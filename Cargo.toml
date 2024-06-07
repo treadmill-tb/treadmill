@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "treadmill-rs",
+    "puppet",
+    "control-socket/tcp/client",
+    "control-socket/tcp/server",
+    "control-socket/unix-seqpacket/client",
+    "control-socket/unix-seqpacket/server",
+    "supervisor/mock",
+    "connector/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Treadmill Project Developers <treadmill@tockos.org>"]
+edition = "2021"

@@ -1,0 +1,15 @@
+[package]
+name = "tml-cli-connector"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+treadmill-rs = { path = "../../treadmill-rs" }
+
+async-trait = "0.1.75"
+serde = { version = "1.0.193", features = [ "derive" ] }
+uuid = { version = "1.6.1", features = [ "serde", "v4" ] }
+log = "0.4.20"
+tokio = { version = "1.35.1", default-features = false, features = [ "signal", "rt-multi-thread" ] }
+inquire = { git = "https://github.com/lschuermann/inquire.git", rev = "d1d9ecaebdbb4ae614f32d2cbea90e3792ca7dc6"  }

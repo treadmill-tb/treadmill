@@ -1,0 +1,11 @@
+[package]
+name = "treadmill-rs"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+async-trait = "0.1.75"
+serde = { version = "1.0.193", features = ["derive"] }
+uuid = { version = "1.6.1", features = ["serde"] }
+log = "0.4.20"
