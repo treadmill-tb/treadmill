@@ -1,7 +1,22 @@
+use std::collections::HashMap;
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
+/// Images are content-addressed by the SHA-256 checksum of their manifest.
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub struct ImageId([u8; 32]);
+
+impl fmt::Debug for ImageId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ImageId")
+            .field(&crate::util::hex_slice::HexSlice(&self.0))
+            .finish()
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ImageManifest {
-    pub id: Uuid,
-
     pub label: String,
     pub revision: usize,
     pub description: String,
@@ -11,15 +26,17 @@ pub struct ImageManifest {
 
 impl ImageManifest {
     pub fn validate(&self) -> bool {
-	if self.label.len() > 64 || self.description.len() > 64 * 1024 || self.parts.len() > 4096 {
-	    return false;
-	}
+        if self.label.len() > 64 || self.description.len() > 64 * 1024 || self.parts.len() > 4096 {
+            return false;
+        }
 
-	for (part_name, part) in self.parts.iter() {
-	    if part_name.len() > 64 || !part_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') || !part.validate() {
-		return false;
-	    }
-	}
+        self.parts.iter().all(|(part_name, part)| {
+            part_name.len() <= 64
+                && part_name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                && part.validate()
+        })
     }
 }
 
@@ -31,12 +48,16 @@ pub struct ImagePartSpec {
 
 impl ImagePartSpec {
     pub fn validate(&self) -> bool {
-	if sha256_checksum.len() != 64 || !sha256_checksum.chars().all(|c| c.is_ascii_alphanumeric()) {
-	    return false;
-	}
+        if self.sha256_checksum.len() != 64
+            || !self
+                .sha256_checksum
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric())
+        {
+            return false;
+        }
 
-
-	return self.sources.all(|s| s.validate());
+        self.sources.iter().all(|s| s.validate())
     }
 }
 
@@ -44,13 +65,13 @@ impl ImagePartSpec {
 #[serde(tag = "type")]
 pub enum ImagePartSourceSpec {
     HttpGet {
-	// TODO: maybe support BasicAuth at some point?
-	url: String,
-    }
+        // TODO: maybe support BasicAuth at some point?
+        url: String,
+    },
 }
 
 impl ImagePartSourceSpec {
     pub fn validate(&self) -> bool {
-	true
+        true
     }
 }

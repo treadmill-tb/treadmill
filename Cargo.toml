@@ -1,14 +1,15 @@
 [workspace]
 resolver = "2"
 members = [
-    "treadmill-rs",
-    "puppet",
+    "connector/cli",
     "control-socket/tcp/client",
     "control-socket/tcp/server",
     "control-socket/unix-seqpacket/client",
     "control-socket/unix-seqpacket/server",
+    "puppet",
     "supervisor/mock",
-    "connector/cli",
+    "supervisor/qemu",
+    "treadmill-rs",
 ]
 
 [workspace.package]

@@ -7,4 +7,6 @@
 pub mod api;
 pub mod connector;
 pub mod control_socket;
+pub mod image;
 pub mod supervisor;
+pub mod util;
