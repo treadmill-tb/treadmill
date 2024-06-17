@@ -71,6 +71,19 @@ pub struct QemuConfig {
     ///   address properly enclosed in square brackets, e.g., `[::1]:8080`
     qemu_args: Vec<std::ffi::OsString>,
 
+    /// Maximum "working" disk image to be allocated for a job, in bytes.
+    ///
+    /// These are thinly provisioned qcow2 CoW files, and so don't necessarily
+    /// take up this much space. However, all images will be extended to this
+    /// size, and the virtual machine can then resize its internal partitions
+    /// accordingly.
+    ///
+    /// The runner will be unable to execute any images that have a disk image
+    /// with a size larger than this limit (even though the sparse qcow2 file
+    /// may be smaller), as otherwise the image exposed to the VM may cut off a
+    /// part of the image at the end.
+    working_disk_max_bytes: u64,
+
     tcp_control_socket_listen_addr: std::net::SocketAddr,
 }
 
@@ -95,6 +108,7 @@ pub struct QemuSupervisorFetchingImageState {
 #[derive(Debug)]
 pub struct QemuSupervisorImageFetchedState {
     start_job_req: connector::StartJobRequest,
+    manifest: image::manifest::ImageManifest,
 }
 
 #[derive(Debug)]
@@ -309,6 +323,7 @@ impl QemuSupervisor {
                 // function from calling `start_job_cont` twice:
                 *job_lg = QemuSupervisorJobState::ImageFetched(QemuSupervisorImageFetchedState {
                     start_job_req: fetching_image_state.start_job_req,
+		    manifest,
                 });
 
                 // Release the lock before continuing to start, otherwise this
@@ -410,7 +425,7 @@ impl QemuSupervisor {
         //
         // If the job is in any state other than `ImageFetched`, swap back and
         // return immediately:
-        let QemuSupervisorImageFetchedState { start_job_req } =
+        let QemuSupervisorImageFetchedState { start_job_req, manifest } =
             match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Starting) {
                 QemuSupervisorJobState::ImageFetched(state) => state,
                 prev_state => {
@@ -438,6 +453,34 @@ impl QemuSupervisor {
                 },
             )
             .await;
+
+	// Retrieve the "top-most" layer in the image manifest, from which we'll
+	// create our "working" disk image overlay:
+	ma
+
+	let (top_layer_id, top_layer_label, top_layer) = manifest.parts
+	    .iter()
+	    .filter_map(|(layer_name, _)| {
+		layer_name
+		    .strip_prefix("org.tockos.treadmill.image.qemu_qcow2_layered.")
+		    .and_then(|layer_id_str| {
+			u64::from_str_radix(layer_id_str)
+			    .map_err(|e| {
+				warn!("Image {:?}}: unable to parse id of image layer {}");
+				e
+			    })
+			    .ok()
+		    })
+	    })
+	    .max_by_key(|(layer_id, _, _)| layer_num);
+
+	// Create a new thick-provisioned disk image with the specified
+	// size. The virtual machine image can then be expanded.
+	//
+	// We want to make sure that the new CoW disk image layer is not smaller
+	// than the one specified in the manifest for the image.
+
+
 
         unimplemented!();
         // // Make sure that we have access to the requested image (it's loaded

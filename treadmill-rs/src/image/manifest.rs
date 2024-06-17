@@ -22,21 +22,26 @@ pub struct ImageManifest {
     pub description: String,
 
     pub parts: HashMap<String, ImagePartSpec>,
+
+    pub attrs: HashMap<String, String>,
 }
 
 impl ImageManifest {
     pub fn validate(&self) -> bool {
-        if self.label.len() > 64 || self.description.len() > 64 * 1024 || self.parts.len() > 4096 {
-            return false;
-        }
-
-        self.parts.iter().all(|(part_name, part)| {
-            part_name.len() <= 64
-                && part_name
+	self.label.len() <= 64
+	    && self.description.len() <= 64 *
+	    && self.parts.len() <= 4096
+	    && self.attrs.iter().all(|(attr_name, attr_val)| {
+		attr_name.len() <= 64
+		    && attr_val.len() <= 64 * 1024
+	    })
+	    && self.parts.iter().all(|(part_name, part)| {
+		part_name.len() <= 64
+                    && part_name
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-                && part.validate()
-        })
+                    && part.validate()
+            })
     }
 }
 
@@ -44,20 +49,18 @@ impl ImageManifest {
 pub struct ImagePartSpec {
     pub sources: Vec<ImagePartSourceSpec>,
     pub sha256_checksum: String,
+    pub attrs: HashMap<String, String>,
 }
 
 impl ImagePartSpec {
     pub fn validate(&self) -> bool {
-        if self.sha256_checksum.len() != 64
-            || !self
-                .sha256_checksum
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric())
-        {
-            return false;
-        }
-
-        self.sources.iter().all(|s| s.validate())
+        self.sha256_checksum.len() == 64
+            && self.sha256_checksum.chars().all(|c| c.is_ascii_alphanumeric())
+	    && self.attrs.iter().all(|(attr_name, attr_val)| {
+		attr_name.len() <= 64
+		    && attr_val.len() <= 64 * 1024
+	    })
+            && self.sources.iter().all(|s| s.validate())
     }
 }
 
