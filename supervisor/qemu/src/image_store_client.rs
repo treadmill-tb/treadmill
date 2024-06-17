@@ -5,7 +5,8 @@ use log::warn;
 
 use treadmill_rs::image::manifest::{ImageId, ImageManifest};
 
-pub enum FetchImageResult {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FetchImageStatus {
     /// The image is currently being fetched. An image store may provide an
     /// optional message indicating the status of this operation.
     InProgress(Option<String>),
@@ -14,6 +15,7 @@ pub enum FetchImageResult {
     Present,
 }
 
+#[derive(Debug)]
 pub struct ImageStoreClient {
     _http_endpoint: String,
 }
@@ -27,7 +29,7 @@ impl ImageStoreClient {
 
     pub async fn into_local<I: Into<PathBuf>>(
         self,
-        fs_endpoint: PathBuf,
+        fs_endpoint: I,
     ) -> Result<LocalImageStoreClient, (anyhow::Error, Self)> {
         LocalImageStoreClient::new(self, fs_endpoint).await
     }
@@ -37,14 +39,14 @@ impl ImageStoreClient {
         &self,
         remote_store_endpoints: Vec<String>,
         image_id: ImageId,
-    ) -> Result<FetchImageResult> {
+    ) -> Result<FetchImageStatus> {
         warn!(
             "Image store client was instructed to fetch an image, which is \
 	     currently unimplemented. Returning an unconditional \
-	     FetchImageResult::Present."
+	     FetchImageStatus::Present."
         );
 
-        Ok(FetchImageResult::Present)
+        Ok(FetchImageStatus::Present)
     }
 
     pub async fn image_manifest(&self, image_id: ImageId) -> Result<ImageManifest> {
@@ -52,6 +54,7 @@ impl ImageStoreClient {
     }
 }
 
+#[derive(Debug)]
 pub struct LocalImageStoreClient {
     image_store_client: ImageStoreClient,
     fs_endpoint: PathBuf,
@@ -84,7 +87,7 @@ impl LocalImageStoreClient {
         &self,
         remote_store_endpoints: Vec<String>,
         image_id: ImageId,
-    ) -> Result<FetchImageResult> {
+    ) -> Result<FetchImageStatus> {
         self.image_store_client
             .fetch_image(remote_store_endpoints, image_id)
             .await
@@ -93,6 +96,12 @@ impl LocalImageStoreClient {
     pub async fn image_manifest(&self, image_id: ImageId) -> Result<ImageManifest> {
         // Only do a local lookup here. If the image store holds the image and
         // has a filesystem endpoint, it should also expose it there.
-        unimplemented!()
+        // unimplemented!()
+        Ok(ImageManifest {
+            label: "".to_string(),
+            revision: 0,
+            description: "".to_string(),
+            parts: std::collections::HashMap::new(),
+        })
     }
 }

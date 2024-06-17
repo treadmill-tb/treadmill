@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// Images are content-addressed by the SHA-256 checksum of their manifest.
 #[derive(Copy, Clone, Eq, PartialEq)]
-pub struct ImageId([u8; 32]);
+pub struct ImageId(pub [u8; 32]);
 
 impl fmt::Debug for ImageId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {

@@ -1,6 +1,8 @@
+use std::fmt;
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
-use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
@@ -15,10 +17,18 @@ enum ControlSocketTaskCommand {
 }
 
 pub struct TcpControlSocket<S: Supervisor> {
-    _job_id: Uuid,
+    job_id: Uuid,
     task_handle: JoinHandle<Result<()>>,
     task_cmd_chan: tokio::sync::mpsc::Sender<ControlSocketTaskCommand>,
     _supervisor: Arc<S>,
+}
+
+impl<S: Supervisor> fmt::Debug for TcpControlSocket<S> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("TcpControlSocket")
+            .field("job_id", &self.job_id)
+            .finish()
+    }
 }
 
 impl<S: Supervisor> TcpControlSocket<S> {
@@ -192,7 +202,7 @@ impl<S: Supervisor> TcpControlSocket<S> {
         });
 
         Ok(TcpControlSocket {
-            _job_id: job_id,
+            job_id,
             task_handle,
             task_cmd_chan: task_cmd_chan_tx,
             _supervisor: supervisor,

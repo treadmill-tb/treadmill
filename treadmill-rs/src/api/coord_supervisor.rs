@@ -42,7 +42,10 @@ pub mod sse {
         /// Which image to base this job off. If the image is not locally cached
         /// at the supervisor, it will be fetched using its manifest prior to
         /// executing the job.
-        pub image_id: Uuid,
+        ///
+        /// Images are content-addressed by the SHA-256 digest of their
+        /// manifest.
+        pub image_id: [u8; 32],
 
         /// The set of initial SSH keys to deploy onto the image.
         ///

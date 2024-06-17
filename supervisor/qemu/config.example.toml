@@ -5,3 +5,8 @@ coord_connector = "cli_connector"
 [cli_connector]
 # Doesn't do anything yet, but we require the images key to be present
 images = { }
+
+[qemu]
+qemu_binary = "qemu-kvm"
+qemu_args = []
+tcp_control_socket_listen_addr = "0.0.0.0:3859"

@@ -31,11 +31,13 @@ pub enum JobErrorKind {
     /// The image is not compatible with, or does not meet the
     /// expectations of this supervisor.
     ImageNotCompatible,
+
+    /// Internal error within the supervisor:
+    InternalError,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobError {
-    pub job_id: Uuid,
     pub request_id: Option<Uuid>,
     pub error_kind: JobErrorKind,
     pub description: String,
