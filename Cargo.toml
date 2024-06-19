@@ -8,7 +8,7 @@ members = [
     "control-socket/unix-seqpacket/client",
     "control-socket/unix-seqpacket/server",
     "supervisor/mock",
-    "connector/cli",
+    "connector/cli", "connector/http",
 ]
 
 [workspace.package]
