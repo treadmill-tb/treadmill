@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Result, Context};
 use async_recursion::async_recursion;
 use async_trait::async_trait;
 use clap::Parser;
@@ -53,6 +53,9 @@ impl Default for SSHPreferredIPVersion {
 pub struct QemuConfig {
     /// Main QEMU binary to execute for a job.
     qemu_binary: PathBuf,
+
+    /// `qemu-img` binary, to work with qcow2 files.
+    qemu_img_binary: PathBuf,
 
     /// List of arguments to pass to the QEMU binary.
     ///
@@ -240,7 +243,7 @@ impl QemuSupervisor {
         // If the job is in any state other than `FetchingImage`, swap back and
         // return immediately:
         let fetching_image_state =
-            match (std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Starting)) {
+            match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Starting) {
                 QemuSupervisorJobState::FetchingImage(state) => state,
                 prev_state => {
                     // Swap the old state back:
@@ -323,7 +326,7 @@ impl QemuSupervisor {
                 // function from calling `start_job_cont` twice:
                 *job_lg = QemuSupervisorJobState::ImageFetched(QemuSupervisorImageFetchedState {
                     start_job_req: fetching_image_state.start_job_req,
-		    manifest,
+                    manifest,
                 });
 
                 // Release the lock before continuing to start, otherwise this
@@ -340,7 +343,6 @@ impl QemuSupervisor {
                 // Start a new task that will run this function in 15 sec. We'll
                 // want to cancel it when we perform any state transition
                 // outside of this function:
-                // let poll_task_this_weak = Arc::downgrade(this);
                 let poll_task_this_weak = Arc::downgrade(this);
                 let poll_task =
                     tokio::task::spawn(fuse(std::time::Duration::from_secs(15), async move {
@@ -392,6 +394,226 @@ impl QemuSupervisor {
         }
     }
 
+    async fn start_job_parse_manifest_check_images(&self) {
+	// Retrieve the "top-most" layer in the image manifest, from which we'll
+        // create our "working" disk image overlay:
+	let top_layer_label = manifest.attrs
+	    .get("org.tockos.treadmill.image.qemu_layered_v0.head")
+	    .ok_or(anyhow!("Image does not have a head layer defined"))?;
+
+	// Now step through each image layer, making sure that it exists and (if
+	// it has a predecessor defined) it points to that predecessor. We don't
+	// want images to be able to reference arbitrary paths in our filesystem
+	// as underlying layers.
+	//
+	// We use qemu-img to retrieve the (partial) metadata of an image.
+	#[derive(Deserialize)]
+	#[serde(rename_all = "kebab-case")]
+	struct QemuImgChildMetadata {
+	    // We're only interested in the filename here, to make sure that the
+	    // image has only one child node, and that node coincides with the
+	    // file that we're operating on.
+	    filename: PathBuf,
+	}
+
+	#[derive(Deserialize)]
+	#[serde(rename_all = "kebab-case")]
+	struct QemuImgMetadata {
+	    filename: PathBuf,
+	    virtual_size: u64,
+	    children: Vec<QemuImgChildMetadata>,
+	    encrypted: Option<bool>,
+	    backing_filename_format: Option<String>,
+	    // According to [1], these attributes are described as
+	    // - backing-filename: name of the backing file
+	    // - full-backing-filename: full path of the backing file
+	    //
+	    // In practice it seems that `full-backing-filename` points to the
+	    // resolved path of the backing file (relative to the current
+	    // working directory), whereas `backing-filename` is just the raw
+	    // attribute stored in the image.
+	    //
+	    // [1]: https://www.qemu.org/docs/master/interop/qemu-storage-daemon-qmp-ref.html
+	    backing_filename: Option<PathBuf>,
+	    full_backing_filename: Option<PathBuf>,
+	}
+
+	// Now, for every image in the chain, parse the metadata and make sure
+	// that the image file:
+	//
+	// - Exists,
+	// - Matches its specification in the manifest, and
+	// - Only references its defined predecessor.
+	let mut current_image = top_layer_label;
+	loop {
+	    // Acquire the manifest metadata for this image "part":
+	    let part_spec = manifest.parts.get(current_image)
+		.ok_or_else(|| anyhow!("Image missing part {}", current_image))?;
+
+	    // Try to read image attributes with `qemu-img`:
+	    let image_path = this.image_store_client.part_path(&part_spec.sha256_digest).await;
+
+	    let image_path_canon = tokio::fs::canonicalize(&image_path)
+		.await
+		.with_context(|| format!(
+		    "Failed to canonicalize image part path {:?}",
+		    image_path
+		))?;
+	    top_image_path.get_or_insert_with(|| image_path_canon.clone());
+
+	    let metadata_output =
+		tokio::process::Command::new(&this.config.qemu.qemu_img_binary)
+		.arg("info")
+		.arg("--format=qcow2")
+		.arg("--output=json")
+		.arg("--")
+		.arg(&image_path_canon)
+		.output()
+		.await
+		.map_err(|e| anyhow::Error::from(e))
+		.and_then(|output| {
+		    // Ideally we'd want to use the nightly `exit_ok()` here:
+		    if !output.status.success() {
+			bail!("Running qemu-img failed with exit-code {:?}", output.status.code());
+		    }
+
+		    // Don't care about stderr:
+		    Ok(output.stdout)
+		})
+		.with_context(|| format!("Failed to query image metadata for {:?}", image_path))?;
+
+	    let metadata: QemuImgMetadata = serde_json::from_slice(&metadata_output)
+		.with_context(|| format!("Failed to parse `qemu-img info` output for {:?}", image_path))?;
+
+	    // Make sure that the image has just one child, and that child's
+	    // filename is identical to the top-level filename. We do this as a
+	    // precaution to images referencing other paths on our machine.
+	    if metadata.children.len() != 1 {
+		bail!("Image file {:?}  does not have exactly one child in qemu-img output", image_path);
+	    }
+
+	    let child = &metadata.children[0];
+	    if child.filename != metadata.filename {
+		bail!(
+		    "Image file {:?}'s child filename ({:?}) diverges from \
+		     main filename ({:?})",
+		    image_path, &child.filename, &metadata.filename
+		);
+	    }
+
+	    // Ensure that the image's advertised virtual size is identical to
+	    // what we hold in the manifest:
+	    let part_virtual_size: u64 = part_spec.attrs
+		.get("org.tockos.treadmill.image.qemu_layered_v0.part-virtual-size")
+		.ok_or_else(|| anyhow!("Image part {} missing `part-virtual-size` attribute", current_image))
+		.and_then(|size_bytes_str| u64::from_str_radix(size_bytes_str, 10).with_context(|| format!("Parsing part {}'s part-virtual-size attribute as u64", current_image)))?;
+	    if part_virtual_size != metadata.virtual_size {
+		bail!(
+		    "Image file {:?}'s virtual size ({} byte) diverges from \
+		     manifest ({} byte)",
+		    image_path, metadata.virtual_size, part_virtual_size,
+		);
+	    }
+
+	    // The image must not be encrypted:
+	    if metadata.encrypted.unwrap_or(false) {
+		bail!(
+		    "Image file {:?} is encrypted",
+		    image_path,
+		);
+	    }
+
+	    // If the image has a backing format, it must be "qcow2":
+	    if let Some(fmt) = metadata.backing_filename_format {
+		if fmt != "qcow2" {
+		    bail!(
+			"Image file {:?} can only have backing files of \
+			 qcow2 format (actual: {})",
+			image_path, fmt,
+		    );
+		}
+	    }
+
+	    // If the manifest has a `lower` attribute then this image must have
+	    // a backing file attribute that's part of our image store, and the
+	    // qcow2 image's backing file path must resolve to the same file as
+	    // our image store lookup.
+	    //
+	    // If the manifest doesn't have a `lower` attribute, then the qcow2
+	    // file may not have either `full_backing_filename` nor a
+	    // `backing_filename`:
+	    let part_lower_opt = part_spec.attrs
+		.get("org.tockos.treadmill.image.qemu_layered_v0.lower");
+	    if let Some(part_lower) = part_lower_opt {
+		// We do have a lower part, look it up in the image store:
+		let lower_part_spec = manifest.parts.get(part_lower)
+		    .ok_or_else(|| anyhow!(
+			"Image missing part {}, referenced by part {}",
+			part_lower, current_image
+		    ))?;
+
+		let image_store_path = this.image_store_client
+		    .part_path(&lower_part_spec.sha256_digest)
+		    .await;
+
+		let image_store_path_canon =
+		    tokio::fs::canonicalize(&image_store_path)
+		    .await
+		    .with_context(|| format!(
+			"Failed to canonicalize image part path {:?},
+                             returned by image store lookup for part {}",
+			image_store_path, part_lower,
+		    ))?;
+
+		let full_backing_filename_canon =
+		    if let Some(f) = &metadata.full_backing_filename {
+			tokio::fs::canonicalize(f)
+			    .await
+			    .with_context(|| format!(
+				"Failed to canonicalize image part path {:?},
+                                     referenced by qcow image file {}",
+				f, current_image,
+			    ))?
+		    } else {
+			bail!(
+			    "Image {} supposed to reference part {}, but \
+			     qemu-img references no backing file",
+			    current_image, part_lower,
+			);
+		    };
+
+		// Ensure that the canonical path representations for the
+		// `image_path` and the path in the image metadata are
+		// identical:
+		if image_store_path_canon != full_backing_filename_canon {
+		    bail!(
+			"Image part {} maps this path in the image store: \
+			 {:?}, but qcow2 of layer {} maps to {:?} as a \
+			 backing file instead.",
+			part_lower, image_store_path_canon, current_image,
+			full_backing_filename_canon,
+		    );
+		}
+
+		// All checks passed, continue with the next layer:
+		current_image = part_lower;
+	    } else {
+		// Image is not supported to have any lower / backing layer:
+		if metadata.backing_filename.is_some() || metadata.full_backing_filename.is_some() {
+		    bail!(
+			"Image part {} (file {:?}) does not have a \
+			 lower-part specified by references a backing file",
+			current_image, image_path_canon,
+		    );
+		}
+
+		// We've reached the end of the image chain without error, break
+		// out of the loop and return a success result.
+		break Ok(());
+	    }
+	}
+    }
+
     async fn start_job_cont(this: &Arc<Self>, job_id: Uuid) {
         // Obtain a reference to the job. It's possible for the job to have
         // transitioned from `ImageFetched` to any other state in between
@@ -425,23 +647,25 @@ impl QemuSupervisor {
         //
         // If the job is in any state other than `ImageFetched`, swap back and
         // return immediately:
-        let QemuSupervisorImageFetchedState { start_job_req, manifest } =
-            match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Starting) {
-                QemuSupervisorJobState::ImageFetched(state) => state,
-                prev_state => {
-                    // Swap the old state back:
-                    *job_lg = prev_state;
+        let QemuSupervisorImageFetchedState {
+            start_job_req,
+            manifest,
+        } = match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Starting) {
+            QemuSupervisorJobState::ImageFetched(state) => state,
+            prev_state => {
+                // Swap the old state back:
+                *job_lg = prev_state;
 
-                    // Same as above, let's issue a debug message:
-                    debug!(
-                        "Job {:?} changed state before `start_job_cont` could \
+                // Same as above, let's issue a debug message:
+                debug!(
+                    "Job {:?} changed state before `start_job_cont` could \
 			 aquire a lock: {:?}",
-                        job_id, job,
-                    );
+                    job_id, job,
+                );
 
-                    return;
-                }
-            };
+                return;
+            }
+        };
 
         // Inform the connector that we're now preparing for start:
         this.connector
@@ -454,33 +678,68 @@ impl QemuSupervisor {
             )
             .await;
 
-	// Retrieve the "top-most" layer in the image manifest, from which we'll
-	// create our "working" disk image overlay:
-	ma
+	// Parse the manifest and sanity-check all image layers. We do this in
+	// an async block such that we can use the `?` operator:
+	let mut top_image_path = None;
 
-	let (top_layer_id, top_layer_label, top_layer) = manifest.parts
-	    .iter()
-	    .filter_map(|(layer_name, _)| {
-		layer_name
-		    .strip_prefix("org.tockos.treadmill.image.qemu_qcow2_layered.")
-		    .and_then(|layer_id_str| {
-			u64::from_str_radix(layer_id_str)
-			    .map_err(|e| {
-				warn!("Image {:?}}: unable to parse id of image layer {}");
-				e
-			    })
-			    .ok()
-		    })
-	    })
-	    .max_by_key(|(layer_id, _, _)| layer_num);
+	// Check whether the image is valid. If it's not, report to the
+	// coordinator:
+	if let Err(e) = parse_check_manifest_res {
+	    // Image is invalid, report an error:
+            this.connector
+                .report_job_error(
+                    start_job_req.job_id,
+                    connector::JobError {
+                        request_id: Some(start_job_req.request_id),
+                        error_kind: connector::JobErrorKind::ImageInvalid,
+                        description: format!(
+			    "Validation of image {:?} failed: {:?}",
+			    start_job_req.image_id, e
+			),
+                    },
+                )
+                .await;
 
-	// Create a new thick-provisioned disk image with the specified
-	// size. The virtual machine image can then be expanded.
-	//
-	// We want to make sure that the new CoW disk image layer is not smaller
-	// than the one specified in the manifest for the image.
+            // No resources have been allocated (yet), so simply remove the
+            // job and set its state to `Stopping`, in case anyone else has
+            // a reference to it still.
+            //
+            // Safe to call, we don't hold a lock on `this.jobs`:
+            this.remove_job(job_id).await;
 
+            // Prevent other tasks from further advancing this job's state:
+            *job_lg = QemuSupervisorJobState::Stopping;
+	}
 
+	// If we reach this point, we must have a "top" image part from which we
+	// can create a new qcow overlay:
+	let top_image_path = top_image_path.unwrap();
+	println!("Top image path: {:?}", top_image_path);
+
+	// Create a new working directory:
+
+        // let (top_layer_id, top_layer_label, top_layer) = manifest
+        //     .parts
+        //     .iter()
+        //     .filter_map(|(layer_name, _)| {
+        //         layer_name
+        //             .strip_prefix("org.tockos.treadmill.image.qemu_qcow2_layered.")
+        //             .and_then(|layer_id_str| {
+        //                 u64::from_str_radix(layer_id_str)
+        //                     .map_err(|e| {
+        //                         warn!("Image {:?}}: unable to parse id of image layer {}");
+        //                         e
+        //                     })
+        //                     .ok()
+        //             })
+        //     })
+        //     .max_by_key(|(layer_id, _, _)| layer_num);
+
+        // Create a new thick-provisioned disk image with the specified
+        // size. The virtual machine image can then be expanded.
+        //
+        // We want to make sure that the new CoW disk image layer is not smaller
+        // than the one specified in the manifest for the image.
 
         unimplemented!();
         // // Make sure that we have access to the requested image (it's loaded
@@ -713,7 +972,7 @@ impl connector::Supervisor for QemuSupervisor {
         // Perform actions depending on the previous job state:
         match prev_job_state {
             StopJobPrevState::FetchingImage(QemuSupervisorFetchingImageState {
-                start_job_req,
+                start_job_req: _,
                 poll_task,
             }) => {
                 // Make sure that we don't have another poll task
@@ -727,7 +986,10 @@ impl connector::Supervisor for QemuSupervisor {
                 }
             }
 
-            StopJobPrevState::ImageFetched(QemuSupervisorImageFetchedState { start_job_req }) => {
+            StopJobPrevState::ImageFetched(QemuSupervisorImageFetchedState {
+		start_job_req: _,
+		manifest: _
+	    }) => {
                 // Nothing to do, the only time we're seeing this state is in
                 // between fetching image, and actually starting the job. Given
                 // that we've acquired the lock between those two functions, we

@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 use log::warn;
@@ -37,8 +37,8 @@ impl ImageStoreClient {
     // TODO: authentication?
     pub async fn fetch_image(
         &self,
-        remote_store_endpoints: Vec<String>,
-        image_id: ImageId,
+        _remote_store_endpoints: Vec<String>,
+        _image_id: ImageId,
     ) -> Result<FetchImageStatus> {
         warn!(
             "Image store client was instructed to fetch an image, which is \
@@ -49,7 +49,7 @@ impl ImageStoreClient {
         Ok(FetchImageStatus::Present)
     }
 
-    pub async fn image_manifest(&self, image_id: ImageId) -> Result<ImageManifest> {
+    pub async fn image_manifest(&self, _image_id: ImageId) -> Result<ImageManifest> {
         bail!("Fetching image manifests via HTTP is not implement.")
     }
 }
@@ -83,6 +83,10 @@ impl LocalImageStoreClient {
         &mut self.image_store_client
     }
 
+    pub async fn part_path(&self, _part_sha256_digest: &[u8; 32]) -> PathBuf {
+	unimplemented!()
+    }
+
     pub async fn fetch_image(
         &self,
         remote_store_endpoints: Vec<String>,
@@ -93,7 +97,7 @@ impl LocalImageStoreClient {
             .await
     }
 
-    pub async fn image_manifest(&self, image_id: ImageId) -> Result<ImageManifest> {
+    pub async fn image_manifest(&self, _image_id: ImageId) -> Result<ImageManifest> {
         // Only do a local lookup here. If the image store holds the image and
         // has a filesystem endpoint, it should also expose it there.
         // unimplemented!()
@@ -101,6 +105,7 @@ impl LocalImageStoreClient {
             label: "".to_string(),
             revision: 0,
             description: "".to_string(),
+	    attrs: std::collections::HashMap::new(),
             parts: std::collections::HashMap::new(),
         })
     }

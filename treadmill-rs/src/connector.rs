@@ -28,6 +28,9 @@ pub enum JobErrorKind {
     /// resource stated therein cannot be fetched):
     ImageNotFound,
 
+    /// There is some problem with the image.
+    ImageInvalid,
+
     /// The image is not compatible with, or does not meet the
     /// expectations of this supervisor.
     ImageNotCompatible,
