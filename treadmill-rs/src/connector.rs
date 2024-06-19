@@ -35,7 +35,6 @@ pub enum JobErrorKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobError {
-    pub job_id: Uuid,
     pub request_id: Option<Uuid>,
     pub error_kind: JobErrorKind,
     pub description: String,
