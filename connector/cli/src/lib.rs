@@ -252,7 +252,11 @@ impl CliCommand {
                         resume_job: false,
                         run_command: None,
                         // TODO: require image to be defined
-                        image_id: Uuid::new_v4(),
+                        image_id: [
+                            0x04, 0x38, 0xdb, 0x44, 0x6d, 0x43, 0xf6, 0xa5, 0xc3, 0x17, 0xa7, 0x3a,
+                            0x10, 0x53, 0x0f, 0x35, 0xae, 0x41, 0xca, 0x71, 0x74, 0x63, 0xfb, 0xb4,
+                            0x36, 0x7f, 0x31, 0x93, 0x80, 0xa0, 0x5f, 0x2d,
+                        ],
                         ssh_keys,
                         ssh_rendezvous_servers: vec![],
                         parameters: HashMap::new(),
