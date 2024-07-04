@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 pub use tml_tcp_control_socket_client as tcp;
 
 // UNIX SeqPacket control socket transport implementation:
-#[cfg(feature = "transport_unix_seqpacket")]
+#[cfg(all(feature = "transport_unix_seqpacket", target_os = "linux"))]
 pub use tml_unix_seqpacket_control_socket_client as unix_seqpacket;
 
 use treadmill_rs::api::supervisor_puppet::{
@@ -13,7 +13,7 @@ use treadmill_rs::api::supervisor_puppet::{
 };
 
 pub enum ControlSocketClient {
-    #[cfg(feature = "transport_unix_seqpacket")]
+    #[cfg(all(feature = "transport_unix_seqpacket", target_os = "linux"))]
     UnixSeqpacket(unix_seqpacket::UnixSeqpacketControlSocketClient),
     #[cfg(feature = "transport_tcp")]
     Tcp(tcp::TcpControlSocketClient),
@@ -22,7 +22,7 @@ pub enum ControlSocketClient {
 impl ControlSocketClient {
     pub async fn request(&self, req: PuppetReq) -> Result<SupervisorResp> {
         match self {
-            #[cfg(feature = "transport_unix_seqpacket")]
+            #[cfg(all(feature = "transport_unix_seqpacket", target_os = "linux"))]
             ControlSocketClient::UnixSeqpacket(client) => client.request(req).await,
             #[cfg(feature = "transport_tcp")]
             ControlSocketClient::Tcp(client) => client.request(req).await,
@@ -31,7 +31,7 @@ impl ControlSocketClient {
 
     pub async fn send_event(&self, ev: PuppetEvent) -> Result<()> {
         match self {
-            #[cfg(feature = "transport_unix_seqpacket")]
+            #[cfg(all(feature = "transport_unix_seqpacket", target_os = "linux"))]
             ControlSocketClient::UnixSeqpacket(client) => client.send_event(ev).await,
             #[cfg(feature = "transport_tcp")]
             ControlSocketClient::Tcp(client) => client.send_event(ev).await,
@@ -40,7 +40,7 @@ impl ControlSocketClient {
 
     pub async fn listen(&self) -> Result<(u64, SupervisorEvent)> {
         match self {
-            #[cfg(feature = "transport_unix_seqpacket")]
+            #[cfg(all(feature = "transport_unix_seqpacket", target_os = "linux"))]
             ControlSocketClient::UnixSeqpacket(client) => client.listen().await,
             #[cfg(feature = "transport_tcp")]
             ControlSocketClient::Tcp(client) => client.listen().await,
@@ -49,7 +49,7 @@ impl ControlSocketClient {
 
     pub async fn shutdown(self) -> Result<()> {
         match self {
-            #[cfg(feature = "transport_unix_seqpacket")]
+            #[cfg(all(feature = "transport_unix_seqpacket", target_os = "linux"))]
             ControlSocketClient::UnixSeqpacket(client) => client.shutdown().await,
             #[cfg(feature = "transport_tcp")]
             ControlSocketClient::Tcp(client) => client.shutdown().await,

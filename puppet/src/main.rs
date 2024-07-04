@@ -209,7 +209,7 @@ async fn run_command(
     environment: Vec<(Vec<u8>, Vec<u8>)>,
     mut command_executor_rx: tokio::sync::mpsc::Receiver<CommandExecutorMsg>,
 ) -> Result<(Option<i32>, bool)> {
-    // All errors we return will be reported to the coordinator by the caller.
+    // All errors we return will be reported to the switchboard by the caller.
     use std::os::unix::ffi::OsStringExt;
     use tokio::io::AsyncReadExt;
 
@@ -239,7 +239,7 @@ async fn run_command(
         .with_context(|| format!("Spawning child process {:?}", &cmdline_osstr))?;
 
     // Acquire the stdout and stderr pipes, and spawn a new log-streamer
-    // task that collects all log output and streams it to the coordinator:
+    // task that collects all log output and streams it to the switchboard:
     //
     // We use expect here, as this should always work:
     let stdout = child
@@ -476,13 +476,20 @@ async fn main() -> Result<()> {
     let mut client = Arc::new((|| async {
 	match args.transport {
 	    #[cfg(feature = "transport_unix_seqpacket")]
-            PuppetControlSocketTransport::UnixSeqpacket => Ok(control_socket_client::ControlSocketClient::UnixSeqpacket(
-		control_socket_client::unix_seqpacket::UnixSeqpacketControlSocketClient::new(
-		    &args.unix_seqpacket_control_socket.clone().unwrap(),
-		    SUPERVISOR_EVENT_CHANNEL_CAP,
-		)
-                    .await?,
-            )),
+        PuppetControlSocketTransport::UnixSeqpacket => {
+            #[cfg(target_os = "linux")]
+            {
+                return Ok(control_socket_client::ControlSocketClient::UnixSeqpacket(
+                    control_socket_client::unix_seqpacket::UnixSeqpacketControlSocketClient::new(
+                        &args.unix_seqpacket_control_socket.clone().unwrap(),
+                        SUPERVISOR_EVENT_CHANNEL_CAP,
+                    )
+                        .await?,
+                ));
+            }
+            #[cfg(not(target_os = "linux"))]
+            unimplemented!("UnixSeqpacket not supported outside of linux")
+        },
 
 	    #[cfg(feature = "transport_tcp")]
             PuppetControlSocketTransport::Tcp => Ok(control_socket_client::ControlSocketClient::Tcp(
@@ -495,12 +502,14 @@ async fn main() -> Result<()> {
 	    PuppetControlSocketTransport::AutoDiscover => {
 		// Give all known control socket clients a chance to auto-discover,
 		// in no particular order:
-		#[cfg(feature = "transport_unix_seqpacket")]
-		if let Some(client_res) = control_socket_client::unix_seqpacket::UnixSeqpacketControlSocketClient::autodiscover(
-		    SUPERVISOR_EVENT_CHANNEL_CAP,
-		).await {
-		    return Ok(control_socket_client::ControlSocketClient::UnixSeqpacket(client_res?));
-		}
+        #[cfg(all(feature = "transport_unix_seqpacket", target_os = "linux"))]
+        {
+            if let Some(client_res) = control_socket_client::unix_seqpacket::UnixSeqpacketControlSocketClient::autodiscover(
+                SUPERVISOR_EVENT_CHANNEL_CAP,
+            ).await {
+                return Ok(control_socket_client::ControlSocketClient::UnixSeqpacket(client_res?));
+            }
+        }
 
 		#[cfg(feature = "transport_tcp")]
 		if let Some(client_res) = control_socket_client::tcp::TcpControlSocketClient::autodiscover(

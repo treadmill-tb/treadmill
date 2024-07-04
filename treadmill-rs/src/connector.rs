@@ -40,9 +40,9 @@ pub struct JobError {
     pub description: String,
 }
 
-/// Supervisor interface for coordinator connectors.
+/// Supervisor interface for switchboard connectors.
 ///
-/// A supervisor interacts with a coordinator through a
+/// A supervisor interacts with a switchboard through a
 /// [_connector_](SupervisorConnector). These connectors expect to be passed an
 /// instance of [`Supervisor`] to deliver requests and events.
 #[async_trait]
@@ -77,12 +77,12 @@ pub trait Supervisor: Send + Sync + 'static {
     async fn stop_job(this: &Arc<Self>, request: StopJobRequest) -> Result<(), JobError>;
 }
 
-/// Connector to a coordinator.
+/// Connector to a switchboard.
 ///
 /// This interface is implemented by all "connectors" that facilitate
 /// interactions between supervisors and coordinators. It allows supervisors
 /// (implementing the [`Supervisor`] trait) to deliver events and issue requests
-/// to a coordinator, for instance to report their current status.
+/// to a switchboard, for instance to report their current status.
 #[async_trait]
 pub trait SupervisorConnector: Send + Sync + 'static {
     /// Start the connector's main loop.

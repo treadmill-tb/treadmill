@@ -1,4 +1,4 @@
-//! Types used in the interface between the coordinator and supervisor
+//! Types used in the interface between the switchboard and supervisor
 //! components.
 
 pub mod sse {

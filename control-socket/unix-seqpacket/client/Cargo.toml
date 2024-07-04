@@ -11,4 +11,6 @@ anyhow = "1.0.76"
 log = "0.4.20"
 serde_json = "1.0.108"
 tokio = { version = "1.35.1", default-features = false, features = ["rt", "sync", "macros"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
 tokio-seqpacket = "0.7.1"

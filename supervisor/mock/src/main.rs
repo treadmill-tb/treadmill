@@ -18,6 +18,7 @@ use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 // use treadmill_sse_connector::SSEConnector;
 
 use tml_tcp_control_socket_server::TcpControlSocket;
+#[cfg(target_os = "linux")]
 use tml_unix_seqpacket_control_socket_server::UnixSeqpacketControlSocket;
 
 #[derive(Parser, Debug, Clone)]
@@ -64,6 +65,7 @@ pub struct MockSupervisorConfig {
 }
 
 pub enum ControlSocket {
+    #[cfg(target_os = "linux")]
     UnixSeqpacket(UnixSeqpacketControlSocket<MockSupervisor>),
     Tcp(TcpControlSocket<MockSupervisor>),
 }
@@ -114,7 +116,7 @@ impl MockSupervisorJobState {
 }
 
 pub struct MockSupervisor {
-    /// Connector to the central coordinator. All communication is mediated
+    /// Connector to the central switchboard. All communication is mediated
     /// through this connector.
     connector: Arc<dyn connector::SupervisorConnector>,
 
@@ -212,7 +214,7 @@ impl connector::Supervisor for MockSupervisor {
         // ========== GLOBAL `jobs` HASHMAP LOCK RELEASED ======================
 
         // The job was inserted into the `jobs` HashMap and initialized as
-        // `Starting`, let the coordinator know:
+        // `Starting`, let the switchboard know:
         this.connector
             .update_job_state(
                 msg.job_id,
@@ -226,11 +228,13 @@ impl connector::Supervisor for MockSupervisor {
             .await;
 
         // Start a UnixSeqpacket control socket in a temporary directory:
+        #[cfg(target_os = "linux")]
         let control_socket_path = tempfile::tempdir()
             .unwrap()
             .into_path()
             .join("S.tml-unix-seqpacket");
 
+        #[cfg(target_os = "linux")]
         let control_socket = UnixSeqpacketControlSocket::new_unix_seqpacket(
             msg.job_id,
             &control_socket_path,
@@ -239,6 +243,17 @@ impl connector::Supervisor for MockSupervisor {
         .await
         .unwrap();
 
+        #[cfg(not(target_os = "linux"))]
+        const SOCKET_ADDR_STR: &str = "[::1]:20202";
+        #[cfg(not(target_os = "linux"))]
+        let socket_addr =
+            <std::net::SocketAddr as std::str::FromStr>::from_str(SOCKET_ADDR_STR).unwrap();
+        #[cfg(not(target_os = "linux"))]
+        let control_socket = TcpControlSocket::new(msg.job_id, socket_addr, this.clone())
+            .await
+            .unwrap();
+
+        #[cfg(target_os = "linux")]
         let puppet_proc = tokio::process::Command::new(
             // Unfortunately, cargo bindeps is still a nightly feature and
             // break things, such as cargo fmt:
@@ -253,8 +268,18 @@ impl connector::Supervisor for MockSupervisor {
         .env("TML_CTRLSOCK_UNIXSEQPACKET", &control_socket_path)
         .spawn()
         .unwrap();
+        let puppet_proc = tokio::process::Command::new(&this.args.puppet_binary)
+            .arg("--transport")
+            .arg("tcp")
+            .arg("--tcp-control-socket-addr")
+            .arg(SOCKET_ADDR_STR)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .unwrap();
 
-        // Job has been started, let the coordinator know:
+        // Job has been started, let the switchboard know:
         this.connector
             .update_job_state(
                 msg.job_id,
@@ -267,10 +292,20 @@ impl connector::Supervisor for MockSupervisor {
             .await;
 
         // Mark the job as started:
-        *job_lg = MockSupervisorJobState::Running(MockSupervisorJobRunningState {
-            control_socket: ControlSocket::UnixSeqpacket(control_socket),
-            puppet_proc,
-        });
+        #[cfg(target_os = "linux")]
+        {
+            *job_lg = MockSupervisorJobState::Running(MockSupervisorJobRunningState {
+                control_socket: ControlSocket::UnixSeqpacket(control_socket),
+                puppet_proc,
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            *job_lg = MockSupervisorJobState::Running(MockSupervisorJobRunningState {
+                control_socket: ControlSocket::Tcp(control_socket),
+                puppet_proc,
+            });
+        }
 
         Ok(())
     }
@@ -337,7 +372,7 @@ impl connector::Supervisor for MockSupervisor {
             }
         };
 
-        // Job is stopping, let the coordinator know:
+        // Job is stopping, let the switchboard know:
         this.connector
             .update_job_state(
                 msg.job_id,
@@ -360,10 +395,11 @@ impl connector::Supervisor for MockSupervisor {
         // Shut down the control socket server:
         match control_socket {
             ControlSocket::Tcp(cs) => cs.shutdown().await.unwrap(),
+            #[cfg(target_os = "linux")]
             ControlSocket::UnixSeqpacket(cs) => cs.shutdown().await.unwrap(),
         }
 
-        // Job has been stopped, let the coordinator know:
+        // Job has been stopped, let the switchboard know:
         this.connector
             .update_job_state(
                 msg.job_id,
