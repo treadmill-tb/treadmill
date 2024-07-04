@@ -1,0 +1,35 @@
+[package]
+name = "tml-switchboard"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+uuid = "1.9.1"
+
+sqlx = { version = "0.7.4", features = ["uuid", "runtime-tokio", "tls-rustls", "postgres", "macros", "chrono", "ipnetwork"] }
+
+axum = { version = "0.7.5", features = ["tokio", "http2", "json", "ws"] }
+axum-extra = { version = "0.9.3", features = ["cookie-signed"] }
+tower = { version = "0.4.13", features = ["default"] }
+
+tokio = { version = "1.38.0", features = ["rt-multi-thread"] }
+tokio-tungstenite = "0.23.1"
+
+dashmap = "6.0.1"
+
+password-hash = "0.5.0"
+rand_chacha = "0.9.0-alpha.1"
+
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
+
+clap = { version = "4.5.8", features = ["derive", "error-context"] }
+
+serde = "1.0.203"
+serde_json = "1.0.120"
+deser-hjson = "2.2.4"
+musli = { version = "0.0.122", features = ["wire", "simdutf8"] }
+
+thiserror = "1.0.61"
+miette = { version = "7.2.0", features = ["fancy"] }
