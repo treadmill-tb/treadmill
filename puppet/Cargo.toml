@@ -5,16 +5,14 @@ authors.workspace = true
 edition.workspace = true
 
 [features]
-default = ["transport_tcp", "transport_unix_seqpacket"]
+default = ["transport_tcp"]
 
 transport_tcp = ["tml-tcp-control-socket-client"]
-transport_unix_seqpacket = ["tml-unix-seqpacket-control-socket-client"]
 
 [dependencies]
 treadmill-rs = { path = "../treadmill-rs" }
 
 tml-tcp-control-socket-client = { path = "../control-socket/tcp/client", optional = true }
-tml-unix-seqpacket-control-socket-client = { path = "../control-socket/unix-seqpacket/client", optional = true }
 
 anyhow = "1.0.76"
 clap = { version = "4.4.11", features = ["derive"] }
