@@ -1,12 +1,12 @@
 use crate::server::session::{SessionError, XCsrfToken, SESSION_ID_COOKIE};
-use crate::server::token::{TokenError, TokenInfoBare, XApiToken};
+use crate::server::token::{TokenError, XApiToken};
 use crate::server::{session, token, AppState};
 use axum::extract::FromRequestParts;
 use axum::response::{IntoResponse, Response};
 use axum::{async_trait, RequestPartsExt};
 use axum_extra::extract::cookie::Key;
 use axum_extra::extract::SignedCookieJar;
-use axum_extra::typed_header::{TypedHeaderRejection, TypedHeaderRejectionReason};
+use axum_extra::typed_header::TypedHeaderRejectionReason;
 use axum_extra::TypedHeader;
 use chrono::Utc;
 use http::request::Parts;
@@ -14,7 +14,6 @@ use http::StatusCode;
 use sqlx::PgPool;
 use std::convert::Infallible;
 use std::fmt::Debug;
-use std::future::Future;
 use std::marker::PhantomData;
 use thiserror::Error;
 use uuid::Uuid;
@@ -22,13 +21,15 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 struct UserId(Uuid);
 #[derive(Debug, Clone)]
-struct TokenId(Uuid);
+struct TokenId(#[allow(dead_code)] Uuid);
 
 // -- SECTION: SUBJECT DERIVATION
 
 #[derive(Debug, Clone)]
 enum SubjectInner {
+    #[allow(dead_code)]
     User(UserId),
+    #[allow(dead_code)]
     Token(TokenId),
     Guest,
 }
@@ -185,8 +186,9 @@ impl FromRequestParts<AppState> for Subject {
 pub enum AuthorizationError {}
 
 #[derive(Debug)]
-enum PermissionResult {
+pub enum PermissionResult {
     Authorized(Subject),
+    #[allow(dead_code)]
     Unauthorized(AuthorizationError),
 }
 impl PermissionResult {
@@ -272,6 +274,7 @@ impl PrivilegedAction for EnqueueCIJobAction {
 }
 
 pub struct MockSearcher<'c> {
+    #[allow(dead_code)]
     db: &'c PgPool,
     subject: Subject,
 }

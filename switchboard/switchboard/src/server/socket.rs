@@ -5,7 +5,6 @@ use axum::extract::connect_info::ConnectInfo;
 use axum::extract::ws::{CloseFrame, WebSocket};
 use axum::extract::{ws, WebSocketUpgrade};
 use axum::response::Response;
-use futures_util::SinkExt;
 use std::net::SocketAddr;
 
 mod auth;

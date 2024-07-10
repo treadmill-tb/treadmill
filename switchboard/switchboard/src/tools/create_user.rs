@@ -5,7 +5,7 @@ use base64::prelude::BASE64_STANDARD_NO_PAD;
 use base64::Engine;
 use chrono::Utc;
 use miette::{Context, IntoDiagnostic};
-use rand::{Rng, RngCore};
+use rand::RngCore;
 use sqlx::postgres::PgConnectOptions;
 use sqlx::PgPool;
 use std::path::Path;

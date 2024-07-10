@@ -1,6 +1,5 @@
 use crate::cfg::{Config, DatabaseAuth, PasswordAuth};
 use crate::server::token::ApiToken;
-use base64::Engine;
 use chrono::Utc;
 use miette::{Context, IntoDiagnostic};
 use sqlx::postgres::PgConnectOptions;

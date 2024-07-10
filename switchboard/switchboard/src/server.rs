@@ -1,12 +1,12 @@
 use crate::cfg::{Config, DatabaseAuth, PasswordAuth};
-use axum::extract::{ConnectInfo, FromRef};
+use axum::extract::FromRef;
 use axum::routing::get;
 use axum::Router;
 use axum_extra::extract::cookie::Key;
 use miette::{IntoDiagnostic, WrapErr};
 use sqlx::{postgres::PgConnectOptions, PgPool};
 use std::net::SocketAddr;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::net::TcpListener;

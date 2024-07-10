@@ -1,4 +1,4 @@
-use base64::prelude::{BASE64_STANDARD, BASE64_STANDARD_NO_PAD};
+use base64::prelude::BASE64_STANDARD_NO_PAD;
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use headers::Header;

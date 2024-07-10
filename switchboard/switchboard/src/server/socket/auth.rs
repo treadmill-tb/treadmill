@@ -19,7 +19,7 @@ use crate::{
 use axum::extract::ws::{Message, WebSocket};
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use rand::{RngCore, SeedableRng};
 use std::cell::RefCell;
 use std::net::SocketAddr;

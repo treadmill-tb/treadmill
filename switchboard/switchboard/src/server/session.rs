@@ -1,27 +1,23 @@
 use crate::server::AppState;
-use argon2::password_hash::{PasswordHashString, Salt, SaltString};
-use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
+use argon2::password_hash::{PasswordHashString, SaltString};
+use argon2::{Algorithm, Argon2, Params, PasswordHasher, PasswordVerifier, Version};
 use axum::extract::{ConnectInfo, State};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use axum_extra::extract::SignedCookieJar;
 use axum_extra::TypedHeader;
-use base64::prelude::{BASE64_STANDARD, BASE64_STANDARD_NO_PAD};
+use base64::prelude::BASE64_STANDARD_NO_PAD;
 use base64::Engine;
 use chrono::{DateTime, Utc};
-use futures_util::TryFutureExt;
 use headers::{Header, UserAgent};
 use http::{HeaderName, HeaderValue, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_with::base64::Base64;
 use serde_with::serde_as;
-use sqlx::encode::IsNull;
-use sqlx::error::BoxDynError;
 use sqlx::types::ipnetwork::IpNetwork;
-use sqlx::{Database, Encode, Error, Executor, PgExecutor, Postgres, Type};
+use sqlx::{Error, PgExecutor};
 use std::fmt::{Display, Formatter};
-use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
@@ -183,9 +179,9 @@ pub struct LoginRequest {
 ///     500 I.S.E.      internal error
 /// In all cases, the response body is empty.
 pub async fn login_handler(
-    TypedHeader(user_agent): TypedHeader<UserAgent>,
+    TypedHeader(_user_agent): TypedHeader<UserAgent>,
     TypedHeader(x_csrf_token): TypedHeader<XCsrfToken>,
-    ConnectInfo(socket_addr): ConnectInfo<SocketAddr>,
+    ConnectInfo(_socket_addr): ConnectInfo<SocketAddr>,
     mut signed_cookie_jar: SignedCookieJar,
     State(app_state): State<AppState>,
     Json(login_request): Json<LoginRequest>,
@@ -283,7 +279,7 @@ pub async fn login_handler(
                 }
             }
         }
-        Err(SessionError::InvalidUsername(user)) => {
+        Err(SessionError::InvalidUsername(_)) => {
             let fake_salt = SaltString::from_b64("A123B123C123D123E123F1").unwrap();
             let _ = std::hint::black_box(
                 argon2.hash_password(login_request.password.as_bytes(), fake_salt.as_salt()),
@@ -369,6 +365,7 @@ pub enum SessionError {
     InvalidUsername(String),
     #[error("invalid session")]
     InvalidSession,
+    #[allow(dead_code)]
     #[error("expired session")]
     ExpiredSession,
 }
@@ -423,6 +420,7 @@ pub struct UserSessionRecord {
     pub user_id: Uuid,
 }
 
+#[allow(dead_code)]
 async fn session_destroy<'c, E: PgExecutor<'c>>(
     conn: E,
     session_id: Uuid,
