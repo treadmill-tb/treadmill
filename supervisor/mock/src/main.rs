@@ -171,7 +171,6 @@ impl connector::Supervisor for MockSupervisor {
         // stopped first:
         if jobs_lg.get(&msg.job_id).is_some() {
             return Err(connector::JobError {
-                job_id: msg.job_id,
                 request_id: Some(msg.request_id),
                 error_kind: connector::JobErrorKind::AlreadyRunning,
                 description: format!(
@@ -184,7 +183,6 @@ impl connector::Supervisor for MockSupervisor {
         // Don't start more jobs than we're allowed to:
         if jobs_lg.len() > this.config.mock.max_parallel_jobs {
             return Err(connector::JobError {
-                job_id: msg.job_id,
                 request_id: Some(msg.request_id),
                 error_kind: connector::JobErrorKind::MaxConcurrentJobs,
                 description: format!(
@@ -290,7 +288,6 @@ impl connector::Supervisor for MockSupervisor {
                 .get(&msg.job_id)
                 .cloned()
                 .ok_or(connector::JobError {
-                    job_id: msg.job_id,
                     request_id: Some(msg.request_id),
                     error_kind: connector::JobErrorKind::JobNotFound,
                     description: format!("Job {:?} not found, cannot stop.", msg.job_id),
@@ -328,7 +325,6 @@ impl connector::Supervisor for MockSupervisor {
                 *job_lg = prev_state;
 
                 return Err(connector::JobError {
-                    job_id: msg.job_id,
                     request_id: Some(msg.request_id),
                     error_kind: connector::JobErrorKind::AlreadyStopping,
                     description: format!("Job {:?} is already stopping.", msg.job_id),
