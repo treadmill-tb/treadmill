@@ -23,7 +23,6 @@ use sqlx::{Database, Encode, Error, Executor, PgExecutor, Postgres, Type};
 use std::fmt::{Display, Formatter};
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::LazyLock;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 use uuid::Uuid;
@@ -285,11 +284,9 @@ pub async fn login_handler(
             }
         }
         Err(SessionError::InvalidUsername(user)) => {
-            static FAKE_SALT: LazyLock<SaltString> =
-                LazyLock::new(|| SaltString::from_b64("A123B123C123D123").unwrap());
-
+            let fake_salt = SaltString::from_b64("A123B123C123D123E123F1").unwrap();
             let _ = std::hint::black_box(
-                argon2.hash_password(login_request.password.as_bytes(), FAKE_SALT.as_salt()),
+                argon2.hash_password(login_request.password.as_bytes(), fake_salt.as_salt()),
             );
 
             tracing::error!(
