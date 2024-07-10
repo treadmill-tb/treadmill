@@ -19,8 +19,6 @@ const SUPERVISOR_EVENT_CHANNEL_CAP: usize = 1024;
 #[derive(Debug, Clone, ValueEnum)]
 #[clap(rename_all = "snake_case")]
 enum PuppetControlSocketTransport {
-    #[cfg(feature = "transport_unix_seqpacket")]
-    UnixSeqpacket,
     #[cfg(feature = "transport_tcp")]
     Tcp,
     AutoDiscover,
@@ -30,9 +28,6 @@ enum PuppetControlSocketTransport {
 struct PuppetArgs {
     #[arg(long, short = 't')]
     transport: PuppetControlSocketTransport,
-
-    #[arg(long, required_if_eq("transport", "unix_seqpacket"))]
-    unix_seqpacket_control_socket: Option<PathBuf>,
 
     #[arg(long, required_if_eq("transport", "tcp"))]
     tcp_control_socket_addr: Option<std::net::SocketAddr>,
@@ -473,47 +468,40 @@ async fn main() -> Result<()> {
 
     let args = PuppetArgs::parse();
 
-    let mut client = Arc::new((|| async {
-	match args.transport {
-	    #[cfg(feature = "transport_unix_seqpacket")]
-            PuppetControlSocketTransport::UnixSeqpacket => Ok(control_socket_client::ControlSocketClient::UnixSeqpacket(
-		control_socket_client::unix_seqpacket::UnixSeqpacketControlSocketClient::new(
-		    &args.unix_seqpacket_control_socket.clone().unwrap(),
-		    SUPERVISOR_EVENT_CHANNEL_CAP,
-		)
-                    .await?,
-            )),
+    let mut client = Arc::new(
+        (|| async {
+            match args.transport {
+                #[cfg(feature = "transport_tcp")]
+                PuppetControlSocketTransport::Tcp => {
+                    Ok(control_socket_client::ControlSocketClient::Tcp(
+                        control_socket_client::tcp::TcpControlSocketClient::new(
+                            args.tcp_control_socket_addr.clone().unwrap(),
+                            SUPERVISOR_EVENT_CHANNEL_CAP,
+                        )
+                        .await?,
+                    ))
+                }
 
-	    #[cfg(feature = "transport_tcp")]
-            PuppetControlSocketTransport::Tcp => Ok(control_socket_client::ControlSocketClient::Tcp(
-		control_socket_client::tcp::TcpControlSocketClient::new(
-		    args.tcp_control_socket_addr.clone().unwrap(),
-		    SUPERVISOR_EVENT_CHANNEL_CAP,
-		).await?,
-            )),
+                PuppetControlSocketTransport::AutoDiscover => {
+                    // Give all known control socket clients a chance to auto-discover,
+                    // in no particular order:
+                    #[cfg(feature = "transport_tcp")]
+                    if let Some(client_res) =
+                        control_socket_client::tcp::TcpControlSocketClient::autodiscover(
+                            SUPERVISOR_EVENT_CHANNEL_CAP,
+                        )
+                        .await
+                    {
+                        return Ok(control_socket_client::ControlSocketClient::Tcp(client_res?));
+                    }
 
-	    PuppetControlSocketTransport::AutoDiscover => {
-		// Give all known control socket clients a chance to auto-discover,
-		// in no particular order:
-		#[cfg(feature = "transport_unix_seqpacket")]
-		if let Some(client_res) = control_socket_client::unix_seqpacket::UnixSeqpacketControlSocketClient::autodiscover(
-		    SUPERVISOR_EVENT_CHANNEL_CAP,
-		).await {
-		    return Ok(control_socket_client::ControlSocketClient::UnixSeqpacket(client_res?));
-		}
-
-		#[cfg(feature = "transport_tcp")]
-		if let Some(client_res) = control_socket_client::tcp::TcpControlSocketClient::autodiscover(
-		    SUPERVISOR_EVENT_CHANNEL_CAP,
-		).await {
-		    return Ok(control_socket_client::ControlSocketClient::Tcp(client_res?));
-		}
-
-		// We did not autodiscover a control socket to connect to, give up:
-		return Err(anyhow!("Auto-discovery of control socket endpoint failed."));
-	    },
-	}
-    })().await?);
+                    // We did not autodiscover a control socket to connect to, give up:
+                    return Err(anyhow!("Auto-discovery of control socket endpoint failed."));
+                }
+            }
+        })()
+        .await?,
+    );
 
     // For certain requests and depending on some command line parameters, we'll
     // want to exit with an error if they fail. We provided these wrappers here

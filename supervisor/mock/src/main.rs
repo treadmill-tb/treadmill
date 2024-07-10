@@ -18,7 +18,6 @@ use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 // use treadmill_sse_connector::SSEConnector;
 
 use tml_tcp_control_socket_server::TcpControlSocket;
-use tml_unix_seqpacket_control_socket_server::UnixSeqpacketControlSocket;
 
 #[derive(Parser, Debug, Clone)]
 pub struct MockSupervisorArgs {
@@ -64,7 +63,6 @@ pub struct MockSupervisorConfig {
 }
 
 pub enum ControlSocket {
-    UnixSeqpacket(UnixSeqpacketControlSocket<MockSupervisor>),
     Tcp(TcpControlSocket<MockSupervisor>),
 }
 
@@ -227,19 +225,14 @@ impl connector::Supervisor for MockSupervisor {
             )
             .await;
 
-        // Start a UnixSeqpacket control socket in a temporary directory:
-        let control_socket_path = tempfile::tempdir()
-            .unwrap()
-            .into_path()
-            .join("S.tml-unix-seqpacket");
+        // Start a control socket server on TCP port 20202
+        const SOCKET_ADDR_STR: &str = "[::1]:20202";
+        let socket_addr =
+            <std::net::SocketAddr as std::str::FromStr>::from_str(SOCKET_ADDR_STR).unwrap();
 
-        let control_socket = UnixSeqpacketControlSocket::new_unix_seqpacket(
-            msg.job_id,
-            &control_socket_path,
-            this.clone(),
-        )
-        .await
-        .unwrap();
+        let control_socket = TcpControlSocket::new(msg.job_id, socket_addr, this.clone())
+            .await
+            .unwrap();
 
         let puppet_proc = tokio::process::Command::new(
             // Unfortunately, cargo bindeps is still a nightly feature and
@@ -248,11 +241,13 @@ impl connector::Supervisor for MockSupervisor {
             &this.args.puppet_binary,
         )
         .arg("--transport")
-        .arg("auto_discover")
+        .arg("tcp")
+        .arg("--tcp-control-socket-addr")
+        .arg(SOCKET_ADDR_STR)
+        // .env("TML_CTRLSOCK_UNIXSEQPACKET", &control_socket_path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
-        .env("TML_CTRLSOCK_UNIXSEQPACKET", &control_socket_path)
         .spawn()
         .unwrap();
 
@@ -270,7 +265,7 @@ impl connector::Supervisor for MockSupervisor {
 
         // Mark the job as started:
         *job_lg = MockSupervisorJobState::Running(MockSupervisorJobRunningState {
-            control_socket: ControlSocket::UnixSeqpacket(control_socket),
+            control_socket: ControlSocket::Tcp(control_socket),
             puppet_proc,
         });
 
@@ -364,7 +359,6 @@ impl connector::Supervisor for MockSupervisor {
         // Shut down the control socket server:
         match control_socket {
             ControlSocket::Tcp(cs) => cs.shutdown().await.unwrap(),
-            ControlSocket::UnixSeqpacket(cs) => cs.shutdown().await.unwrap(),
         }
 
         // Job has been stopped, let the coordinator know:

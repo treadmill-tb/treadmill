@@ -5,8 +5,6 @@ members = [
     "puppet",
     "control-socket/tcp/client",
     "control-socket/tcp/server",
-    "control-socket/unix-seqpacket/client",
-    "control-socket/unix-seqpacket/server",
     "supervisor/mock",
     "connector/cli",
 ]
