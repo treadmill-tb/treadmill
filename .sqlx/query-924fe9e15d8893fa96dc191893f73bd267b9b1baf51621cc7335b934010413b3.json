@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT token_id, canceled as \"canceled: _\", expires_at FROM api_tokens WHERE token = $1 LIMIT 1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "token_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "canceled: _",
+        "type_info": {
+          "Custom": {
+            "name": "cancellation",
+            "kind": {
+              "Composite": [
+                [
+                  "canceled_at",
+                  "Timestamptz"
+                ],
+                [
+                  "cancellation_reason",
+                  "Text"
+                ]
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "924fe9e15d8893fa96dc191893f73bd267b9b1baf51621cc7335b934010413b3"
+}
