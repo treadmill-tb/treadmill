@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::task::JoinError;
+use tower_http::trace::TraceLayer;
 use tracing::instrument;
 
 mod auth;
@@ -24,7 +25,7 @@ pub struct AppStateInner {
     db_pool: PgPool,
     #[allow(dead_code)]
     config: Config,
-    cookie_signing_key: axum_extra::extract::cookie::Key,
+    cookie_signing_key: Key,
 }
 #[derive(Debug, Clone)]
 pub struct AppState(Arc<AppStateInner>);
@@ -147,7 +148,8 @@ async fn serve_public_server(tcp_listener: TcpListener, state: AppState) {
         .route("/supervisor", get(socket::supervisor_handler))
         .route("/perm_test", get(auth::example))
         // TODO: web routes
-        .with_state(state);
+        .with_state(state)
+        .layer(TraceLayer::new_for_http());
 
     tracing::info!("Starting public server");
 
