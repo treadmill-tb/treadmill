@@ -1,3 +1,5 @@
+//! Session management interfaces.
+
 use crate::server::AppState;
 use argon2::password_hash::{PasswordHashString, SaltString};
 use argon2::{Algorithm, Argon2, Params, PasswordHasher, PasswordVerifier, Version};
@@ -23,9 +25,36 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 use uuid::Uuid;
 
+/// Session ID cookie.
 pub static SESSION_ID_COOKIE: &str = "__Host-TML-Session-Id";
+/// Pre-session ID cookie.
 pub static PRESESSION_ID_COOKIE: &str = "__Host-TML-Presession-Id";
 
+/// [`TypedHeader`]-compatible HTTP header carrying a CSRF token.
+///
+/// CSRF (Cross-Site Request Forgery) tokens ensure that an attacker cannot simply hand a logged-in
+/// user a link and by thereafter tricking the logged-in user into following that link, whether
+/// manually or automatically, and in such a manner performing an action on the target website using
+/// the identity and authorizations of the logged-in user.
+///
+/// Additionally, we also use CSRF tokens to address SI-CSRF (Session Initialization CSRF), which
+/// occurs (for example) when an attacker causes a different user to be logged into the target site
+/// with the identity of the attacker without the victim's knowledge.
+///
+/// The header is of the form
+/// ```http
+/// tml-csrf-token: "<base64-unpadded token goes here>"
+/// ```
+///
+/// As per the recommendation of [RFC6648](https://www.rfc-editor.org/rfc/rfc6648#section-3.3),
+/// we do _not_ use the `X-` prefix.
+/// As per [RFC7540](https://www.rfc-editor.org/rfc/rfc7540#section-8.1.2), "header field names MUST
+/// be converted to lowercase prior to their encoding in HTTP/2"; this is also specified by the
+/// [`headers`] crate for HTTP/2 ease of use, so we will everywhere refer to it in all-lowercase
+/// form, even though HTTP/1 is case-insensitive to header field names and often displays them in
+/// `Screaming-Lisp-Case`.
+///
+/// Implements [`http::Header`].
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct XCsrfToken(pub CsrfToken);
@@ -71,6 +100,7 @@ impl Display for CsrfToken {
 // TODO: SessionId
 // TODO: PresessionId
 
+/// Representation of a CSRF token, which is a 128-byte random string.
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Eq, Copy, Clone)]
 pub struct CsrfToken(#[serde_as(as = "Base64")] [u8; 128]);
@@ -88,6 +118,23 @@ impl TryFrom<Vec<u8>> for CsrfToken {
     }
 }
 
+/// Handler for `/session/presession`.
+///
+/// Responds with a presession ID cookie and a CSRF token header.
+///
+/// # Request
+///
+/// Expects empty request, with no declared session cookies. If a presession cookie is already
+/// present, that presession will be deleted.
+///
+/// # Response
+///
+/// ```text
+/// 200 OK          successfully created presession and deleted any preexisting presession
+/// 400 BAD REQUEST preexisting session cookie
+/// 500 I.S.E.      internal error
+/// ```
+/// Empty response body.
 pub async fn presession_handler(
     TypedHeader(user_agent): TypedHeader<UserAgent>,
     ConnectInfo(socket_addr): ConnectInfo<SocketAddr>,
@@ -167,17 +214,29 @@ pub async fn presession_handler(
         .into_response()
 }
 
+/// Request Body that [`login_handler`] expects.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LoginRequest {
     username_or_email: String,
     password: String,
 }
 
-/// Returns:
+/// Handler for `/session/login`.
+///
+/// # Request
+///
+/// Expects request body to be JSON-encoded [`LoginRequest`]; additionally expected [`XCSRFToken`]
+/// header, and [`PRESESSION_ID_COOKIE`] cookie.
+///
+/// # Response
+///
+/// Status codes
+/// ```text
 ///     200 OK          authentication succeeded
-///     403 FORBIDDEN   invalid username or password
 ///     400 BAD REQUEST malformed login request, CSRF failure, etc.
+///     403 FORBIDDEN   invalid username or password
 ///     500 I.S.E.      internal error
+/// ```
 /// In all cases, the response body is empty.
 pub async fn login_handler(
     TypedHeader(_user_agent): TypedHeader<UserAgent>,
@@ -352,24 +411,33 @@ pub async fn login_handler(
         .into_response()
 }
 
-// -- INTERNALS --
-
+/// Things that can go wrong in session management.
 #[derive(Debug, Error)]
 pub enum SessionError {
+    /// Database error; note that unlike the underlying [`sqlx::Error`], this does *not* include
+    /// the row-not-found case.
     #[error("database error: {0}")]
     Database(sqlx::Error),
+    /// Specified presession information is in some way invalid or malformed.
     #[error("invalid presession")]
     InvalidPresession,
+    /// Presession timed out.
     #[error("expired presession")]
     ExpiredPresession,
+    /// Username is invalid; used for internal logging only.
+    /// TODO: remove
     #[error("invalid user: {0}")]
     InvalidUsername(String),
+    /// Specified session information is in some way invalid or malformed.
     #[error("invalid session")]
     InvalidSession,
+    /// Session is expired.
     #[allow(dead_code)]
     #[error("expired session")]
     ExpiredSession,
 }
+
+// -- INTERNALS --
 
 // -- Look up a user's credentials
 

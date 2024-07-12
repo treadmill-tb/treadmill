@@ -1,3 +1,5 @@
+//! Privileged actions acting on jobs and the job queue.
+
 use crate::server::auth::{
     AuthSource, AuthorizationError, AuthorizationSource, DbPermSource, PermissionQueryExecutor,
     Privilege, PrivilegedAction,

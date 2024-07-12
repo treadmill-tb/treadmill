@@ -1,3 +1,5 @@
+//! The switchboard server.
+
 use crate::cfg::{Config, DatabaseAuth, PasswordAuth};
 use crate::perms;
 use axum::extract::FromRef;
@@ -17,19 +19,29 @@ use tokio::task::JoinError;
 use tower_http::trace::TraceLayer;
 use tracing::instrument;
 
-pub(crate) mod auth;
+pub mod auth;
+mod public;
 mod session;
 mod socket;
 pub mod token;
-mod web;
 
+/// State of the server. Only one of these objects ever exists at a time.
+/// This type must also be [`Sync`].
 #[derive(Debug)]
 pub struct AppStateInner {
+    /// Connection pool to the database server.
     db_pool: PgPool,
+    /// Server configuration, set at startup
     #[allow(dead_code)]
     config: Config,
+    /// Used for cookie signing; should not be touched
     cookie_signing_key: Key,
 }
+/// Thin wrapper around an [`Arc`] of an [`AppStateInner`], since [`State`](axum::extract::State)
+/// requires [`Clone`].
+///
+/// Implements `FromRef<Key>` for the [`SignedCookieJar`](axum_extra::extract::cookie::SignedCookieJar)
+/// extractor.
 #[derive(Debug, Clone)]
 pub struct AppState(Arc<AppStateInner>);
 impl Deref for AppState {
@@ -45,6 +57,8 @@ impl FromRef<AppState> for Key {
     }
 }
 
+/// Main server entry point; starts public and internal servers according to the configuration at
+/// `config_path`.
 #[instrument]
 pub async fn serve(config_path: &Path) -> miette::Result<()> {
     // Tracing init
@@ -52,6 +66,8 @@ pub async fn serve(config_path: &Path) -> miette::Result<()> {
     tracing_subscriber::fmt::init();
 
     // Load configuration
+
+    // TODO: overlayed configuration
 
     let cfg_text = std::fs::read_to_string(config_path)
         .into_diagnostic()
@@ -116,7 +132,7 @@ pub async fn serve(config_path: &Path) -> miette::Result<()> {
     let state_inner = AppStateInner {
         db_pool: pg_pool,
         config: cfg,
-        cookie_signing_key: axum_extra::extract::cookie::Key::generate(),
+        cookie_signing_key: Key::generate(),
     };
 
     let (public_server_state, internal_server_state) = {
@@ -124,7 +140,7 @@ pub async fn serve(config_path: &Path) -> miette::Result<()> {
         (arc.clone(), arc)
     };
 
-    // Create servers
+    // Spawn server tasks
 
     let public_server = tokio::spawn(async move {
         serve_public_server(public_server_listener, public_server_state).await
@@ -142,23 +158,32 @@ pub async fn serve(config_path: &Path) -> miette::Result<()> {
     Ok(())
 }
 
+/// Serve the public server.
+///
+/// Should be run in its own `tokio` task.
 async fn serve_public_server(tcp_listener: TcpListener, state: AppState) {
     // TODO: TLS
 
+    // fallback when the requested path doesn't exist
     async fn not_found() -> impl IntoResponse {
         StatusCode::NOT_FOUND
     }
 
     let router = Router::new()
-        .nest("/session", web::build_session_router())
-        .nest("/api", web::build_api_router())
+        // Session management
+        .nest("/session", public::build_session_router())
+        // API endpoints
+        .nest("/api", public::build_api_router())
+        // supervisor websocket endpoint
         .route("/supervisor", get(socket::supervisor_handler))
+        // for testing/debugging:
         .route("/perm_test", get(perms::jobs::example))
+        // miscellanea
         .fallback(not_found)
         .with_state(state)
         .layer(TraceLayer::new_for_http())
     /*
-     TODO: CORS
+     TODO: CorsLayer
       */
         ;
 
@@ -175,6 +200,9 @@ async fn serve_public_server(tcp_listener: TcpListener, state: AppState) {
     }
 }
 
+/// Serve the internal control server.
+///
+/// Should be run in its own `tokio` task.
 async fn serve_internal_server(tcp_listener: TcpListener, state: AppState) {
     let router = Router::new().with_state(state);
 

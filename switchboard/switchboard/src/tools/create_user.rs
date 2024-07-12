@@ -1,3 +1,7 @@
+//! Backend for the `swx create-user` command.
+//!
+//! Creates a new user with the specified username, email, and password.
+
 use crate::cfg::{Config, DatabaseAuth, PasswordAuth};
 use argon2::password_hash::Salt;
 use argon2::{Argon2, PasswordHasher};
@@ -11,6 +15,8 @@ use sqlx::PgPool;
 use std::path::Path;
 use uuid::Uuid;
 
+/// Create a user with the specified information, using the database connection configured at
+/// `config_path`, and print the new user's information to standard output.
 pub async fn create_user(
     config_path: &Path,
     username: String,

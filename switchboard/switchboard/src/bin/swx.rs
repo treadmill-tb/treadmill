@@ -1,3 +1,5 @@
+//! The actual switchboard runner. Run as a command-line tool.
+
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::Duration;

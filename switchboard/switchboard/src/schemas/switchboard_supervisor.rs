@@ -1,3 +1,4 @@
+/// Challenge-based authentication for switchboard-supervisor websocket connections.
 pub mod challenge {
     use serde::{Deserialize, Serialize};
     use uuid::Uuid;

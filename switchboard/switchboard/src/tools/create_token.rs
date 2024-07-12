@@ -1,3 +1,7 @@
+//! Backend for the `swx create-token` command.
+//!
+//! Creates an API token owned by a specified user with a specified lifetime.
+
 use crate::cfg::{Config, DatabaseAuth, PasswordAuth};
 use crate::server::token::ApiToken;
 use chrono::Utc;
@@ -7,6 +11,9 @@ use sqlx::PgPool;
 use std::path::Path;
 use uuid::Uuid;
 
+/// Create an API token with user `created_by_user_id` that will expire after `lifetime`, and print
+/// the newly created token's information to standard output. Database connection information will
+/// be taken from the configuration file at `config_path`.
 pub async fn create_token(
     config_path: &Path,
     created_by_user_id: Uuid,

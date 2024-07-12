@@ -1,3 +1,5 @@
+//! Server side handling for supervisor-switchboard websocket connections.
+
 use crate::server::socket::auth::{authenticate_supervisor, AuthenticationResult};
 use crate::server::AppState;
 use axum::extract;
@@ -10,6 +12,8 @@ use std::net::SocketAddr;
 mod auth;
 
 /// Axum handler for the `/supervisor` path.
+///
+/// Responds with an `Upgrade: websocket` and launches [`launch_supervisor_actor`] as a `tokio` task.
 #[tracing::instrument]
 pub async fn supervisor_handler(
     ws: WebSocketUpgrade,
@@ -58,15 +62,16 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
         }
     }
 
-    // Check that the subprotocol is correct.
+    // -- Check that the subprotocol is correct.
+
     if !check_protocol_header(socket.protocol(), socket_addr) {
         try_close(socket, socket_addr, None).await;
         return;
     }
 
-    let auth_message_timeout = state.config.websocket.auth.per_message_timeout;
+    // -- Authenticate the supervisor.
 
-    // Authenticate the supervisor.
+    let auth_message_timeout = state.config.websocket.auth.per_message_timeout;
     let supervisor_id =
         match authenticate_supervisor(&mut socket, &state, socket_addr, auth_message_timeout).await
         {
@@ -91,9 +96,12 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
 
     tracing::info!("Supervisor ({supervisor_id}) has connected from {socket_addr}");
 
-    // TODO: Primary logic goes here
+    // -- Connection is OK, run the actor loop
 
-    // Close the connection.
+    // TODO: Actor goes here
+
+    // -- Main loop has exited, close the connection
+
     try_close(
         socket,
         socket_addr,
