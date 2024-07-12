@@ -7,6 +7,8 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use axum_extra::extract::cookie::Key;
+use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
+use axum_server::Server;
 use http::StatusCode;
 use miette::{IntoDiagnostic, WrapErr};
 use sqlx::{postgres::PgConnectOptions, PgPool};
@@ -112,12 +114,13 @@ pub async fn serve(config_path: &Path) -> miette::Result<()> {
     let public_socket_addr = cfg.public_server.socket_addr;
     let internal_socket_addr = cfg.internal_server.socket_addr;
 
-    let public_server_listener = TcpListener::bind(public_socket_addr)
-        .await
-        .into_diagnostic()
-        .wrap_err_with(|| {
-            format!("Failed to bind TcpListener for public server at {public_socket_addr}")
-        })?;
+    let rustls_config =
+        RustlsConfig::from_pem_file(&cfg.public_server.cert, &cfg.public_server.key)
+            .await
+            .into_diagnostic()
+            .wrap_err("Failed to load RusTls configuration for public server")?;
+    let public_server_listener = axum_server::bind_rustls(public_socket_addr, rustls_config);
+
     let internal_server_listener = TcpListener::bind(internal_socket_addr)
         .await
         .into_diagnostic()
@@ -161,7 +164,7 @@ pub async fn serve(config_path: &Path) -> miette::Result<()> {
 /// Serve the public server.
 ///
 /// Should be run in its own `tokio` task.
-async fn serve_public_server(tcp_listener: TcpListener, state: AppState) {
+async fn serve_public_server(server: Server<RustlsAcceptor>, state: AppState) {
     // TODO: TLS
 
     // fallback when the requested path doesn't exist
@@ -189,11 +192,9 @@ async fn serve_public_server(tcp_listener: TcpListener, state: AppState) {
 
     tracing::info!("Starting public server");
 
-    match axum::serve(
-        tcp_listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await
+    match server
+        .serve(router.into_make_service_with_connect_info::<SocketAddr>())
+        .await
     {
         Ok(()) => tracing::info!("Public server exited successfully"),
         Err(e) => tracing::error!("Public server exited with error: {e:?}"),

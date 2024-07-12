@@ -11,13 +11,13 @@ PasswordAuth = { username = "postgres", password = "" }
 
 [public_server]
 socket_addr = "0.0.0.0:443"
-cert = "switchboard/conf/tls-certs/cert.pem"
-key = "switchboard/conf/tls-certs/key.pem"
+cert = "config/tls-certs/localhost-public.pem"
+key = "config/tls-certs/localhost.pem"
 
 [internal_server]
 socket_addr = "127.0.0.1:8430"
-cert = "switchboard/conf/tls-certs/cert_internal.pem"
-key = "switchboard/conf/tls-certs/key_internal.pem"
+cert = ""
+key = ""
 
 [websocket.auth]
 per_message_timeout = "10sec"
