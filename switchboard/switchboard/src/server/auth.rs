@@ -1,3 +1,15 @@
+//! Per-request authentication systems.
+//!
+//! The security system uses a subject-privilege abstraction:
+//!   - a _permission_ is an action paired with an object that is acted on (e.g. enqueueing a job on
+//!     a particular supervisor is a permission).
+//!   - a _subject_ is an entity that can perform an action on an object, or, to use the parlance
+//!     we've established, can have privileges (e.g. a user or an API token).
+//!   - a _privilege_ is a _(subject, permission)_ pair.
+//!
+//! In this system, permissions are represented by [`PrivilegedAction`], subjects are represented
+//! by [`Subject`]s, and privileges by [`Privilege`]s.
+
 use crate::server::session::{SessionError, XCsrfToken, SESSION_ID_COOKIE};
 use crate::server::token::{TokenError, XApiToken};
 use crate::server::{session, token, AppState};
@@ -19,23 +31,52 @@ use thiserror::Error;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
-struct UserId(Uuid);
+pub struct UserId(Uuid);
+impl From<UserId> for Uuid {
+    fn from(value: UserId) -> Self {
+        value.0
+    }
+}
 #[derive(Debug, Clone)]
-struct TokenId(#[allow(dead_code)] Uuid);
+pub struct TokenId(#[allow(dead_code)] Uuid);
+impl From<TokenId> for Uuid {
+    fn from(value: TokenId) -> Self {
+        value.0
+    }
+}
 
 // -- SECTION: SUBJECT DERIVATION
 
+/// Accessible _subject_ information (see module docs).
 #[derive(Debug, Clone)]
-enum SubjectInner {
+pub enum SubjectDetail {
     #[allow(dead_code)]
     User(UserId),
     #[allow(dead_code)]
     Token(TokenId),
-    Guest,
+    /// No token or user subject could be detected, so instead this fallback subject is produced.
+    Anonymous,
 }
+/// Opaque _subject_ type (see module docs).
+///
+/// The actual information inside the subject (i.e. the [`SubjectDetail`]) can only be accessed
+/// through [`Privilege::subject`]. In this way, it is not possible to forge a `SubjectDetail` _and_
+/// pass it to a privileged function that requires a [`Privilege`].
+///
+/// This is an `axum` extractor, though in most cases it should not be used directly; see the
+/// [`AuthSource`] extractor.
+///
+/// The rejections it produces are empty-bodied, with status codes as follows:
+/// ```text
+/// 400 BAD REQUEST  failed to run secondary extractor
+/// 401 UNAUTHORIZED user's request tried to authenticate itself but fails; note that if no
+///                  authentication information is passed, then the extractor will succeed with an
+///                  `Anonymous` subject.
+/// 500 I.S.E.       internal error
+/// ```
+// TODO: should SubjectDetail be expose-able via `Debug` or should we use a custom impl instead?
 #[derive(Debug)]
-pub struct Subject(SubjectInner);
-
+pub struct Subject(SubjectDetail);
 #[async_trait]
 impl FromRequestParts<AppState> for Subject {
     type Rejection = Response;
@@ -168,8 +209,8 @@ impl FromRequestParts<AppState> for Subject {
         }
 
         match (token_subject, user_subject) {
-            (Some(t), None) => return Ok(Self(SubjectInner::Token(t))),
-            (None, Some(u)) => return Ok(Self(SubjectInner::User(u))),
+            (Some(t), None) => return Ok(Self(SubjectDetail::Token(t))),
+            (None, Some(u)) => return Ok(Self(SubjectDetail::User(u))),
             (Some(t), Some(u)) => {
                 tracing::warn!(
                     "received both a token ({}) subject and a user ({}) subject",
@@ -178,7 +219,7 @@ impl FromRequestParts<AppState> for Subject {
                 );
                 return Err(StatusCode::UNAUTHORIZED.into_response());
             }
-            (None, None) => Ok(Self(SubjectInner::Guest)),
+            (None, None) => Ok(Self(SubjectDetail::Anonymous)),
         }
     }
 }
@@ -188,6 +229,7 @@ impl FromRequestParts<AppState> for Subject {
 // Note: we make use of #[async_trait] here as we ran into this odd issue when using the native
 // async-in-traits-support: https://github.com/rust-lang/rust/issues/100013.
 
+/// Things that may go wrong with an attempt to authorize an action.
 #[derive(Debug, Error)]
 pub enum AuthorizationError {
     #[error("failed to fetch permissions: {0}")]
@@ -204,28 +246,41 @@ impl IntoResponse for AuthorizationError {
     }
 }
 
+/// Internal type of [`PermissionResult`]. Not exposed publicly to prevent arbitrary construction.
 #[derive(Debug)]
-pub enum PermissionResult {
+enum PermissionResultInner {
+    /// The query succeeded, and [`Self::try_into_privilege`] can be used to make `self` into a
+    /// [`Privilege`].
     Authorized(Subject),
+    /// The query failed.
     #[allow(dead_code)]
     Unauthorized(AuthorizationError),
 }
+/// Result of a permission query.
+#[derive(Debug)]
+pub struct PermissionResult(PermissionResultInner);
 impl PermissionResult {
+    fn unauthorized(error: AuthorizationError) -> Self {
+        Self(PermissionResultInner::Unauthorized(error))
+    }
+
+    /// Try to create a [`Privilege`] from `self` and a given [`PrivilegedAction`].
     pub fn try_into_privilege<'source, A: PrivilegedAction>(
         self,
         action: A,
     ) -> Result<Privilege<'source, A>, AuthorizationError> {
         match self {
-            PermissionResult::Authorized(subject) => Ok(Privilege {
+            Self(PermissionResultInner::Authorized(subject)) => Ok(Privilege {
                 subject,
                 action,
                 _pd: Default::default(),
             }),
-            PermissionResult::Unauthorized(e) => Err(e),
+            Self(PermissionResultInner::Unauthorized(e)) => Err(e),
         }
     }
 }
 
+/// Semantically, represents a type of _permission_ (see module level docs).
 #[async_trait]
 pub trait PrivilegedAction: Debug + Sized {
     async fn authorize<'source, PQE: PermissionQueryExecutor + Send>(
@@ -234,35 +289,45 @@ pub trait PrivilegedAction: Debug + Sized {
     ) -> Result<Privilege<'source, Self>, AuthorizationError>;
 }
 
+/// Represents a _privilege_ (see module level docs).
 #[derive(Debug)]
 pub struct Privilege<'a, A: PrivilegedAction> {
     subject: Subject,
     action: A,
     _pd: PhantomData<&'a ()>,
 }
-
 impl<A: PrivilegedAction> Privilege<'_, A> {
-    pub fn subject(&self) -> &Subject {
-        &self.subject
+    /// Extract the subject information. This is the _only_ way to access the inside of a
+    /// `SubjectDetail`.
+    pub fn subject(&self) -> &SubjectDetail {
+        &self.subject.0
     }
     pub fn action(&self) -> &A {
         &self.action
     }
 }
 
+/// Abstracts the ability to query whether a certain subject has a permission.
 #[async_trait]
 pub trait PermissionQueryExecutor {
     async fn query(&self, s: String) -> PermissionResult;
 }
+
+/// Abstracts a source of permissions; semantically, a subject and a capability to look up
+/// permissions for that subject (and only that subject).
 #[async_trait]
 pub trait AuthorizationSource {
     fn from_state_with_subject(app_state: &AppState, subject: Subject) -> Self;
+
+    /// Attempt to authorize the subject embedded in this source to use a permission.
     async fn authorize<'a, A: PrivilegedAction + Send>(
         &'a self,
         action: A,
     ) -> Result<Privilege<'a, A>, AuthorizationError>;
 }
 
+/// `axum` extractor for authorization sources.
+/// Uses [`AuthorizationSource::from_state_with_subject`] internally.
 #[derive(Debug)]
 pub struct AuthSource<AS: AuthorizationSource>(pub AS);
 #[async_trait]
@@ -279,6 +344,7 @@ impl<AS: AuthorizationSource> FromRequestParts<AppState> for AuthSource<AS> {
     }
 }
 
+/// Implementation of [`PermissionQueryExecutor`] that is backed by the switchboard database.
 pub struct DbPermSearcher {
     #[allow(dead_code)]
     db: PgPool,
@@ -288,7 +354,7 @@ pub struct DbPermSearcher {
 impl PermissionQueryExecutor for DbPermSearcher {
     async fn query(&self, perm_str: String) -> PermissionResult {
         let ok = match &self.subject {
-            Subject(SubjectInner::User(user)) => {
+            Subject(SubjectDetail::User(user)) => {
                 let perms = match sqlx::query!(
                     r#"select user_id,permission from user_privileges where user_id = $1;"#,
                     user.0
@@ -298,12 +364,12 @@ impl PermissionQueryExecutor for DbPermSearcher {
                 {
                     Ok(v) => v,
                     Err(e) => {
-                        return PermissionResult::Unauthorized(AuthorizationError::Database(e))
+                        return PermissionResult::unauthorized(AuthorizationError::Database(e))
                     }
                 };
                 perms.iter().any(|r| r.permission == perm_str)
             }
-            Subject(SubjectInner::Token(token)) => {
+            Subject(SubjectDetail::Token(token)) => {
                 let perms = match sqlx::query!(
                     r#"select token_id,permission from api_token_privileges where token_id = $1;"#,
                     token.0
@@ -313,21 +379,24 @@ impl PermissionQueryExecutor for DbPermSearcher {
                 {
                     Ok(v) => v,
                     Err(e) => {
-                        return PermissionResult::Unauthorized(AuthorizationError::Database(e));
+                        return PermissionResult::unauthorized(AuthorizationError::Database(e));
                     }
                 };
                 perms.iter().any(|r| r.permission == perm_str)
             }
-            Subject(SubjectInner::Guest) => false,
+            Subject(SubjectDetail::Anonymous) => false,
         };
         if ok {
-            PermissionResult::Authorized(Subject(self.subject.0.clone()))
+            PermissionResult(PermissionResultInner::Authorized(Subject(
+                self.subject.0.clone(),
+            )))
         } else {
-            PermissionResult::Unauthorized(AuthorizationError::Unauthorized(perm_str))
+            PermissionResult::unauthorized(AuthorizationError::Unauthorized(perm_str))
         }
     }
 }
 
+/// Implementation of [`AuthorizationSource`] that is backed by the switchboard database.
 pub struct DbPermSource {
     db: PgPool,
     subject: Subject,
