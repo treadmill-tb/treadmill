@@ -59,6 +59,8 @@ pub struct MockSupervisorConfig {
     /// optional, and not all of them have to be supported:
     cli_connector: Option<tml_cli_connector::CliConnectorConfig>,
 
+    ws_connector: Option<tml_ws_connector::WsConnectorConfig>,
+
     mock: MockConfig,
 }
 
@@ -503,6 +505,38 @@ async fn main() -> Result<()> {
             // that'll upgrade its Weak into an Arc. Otherwise we're dropping
             // the only reference to it:
             std::mem::drop(mock_supervisor);
+
+            Ok(())
+        }
+        SupervisorCoordConnector::WsConnector => {
+            let ws_connector_config = config.ws_connector.clone().ok_or(anyhow!(
+                "Requested WsConnector, but `ws_connector` config not present."
+            ))?;
+
+            // Both the supervisor and connectors have references to each other,
+            // so we break the cyclic dependency with an initially unoccupied
+            // weak Arc reference:
+            let mut connector_opt = None;
+
+            let mock_supervisor = {
+                // Shadow, to avoid moving the variable:
+                let connector_opt = &mut connector_opt;
+                Arc::new_cyclic(move |weak_supervisor| {
+                    let connector = Arc::new(tml_ws_connector::WsConnector::new(
+                        config.base.supervisor_id,
+                        ws_connector_config,
+                        weak_supervisor.clone(),
+                    ));
+                    *connector_opt = Some(connector.clone());
+                    MockSupervisor::new(connector, args, config)
+                })
+            };
+
+            let connector = connector_opt.take().unwrap();
+
+            connector.run().await;
+
+            drop(mock_supervisor);
 
             Ok(())
         }

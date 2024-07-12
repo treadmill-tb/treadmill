@@ -41,7 +41,7 @@ values ('{7d55ec6d-15e7-4b84-8c04-7c085fe60df4}',
         current_timestamp,
         '{2c71904b-a9b7-4e22-9d56-8a5d80567ccd}',
         '-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAT/8zh6mwtqoJXFksvRc4KP3Pn+1nKEyfrcaJXtO8G2E=
+MCowBQYDK2VwAyEAeuUgVpZLvlodcZFuyEJWx5PoDleQdX5sFkZl2DFmi6U=
 -----END PUBLIC KEY-----
 ',
         '', -- no reported status

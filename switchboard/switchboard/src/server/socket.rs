@@ -11,6 +11,8 @@ use std::net::SocketAddr;
 
 mod auth;
 
+pub static TREADMILL_WEBSOCKET_PROTOCOL: &str = "treadmillv1";
+
 /// Axum handler for the `/supervisor` path.
 ///
 /// Responds with an `Upgrade: websocket` and launches [`launch_supervisor_actor`] as a `tokio` task.
@@ -20,7 +22,7 @@ pub async fn supervisor_handler(
     extract::State(state): extract::State<AppState>,
     ConnectInfo(socket_addr): ConnectInfo<SocketAddr>,
 ) -> Response {
-    ws.protocols(["treadmill"])
+    ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL])
         .on_upgrade(move |web_socket| async move {
             tokio::spawn(
                 async move { launch_supervisor_actor(web_socket, state, socket_addr).await },
@@ -31,7 +33,7 @@ pub async fn supervisor_handler(
 /// Check that the WebSocket subprotocol is correctly specified as `treadmill`.
 fn check_protocol_header(protocol: Option<&http::HeaderValue>, socket_addr: SocketAddr) -> bool {
     if let Some(protocol) = protocol {
-        if protocol != http::HeaderValue::from_static("treadmill") {
+        if protocol != http::HeaderValue::from_static(TREADMILL_WEBSOCKET_PROTOCOL) {
             let protocol_str = protocol.to_str().unwrap_or_else(|e| {
                 tracing::error!("Websocket connection from {socket_addr} specifies Sec-Websocket-Protocol that cannot be converted to a string: {e}, closing.");
                 "<invalid>"

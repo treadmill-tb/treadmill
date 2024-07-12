@@ -24,7 +24,7 @@ use tracing::instrument;
 pub mod auth;
 mod public;
 mod session;
-mod socket;
+pub mod socket;
 pub mod token;
 
 /// State of the server. Only one of these objects ever exists at a time.
