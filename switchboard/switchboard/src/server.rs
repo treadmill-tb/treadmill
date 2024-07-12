@@ -1,8 +1,11 @@
 use crate::cfg::{Config, DatabaseAuth, PasswordAuth};
+use crate::perms;
 use axum::extract::FromRef;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use axum_extra::extract::cookie::Key;
+use http::StatusCode;
 use miette::{IntoDiagnostic, WrapErr};
 use sqlx::{postgres::PgConnectOptions, PgPool};
 use std::net::SocketAddr;
@@ -14,7 +17,7 @@ use tokio::task::JoinError;
 use tower_http::trace::TraceLayer;
 use tracing::instrument;
 
-mod auth;
+pub(crate) mod auth;
 mod session;
 mod socket;
 pub mod token;
@@ -142,14 +145,22 @@ pub async fn serve(config_path: &Path) -> miette::Result<()> {
 async fn serve_public_server(tcp_listener: TcpListener, state: AppState) {
     // TODO: TLS
 
+    async fn not_found() -> impl IntoResponse {
+        StatusCode::NOT_FOUND
+    }
+
     let router = Router::new()
         .nest("/session", web::build_session_router())
         .nest("/api", web::build_api_router())
         .route("/supervisor", get(socket::supervisor_handler))
-        .route("/perm_test", get(auth::example))
-        // TODO: web routes
+        .route("/perm_test", get(perms::jobs::example))
+        .fallback(not_found)
         .with_state(state)
-        .layer(TraceLayer::new_for_http());
+        .layer(TraceLayer::new_for_http())
+    /*
+     TODO: CORS
+      */
+        ;
 
     tracing::info!("Starting public server");
 

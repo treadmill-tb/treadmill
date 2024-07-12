@@ -36,10 +36,17 @@ impl Header for XApiToken {
         I: Iterator<Item = &'i HeaderValue>,
     {
         let value = values.next().ok_or_else(headers::Error::invalid)?;
-        let csrf_token: ApiToken =
-            serde_json::from_str(value.to_str().map_err(|_| headers::Error::invalid())?)
-                .map_err(|_| headers::Error::invalid())?;
-        Ok(Self(csrf_token))
+        let value_str = value.to_str().map_err(|e| {
+            tracing::error!(
+                "Failed to parsex-api-token: field value has non-ASCII characters: {e}"
+            );
+            headers::Error::invalid()
+        })?;
+        let api_token: ApiToken = serde_json::from_str(value_str).map_err(|e| {
+            tracing::error!("Failed to parse x-api-token: {e}");
+            headers::Error::invalid()
+        })?;
+        Ok(Self(api_token))
     }
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         values.extend(std::iter::once(

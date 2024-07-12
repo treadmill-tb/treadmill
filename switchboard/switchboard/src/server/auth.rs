@@ -50,7 +50,10 @@ impl FromRequestParts<AppState> for Subject {
             Err(rejection) => match &rejection {
                 rej => match rej.reason() {
                     TypedHeaderRejectionReason::Missing => None,
-                    TypedHeaderRejectionReason::Error(_) => return Err(rejection.into_response()),
+                    TypedHeaderRejectionReason::Error(e) => {
+                        tracing::error!("failed to extract XApiToken: {e:?}");
+                        return Err(rejection.into_response());
+                    }
                     _ => unreachable!(),
                 },
             },
@@ -260,6 +263,7 @@ pub trait AuthorizationSource {
     ) -> Result<Privilege<'a, A>, AuthorizationError>;
 }
 
+#[derive(Debug)]
 pub struct AuthSource<AS: AuthorizationSource>(pub AS);
 #[async_trait]
 impl<AS: AuthorizationSource> FromRequestParts<AppState> for AuthSource<AS> {
@@ -269,39 +273,21 @@ impl<AS: AuthorizationSource> FromRequestParts<AppState> for AuthSource<AS> {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        tracing::trace!("AuthSource::FromRequestParts");
         let subject: Subject = Subject::from_request_parts(parts, state).await?;
         Ok(AuthSource(AS::from_state_with_subject(state, subject)))
     }
 }
 
-// -- EXAMPLE
-
-#[derive(Debug, Clone)]
-pub struct EnqueueCIJobAction {
-    pub supervisor_id: String,
-}
-#[async_trait]
-impl PrivilegedAction for EnqueueCIJobAction {
-    async fn authorize<'s, PQE: PermissionQueryExecutor + Send>(
-        self,
-        perm_query_exec: PQE,
-    ) -> Result<Privilege<'s, Self>, AuthorizationError> {
-        perm_query_exec
-            .query(format!("enqueue_ci_job:{}", &self.supervisor_id))
-            .await
-            .try_into_privilege(self)
-    }
-}
-
-pub struct MockSearcher {
+pub struct DbPermSearcher {
     #[allow(dead_code)]
     db: PgPool,
     subject: Subject,
 }
 #[async_trait]
-impl PermissionQueryExecutor for MockSearcher {
+impl PermissionQueryExecutor for DbPermSearcher {
     async fn query(&self, perm_str: String) -> PermissionResult {
-        match &self.subject {
+        let ok = match &self.subject {
             Subject(SubjectInner::User(user)) => {
                 let perms = match sqlx::query!(
                     r#"select user_id,permission from user_privileges where user_id = $1;"#,
@@ -315,11 +301,7 @@ impl PermissionQueryExecutor for MockSearcher {
                         return PermissionResult::Unauthorized(AuthorizationError::Database(e))
                     }
                 };
-                if perms.iter().any(|r| r.permission == perm_str) {
-                    PermissionResult::Authorized(Subject(self.subject.0.clone()))
-                } else {
-                    PermissionResult::Unauthorized(AuthorizationError::Unauthorized(perm_str))
-                }
+                perms.iter().any(|r| r.permission == perm_str)
             }
             Subject(SubjectInner::Token(token)) => {
                 let perms = match sqlx::query!(
@@ -331,28 +313,27 @@ impl PermissionQueryExecutor for MockSearcher {
                 {
                     Ok(v) => v,
                     Err(e) => {
-                        return PermissionResult::Unauthorized(AuthorizationError::Database(e))
+                        return PermissionResult::Unauthorized(AuthorizationError::Database(e));
                     }
                 };
-                if perms.iter().any(|r| r.permission == perm_str) {
-                    PermissionResult::Authorized(Subject(self.subject.0.clone()))
-                } else {
-                    PermissionResult::Unauthorized(AuthorizationError::Unauthorized(perm_str))
-                }
+                perms.iter().any(|r| r.permission == perm_str)
             }
-            Subject(SubjectInner::Guest) => {
-                PermissionResult::Unauthorized(AuthorizationError::Unauthorized(perm_str))
-            }
+            Subject(SubjectInner::Guest) => false,
+        };
+        if ok {
+            PermissionResult::Authorized(Subject(self.subject.0.clone()))
+        } else {
+            PermissionResult::Unauthorized(AuthorizationError::Unauthorized(perm_str))
         }
     }
 }
 
-pub struct MockPrivilegeSource {
+pub struct DbPermSource {
     db: PgPool,
     subject: Subject,
 }
 #[async_trait]
-impl AuthorizationSource for MockPrivilegeSource {
+impl AuthorizationSource for DbPermSource {
     fn from_state_with_subject(app_state: &AppState, subject: Subject) -> Self {
         Self {
             db: app_state.db_pool.clone(),
@@ -360,37 +341,15 @@ impl AuthorizationSource for MockPrivilegeSource {
         }
     }
 
-    async fn authorize<'a, A: PrivilegedAction + Send>(
-        &'a self,
+    async fn authorize<A: PrivilegedAction + Send>(
+        &self,
         action: A,
-    ) -> Result<Privilege<'a, A>, AuthorizationError> {
+    ) -> Result<Privilege<A>, AuthorizationError> {
         action
-            .authorize(MockSearcher {
+            .authorize(DbPermSearcher {
                 db: self.db.clone(),
                 subject: Subject(self.subject.0.clone()),
             })
             .await
     }
-}
-
-fn enqueue_ci_job(p: Privilege<EnqueueCIJobAction>) {
-    // do things
-    let subject = p.subject();
-    let object = &p.action().supervisor_id;
-    println!("[subject:{subject:?}] enqueuing a job on [object:{object:?}]");
-}
-
-pub async fn example(
-    AuthSource(auth_source): AuthSource<MockPrivilegeSource>,
-    TypedHeader(_): TypedHeader<XApiToken>,
-) -> Result<(), AuthorizationError> {
-    let privilege = auth_source
-        .authorize(EnqueueCIJobAction {
-            supervisor_id: "foobar".to_string(),
-        })
-        .await?;
-
-    enqueue_ci_job(privilege);
-
-    Ok(())
 }
