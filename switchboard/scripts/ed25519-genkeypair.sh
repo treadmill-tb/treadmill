@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 
-if [[ $# -ne 2 ]] ; then
+if [ $# -ne 1 ] ; then
   echo "ed25519-genkeypair.sh <PREFIX>"
   echo ""
   echo "This command will generate an ed25519 keypair at <PREFIX>.pem, <PREFIX>-public.pem."
