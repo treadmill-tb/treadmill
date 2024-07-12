@@ -475,7 +475,7 @@ async fn lookup_user_password_hash<'c, E: PgExecutor<'c>>(
     })
 }
 
-// -- Functiosn for working with sessions
+// -- Functions for working with sessions
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct UserSessionRecord {

@@ -12,28 +12,38 @@ use miette::{Context, IntoDiagnostic};
 use rand::RngCore;
 use sqlx::postgres::PgConnectOptions;
 use sqlx::PgPool;
-use std::path::Path;
+use std::path::PathBuf;
 use uuid::Uuid;
+
+#[derive(Debug, clap::Args)]
+pub struct CreateUserCommand {
+    #[arg(short = 'c', long = "cfg", env = "TML_CFG")]
+    cfg: PathBuf,
+
+    /// Username of the user to create
+    username: String,
+    /// Email of the user to create
+    email: String,
+    /// Password to use for this user
+    password: String,
+}
 
 /// Create a user with the specified information, using the database connection configured at
 /// `config_path`, and print the new user's information to standard output.
 pub async fn create_user(
-    config_path: &Path,
-    username: String,
-    email: String,
-    password: String,
+    CreateUserCommand {
+        cfg,
+        username,
+        email,
+        password,
+    }: CreateUserCommand,
 ) -> miette::Result<()> {
-    let cfg_text = std::fs::read_to_string(config_path)
+    let cfg_text = std::fs::read_to_string(&cfg)
         .into_diagnostic()
         .wrap_err("Failed to open configuration file")?;
     let cfg: Config = toml::from_str(&cfg_text)
         .into_diagnostic()
-        .wrap_err_with(|| {
-            format!(
-                "Failed to parse configuration file {}",
-                config_path.display()
-            )
-        })?;
+        .wrap_err_with(|| format!("Failed to parse configuration file {}", cfg.display()))?;
     let pg_options = PgConnectOptions::new()
         .host(&cfg.database.address)
         .port(cfg.database.port)

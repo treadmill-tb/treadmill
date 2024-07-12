@@ -8,28 +8,38 @@ use chrono::Utc;
 use miette::{Context, IntoDiagnostic};
 use sqlx::postgres::PgConnectOptions;
 use sqlx::PgPool;
-use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
 use uuid::Uuid;
+
+#[derive(Debug, clap::Args)]
+pub struct CreateTokenCommand {
+    #[arg(short = 'c', long = "cfg", env = "TML_CFG")]
+    cfg: PathBuf,
+
+    /// The user to create the token under
+    created_by_user_id: Uuid,
+    /// How long the token should be valid for
+    #[arg(value_parser = humantime_serde::re::humantime::parse_duration)]
+    lifetime: Duration,
+}
 
 /// Create an API token with user `created_by_user_id` that will expire after `lifetime`, and print
 /// the newly created token's information to standard output. Database connection information will
 /// be taken from the configuration file at `config_path`.
 pub async fn create_token(
-    config_path: &Path,
-    created_by_user_id: Uuid,
-    lifetime: std::time::Duration,
+    CreateTokenCommand {
+        cfg,
+        created_by_user_id,
+        lifetime,
+    }: CreateTokenCommand,
 ) -> miette::Result<()> {
-    let cfg_text = std::fs::read_to_string(config_path)
+    let cfg_text = std::fs::read_to_string(&cfg)
         .into_diagnostic()
         .wrap_err("Failed to open configuration file")?;
     let cfg: Config = toml::from_str(&cfg_text)
         .into_diagnostic()
-        .wrap_err_with(|| {
-            format!(
-                "Failed to parse configuration file {}",
-                config_path.display()
-            )
-        })?;
+        .wrap_err_with(|| format!("Failed to parse configuration file {}", cfg.display()))?;
     let pg_options = PgConnectOptions::new()
         .host(&cfg.database.address)
         .port(cfg.database.port)

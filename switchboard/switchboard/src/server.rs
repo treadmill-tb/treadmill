@@ -14,7 +14,7 @@ use miette::{IntoDiagnostic, WrapErr};
 use sqlx::{postgres::PgConnectOptions, PgPool};
 use std::net::SocketAddr;
 use std::ops::Deref;
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::task::JoinError;
@@ -59,10 +59,19 @@ impl FromRef<AppState> for Key {
     }
 }
 
+#[derive(clap::Args, Debug)]
+pub struct ServeCommand {
+    /// Path to server configuration file
+    #[arg(short = 'c', long = "cfg", env = "TML_CFG")]
+    cfg: PathBuf,
+}
+
 /// Main server entry point; starts public and internal servers according to the configuration at
 /// `config_path`.
 #[instrument]
-pub async fn serve(config_path: &Path) -> miette::Result<()> {
+pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
+    let config_path = &cmd.cfg;
+
     // Tracing init
 
     tracing_subscriber::fmt::init();
