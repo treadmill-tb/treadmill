@@ -27,7 +27,7 @@ impl From<ApiToken> for XApiToken {
 }
 impl Header for XApiToken {
     fn name() -> &'static HeaderName {
-        static HEADER_NAME: HeaderName = HeaderName::from_static("x-api-token");
+        static HEADER_NAME: HeaderName = HeaderName::from_static("tml-api-token");
         &HEADER_NAME
     }
     fn decode<'i, I>(values: &mut I) -> Result<Self, headers::Error>

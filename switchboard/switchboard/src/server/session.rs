@@ -41,7 +41,7 @@ impl From<CsrfToken> for XCsrfToken {
 }
 impl Header for XCsrfToken {
     fn name() -> &'static HeaderName {
-        static HEADER_NAME: HeaderName = HeaderName::from_static("x-csrf-token");
+        static HEADER_NAME: HeaderName = HeaderName::from_static("tml-csrf-token");
         &HEADER_NAME
     }
     fn decode<'i, I>(values: &mut I) -> Result<Self, headers::Error>
