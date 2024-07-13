@@ -9,13 +9,7 @@
 //!
 //! (See [`crate::schemas::switchboard_supervisor::challenge`] for the relevant types)
 
-use crate::{
-    schemas::switchboard_supervisor::challenge::{
-        Challenge, ChallengeMessage, ChallengeRequest, ChallengeResponse, ChallengeResult,
-        NONCE_LEN,
-    },
-    server::AppState,
-};
+use crate::server::AppState;
 use axum::extract::ws::{Message, WebSocket};
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -25,6 +19,9 @@ use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::time::Duration;
 use thiserror::Error;
+use treadmill_rs::api::coord_supervisor::ws_challenge::{
+    Challenge, ChallengeMessage, ChallengeRequest, ChallengeResponse, ChallengeResult, NONCE_LEN,
+};
 use uuid::Uuid;
 
 /// Errors that may occur during the authentication process.

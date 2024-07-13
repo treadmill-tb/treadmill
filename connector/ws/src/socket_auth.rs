@@ -3,10 +3,10 @@
 use ed25519_dalek::{Signer, SigningKey};
 use futures_util::{SinkExt, StreamExt};
 use thiserror::Error;
-use tml_switchboard::schemas::switchboard_supervisor::challenge::*;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use treadmill_rs::api::coord_supervisor::ws_challenge::*;
 use uuid::Uuid;
 
 #[derive(Debug, Error)]

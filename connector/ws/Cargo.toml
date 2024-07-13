@@ -6,7 +6,6 @@ edition.workspace = true
 
 [dependencies]
 treadmill-rs = { path = "../../treadmill-rs" }
-tml-switchboard = { path = "../../switchboard/switchboard" }
 
 uuid = { version = "1.9.1", features = ["v4", "rng"] }
 chrono = "0.4.38"

@@ -9,10 +9,10 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{OnceLock, Weak};
 use thiserror::Error;
-use tml_switchboard::server::socket::TREADMILL_WEBSOCKET_PROTOCOL;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::http::{Request, Uri};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use treadmill_rs::api::coord_supervisor::ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL;
 use treadmill_rs::connector::{self, JobError, JobState, SupervisorConnector};
 use uuid::Uuid;
 

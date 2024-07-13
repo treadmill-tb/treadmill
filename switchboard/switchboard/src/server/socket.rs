@@ -8,10 +8,9 @@ use axum::extract::ws::{CloseFrame, WebSocket};
 use axum::extract::{ws, WebSocketUpgrade};
 use axum::response::Response;
 use std::net::SocketAddr;
+use treadmill_rs::api::coord_supervisor::ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL;
 
 mod auth;
-
-pub static TREADMILL_WEBSOCKET_PROTOCOL: &str = "treadmillv1";
 
 /// Axum handler for the `/supervisor` path.
 ///
