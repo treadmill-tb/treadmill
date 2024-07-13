@@ -8,7 +8,7 @@ use axum::extract::ws::{CloseFrame, WebSocket};
 use axum::extract::{ws, WebSocketUpgrade};
 use axum::response::Response;
 use std::net::SocketAddr;
-use treadmill_rs::api::coord_supervisor::ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL;
+use treadmill_rs::api::switchboard_supervisor::ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL;
 
 mod auth;
 

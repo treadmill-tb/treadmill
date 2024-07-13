@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::time::Duration;
 use thiserror::Error;
-use treadmill_rs::api::coord_supervisor::ws_challenge::{
+use treadmill_rs::api::switchboard_supervisor::ws_challenge::{
     Challenge, ChallengeMessage, ChallengeRequest, ChallengeResponse, ChallengeResult, NONCE_LEN,
 };
 use uuid::Uuid;

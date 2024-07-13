@@ -6,7 +6,7 @@ use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use treadmill_rs::api::coord_supervisor::ws_challenge::*;
+use treadmill_rs::api::switchboard_supervisor::ws_challenge::*;
 use uuid::Uuid;
 
 #[derive(Debug, Error)]
