@@ -1,13 +1,13 @@
-use crate::api::coord_supervisor::{rest, sse};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub use rest::JobStartingStage;
-pub use rest::JobState;
-pub use sse::StartJobMessage as StartJobRequest;
-pub use sse::StopJobMessage as StopJobRequest;
+use crate::api::coord_supervisor;
+pub use crate::api::coord_supervisor::JobStartingStage;
+pub use crate::api::coord_supervisor::JobState;
+pub use crate::api::coord_supervisor::StartJobMessage as StartJobRequest;
+pub use crate::api::coord_supervisor::StopJobMessage as StopJobRequest;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -92,7 +92,7 @@ pub trait SupervisorConnector: Send + Sync + 'static {
     /// intends the supervisor to shut down.
     async fn run(&self);
 
-    async fn update_job_state(&self, job_id: Uuid, job_state: rest::JobState);
+    async fn update_job_state(&self, job_id: Uuid, job_state: coord_supervisor::JobState);
     async fn report_job_error(&self, job_id: Uuid, error: JobError);
 
     // TODO: we'll likely want to remove this method from here, and instead have
