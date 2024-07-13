@@ -24,6 +24,7 @@ pub mod auth;
 mod public;
 mod session;
 pub mod socket;
+mod supervisor;
 pub mod token;
 
 /// State of the server. Only one of these objects ever exists at a time.
