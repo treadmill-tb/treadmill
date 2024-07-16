@@ -6,6 +6,7 @@ use log::{error, info};
 use serde::Deserialize;
 use uuid::Uuid;
 
+use treadmill_rs::api::switchboard_supervisor::ParameterValue;
 use treadmill_rs::connector;
 
 pub mod cli;
@@ -230,7 +231,7 @@ impl CliCommand {
                 false
             }
             CliCommand::StartJob(CliStartJobCommand) => {
-                let (job_id, _cli_job_state) = if let Some(id) = state.selected_job {
+                let (job_id, cli_job_state) = if let Some(id) = state.selected_job {
                     (id, state.jobs.entry(id).or_insert(JobState::default()))
                 } else {
                     error!("No job_id selected!");
@@ -244,6 +245,20 @@ impl CliCommand {
                     "Requesting start of new job {}, ssh keys: {:?}",
                     job_id, &ssh_keys
                 );
+
+                let parameters = cli_job_state
+                    .parameters
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            ParameterValue {
+                                value: v.clone(),
+                                secret: false,
+                            },
+                        )
+                    })
+                    .collect();
 
                 let start_job_res = S::start_job(
                     supervisor,
@@ -259,7 +274,7 @@ impl CliCommand {
                         ],
                         ssh_keys,
                         ssh_rendezvous_servers: vec![],
-                        parameters: HashMap::new(),
+                        parameters,
                         request_id: Uuid::new_v4(),
                     },
                 )
@@ -322,7 +337,7 @@ pub struct JobState {
     // TODO: allow customizations of these parameters.
     // started: bool,
     // image: Option<String>,
-    // parameters: HashMap<String, String>,
+    parameters: HashMap<String, String>,
 }
 
 #[derive(Default, Debug, Clone)]

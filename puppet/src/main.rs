@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::mem;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
@@ -43,6 +44,78 @@ struct PuppetArgs {
 
     #[arg(long, default_value = "true")]
     exit_on_network_config_error: bool,
+
+    #[arg(long)]
+    parameters_dir: Option<PathBuf>,
+}
+
+async fn update_parameters_dir(
+    args: &PuppetArgs,
+    client: &control_socket_client::ControlSocketClient,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let parameters_dir_path = match args.parameters_dir {
+        Some(ref path) => path,
+        None => return Ok(()),
+    };
+
+    info!("Updating parameters dir: {:?}", parameters_dir_path);
+
+    // First, make sure that the directory exists:
+    tokio::fs::create_dir_all(&parameters_dir_path)
+        .await
+        .context("Creating parameters dir (recursively)")?;
+
+    // Fetch the set of parameters:
+    let parameters = client
+        .get_parameters()
+        .await
+        .context("Requesting parameters from supervisor")?;
+
+    // Write the parameters to a temporary file, and then atomically
+    // rename this file to the target filename. This avoids reads of
+    // partially written parameters:
+    let tmpfile_path = parameters_dir_path.join(".tmp");
+    for (name, value) in parameters.into_iter() {
+        // Sanitize the path to ensure we don't have any
+        // unrepresentable characters or path separators in there:
+        let sanitized_path = parameters_dir_path.join(
+            name.chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
+                .take(128)
+                .collect::<String>(),
+        );
+
+        // Dump the parameter value to a tempfile:
+        let mut tmpfile = tokio::fs::File::create(&tmpfile_path)
+            .await
+            .context("Writing temporary parameter file")?;
+        tmpfile
+            .write_all(value.value.as_bytes())
+            .await
+            .context("Writing temporary parameter file")?;
+
+        // To close the file immediately, we need to flush it and then
+        // drop its handle:
+        tmpfile
+            .flush()
+            .await
+            .context("Flushing temporary parameter file")?;
+        mem::drop(tmpfile);
+
+        // Finally, rename the parameter to its sanitized path:
+        tokio::fs::rename(&tmpfile_path, &sanitized_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "Renaming temporary parameter file {:?} to target file {:?}",
+                    tmpfile_path, sanitized_path
+                )
+            })?;
+    }
+
+    Ok(())
 }
 
 async fn update_authorized_keys(
@@ -550,6 +623,9 @@ async fn main() -> Result<()> {
 
     update_authorized_keys_wrapper(&args, &client).await?;
     configure_network_wrapper(&args, &client).await?;
+    update_parameters_dir(&args, &client)
+        .await
+        .context("Failed to create / update parameters directory")?;
 
     // Report the puppet as ready:
     client

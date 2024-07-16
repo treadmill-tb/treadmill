@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{bail, Context, Result};
 
 // TCP control socket transport implementation:
@@ -5,7 +7,7 @@ use anyhow::{bail, Context, Result};
 pub use tml_tcp_control_socket_client as tcp;
 
 use treadmill_rs::api::supervisor_puppet::{
-    NetworkConfig, PuppetEvent, PuppetReq, SupervisorEvent, SupervisorResp,
+    NetworkConfig, ParameterValue, PuppetEvent, PuppetReq, SupervisorEvent, SupervisorResp,
 };
 
 pub enum ControlSocketClient {
@@ -70,6 +72,23 @@ impl ControlSocketClient {
             _ => {
                 bail!(
                     "Invalid supervisor response to network config request: {:?}",
+                    resp
+                );
+            }
+        }
+    }
+
+    pub async fn get_parameters(&self) -> Result<HashMap<String, ParameterValue>> {
+        let resp = self
+            .request(PuppetReq::Parameters)
+            .await
+            .context("Sending parameters request to supervisor")?;
+
+        match resp {
+            SupervisorResp::Parameters { parameters } => Ok(parameters),
+            _ => {
+                bail!(
+                    "Invalid supervisor response to parameters request: {:?}",
                     resp
                 );
             }
