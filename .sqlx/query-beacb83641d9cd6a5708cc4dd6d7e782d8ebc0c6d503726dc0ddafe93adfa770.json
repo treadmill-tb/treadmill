@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM \"user_sessions\" WHERE \"session_id\"=$1;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "beacb83641d9cd6a5708cc4dd6d7e782d8ebc0c6d503726dc0ddafe93adfa770"
+}

@@ -7,6 +7,7 @@ use uuid::Uuid;
 pub enum SupervisorCoordConnector {
     RestSSEConnector,
     CliConnector,
+    WsConnector,
 }
 
 /// Base configuration object for every supervisor.
