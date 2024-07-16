@@ -1,12 +1,13 @@
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
-use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use uuid::Uuid;
 
-use treadmill_rs::api::supervisor_puppet::{PuppetMsg, PuppetReq, SupervisorMsg, SupervisorResp};
+use treadmill_rs::api::supervisor_puppet::{PuppetMsg, SupervisorMsg};
 use treadmill_rs::control_socket::Supervisor;
 
 #[derive(Debug, Clone)]
@@ -22,31 +23,6 @@ pub struct TcpControlSocket<S: Supervisor> {
 }
 
 impl<S: Supervisor> TcpControlSocket<S> {
-    async fn handle_request(
-        _request_id: u64,
-        req: PuppetReq,
-        job_id: Uuid,
-        supervisor: &S,
-    ) -> SupervisorResp {
-        match req {
-            PuppetReq::Ping => SupervisorResp::PingResp,
-
-            PuppetReq::SSHKeys => SupervisorResp::SSHKeysResp {
-                ssh_keys: supervisor.ssh_keys(job_id).await.unwrap_or_else(|| vec![]),
-            },
-
-            PuppetReq::NetworkConfig => {
-                if let Some(nc) = supervisor.network_config(job_id).await {
-                    SupervisorResp::NetworkConfig(nc)
-                } else {
-                    SupervisorResp::JobNotFound
-                }
-            }
-
-            _ => SupervisorResp::UnsupportedRequest,
-        }
-    }
-
     pub async fn new(
         job_id: Uuid,
         bind_addr: std::net::SocketAddr,
@@ -136,14 +112,9 @@ impl<S: Supervisor> TcpControlSocket<S> {
                                     request,
                                 }) => Some(SupervisorMsg::Response {
                                     request_id,
-                                    response: Self::handle_request(
-                                        request_id,
-                                        request,
-                                        job_id,
-                                        &supervisor,
-                                        // &mut sock_state,
-                                    )
-                                    .await,
+                                    response: supervisor
+                                        .handle_request(request_id, request, job_id)
+                                        .await,
                                 }),
                                 Ok(PuppetMsg::Event {
                                     puppet_event_id,
