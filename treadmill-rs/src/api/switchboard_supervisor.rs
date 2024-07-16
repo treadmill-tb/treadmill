@@ -105,7 +105,7 @@ pub enum JobState {
     },
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ParameterValue {
     pub value: String,
     pub secret: bool,

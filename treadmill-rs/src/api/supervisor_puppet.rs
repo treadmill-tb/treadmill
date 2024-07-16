@@ -1,7 +1,11 @@
 //! Types used in the interface between supervisors and the puppet
 //! daemon running on hosts.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
+
+pub use super::switchboard_supervisor::ParameterValue;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -11,6 +15,7 @@ pub enum PuppetReq {
     Ping,
     SSHKeys,
     NetworkConfig,
+    Parameters,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,8 +183,13 @@ pub struct NetworkConfig {
 pub enum SupervisorResp {
     // Request reponses:
     PingResp,
-    SSHKeysResp { ssh_keys: Vec<String> },
+    SSHKeysResp {
+        ssh_keys: Vec<String>,
+    },
     NetworkConfig(NetworkConfig),
+    Parameters {
+        parameters: HashMap<String, ParameterValue>,
+    },
 
     // Error responses:
     UnsupportedRequest,

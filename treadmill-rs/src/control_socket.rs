@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use uuid::Uuid;
 
@@ -37,4 +39,17 @@ pub trait Supervisor: Send + Sync + 'static {
     /// the host's hostname, and may optionally provide IPv4 and IPv6 addresses,
     /// gateways, and a DNS server.
     async fn network_config(&self, job_id: Uuid) -> Option<supervisor_puppet::NetworkConfig>;
+
+    /// Puppet job parameters request.
+    ///
+    /// If the supervisor deems that this job is currently active, it should
+    /// respond with the full set of parameters supplied by the coordinator.
+    ///
+    /// Returning `None` implies that this job id is currently not active. If a
+    /// job has no parameters defined, the `parameters` field should be an empty
+    /// `HashMap`.
+    async fn parameters(
+        &self,
+        job_id: Uuid,
+    ) -> Option<HashMap<String, supervisor_puppet::ParameterValue>>;
 }

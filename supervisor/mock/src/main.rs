@@ -69,6 +69,8 @@ pub enum ControlSocket {
 }
 
 pub struct MockSupervisorJobRunningState {
+    start_job_req: connector::StartJobRequest,
+
     /// The puppet process handle:
     puppet_proc: tokio::process::Child,
 
@@ -266,6 +268,7 @@ impl connector::Supervisor for MockSupervisor {
         // Mark the job as started:
         *job_lg = MockSupervisorJobState::Running(MockSupervisorJobRunningState {
             control_socket: ControlSocket::Tcp(control_socket),
+            start_job_req: msg,
             puppet_proc,
         });
 
@@ -346,6 +349,7 @@ impl connector::Supervisor for MockSupervisor {
 
         // Right now, we only have the running state that can be returned above.
         let MockSupervisorJobRunningState {
+            start_job_req: _,
             control_socket,
             mut puppet_proc,
         } = prev_job_state;
@@ -384,7 +388,7 @@ impl control_socket::Supervisor for MockSupervisor {
             Some(job_state) => match &*job_state.lock().await {
                 // We don't actually store any SSH keys for the MockSupervisor
                 // job, so just return an empty set:
-                MockSupervisorJobState::Running { .. } => Some(vec![]),
+                MockSupervisorJobState::Running(_) => Some(vec![]),
 
                 // Only respond to host / puppet requests when the job is marked
                 // as "running":
@@ -416,7 +420,7 @@ impl control_socket::Supervisor for MockSupervisor {
         match self.jobs.lock().await.get(&tgt_job_id) {
             Some(job_state) => match &*job_state.lock().await {
                 // Job is currently running, respond with its assigned hostname:
-                MockSupervisorJobState::Running { .. } => {
+                MockSupervisorJobState::Running(_) => {
                     let hostname = format!("job-{}", format!("{}", tgt_job_id).split_at(10).0);
                     Some(treadmill_rs::api::supervisor_puppet::NetworkConfig {
                         hostname,
@@ -443,6 +447,41 @@ impl control_socket::Supervisor for MockSupervisor {
             None => {
                 warn!(
                     "Received puppet network config request for non-existant job: {:?}",
+                    tgt_job_id
+                );
+                None
+            }
+        }
+    }
+
+    async fn parameters(
+        &self,
+        tgt_job_id: Uuid,
+    ) -> Option<HashMap<String, treadmill_rs::api::supervisor_puppet::ParameterValue>> {
+        match self.jobs.lock().await.get(&tgt_job_id) {
+            Some(job_state) => match &*job_state.lock().await {
+                // Job is currently running:
+                MockSupervisorJobState::Running(MockSupervisorJobRunningState {
+                    start_job_req,
+                    ..
+                }) => Some(start_job_req.parameters.clone()),
+
+                // Only respond to host / puppet requests when the job is marked
+                // as "running":
+                state => {
+                    warn!(
+                        "Received puppet parameters request for job {:?} in invalid state: {}",
+                        tgt_job_id,
+                        state.state_name()
+                    );
+                    None
+                }
+            },
+
+            // Job not found:
+            None => {
+                warn!(
+                    "Received puppet parameters request for non-existant job: {:?}",
                     tgt_job_id
                 );
                 None
