@@ -18,6 +18,14 @@ pub enum JobErrorKind {
     /// The requested job is already in the process of being shut down.
     AlreadyStopping,
 
+    /// A job with this ID was previously running on this supervisor,
+    /// but we weren't asked to `resume` it.
+    JobAlreadyExists,
+
+    /// Cannot resume this job, either because this functionality is
+    /// unsupported or because this particular job cannot be resumed.
+    CannotResume,
+
     /// Job with the specified ID cannot be found.
     JobNotFound,
 
@@ -28,9 +36,15 @@ pub enum JobErrorKind {
     /// resource stated therein cannot be fetched):
     ImageNotFound,
 
+    /// There is some problem with the image.
+    ImageInvalid,
+
     /// The image is not compatible with, or does not meet the
     /// expectations of this supervisor.
     ImageNotCompatible,
+
+    /// Internal error within the supervisor:
+    InternalError,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

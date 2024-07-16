@@ -4,8 +4,15 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub use super::switchboard_supervisor::ParameterValue;
+
+#[derive(Serialize, Deserialize)]
+pub struct JobMetadata {
+    job_id: Uuid,
+    image_id: crate::image::manifest::ImageId,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

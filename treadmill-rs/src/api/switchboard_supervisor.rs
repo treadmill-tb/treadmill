@@ -43,7 +43,7 @@ pub mod ws_challenge {
     }
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStartingStage {
     /// Generic starting stage, for when no other stage is applicable:
