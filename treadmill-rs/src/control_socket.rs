@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::api::supervisor_puppet;
+use crate::api::supervisor_puppet::{self, PuppetReq, SupervisorResp};
 
 /// Supervisor interface for control socket servers.
 ///
@@ -52,4 +52,42 @@ pub trait Supervisor: Send + Sync + 'static {
         &self,
         job_id: Uuid,
     ) -> Option<HashMap<String, supervisor_puppet::ParameterValue>>;
+
+    /// Generic request handler.
+    ///
+    /// The default implementation of this method calls out to the other methods
+    /// of this trait and should normally not need to be overriden. This method
+    /// is to be used by control socket server implementations.
+    async fn handle_request(
+        &self,
+        _request_id: u64,
+        req: PuppetReq,
+        job_id: Uuid,
+    ) -> SupervisorResp {
+        match req {
+            PuppetReq::Ping => SupervisorResp::PingResp,
+
+            PuppetReq::SSHKeys => SupervisorResp::SSHKeysResp {
+                ssh_keys: self.ssh_keys(job_id).await.unwrap_or_else(|| vec![]),
+            },
+
+            PuppetReq::Parameters => self
+                .parameters(job_id)
+                .await
+                .map_or(SupervisorResp::JobNotFound, |parameters| {
+                    SupervisorResp::Parameters { parameters }
+                }),
+
+            PuppetReq::NetworkConfig => self
+                .network_config(job_id)
+                .await
+                .map_or(SupervisorResp::JobNotFound, SupervisorResp::NetworkConfig),
+            // Would be required for consumers of this type outside of this
+            // crate, as it's marked with `#[non_exhaustive]`. However here we
+            // can exhaustively list all request types and force compile-errors
+            // if we add some in the future.
+            //
+            // _ => SupervisorResp::UnsupportedRequest,
+        }
+    }
 }
