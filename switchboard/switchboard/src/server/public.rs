@@ -1,6 +1,7 @@
 //! Bootstrapping for the public API server.
 
 use crate::server::{session, AppState};
+use axum::routing::post;
 use axum::Router;
 
 /// Sub-router for API endpoints.
