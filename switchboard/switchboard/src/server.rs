@@ -191,7 +191,7 @@ async fn serve_public_server(server: Server<RustlsAcceptor>, state: AppState) {
         // Session management
         .nest("/session", public::build_session_router())
         // API endpoints
-        .nest("/api", public::build_api_router())
+        .nest("/api/v1", public::build_api_router())
         // supervisor websocket endpoint
         .route("/supervisor", get(socket::supervisor_handler))
         // miscellanea

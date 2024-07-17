@@ -43,7 +43,7 @@ MCowBQYDK2VwAyEAeuUgVpZLvlodcZFuyEJWx5PoDleQdX5sFkZl2DFmi6U=
         '{}');
 
 -- insert a fake token under fake_user1
-INSERT INTO public.api_tokens
+INSERT INTO api_tokens
 (token_id, token, user_id, inherits_user_permissions, canceled, created_at, expires_at)
 VALUES ('3be73eea-192f-46c0-af01-92f574290c81',
            -- tml-api-token: B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8
@@ -53,3 +53,7 @@ VALUES ('3be73eea-192f-46c0-af01-92f574290c81',
         NULL,
         '2024-07-12 13:56:50.616829-07',
         '2034-07-12 13:56:50.616829-07');
+
+INSERT INTO user_privileges
+    (user_id, permission)
+VALUES ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'enqueue_ci_job:7d55ec6d-15e7-4b84-8c04-7c085fe60df4');
