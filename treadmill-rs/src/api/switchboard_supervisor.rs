@@ -123,9 +123,10 @@ pub struct RendezvousServerSpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
 pub enum JobInitSpec {
     /// Whether to resume a previously started job.
-    ResumeJob(Uuid),
+    ResumeJob { job_id: Uuid },
 
     /// Which image to base this job off. If the image is not locally cached
     /// at the supervisor, it will be fetched using its manifest prior to
@@ -133,7 +134,7 @@ pub enum JobInitSpec {
     ///
     /// Images are content-addressed by the SHA-256 digest of their
     /// manifest.
-    Image(ImageId),
+    Image { image_id: ImageId },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

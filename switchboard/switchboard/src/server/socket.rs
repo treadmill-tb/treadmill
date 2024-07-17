@@ -117,7 +117,9 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
                     restart_policy: RestartPolicy { restart_count: 0 },
                     ssh_rendezvous_servers: vec![],
                     parameters: Default::default(),
-                    init_spec: JobInitSpec::Image(ImageId(rand::random())),
+                    init_spec: JobInitSpec::Image {
+                        image_id: ImageId(rand::random()),
+                    },
                 },
             ))
             .unwrap(),
