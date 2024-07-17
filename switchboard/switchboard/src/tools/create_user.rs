@@ -13,7 +13,26 @@ use rand::RngCore;
 use sqlx::postgres::PgConnectOptions;
 use sqlx::PgPool;
 use std::path::PathBuf;
+use std::str::FromStr;
 use uuid::Uuid;
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, sqlx::Type, clap::ValueEnum)]
+#[sqlx(type_name = "user_type", rename_all = "lowercase")]
+enum UserKind {
+    Normal,
+    System,
+}
+impl FromStr for UserKind {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "normal" => Ok(Self::Normal),
+            "system" => Ok(Self::System),
+            _ => Err(()),
+        }
+    }
+}
 
 #[derive(Debug, clap::Args)]
 pub struct CreateUserCommand {
@@ -26,6 +45,9 @@ pub struct CreateUserCommand {
     email: String,
     /// Password to use for this user
     password: String,
+
+    #[arg(long)]
+    kind: UserKind,
 }
 
 /// Create a user with the specified information, using the database connection configured at
@@ -36,6 +58,7 @@ pub async fn create_user(
         username,
         email,
         password,
+        kind,
     }: CreateUserCommand,
 ) -> miette::Result<()> {
     let cfg_text = std::fs::read_to_string(&cfg)
@@ -74,12 +97,14 @@ pub async fn create_user(
         .unwrap()
         .to_string();
 
+    // as per https://users.rust-lang.org/t/sqlx-postgres-how-to-insert-a-enum-value/53044
     sqlx::query!(
-        r#"insert into users values ($1, $2, $3, $4, $5, $6, $7);"#,
+        r#"insert into users values ($1, $2, $3, $4, $5, $6, $7, $8);"#,
         uuid,
         username,
         email,
         password_hash,
+        kind as UserKind,
         Utc::now(),
         Utc::now(),
         false

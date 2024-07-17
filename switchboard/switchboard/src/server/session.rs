@@ -1,225 +1,18 @@
 //! Session management interfaces.
 
+use crate::server::token::ApiToken;
 use crate::server::AppState;
 use argon2::password_hash::{PasswordHashString, SaltString};
 use argon2::{Algorithm, Argon2, Params, PasswordHasher, PasswordVerifier, Version};
 use axum::extract::{ConnectInfo, State};
-use axum::response::{IntoResponse, Response};
 use axum::Json;
-use axum_extra::extract::cookie::{Cookie, SameSite};
-use axum_extra::extract::SignedCookieJar;
-use axum_extra::TypedHeader;
-use base64::prelude::BASE64_STANDARD_NO_PAD;
-use base64::Engine;
 use chrono::{DateTime, Utc};
-use headers::{Header, UserAgent};
-use http::{HeaderName, HeaderValue, StatusCode};
-use serde::{Deserialize, Serialize};
-use serde_with::base64::Base64;
-use serde_with::serde_as;
-use sqlx::types::ipnetwork::IpNetwork;
+use http::StatusCode;
 use sqlx::{Error, PgExecutor};
-use std::fmt::{Display, Formatter};
-use std::net::{IpAddr, SocketAddr};
-use subtle::ConstantTimeEq;
+use std::net::SocketAddr;
 use thiserror::Error;
+use treadmill_rs::api::switchboard::{LoginRequest, LoginResponse};
 use uuid::Uuid;
-
-/// Session ID cookie.
-pub static SESSION_ID_COOKIE: &str = "__Host-TML-Session-Id";
-/// Pre-session ID cookie.
-pub static PRESESSION_ID_COOKIE: &str = "__Host-TML-Presession-Id";
-
-/// [`TypedHeader`]-compatible HTTP header carrying a CSRF token.
-///
-/// CSRF (Cross-Site Request Forgery) tokens ensure that an attacker cannot simply hand a logged-in
-/// user a link and by thereafter tricking the logged-in user into following that link, whether
-/// manually or automatically, and in such a manner performing an action on the target website using
-/// the identity and authorizations of the logged-in user.
-///
-/// Additionally, we also use CSRF tokens to address SI-CSRF (Session Initialization CSRF), which
-/// occurs (for example) when an attacker causes a different user to be logged into the target site
-/// with the identity of the attacker without the victim's knowledge.
-///
-/// The header is of the form
-/// ```http
-/// tml-csrf-token: "<base64-unpadded token goes here>"
-/// ```
-///
-/// As per the recommendation of [RFC6648](https://www.rfc-editor.org/rfc/rfc6648#section-3.3),
-/// we do _not_ use the `X-` prefix.
-/// As per [RFC7540](https://www.rfc-editor.org/rfc/rfc7540#section-8.1.2), "header field names MUST
-/// be converted to lowercase prior to their encoding in HTTP/2"; this is also specified by the
-/// [`headers`] crate for HTTP/2 ease of use, so we will everywhere refer to it in all-lowercase
-/// form, even though HTTP/1 is case-insensitive to header field names and often displays them in
-/// `Screaming-Lisp-Case`.
-///
-/// Implements [`http::Header`].
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct XCsrfToken(pub CsrfToken);
-impl From<XCsrfToken> for CsrfToken {
-    fn from(value: XCsrfToken) -> Self {
-        value.0
-    }
-}
-impl From<CsrfToken> for XCsrfToken {
-    fn from(value: CsrfToken) -> Self {
-        XCsrfToken(value)
-    }
-}
-impl Header for XCsrfToken {
-    fn name() -> &'static HeaderName {
-        static HEADER_NAME: HeaderName = HeaderName::from_static("tml-csrf-token");
-        &HEADER_NAME
-    }
-    fn decode<'i, I>(values: &mut I) -> Result<Self, headers::Error>
-    where
-        Self: Sized,
-        I: Iterator<Item = &'i HeaderValue>,
-    {
-        let value = values.next().ok_or_else(headers::Error::invalid)?;
-        let csrf_token: CsrfToken =
-            serde_json::from_str(value.to_str().map_err(|_| headers::Error::invalid())?)
-                .map_err(|_| headers::Error::invalid())?;
-        Ok(Self(csrf_token))
-    }
-
-    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        values.extend(std::iter::once(
-            HeaderValue::from_str(serde_json::to_string(&self.0).unwrap().as_str()).unwrap(),
-        ));
-    }
-}
-impl Display for CsrfToken {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&BASE64_STANDARD_NO_PAD.encode(&self.0))
-    }
-}
-
-// TODO: SessionId
-// TODO: PresessionId
-
-/// Representation of a CSRF token, which is a 128-byte random string.
-#[serde_as]
-#[derive(Debug, Serialize, Deserialize, Eq, Copy, Clone)]
-pub struct CsrfToken(#[serde_as(as = "Base64")] [u8; 128]);
-impl PartialEq for CsrfToken {
-    fn eq(&self, other: &Self) -> bool {
-        // use ConstantTimeEq to mitigate timing attacks
-        self.0.ct_eq(&other.0).into()
-    }
-}
-impl TryFrom<Vec<u8>> for CsrfToken {
-    type Error = Vec<u8>;
-
-    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        Ok(Self(value.try_into()?))
-    }
-}
-
-/// Handler for `/session/presession`.
-///
-/// Responds with a presession ID cookie and a CSRF token header.
-///
-/// # Request
-///
-/// Expects empty request, with no declared session cookies. If a presession cookie is already
-/// present, that presession will be deleted.
-///
-/// # Response
-///
-/// ```text
-/// 200 OK          successfully created presession and deleted any preexisting presession
-/// 400 BAD REQUEST preexisting session cookie
-/// 500 I.S.E.      internal error
-/// ```
-/// Empty response body.
-pub async fn presession_handler(
-    TypedHeader(user_agent): TypedHeader<UserAgent>,
-    ConnectInfo(socket_addr): ConnectInfo<SocketAddr>,
-    mut signed_cookie_jar: SignedCookieJar,
-    State(app_state): State<AppState>,
-) -> Response {
-    tracing::info!("/session/presession");
-
-    if let Some(preexisting_session) = signed_cookie_jar.get(SESSION_ID_COOKIE) {
-        // TODO: should we not log the cookie value?
-        tracing::warn!(
-            "requested presession with preexisting session cookie: {preexisting_session}",
-        );
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-
-    if let Some(preexisting_presession) = signed_cookie_jar.get(PRESESSION_ID_COOKIE) {
-        tracing::warn!(
-            "requested presession with preexisting presession cookie: {preexisting_presession}",
-        );
-        // get rid of prior presession
-        match serde_json::from_str::<Uuid>(preexisting_presession.value()) {
-            Ok(presession_id) => {
-                match presession_destroy(&app_state.db_pool, presession_id).await {
-                    Ok(()) => (),
-                    Err(SessionError::InvalidPresession) => {
-                        tracing::warn!("no such presession in database");
-                    }
-                    Err(e) => {
-                        tracing::error!("failed to destroy presession: {e}");
-                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("failed to deserialize presession cookie: {e}");
-            }
-        }
-    }
-
-    let presession = match presession_create(
-        &app_state.db_pool,
-        user_agent,
-        socket_addr.ip(),
-        chrono::Duration::from_std(app_state.config.api.auth_presession_timeout).unwrap(),
-    )
-    .await
-    {
-        Ok(info) => info,
-        Err(e) => {
-            tracing::error!("Failed to register presession for: {e}");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-
-    let uuid_str = serde_json::to_string(&presession.presession_id)
-        .expect("Failed to serialize presession ID");
-
-    // Note that it's better NOT to set Domain for this, since we already have it as a __Host-
-    // cookie.
-    let mut cookie = Cookie::new(PRESESSION_ID_COOKIE, uuid_str);
-    cookie.set_same_site(Some(SameSite::Strict));
-    // TODO: SSL
-    //cookie.set_secure(Some(true));
-    cookie.set_http_only(Some(true));
-    // Max-Age is more precedent than Expires
-    cookie.set_max_age(Some(
-        time::Duration::try_from(app_state.config.api.auth_presession_timeout).unwrap(),
-    ));
-    signed_cookie_jar = signed_cookie_jar.add(cookie);
-
-    (
-        StatusCode::OK,
-        signed_cookie_jar,
-        TypedHeader(XCsrfToken(presession.csrf_token)),
-    )
-        .into_response()
-}
-
-/// Request Body that [`login_handler`] expects.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct LoginRequest {
-    username_or_email: String,
-    password: String,
-}
 
 /// Handler for `/session/login`.
 ///
@@ -239,66 +32,11 @@ pub struct LoginRequest {
 /// ```
 /// In all cases, the response body is empty.
 pub async fn login_handler(
-    TypedHeader(_user_agent): TypedHeader<UserAgent>,
-    TypedHeader(x_csrf_token): TypedHeader<XCsrfToken>,
     ConnectInfo(_socket_addr): ConnectInfo<SocketAddr>,
-    mut signed_cookie_jar: SignedCookieJar,
     State(app_state): State<AppState>,
     Json(login_request): Json<LoginRequest>,
-) -> Response {
+) -> Result<(StatusCode, Json<LoginResponse>), StatusCode> {
     tracing::info!("/session/login");
-
-    if let Some(preexisting_session) = signed_cookie_jar.get(SESSION_ID_COOKIE) {
-        // TODO: should we not log the cookie value?
-        tracing::warn!("tried to log in with preexisting session cookie: {preexisting_session}");
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-
-    let Some(presession_cookie) = signed_cookie_jar.get(PRESESSION_ID_COOKIE) else {
-        tracing::warn!("tried to log in without presession cookie");
-        return StatusCode::BAD_REQUEST.into_response();
-    };
-
-    let presession_id: Uuid = match serde_json::from_str(presession_cookie.value()) {
-        Ok(id) => id,
-        Err(e) => {
-            tracing::warn!("failed to deserialize presession cookie: {e}");
-            return StatusCode::BAD_REQUEST.into_response();
-        }
-    };
-
-    let presession = match presession_lookup(&app_state.db_pool, presession_id)
-        .await
-        .and_then(|presession| {
-            if presession.expires_at >= Utc::now() {
-                Ok(presession)
-            } else {
-                Err(SessionError::ExpiredPresession)
-            }
-        }) {
-        Ok(presession) => presession,
-        Err(e) => {
-            tracing::warn!("failed to look up presession: {e}");
-            return StatusCode::BAD_REQUEST.into_response();
-        }
-    };
-
-    if presession.csrf_token != x_csrf_token.0 {
-        tracing::warn!(
-            "mismatched CSRF tokens for presession ID ({presession_id}); correct ({}), got ({})!",
-            presession.presession_id,
-            x_csrf_token.0,
-        );
-
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-
-    if let Err(e) = presession_destroy(&app_state.db_pool, presession_id).await {
-        tracing::error!("failed to destroy presession: {e}");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-
-    // CSRF is okay, check credentials
 
     let argon2 = Argon2::new(
         Algorithm::Argon2id,
@@ -306,11 +44,19 @@ pub async fn login_handler(
         Params::new(19456, 2, 1, Some(64)).unwrap(),
     );
 
-    static LOGIN_FAILED_RESPONSE: (StatusCode, &str) =
-        (StatusCode::FORBIDDEN, "invalid user ID or password");
+    static LOGIN_FAILED_RESPONSE: (StatusCode, LoginResponse) = (
+        StatusCode::FORBIDDEN,
+        LoginResponse::InvalidUsernameOrPassword,
+    );
+    let login_failed = || {
+        (
+            LOGIN_FAILED_RESPONSE.0.clone(),
+            Json(LOGIN_FAILED_RESPONSE.1.clone()),
+        )
+    };
 
     let user_lookup_result =
-        lookup_user_password_hash(&app_state.db_pool, &login_request.username_or_email).await;
+        lookup_user_password_hash(&app_state.db_pool, &login_request.user_identifier).await;
     let user = match user_lookup_result {
         Ok(user) => {
             match argon2.verify_password(
@@ -320,7 +66,7 @@ pub async fn login_handler(
                 Ok(()) => {
                     if user.locked {
                         tracing::info!("failed login attempt to user ({}): locked", user.user_id);
-                        return LOGIN_FAILED_RESPONSE.into_response();
+                        return Ok(login_failed());
                     } else {
                         tracing::info!("user ({}) logged in successfully", user.user_id);
                         user
@@ -331,11 +77,11 @@ pub async fn login_handler(
                         "failed login attempt to user ({}): wrong password",
                         user.user_id
                     );
-                    return LOGIN_FAILED_RESPONSE.into_response();
+                    return Ok(login_failed());
                 }
                 Err(e) => {
                     tracing::error!("failed to verify password for user ({}): {e}", user.user_id);
-                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
                 }
             }
         }
@@ -347,68 +93,52 @@ pub async fn login_handler(
 
             tracing::error!(
                 "user identified by user ID `{}` does not exist",
-                login_request.username_or_email
+                login_request.user_identifier
             );
-            return LOGIN_FAILED_RESPONSE.into_response();
+            return Ok(login_failed());
         }
         Err(e) => {
             tracing::error!(
                 "failed to look up credentials for user ID `{}`: {e}",
-                login_request.username_or_email
+                login_request.user_identifier
             );
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
-    // okay, login was successful, create a session
+    // okay, login was successful, create a session token
 
-    let UserPresessionRecord {
-        presession_id: _,
-        csrf_token: _,
-        user_agent,
-        remote_ip,
-        created_at: _,
-        expires_at: _,
-    } = presession;
+    async fn create_token(
+        _conn: impl PgExecutor<'_>,
+        _user_id: Uuid,
+        _inherit_perms: bool,
+        _lifetime: chrono::Duration,
+    ) -> Result<(ApiToken, DateTime<Utc>), sqlx::Error> {
+        todo!()
+    }
 
-    let session = match session_create(
-        &app_state.db_pool,
-        user_agent,
-        remote_ip,
-        chrono::Duration::from_std(app_state.config.api.auth_session_timeout).unwrap(),
+    let (token, expires_at) = create_token(
+        app_state.pool(),
         user.user_id,
+        true,
+        chrono::Duration::from_std(app_state.config.api.auth_session_timeout).unwrap(),
     )
     .await
-    {
-        Ok(session) => session,
-        Err(e) => {
-            tracing::error!("failed to create session for user ({}): {e}", user.user_id);
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
+    .map_err(|e| {
+        tracing::error!(
+            "failed to create temporary session token for user({}): {e}",
+            user.user_id
+        );
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
-    let session_id_str =
-        serde_json::to_string(&session.session_id).expect("Failed to serialize session ID");
-
-    // Note that it's better NOT to set Domain for this, since we already have it as a __Host-
-    // cookie.
-    let mut cookie = Cookie::new(PRESESSION_ID_COOKIE, session_id_str);
-    cookie.set_same_site(Some(SameSite::Strict));
-    // TODO: SSL
-    //cookie.set_secure(Some(true));
-    cookie.set_http_only(Some(true));
-    // Max-Age is more precedent than Expires
-    cookie.set_max_age(Some(
-        time::Duration::try_from(app_state.config.api.auth_presession_timeout).unwrap(),
-    ));
-    signed_cookie_jar = signed_cookie_jar.add(cookie);
-
-    (
+    Ok((
         StatusCode::OK,
-        signed_cookie_jar,
-        TypedHeader(XCsrfToken(session.csrf_token)),
-    )
-        .into_response()
+        Json(LoginResponse::Authenticated {
+            token: token.into(),
+            expires_at,
+        }),
+    ))
 }
 
 /// Things that can go wrong in session management.
@@ -418,23 +148,10 @@ pub enum SessionError {
     /// the row-not-found case.
     #[error("database error: {0}")]
     Database(sqlx::Error),
-    /// Specified presession information is in some way invalid or malformed.
-    #[error("invalid presession")]
-    InvalidPresession,
-    /// Presession timed out.
-    #[error("expired presession")]
-    ExpiredPresession,
     /// Username is invalid; used for internal logging only.
     /// TODO: remove
     #[error("invalid user: {0}")]
     InvalidUsername(String),
-    /// Specified session information is in some way invalid or malformed.
-    #[error("invalid session")]
-    InvalidSession,
-    /// Session is expired.
-    #[allow(dead_code)]
-    #[error("expired session")]
-    ExpiredSession,
 }
 
 // -- INTERNALS --
@@ -473,232 +190,4 @@ async fn lookup_user_password_hash<'c, E: PgExecutor<'c>>(
         password_hash,
         locked,
     })
-}
-
-// -- Functions for working with sessions
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct UserSessionRecord {
-    pub session_id: Uuid,
-    #[sqlx(try_from = "Vec<u8>")]
-    pub csrf_token: CsrfToken,
-    pub user_agent: String,
-    pub remote_ip: IpAddr,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
-    pub user_id: Uuid,
-}
-
-#[allow(dead_code)]
-async fn session_destroy<'c, E: PgExecutor<'c>>(
-    conn: E,
-    session_id: Uuid,
-) -> Result<(), SessionError> {
-    let _ = sqlx::query!(
-        r#"DELETE FROM "user_sessions" WHERE "session_id"=$1;"#,
-        session_id
-    )
-    .execute(conn)
-    .await
-    .map_err(|e| match e {
-        Error::RowNotFound => SessionError::InvalidSession,
-        e => SessionError::Database(e),
-    })?;
-    Ok(())
-}
-
-pub async fn session_lookup<'c, E: PgExecutor<'c>>(
-    conn: E,
-    presession_id: Uuid,
-) -> Result<UserSessionRecord, SessionError> {
-    struct TempRecord {
-        session_id: Uuid,
-        csrf_token: Vec<u8>,
-        user_agent: String,
-        remote_ip: IpNetwork,
-        created_at: DateTime<Utc>,
-        expires_at: DateTime<Utc>,
-        user_id: Uuid,
-    }
-    sqlx::query_as!(
-        TempRecord,
-        r#"SELECT * FROM "user_sessions" WHERE "session_id"=$1 LIMIT 1;"#,
-        presession_id,
-    )
-    .fetch_one(conn)
-    .await
-    .map_err(|e| match e {
-        Error::RowNotFound => SessionError::InvalidPresession,
-        e => SessionError::Database(e),
-    })
-    .map(
-        |TempRecord {
-             session_id,
-             csrf_token,
-             user_agent,
-             remote_ip,
-             created_at,
-             expires_at,
-             user_id,
-         }| {
-            let token_barr: [u8; 128] = csrf_token
-                .try_into()
-                .expect("stored     token has wrong length");
-            UserSessionRecord {
-                session_id,
-                csrf_token: CsrfToken(token_barr),
-                user_agent,
-                remote_ip: remote_ip.ip(),
-                created_at,
-                expires_at,
-                user_id,
-            }
-        },
-    )
-}
-
-async fn session_create<'c, E: PgExecutor<'c>>(
-    conn: E,
-    user_agent: String,
-    ip_addr: IpAddr,
-    lifetime: chrono::Duration,
-    user_id: Uuid,
-) -> Result<UserSessionRecord, SessionError> {
-    let session_id = Uuid::new_v4();
-    let csrf_token = CsrfToken(rand::random());
-    let created_at = Utc::now();
-    let expires_at = created_at + lifetime;
-    let record = UserSessionRecord {
-        session_id,
-        csrf_token,
-        user_agent: user_agent.to_string(),
-        remote_ip: ip_addr,
-        created_at,
-        expires_at,
-        user_id,
-    };
-    let _ = sqlx::query!(
-        r#"INSERT INTO "user_sessions" VALUES ($1,$2,$3,$4,$5,$6,$7);"#,
-        record.session_id,
-        &record.csrf_token.0,
-        record.user_agent,
-        IpNetwork::from(record.remote_ip),
-        record.created_at,
-        record.expires_at,
-        record.user_id,
-    )
-    .execute(conn)
-    .await
-    .map_err(SessionError::Database)?;
-    Ok(record)
-}
-
-// -- Functions for working with pre-sessions
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-struct UserPresessionRecord {
-    presession_id: Uuid,
-    #[sqlx(try_from = "Vec<u8>")]
-    csrf_token: CsrfToken,
-    user_agent: String,
-    remote_ip: IpAddr,
-    created_at: DateTime<Utc>,
-    expires_at: DateTime<Utc>,
-}
-
-async fn presession_destroy<'c, E: PgExecutor<'c>>(
-    conn: E,
-    presession_id: Uuid,
-) -> Result<(), SessionError> {
-    let _ = sqlx::query!(
-        r#"DELETE FROM "user_presessions" WHERE "presession_id"=$1;"#,
-        presession_id
-    )
-    .execute(conn)
-    .await
-    .map_err(|e| match e {
-        Error::RowNotFound => SessionError::InvalidPresession,
-        e => SessionError::Database(e),
-    })?;
-    Ok(())
-}
-
-async fn presession_lookup<'c, E: PgExecutor<'c>>(
-    conn: E,
-    presession_id: Uuid,
-) -> Result<UserPresessionRecord, SessionError> {
-    struct TempRecord {
-        presession_id: Uuid,
-        csrf_token: Vec<u8>,
-        user_agent: String,
-        remote_ip: IpNetwork,
-        created_at: DateTime<Utc>,
-        expires_at: DateTime<Utc>,
-    }
-    sqlx::query_as!(
-        TempRecord,
-        r#"SELECT * FROM "user_presessions" WHERE "presession_id"=$1 LIMIT 1;"#,
-        presession_id,
-    )
-    .fetch_one(conn)
-    .await
-    .map_err(|e| match e {
-        Error::RowNotFound => SessionError::InvalidPresession,
-        e => SessionError::Database(e),
-    })
-    .map(
-        |TempRecord {
-             presession_id,
-             csrf_token,
-             user_agent,
-             remote_ip,
-             created_at,
-             expires_at,
-         }| {
-            let token_barr: [u8; 128] = csrf_token
-                .try_into()
-                .expect("stored token has wrong length");
-            UserPresessionRecord {
-                presession_id,
-                csrf_token: CsrfToken(token_barr),
-                user_agent,
-                remote_ip: remote_ip.ip(),
-                created_at,
-                expires_at,
-            }
-        },
-    )
-}
-
-async fn presession_create<'c, E: PgExecutor<'c>>(
-    conn: E,
-    user_agent: UserAgent,
-    ip_addr: IpAddr,
-    lifetime: chrono::Duration,
-) -> Result<UserPresessionRecord, SessionError> {
-    let presession_id = Uuid::new_v4();
-    let csrf_token = CsrfToken(rand::random());
-    let created_at = Utc::now();
-    let expires_at = created_at + lifetime;
-    let record = UserPresessionRecord {
-        presession_id,
-        csrf_token,
-        user_agent: user_agent.to_string(),
-        remote_ip: ip_addr,
-        created_at,
-        expires_at,
-    };
-    let _ = sqlx::query!(
-        r#"INSERT INTO "user_presessions" VALUES ($1,$2,$3,$4,$5,$6);"#,
-        record.presession_id,
-        &record.csrf_token.0,
-        record.user_agent,
-        IpNetwork::from(record.remote_ip),
-        record.created_at,
-        record.expires_at,
-    )
-    .execute(conn)
-    .await
-    .map_err(SessionError::Database)?;
-    Ok(record)
 }

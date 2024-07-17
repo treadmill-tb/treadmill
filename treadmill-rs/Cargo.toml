@@ -9,5 +9,7 @@ async-trait = "0.1.75"
 serde = { version = "1.0.193", features = ["derive"] }
 uuid = { version = "1.6.1", features = ["serde"] }
 log = "0.4.20"
-serde_with = { version = "3.8.1", features = ["hex"] }
+serde_with = { version = "3.8.1", features = ["hex", "base64"] }
 ed25519-dalek = { version = "2.1.1", features = ["serde"] }
+subtle = "2.6.1"
+chrono = "0.4.38"

@@ -132,6 +132,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ImageId(#[serde_as(as = "serde_with::hex::Hex")] pub [u8; 32]);
 
+impl ImageId {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0[..]
+    }
+}
+
 impl fmt::Debug for ImageId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("ImageId")

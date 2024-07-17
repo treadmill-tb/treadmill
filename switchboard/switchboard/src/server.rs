@@ -1,7 +1,6 @@
 //! The switchboard server.
 
 use crate::cfg::{Config, DatabaseAuth, PasswordAuth};
-use crate::perms;
 use axum::extract::FromRef;
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -33,11 +32,17 @@ pub mod token;
 pub struct AppStateInner {
     /// Connection pool to the database server.
     db_pool: PgPool,
+
     /// Server configuration, set at startup
     #[allow(dead_code)]
     config: Config,
     /// Used for cookie signing; should not be touched
     cookie_signing_key: Key,
+}
+impl AppStateInner {
+    pub fn pool(&self) -> &PgPool {
+        &self.db_pool
+    }
 }
 /// Thin wrapper around an [`Arc`] of an [`AppStateInner`], since [`State`](axum::extract::State)
 /// requires [`Clone`].
@@ -188,8 +193,6 @@ async fn serve_public_server(server: Server<RustlsAcceptor>, state: AppState) {
         .nest("/api", public::build_api_router())
         // supervisor websocket endpoint
         .route("/supervisor", get(socket::supervisor_handler))
-        // for testing/debugging:
-        .route("/perm_test", get(perms::jobs::example))
         // miscellanea
         .fallback(not_found)
         .with_state(state)

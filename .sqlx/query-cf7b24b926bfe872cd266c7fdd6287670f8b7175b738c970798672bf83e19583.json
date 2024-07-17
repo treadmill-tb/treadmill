@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO jobs\n               VALUES ($1, $2, $3, $4, $5, $6, $7, $8);",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "TextArray",
+        {
+          "Custom": {
+            "name": "restart_policy",
+            "kind": {
+              "Composite": [
+                [
+                  "restart_count",
+                  "Int4"
+                ]
+              ]
+            }
+          }
+        },
+        "Bool",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cf7b24b926bfe872cd266c7fdd6287670f8b7175b738c970798672bf83e19583"
+}

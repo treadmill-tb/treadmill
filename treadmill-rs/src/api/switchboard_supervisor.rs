@@ -1,6 +1,8 @@
 //! Types used in the interface between the coordinator and supervisor
 //! components.
 
+use crate::connector::JobError;
+use crate::image::manifest::ImageId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -43,7 +45,7 @@ pub mod ws_challenge {
     }
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStartingStage {
     /// Generic starting stage, for when no other stage is applicable:
@@ -65,7 +67,7 @@ pub enum JobStartingStage {
     Booting,
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum JobSessionConnectionInfo {
     #[serde(rename = "direct_ssh")]
@@ -82,7 +84,7 @@ pub enum JobSessionConnectionInfo {
     },
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "state")]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
@@ -111,7 +113,7 @@ pub struct ParameterValue {
     pub secret: bool,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct RendezvousServerSpec {
     pub client_id: Uuid,
@@ -119,9 +121,30 @@ pub struct RendezvousServerSpec {
     pub auth_token: String,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
+pub enum JobInitSpec {
+    /// Whether to resume a previously started job.
+    ResumeJob(Uuid),
+
+    /// Which image to base this job off. If the image is not locally cached
+    /// at the supervisor, it will be fetched using its manifest prior to
+    /// executing the job.
+    ///
+    /// Images are content-addressed by the SHA-256 digest of their
+    /// manifest.
+    Image(ImageId),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
-pub struct StartJobMessage {
+pub struct RestartPolicy {
+    pub restart_count: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct StartJobRequest {
     /// Identifier of this particular request, to associate responses:
     pub request_id: Uuid,
 
@@ -134,22 +157,15 @@ pub struct StartJobMessage {
     /// and `resume_job` is asserted.
     pub job_id: Uuid,
 
-    /// Whether to resume a previously started job.
-    pub resume_job: bool,
-
-    /// Which image to base this job off. If the image is not locally cached
-    /// at the supervisor, it will be fetched using its manifest prior to
-    /// executing the job.
-    ///
-    /// Images are content-addressed by the SHA-256 digest of their
-    /// manifest.
-    pub image_id: [u8; 32],
+    pub init_spec: JobInitSpec,
 
     /// The set of initial SSH keys to deploy onto the image.
     ///
     /// The image's configuration of the Treadmill puppet daemon determines
     /// how and whether these keys will be loaded.
     pub ssh_keys: Vec<String>,
+
+    pub restart_policy: RestartPolicy,
 
     /// A set of SSH rendezvous servers to tunnel inbound SSH connections
     /// through. Leave empty to avoid using SSH rendezvouz
@@ -161,14 +177,9 @@ pub struct StartJobMessage {
     /// A hash map of parameters provided to this job execution. These
     /// parameters are provided to the puppet daemon.
     pub parameters: HashMap<String, ParameterValue>,
-
-    /// A command to execute in the target. This command will be provided to
-    /// the puppet daemon. How this is executed depends on the puppet
-    /// daemon's configuration.
-    pub run_command: Option<String>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct StopJobMessage {
     /// Identifier of this particular request, to associate responses:
@@ -178,11 +189,30 @@ pub struct StopJobMessage {
     pub job_id: Uuid,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub enum InfoMessage {
+    UpdateJobState {
+        job_id: Uuid,
+        job_state: JobState,
+    },
+    ReportJobError {
+        job_id: Uuid,
+        error: JobError,
+    },
+    SendJobConsoleLog {
+        job_id: Uuid,
+        console_bytes: Vec<u8>,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
 pub enum Message {
-    RequestStatusUpdate { request_id: Uuid },
-    StartJob(StartJobMessage),
+    // RequestStatusUpdate { request_id: Uuid },
+    StartJob(StartJobRequest),
     StopJob(StopJobMessage),
+    Info(InfoMessage),
 }

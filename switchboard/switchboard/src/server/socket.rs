@@ -8,7 +8,12 @@ use axum::extract::ws::{CloseFrame, WebSocket};
 use axum::extract::{ws, WebSocketUpgrade};
 use axum::response::Response;
 use std::net::SocketAddr;
+use treadmill_rs::api::switchboard_supervisor;
 use treadmill_rs::api::switchboard_supervisor::ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL;
+use treadmill_rs::api::switchboard_supervisor::{JobInitSpec, RestartPolicy};
+use treadmill_rs::connector::StartJobRequest;
+use treadmill_rs::image::manifest::ImageId;
+use uuid::Uuid;
 
 mod auth;
 
@@ -58,9 +63,9 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
         if let Err(e) = socket.send(ws::Message::Close(maybe_cf)).await {
             tracing::error!("Failed to send close frame to {socket_addr}: {e}.");
         }
-        if let Err(e) = socket.close().await {
-            tracing::error!("Failed to close websocket connection from {socket_addr}: {e}.");
-        }
+        // if let Err(e) = socket.close().await {
+        //     tracing::error!("Failed to close websocket connection from {socket_addr}: {e}.");
+        // }
     }
 
     // -- Check that the subprotocol is correct.
@@ -101,7 +106,32 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
 
     // TODO: Actor goes here
 
+    // temporary test:
+    socket
+        .send(ws::Message::Text(
+            serde_json::to_string(&switchboard_supervisor::Message::StartJob(
+                StartJobRequest {
+                    request_id: Uuid::new_v4(),
+                    job_id: Uuid::new_v4(),
+                    ssh_keys: vec![],
+                    restart_policy: RestartPolicy { restart_count: 0 },
+                    ssh_rendezvous_servers: vec![],
+                    parameters: Default::default(),
+                    init_spec: JobInitSpec::Image(ImageId(rand::random())),
+                },
+            ))
+            .unwrap(),
+        ))
+        .await
+        .unwrap();
+
+    // loop {
+    //     std::future::pending().await
+    // }
+
     // -- Main loop has exited, close the connection
+
+    tracing::info!("Closing connection with supervisor ({supervisor_id})");
 
     try_close(
         socket,

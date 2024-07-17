@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT key, value as \"value: _\" FROM job_parameters WHERE job_id = $1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "value: _",
+        "type_info": {
+          "Custom": {
+            "name": "parameter_value",
+            "kind": {
+              "Composite": [
+                [
+                  "value",
+                  "Text"
+                ],
+                [
+                  "secret",
+                  "Bool"
+                ]
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "4c2985a2d17febfd247e93a0626fbf7b6c896350637f1ee8e8788e8fa9dd6df0"
+}
