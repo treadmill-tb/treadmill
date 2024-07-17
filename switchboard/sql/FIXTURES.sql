@@ -8,55 +8,48 @@ truncate table api_tokens cascade;
 
 -- insert a fake user
 insert into users
-(user_id, name, email, password_hash, created_at, last_login_at, locked)
+(user_id, name, email, password_hash, user_type, created_at, last_login_at, locked)
 values ('{2c71904b-a9b7-4e22-9d56-8a5d80567ccd}',
         'fake_admin1',
         'example@example.com',
            -- PASSWORD: FAKEFAKE
         '$argon2id$v=19$m=19456,t=2,p=1$3ZxJX8IBx77yc4cIO87UMg$z6Zvfi2uK7d0hreUSb3xZlLi8w3y1966ldxOqe2/O/4',
+        'system',
         current_timestamp,
         current_timestamp, false);
 
 insert into users
-(user_id, name, email, password_hash, created_at, last_login_at, locked)
+(user_id, name, email, password_hash, user_type, created_at, last_login_at, locked)
 values ('{8752ca01-a650-4716-b0a1-d2f1860e4175}',
         'fake_user1',
         'fake_user1@example.com',
            -- PASSWORD: FAKEFAKE
         '$argon2id$v=19$m=19456,t=2,p=1$3ZxJX8IBx77yc4cIO87UMg$z6Zvfi2uK7d0hreUSb3xZlLi8w3y1966ldxOqe2/O/4',
+        'normal',
         '2024-07-12 20:46:18.554751 +00:00',
         '2024-07-12 20:46:18.554766 +00:00',
         false);
 
 -- insert a fake supervisor (
 insert into supervisors
-(supervisor_id, name,
- created_at, last_connected_at, created_by_admin_id,
- public_key,
- last_reported_status, last_reported_status_at,
- tags)
+    (supervisor_id, name, last_connected_at, public_key, tags)
 values ('{7d55ec6d-15e7-4b84-8c04-7c085fe60df4}',
         'fake_supervisor_authtest',
         current_timestamp,
-        current_timestamp,
-        '{2c71904b-a9b7-4e22-9d56-8a5d80567ccd}',
         '-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAeuUgVpZLvlodcZFuyEJWx5PoDleQdX5sFkZl2DFmi6U=
 -----END PUBLIC KEY-----
 ',
-        '', -- no reported status
-        current_timestamp,
         '{}');
 
 -- insert a fake token under fake_user1
-INSERT INTO public.api_tokens (token_id, token, created_by_user_id, canceled, created_at, expires_at, limit_policy,
-                               limit_quotas)
+INSERT INTO public.api_tokens
+(token_id, token, user_id, inherits_user_permissions, canceled, created_at, expires_at)
 VALUES ('3be73eea-192f-46c0-af01-92f574290c81',
            -- tml-api-token: B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8
         '\x075a32da4a35c1574629bbca73ff5d2a2ee081960b4cbcdd9b602ce02595d797f2bb3bc7b1b0503af9cdfbf46907b3af5498d162195d952638885b0d66ae57a4ef1f5e2a9137a3bf827fa73f9700d49ea8c767768d5df64c6cda853640419505c08b08d753327be26eb3decbd5efa5dceff4c81b7fb32c2824517091454e157f',
         '8752ca01-a650-4716-b0a1-d2f1860e4175',
+        true,
         NULL,
         '2024-07-12 13:56:50.616829-07',
-        '2034-07-12 13:56:50.616829-07',
-        '\x',
-        '\x');
+        '2034-07-12 13:56:50.616829-07');
