@@ -2,12 +2,12 @@ use super::{BifurcateProxy, IntoProxiedResponse, ResponseProxy};
 use crate::perms::jobs::{enqueue_ci_job, EnqueueCIJobAction, EnqueueJobError};
 use crate::server::auth::{AuthSource, AuthorizationError, AuthorizationSource, DbPermSource};
 use crate::server::AppState;
-use crate::supervisor::HerdError;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use http::StatusCode;
 use treadmill_rs::api::switchboard::{EnqueueJobRequest, EnqueueJobResponse};
+
 // POST /job/queue
 
 impl IntoProxiedResponse for EnqueueJobResponse {
@@ -20,7 +20,6 @@ impl IntoProxiedResponse for EnqueueJobResponse {
                 (StatusCode::BAD_REQUEST, Json(this)).into_response()
             }
             EnqueueJobResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-            EnqueueJobResponse::Conflict => StatusCode::CONFLICT.into_response(),
         }
     }
 }
@@ -29,10 +28,6 @@ impl From<EnqueueJobError> for EnqueueJobResponse {
         match value {
             EnqueueJobError::Database => EnqueueJobResponse::Internal,
             EnqueueJobError::SupervisorNotFound => EnqueueJobResponse::SupervisorNotFound,
-            EnqueueJobError::Herd(e) => match e {
-                HerdError::InvalidSupervisor => EnqueueJobResponse::SupervisorNotFound,
-                HerdError::BusySupervisor => EnqueueJobResponse::Conflict,
-            },
         }
     }
 }
@@ -60,14 +55,9 @@ pub async fn enqueue(
         })
         .map_err(ResponseProxy)?;
 
-    enqueue_ci_job(
-        &state,
-        privilege,
-        request.start_job_request,
-        request.supervisor_id,
-    )
-    .await
-    .map_err(|e| ResponseProxy(EnqueueJobResponse::from(e)))?;
+    enqueue_ci_job(&state, privilege, request.start_job_request)
+        .await
+        .map_err(|e| ResponseProxy(EnqueueJobResponse::from(e)))?;
 
     super::bifurcated_ok!(EnqueueJobResponse::Ok)
 }
