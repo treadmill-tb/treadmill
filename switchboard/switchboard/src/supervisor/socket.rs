@@ -1,7 +1,7 @@
 //! Server side handling for supervisor-switchboard websocket connections.
 
-use crate::server::socket::auth::{authenticate_supervisor, AuthenticationResult};
 use crate::server::AppState;
+use crate::supervisor::auth::{authenticate_supervisor, AuthenticationResult};
 use axum::extract;
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::ws::{CloseFrame, WebSocket};
@@ -14,8 +14,6 @@ use treadmill_rs::api::switchboard_supervisor::{JobInitSpec, RestartPolicy};
 use treadmill_rs::connector::StartJobRequest;
 use treadmill_rs::image::manifest::ImageId;
 use uuid::Uuid;
-
-mod auth;
 
 /// Axum handler for the `/supervisor` path.
 ///
@@ -63,9 +61,7 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
         if let Err(e) = socket.send(ws::Message::Close(maybe_cf)).await {
             tracing::error!("Failed to send close frame to {socket_addr}: {e}.");
         }
-        // if let Err(e) = socket.close().await {
-        //     tracing::error!("Failed to close websocket connection from {socket_addr}: {e}.");
-        // }
+        // .send(..::Close(..)) already closes the socket, so no need to call .close()
     }
 
     // -- Check that the subprotocol is correct.
@@ -77,7 +73,7 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
 
     // -- Authenticate the supervisor.
 
-    let auth_message_timeout = state.config.websocket.auth.per_message_timeout;
+    let auth_message_timeout = state.config().websocket.auth.per_message_timeout;
     let supervisor_id =
         match authenticate_supervisor(&mut socket, &state, socket_addr, auth_message_timeout).await
         {
@@ -127,9 +123,7 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
         .await
         .unwrap();
 
-    // loop {
-    //     std::future::pending().await
-    // }
+    let () = std::future::pending().await;
 
     // -- Main loop has exited, close the connection
 

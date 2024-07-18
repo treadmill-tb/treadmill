@@ -18,8 +18,7 @@ use uuid::Uuid;
 ///
 /// # Request
 ///
-/// Expects request body to be JSON-encoded [`LoginRequest`]; additionally expected [`XCSRFToken`]
-/// header, and [`PRESESSION_ID_COOKIE`] cookie.
+/// Expects request body to be JSON-encoded [`LoginRequest`];.
 ///
 /// # Response
 ///
@@ -30,7 +29,9 @@ use uuid::Uuid;
 ///     403 FORBIDDEN   invalid username or password
 ///     500 I.S.E.      internal error
 /// ```
-/// In all cases, the response body is empty.
+///
+/// Response body is JSON-encoded [`LoginResponse`] if the status code is 200, otherwise the
+/// response body is empty.
 pub async fn login_handler(
     ConnectInfo(_socket_addr): ConnectInfo<SocketAddr>,
     State(app_state): State<AppState>,
@@ -44,17 +45,6 @@ pub async fn login_handler(
         Params::new(19456, 2, 1, Some(64)).unwrap(),
     );
 
-    static LOGIN_FAILED_RESPONSE: (StatusCode, LoginResponse) = (
-        StatusCode::FORBIDDEN,
-        LoginResponse::InvalidUsernameOrPassword,
-    );
-    let login_failed = || {
-        (
-            LOGIN_FAILED_RESPONSE.0.clone(),
-            Json(LOGIN_FAILED_RESPONSE.1.clone()),
-        )
-    };
-
     let user_lookup_result =
         lookup_user_password_hash(&app_state.db_pool, &login_request.user_identifier).await;
     let user = match user_lookup_result {
@@ -66,7 +56,7 @@ pub async fn login_handler(
                 Ok(()) => {
                     if user.locked {
                         tracing::info!("failed login attempt to user ({}): locked", user.user_id);
-                        return Ok(login_failed());
+                        return Err(StatusCode::FORBIDDEN);
                     } else {
                         tracing::info!("user ({}) logged in successfully", user.user_id);
                         user
@@ -77,7 +67,7 @@ pub async fn login_handler(
                         "failed login attempt to user ({}): wrong password",
                         user.user_id
                     );
-                    return Ok(login_failed());
+                    return Err(StatusCode::FORBIDDEN);
                 }
                 Err(e) => {
                     tracing::error!("failed to verify password for user ({}): {e}", user.user_id);
@@ -95,7 +85,7 @@ pub async fn login_handler(
                 "user identified by user ID `{}` does not exist",
                 login_request.user_identifier
             );
-            return Ok(login_failed());
+            return Err(StatusCode::FORBIDDEN);
         }
         Err(e) => {
             tracing::error!(
@@ -134,7 +124,7 @@ pub async fn login_handler(
 
     Ok((
         StatusCode::OK,
-        Json(LoginResponse::Authenticated {
+        Json(LoginResponse {
             token: token.into(),
             expires_at,
         }),

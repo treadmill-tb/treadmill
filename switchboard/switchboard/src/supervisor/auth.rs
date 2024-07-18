@@ -288,7 +288,7 @@ impl SocketAuthenticator {
             "SELECT public_key FROM supervisors WHERE supervisor_id = $1",
             uuid
         )
-        .fetch_one(&app_state.db_pool)
+        .fetch_one(app_state.pool())
         .await;
         let public_key_record = match res {
             Ok(pkr) => pkr,

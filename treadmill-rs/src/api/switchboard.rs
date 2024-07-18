@@ -29,16 +29,13 @@ impl PartialEq for AuthToken {
 }
 
 /// Response Body that [`login_handler`] emits.
+///
+/// Indicates that the user successfully authenticated, and was issued `token`, which inherits the
+/// user's credentials, and will expire at `expires_at`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum LoginResponse {
-    /// The user successfully authenticated, and was issued `token`, which inherits the user's
-    /// credentials, and will expire at `expires_at`.
-    Authenticated {
-        token: AuthToken,
-        expires_at: DateTime<Utc>,
-    },
-    /// The user did not successfully authenticate.
-    InvalidUsernameOrPassword,
+pub struct LoginResponse {
+    pub token: AuthToken,
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
