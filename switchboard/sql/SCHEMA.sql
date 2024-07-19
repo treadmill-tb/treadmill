@@ -12,8 +12,6 @@ drop table if exists jobs;
 drop table if exists images;
 drop type if exists restart_policy;
 
--- drop table if exists maintenance_schedule;
-
 drop table if exists supervisors;
 
 drop table if exists api_token_privileges;
@@ -112,7 +110,7 @@ create table supervisors
 
 create type restart_policy as
 (
-    restart_count integer
+    remaining_restart_count integer
 );
 
 create table images
@@ -123,8 +121,12 @@ create table images
 create table jobs
 (
     job_id               uuid           not null primary key,
-    resume_job_id        uuid references jobs on delete no action,
-    image_id             bytea references images (image_id) on delete no action,
+    resume_job_id        uuid references jobs (job_id) on delete no action,
+    restart_job_id       uuid references jobs (job_id) on delete no action,
+-- MC: for now, since image management isn't really worked out, just completely don't bother with this
+--      reason: having the foreign key constraint makes testing fixtures more complicated
+    image_id             bytea, --references images (image_id) on delete no action,
+
     ssh_keys             text[]         not null,
 
     -- run_command          text,
@@ -173,7 +175,6 @@ create table job_results
 (
     job_id        uuid                     not null references jobs (job_id),
     supervisor_id uuid                     not null references supervisors (supervisor_id) on delete no action,
-    run_number    integer                  not null,
 
     exit_status   exit_status              not null,
     host_output   jsonb,
