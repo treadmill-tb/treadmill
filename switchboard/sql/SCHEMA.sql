@@ -138,8 +138,7 @@ create table jobs
 
     tag_config           text           not null,
     check
-        ( (resume_job_id is null and image_id is not null)
-        or (resume_job_id is not null and image_id is null))
+        ((resume_job_id::int + restart_job_id::int + image_id::int) = 1)
 );
 
 create type parameter_value as
