@@ -74,7 +74,7 @@ pub async fn serve(cli: Cli) -> miette::Result<()> {
     tracing_subscriber::fmt::init();
 
     // Load configuration
-    let config = config::load_config(cli.config)
+    let config = config::load_config()
         .into_diagnostic()
         .wrap_err("Failed to load configuration")?;
 
