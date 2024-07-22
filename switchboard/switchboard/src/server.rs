@@ -62,14 +62,14 @@ impl FromRef<AppState> for Key {
 }
 
 #[derive(clap::Parser, Debug)]
-pub struct Cli {
+pub struct ServeCommand {
     #[clap(long, env = "TREADMILL_CONFIG")]
     config: Option<PathBuf>,
 }
 
 /// Main server entry point; starts public and internal servers according to the configuration.
 #[instrument]
-pub async fn serve(cli: Cli) -> miette::Result<()> {
+pub async fn serve(cli: ServeCommand) -> miette::Result<()> {
     // Tracing init
     tracing_subscriber::fmt::init();
 
