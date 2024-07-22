@@ -13,15 +13,16 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::http::{Request, Uri};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use treadmill_rs::api::switchboard_supervisor::ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL;
+use treadmill_rs::config::{self, TreadmillConfig, WsConnectorConfig};
 use treadmill_rs::connector::{self, JobError, JobState, SupervisorConnector};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct WsConnectorConfig {
-    /// PKCS8 PEM FILE
-    private_key: PathBuf,
-    switchboard_uri: String,
-}
+//#[derive(Debug, Clone, Deserialize)]
+//pub struct WsConnectorConfig {
+//    /// PKCS8 PEM FILE
+//    private_key: PathBuf,
+//    switchboard_uri: String,
+//}
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -65,7 +66,10 @@ impl<S: connector::Supervisor> WsConnectorInner<S> {
         let signing_key = SigningKey::from_pkcs8_pem(
             std::fs::read_to_string(&config.private_key)
                 .map_err(|e| {
-                    WsConnectorError::Config(ConfigError::IoError(config.private_key.clone(), e))
+                    WsConnectorError::Config(ConfigError::IoError(
+                        config.private_key.clone().into(),
+                        e,
+                    ))
                 })?
                 .as_str(),
         )
@@ -162,6 +166,24 @@ impl<S: connector::Supervisor> WsConnector<S> {
             inner_proxy: OnceLock::new(),
         }
     }
+
+    pub async fn from_config(
+        supervisor_id: Uuid,
+        //config_path: Option<PathBuf>,
+        supervisor: Weak<S>,
+    ) -> Result<Self, config::ConfigError> {
+        let config = match config::load_config() {
+            Ok(x) => x,
+            Err(e) => return Err(config::ConfigError::FigmentError(e)),
+        };
+        let ws_config = match config.connector.ws {
+            None => return Err(config::ConfigError::MissingField("ws_connector")),
+            Some(x) => x,
+        };
+
+        Ok(Self::new(supervisor_id, ws_config, supervisor))
+    }
+
     async fn assure(&self) -> &WsConnectorInner<S> {
         // So, unfortunately, OnceLock::get_or_init is insufficient, since we need a
         // `WsConnectorInner`, and we can only construct that in an `async` function, so we sort of

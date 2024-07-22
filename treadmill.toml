@@ -1,0 +1,60 @@
+[supervisor]
+[supervisor.base]
+supervisor_id = "7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
+coord_connector = "cli_connector"
+
+#[supervisor.cli_connector]
+#images = {}
+#
+#[supervisor.ws_connector]
+#private_key = "config/supervisors/7d55ec6d-15e7-4b84-8c04-7c085fe60df4/auth.pem"
+#switchboard_uri = "wss://localhost:443/supervisor"
+
+[supervisor.mock]
+max_parallel_jobs = 1
+
+[switchboard]
+[switchboard.database]
+address = "localhost"
+port = 5432
+name = "treadmill_db"
+
+[switchboard.database.auth]
+PasswordAuth = { username = "treadmill_user", password = "treadmill_password" }
+
+[switchboard.logs]
+dir = "/var/log/treadmill"
+
+[switchboard.public_server]
+socket_addr = "0.0.0.0:8080"
+cert = "/path/to/public_cert.pem"
+key = "/path/to/public_key.pem"
+
+[switchboard.internal_server]
+socket_addr = "127.0.0.1:8081"
+cert = "/path/to/internal_cert.pem"
+key = "/path/to/internal_key.pem"
+
+[switchboard.websocket.auth]
+per_message_timeout = "30s"
+
+[switchboard.api]
+auth_presession_timeout = "5m"
+auth_session_timeout = "1h"
+
+[puppet]
+transport = "tcp"  # or "autodiscover"
+tcp_control_socket_addr = "127.0.0.1:8080"
+authorized_keys_file = "/path/to/authorized_keys"
+exit_on_authorized_keys_update_error = true
+network_config_script = "/path/to/network_config.sh"
+exit_on_network_config_error = true
+parameters_dir = "/path/to/parameters"
+
+[connector]
+[connector.cli]
+images = {}
+
+[connector.ws]
+private_key = "config/supervisors/7d55ec6d-15e7-4b84-8c04-7c085fe60df4/auth.pem"
+switchboard_uri = "wss://localhost:443/supervisor"

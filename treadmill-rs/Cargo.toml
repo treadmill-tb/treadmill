@@ -11,3 +11,7 @@ uuid = { version = "1.6.1", features = ["serde"] }
 log = "0.4.20"
 serde_with = { version = "3.8.1", features = ["hex"] }
 ed25519-dalek = { version = "2.1.1", features = ["serde"] }
+figment = {version = "0.10.19", features = ["toml", "env"]}
+clap = {version = "4.5.9", features = ["derive"]}
+humantime-serde = "1.1.1"
+serde_derive = "1.0.204"

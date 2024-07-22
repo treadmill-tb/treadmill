@@ -10,52 +10,61 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use log::{debug, error, info, warn};
 
-use treadmill_rs::api::supervisor_puppet::{CommandOutputStream, PuppetEvent, SupervisorEvent};
+use treadmill_rs::api::supervisor_puppet::{
+    CommandOutputStream, PuppetEvent, PuppetReq, SupervisorEvent,
+};
+use treadmill_rs::config::{self, PuppetConfig, TreadmillConfig};
 
 mod control_socket_client;
 
 // Cache at most 1024 supervisor-sent events:
 const SUPERVISOR_EVENT_CHANNEL_CAP: usize = 1024;
 
-#[derive(Debug, Clone, ValueEnum)]
-#[clap(rename_all = "snake_case")]
-enum PuppetControlSocketTransport {
-    #[cfg(feature = "transport_tcp")]
-    Tcp,
-    AutoDiscover,
-}
+//#[derive(Debug, Clone, ValueEnum)]
+//#[clap(rename_all = "snake_case")]
+//enum PuppetControlSocketTransport {
+//    #[cfg(feature = "transport_tcp")]
+//    Tcp,
+//    AutoDiscover,
+//}
 
 #[derive(Debug, Clone, Parser)]
 struct PuppetArgs {
-    #[arg(long, short = 't')]
-    transport: PuppetControlSocketTransport,
-
-    #[arg(long, required_if_eq("transport", "tcp"))]
-    tcp_control_socket_addr: Option<std::net::SocketAddr>,
-
-    #[arg(long)]
-    authorized_keys_file: Option<PathBuf>,
-
-    #[arg(long, default_value = "true")]
-    exit_on_authorized_keys_update_error: bool,
-
-    #[arg(long)]
-    network_config_script: Option<PathBuf>,
-
-    #[arg(long, default_value = "true")]
-    exit_on_network_config_error: bool,
-
-    #[arg(long)]
-    parameters_dir: Option<PathBuf>,
+    #[clap(long, env = "TREADMILL_CONFIG")]
+    config: Option<PathBuf>,
 }
 
+//#[derive(Debug, Clone, Parser)]
+//struct PuppetArgs {
+//    #[arg(long, short = 't')]
+//    transport: PuppetControlSocketTransport,
+//
+//    #[arg(long, required_if_eq("transport", "tcp"))]
+//    tcp_control_socket_addr: Option<std::net::SocketAddr>,
+//
+//    #[arg(long)]
+//    authorized_keys_file: Option<PathBuf>,
+//
+//    #[arg(long, default_value = "true")]
+//    exit_on_authorized_keys_update_error: bool,
+//
+//    #[arg(long)]
+//    network_config_script: Option<PathBuf>,
+//
+//    #[arg(long, default_value = "true")]
+//    exit_on_network_config_error: bool,
+//
+//    #[arg(long)]
+//    parameters_dir: Option<PathBuf>,
+//}
+
 async fn update_parameters_dir(
-    args: &PuppetArgs,
+    puppet_config: &PuppetConfig,
     client: &control_socket_client::ControlSocketClient,
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
 
-    let parameters_dir_path = match args.parameters_dir {
+    let parameters_dir_path = match puppet_config.parameters_dir {
         Some(ref path) => path,
         None => return Ok(()),
     };
@@ -119,10 +128,10 @@ async fn update_parameters_dir(
 }
 
 async fn update_authorized_keys(
-    args: &PuppetArgs,
+    puppet_config: &PuppetConfig,
     client: &control_socket_client::ControlSocketClient,
 ) -> Result<()> {
-    if let Some(ref authorized_keys_file) = args.authorized_keys_file {
+    if let Some(ref authorized_keys_file) = puppet_config.authorized_keys_file {
         info!(
             "Updating SSH authorized_keys file: {:?}",
             authorized_keys_file
@@ -171,7 +180,7 @@ async fn update_authorized_keys(
 }
 
 async fn configure_network(
-    args: &PuppetArgs,
+    puppet_config: &PuppetConfig,
     client: &control_socket_client::ControlSocketClient,
 ) -> Result<()> {
     // Request the network configuration, dump it into environment variables and
@@ -181,7 +190,7 @@ async fn configure_network(
     // be bootstrapped in order to establish a control socket connection at
     // all. Thus, only the hostname parameter is manadatory for any network
     // configuration object provided by the supervisor.
-    if let Some(script) = &args.network_config_script {
+    if let Some(script) = &puppet_config.network_config_script {
         info!("Requesting network configuration from supervisor.");
 
         let network_config = client
@@ -540,22 +549,24 @@ async fn main() -> Result<()> {
     .unwrap();
 
     let args = PuppetArgs::parse();
+    let config = config::load_config().context("Failed to load configuration")?;
+    let puppet_config = config.puppet;
 
     let mut client = Arc::new(
         (|| async {
-            match args.transport {
+            match puppet_config.transport {
                 #[cfg(feature = "transport_tcp")]
-                PuppetControlSocketTransport::Tcp => {
+                config::PuppetControlSocketTransport::Tcp => {
                     Ok(control_socket_client::ControlSocketClient::Tcp(
                         control_socket_client::tcp::TcpControlSocketClient::new(
-                            args.tcp_control_socket_addr.clone().unwrap(),
+                            puppet_config.tcp_control_socket_addr.clone().unwrap(),
                             SUPERVISOR_EVENT_CHANNEL_CAP,
                         )
                         .await?,
                     ))
                 }
 
-                PuppetControlSocketTransport::AutoDiscover => {
+                config::PuppetControlSocketTransport::AutoDiscover => {
                     // Give all known control socket clients a chance to auto-discover,
                     // in no particular order:
                     #[cfg(feature = "transport_tcp")]
@@ -581,13 +592,13 @@ async fn main() -> Result<()> {
     // that selectively either log or forward errors:
 
     async fn update_authorized_keys_wrapper(
-        args: &PuppetArgs,
+        puppet_config: &PuppetConfig,
         client: &control_socket_client::ControlSocketClient,
     ) -> Result<()> {
         let msg = "Failed to update the SSH authorized_keys database";
-        let res = update_authorized_keys(&args, &client).await;
+        let res = update_authorized_keys(&puppet_config, &client).await;
 
-        if args.exit_on_authorized_keys_update_error {
+        if puppet_config.exit_on_authorized_keys_update_error {
             // Forward the raw Result with additional context:
             res.context(msg)
         } else if let Err(e) = res {
@@ -600,13 +611,13 @@ async fn main() -> Result<()> {
     }
 
     async fn configure_network_wrapper(
-        args: &PuppetArgs,
+        puppet_config: &PuppetConfig,
         client: &control_socket_client::ControlSocketClient,
     ) -> Result<()> {
         let msg = "Failed to configure the network using the provided script";
-        let res = configure_network(&args, &client).await;
+        let res = configure_network(&puppet_config, &client).await;
 
-        if args.exit_on_network_config_error {
+        if puppet_config.exit_on_network_config_error {
             // Forward the raw Result with additional context:
             res.context(msg)
         } else if let Err(e) = res {
@@ -621,9 +632,9 @@ async fn main() -> Result<()> {
     // We perform a couple essential supervisor requests at the start, report
     // ourselves as ready, and then listen to supervisor events.
 
-    update_authorized_keys_wrapper(&args, &client).await?;
-    configure_network_wrapper(&args, &client).await?;
-    update_parameters_dir(&args, &client)
+    update_authorized_keys_wrapper(&puppet_config, &client).await?;
+    configure_network_wrapper(&puppet_config, &client).await?;
+    update_parameters_dir(&puppet_config, &client)
         .await
         .context("Failed to create / update parameters directory")?;
 
@@ -664,7 +675,7 @@ async fn main() -> Result<()> {
 
         match event {
             SupervisorEvent::SSHKeysUpdated => {
-                update_authorized_keys_wrapper(&args, &client).await?;
+                update_authorized_keys_wrapper(&puppet_config, &client).await?;
             }
 
             SupervisorEvent::ShutdownReq => {

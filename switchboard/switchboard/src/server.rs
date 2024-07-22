@@ -1,6 +1,5 @@
 //! The switchboard server.
 
-use crate::cfg::{Config, DatabaseAuth, PasswordAuth};
 use crate::perms;
 use axum::extract::FromRef;
 use axum::response::IntoResponse;
@@ -20,6 +19,7 @@ use tokio::net::TcpListener;
 use tokio::task::JoinError;
 use tower_http::trace::TraceLayer;
 use tracing::instrument;
+use treadmill_rs::config::{self, TreadmillConfig};
 
 pub mod auth;
 mod public;
@@ -34,11 +34,11 @@ pub struct AppStateInner {
     /// Connection pool to the database server.
     db_pool: PgPool,
     /// Server configuration, set at startup
-    #[allow(dead_code)]
-    config: Config,
+    config: TreadmillConfig,
     /// Used for cookie signing; should not be touched
     cookie_signing_key: Key,
 }
+
 /// Thin wrapper around an [`Arc`] of an [`AppStateInner`], since [`State`](axum::extract::State)
 /// requires [`Clone`].
 ///
@@ -46,6 +46,7 @@ pub struct AppStateInner {
 /// extractor.
 #[derive(Debug, Clone)]
 pub struct AppState(Arc<AppStateInner>);
+
 impl Deref for AppState {
     type Target = AppStateInner;
 
@@ -53,64 +54,45 @@ impl Deref for AppState {
         self.0.deref()
     }
 }
+
 impl FromRef<AppState> for Key {
     fn from_ref(input: &AppState) -> Self {
         input.cookie_signing_key.clone()
     }
 }
 
-#[derive(clap::Args, Debug)]
-pub struct ServeCommand {
-    /// Path to server configuration file
-    #[arg(short = 'c', long = "cfg", env = "TML_CFG")]
-    cfg: PathBuf,
+#[derive(clap::Parser, Debug)]
+pub struct Cli {
+    #[clap(long, env = "TREADMILL_CONFIG")]
+    config: Option<PathBuf>,
 }
 
-/// Main server entry point; starts public and internal servers according to the configuration at
-/// `config_path`.
+/// Main server entry point; starts public and internal servers according to the configuration.
 #[instrument]
-pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
-    let config_path = &cmd.cfg;
-
+pub async fn serve(cli: Cli) -> miette::Result<()> {
     // Tracing init
-
     tracing_subscriber::fmt::init();
 
     // Load configuration
-
-    // TODO: overlayed configuration
-
-    let cfg_text = std::fs::read_to_string(config_path)
+    let config = config::load_config(cli.config)
         .into_diagnostic()
-        .wrap_err("Failed to open configuration file")?;
-    let cfg: Config = toml::from_str(&cfg_text)
-        .into_diagnostic()
-        .wrap_err_with(|| {
-            format!(
-                "Failed to parse configuration file {}",
-                config_path.display()
-            )
-        })?;
+        .wrap_err("Failed to load configuration")?;
 
-    tracing::info!("Serving with configuration: {cfg:?}");
+    tracing::info!("Serving with configuration: {:?}", config.switchboard);
 
     // Connect to database
-
     let pg_options = PgConnectOptions::new()
-        .host(&cfg.database.address)
-        .port(cfg.database.port)
-        .database(&cfg.database.name)
-    /*
-        .ssl_mode(PgSslMode::VerifyFull)
-        /* TODO: supply ssl client cert */
-     */
-        ;
-    let pg_options = match cfg.database.auth {
-        DatabaseAuth::PasswordAuth(PasswordAuth {
+        .host(&config.switchboard.database.address)
+        .port(config.switchboard.database.port)
+        .database(&config.switchboard.database.name);
+
+    let pg_options = match config.switchboard.database.auth {
+        config::DatabaseAuth::PasswordAuth(config::PasswordAuth {
             ref username,
             ref password,
         }) => pg_options.username(username).password(password),
     };
+
     let pg_pool = PgPool::connect_with(pg_options)
         .await
         .into_diagnostic()
@@ -119,15 +101,17 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
     tracing::info!("Connected to database, poolsz_idle={}", pg_pool.num_idle());
 
     // Bind TCP listeners.
+    let public_socket_addr = config.switchboard.public_server.socket_addr;
+    let internal_socket_addr = config.switchboard.internal_server.socket_addr;
 
-    let public_socket_addr = cfg.public_server.socket_addr;
-    let internal_socket_addr = cfg.internal_server.socket_addr;
+    let rustls_config = RustlsConfig::from_pem_file(
+        &config.switchboard.public_server.cert,
+        &config.switchboard.public_server.key,
+    )
+    .await
+    .into_diagnostic()
+    .wrap_err("Failed to load RusTls configuration for public server")?;
 
-    let rustls_config =
-        RustlsConfig::from_pem_file(&cfg.public_server.cert, &cfg.public_server.key)
-            .await
-            .into_diagnostic()
-            .wrap_err("Failed to load RusTls configuration for public server")?;
     let public_server_listener = axum_server::bind_rustls(public_socket_addr, rustls_config);
 
     let internal_server_listener = TcpListener::bind(internal_socket_addr)
@@ -140,10 +124,9 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
     tracing::info!("Bound TCP listeners on:\n\t(public) {public_socket_addr}\n\t(internal) {internal_socket_addr}");
 
     // Build shared state
-
     let state_inner = AppStateInner {
         db_pool: pg_pool,
-        config: cfg,
+        config,
         cookie_signing_key: Key::generate(),
     };
 
@@ -153,7 +136,6 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
     };
 
     // Spawn server tasks
-
     let public_server = tokio::spawn(async move {
         serve_public_server(public_server_listener, public_server_state).await
     });
@@ -174,8 +156,6 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
 ///
 /// Should be run in its own `tokio` task.
 async fn serve_public_server(server: Server<RustlsAcceptor>, state: AppState) {
-    // TODO: TLS
-
     // fallback when the requested path doesn't exist
     async fn not_found() -> impl IntoResponse {
         StatusCode::NOT_FOUND
@@ -193,11 +173,7 @@ async fn serve_public_server(server: Server<RustlsAcceptor>, state: AppState) {
         // miscellanea
         .fallback(not_found)
         .with_state(state)
-        .layer(TraceLayer::new_for_http())
-    /*
-     TODO: CorsLayer
-      */
-        ;
+        .layer(TraceLayer::new_for_http());
 
     tracing::info!("Starting public server");
 

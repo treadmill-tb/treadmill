@@ -2,23 +2,23 @@
 //!
 //! Creates a new user with the specified username, email, and password.
 
-use crate::cfg::{Config, DatabaseAuth, PasswordAuth};
 use argon2::password_hash::Salt;
 use argon2::{Argon2, PasswordHasher};
 use base64::prelude::BASE64_STANDARD_NO_PAD;
 use base64::Engine;
 use chrono::Utc;
-use miette::{Context, IntoDiagnostic};
+use miette::{Context, IntoDiagnostic, Result, WrapErr};
 use rand::RngCore;
 use sqlx::postgres::PgConnectOptions;
 use sqlx::PgPool;
 use std::path::PathBuf;
+use treadmill_rs::config::{self, TreadmillConfig};
 use uuid::Uuid;
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, clap::Parser)]
 pub struct CreateUserCommand {
-    #[arg(short = 'c', long = "cfg", env = "TML_CFG")]
-    cfg: PathBuf,
+    #[clap(long, env = "TREADMILL_CONFIG")]
+    config: Option<PathBuf>,
 
     /// Username of the user to create
     username: String,
@@ -28,37 +28,23 @@ pub struct CreateUserCommand {
     password: String,
 }
 
-/// Create a user with the specified information, using the database connection configured at
-/// `config_path`, and print the new user's information to standard output.
-pub async fn create_user(
-    CreateUserCommand {
-        cfg,
-        username,
-        email,
-        password,
-    }: CreateUserCommand,
-) -> miette::Result<()> {
-    let cfg_text = std::fs::read_to_string(&cfg)
+pub async fn create_user(cmd: CreateUserCommand) -> Result<()> {
+    let config = config::load_config(cmd.config)
         .into_diagnostic()
-        .wrap_err("Failed to open configuration file")?;
-    let cfg: Config = toml::from_str(&cfg_text)
-        .into_diagnostic()
-        .wrap_err_with(|| format!("Failed to parse configuration file {}", cfg.display()))?;
+        .wrap_err("Failed to load configuration")?;
+
     let pg_options = PgConnectOptions::new()
-        .host(&cfg.database.address)
-        .port(cfg.database.port)
-        .database(&cfg.database.name)
-        /*
-            .ssl_mode(PgSslMode::VerifyFull)
-            /* TODO: supply ssl client cert */
-         */
-        ;
-    let pg_options = match cfg.database.auth {
-        DatabaseAuth::PasswordAuth(PasswordAuth {
+        .host(&config.switchboard.database.address)
+        .port(config.switchboard.database.port)
+        .database(&config.switchboard.database.name);
+
+    let pg_options = match config.switchboard.database.auth {
+        config::DatabaseAuth::PasswordAuth(config::PasswordAuth {
             ref username,
             ref password,
         }) => pg_options.username(username).password(password),
     };
+
     let pg_pool = PgPool::connect_with(pg_options)
         .await
         .into_diagnostic()
@@ -70,15 +56,15 @@ pub async fn create_user(
     let b64 = BASE64_STANDARD_NO_PAD.encode(&salt_bytes);
     let salt = Salt::from_b64(&b64).unwrap();
     let password_hash = Argon2::default()
-        .hash_password(password.as_bytes(), salt)
+        .hash_password(cmd.password.as_bytes(), salt)
         .unwrap()
         .to_string();
 
     sqlx::query!(
-        r#"insert into users values ($1, $2, $3, $4, $5, $6, $7);"#,
+        r#"INSERT INTO users VALUES ($1, $2, $3, $4, $5, $6, $7);"#,
         uuid,
-        username,
-        email,
+        cmd.username,
+        cmd.email,
         password_hash,
         Utc::now(),
         Utc::now(),
@@ -86,12 +72,13 @@ pub async fn create_user(
     )
     .execute(&pg_pool)
     .await
-    .into_diagnostic()?;
+    .into_diagnostic()
+    .wrap_err("Failed to insert new user into database")?;
 
     println!("user_id={uuid}");
-    println!("name={username}");
-    println!("email={email}");
-    println!("password={password}");
+    println!("name={}", cmd.username);
+    println!("email={}", cmd.email);
+    println!("password={}", cmd.password);
 
     Ok(())
 }

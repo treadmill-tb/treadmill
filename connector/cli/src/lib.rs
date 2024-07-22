@@ -9,6 +9,8 @@ use uuid::Uuid;
 use treadmill_rs::api::switchboard_supervisor::ParameterValue;
 use treadmill_rs::connector;
 
+use treadmill_rs::config::{self, TreadmillConfig, WsConnectorConfig};
+
 pub mod cli;
 pub mod edit_tree;
 
@@ -25,7 +27,7 @@ pub struct JobConfig {}
 
 pub struct CliConnector<S: connector::Supervisor> {
     _supervisor_id: Uuid,
-    _config: CliConnectorConfig,
+    config: TreadmillConfig,
     supervisor: Weak<S>,
 }
 
@@ -349,10 +351,10 @@ pub struct CliState {
 }
 
 impl<S: connector::Supervisor> CliConnector<S> {
-    pub fn new(supervisor_id: Uuid, config: CliConnectorConfig, supervisor: Weak<S>) -> Self {
+    pub fn new(supervisor_id: Uuid, config: TreadmillConfig, supervisor: Weak<S>) -> Self {
         CliConnector {
             _supervisor_id: supervisor_id,
-            _config: config,
+            config,
             supervisor,
         }
     }
