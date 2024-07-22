@@ -72,7 +72,7 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
 
     // -- Authenticate the supervisor.
 
-    let auth_message_timeout = state.config.websocket.auth.per_message_timeout;
+    let auth_message_timeout = state.config.switchboard.websocket.auth.per_message_timeout;
     let supervisor_id =
         match authenticate_supervisor(&mut socket, &state, socket_addr, auth_message_timeout).await
         {

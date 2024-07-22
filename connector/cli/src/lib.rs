@@ -7,6 +7,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard_supervisor::ParameterValue;
+use treadmill_rs::config::CliConnectorConfig;
 use treadmill_rs::connector;
 
 pub mod cli;
@@ -14,11 +15,6 @@ pub mod edit_tree;
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct CliConnectorImageConfig {}
-
-#[derive(Deserialize, Clone, Debug)]
-pub struct CliConnectorConfig {
-    pub images: HashMap<Uuid, CliConnectorImageConfig>,
-}
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct JobConfig {}
@@ -349,10 +345,10 @@ pub struct CliState {
 }
 
 impl<S: connector::Supervisor> CliConnector<S> {
-    pub fn new(supervisor_id: Uuid, config: CliConnectorConfig, supervisor: Weak<S>) -> Self {
+    pub fn new(supervisor_id: Uuid, _config: CliConnectorConfig, supervisor: Weak<S>) -> Self {
         CliConnector {
             _supervisor_id: supervisor_id,
-            _config: config,
+            _config,
             supervisor,
         }
     }

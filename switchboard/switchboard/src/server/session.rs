@@ -179,7 +179,8 @@ pub async fn presession_handler(
         &app_state.db_pool,
         user_agent,
         socket_addr.ip(),
-        chrono::Duration::from_std(app_state.config.api.auth_presession_timeout).unwrap(),
+        chrono::Duration::from_std(app_state.config.switchboard.api.auth_presession_timeout)
+            .unwrap(),
     )
     .await
     {
@@ -202,7 +203,7 @@ pub async fn presession_handler(
     cookie.set_http_only(Some(true));
     // Max-Age is more precedent than Expires
     cookie.set_max_age(Some(
-        time::Duration::try_from(app_state.config.api.auth_presession_timeout).unwrap(),
+        time::Duration::try_from(app_state.config.switchboard.api.auth_presession_timeout).unwrap(),
     ));
     signed_cookie_jar = signed_cookie_jar.add(cookie);
 
@@ -375,7 +376,7 @@ pub async fn login_handler(
         &app_state.db_pool,
         user_agent,
         remote_ip,
-        chrono::Duration::from_std(app_state.config.api.auth_session_timeout).unwrap(),
+        chrono::Duration::from_std(app_state.config.switchboard.api.auth_session_timeout).unwrap(),
         user.user_id,
     )
     .await
@@ -399,7 +400,7 @@ pub async fn login_handler(
     cookie.set_http_only(Some(true));
     // Max-Age is more precedent than Expires
     cookie.set_max_age(Some(
-        time::Duration::try_from(app_state.config.api.auth_presession_timeout).unwrap(),
+        time::Duration::try_from(app_state.config.switchboard.api.auth_presession_timeout).unwrap(),
     ));
     signed_cookie_jar = signed_cookie_jar.add(cookie);
 

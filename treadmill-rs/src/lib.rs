@@ -5,6 +5,7 @@
 //! component / service implementations.
 
 pub mod api;
+pub mod config;
 pub mod connector;
 pub mod control_socket;
 pub mod image;
