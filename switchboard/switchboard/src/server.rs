@@ -67,7 +67,8 @@ pub struct ServeCommand {
     config: Option<PathBuf>,
 }
 
-/// Main server entry point; starts public and internal servers according to the configuration.
+/// Main server entry point; starts public and internal servers according to the configuration at
+/// `config_path`.
 #[instrument]
 pub async fn serve(cli: ServeCommand) -> miette::Result<()> {
     // Tracing init
@@ -85,6 +86,8 @@ pub async fn serve(cli: ServeCommand) -> miette::Result<()> {
         .host(&config.switchboard.database.address)
         .port(config.switchboard.database.port)
         .database(&config.switchboard.database.name);
+    //  .ssl_mode(PgSslMode::VerifyFull)
+    /* TODO: supply ssl client cert */
 
     let pg_options = match config.switchboard.database.auth {
         config::DatabaseAuth::PasswordAuth(config::PasswordAuth {

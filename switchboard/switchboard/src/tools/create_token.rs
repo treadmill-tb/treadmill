@@ -38,6 +38,8 @@ pub async fn create_token(cmd: CreateTokenCommand) -> Result<()> {
         .host(&config.switchboard.database.address)
         .port(config.switchboard.database.port)
         .database(&config.switchboard.database.name);
+    //  .ssl_mode(PgSslMode::VerifyFull)
+    /* TODO: supply ssl client cert */
 
     let pg_options = match &config.switchboard.database.auth {
         config::DatabaseAuth::PasswordAuth(config::PasswordAuth {
