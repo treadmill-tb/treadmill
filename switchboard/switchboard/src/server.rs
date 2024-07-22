@@ -2,7 +2,7 @@
 
 use crate::api;
 use crate::cfg::{Config, DatabaseAuth, PasswordAuth};
-use crate::supervisor::socket;
+use crate::supervisor::{socket, Herd};
 use axum::extract::FromRef;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
@@ -31,6 +31,9 @@ pub struct AppStateInner {
     /// Connection pool to the database server.
     db_pool: PgPool,
 
+    /// Supervisor herd
+    herd: Arc<Herd>,
+
     /// Server configuration, set at startup
     config: Config,
     /// Used for cookie signing; should not be touched
@@ -39,6 +42,9 @@ pub struct AppStateInner {
 impl AppStateInner {
     pub fn pool(&self) -> &PgPool {
         &self.db_pool
+    }
+    pub fn herd(&self) -> Arc<Herd> {
+        self.herd.clone()
     }
     pub fn config(&self) -> &Config {
         &self.config
@@ -126,7 +132,6 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
     // Bind TCP listeners.
 
     let public_socket_addr = cfg.public_server.socket_addr;
-    let internal_socket_addr = cfg.internal_server.socket_addr;
 
     let rustls_config =
         RustlsConfig::from_pem_file(&cfg.public_server.cert, &cfg.public_server.key)
@@ -135,12 +140,13 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
             .wrap_err("Failed to load RusTls configuration for public server")?;
     let public_server_listener = axum_server::bind_rustls(public_socket_addr, rustls_config);
 
-    tracing::info!("Bound TCP listeners on:\n\t(public) {public_socket_addr}\n\t(internal) {internal_socket_addr}");
+    tracing::info!("Bound TCP listener on: (public) {public_socket_addr}");
 
     // Build shared state
 
     let state_inner = AppStateInner {
         db_pool: pg_pool,
+        herd: Arc::new(Herd::new()),
         config: cfg,
         cookie_signing_key: Key::generate(),
     };

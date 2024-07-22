@@ -18,7 +18,7 @@ use tokio_tungstenite::tungstenite::{
 };
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use treadmill_rs::api::switchboard_supervisor::{
-    self, ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL, InfoMessage,
+    self, ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL, SupervisorEvent,
 };
 use treadmill_rs::connector::{self, JobError, JobState, SupervisorConnector};
 use uuid::Uuid;
@@ -49,14 +49,11 @@ pub enum WsConnectorError {
 }
 
 pub struct WsConnector<S: connector::Supervisor> {
-    #[allow(dead_code)]
     supervisor_id: Uuid,
-    #[allow(dead_code)]
     config: WsConnectorConfig,
-    #[allow(dead_code)]
     supervisor: Weak<S>,
-    update_rx: Mutex<Option<mpsc::UnboundedReceiver<InfoMessage>>>,
-    update_tx: mpsc::UnboundedSender<InfoMessage>,
+    update_rx: Mutex<Option<mpsc::UnboundedReceiver<SupervisorEvent>>>,
+    update_tx: mpsc::UnboundedSender<SupervisorEvent>,
 }
 
 impl<S: connector::Supervisor> WsConnector<S> {
@@ -131,7 +128,7 @@ impl<S: connector::Supervisor> WsConnector<S> {
                         connector::Supervisor::start_job(&supervisor, start_job_request).await
                     {
                         self.update_tx
-                            .send(InfoMessage::ReportJobError { job_id, error })
+                            .send(SupervisorEvent::ReportJobError { job_id, error })
                             .unwrap();
                     }
                 }
@@ -143,13 +140,23 @@ impl<S: connector::Supervisor> WsConnector<S> {
                         connector::Supervisor::stop_job(&supervisor, stop_job_request).await
                     {
                         self.update_tx
-                            .send(InfoMessage::ReportJobError { job_id, error })
+                            .send(SupervisorEvent::ReportJobError { job_id, error })
                             .unwrap();
                     }
                 }
             }
-            switchboard_supervisor::Message::Info(_) => {
+            switchboard_supervisor::Message::StatusRequest(switchboard_supervisor::Request {
+                request_id: _,
+                message: (),
+            }) => {
+                todo!("not yet implemented")
+            }
+            switchboard_supervisor::Message::SupervisorEvent(_) => {
                 // shouldn't happen
+                unimplemented!()
+            }
+            switchboard_supervisor::Message::StatusResponse(_) => {
+                // Shouldn't happen
                 unimplemented!()
             }
         }
@@ -172,7 +179,7 @@ impl<S: connector::Supervisor> SupervisorConnector for WsConnector<S> {
             tokio::select! {
                 msg = update_rx.recv() => {
                     let msg = msg.unwrap();
-                    let to_msg = switchboard_supervisor::Message::Info(msg);
+                    let to_msg = switchboard_supervisor::Message::SupervisorEvent(msg);
                     let stringified = serde_json::to_string(&to_msg).unwrap();
 
                     if let Err(e) = socket.send(tungstenite::Message::Text(stringified)).await {
@@ -235,7 +242,7 @@ impl<S: connector::Supervisor> SupervisorConnector for WsConnector<S> {
         );
         if let Err(e) = self
             .update_tx
-            .send(InfoMessage::UpdateJobState { job_id, job_state })
+            .send(SupervisorEvent::UpdateJobState { job_id, job_state })
         {
             tracing::error!("failed to send job state update to runloop: {e}")
         }
@@ -249,7 +256,7 @@ impl<S: connector::Supervisor> SupervisorConnector for WsConnector<S> {
         );
         if let Err(e) = self
             .update_tx
-            .send(InfoMessage::ReportJobError { job_id, error })
+            .send(SupervisorEvent::ReportJobError { job_id, error })
         {
             tracing::error!("failed to report job error to runloop: {e}")
         }
@@ -262,7 +269,7 @@ impl<S: connector::Supervisor> SupervisorConnector for WsConnector<S> {
             console_bytes.len(),
             String::from_utf8_lossy(&console_bytes)
         );
-        if let Err(e) = self.update_tx.send(InfoMessage::SendJobConsoleLog {
+        if let Err(e) = self.update_tx.send(SupervisorEvent::SendJobConsoleLog {
             job_id,
             console_bytes,
         }) {
