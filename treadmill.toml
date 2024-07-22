@@ -14,33 +14,34 @@ coord_connector = "cli" # or "ws" or "restsseconnector"
 max_parallel_jobs = 1
 
 [switchboard]
+[switchboard.logs]
+dir = "switchboard/logs"
+
 [switchboard.database]
 address = "localhost"
-port = 5432
-name = "treadmill_db"
+port = 5400
+name = "tml_switchboard"
 
 [switchboard.database.auth]
-PasswordAuth = { username = "treadmill_user", password = "treadmill_password" }
-
-[switchboard.logs]
-dir = "/var/log/treadmill"
+PasswordAuth = { username = "postgres", password = "" }
 
 [switchboard.public_server]
-socket_addr = "0.0.0.0:8080"
-cert = "/path/to/public_cert.pem"
-key = "/path/to/public_key.pem"
+socket_addr = "0.0.0.0:443"
+cert = "config/tls-certs/localhost-public.pem"
+key = "config/tls-certs/localhost.pem"
 
 [switchboard.internal_server]
-socket_addr = "127.0.0.1:8081"
-cert = "/path/to/internal_cert.pem"
-key = "/path/to/internal_key.pem"
+socket_addr = "127.0.0.1:8430"
+cert = ""
+key = ""
 
 [switchboard.websocket.auth]
-per_message_timeout = "30s"
+per_message_timeout = "10sec"
 
 [switchboard.api]
-auth_presession_timeout = "5m"
-auth_session_timeout = "1h"
+auth_presession_timeout = "5min"
+auth_session_timeout = "5min"
+
 
 [puppet]
 transport = "tcp"  # or "autodiscover"
