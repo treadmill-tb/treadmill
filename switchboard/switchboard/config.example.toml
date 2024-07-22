@@ -14,11 +14,6 @@ socket_addr = "0.0.0.0:443"
 cert = "config/tls-certs/localhost-public.pem"
 key = "config/tls-certs/localhost.pem"
 
-[internal_server]
-socket_addr = "127.0.0.1:8430"
-cert = ""
-key = ""
-
 [websocket.auth]
 per_message_timeout = "10sec"
 

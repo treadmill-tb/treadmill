@@ -1,19 +1,20 @@
 //! Server side handling for supervisor-switchboard websocket connections.
 
-use crate::server::AppState;
-use crate::supervisor::auth::{authenticate_supervisor, AuthenticationResult};
-use axum::extract;
-use axum::extract::connect_info::ConnectInfo;
-use axum::extract::ws::{CloseFrame, WebSocket};
-use axum::extract::{ws, WebSocketUpgrade};
-use axum::response::Response;
+use crate::{
+    model,
+    server::AppState,
+    supervisor::auth::{authenticate_supervisor, AuthenticationResult},
+};
+use axum::{
+    extract::{
+        self,
+        connect_info::ConnectInfo,
+        ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade},
+    },
+    response::Response,
+};
 use std::net::SocketAddr;
-use treadmill_rs::api::switchboard_supervisor;
 use treadmill_rs::api::switchboard_supervisor::ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL;
-use treadmill_rs::api::switchboard_supervisor::{JobInitSpec, RestartPolicy};
-use treadmill_rs::connector::StartJobRequest;
-use treadmill_rs::image::manifest::ImageId;
-use uuid::Uuid;
 
 /// Axum handler for the `/supervisor` path.
 ///
@@ -58,7 +59,7 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
         socket_addr: SocketAddr,
         maybe_cf: Option<CloseFrame<'static>>,
     ) {
-        if let Err(e) = socket.send(ws::Message::Close(maybe_cf)).await {
+        if let Err(e) = socket.send(WsMessage::Close(maybe_cf)).await {
             tracing::error!("Failed to send close frame to {socket_addr}: {e}.");
         }
         // .send(..::Close(..)) already closes the socket, so no need to call .close()
@@ -101,41 +102,46 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
     // -- Connection is OK, run the actor loop
 
     // TODO: Actor goes here
-
-    // temporary test:
-    socket
-        .send(ws::Message::Text(
-            serde_json::to_string(&switchboard_supervisor::Message::StartJob(
-                StartJobRequest {
-                    request_id: Uuid::new_v4(),
-                    job_id: Uuid::new_v4(),
-                    ssh_keys: vec![],
-                    restart_policy: RestartPolicy { restart_count: 0 },
-                    ssh_rendezvous_servers: vec![],
-                    parameters: Default::default(),
-                    init_spec: JobInitSpec::Image {
-                        image_id: ImageId(rand::random()),
-                    },
-                },
-            ))
-            .unwrap(),
-        ))
+    let model = model::supervisor::fetch_by_id(supervisor_id, state.pool())
         .await
-        .unwrap();
+        .expect("supervisor was deleted from database between authentication and model lookup");
+    state.herd().add_supervisor(model, socket).await;
 
-    let () = std::future::pending().await;
+    // // temporary test:
+    // socket
+    //     .send(ws::Message::Text(
+    //         serde_json::to_string(&switchboard_supervisor::Message::StartJob(
+    //             StartJobMessage {
+    //                 job_id: Uuid::new_v4(),
+    //                 ssh_keys: vec![],
+    //                 restart_policy: RestartPolicy {
+    //                     remaining_restart_count: 0,
+    //                 },
+    //                 ssh_rendezvous_servers: vec![],
+    //                 parameters: Default::default(),
+    //                 init_spec: JobInitSpec::Image {
+    //                     image_id: ImageId(rand::random()),
+    //                 },
+    //             },
+    //         ))
+    //         .unwrap(),
+    //     ))
+    //     .await
+    //     .unwrap();
 
-    // -- Main loop has exited, close the connection
-
-    tracing::info!("Closing connection with supervisor ({supervisor_id})");
-
-    try_close(
-        socket,
-        socket_addr,
-        Some(CloseFrame {
-            code: ws::close_code::NORMAL,
-            reason: "terminated".into(),
-        }),
-    )
-    .await;
+    // let () = std::future::pending().await;
+    // //
+    // // -- Main loop has exited, close the connection
+    //
+    // tracing::info!("Closing connection with supervisor ({supervisor_id})");
+    //
+    // try_close(
+    //     socket,
+    //     socket_addr,
+    //     Some(CloseFrame {
+    //         code: ws::close_code::NORMAL,
+    //         reason: "terminated".into(),
+    //     }),
+    // )
+    // .await;
 }
