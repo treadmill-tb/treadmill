@@ -1,7 +1,7 @@
 [supervisor]
 [supervisor.base]
 supervisor_id = "7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
-coord_connector = "cli_connector"
+coord_connector = "cli" # or "ws" or "restsseconnector"
 
 #[supervisor.cli_connector]
 #images = {}
