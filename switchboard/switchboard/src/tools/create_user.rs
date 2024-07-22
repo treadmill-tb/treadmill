@@ -29,7 +29,7 @@ pub struct CreateUserCommand {
 }
 
 pub async fn create_user(cmd: CreateUserCommand) -> Result<()> {
-    let config = config::load_config(cmd.config)
+    let config = config::load_config()
         .into_diagnostic()
         .wrap_err("Failed to load configuration")?;
 
