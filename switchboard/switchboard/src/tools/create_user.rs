@@ -7,12 +7,12 @@ use argon2::{Argon2, PasswordHasher};
 use base64::prelude::BASE64_STANDARD_NO_PAD;
 use base64::Engine;
 use chrono::Utc;
-use miette::{Context, IntoDiagnostic, Result, WrapErr};
+use miette::{Context, IntoDiagnostic, Result};
 use rand::RngCore;
 use sqlx::postgres::PgConnectOptions;
 use sqlx::PgPool;
 use std::path::PathBuf;
-use treadmill_rs::config::{self, TreadmillConfig};
+use treadmill_rs::config::{self};
 use uuid::Uuid;
 
 #[derive(Debug, clap::Parser)]

@@ -7,13 +7,11 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use log::{debug, error, info, warn};
 
-use treadmill_rs::api::supervisor_puppet::{
-    CommandOutputStream, PuppetEvent, PuppetReq, SupervisorEvent,
-};
-use treadmill_rs::config::{self, PuppetConfig, TreadmillConfig};
+use treadmill_rs::api::supervisor_puppet::{CommandOutputStream, PuppetEvent, SupervisorEvent};
+use treadmill_rs::config::{self, PuppetConfig};
 
 mod control_socket_client;
 
@@ -548,7 +546,6 @@ async fn main() -> Result<()> {
     )
     .unwrap();
 
-    let args = PuppetArgs::parse();
     let config = config::load_config().context("Failed to load configuration")?;
     let puppet_config = config.puppet;
 

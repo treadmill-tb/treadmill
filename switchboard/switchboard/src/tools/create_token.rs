@@ -9,7 +9,7 @@ use sqlx::postgres::PgConnectOptions;
 use sqlx::PgPool;
 use std::path::PathBuf;
 use std::time::Duration;
-use treadmill_rs::config::{self, TreadmillConfig};
+use treadmill_rs::config::{self};
 use uuid::Uuid;
 
 #[derive(Debug, clap::Parser)]

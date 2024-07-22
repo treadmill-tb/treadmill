@@ -10,13 +10,9 @@ use serde::Deserialize;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use treadmill_rs::config::{
-    CliConnectorConfig, MockConfig, SupervisorBaseConfig, SupervisorConfig, TreadmillConfig,
-    WsConnectorConfig,
-};
+use treadmill_rs::config::{MockConfig, SupervisorBaseConfig};
 use treadmill_rs::connector;
 use treadmill_rs::control_socket;
-use treadmill_rs::supervisor::SupervisorCoordConnector;
 
 // TODO: to port!
 // use treadmill_sse_connector::SSEConnector;
@@ -58,12 +54,6 @@ impl Default for SSHPreferredIPVersion {
 pub struct MockSupervisorConfig {
     /// Base configuration, identical across all supervisors:
     base: SupervisorBaseConfig,
-
-    /// Configurations for individual connector implementations. All are
-    /// optional, and not all of them have to be supported:
-    cli_connector: Option<treadmill_rs::config::CliConnectorConfig>,
-
-    ws_connector: Option<treadmill_rs::config::WsConnectorConfig>,
 
     mock: MockConfig,
 }
@@ -514,38 +504,6 @@ async fn main() -> Result<()> {
 
     let config = treadmill_rs::config::load_config()?;
     let supervisor_config = config.supervisor.clone();
-    //let cloned_config = config.clone();
-    //let ws_connector_config = match supervisor.base.coord_connector {
-    //    treadmill_rs::config::ConnectorType::Cli => config.connectors.cli.as_ref(),
-    //    treadmill_rs::config::ConnectorType::Ws => None(),
-    //};
-
-    //let cli_connector_config = match supervisor.base.coord_connector {
-    //    treadmill_rs::config::ConnectorType::Cli => None(),
-    //    treadmill_rs::config::ConnectorType::Ws => config.connectors.ws.as_ref(),
-    //};
-
-    //pub struct MockSupervisorConfig {
-    //    /// Base configuration, identical across all supervisors:
-    //    base: SupervisorBaseConfig,
-    //
-    //    /// Configurations for individual connector implementations. All are
-    //    /// optional, and not all of them have to be supported:
-    //    cli_connector: Option<treadmill_rs::config::CliConnectorConfig>,
-    //
-    //    ws_connector: Option<treadmill_rs::config::WsConnectorConfig>,
-    //
-    //    mock: MockConfig,
-    //}
-
-    //let config: MockSupervisorConfig = MockSupervisorConfig {
-    //    base: supervisor_config.base,
-    //    cli_connector: cli_connector_config.cloned(),
-    //    ws_connector: ws_connector_config.cloned(),
-    //    mock: supervisor_config.mock,
-    //};
-
-    //let config_str = std::fs::read_to_string(&args.config_file).unwrap();
 
     match supervisor_config.base.coord_connector {
         treadmill_rs::config::ConnectorType::Cli => {
@@ -564,14 +522,12 @@ async fn main() -> Result<()> {
                 Arc::new_cyclic(move |weak_supervisor| {
                     let connector = Arc::new(tml_cli_connector::CliConnector::new(
                         supervisor_config.base.supervisor_id,
-                        config,
+                        cli_connector_config,
                         weak_supervisor.clone(),
                     ));
                     *connector_opt = Some(connector.clone());
                     let mock_supervisor_config = MockSupervisorConfig {
                         base: supervisor_config.base.clone(),
-                        cli_connector: Some(cli_connector_config.clone()),
-                        ws_connector: None,
                         mock: supervisor_config.mock.clone(),
                     };
                     MockSupervisor::new(connector, args, mock_supervisor_config)
@@ -611,8 +567,6 @@ async fn main() -> Result<()> {
                     *connector_opt = Some(connector.clone());
                     let mock_supervisor_config = MockSupervisorConfig {
                         base: supervisor_config.base.clone(),
-                        cli_connector: None,
-                        ws_connector: Some(ws_connector_config.clone()),
                         mock: supervisor_config.mock.clone(),
                     };
                     MockSupervisor::new(connector, args, mock_supervisor_config)

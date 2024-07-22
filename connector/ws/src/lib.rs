@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use base64::Engine;
 use ed25519_dalek::pkcs8::DecodePrivateKey;
 use ed25519_dalek::SigningKey;
-use serde::Deserialize;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{OnceLock, Weak};
@@ -13,7 +12,7 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::http::{Request, Uri};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use treadmill_rs::api::switchboard_supervisor::ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL;
-use treadmill_rs::config::{self, TreadmillConfig, WsConnectorConfig};
+use treadmill_rs::config::{self, WsConnectorConfig};
 use treadmill_rs::connector::{self, JobError, JobState, SupervisorConnector};
 use uuid::Uuid;
 
