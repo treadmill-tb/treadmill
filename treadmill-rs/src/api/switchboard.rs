@@ -1,4 +1,4 @@
-use crate::connector::StartJobRequest;
+use crate::connector::StartJobMessage;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
@@ -43,7 +43,7 @@ pub struct EnqueueJobRequest {
     /// Supervisor to enqueue job on.
     pub supervisor_id: Uuid,
     /// Job request.
-    pub start_job_request: StartJobRequest,
+    pub start_job_request: StartJobMessage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,4 +58,6 @@ pub enum EnqueueJobResponse {
     Invalid { reason: String },
     /// Internal error. (HTTP 500)
     Internal,
+    /// Unable to fulfill request due to lack of available time slos.
+    Conflict,
 }

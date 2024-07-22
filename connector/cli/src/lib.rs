@@ -264,7 +264,7 @@ impl CliCommand {
 
                 let start_job_res = S::start_job(
                     supervisor,
-                    connector::StartJobRequest {
+                    connector::StartJobMessage {
                         job_id,
                         // TODO: require image to be defined
                         init_spec: JobInitSpec::Image {
@@ -275,10 +275,11 @@ impl CliCommand {
                             ]),
                         },
                         ssh_keys,
-                        restart_policy: RestartPolicy { restart_count: 0 },
+                        restart_policy: RestartPolicy {
+                            remaining_restart_count: 0,
+                        },
                         ssh_rendezvous_servers: vec![],
                         parameters,
-                        request_id: Uuid::new_v4(),
                     },
                 )
                 .await;
@@ -297,14 +298,8 @@ impl CliCommand {
                     return false;
                 };
 
-                let stop_job_res = S::stop_job(
-                    supervisor,
-                    connector::StopJobRequest {
-                        job_id,
-                        request_id: Uuid::new_v4(),
-                    },
-                )
-                .await;
+                let stop_job_res =
+                    S::stop_job(supervisor, connector::StopJobMessage { job_id }).await;
 
                 if let Err(stop_job_err) = stop_job_res {
                     error!("Failed to stop job: {:#?}", stop_job_err);
