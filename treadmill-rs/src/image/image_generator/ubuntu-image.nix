@@ -103,7 +103,7 @@ vmTools.makeImageFromDebDist {
     # CONFIG
     # Place your public binary here
     # For example:
-    # cp ./custom_binary /usr/local/bin/
+    # cp /path/to/custom_binary /usr/local/bin/
     # chmod +x /usr/local/bin/custom_binary
     CHROOT
 
