@@ -9,6 +9,7 @@ drop type if exists exit_status;
 drop table if exists job_parameters;
 drop type if exists parameter_value;
 drop table if exists jobs;
+drop type if exists rendezvous_server_spec;
 drop table if exists images;
 drop type if exists restart_policy;
 
@@ -118,27 +119,39 @@ create table images
     image_id bytea not null primary key
 );
 
+create type rendezvous_server_spec as
+(
+    client_id       uuid,
+    server_base_url text,
+    auth_token      text
+);
 create table jobs
 (
-    job_id               uuid           not null primary key,
-    resume_job_id        uuid references jobs (job_id) on delete no action,
-    restart_job_id       uuid references jobs (job_id) on delete no action,
+    job_id                 uuid                     not null primary key,
+
+    resume_job_id          uuid references jobs (job_id) on delete no action,
+    restart_job_id         uuid references jobs (job_id) on delete no action,
 -- MC: for now, since image management isn't really worked out, just completely don't bother with this
 --      reason: having the foreign key constraint makes testing fixtures more complicated
-    image_id             bytea, --references images (image_id) on delete no action,
+    image_id               bytea, --references images (image_id) on delete no action,
 
-    ssh_keys             text[]         not null,
+    ssh_keys               text[]                   not null,
+    ssh_rendezvous_servers rendezvous_server_spec[] not null,
 
     -- run_command          text,
-    restart_policy       restart_policy not null,
+    restart_policy         restart_policy           not null,
 
-    queued               bool           not null default true,
+    queued                 bool                     not null default true,
 
-    enqueued_by_token_id uuid           not null references api_tokens (token_id) on delete no action,
+    enqueued_by_token_id   uuid                     not null references api_tokens (token_id) on delete no action,
 
-    tag_config           text           not null,
+    tag_config             text                     not null,
     check
-        ((resume_job_id::int + restart_job_id::int + image_id::int) = 1)
+        ( ((resume_job_id is not null)::int
+        + (restart_job_id is not null)::int
+        + (image_id is not null)::int)
+        = 1
+        )
 );
 
 create type parameter_value as
