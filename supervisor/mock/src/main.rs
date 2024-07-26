@@ -18,7 +18,6 @@ use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 // use treadmill_sse_connector::SSEConnector;
 
 use tml_tcp_control_socket_server::TcpControlSocket;
-use treadmill_rs::api::switchboard_supervisor::SupervisorStatus;
 
 #[derive(Parser, Debug, Clone)]
 pub struct MockSupervisorArgs {
@@ -376,10 +375,11 @@ impl connector::Supervisor for MockSupervisor {
 
         Ok(())
     }
-
-    async fn request_status(_this: &Arc<Self>) -> SupervisorStatus {
-        todo!()
-    }
+    //
+    // async fn request_status(_this: &Arc<Self>) -> SupervisorStatus {
+    //     // MC: I genuinely have no idea how this should be implemented
+    //     todo!()
+    // }
 }
 
 #[async_trait]
@@ -447,7 +447,7 @@ impl control_socket::Supervisor for MockSupervisor {
             // Job not found:
             None => {
                 warn!(
-                    "Received puppet network config request for non-existant job: {:?}",
+                    "Received puppet network config request for non-existent job: {:?}",
                     tgt_job_id
                 );
                 None

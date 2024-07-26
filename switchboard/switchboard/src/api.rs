@@ -1,4 +1,5 @@
 pub mod jobs;
+pub mod supervisors;
 
 use axum::response::{IntoResponse, Response};
 use std::fmt::{Debug, Formatter};

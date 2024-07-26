@@ -22,8 +22,8 @@ use headers::authorization::Bearer;
 use headers::Authorization;
 use http::request::Parts;
 use http::StatusCode;
-use sqlx::PgPool;
-use std::fmt::{Debug, Formatter};
+use sqlx::{PgExecutor, PgPool};
+use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use thiserror::Error;
@@ -36,11 +36,29 @@ impl From<UserId> for Uuid {
         value.0
     }
 }
+
 #[derive(Debug, Copy, Clone)]
 pub struct TokenId(#[allow(dead_code)] Uuid);
 impl From<TokenId> for Uuid {
     fn from(value: TokenId) -> Self {
         value.0
+    }
+}
+impl Display for TokenId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "token ({})", self.0)
+    }
+}
+
+impl TokenId {
+    pub async fn fetch_user(&self, db: impl PgExecutor<'_>) -> Result<UserId, sqlx::Error> {
+        sqlx::query!(
+            "select user_id from api_tokens where api_tokens.token_id = $1;",
+            self.0
+        )
+        .fetch_one(db)
+        .await
+        .map(|r| UserId(r.user_id))
     }
 }
 

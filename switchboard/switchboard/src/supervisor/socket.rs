@@ -102,46 +102,9 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
     // -- Connection is OK, run the actor loop
 
     // TODO: Actor goes here
+    // TODO: error handling
     let model = model::supervisor::fetch_by_id(supervisor_id, state.pool())
         .await
         .expect("supervisor was deleted from database between authentication and model lookup");
-    state.herd().add_supervisor(model, socket).await;
-
-    // // temporary test:
-    // socket
-    //     .send(ws::Message::Text(
-    //         serde_json::to_string(&switchboard_supervisor::Message::StartJob(
-    //             StartJobMessage {
-    //                 job_id: Uuid::new_v4(),
-    //                 ssh_keys: vec![],
-    //                 restart_policy: RestartPolicy {
-    //                     remaining_restart_count: 0,
-    //                 },
-    //                 ssh_rendezvous_servers: vec![],
-    //                 parameters: Default::default(),
-    //                 init_spec: JobInitSpec::Image {
-    //                     image_id: ImageId(rand::random()),
-    //                 },
-    //             },
-    //         ))
-    //         .unwrap(),
-    //     ))
-    //     .await
-    //     .unwrap();
-
-    // let () = std::future::pending().await;
-    // //
-    // // -- Main loop has exited, close the connection
-    //
-    // tracing::info!("Closing connection with supervisor ({supervisor_id})");
-    //
-    // try_close(
-    //     socket,
-    //     socket_addr,
-    //     Some(CloseFrame {
-    //         code: ws::close_code::NORMAL,
-    //         reason: "terminated".into(),
-    //     }),
-    // )
-    // .await;
+    state.herd().add_supervisor(&model, socket).await;
 }

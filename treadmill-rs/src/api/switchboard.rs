@@ -1,4 +1,4 @@
-use crate::connector::StartJobMessage;
+use crate::connector::{JobError, JobState, StartJobMessage};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
@@ -58,6 +58,29 @@ pub enum EnqueueJobResponse {
     Invalid { reason: String },
     /// Internal error. (HTTP 500)
     Internal,
-    /// Unable to fulfill request due to lack of available time slos.
+    /// Unable to fulfill request due to lack of available time slots.
     Conflict,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum JobStatus {
+    Active {
+        // Not sure yet whether we should include this...
+        // on_supervisor_id: Uuid,
+        job_state: JobState,
+    },
+    Error {
+        job_error: JobError,
+    },
+    Inactive,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "job_status")]
+pub enum JobStatusResponse {
+    Ok { job_status: JobStatus },
+    JobNotFound,
+    Unauthorized,
+    Internal,
 }
