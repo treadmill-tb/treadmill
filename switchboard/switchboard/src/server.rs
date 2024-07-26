@@ -2,7 +2,7 @@
 
 use crate::api;
 use crate::cfg::{Config, DatabaseAuth, PasswordAuth};
-use crate::supervisor::{socket, Herd};
+use crate::supervisor::{socket, Herd, JobMarket};
 use axum::extract::FromRef;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
@@ -34,6 +34,8 @@ pub struct AppStateInner {
     /// Supervisor herd
     herd: Arc<Herd>,
 
+    job_market: Arc<JobMarket>,
+
     /// Server configuration, set at startup
     config: Config,
     /// Used for cookie signing; should not be touched
@@ -45,6 +47,9 @@ impl AppStateInner {
     }
     pub fn herd(&self) -> Arc<Herd> {
         self.herd.clone()
+    }
+    pub fn job_market(&self) -> Arc<JobMarket> {
+        self.job_market.clone()
     }
     pub fn config(&self) -> &Config {
         &self.config
@@ -147,6 +152,7 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
     let state_inner = AppStateInner {
         db_pool: pg_pool,
         herd: Arc::new(Herd::new()),
+        job_market: Arc::new(JobMarket::new()),
         config: cfg,
         cookie_signing_key: Key::generate(),
     };
@@ -214,6 +220,13 @@ pub fn api_router() -> Router<AppState> {
         .route("/job/:id", delete(api::jobs::cancel))
         .route("/job/:id/info", get(api::jobs::info))
         .route("/job/:id/status", get(api::jobs::status))
+        .route("/supervisor/list", get(api::supervisors::list))
+        .route("/supervisor/:id/status", get(api::supervisors::status))
+    //-- Creating & deleting supervsiors
+    // .route("/supervisor/register", post(api::supervisors::register))
+    // .route("/supervisor/:id", delete(api::supervisors::unregister))
+    //-- Remotely turning off supervisors (?)
+    // .route("/supervisor/:id/status", put(api::supervisors::/* todo */))
 }
 
 /// Sub-router for session endpoints.

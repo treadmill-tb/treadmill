@@ -1,14 +1,42 @@
 use crate::server::auth::SubjectDetail;
+use sqlx::postgres::{PgHasArrayType, PgTypeInfo};
 use sqlx::PgExecutor;
-use treadmill_rs::api::switchboard_supervisor::{JobInitSpec, RestartPolicy};
+use treadmill_rs::api::switchboard_supervisor::{JobInitSpec, RendezvousServerSpec, RestartPolicy};
 use treadmill_rs::connector::StartJobMessage;
 use treadmill_rs::image::manifest::ImageId;
 use uuid::Uuid;
 
-#[derive(Debug, sqlx::Type)]
+#[derive(Debug, Clone, sqlx::Type)]
 #[sqlx(type_name = "restart_policy")]
 struct SqlRestartPolicy {
     remaining_restart_count: i32,
+}
+#[derive(Debug, Clone, sqlx::Type)]
+#[sqlx(type_name = "rendezvous_server_spec")]
+struct SqlRendezvousServerSpec {
+    client_id: Uuid,
+    server_base_url: String,
+    auth_token: String,
+}
+impl PgHasArrayType for SqlRendezvousServerSpec {
+    fn array_type_info() -> PgTypeInfo {
+        PgTypeInfo::with_name("_rendezvous_server_spec")
+    }
+}
+impl From<SqlRendezvousServerSpec> for RendezvousServerSpec {
+    fn from(
+        SqlRendezvousServerSpec {
+            client_id,
+            server_base_url,
+            auth_token,
+        }: SqlRendezvousServerSpec,
+    ) -> Self {
+        Self {
+            client_id,
+            server_base_url,
+            auth_token,
+        }
+    }
 }
 #[derive(Debug)]
 pub struct JobModel {
@@ -17,6 +45,7 @@ pub struct JobModel {
     restart_job_id: Option<Uuid>,
     image_id: Option<Vec<u8>>,
     ssh_keys: Vec<String>,
+    ssh_rendezvous_servers: Vec<SqlRendezvousServerSpec>,
     restart_policy: SqlRestartPolicy,
     queued: bool,
     enqueued_by_token_id: Uuid,
@@ -39,6 +68,22 @@ impl JobModel {
     pub fn ssh_keys(&self) -> &[String] {
         &self.ssh_keys
     }
+    pub fn rendezvous_servers(&self) -> Vec<RendezvousServerSpec> {
+        self.ssh_rendezvous_servers
+            .iter()
+            .map(
+                |SqlRendezvousServerSpec {
+                     client_id,
+                     server_base_url,
+                     auth_token,
+                 }| RendezvousServerSpec {
+                    client_id: *client_id,
+                    server_base_url: server_base_url.clone(),
+                    auth_token: auth_token.clone(),
+                },
+            )
+            .collect()
+    }
     pub fn restart_policy(&self) -> RestartPolicy {
         RestartPolicy {
             remaining_restart_count: self.restart_policy.remaining_restart_count as usize,
@@ -59,6 +104,7 @@ pub async fn fetch_by_job_id(id: Uuid, db: impl PgExecutor<'_>) -> Result<JobMod
     sqlx::query_as!(
         JobModel,
         r#"SELECT job_id, resume_job_id, restart_job_id, image_id, ssh_keys,
+                      ssh_rendezvous_servers as "ssh_rendezvous_servers: _",
                       restart_policy as "restart_policy: _", queued, enqueued_by_token_id,
                       tag_config
                FROM jobs
@@ -73,7 +119,7 @@ pub async fn insert(
     jr: &StartJobMessage,
     subject: &SubjectDetail,
     db: impl PgExecutor<'_>,
-) -> Result<(), sqlx::Error> {
+) -> Result<JobModel, sqlx::Error> {
     let token_id = Uuid::from(subject.token_id());
     let (resume_job_id, restart_job_id, image_id) = match jr.init_spec {
         JobInitSpec::ResumeJob { job_id } => (Some(job_id), None, None),
@@ -88,24 +134,54 @@ pub async fn insert(
             .try_into()
             .unwrap_or(i32::MAX),
     };
+    let srs: Vec<SqlRendezvousServerSpec> = jr
+        .ssh_rendezvous_servers
+        .clone()
+        .into_iter()
+        .map(
+            |RendezvousServerSpec {
+                 client_id,
+                 server_base_url,
+                 auth_token,
+             }| SqlRendezvousServerSpec {
+                client_id,
+                server_base_url,
+                auth_token,
+            },
+        )
+        .collect();
+    // TODO
+    let tag_config = "";
     sqlx::query!(
         r#"INSERT INTO jobs
         (job_id, resume_job_id, restart_job_id, image_id,
-         ssh_keys, restart_policy, queued, enqueued_by_token_id, tag_config)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);"#,
+         ssh_keys, ssh_rendezvous_servers, restart_policy, queued, enqueued_by_token_id, tag_config)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);"#,
         &jr.job_id,
         resume_job_id,
         restart_job_id,
         image_id.as_ref().map(ImageId::as_bytes),
         &jr.ssh_keys,
-        restart_policy as SqlRestartPolicy,
+        srs.as_slice() as &[SqlRendezvousServerSpec],
+        restart_policy.clone() as SqlRestartPolicy,
         true,
         token_id,
-        "",
+        tag_config,
     )
     .execute(db)
-    .await
-    .map(|_| ())
+    .await?;
+    Ok(JobModel {
+        job_id: jr.job_id,
+        resume_job_id,
+        restart_job_id,
+        image_id: image_id.map(|iid| iid.0.to_vec()),
+        ssh_keys: jr.ssh_keys.clone(),
+        ssh_rendezvous_servers: srs,
+        restart_policy,
+        queued: false,
+        enqueued_by_token_id: token_id,
+        tag_config: tag_config.to_string(),
+    })
 }
 
 pub mod params {

@@ -8,7 +8,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Weak;
+use std::sync::{Arc, Weak};
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
@@ -18,9 +18,9 @@ use tokio_tungstenite::tungstenite::{
 };
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use treadmill_rs::api::switchboard_supervisor::{
-    self, ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL, SupervisorEvent,
+    self, ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL, Response, SupervisorEvent, SupervisorStatus,
 };
-use treadmill_rs::connector::{self, JobError, JobState, SupervisorConnector};
+use treadmill_rs::connector::{self, JobError, JobState};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -49,25 +49,35 @@ pub enum WsConnectorError {
 }
 
 pub struct WsConnector<S: connector::Supervisor> {
+    inner: Arc<Inner<S>>,
+}
+struct Inner<S: connector::Supervisor> {
     supervisor_id: Uuid,
     config: WsConnectorConfig,
     supervisor: Weak<S>,
-    update_rx: Mutex<Option<mpsc::UnboundedReceiver<SupervisorEvent>>>,
-    update_tx: mpsc::UnboundedSender<SupervisorEvent>,
+    update_rx: Mutex<Option<mpsc::UnboundedReceiver<switchboard_supervisor::Message>>>,
+    update_tx: mpsc::UnboundedSender<switchboard_supervisor::Message>,
+    last_updated_status: Mutex<SupervisorStatus>,
 }
 
 impl<S: connector::Supervisor> WsConnector<S> {
     pub fn new(supervisor_id: Uuid, config: WsConnectorConfig, supervisor: Weak<S>) -> Self {
         let (update_tx, update_rx) = mpsc::unbounded_channel();
         Self {
-            supervisor_id,
-            config,
-            supervisor,
-            update_rx: Mutex::new(Some(update_rx)),
-            update_tx,
+            inner: Arc::new(Inner {
+                supervisor_id,
+                config,
+                supervisor,
+                update_rx: Mutex::new(Some(update_rx)),
+                update_tx,
+                last_updated_status: Mutex::new(SupervisorStatus::Idle),
+            }),
         }
     }
-    pub async fn connect(
+}
+
+impl<S: connector::Supervisor> Inner<S> {
+    async fn connect(
         &self,
     ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, WsConnectorError> {
         rustls::crypto::aws_lc_rs::default_provider()
@@ -118,38 +128,51 @@ impl<S: connector::Supervisor> WsConnector<S> {
 
         Ok(ws)
     }
-
-    async fn handle(&self, message: switchboard_supervisor::Message) -> ControlFlow {
+    async fn handle(&self, message: switchboard_supervisor::Message) {
         match message {
             switchboard_supervisor::Message::StartJob(start_job_request) => {
                 let job_id = start_job_request.job_id;
                 if let Some(supervisor) = self.supervisor.upgrade() {
+                    // TODO: timeout
                     if let Err(error) =
                         connector::Supervisor::start_job(&supervisor, start_job_request).await
                     {
-                        self.update_tx
-                            .send(SupervisorEvent::ReportJobError { job_id, error })
-                            .unwrap();
+                        self.report_job_error(job_id, error).await;
+                        // self.update_tx
+                        //     .send(switchboard_supervisor::Message::SupervisorEvent(
+                        //         SupervisorEvent::ReportJobError { job_id, error },
+                        //     ))
+                        //     .unwrap();
                     }
                 }
             }
             switchboard_supervisor::Message::StopJob(stop_job_request) => {
                 let job_id = stop_job_request.job_id;
+                // TODO: timeout
                 if let Some(supervisor) = self.supervisor.upgrade() {
                     if let Err(error) =
                         connector::Supervisor::stop_job(&supervisor, stop_job_request).await
                     {
-                        self.update_tx
-                            .send(SupervisorEvent::ReportJobError { job_id, error })
-                            .unwrap();
+                        self.report_job_error(job_id, error).await;
+                        // self.update_tx
+                        //     .send(switchboard_supervisor::Message::SupervisorEvent(
+                        //         SupervisorEvent::ReportJobError { job_id, error },
+                        //     ))
+                        //     .unwrap();
                     }
                 }
             }
             switchboard_supervisor::Message::StatusRequest(switchboard_supervisor::Request {
-                request_id: _,
+                request_id,
                 message: (),
             }) => {
-                todo!("not yet implemented")
+                let status = self.last_updated_status.lock().await.clone();
+                self.update_tx
+                    .send(switchboard_supervisor::Message::StatusResponse(Response {
+                        response_to_request_id: request_id,
+                        message: status,
+                    }))
+                    .unwrap();
             }
             switchboard_supervisor::Message::SupervisorEvent(_) => {
                 // shouldn't happen
@@ -160,27 +183,38 @@ impl<S: connector::Supervisor> WsConnector<S> {
                 unimplemented!()
             }
         }
-        ControlFlow::Continue
     }
 }
 
-enum ControlFlow {
-    Continue,
-    #[allow(dead_code)]
-    Break,
+#[async_trait]
+impl<S: connector::Supervisor> connector::SupervisorConnector for WsConnector<S> {
+    async fn run(&self) {
+        Inner::run(&self.inner).await
+    }
+
+    async fn update_job_state(&self, job_id: Uuid, job_state: JobState) {
+        self.inner.update_job_state(job_id, job_state).await
+    }
+
+    async fn report_job_error(&self, job_id: Uuid, error: JobError) {
+        self.inner.report_job_error(job_id, error).await
+    }
+
+    async fn send_job_console_log(&self, job_id: Uuid, console_bytes: Vec<u8>) {
+        self.inner.send_job_console_log(job_id, console_bytes).await
+    }
 }
 
-#[async_trait]
-impl<S: connector::Supervisor> SupervisorConnector for WsConnector<S> {
-    async fn run(&self) {
+impl<S: connector::Supervisor> Inner<S> {
+    async fn run(self: &Arc<Self>) {
         let mut socket = self.connect().await.unwrap();
         let mut update_rx = self.update_rx.lock().await.take().unwrap();
         loop {
             tokio::select! {
                 msg = update_rx.recv() => {
                     let msg = msg.unwrap();
-                    let to_msg = switchboard_supervisor::Message::SupervisorEvent(msg);
-                    let stringified = serde_json::to_string(&to_msg).unwrap();
+                    // let to_msg = switchboard_supervisor::Message::SupervisorEvent(msg);
+                    let stringified = serde_json::to_string(&msg).unwrap();
 
                     if let Err(e) = socket.send(tungstenite::Message::Text(stringified)).await {
                         tracing::error!("Failed to send message: {e}");
@@ -199,12 +233,19 @@ impl<S: connector::Supervisor> SupervisorConnector for WsConnector<S> {
                                             continue
                                         }
                                     };
-                                    match self.handle(msg).await {
-                                        ControlFlow::Continue => {}
-                                        ControlFlow::Break => {
-                                            break
-                                        }
-                                    }
+                                    // This is the reason we have separate WsConnector and Inner
+                                    // types: Supervisor wants to have a <dyn SupervisorConnector>
+                                    // (because the SupervisorConnectors right now take
+                                    // <S: Supervisor>, and we need to avoid recursive types), so
+                                    // we need something that is object-safe; however, if we want to
+                                    // be able to serve a status request while a job is being
+                                    // started, we need to tokio::spawn. For lifetime reasons, then,
+                                    // we need self to be 'static.
+                                    // However, to be object-safe, it won't work for
+                                    // SupervisorConnector::run to take self:&Arc<Self>; therefore
+                                    // we have an interior type that lives inside an Arc.
+                                    let this = Arc::clone(self);
+                                    let _jh = tokio::spawn(async move { this.handle(msg).await });
                                 }
                                 tungstenite::Message::Binary(_) => {
                                     unimplemented!()
@@ -240,9 +281,26 @@ impl<S: connector::Supervisor> SupervisorConnector for WsConnector<S> {
             job_id,
             job_state
         );
+        {
+            let mut lus_lg = self.last_updated_status.lock().await;
+            // MC: We do not currently handle this case, since there is no extant usage, and I am
+            //     unsure of the semantics of JobState::Failed.
+            assert!(!matches!(job_state, JobState::Failed { .. }));
+            // Finished is an event, not a state.
+            if matches!(job_state, JobState::Finished { .. }) {
+                *lus_lg = SupervisorStatus::Idle;
+            } else {
+                *lus_lg = SupervisorStatus::OngoingJob {
+                    job_id,
+                    job_state: job_state.clone(),
+                };
+            }
+        }
         if let Err(e) = self
             .update_tx
-            .send(SupervisorEvent::UpdateJobState { job_id, job_state })
+            .send(switchboard_supervisor::Message::SupervisorEvent(
+                SupervisorEvent::UpdateJobState { job_id, job_state },
+            ))
         {
             tracing::error!("failed to send job state update to runloop: {e}")
         }
@@ -254,9 +312,17 @@ impl<S: connector::Supervisor> SupervisorConnector for WsConnector<S> {
             job_id,
             error,
         );
+        {
+            // An error occurred-according to my understanding, the supervisor should cancel the job
+            // and return to an idle state. 'Error' is not a state, but Idle is.
+            let mut lus_lg = self.last_updated_status.lock().await;
+            *lus_lg = SupervisorStatus::Idle;
+        }
         if let Err(e) = self
             .update_tx
-            .send(SupervisorEvent::ReportJobError { job_id, error })
+            .send(switchboard_supervisor::Message::SupervisorEvent(
+                SupervisorEvent::ReportJobError { job_id, error },
+            ))
         {
             tracing::error!("failed to report job error to runloop: {e}")
         }
@@ -269,10 +335,15 @@ impl<S: connector::Supervisor> SupervisorConnector for WsConnector<S> {
             console_bytes.len(),
             String::from_utf8_lossy(&console_bytes)
         );
-        if let Err(e) = self.update_tx.send(SupervisorEvent::SendJobConsoleLog {
-            job_id,
-            console_bytes,
-        }) {
+        if let Err(e) = self
+            .update_tx
+            .send(switchboard_supervisor::Message::SupervisorEvent(
+                SupervisorEvent::SendJobConsoleLog {
+                    job_id,
+                    console_bytes,
+                },
+            ))
+        {
             tracing::error!("failed to send job console log to runloop: {e}")
         }
     }

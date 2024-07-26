@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO jobs\n        (job_id, resume_job_id, restart_job_id, image_id,\n         ssh_keys, ssh_rendezvous_servers, restart_policy, queued, enqueued_by_token_id, tag_config)\n               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "TextArray",
+        {
+          "Custom": {
+            "name": "_rendezvous_server_spec",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "rendezvous_server_spec",
+                  "kind": {
+                    "Composite": [
+                      [
+                        "client_id",
+                        "Uuid"
+                      ],
+                      [
+                        "server_base_url",
+                        "Text"
+                      ],
+                      [
+                        "auth_token",
+                        "Text"
+                      ]
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "restart_policy",
+            "kind": {
+              "Composite": [
+                [
+                  "remaining_restart_count",
+                  "Int4"
+                ]
+              ]
+            }
+          }
+        },
+        "Bool",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "69d151ab0c7868ebcb73f68aaf809e14092946c540b731be477426f88fcc21f2"
+}

@@ -1,14 +1,18 @@
+use crate::model::job::JobModel;
 use crate::model::supervisor::SupervisorModel;
 use axum::extract::ws;
 use axum::extract::ws::{CloseFrame, Message as WsMessage, WebSocket};
 use axum::Error;
 use dashmap::{DashMap, DashSet};
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use std::ops::ControlFlow;
+use std::pin::Pin;
 use std::sync::{Arc, Weak};
+use std::task::{Context, Poll};
 use thiserror::Error;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, OwnedMutexGuard};
+use treadmill_rs::api::switchboard::JobStatus;
 use treadmill_rs::api::switchboard_supervisor::{
     self, Request, ResponseMessage, SupervisorEvent, SupervisorStatus,
 };
@@ -19,17 +23,105 @@ mod auth;
 pub mod socket;
 
 #[derive(Debug)]
-pub struct ActiveJob {
-    //
+struct JobInner {
+    job_model: JobModel,
+    status_watch: watch::Receiver<JobStatus>,
+    event_stream: UnboundedReceiver<SupervisorEvent>,
 }
+impl JobInner {
+    pub fn id(&self) -> Uuid {
+        self.job_model.id()
+    }
+    pub fn latest_status(&mut self) -> Result<JobStatus, JobMarketError> {
+        if self.event_stream.is_closed() {
+            Err(JobMarketError::InvalidJob)
+        } else {
+            Ok(self.status_watch.borrow_and_update().clone())
+        }
+    }
+}
+fn tap_event_stream(
+    mut event_stream: EventStream,
+) -> (
+    watch::Receiver<JobStatus>,
+    UnboundedReceiver<SupervisorEvent>,
+) {
+    let (status_tx, status_rx) = watch::channel(JobStatus::Inactive);
+    let (other_tx, other_rx) = mpsc::unbounded_channel();
+
+    tokio::spawn(async move {
+        while let Some(event) = event_stream.next().await {
+            match &event {
+                SupervisorEvent::UpdateJobState {
+                    job_id: _,
+                    job_state,
+                } => {
+                    if let Err(_) = status_tx.send(JobStatus::Active {
+                        job_state: job_state.clone(),
+                    }) {
+                        break;
+                    }
+                }
+                SupervisorEvent::ReportJobError { job_id: _, error } => {
+                    if let Err(_) = status_tx.send(JobStatus::Error {
+                        job_error: error.clone(),
+                    }) {
+                        break;
+                    }
+                }
+                SupervisorEvent::SendJobConsoleLog { .. } => {}
+            }
+            if let Err(_) = other_tx.send(event) {
+                break;
+            }
+        }
+    });
+
+    (status_rx, other_rx)
+}
+#[derive(Debug)]
+pub struct ActiveJob(parking_lot::Mutex<JobInner>);
 impl ActiveJob {
-    //
+    pub fn id(&self) -> Uuid {
+        self.0.lock().id()
+    }
+    pub fn latest_status(&self) -> Result<JobStatus, JobMarketError> {
+        self.0.lock().latest_status()
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum JobMarketError {
+    #[error("no such job")]
+    InvalidJob,
+}
+
+#[derive(Debug)]
+pub struct JobMarket {
+    jobs: DashMap<Uuid, Arc<ActiveJob>>,
+}
+impl JobMarket {
+    pub fn new() -> Self {
+        Self {
+            jobs: DashMap::new(),
+        }
+    }
+    pub fn insert_active(&self, active_job: Arc<ActiveJob>) {
+        // if it's being inserted, it's already been inserted into the database, and if the FKEY
+        // constraint didn't fail there, then we won't encounter a collision here, either
+        let _ = self.jobs.insert(active_job.id(), active_job);
+    }
+    pub fn job_status(&self, job_id: Uuid) -> Result<JobStatus, JobMarketError> {
+        self.jobs
+            .get(&job_id)
+            .ok_or(JobMarketError::InvalidJob)?
+            .latest_status()
+    }
 }
 
 #[derive(Debug)]
 pub struct SupervisorActor {
-    #[allow(dead_code)]
-    model: SupervisorModel,
+    // model: SupervisorModel,
     agent: SupervisorAgent,
     job: Mutex<Option<Weak<ActiveJob>>>,
 }
@@ -44,6 +136,9 @@ pub enum HerdError {
     /// Supervisor is already working on another job.
     #[error("supervisor already has active job")]
     BusySupervisor,
+    // /// No job is currently running on the supervisor.
+    // #[error("no job currently running on supervisor")]
+    // IdleSupervisor,
 }
 
 #[derive(Debug)]
@@ -63,14 +158,13 @@ impl Herd {
 }
 
 impl Herd {
-    pub async fn add_supervisor(self: Arc<Self>, model: SupervisorModel, socket: WebSocket) {
+    pub async fn add_supervisor(self: Arc<Self>, model: &SupervisorModel, socket: WebSocket) {
         let supervisor_id = model.id();
         let (loop_task_jh, outbox, event_receiver) = supervisor_run(supervisor_id, socket).await;
         let actor = SupervisorActor {
-            model,
             agent: SupervisorAgent {
                 outbox,
-                event_receiver: Mutex::new(event_receiver),
+                event_receiver: Arc::new(Mutex::new(event_receiver)),
             },
             job: Mutex::new(None),
         };
@@ -89,20 +183,26 @@ impl Herd {
     pub async fn try_start_job(
         &self,
         job: StartJobMessage,
+        job_model: JobModel,
         on_supervisor_id: Uuid,
-    ) -> Result<(), HerdError> {
+    ) -> Result<Arc<ActiveJob>, HerdError> {
         let actor = self
             .supervisors
             .get(&on_supervisor_id)
             .ok_or(HerdError::InvalidSupervisor)?;
-        let active_job = Arc::new(ActiveJob {
-            //-
-        });
+        let active_job;
         {
             let mut job_lg = actor.job.lock().await;
             if job_lg.is_some() {
                 return Err(HerdError::BusySupervisor);
             }
+            let event_stream = actor.agent.event_stream().await;
+            let (status_watch, dupe_stream) = tap_event_stream(event_stream);
+            active_job = Arc::new(ActiveJob(parking_lot::Mutex::new(JobInner {
+                job_model,
+                status_watch,
+                event_stream: dupe_stream,
+            })));
             let _ = job_lg.insert(Arc::downgrade(&active_job));
         }
         // if it returns None, then the supervisor connection closed for some reason in the last few
@@ -113,7 +213,19 @@ impl Herd {
             .await
             .ok_or(HerdError::InvalidSupervisor)?;
 
-        Ok(())
+        Ok(active_job)
+    }
+
+    pub async fn status(&self, supervisor_id: Uuid) -> Result<SupervisorStatus, HerdError> {
+        let actor = self
+            .supervisors
+            .get(&supervisor_id)
+            .ok_or(HerdError::InvalidSupervisor)?;
+        actor
+            .agent
+            .request_status()
+            .await
+            .ok_or(HerdError::InvalidSupervisor)
     }
 }
 
@@ -146,28 +258,46 @@ async fn supervisor_run(
 }
 
 #[derive(Debug)]
+pub struct EventStream {
+    inner: OwnedMutexGuard<UnboundedReceiver<SupervisorEvent>>,
+}
+impl Stream for EventStream {
+    type Item = SupervisorEvent;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.poll_recv(cx)
+    }
+}
+
+/// Interacts with a [`SupervisorConnector`]'s [`run`](Supervisor::run) loop via message passing.
+#[derive(Debug)]
 pub struct SupervisorAgent {
     outbox: UnboundedSender<OutboxMessage>,
     // needs &mut
-    event_receiver: Mutex<UnboundedReceiver<SupervisorEvent>>,
+    event_receiver: Arc<Mutex<UnboundedReceiver<SupervisorEvent>>>,
 }
 impl SupervisorAgent {
-    pub async fn next_event(&self) -> Option<SupervisorEvent> {
-        self.event_receiver.lock().await.recv().await
+    /// Returns [`None`] if the connection closed.
+    pub async fn event_stream(&self) -> EventStream {
+        let lg = Mutex::lock_owned(self.event_receiver.clone()).await;
+        EventStream { inner: lg }
     }
 
+    /// Returns [`None`] if the connection closed.
     pub async fn start_job(&self, message: StartJobMessage) -> Option<()> {
         self.outbox
             .send((switchboard_supervisor::Message::StartJob(message), None))
             .ok()
     }
 
+    /// Returns [`None`] if the connection closed.
     pub async fn stop_job(&self, message: StopJobMessage) -> Option<()> {
         self.outbox
             .send((switchboard_supervisor::Message::StopJob(message), None))
             .ok()
     }
 
+    /// Currently not implemented on the supervisor end.
     pub async fn request_status(&self) -> Option<SupervisorStatus> {
         let (tx, rx) = oneshot::channel();
         self.outbox
@@ -208,7 +338,10 @@ struct SwitchboardConnector {
     outstanding: DashMap<Uuid, oneshot::Sender<ResponseMessage>>,
 }
 impl SwitchboardConnector {
+    /// Primary run-loop. This owns the actual WebSocket connection. When this exits, the connection
+    /// is considered closed.
     async fn run(&mut self, mut socket: WebSocket) {
+        // TODO: need more robust method of error handling
         let supervisor_id = self.supervisor_id;
         loop {
             tokio::select! {

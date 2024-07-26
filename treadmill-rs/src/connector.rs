@@ -7,7 +7,6 @@ pub use crate::api::switchboard_supervisor::JobStartingStage;
 pub use crate::api::switchboard_supervisor::JobState;
 pub use crate::api::switchboard_supervisor::StartJobMessage;
 pub use crate::api::switchboard_supervisor::StopJobMessage;
-use crate::api::switchboard_supervisor::SupervisorStatus;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -75,7 +74,8 @@ pub trait Supervisor: Send + Sync + 'static {
     /// similar actions.
     async fn stop_job(this: &Arc<Self>, request: StopJobMessage) -> Result<(), JobError>;
 
-    async fn request_status(this: &Arc<Self>) -> SupervisorStatus;
+    // For now, the tracking of supervisor status is done in the SupervisorConnector.
+    //async fn request_status(this: &Arc<Self>) -> SupervisorStatus;
 }
 
 /// Connector to a coordinator.
