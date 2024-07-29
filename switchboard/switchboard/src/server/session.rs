@@ -99,19 +99,34 @@ pub async fn login_handler(
     // okay, login was successful, create a session token
 
     async fn create_token(
-        _conn: impl PgExecutor<'_>,
-        _user_id: Uuid,
-        _inherit_perms: bool,
-        _lifetime: chrono::Duration,
+        conn: impl PgExecutor<'_>,
+        user_id: Uuid,
+        inherit_perms: bool,
+        lifetime: chrono::TimeDelta,
     ) -> Result<(ApiToken, DateTime<Utc>), sqlx::Error> {
-        todo!()
+        let token_id = Uuid::new_v4();
+        let api_token = ApiToken::generate();
+        let created = Utc::now();
+        let expires = created + lifetime;
+        sqlx::query!(
+            "insert into api_tokens values ($1, $2, $3, $4, null, $5, $6);",
+            token_id,
+            api_token.as_bytes(),
+            user_id,
+            inherit_perms,
+            created,
+            expires
+        )
+        .execute(conn)
+        .await
+        .map(|_| (api_token, expires))
     }
 
     let (token, expires_at) = create_token(
         app_state.pool(),
         user.user_id,
         true,
-        chrono::Duration::from_std(app_state.config.api.auth_session_timeout).unwrap(),
+        app_state.config.api.auth_session_timeout,
     )
     .await
     .map_err(|e| {

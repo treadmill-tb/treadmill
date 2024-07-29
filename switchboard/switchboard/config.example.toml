@@ -15,8 +15,8 @@ cert = "config/tls-certs/localhost-public.pem"
 key = "config/tls-certs/localhost.pem"
 
 [websocket.auth]
-per_message_timeout = "10sec"
+per_message_timeout = "10s"
 
 [api]
-auth_presession_timeout = "5min"
-auth_session_timeout = "5min"
+auth_session_timeout = "5m"
+default_job_timeout = "30m"

@@ -127,10 +127,10 @@ impl TokenInfoBare {
             // need `as "canceled: _"` for weird SQLx reasons
             r#"SELECT token_id, user_id, inherits_user_permissions, canceled as "canceled: _",
                   expires_at
-           FROM api_tokens
-           WHERE token = $1
-           LIMIT 1;"#,
-            &token.0 .0,
+            FROM api_tokens
+            WHERE token = $1
+            LIMIT 1;"#,
+            token.as_bytes(),
         )
         .fetch_one(conn)
         .await

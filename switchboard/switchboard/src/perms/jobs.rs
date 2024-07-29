@@ -8,7 +8,7 @@ use crate::server::AppState;
 use crate::supervisor::{HerdError, JobMarketError};
 use axum::async_trait;
 use std::fmt::Debug;
-use treadmill_rs::api::switchboard::JobStatus;
+use treadmill_rs::api::switchboard::{JobRequest, JobStatus};
 use treadmill_rs::connector::StartJobMessage;
 use uuid::Uuid;
 // enqueue_ci_job
@@ -38,19 +38,25 @@ pub enum EnqueueJobError {
 pub async fn enqueue_ci_job(
     state: &AppState,
     p: Privilege<'_, EnqueueCIJobAction>,
-    job: StartJobMessage,
-) -> Result<(), EnqueueJobError> {
+    job: JobRequest,
+) -> Result<Uuid, EnqueueJobError> {
     let mut transaction = state.pool().begin().await.map_err(|e| {
         tracing::error!("Failed to create transaction: {e}");
         EnqueueJobError::Database
     })?;
-    let job_model = model::job::insert(&job, p.subject(), transaction.as_mut())
-        .await
-        .map_err(|e| {
-            tracing::error!("failed to add job ({}) to transaction: {e}", job.job_id);
-            EnqueueJobError::Database
-        })?;
-    let job_id = job.job_id;
+    let job_id = Uuid::new_v4();
+    let job_model = model::job::insert(
+        job_id,
+        &job,
+        state.config().api.default_job_timeout,
+        p.subject(),
+        transaction.as_mut(),
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("failed to add job ({}) to transaction: {e}", job_id);
+        EnqueueJobError::Database
+    })?;
     model::job::params::insert(job_id, job.parameters.clone(), transaction.as_mut())
         .await
         .map_err(|e| {
@@ -82,7 +88,11 @@ pub async fn enqueue_ci_job(
     // TODO: add job to ephemeral queue
     let active_job = state
         .herd()
-        .try_start_job(job.clone(), job_model, p.action().supervisor_id)
+        .try_start_job(
+            StartJobMessage::from_job_request_with_id(job_id, job.clone()),
+            job_model,
+            p.action().supervisor_id,
+        )
         .await
         .map_err(|e| {
             tracing::error!(
@@ -93,7 +103,7 @@ pub async fn enqueue_ci_job(
         })?;
     state.job_market().insert_active(active_job);
 
-    Ok(())
+    Ok(job_id)
 }
 
 // read_job_status

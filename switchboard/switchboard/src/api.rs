@@ -1,11 +1,23 @@
 pub mod jobs;
 pub mod supervisors;
 
+use axum::extract;
 use axum::response::{IntoResponse, Response};
+use http::StatusCode;
+use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
 
 pub trait IntoProxiedResponse {
     fn into_proxied_response(self) -> Response;
+}
+pub trait JsonProxiedResponse: Serialize + for<'de> Deserialize<'de> {
+    fn status_code(&self) -> StatusCode;
+}
+impl<T: JsonProxiedResponse> IntoProxiedResponse for T {
+    fn into_proxied_response(self) -> Response {
+        let status_code = self.status_code();
+        (status_code, extract::Json(self)).into_response()
+    }
 }
 #[repr(transparent)]
 pub struct ResponseProxy<R: IntoProxiedResponse>(R);

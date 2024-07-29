@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT job_id, resume_job_id, restart_job_id, image_id, ssh_keys,\n                      ssh_rendezvous_servers as \"ssh_rendezvous_servers: _\",\n                      restart_policy as \"restart_policy: _\", queued, enqueued_by_token_id,\n                      tag_config\n               FROM jobs\n               WHERE job_id = $1\n               LIMIT 1;",
+  "query": "SELECT job_id, resume_job_id, restart_job_id, image_id, ssh_keys,\n                      ssh_rendezvous_servers as \"ssh_rendezvous_servers: _\",\n                      restart_policy as \"restart_policy: _\", enqueued_by_token_id,\n                      tag_config, known_state as \"known_state: _\", timeout\n               FROM jobs\n               WHERE job_id = $1\n               LIMIT 1;",
   "describe": {
     "columns": [
       {
@@ -33,7 +33,7 @@
         "name": "ssh_rendezvous_servers: _",
         "type_info": {
           "Custom": {
-            "name": "_rendezvous_server_spec",
+            "name": "rendezvous_server_spec[]",
             "kind": {
               "Array": {
                 "Custom": {
@@ -79,18 +79,34 @@
       },
       {
         "ordinal": 7,
-        "name": "queued",
-        "type_info": "Bool"
-      },
-      {
-        "ordinal": 8,
         "name": "enqueued_by_token_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "tag_config",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "known_state: _",
+        "type_info": {
+          "Custom": {
+            "name": "job_known_state",
+            "kind": {
+              "Enum": [
+                "queued",
+                "running",
+                "finished"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "timeout",
+        "type_info": "Interval"
       }
     ],
     "parameters": {
@@ -108,8 +124,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "be212ac4227151a30317c8df1a83ee3e2064678fe26607cdc4bd7cb06a09a814"
+  "hash": "878efcf1737a08cc48ba217efe579238e14ebd62ffed88e331f406a319bd4202"
 }

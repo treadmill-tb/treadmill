@@ -52,7 +52,7 @@ VALUES ('3be73eea-192f-46c0-af01-92f574290c81',
         true,
         NULL,
         '2024-07-12 13:56:50.616829-07',
-        '2034-07-12 13:56:50.616829-07');
+        '2124-07-12 13:56:50.616829-07');
 
 INSERT INTO user_privileges
     (user_id, permission)

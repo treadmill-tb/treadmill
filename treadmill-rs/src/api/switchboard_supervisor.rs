@@ -1,6 +1,7 @@
 //! Types used in the interface between the coordinator and supervisor
 //! components.
 
+use crate::api::switchboard::JobRequest;
 use crate::connector::JobError;
 use crate::image::manifest::ImageId;
 use serde::{Deserialize, Serialize};
@@ -115,6 +116,18 @@ pub struct StartJobMessage {
     /// A hash map of parameters provided to this job execution. These
     /// parameters are provided to the puppet daemon.
     pub parameters: HashMap<String, ParameterValue>,
+}
+impl StartJobMessage {
+    pub fn from_job_request_with_id(job_id: Uuid, job_request: JobRequest) -> Self {
+        Self {
+            job_id,
+            init_spec: job_request.init_spec,
+            ssh_keys: job_request.ssh_keys,
+            restart_policy: job_request.restart_policy,
+            ssh_rendezvous_servers: job_request.ssh_rendezvous_servers,
+            parameters: job_request.parameters,
+        }
+    }
 }
 
 // -- StopJobRequest -------------------------------------------------------------------------------
