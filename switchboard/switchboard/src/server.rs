@@ -8,8 +8,8 @@ use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::Router;
 use axum_extra::extract::cookie::Key;
-use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
-use axum_server::Server;
+// use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
+use axum_server::{accept::DefaultAcceptor, Server};
 use http::StatusCode;
 use miette::{IntoDiagnostic, WrapErr};
 use sqlx::{postgres::PgConnectOptions, PgPool};
@@ -114,7 +114,7 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
 
     let pg_options = PgConnectOptions::new()
         .host(&cfg.database.address)
-        .port(cfg.database.port)
+    // .port(cfg.database.port)
         .database(&cfg.database.name)
     /*
         .ssl_mode(PgSslMode::VerifyFull)
@@ -138,12 +138,12 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
 
     let public_socket_addr = cfg.public_server.socket_addr;
 
-    let rustls_config =
-        RustlsConfig::from_pem_file(&cfg.public_server.cert, &cfg.public_server.key)
-            .await
-            .into_diagnostic()
-            .wrap_err("Failed to load RusTls configuration for public server")?;
-    let public_server_listener = axum_server::bind_rustls(public_socket_addr, rustls_config);
+    // let rustls_config =
+    //     RustlsConfig::from_pem_file(&cfg.public_server.cert, &cfg.public_server.key)
+    //         .await
+    //         .into_diagnostic()
+    //         .wrap_err("Failed to load RusTls configuration for public server")?;
+    let public_server_listener = axum_server::bind(public_socket_addr); //, rustls_config);
 
     tracing::info!("Bound TCP listener on: (public) {public_socket_addr}");
 
@@ -180,7 +180,7 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
 /// Serve the public server.
 ///
 /// Should be run in its own `tokio` task.
-async fn serve_public_server(server: Server<RustlsAcceptor>, state: AppState) {
+async fn serve_public_server(server: Server<DefaultAcceptor>, state: AppState) {
     // fallback when the requested path doesn't exist
     async fn not_found() -> impl IntoResponse {
         StatusCode::NOT_FOUND

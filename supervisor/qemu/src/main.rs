@@ -15,6 +15,7 @@ use treadmill_rs::connector;
 use treadmill_rs::control_socket;
 use treadmill_rs::image;
 use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
+use treadmill_rs::api::switchboard_supervisor::JobInitSpec;
 
 use tml_tcp_control_socket_server::TcpControlSocket;
 
@@ -143,24 +144,28 @@ pub struct QemuSupervisorConfig {
     /// optional, and not all of them have to be supported:
     cli_connector: Option<tml_cli_connector::CliConnectorConfig>,
 
+    ws_connector: Option<tml_ws_connector::WsConnectorConfig>,
+
     qemu: QemuConfig,
 }
 
 #[derive(Debug)]
 pub struct QemuSupervisorFetchingImageState {
-    start_job_req: connector::StartJobRequest,
+    start_job_req: connector::StartJobMessage,
+    image_id: image::manifest::ImageId,
     poll_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[derive(Debug)]
 pub struct QemuSupervisorImageFetchedState {
-    start_job_req: connector::StartJobRequest,
+    start_job_req: connector::StartJobMessage,
+    image_id: image::manifest::ImageId,
     manifest: image::manifest::ImageManifest,
 }
 
 #[derive(Debug)]
 pub struct QemuSupervisorJobRunningState {
-    start_job_req: connector::StartJobRequest,
+    start_job_req: connector::StartJobMessage,
 
     /// The qemu process handle:
     qemu_proc: tokio::process::Child,
@@ -306,7 +311,6 @@ impl QemuSupervisor {
                 }
             };
 
-        let image_id = image::manifest::ImageId(fetching_image_state.start_job_req.image_id);
 
         // Check whether the image store already holds this image. If it does,
         // we can pass the manifest to the `start_job_cont` function. Otherwise,
@@ -316,7 +320,7 @@ impl QemuSupervisor {
             .fetch_image(
                 // TODO: pass remote store endpoints:
                 vec![],
-                image_id,
+                fetching_image_state.image_id,
             )
             .await
         {
@@ -332,7 +336,7 @@ impl QemuSupervisor {
                 // The transition to `start_job_cont` will then report a
                 // subsequent status, such as `Allocating`.
 
-                let manifest = match this.image_store_client.image_manifest(image_id).await {
+                let manifest = match this.image_store_client.image_manifest(fetching_image_state.image_id).await {
                     Ok(manifest) => manifest,
                     Err(manifest_err) => {
                         // We could not retrieve the manifest, despite the image
@@ -342,11 +346,10 @@ impl QemuSupervisor {
                             .report_job_error(
                                 fetching_image_state.start_job_req.job_id,
                                 connector::JobError {
-                                    request_id: Some(fetching_image_state.start_job_req.request_id),
                                     error_kind: connector::JobErrorKind::InternalError,
                                     description: format!(
                                         "Cannot retrieve image manifest of {:?}: {:?}",
-                                        image_id, manifest_err,
+                                        fetching_image_state.image_id, manifest_err,
                                     ),
                                 },
                             )
@@ -371,6 +374,7 @@ impl QemuSupervisor {
                 // function from calling `start_job_cont` twice:
                 *job_lg = QemuSupervisorJobState::ImageFetched(QemuSupervisorImageFetchedState {
                     start_job_req: fetching_image_state.start_job_req,
+		    image_id: fetching_image_state.image_id,
                     manifest,
                 });
 
@@ -419,9 +423,8 @@ impl QemuSupervisor {
                     .report_job_error(
                         fetching_image_state.start_job_req.job_id,
                         connector::JobError {
-                            request_id: Some(fetching_image_state.start_job_req.request_id),
                             error_kind: connector::JobErrorKind::InternalError,
-                            description: format!("Failed to fetch image {:?}: {:?}", image_id, e),
+                            description: format!("Failed to fetch image {:?}: {:?}", fetching_image_state.image_id, e),
                         },
                     )
                     .await;
@@ -680,19 +683,10 @@ impl QemuSupervisor {
 
     async fn start_job_parse_manifest_allocate_disk(
         &self,
-        start_job_req: &connector::StartJobRequest,
+        start_job_req: &connector::StartJobMessage,
         top_image_path: &Path,
         top_image_qemu_info: &QemuImgMetadata,
     ) -> Result<PathBuf, connector::JobError> {
-        // We don't currently support resuming an existing job:
-        if start_job_req.resume_job {
-            return Err(connector::JobError {
-                request_id: Some(start_job_req.request_id),
-                error_kind: connector::JobErrorKind::CannotResume,
-                description: "Resuming of jobs is unsupported.".to_string(),
-            });
-        }
-
         // Ensure that the state/jobs directory (and all recursive parents)
         // exists:
         let jobs_dir = self.config.qemu.state_dir.join("jobs");
@@ -705,7 +699,6 @@ impl QemuSupervisor {
 
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 return Err(connector::JobError {
-                    request_id: Some(start_job_req.request_id),
                     error_kind: connector::JobErrorKind::JobAlreadyExists,
                     description: format!(
                         "A job with {:?} was previously started on this supervisor",
@@ -727,7 +720,6 @@ impl QemuSupervisor {
         // than the one specified in the manifest for the image.
         if top_image_qemu_info.virtual_size > self.config.qemu.working_disk_max_bytes {
             return Err(connector::JobError {
-                request_id: Some(start_job_req.request_id),
                 error_kind: connector::JobErrorKind::JobAlreadyExists,
                 description: format!(
                     "A job with {:?} was previously started on this supervisor",
@@ -771,7 +763,6 @@ impl QemuSupervisor {
                 Ok(())
             })
             .map_err(|e| connector::JobError {
-                request_id: Some(start_job_req.request_id),
                 error_kind: connector::JobErrorKind::InternalError,
                 description: format!(
                     "Failed to allocate disk image for job {:?}: {:?}",
@@ -817,6 +808,7 @@ impl QemuSupervisor {
         // return immediately:
         let QemuSupervisorImageFetchedState {
             start_job_req,
+	    image_id,
             manifest,
         } = match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Starting) {
             QemuSupervisorJobState::ImageFetched(state) => state,
@@ -858,11 +850,10 @@ impl QemuSupervisor {
                         .report_job_error(
                             start_job_req.job_id,
                             connector::JobError {
-                                request_id: Some(start_job_req.request_id),
                                 error_kind: connector::JobErrorKind::ImageInvalid,
                                 description: format!(
                                     "Validation of image {:?} failed: {:?}",
-                                    start_job_req.image_id, e
+                                    image_id, e
                                 ),
                             },
                         )
@@ -941,7 +932,6 @@ impl QemuSupervisor {
                     .report_job_error(
                         start_job_req.job_id,
                         connector::JobError {
-                            request_id: Some(start_job_req.request_id),
                             error_kind: connector::JobErrorKind::InternalError,
                             description: format!(
                                 "Failed to generate QEMU command line arguments: {:?}",
@@ -1005,7 +995,7 @@ impl QemuSupervisor {
 impl connector::Supervisor for QemuSupervisor {
     async fn start_job(
         this: &Arc<Self>,
-        start_job_req: connector::StartJobRequest,
+        start_job_req: connector::StartJobMessage,
     ) -> Result<(), connector::JobError> {
         // This method may be long-lived, but we should avoid performing
         // long-running, uninterruptible actions in here (as this will prevent
@@ -1033,7 +1023,6 @@ impl connector::Supervisor for QemuSupervisor {
         // stopped first:
         if jobs_lg.get(&start_job_req.job_id).is_some() {
             return Err(connector::JobError {
-                request_id: Some(start_job_req.request_id),
                 error_kind: connector::JobErrorKind::AlreadyRunning,
                 description: format!(
                     "Job {:?} is already running and cannot be started again.",
@@ -1048,7 +1037,6 @@ impl connector::Supervisor for QemuSupervisor {
         // parameters for each instance, etc.).
         if jobs_lg.len() > 1 {
             return Err(connector::JobError {
-                request_id: Some(start_job_req.request_id),
                 error_kind: connector::JobErrorKind::MaxConcurrentJobs,
                 description: format!(
                     "Supervisor {:?} cannot start any more concurrent jobs (running {}, max 1).",
@@ -1094,10 +1082,16 @@ impl connector::Supervisor for QemuSupervisor {
         // we poll the image supervisor repeatedly, but don't hold onto the
         // job's lock in between these polling operations.
 
+        let image_id = match start_job_req.init_spec {
+	    JobInitSpec::Image { image_id } => image_id,
+	    unsupported_init_spec => unimplemented!("Unsupported init spec: {:?}", unsupported_init_spec),
+	};
+
         // Put the job into the `FetchingImage` state:
         let job_id = start_job_req.job_id; // Copy required below
         *job_lg = QemuSupervisorJobState::FetchingImage(QemuSupervisorFetchingImageState {
             start_job_req,
+	    image_id,
             // Will be set to Some(...) when an asynchronous fetch operation is
             // kicked off:
             poll_task: None,
@@ -1112,7 +1106,7 @@ impl connector::Supervisor for QemuSupervisor {
 
     async fn stop_job(
         this: &Arc<Self>,
-        msg: connector::StopJobRequest,
+        msg: connector::StopJobMessage,
     ) -> Result<(), connector::JobError> {
         // We do not immediately remove the job from the global jobs HashMap, as
         // we want to deallocate all resources before a job with an identical ID
@@ -1128,7 +1122,6 @@ impl connector::Supervisor for QemuSupervisor {
                 .get(&msg.job_id)
                 .cloned()
                 .ok_or(connector::JobError {
-                    request_id: Some(msg.request_id),
                     error_kind: connector::JobErrorKind::JobNotFound,
                     description: format!("Job {:?} not found, cannot stop.", msg.job_id),
                 })?
@@ -1169,7 +1162,6 @@ impl connector::Supervisor for QemuSupervisor {
                 *job_lg = prev_state;
 
                 return Err(connector::JobError {
-                    request_id: Some(msg.request_id),
                     error_kind: connector::JobErrorKind::AlreadyStopping,
                     description: format!("Job {:?} is already stopping.", msg.job_id),
                 });
@@ -1190,6 +1182,7 @@ impl connector::Supervisor for QemuSupervisor {
         match prev_job_state {
             StopJobPrevState::FetchingImage(QemuSupervisorFetchingImageState {
                 start_job_req: _,
+		image_id: _,
                 poll_task,
             }) => {
                 // Make sure that we don't have another poll task
@@ -1205,6 +1198,7 @@ impl connector::Supervisor for QemuSupervisor {
 
             StopJobPrevState::ImageFetched(QemuSupervisorImageFetchedState {
                 start_job_req: _,
+		image_id: _,
                 manifest: _,
             }) => {
                 // Nothing to do, the only time we're seeing this state is in
@@ -1418,6 +1412,38 @@ async fn main() -> Result<()> {
             // that'll upgrade its Weak into an Arc. Otherwise we're dropping
             // the only reference to it:
             std::mem::drop(qemu_supervisor);
+
+            Ok(())
+        }
+	SupervisorCoordConnector::WsConnector => {
+            let ws_connector_config = config.ws_connector.clone().ok_or(anyhow!(
+                "Requested WsConnector, but `ws_connector` config not present."
+            ))?;
+
+            // Both the supervisor and connectors have references to each other,
+            // so we break the cyclic dependency with an initially unoccupied
+            // weak Arc reference:
+            let mut connector_opt = None;
+
+            let qemu_supervisor = {
+                // Shadow, to avoid moving the variable:
+                let connector_opt = &mut connector_opt;
+                Arc::new_cyclic(move |weak_supervisor| {
+                    let connector = Arc::new(tml_ws_connector::WsConnector::new(
+                        config.base.supervisor_id,
+                        ws_connector_config,
+                        weak_supervisor.clone(),
+                    ));
+                    *connector_opt = Some(connector.clone());
+                    QemuSupervisor::new(connector, image_store, args, config)
+                })
+            };
+
+            let connector = connector_opt.take().unwrap();
+
+            connector.run().await;
+
+            drop(qemu_supervisor);
 
             Ok(())
         }

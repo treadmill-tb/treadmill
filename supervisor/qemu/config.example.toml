@@ -1,10 +1,14 @@
 [base]
 supervisor_id = "7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
-coord_connector = "cli_connector"
+coord_connector = "ws_connector"
 
 [cli_connector]
 # Doesn't do anything yet, but we require the images key to be present
 images = { }
+
+[ws_connector]
+private_key = "../mock/config/supervisors/7d55ec6d-15e7-4b84-8c04-7c085fe60df4/auth.pem"
+switchboard_uri = "ws://localhost:8080/supervisor"
 
 [qemu]
 qemu_binary = "qemu-kvm"

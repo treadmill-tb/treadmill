@@ -2,15 +2,15 @@
 dir = "switchboard/logs"
 
 [database]
-address = "localhost"
+address = "/home/leons/proj/treadmill/code/switchboard/switchboard/.nix-shell/db"
 port = 5400
 name = "tml_switchboard"
 
 [database.auth]
-PasswordAuth = { username = "postgres", password = "" }
+PasswordAuth = { username = "leons", password = "" }
 
 [public_server]
-socket_addr = "0.0.0.0:443"
+socket_addr = "0.0.0.0:8080"
 cert = "config/tls-certs/localhost-public.pem"
 key = "config/tls-certs/localhost.pem"
 

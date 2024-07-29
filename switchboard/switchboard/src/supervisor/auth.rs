@@ -14,7 +14,7 @@ use axum::extract::ws::{Message, WebSocket};
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use futures_util::StreamExt;
-use rand::{RngCore, SeedableRng};
+use rand_core::{RngCore, SeedableRng};
 use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -152,7 +152,7 @@ enum AuthState {
 
 thread_local! {
     /// Used to generate nonces to be signed by the client.
-    static THREAD_LOCAL_NONCE_RNG : RefCell<rand_chacha::ChaCha20Rng> = RefCell::new(rand_chacha::ChaCha20Rng::from_entropy());
+    static THREAD_LOCAL_NONCE_RNG : RefCell<rand_chacha::ChaCha20Rng> = RefCell::new(rand_chacha::ChaCha20Rng::from_os_rng());
 }
 
 /// State machine responsible for authenticating incoming websocket connections from supervisors.
