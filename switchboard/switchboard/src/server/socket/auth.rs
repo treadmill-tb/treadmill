@@ -152,7 +152,7 @@ enum AuthState {
 
 thread_local! {
     /// Used to generate nonces to be signed by the client.
-    static THREAD_LOCAL_NONCE_RNG : RefCell<rand_chacha::ChaCha20Rng> = RefCell::new(rand_chacha::ChaCha20Rng::from_entropy());
+    static THREAD_LOCAL_NONCE_RNG : RefCell<rand_chacha::ChaCha20Rng> = RefCell::new(rand_chacha::ChaCha20Rng::from_os_rng());
 }
 
 /// State machine responsible for authenticating incoming websocket connections from supervisors.
