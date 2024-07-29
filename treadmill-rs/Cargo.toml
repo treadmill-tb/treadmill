@@ -12,4 +12,6 @@ log = "0.4.20"
 serde_with = { version = "3.8.1", features = ["hex", "base64"] }
 ed25519-dalek = { version = "2.1.1", features = ["serde"] }
 subtle = "2.6.1"
-chrono = "0.4.38"
+chrono = { version = "0.4.38", features = ["serde"] }
+#humantime-serde = "1.1.1"
+fundu = { version = "2.0.0", features = ["chrono", "serde"] }
