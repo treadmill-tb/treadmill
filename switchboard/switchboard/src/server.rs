@@ -1,10 +1,11 @@
 //! The switchboard server.
 
+use crate::api;
 use crate::cfg::{Config, DatabaseAuth, PasswordAuth};
-use crate::perms;
+use crate::supervisor::{socket, Herd, JobMarket};
 use axum::extract::FromRef;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{delete, get, post};
 use axum::Router;
 use axum_extra::extract::cookie::Key;
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
@@ -16,15 +17,11 @@ use std::net::SocketAddr;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::net::TcpListener;
-use tokio::task::JoinError;
 use tower_http::trace::TraceLayer;
 use tracing::instrument;
 
 pub mod auth;
-mod public;
-mod session;
-pub mod socket;
+pub mod session;
 pub mod token;
 
 /// State of the server. Only one of these objects ever exists at a time.
@@ -33,11 +30,30 @@ pub mod token;
 pub struct AppStateInner {
     /// Connection pool to the database server.
     db_pool: PgPool,
+
+    /// Supervisor herd
+    herd: Arc<Herd>,
+
+    job_market: Arc<JobMarket>,
+
     /// Server configuration, set at startup
-    #[allow(dead_code)]
     config: Config,
     /// Used for cookie signing; should not be touched
     cookie_signing_key: Key,
+}
+impl AppStateInner {
+    pub fn pool(&self) -> &PgPool {
+        &self.db_pool
+    }
+    pub fn herd(&self) -> Arc<Herd> {
+        self.herd.clone()
+    }
+    pub fn job_market(&self) -> Arc<JobMarket> {
+        self.job_market.clone()
+    }
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
 }
 /// Thin wrapper around an [`Arc`] of an [`AppStateInner`], since [`State`](axum::extract::State)
 /// requires [`Clone`].
@@ -121,7 +137,6 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
     // Bind TCP listeners.
 
     let public_socket_addr = cfg.public_server.socket_addr;
-    let internal_socket_addr = cfg.internal_server.socket_addr;
 
     let rustls_config =
         RustlsConfig::from_pem_file(&cfg.public_server.cert, &cfg.public_server.key)
@@ -130,42 +145,34 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
             .wrap_err("Failed to load RusTls configuration for public server")?;
     let public_server_listener = axum_server::bind_rustls(public_socket_addr, rustls_config);
 
-    let internal_server_listener = TcpListener::bind(internal_socket_addr)
-        .await
-        .into_diagnostic()
-        .wrap_err_with(|| {
-            format!("Failed to bind TcpListener for internal server at {internal_socket_addr}")
-        })?;
-
-    tracing::info!("Bound TCP listeners on:\n\t(public) {public_socket_addr}\n\t(internal) {internal_socket_addr}");
+    tracing::info!("Bound TCP listener on: (public) {public_socket_addr}");
 
     // Build shared state
 
     let state_inner = AppStateInner {
         db_pool: pg_pool,
+        herd: Arc::new(Herd::new()),
+        job_market: Arc::new(JobMarket::new()),
         config: cfg,
         cookie_signing_key: Key::generate(),
     };
 
-    let (public_server_state, internal_server_state) = {
-        let arc = AppState(Arc::new(state_inner));
-        (arc.clone(), arc)
-    };
+    let server_state = AppState(Arc::new(state_inner));
 
     // Spawn server tasks
 
-    let public_server = tokio::spawn(async move {
-        serve_public_server(public_server_listener, public_server_state).await
-    });
-    let internal_server = tokio::spawn(async move {
-        serve_internal_server(internal_server_listener, internal_server_state).await
-    });
-
-    let (psr, isr): (Result<(), JoinError>, Result<(), JoinError>) =
-        tokio::join!(public_server, internal_server);
-
-    tracing::debug!("psr: {psr:?}");
-    tracing::debug!("isr: {isr:?}");
+    match tokio::spawn(
+        async move { serve_public_server(public_server_listener, server_state).await },
+    )
+    .await
+    {
+        Ok(()) => {
+            tracing::info!("Server exited successfully");
+        }
+        Err(e) => {
+            tracing::error!("Server exited with error: {e}");
+        }
+    }
 
     Ok(())
 }
@@ -174,8 +181,6 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
 ///
 /// Should be run in its own `tokio` task.
 async fn serve_public_server(server: Server<RustlsAcceptor>, state: AppState) {
-    // TODO: TLS
-
     // fallback when the requested path doesn't exist
     async fn not_found() -> impl IntoResponse {
         StatusCode::NOT_FOUND
@@ -183,21 +188,15 @@ async fn serve_public_server(server: Server<RustlsAcceptor>, state: AppState) {
 
     let router = Router::new()
         // Session management
-        .nest("/session", public::build_session_router())
+        .nest("/session", session_router())
         // API endpoints
-        .nest("/api", public::build_api_router())
+        .nest("/api/v1", api_router())
         // supervisor websocket endpoint
         .route("/supervisor", get(socket::supervisor_handler))
-        // for testing/debugging:
-        .route("/perm_test", get(perms::jobs::example))
         // miscellanea
         .fallback(not_found)
         .with_state(state)
-        .layer(TraceLayer::new_for_http())
-    /*
-     TODO: CorsLayer
-      */
-        ;
+        .layer(TraceLayer::new_for_http());
 
     tracing::info!("Starting public server");
 
@@ -210,16 +209,30 @@ async fn serve_public_server(server: Server<RustlsAcceptor>, state: AppState) {
     }
 }
 
-/// Serve the internal control server.
-///
-/// Should be run in its own `tokio` task.
-async fn serve_internal_server(tcp_listener: TcpListener, state: AppState) {
-    let router = Router::new().with_state(state);
+/// Sub-router for API endpoints.
+pub fn api_router() -> Router<AppState> {
+    Router::new()
+        // job management group
+        .route(
+            "/job/queue",
+            post(api::jobs::enqueue).get(api::jobs::get_queue),
+        )
+        .route("/job/:id", delete(api::jobs::cancel))
+        .route("/job/:id/info", get(api::jobs::info))
+        .route("/job/:id/status", get(api::jobs::status))
+        .route("/supervisor/list", get(api::supervisors::list))
+        .route("/supervisor/:id/status", get(api::supervisors::status))
+    //-- Creating & deleting supervsiors
+    // .route("/supervisor/register", post(api::supervisors::register))
+    // .route("/supervisor/:id", delete(api::supervisors::unregister))
+    //-- Remotely turning off supervisors (?)
+    // .route("/supervisor/:id/status", put(api::supervisors::/* todo */))
+}
 
-    tracing::info!("Starting internal server");
-
-    match axum::serve(tcp_listener, router).await {
-        Ok(()) => tracing::info!("Internal server exited successfully"),
-        Err(e) => tracing::error!("Internal server exited with error: {e:?}"),
-    }
+/// Sub-router for session endpoints.
+pub fn session_router() -> Router<AppState> {
+    Router::new()
+        // Standard login endpoint.
+        .route("/login", post(session::login_handler))
+    // TODO: other session management (logout)
 }

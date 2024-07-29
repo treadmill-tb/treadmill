@@ -3,11 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::api::switchboard_supervisor;
 pub use crate::api::switchboard_supervisor::JobStartingStage;
 pub use crate::api::switchboard_supervisor::JobState;
-pub use crate::api::switchboard_supervisor::StartJobMessage as StartJobRequest;
-pub use crate::api::switchboard_supervisor::StopJobMessage as StopJobRequest;
+pub use crate::api::switchboard_supervisor::StartJobMessage;
+pub use crate::api::switchboard_supervisor::StopJobMessage;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -49,7 +48,6 @@ pub enum JobErrorKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobError {
-    pub request_id: Option<Uuid>,
     pub error_kind: JobErrorKind,
     pub description: String,
 }
@@ -76,7 +74,7 @@ pub trait Supervisor: Send + Sync + 'static {
     /// Implementations should use [`SupervisorConnector::update_job_state`] to
     /// report on progress while starting or stopping a job, or performing
     /// similar actions.
-    async fn start_job(this: &Arc<Self>, request: StartJobRequest) -> Result<(), JobError>;
+    async fn start_job(this: &Arc<Self>, request: StartJobMessage) -> Result<(), JobError>;
 
     /// Stop a running job.
     ///
@@ -88,7 +86,10 @@ pub trait Supervisor: Send + Sync + 'static {
     /// Implementations should use [`SupervisorConnector::update_job_state`] to
     /// report on progress while starting or stopping a job, or performing
     /// similar actions.
-    async fn stop_job(this: &Arc<Self>, request: StopJobRequest) -> Result<(), JobError>;
+    async fn stop_job(this: &Arc<Self>, request: StopJobMessage) -> Result<(), JobError>;
+
+    // For now, the tracking of supervisor status is done in the SupervisorConnector.
+    //async fn request_status(this: &Arc<Self>) -> SupervisorStatus;
 }
 
 /// Connector to a coordinator.
@@ -106,7 +107,7 @@ pub trait SupervisorConnector: Send + Sync + 'static {
     /// intends the supervisor to shut down.
     async fn run(&self);
 
-    async fn update_job_state(&self, job_id: Uuid, job_state: switchboard_supervisor::JobState);
+    async fn update_job_state(&self, job_id: Uuid, job_state: JobState);
     async fn report_job_error(&self, job_id: Uuid, error: JobError);
 
     // TODO: we'll likely want to remove this method from here, and instead have

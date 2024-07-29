@@ -18,10 +18,13 @@ pub struct CreateTokenCommand {
     cfg: PathBuf,
 
     /// The user to create the token under
-    created_by_user_id: Uuid,
+    user_id: Uuid,
     /// How long the token should be valid for
     #[arg(value_parser = humantime_serde::re::humantime::parse_duration)]
     lifetime: Duration,
+
+    #[arg(long)]
+    inherit_user_perms: bool,
 }
 
 /// Create an API token with user `created_by_user_id` that will expire after `lifetime`, and print
@@ -30,8 +33,9 @@ pub struct CreateTokenCommand {
 pub async fn create_token(
     CreateTokenCommand {
         cfg,
-        created_by_user_id,
+        user_id,
         lifetime,
+        inherit_user_perms,
     }: CreateTokenCommand,
 ) -> miette::Result<()> {
     let cfg_text = std::fs::read_to_string(&cfg)
@@ -64,14 +68,13 @@ pub async fn create_token(
     let token = ApiToken::generate();
 
     sqlx::query!(
-        r#"insert into api_tokens values ($1, $2, $3, null, $4, $5, $6, $7);"#,
+        r#"insert into api_tokens values ($1, $2, $3, $4, null, $5, $6);"#,
         uuid,
         token.as_bytes(),
-        created_by_user_id,
+        user_id,
+        inherit_user_perms,
         Utc::now(),
         Utc::now() + chrono::Duration::from_std(lifetime).unwrap(),
-        &[],
-        &[]
     )
     .execute(&pg_pool)
     .await

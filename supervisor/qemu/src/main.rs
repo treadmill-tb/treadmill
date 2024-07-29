@@ -1379,7 +1379,9 @@ async fn main() -> Result<()> {
         image_store_client::ImageStoreClient::new("http://localhost:4242".to_string())
             .await
             .unwrap()
-            .into_local("/home/leons/proj/treadmill/images/ubuntu_image_generator/result/dev-image-store")
+            .into_local(
+                "/home/leons/proj/treadmill/images/ubuntu_image_generator/result/dev-image-store",
+            )
             .await
             .unwrap();
 

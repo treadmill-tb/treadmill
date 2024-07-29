@@ -83,23 +83,29 @@ impl<S: Supervisor> TcpControlSocket<S> {
 
                 let mut transport = Framed::new(socket, LengthDelimitedCodec::new());
 
+                enum SocketPollResult {
+                    Data(bytes::BytesMut),
+                    Command(ControlSocketTaskCommand),
+                    Close,
+                }
+
                 loop {
                     #[rustfmt::skip]
                     let res = tokio::select! {
                         recv_res = transport.next() => {
                             match recv_res {
-                                Some(Ok(bytes)) => Ok(bytes),
+                                Some(Ok(bytes)) => SocketPollResult::Data(bytes),
                                 // TODO: replace with error
-				// TODO: what happens on stream close?
+				                // TODO: what happens on stream close?
                                 Some(Err(e)) => panic!("Error occurred while receiving from control socket: {:?}", e),
-				None => panic!("Error occurred while receiving from control socket: None"),
+				                None =>  SocketPollResult::Close
                             }
                         }
 
                         cmd_res = task_cmd_chan_rx.recv() => {
                             error!("Received task command inner!");
                             match cmd_res {
-                                Some(cmd) => Err(cmd),
+                                Some(cmd) => SocketPollResult::Command(cmd),
                                 None => {
                                     panic!("Control socket command channel TX dropped!");
                                 },
@@ -109,7 +115,7 @@ impl<S: Supervisor> TcpControlSocket<S> {
 
                     // Handle either an incoming request or a command.
                     match res {
-                        Ok(bytes) => {
+                        SocketPollResult::Data(bytes) => {
                             // Attept to decode the datagram. If this fails,
                             // send a RequestError response containing the error
                             // message. Otherwise, pass the request onto the
@@ -160,8 +166,11 @@ impl<S: Supervisor> TcpControlSocket<S> {
                                 }
                             }
                         }
-                        Err(ControlSocketTaskCommand::Shutdown) => {
+                        SocketPollResult::Command(ControlSocketTaskCommand::Shutdown) => {
                             shutdown_requested = true;
+                            break;
+                        }
+                        SocketPollResult::Close => {
                             break;
                         }
                     }

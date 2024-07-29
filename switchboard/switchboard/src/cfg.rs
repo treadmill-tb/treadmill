@@ -16,8 +16,6 @@ pub struct Config {
     pub logs: Logs,
     /// Server parameters for the public API server.
     pub public_server: Server,
-    /// Server parameters for the internal control server.
-    pub internal_server: Server,
     /// Parameters for the websocket backend that supervisors communicate with.
     pub websocket: WebSocket,
     /// General configuration for specific features within the interface.

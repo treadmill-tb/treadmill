@@ -1,16 +1,20 @@
 //! Server side handling for supervisor-switchboard websocket connections.
 
-use crate::server::socket::auth::{authenticate_supervisor, AuthenticationResult};
-use crate::server::AppState;
-use axum::extract;
-use axum::extract::connect_info::ConnectInfo;
-use axum::extract::ws::{CloseFrame, WebSocket};
-use axum::extract::{ws, WebSocketUpgrade};
-use axum::response::Response;
+use crate::{
+    model,
+    server::AppState,
+    supervisor::auth::{authenticate_supervisor, AuthenticationResult},
+};
+use axum::{
+    extract::{
+        self,
+        connect_info::ConnectInfo,
+        ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade},
+    },
+    response::Response,
+};
 use std::net::SocketAddr;
 use treadmill_rs::api::switchboard_supervisor::ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL;
-
-mod auth;
 
 /// Axum handler for the `/supervisor` path.
 ///
@@ -55,12 +59,10 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
         socket_addr: SocketAddr,
         maybe_cf: Option<CloseFrame<'static>>,
     ) {
-        if let Err(e) = socket.send(ws::Message::Close(maybe_cf)).await {
+        if let Err(e) = socket.send(WsMessage::Close(maybe_cf)).await {
             tracing::error!("Failed to send close frame to {socket_addr}: {e}.");
         }
-        if let Err(e) = socket.close().await {
-            tracing::error!("Failed to close websocket connection from {socket_addr}: {e}.");
-        }
+        // .send(..::Close(..)) already closes the socket, so no need to call .close()
     }
 
     // -- Check that the subprotocol is correct.
@@ -72,7 +74,7 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
 
     // -- Authenticate the supervisor.
 
-    let auth_message_timeout = state.config.websocket.auth.per_message_timeout;
+    let auth_message_timeout = state.config().websocket.auth.per_message_timeout;
     let supervisor_id =
         match authenticate_supervisor(&mut socket, &state, socket_addr, auth_message_timeout).await
         {
@@ -100,16 +102,9 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
     // -- Connection is OK, run the actor loop
 
     // TODO: Actor goes here
-
-    // -- Main loop has exited, close the connection
-
-    try_close(
-        socket,
-        socket_addr,
-        Some(CloseFrame {
-            code: ws::close_code::NORMAL,
-            reason: "terminated".into(),
-        }),
-    )
-    .await;
+    // TODO: error handling
+    let model = model::supervisor::fetch_by_id(supervisor_id, state.pool())
+        .await
+        .expect("supervisor was deleted from database between authentication and model lookup");
+    state.herd().add_supervisor(&model, socket).await;
 }
