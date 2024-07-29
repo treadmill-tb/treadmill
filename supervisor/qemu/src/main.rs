@@ -975,8 +975,8 @@ impl QemuSupervisor {
         let qemu_proc = tokio::process::Command::new(&this.config.qemu.qemu_binary)
             .args(&qemu_args)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .spawn()
             .unwrap();
 
@@ -1379,7 +1379,7 @@ async fn main() -> Result<()> {
         image_store_client::ImageStoreClient::new("http://localhost:4242".to_string())
             .await
             .unwrap()
-            .into_local("/home/leons/proj/treadmill/dev-image-store/")
+            .into_local("/home/leons/proj/treadmill/images/ubuntu_image_generator/result/dev-image-store")
             .await
             .unwrap();
 
