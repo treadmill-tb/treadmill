@@ -90,10 +90,10 @@ pub struct WebSocketAuth {
 /// Api configuration details.
 #[derive(Debug, Deserialize)]
 pub struct Api {
-    /// How long a pre-login pseudo-session lasts for.
-    #[serde(with = "humantime_serde")]
-    pub auth_presession_timeout: Duration,
     /// How long a fully logged-in user session lasts for.
-    #[serde(with = "humantime_serde")]
-    pub auth_session_timeout: Duration,
+    #[serde(with = "treadmill_rs::util::chrono::duration")]
+    pub auth_session_timeout: chrono::TimeDelta,
+    /// Default per-job timeout.
+    #[serde(with = "treadmill_rs::util::chrono::duration")]
+    pub default_job_timeout: chrono::TimeDelta,
 }

@@ -1,4 +1,4 @@
-use super::{BifurcateProxy, IntoProxiedResponse, ResponseProxy};
+use super::{BifurcateProxy, IntoProxiedResponse, JsonProxiedResponse, ResponseProxy};
 use crate::perms::jobs::{
     enqueue_ci_job, read_job_status, EnqueueCIJobAction, EnqueueJobError, JobStatusAction,
     JobStatusError,
@@ -13,17 +13,16 @@ use http::StatusCode;
 use treadmill_rs::api::switchboard::{EnqueueJobRequest, EnqueueJobResponse, JobStatusResponse};
 use uuid::Uuid;
 
-impl IntoProxiedResponse for EnqueueJobResponse {
-    fn into_proxied_response(self) -> Response {
-        let status_code = match &self {
-            EnqueueJobResponse::Ok => StatusCode::OK,
+impl JsonProxiedResponse for EnqueueJobResponse {
+    fn status_code(&self) -> StatusCode {
+        match &self {
+            EnqueueJobResponse::Ok { .. } => StatusCode::OK,
             EnqueueJobResponse::SupervisorNotFound => StatusCode::NOT_FOUND,
             EnqueueJobResponse::Unauthorized => StatusCode::UNAUTHORIZED,
             EnqueueJobResponse::Invalid { .. } => StatusCode::BAD_REQUEST,
             EnqueueJobResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             EnqueueJobResponse::Conflict => StatusCode::CONFLICT,
-        };
-        (status_code, Json(self)).into_response()
+        }
     }
 }
 impl From<EnqueueJobError> for EnqueueJobResponse {
@@ -62,11 +61,11 @@ pub async fn enqueue(
         })
         .map_err(ResponseProxy)?;
 
-    enqueue_ci_job(&state, privilege, request.start_job_request)
+    let job_id = enqueue_ci_job(&state, privilege, request.job_request)
         .await
         .map_err(|e| ResponseProxy(EnqueueJobResponse::from(e)))?;
 
-    super::bifurcated_ok!(EnqueueJobResponse::Ok)
+    super::bifurcated_ok!(EnqueueJobResponse::Ok { job_id })
 }
 
 // GET /job/queue

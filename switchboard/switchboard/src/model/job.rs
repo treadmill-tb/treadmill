@@ -1,8 +1,9 @@
 use crate::server::auth::SubjectDetail;
-use sqlx::postgres::{PgHasArrayType, PgTypeInfo};
+use chrono::TimeDelta;
+use sqlx::postgres::types::PgInterval;
 use sqlx::PgExecutor;
+use treadmill_rs::api::switchboard::JobRequest;
 use treadmill_rs::api::switchboard_supervisor::{JobInitSpec, RendezvousServerSpec, RestartPolicy};
-use treadmill_rs::connector::StartJobMessage;
 use treadmill_rs::image::manifest::ImageId;
 use uuid::Uuid;
 
@@ -17,11 +18,6 @@ struct SqlRendezvousServerSpec {
     client_id: Uuid,
     server_base_url: String,
     auth_token: String,
-}
-impl PgHasArrayType for SqlRendezvousServerSpec {
-    fn array_type_info() -> PgTypeInfo {
-        PgTypeInfo::with_name("_rendezvous_server_spec")
-    }
 }
 impl From<SqlRendezvousServerSpec> for RendezvousServerSpec {
     fn from(
@@ -38,6 +34,13 @@ impl From<SqlRendezvousServerSpec> for RendezvousServerSpec {
         }
     }
 }
+#[derive(Debug, Copy, Clone, Eq, PartialEq, sqlx::Type)]
+#[sqlx(type_name = "job_known_state", rename_all = "lowercase")]
+pub enum KnownState {
+    Queued,
+    Running,
+    Finished,
+}
 #[derive(Debug)]
 pub struct JobModel {
     job_id: Uuid,
@@ -47,9 +50,10 @@ pub struct JobModel {
     ssh_keys: Vec<String>,
     ssh_rendezvous_servers: Vec<SqlRendezvousServerSpec>,
     restart_policy: SqlRestartPolicy,
-    queued: bool,
     enqueued_by_token_id: Uuid,
     tag_config: String,
+    known_state: KnownState,
+    timeout: PgInterval,
 }
 impl JobModel {
     pub fn id(&self) -> Uuid {
@@ -89,14 +93,19 @@ impl JobModel {
             remaining_restart_count: self.restart_policy.remaining_restart_count as usize,
         }
     }
-    pub fn is_queued(&self) -> bool {
-        self.queued
-    }
     pub fn enqueued_by_token_id(&self) -> Uuid {
         self.enqueued_by_token_id
     }
     pub fn tag_config(&self) -> &str {
         &self.tag_config
+    }
+    pub fn known_state(&self) -> KnownState {
+        self.known_state
+    }
+    pub fn timeout(&self) -> TimeDelta {
+        assert_eq!(self.timeout.months, 0, "job timeouts, for practical as well as technical reasons, should not take more than 28 (*) days");
+        TimeDelta::microseconds(self.timeout.microseconds)
+            + TimeDelta::days(self.timeout.days as i64)
     }
 }
 
@@ -105,8 +114,8 @@ pub async fn fetch_by_job_id(id: Uuid, db: impl PgExecutor<'_>) -> Result<JobMod
         JobModel,
         r#"SELECT job_id, resume_job_id, restart_job_id, image_id, ssh_keys,
                       ssh_rendezvous_servers as "ssh_rendezvous_servers: _",
-                      restart_policy as "restart_policy: _", queued, enqueued_by_token_id,
-                      tag_config
+                      restart_policy as "restart_policy: _", enqueued_by_token_id,
+                      tag_config, known_state as "known_state: _", timeout
                FROM jobs
                WHERE job_id = $1
                LIMIT 1;"#,
@@ -116,7 +125,9 @@ pub async fn fetch_by_job_id(id: Uuid, db: impl PgExecutor<'_>) -> Result<JobMod
     .await
 }
 pub async fn insert(
-    jr: &StartJobMessage,
+    job_id: Uuid,
+    jr: &JobRequest,
+    default_timeout: TimeDelta,
     subject: &SubjectDetail,
     db: impl PgExecutor<'_>,
 ) -> Result<JobModel, sqlx::Error> {
@@ -152,40 +163,49 @@ pub async fn insert(
         .collect();
     // TODO
     let tag_config = "";
+    let timeout = jr
+        .override_timeout
+        .and_then(|td| PgInterval::try_from(td).ok())
+        .unwrap_or_else(|| {
+            PgInterval::try_from(default_timeout)
+                .expect("configured default job timeout could not be converted into PgInterval")
+        });
     sqlx::query!(
         r#"INSERT INTO jobs
         (job_id, resume_job_id, restart_job_id, image_id,
-         ssh_keys, ssh_rendezvous_servers, restart_policy, queued, enqueued_by_token_id, tag_config)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);"#,
-        &jr.job_id,
+         ssh_keys, ssh_rendezvous_servers, restart_policy, enqueued_by_token_id, tag_config,
+         known_state, timeout)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);"#,
+        &job_id,
         resume_job_id,
         restart_job_id,
         image_id.as_ref().map(ImageId::as_bytes),
         &jr.ssh_keys,
         srs.as_slice() as &[SqlRendezvousServerSpec],
         restart_policy.clone() as SqlRestartPolicy,
-        true,
         token_id,
         tag_config,
+        KnownState::Queued as KnownState,
+        &timeout,
     )
     .execute(db)
     .await?;
     Ok(JobModel {
-        job_id: jr.job_id,
+        job_id,
         resume_job_id,
         restart_job_id,
         image_id: image_id.map(|iid| iid.0.to_vec()),
         ssh_keys: jr.ssh_keys.clone(),
         ssh_rendezvous_servers: srs,
         restart_policy,
-        queued: false,
         enqueued_by_token_id: token_id,
         tag_config: tag_config.to_string(),
+        known_state: KnownState::Queued,
+        timeout,
     })
 }
 
 pub mod params {
-    use sqlx::postgres::{PgHasArrayType, PgTypeInfo};
     use sqlx::PgExecutor;
     use std::collections::HashMap;
     use treadmill_rs::api::switchboard_supervisor::ParameterValue;
@@ -196,11 +216,6 @@ pub mod params {
     struct SqlParamValue {
         value: String,
         secret: bool,
-    }
-    impl PgHasArrayType for SqlParamValue {
-        fn array_type_info() -> PgTypeInfo {
-            PgTypeInfo::with_name("_parameter_value")
-        }
     }
     pub async fn fetch_by_job_id(
         id: Uuid,

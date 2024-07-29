@@ -9,7 +9,7 @@
         "TextArray",
         {
           "Custom": {
-            "name": "_parameter_value",
+            "name": "parameter_value[]",
             "kind": {
               "Array": {
                 "Custom": {

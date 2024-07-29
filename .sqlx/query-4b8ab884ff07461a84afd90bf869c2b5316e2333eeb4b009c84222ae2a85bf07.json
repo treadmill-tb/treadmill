@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO jobs\n        (job_id, resume_job_id, restart_job_id, image_id,\n         ssh_keys, ssh_rendezvous_servers, restart_policy, queued, enqueued_by_token_id, tag_config)\n               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);",
+  "query": "INSERT INTO jobs\n        (job_id, resume_job_id, restart_job_id, image_id,\n         ssh_keys, ssh_rendezvous_servers, restart_policy, enqueued_by_token_id, tag_config,\n         known_state, timeout)\n               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);",
   "describe": {
     "columns": [],
     "parameters": {
@@ -12,7 +12,7 @@
         "TextArray",
         {
           "Custom": {
-            "name": "_rendezvous_server_spec",
+            "name": "rendezvous_server_spec[]",
             "kind": {
               "Array": {
                 "Custom": {
@@ -51,12 +51,24 @@
             }
           }
         },
-        "Bool",
         "Uuid",
-        "Text"
+        "Text",
+        {
+          "Custom": {
+            "name": "job_known_state",
+            "kind": {
+              "Enum": [
+                "queued",
+                "running",
+                "finished"
+              ]
+            }
+          }
+        },
+        "Interval"
       ]
     },
     "nullable": []
   },
-  "hash": "69d151ab0c7868ebcb73f68aaf809e14092946c540b731be477426f88fcc21f2"
+  "hash": "4b8ab884ff07461a84afd90bf869c2b5316e2333eeb4b009c84222ae2a85bf07"
 }
