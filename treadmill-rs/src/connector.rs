@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::api::switchboard_supervisor;
 pub use crate::api::switchboard_supervisor::JobStartingStage;
 pub use crate::api::switchboard_supervisor::JobState;
-pub use crate::api::switchboard_supervisor::StartJobMessage as StartJobRequest;
+pub use crate::api::switchboard_supervisor::StartJobRequest;
 pub use crate::api::switchboard_supervisor::StopJobMessage as StopJobRequest;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
