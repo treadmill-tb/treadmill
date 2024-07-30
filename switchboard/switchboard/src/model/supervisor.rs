@@ -1,7 +1,5 @@
-use crate::server::token::SecurityToken;
 use chrono::Utc;
 use sqlx::PgExecutor;
-use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -37,26 +35,4 @@ pub async fn fetch_by_id(
     )
     .fetch_one(db)
     .await
-}
-
-pub async fn try_authenticate(
-    supervisor_id: Uuid,
-    auth_token: SecurityToken,
-    db: impl PgExecutor<'_>,
-) -> Result<bool, sqlx::Error> {
-    // how to do this without leaking timing?
-    let q = sqlx::query!(
-        r#"select supervisor_id, auth_token from supervisors where supervisor_id = $1 limit 1;"#,
-        supervisor_id,
-    )
-    .fetch_one(db)
-    .await;
-    let v = q
-        .as_ref()
-        .map(|r| r.auth_token.clone())
-        .unwrap_or(vec![0u8; 128]);
-    let st = SecurityToken::try_from(v).expect("stored auth token in database is invalid");
-    Ok(bool::from(
-        st.ct_eq(&auth_token) & ({ q.is_ok() as u8 }.ct_eq(&1)),
-    ))
 }

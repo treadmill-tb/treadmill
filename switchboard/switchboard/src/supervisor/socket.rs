@@ -1,7 +1,8 @@
 //! Server side handling for supervisor-switchboard websocket connections.
 
+use crate::model;
 use crate::server::token::SecurityToken;
-use crate::{model, server::AppState};
+use crate::server::AppState;
 use axum::response::IntoResponse;
 use axum::{
     extract::{
@@ -15,7 +16,9 @@ use axum_extra::TypedHeader;
 use headers::authorization::Bearer;
 use headers::Authorization;
 use http::StatusCode;
+use sqlx::PgExecutor;
 use std::net::SocketAddr;
+use subtle::ConstantTimeEq;
 use treadmill_rs::api::switchboard_supervisor::ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL;
 use uuid::Uuid;
 
@@ -37,7 +40,7 @@ pub async fn supervisor_handler(
             return StatusCode::FORBIDDEN.into_response();
         }
     };
-    match model::supervisor::try_authenticate(supervisor_id, auth_token, state.pool()).await {
+    match try_authenticate(supervisor_id, auth_token, state.pool()).await {
         Ok(b) => {
             if b {
                 //
@@ -115,4 +118,26 @@ async fn launch_supervisor_actor(
         .await
         .expect("supervisor was deleted from database between authentication and model lookup");
     state.herd().add_supervisor(&model, socket).await;
+}
+
+pub async fn try_authenticate(
+    supervisor_id: Uuid,
+    auth_token: SecurityToken,
+    db: impl PgExecutor<'_>,
+) -> Result<bool, sqlx::Error> {
+    // how to do this without leaking timing?
+    let q = sqlx::query!(
+        r#"select supervisor_id, auth_token from supervisors where supervisor_id = $1 limit 1;"#,
+        supervisor_id,
+    )
+    .fetch_one(db)
+    .await;
+    let v = q
+        .as_ref()
+        .map(|r| r.auth_token.clone())
+        .unwrap_or(vec![0u8; 128]);
+    let st = SecurityToken::try_from(v).expect("stored auth token in database is invalid");
+    Ok(bool::from(
+        st.ct_eq(&auth_token) & ({ q.is_ok() as u8 }.ct_eq(&1)),
+    ))
 }
