@@ -16,7 +16,7 @@ pub struct Config {
     /// How the database should handle logging output.
     pub logs: Logs,
     /// Server parameters for the public API server.
-    pub public_server: Server,
+    pub server: Server,
     /// Parameters for the websocket backend that supervisors communicate with.
     pub websocket: WebSocket,
     /// General configuration for specific features within the interface.

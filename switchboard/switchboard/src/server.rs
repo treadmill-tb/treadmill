@@ -130,11 +130,11 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
 
     // Bind TCP listeners.
 
-    let public_socket_addr = cfg.public_server.socket_addr;
+    let public_socket_addr = cfg.server.socket_addr;
 
     // Build shared state
 
-    let dev_mode_ssl = cfg.public_server.dev_mode_ssl.clone();
+    let dev_mode_ssl = cfg.server.dev_mode_ssl.clone();
 
     let state_inner = AppStateInner {
         db_pool: pg_pool,
