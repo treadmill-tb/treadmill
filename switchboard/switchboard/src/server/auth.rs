@@ -111,7 +111,7 @@ impl FromRequestParts<AppState> for Subject {
                     TypedHeaderRejectionReason::Missing => None,
                     TypedHeaderRejectionReason::Error(e) => {
                         tracing::error!("failed to extract Authorization<Bearer>: {e:?}");
-                        return Err(rejection.into_response());
+                        return Err(StatusCode::UNAUTHORIZED.into_response());
                     }
                     _ => unreachable!(),
                 },
@@ -120,7 +120,7 @@ impl FromRequestParts<AppState> for Subject {
         if let Some(bearer) = maybe_bearer {
             let token = SecurityToken::try_from(bearer).map_err(|e| {
                 tracing::warn!("failed to decode bearer token: {e}");
-                StatusCode::BAD_REQUEST.into_response()
+                StatusCode::UNAUTHORIZED.into_response()
             })?;
             let token_info = match ApiTokenInfo::fetch(&state.db_pool, token).await {
                 Ok(tib) => tib,
