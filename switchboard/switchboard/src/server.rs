@@ -191,11 +191,6 @@ async fn serve_public_server(server: Server<RustlsAcceptor>, state: AppState) {
         .nest("/session", session_router())
         // API endpoints
         .nest("/api/v1", api_router())
-        // supervisor websocket endpoint
-        .route(
-            "/api/v1/supervisor/:id/socket",
-            get(socket::supervisor_handler),
-        )
         // miscellanea
         .fallback(not_found)
         .with_state(state)
@@ -225,6 +220,7 @@ pub fn api_router() -> Router<AppState> {
         .route("/job/:id/status", get(api::jobs::status))
         .route("/supervisor/list", get(api::supervisors::list))
         .route("/supervisor/:id/status", get(api::supervisors::status))
+        .route("/supervisor/:id/socket", get(socket::supervisor_handler))
     //-- Creating & deleting supervsiors
     // .route("/supervisor/register", post(api::supervisors::register))
     // .route("/supervisor/:id", delete(api::supervisors::unregister))
