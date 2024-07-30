@@ -2,12 +2,10 @@
 //!
 //! Creates an API token owned by a specified user with a specified lifetime.
 
-use crate::cfg::{Config, DatabaseAuth, PasswordAuth};
+use crate::server::database_from_config;
 use crate::server::token::SecurityToken;
 use chrono::Utc;
-use miette::{Context, IntoDiagnostic};
-use sqlx::postgres::PgConnectOptions;
-use sqlx::PgPool;
+use miette::IntoDiagnostic;
 use std::path::PathBuf;
 use std::time::Duration;
 use uuid::Uuid;
@@ -38,31 +36,8 @@ pub async fn create_token(
         inherit_user_perms,
     }: CreateTokenCommand,
 ) -> miette::Result<()> {
-    let cfg_text = std::fs::read_to_string(&cfg)
-        .into_diagnostic()
-        .wrap_err("Failed to open configuration file")?;
-    let cfg: Config = toml::from_str(&cfg_text)
-        .into_diagnostic()
-        .wrap_err_with(|| format!("Failed to parse configuration file {}", cfg.display()))?;
-    let pg_options = PgConnectOptions::new()
-        .host(&cfg.database.address)
-        .port(cfg.database.port)
-        .database(&cfg.database.name)
-        /*
-            .ssl_mode(PgSslMode::VerifyFull)
-            /* TODO: supply ssl client cert */
-         */
-        ;
-    let pg_options = match cfg.database.auth {
-        DatabaseAuth::PasswordAuth(PasswordAuth {
-            ref username,
-            ref password,
-        }) => pg_options.username(username).password(password),
-    };
-    let pg_pool = PgPool::connect_with(pg_options)
-        .await
-        .into_diagnostic()
-        .wrap_err("Failed to connect to database")?;
+    let cfg = crate::cfg::load_config(&cfg)?;
+    let pg_pool = database_from_config(&cfg).await?;
 
     let uuid = Uuid::new_v4();
     let token = SecurityToken::generate();

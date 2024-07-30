@@ -8,8 +8,7 @@ use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::Router;
 use axum_extra::extract::cookie::Key;
-use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
-use axum_server::Server;
+use axum_server::tls_rustls::RustlsConfig;
 use http::StatusCode;
 use miette::{IntoDiagnostic, WrapErr};
 use sqlx::{postgres::PgConnectOptions, PgPool};
@@ -82,6 +81,31 @@ pub struct ServeCommand {
     cfg: PathBuf,
 }
 
+pub async fn database_from_config(cfg: &Config) -> miette::Result<PgPool> {
+    let pg_options = PgConnectOptions::new()
+        .host(&cfg.database.address)
+        .database(&cfg.database.name)
+        /*
+            .ssl_mode(PgSslMode::VerifyFull)
+            /* TODO: supply ssl client cert */
+         */
+        ;
+    let pg_options = match &cfg.database.port {
+        None => pg_options,
+        &Some(p) => pg_options.port(p),
+    };
+    let pg_options = match cfg.database.auth {
+        DatabaseAuth::PasswordAuth(PasswordAuth {
+            ref username,
+            ref password,
+        }) => pg_options.username(username).password(password),
+    };
+    PgPool::connect_with(pg_options)
+        .await
+        .into_diagnostic()
+        .wrap_err("Failed to connect to database")
+}
+
 /// Main server entry point; starts public and internal servers according to the configuration at
 /// `config_path`.
 #[instrument]
@@ -95,59 +119,22 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
     // Load configuration
 
     // TODO: overlayed configuration
-
-    let cfg_text = std::fs::read_to_string(config_path)
-        .into_diagnostic()
-        .wrap_err("Failed to open configuration file")?;
-    let cfg: Config = toml::from_str(&cfg_text)
-        .into_diagnostic()
-        .wrap_err_with(|| {
-            format!(
-                "Failed to parse configuration file {}",
-                config_path.display()
-            )
-        })?;
+    let cfg = crate::cfg::load_config(config_path)?;
 
     tracing::info!("Serving with configuration: {cfg:?}");
 
     // Connect to database
 
-    let pg_options = PgConnectOptions::new()
-        .host(&cfg.database.address)
-        .port(cfg.database.port)
-        .database(&cfg.database.name)
-    /*
-        .ssl_mode(PgSslMode::VerifyFull)
-        /* TODO: supply ssl client cert */
-     */
-        ;
-    let pg_options = match cfg.database.auth {
-        DatabaseAuth::PasswordAuth(PasswordAuth {
-            ref username,
-            ref password,
-        }) => pg_options.username(username).password(password),
-    };
-    let pg_pool = PgPool::connect_with(pg_options)
-        .await
-        .into_diagnostic()
-        .wrap_err("Failed to connect to database")?;
-
+    let pg_pool = database_from_config(&cfg).await?;
     tracing::info!("Connected to database, poolsz_idle={}", pg_pool.num_idle());
 
     // Bind TCP listeners.
 
     let public_socket_addr = cfg.public_server.socket_addr;
 
-    let rustls_config =
-        RustlsConfig::from_pem_file(&cfg.public_server.cert, &cfg.public_server.key)
-            .await
-            .into_diagnostic()
-            .wrap_err("Failed to load RusTls configuration for public server")?;
-    let public_server_listener = axum_server::bind_rustls(public_socket_addr, rustls_config);
-
-    tracing::info!("Bound TCP listener on: (public) {public_socket_addr}");
-
     // Build shared state
+
+    let dev_mode_ssl = cfg.public_server.dev_mode_ssl.clone();
 
     let state_inner = AppStateInner {
         db_pool: pg_pool,
@@ -158,20 +145,46 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
     };
 
     let server_state = AppState(Arc::new(state_inner));
+    let router = public_router(server_state);
 
     // Spawn server tasks
 
-    match tokio::spawn(
-        async move { serve_public_server(public_server_listener, server_state).await },
-    )
-    .await
-    {
-        Ok(()) => {
-            tracing::info!("Server exited successfully");
+    let result = match dev_mode_ssl {
+        Some(dms) => {
+            let rustls_config = RustlsConfig::from_pem_file(&dms.cert, &dms.key)
+                .await
+                .into_diagnostic()
+                .wrap_err("Failed to load RusTls configuration for public server")?;
+            let server = axum_server::bind_rustls(public_socket_addr, rustls_config);
+
+            tracing::warn!("-- WARNING -- DEVELOPMENT-ONLY SSL MODE IS ENABLED. PLEASE DO NOT USE THIS IN PRODUCTION.");
+
+            tracing::info!("Bound TCP listener on: (public) {public_socket_addr}");
+
+            tokio::spawn(async move {
+                server
+                    .serve(router.into_make_service_with_connect_info::<SocketAddr>())
+                    .await
+            })
+            .await
         }
-        Err(e) => {
-            tracing::error!("Server exited with error: {e}");
+        None => {
+            let server = axum_server::bind(public_socket_addr);
+
+            tracing::info!("Bound TCP listener on: (public) {public_socket_addr}");
+
+            tokio::spawn(async move {
+                server
+                    .serve(router.into_make_service_with_connect_info::<SocketAddr>())
+                    .await
+            })
+            .await
         }
+    };
+    match result {
+        Ok(Ok(())) => tracing::info!("Public server exited successfully"),
+        Ok(Err(e)) => tracing::error!("Public server exited with error: {e:?}"),
+        Err(e) => tracing::error!("Failed to join public server task: {e:?}"),
     }
 
     Ok(())
@@ -180,7 +193,7 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
 /// Serve the public server.
 ///
 /// Should be run in its own `tokio` task.
-async fn serve_public_server(server: Server<RustlsAcceptor>, state: AppState) {
+fn public_router(state: AppState) -> Router<()> {
     // fallback when the requested path doesn't exist
     async fn not_found() -> impl IntoResponse {
         StatusCode::NOT_FOUND
@@ -198,13 +211,7 @@ async fn serve_public_server(server: Server<RustlsAcceptor>, state: AppState) {
 
     tracing::info!("Starting public server");
 
-    match server
-        .serve(router.into_make_service_with_connect_info::<SocketAddr>())
-        .await
-    {
-        Ok(()) => tracing::info!("Public server exited successfully"),
-        Err(e) => tracing::error!("Public server exited with error: {e:?}"),
-    }
+    router
 }
 
 /// Sub-router for API endpoints.
