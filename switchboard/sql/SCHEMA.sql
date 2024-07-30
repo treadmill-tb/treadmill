@@ -188,7 +188,9 @@ create type exit_status as enum (
     -- host reported success
     'host_terminated_with_success',
     -- job timeout
-    'host_terminated_timeout'
+    'host_terminated_timeout',
+    -- job was stopped by user
+    'stopped_by_user'
     );
 
 create table job_results
