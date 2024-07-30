@@ -142,7 +142,6 @@ impl PrivilegedAction for JobStatusAction {
 }
 #[derive(Debug)]
 pub enum JobStatusError {
-    Database,
     JobNotFound,
     Herd(HerdError),
     JobMarket(JobMarketError),
@@ -155,4 +154,37 @@ pub async fn read_job_status(
         .job_market()
         .job_status(p.action().job_id)
         .map_err(JobStatusError::JobMarket)
+}
+
+#[derive(Debug, Clone)]
+pub struct StopJobAction {
+    pub job_id: Uuid,
+}
+#[async_trait]
+impl PrivilegedAction for StopJobAction {
+    async fn authorize<'source, PQE: PermissionQueryExecutor + Send>(
+        self,
+        perm_query_exec: PQE,
+    ) -> Result<Privilege<'source, Self>, AuthorizationError> {
+        perm_query_exec
+            .query(format!("stop_job:{}", &self.job_id))
+            .await
+            .try_into_privilege(self)
+    }
+}
+#[derive(Debug)]
+pub enum StopJobError {
+    JobNotFound,
+    Herd(HerdError),
+    JobMarket(JobMarketError),
+}
+pub async fn stop_job(
+    state: &AppState,
+    p: Privilege<'_, StopJobAction>,
+) -> Result<(), StopJobError> {
+    state
+        .job_market()
+        .stop_job(p.action().job_id)
+        .await
+        .map_err(StopJobError::JobMarket)
 }

@@ -10,7 +10,7 @@
 //! In this system, permissions are represented by [`PrivilegedAction`], subjects are represented
 //! by [`Subject`]s, and privileges by [`Privilege`]s.
 
-use crate::server::token::{ApiToken, TokenError, TokenInfoBare};
+use crate::server::token::{ApiTokenInfo, SecurityToken, TokenError};
 use crate::server::AppState;
 use axum::extract::FromRequestParts;
 use axum::response::{IntoResponse, Response};
@@ -67,7 +67,7 @@ impl TokenId {
 /// Accessible _subject_ information (see module docs).
 #[derive(Debug, Clone)]
 pub struct SubjectDetail {
-    token_info: Arc<TokenInfoBare>,
+    token_info: Arc<ApiTokenInfo>,
 }
 impl SubjectDetail {
     pub fn token_id(&self) -> TokenId {
@@ -118,11 +118,11 @@ impl FromRequestParts<AppState> for Subject {
             },
         };
         if let Some(bearer) = maybe_bearer {
-            let token = ApiToken::try_from(bearer).map_err(|e| {
+            let token = SecurityToken::try_from(bearer).map_err(|e| {
                 tracing::warn!("failed to decode bearer token: {e}");
                 StatusCode::BAD_REQUEST.into_response()
             })?;
-            let token_info = match TokenInfoBare::lookup(&state.db_pool, token).await {
+            let token_info = match ApiTokenInfo::fetch(&state.db_pool, token).await {
                 Ok(tib) => tib,
                 Err(TokenError::InvalidToken) => {
                     tracing::warn!("failed to derive subject: invalid token {token}");

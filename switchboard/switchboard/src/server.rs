@@ -192,7 +192,10 @@ async fn serve_public_server(server: Server<RustlsAcceptor>, state: AppState) {
         // API endpoints
         .nest("/api/v1", api_router())
         // supervisor websocket endpoint
-        .route("/supervisor", get(socket::supervisor_handler))
+        .route(
+            "/api/v1/supervisor/:id/socket",
+            get(socket::supervisor_handler),
+        )
         // miscellanea
         .fallback(not_found)
         .with_state(state)

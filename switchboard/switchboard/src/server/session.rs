@@ -1,6 +1,6 @@
 //! Session management interfaces.
 
-use crate::server::token::ApiToken;
+use crate::server::token::SecurityToken;
 use crate::server::AppState;
 use argon2::password_hash::{PasswordHashString, SaltString};
 use argon2::{Algorithm, Argon2, Params, PasswordHasher, PasswordVerifier, Version};
@@ -103,9 +103,9 @@ pub async fn login_handler(
         user_id: Uuid,
         inherit_perms: bool,
         lifetime: chrono::TimeDelta,
-    ) -> Result<(ApiToken, DateTime<Utc>), sqlx::Error> {
+    ) -> Result<(SecurityToken, DateTime<Utc>), sqlx::Error> {
         let token_id = Uuid::new_v4();
-        let api_token = ApiToken::generate();
+        let api_token = SecurityToken::generate();
         let created = Utc::now();
         let expires = created + lifetime;
         sqlx::query!(

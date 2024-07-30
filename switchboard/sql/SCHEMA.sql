@@ -102,7 +102,7 @@ create table supervisors
 
     last_connected_at timestamp with time zone not null,
 
-    public_key        text                     not null,
+    auth_token        bytea                    not null unique,
 
     tags              text[]                   not null
 );

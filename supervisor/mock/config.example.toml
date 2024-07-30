@@ -7,8 +7,8 @@ coord_connector = "cli_connector"
 images = { }
 
 [ws_connector]
-private_key = "config/supervisors/7d55ec6d-15e7-4b84-8c04-7c085fe60df4/auth.pem"
-switchboard_uri = "wss://localhost:443/supervisor"
+token = "OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc"
+switchboard_uri = "wss://localhost:443"
 
 [mock]
 max_parallel_jobs = 1

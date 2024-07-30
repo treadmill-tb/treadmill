@@ -19,7 +19,6 @@ use treadmill_rs::api::switchboard_supervisor::{
 use treadmill_rs::connector::{StartJobMessage, StopJobMessage};
 use uuid::Uuid;
 
-mod auth;
 pub mod socket;
 
 #[derive(Debug)]
@@ -27,6 +26,7 @@ struct JobInner {
     job_model: JobModel,
     status_watch: watch::Receiver<JobStatus>,
     event_stream: UnboundedReceiver<SupervisorEvent>,
+    outbox: Outbox,
 }
 impl JobInner {
     pub fn id(&self) -> Uuid {
@@ -88,12 +88,21 @@ impl ActiveJob {
     pub fn latest_status(&self) -> Result<JobStatus, JobMarketError> {
         self.0.lock().latest_status()
     }
+    pub async fn stop_job(&self) -> Result<(), JobMarketError> {
+        let outbox = { self.0.lock().outbox.clone() };
+        outbox
+            .stop_job(StopJobMessage { job_id: self.id() })
+            .await
+            .ok_or(JobMarketError::Disconnect)
+    }
 }
 
 #[derive(Debug, Error)]
 pub enum JobMarketError {
     #[error("no such job")]
     InvalidJob,
+    #[error("supervisor dropped")]
+    Disconnect,
 }
 
 #[derive(Debug)]
@@ -116,6 +125,13 @@ impl JobMarket {
             .get(&job_id)
             .ok_or(JobMarketError::InvalidJob)?
             .latest_status()
+    }
+    pub async fn stop_job(&self, job_id: Uuid) -> Result<(), JobMarketError> {
+        self.jobs
+            .get(&job_id)
+            .ok_or(JobMarketError::InvalidJob)?
+            .stop_job()
+            .await
     }
 }
 
@@ -202,6 +218,7 @@ impl Herd {
                 job_model,
                 status_watch,
                 event_stream: dupe_stream,
+                outbox: actor.agent.outbox().await,
             })));
             let _ = job_lg.insert(Arc::downgrade(&active_job));
         }
@@ -243,8 +260,8 @@ async fn supervisor_run(
     UnboundedSender<OutboxMessage>,
     UnboundedReceiver<SupervisorEvent>,
 ) {
-    let (outbox_tx, outbox_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (event_report_queue_tx, event_report_queue_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (outbox_tx, outbox_rx) = mpsc::unbounded_channel();
+    let (event_report_queue_tx, event_report_queue_rx) = mpsc::unbounded_channel();
 
     let mut swx_conn = SwitchboardConnector {
         supervisor_id,
@@ -269,6 +286,19 @@ impl Stream for EventStream {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Outbox {
+    inner: UnboundedSender<OutboxMessage>,
+}
+impl Outbox {
+    /// Returns [`None`] if the connection closed.
+    pub async fn stop_job(&self, message: StopJobMessage) -> Option<()> {
+        self.inner
+            .send((switchboard_supervisor::Message::StopJob(message), None))
+            .ok()
+    }
+}
+
 /// Interacts with a [`SupervisorConnector`]'s [`run`](Supervisor::run) loop via message passing.
 #[derive(Debug)]
 pub struct SupervisorAgent {
@@ -283,17 +313,16 @@ impl SupervisorAgent {
         EventStream { inner: lg }
     }
 
+    pub async fn outbox(&self) -> Outbox {
+        Outbox {
+            inner: self.outbox.clone(),
+        }
+    }
+
     /// Returns [`None`] if the connection closed.
     pub async fn start_job(&self, message: StartJobMessage) -> Option<()> {
         self.outbox
             .send((switchboard_supervisor::Message::StartJob(message), None))
-            .ok()
-    }
-
-    /// Returns [`None`] if the connection closed.
-    pub async fn stop_job(&self, message: StopJobMessage) -> Option<()> {
-        self.outbox
-            .send((switchboard_supervisor::Message::StopJob(message), None))
             .ok()
     }
 

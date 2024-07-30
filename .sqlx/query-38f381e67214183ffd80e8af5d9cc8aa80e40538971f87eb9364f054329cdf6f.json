@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select * from supervisors where supervisor_id = $1 limit 1;",
+  "query": "select supervisor_id, name, last_connected_at, tags from supervisors where supervisor_id = $1 limit 1;",
   "describe": {
     "columns": [
       {
@@ -20,11 +20,6 @@
       },
       {
         "ordinal": 3,
-        "name": "public_key",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 4,
         "name": "tags",
         "type_info": "TextArray"
       }
@@ -38,9 +33,8 @@
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "9f1ca785d1a8ea2a9750d0244d04a966973359dbbdce48c2e5da59564618b989"
+  "hash": "38f381e67214183ffd80e8af5d9cc8aa80e40538971f87eb9364f054329cdf6f"
 }

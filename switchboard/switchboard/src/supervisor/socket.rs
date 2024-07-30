@@ -1,10 +1,8 @@
 //! Server side handling for supervisor-switchboard websocket connections.
 
-use crate::{
-    model,
-    server::AppState,
-    supervisor::auth::{authenticate_supervisor, AuthenticationResult},
-};
+use crate::server::token::SecurityToken;
+use crate::{model, server::AppState};
+use axum::response::IntoResponse;
 use axum::{
     extract::{
         self,
@@ -13,8 +11,13 @@ use axum::{
     },
     response::Response,
 };
+use axum_extra::TypedHeader;
+use headers::authorization::Bearer;
+use headers::Authorization;
+use http::StatusCode;
 use std::net::SocketAddr;
 use treadmill_rs::api::switchboard_supervisor::ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL;
+use uuid::Uuid;
 
 /// Axum handler for the `/supervisor` path.
 ///
@@ -24,12 +27,37 @@ pub async fn supervisor_handler(
     ws: WebSocketUpgrade,
     extract::State(state): extract::State<AppState>,
     ConnectInfo(socket_addr): ConnectInfo<SocketAddr>,
+    TypedHeader(Authorization(bearer)): TypedHeader<Authorization<Bearer>>,
+    extract::Path(supervisor_id): extract::Path<Uuid>,
 ) -> Response {
+    let auth_token = match SecurityToken::try_from(bearer) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!("Failed to extract bearer token: {e}");
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    };
+    match model::supervisor::try_authenticate(supervisor_id, auth_token, state.pool()).await {
+        Ok(b) => {
+            if b {
+                //
+            } else {
+                tracing::warn!(
+                    "invalid supervisor-token ({supervisor_id}, {auth_token}) combination"
+                );
+                return StatusCode::FORBIDDEN.into_response();
+            }
+        }
+        Err(e) => {
+            tracing::error!("failed to authenticate supervisor ({supervisor_id}) with token ({auth_token}): {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
     ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL])
         .on_upgrade(move |web_socket| async move {
-            tokio::spawn(
-                async move { launch_supervisor_actor(web_socket, state, socket_addr).await },
-            );
+            tokio::spawn(async move {
+                launch_supervisor_actor(web_socket, supervisor_id, state, socket_addr).await
+            });
         })
 }
 
@@ -52,7 +80,12 @@ fn check_protocol_header(protocol: Option<&http::HeaderValue>, socket_addr: Sock
 }
 
 /// Launch the actor representing a particular supervisor.
-async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_addr: SocketAddr) {
+async fn launch_supervisor_actor(
+    socket: WebSocket,
+    supervisor_id: Uuid,
+    state: AppState,
+    socket_addr: SocketAddr,
+) {
     /// Helper function to close a socket.
     async fn try_close(
         mut socket: WebSocket,
@@ -72,34 +105,9 @@ async fn launch_supervisor_actor(mut socket: WebSocket, state: AppState, socket_
         return;
     }
 
-    // -- Authenticate the supervisor.
-
-    let auth_message_timeout = state.config().websocket.auth.per_message_timeout;
-    let supervisor_id =
-        match authenticate_supervisor(&mut socket, &state, socket_addr, auth_message_timeout).await
-        {
-            Ok(auth_result) => match auth_result {
-                AuthenticationResult::Authenticated { as_supervisor_id } => as_supervisor_id,
-                AuthenticationResult::Unauthenticated => {
-                    tracing::error!(
-                        "Closing unauthenticated websocket connection from {socket_addr}."
-                    );
-                    try_close(socket, socket_addr, None).await;
-                    return;
-                }
-            },
-            Err(e) => {
-                tracing::error!(
-                    "Failed to authenticate websocket connection from {socket_addr}: {e}. Closing."
-                );
-                try_close(socket, socket_addr, None).await;
-                return;
-            }
-        };
+    // -- Connection is OK, run the actor loop
 
     tracing::info!("Supervisor ({supervisor_id}) has connected from {socket_addr}");
-
-    // -- Connection is OK, run the actor loop
 
     // TODO: Actor goes here
     // TODO: error handling

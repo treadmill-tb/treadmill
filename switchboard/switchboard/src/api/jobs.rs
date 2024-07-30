@@ -1,7 +1,7 @@
 use super::{BifurcateProxy, IntoProxiedResponse, JsonProxiedResponse, ResponseProxy};
 use crate::perms::jobs::{
-    enqueue_ci_job, read_job_status, EnqueueCIJobAction, EnqueueJobError, JobStatusAction,
-    JobStatusError,
+    enqueue_ci_job, read_job_status, stop_job, EnqueueCIJobAction, EnqueueJobError,
+    JobStatusAction, JobStatusError, StopJobAction, StopJobError,
 };
 use crate::server::auth::{AuthSource, AuthorizationError, AuthorizationSource, DbPermSource};
 use crate::server::AppState;
@@ -10,7 +10,9 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::{extract, Json};
 use http::StatusCode;
-use treadmill_rs::api::switchboard::{EnqueueJobRequest, EnqueueJobResponse, JobStatusResponse};
+use treadmill_rs::api::switchboard::{
+    EnqueueJobRequest, EnqueueJobResponse, JobCancelResponse, JobStatusResponse,
+};
 use uuid::Uuid;
 
 impl JsonProxiedResponse for EnqueueJobResponse {
@@ -86,6 +88,7 @@ impl IntoProxiedResponse for JobStatusResponse {
             JobStatusResponse::JobNotFound => StatusCode::NOT_FOUND,
             JobStatusResponse::Unauthorized => StatusCode::UNAUTHORIZED,
             JobStatusResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            JobStatusResponse::SupervisorNotFound => StatusCode::NOT_FOUND,
         };
         (status_code, Json(self)).into_response()
     }
@@ -93,16 +96,16 @@ impl IntoProxiedResponse for JobStatusResponse {
 impl From<JobStatusError> for JobStatusResponse {
     fn from(value: JobStatusError) -> Self {
         match value {
-            JobStatusError::Database => JobStatusResponse::Internal,
             JobStatusError::JobNotFound => JobStatusResponse::JobNotFound,
             JobStatusError::Herd(e) => match e {
                 // TODO: better error for this case
-                HerdError::InvalidSupervisor => JobStatusResponse::Internal,
+                HerdError::InvalidSupervisor => JobStatusResponse::SupervisorNotFound,
                 // shouldn't happen
                 HerdError::BusySupervisor => JobStatusResponse::Internal,
             },
             JobStatusError::JobMarket(e) => match e {
                 JobMarketError::InvalidJob => JobStatusResponse::JobNotFound,
+                JobMarketError::Disconnect => JobStatusResponse::SupervisorNotFound,
             },
         }
     }
@@ -136,6 +139,63 @@ pub async fn status(
 }
 
 // DELETE /job/:id
-pub async fn cancel() {
-    unimplemented!()
+impl JsonProxiedResponse for JobCancelResponse {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            JobCancelResponse::Ok => StatusCode::OK,
+            JobCancelResponse::JobNotFound => StatusCode::NOT_FOUND,
+            JobCancelResponse::Unauthorized => StatusCode::UNAUTHORIZED,
+            JobCancelResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            JobCancelResponse::SupervisorNotFound => StatusCode::NOT_FOUND,
+        }
+    }
+}
+impl From<StopJobError> for JobCancelResponse {
+    fn from(value: StopJobError) -> Self {
+        // TODO: redo this
+        match value {
+            StopJobError::JobNotFound => JobCancelResponse::JobNotFound,
+            StopJobError::Herd(e) => match e {
+                HerdError::InvalidSupervisor => {
+                    // shouldn't happen?
+                    panic!()
+                }
+                HerdError::BusySupervisor => {
+                    // shouldn't happen?
+                    panic!()
+                }
+            },
+            StopJobError::JobMarket(e) => match e {
+                JobMarketError::InvalidJob => JobCancelResponse::JobNotFound,
+                JobMarketError::Disconnect => JobCancelResponse::JobNotFound,
+            },
+        }
+    }
+}
+pub async fn cancel(
+    AuthSource(auth_source): AuthSource<DbPermSource>,
+    State(state): State<AppState>,
+    extract::Path(job_id): extract::Path<Uuid>,
+) -> BifurcateProxy<JobCancelResponse> {
+    let privilege = auth_source
+        .authorize(StopJobAction { job_id })
+        .await
+        .map_err(|e| match e {
+            AuthorizationError::Database(e) => {
+                tracing::error!("failed to check privilege: {e}");
+                JobCancelResponse::Internal
+            }
+            AuthorizationError::Unauthorized(p) => {
+                tracing::warn!("{auth_source:?} lacks permission {p}");
+                JobCancelResponse::Unauthorized
+            }
+        })
+        .map_err(ResponseProxy)?;
+
+    stop_job(&state, privilege)
+        .await
+        .map(|()| JobCancelResponse::Ok)
+        .map(ResponseProxy)
+        .map_err(JobCancelResponse::from)
+        .map_err(ResponseProxy)
 }

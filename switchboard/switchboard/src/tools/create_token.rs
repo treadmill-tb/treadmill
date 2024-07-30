@@ -3,7 +3,7 @@
 //! Creates an API token owned by a specified user with a specified lifetime.
 
 use crate::cfg::{Config, DatabaseAuth, PasswordAuth};
-use crate::server::token::ApiToken;
+use crate::server::token::SecurityToken;
 use chrono::Utc;
 use miette::{Context, IntoDiagnostic};
 use sqlx::postgres::PgConnectOptions;
@@ -65,7 +65,7 @@ pub async fn create_token(
         .wrap_err("Failed to connect to database")?;
 
     let uuid = Uuid::new_v4();
-    let token = ApiToken::generate();
+    let token = SecurityToken::generate();
 
     sqlx::query!(
         r#"insert into api_tokens values ($1, $2, $3, $4, null, $5, $6);"#,

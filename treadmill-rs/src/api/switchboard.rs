@@ -117,6 +117,17 @@ pub enum JobStatus {
 pub enum JobStatusResponse {
     Ok { job_status: JobStatus },
     JobNotFound,
+    SupervisorNotFound,
+    Unauthorized,
+    Internal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum JobCancelResponse {
+    Ok,
+    JobNotFound,
+    SupervisorNotFound,
     Unauthorized,
     Internal,
 }

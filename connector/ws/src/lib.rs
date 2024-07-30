@@ -2,8 +2,6 @@ pub mod socket_auth;
 
 use async_trait::async_trait;
 use base64::Engine;
-use ed25519_dalek::pkcs8::DecodePrivateKey;
-use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -12,11 +10,13 @@ use std::sync::{Arc, Weak};
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
+use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::{
     self,
     http::{Request, Uri},
 };
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use treadmill_rs::api::switchboard::AuthToken;
 use treadmill_rs::api::switchboard_supervisor::{
     self, ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL, Response, SupervisorEvent, SupervisorStatus,
 };
@@ -25,8 +25,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct WsConnectorConfig {
-    /// PKCS8 PEM FILE
-    private_key: PathBuf,
+    token: AuthToken,
     switchboard_uri: String,
 }
 
@@ -34,8 +33,8 @@ pub struct WsConnectorConfig {
 pub enum ConfigError {
     #[error("failed to read private key from {0}: {1}")]
     IoError(PathBuf, std::io::Error),
-    #[error("invalid private key: {0}")]
-    InvalidKey(ed25519_dalek::pkcs8::Error),
+    #[error("invalid authorization token: {0}")]
+    InvalidToken(String),
 }
 
 #[derive(Debug, Error)]
@@ -44,8 +43,8 @@ pub enum WsConnectorError {
     Config(ConfigError),
     #[error("failed to connect to remote host: {0}")]
     Connection(tokio_tungstenite::tungstenite::error::Error),
-    #[error("failed to authenticate: {0}")]
-    Authentication(socket_auth::AuthError),
+    #[error("failed to authenticate")]
+    Authentication,
 }
 
 pub struct WsConnector<S: connector::Supervisor> {
@@ -84,17 +83,8 @@ impl<S: connector::Supervisor> Inner<S> {
             .install_default()
             .unwrap();
 
-        let signing_key = SigningKey::from_pkcs8_pem(
-            std::fs::read_to_string(&self.config.private_key)
-                .map_err(|e| {
-                    WsConnectorError::Config(ConfigError::IoError(
-                        self.config.private_key.clone(),
-                        e,
-                    ))
-                })?
-                .as_str(),
-        )
-        .map_err(|e| WsConnectorError::Config(ConfigError::InvalidKey(e)))?;
+        let token_ser_string =
+            serde_json::to_string(&self.config.token).expect("failed to re-serialize token");
 
         // As per RFC6455 §4.1:
         // As this is not a browser client and does not match the semantics of one, we do not send
@@ -103,7 +93,11 @@ impl<S: connector::Supervisor> Inner<S> {
 
         let key_buf: [u8; 16] = rand::random();
         let base64_key = base64::prelude::BASE64_STANDARD.encode(&key_buf);
-        let uri = Uri::from_str(&self.config.switchboard_uri).unwrap();
+        let uri = Uri::from_str(&format!(
+            "{}/api/v1/supervisor/{}/socket",
+            self.config.switchboard_uri, self.supervisor_id,
+        ))
+        .unwrap();
         let req = Request::builder()
             .method("GET")
             // .header("host",... before .uri(... so we don't have to clone
@@ -114,17 +108,33 @@ impl<S: connector::Supervisor> Inner<S> {
             .header("sec-websocket-key", base64_key)
             .header("sec-websocket-protocol", TREADMILL_WEBSOCKET_PROTOCOL)
             .header("sec-websocket-version", "13")
+            .header("authorization", format!("Bearer {token_ser_string}"))
             .body(())
             .unwrap();
 
-        let (mut ws, _resp) =
-            tokio_tungstenite::connect_async_tls_with_config(req, None, false, None)
-                .await
-                .map_err(|e| WsConnectorError::Connection(e))?;
-
-        let _ = socket_auth::authenticate_as_supervisor(&mut ws, self.supervisor_id, signing_key)
+        let (ws, resp) = tokio_tungstenite::connect_async_tls_with_config(req, None, false, None)
             .await
-            .map_err(|e| WsConnectorError::Authentication(e))?;
+            .map_err(|e| WsConnectorError::Connection(e))?;
+
+        tracing::debug!("Received response from switchboard: {resp:?}");
+
+        match resp.status() {
+            StatusCode::SWITCHING_PROTOCOLS => {
+                tracing::info!("Authenticated successfully, switching protocols!");
+            }
+            StatusCode::FORBIDDEN => {
+                tracing::error!(
+                    "Received 403 FORBIDDEN from switchboard; please check configuration."
+                );
+                return Err(WsConnectorError::Authentication);
+            }
+            status => {
+                tracing::error!(
+                    "Received unexpected response from switchboard with status: {status:?}"
+                );
+                return Err(WsConnectorError::Authentication);
+            }
+        }
 
         Ok(ws)
     }
