@@ -1,10 +1,12 @@
 //! Types used in the interface between the coordinator and supervisor
 //! components.
 
+use crate::api::switchboard::JobRequest;
 use crate::connector::JobError;
 use crate::image::manifest::ImageId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt::Debug;
 use uuid::Uuid;
 
 /// Challenge-based authentication for switchboard-supervisor websocket connections.
@@ -45,74 +47,13 @@ pub mod ws_challenge {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub enum JobStartingStage {
-    /// Generic starting stage, for when no other stage is applicable:
-    Starting,
-
-    /// Fetching the specified image:
-    FetchingImage,
-
-    /// Acquiring resources, such as the root file system, to launch the
-    /// board environment.
-    Allocating,
-
-    /// Provisioning the environment, such as making any changes to the base
-    /// system according to the user-provided customizations.
-    Provisioning,
-
-    /// The container is booting. The next transition should
-    /// either be into the `Ready` or `Failed` states.
-    Booting,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub enum JobSessionConnectionInfo {
-    #[serde(rename = "direct_ssh")]
-    DirectSSH {
-        hostname: String,
-        port: u16,
-        host_key_fingerprints: Vec<String>,
-    },
-    #[serde(rename = "rendezvous_ssh")]
-    RendezvousSSH {
-        hostname: String,
-        port: u16,
-        host_key_fingerprints: Vec<String>,
-    },
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "state")]
-#[serde(rename_all = "snake_case")]
-pub enum JobState {
-    Starting {
-        stage: JobStartingStage,
-        status_message: Option<String>,
-    },
-    Ready {
-        connection_info: Vec<JobSessionConnectionInfo>,
-        status_message: Option<String>,
-    },
-    Stopping {
-        status_message: Option<String>,
-    },
-    Finished {
-        status_message: Option<String>,
-    },
-    Failed {
-        status_message: Option<String>,
-    },
-}
+// -- StartJobRequest ------------------------------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ParameterValue {
     pub value: String,
     pub secret: bool,
 }
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct RendezvousServerSpec {
@@ -120,13 +61,15 @@ pub struct RendezvousServerSpec {
     pub server_base_url: String,
     pub auth_token: String,
 }
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum JobInitSpec {
     /// Whether to resume a previously started job.
     ResumeJob { job_id: Uuid },
+
+    /// Whether to restart a previously attempted job.
+    RestartJob { job_id: Uuid },
 
     /// Which image to base this job off. If the image is not locally cached
     /// at the supervisor, it will be fetched using its manifest prior to
@@ -136,19 +79,14 @@ pub enum JobInitSpec {
     /// manifest.
     Image { image_id: ImageId },
 }
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct RestartPolicy {
-    pub restart_count: usize,
+    pub remaining_restart_count: usize,
 }
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
-pub struct StartJobRequest {
-    /// Identifier of this particular request, to associate responses:
-    pub request_id: Uuid,
-
+pub struct StartJobMessage {
     /// Unique identifier of the job to be started.
     ///
     /// To restart a previously failed or interrupted job, pass the same ID
@@ -179,21 +117,99 @@ pub struct StartJobRequest {
     /// parameters are provided to the puppet daemon.
     pub parameters: HashMap<String, ParameterValue>,
 }
+impl StartJobMessage {
+    pub fn from_job_request_with_id(job_id: Uuid, job_request: JobRequest) -> Self {
+        Self {
+            job_id,
+            init_spec: job_request.init_spec,
+            ssh_keys: job_request.ssh_keys,
+            restart_policy: job_request.restart_policy,
+            ssh_rendezvous_servers: job_request.ssh_rendezvous_servers,
+            parameters: job_request.parameters,
+        }
+    }
+}
+
+// -- StopJobRequest -------------------------------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct StopJobMessage {
-    /// Identifier of this particular request, to associate responses:
-    pub request_id: Uuid,
-
     /// Unique identifier of the job to be stopped:
     pub job_id: Uuid,
 }
 
+// -- StatusInfo -----------------------------------------------------------------------------------
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStartingStage {
+    /// Generic starting stage, for when no other stage is applicable:
+    Starting,
+
+    /// Fetching the specified image:
+    FetchingImage,
+
+    /// Acquiring resources, such as the root file system, to launch the
+    /// board environment.
+    Allocating,
+
+    /// Provisioning the environment, such as making any changes to the base
+    /// system according to the user-provided customizations.
+    Provisioning,
+
+    /// The container is booting. The next transition should
+    /// either be into the `Ready` or `Failed` states.
+    Booting,
+}
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum JobSessionConnectionInfo {
+    #[serde(rename = "direct_ssh")]
+    DirectSSH {
+        hostname: String,
+        port: u16,
+        host_key_fingerprints: Vec<String>,
+    },
+    #[serde(rename = "rendezvous_ssh")]
+    RendezvousSSH {
+        hostname: String,
+        port: u16,
+        host_key_fingerprints: Vec<String>,
+    },
+}
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "state")]
+#[serde(rename_all = "snake_case")]
+pub enum JobState {
+    Starting {
+        stage: JobStartingStage,
+        status_message: Option<String>,
+    },
+    Ready {
+        connection_info: Vec<JobSessionConnectionInfo>,
+        status_message: Option<String>,
+    },
+    Stopping {
+        status_message: Option<String>,
+    },
+    Finished {
+        status_message: Option<String>,
+    },
+    Failed {
+        status_message: Option<String>,
+    },
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
-pub enum InfoMessage {
+pub enum SupervisorStatus {
+    OngoingJob { job_id: Uuid, job_state: JobState },
+    Idle,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisorEvent {
     UpdateJobState {
         job_id: Uuid,
         job_state: JobState,
@@ -210,10 +226,57 @@ pub enum InfoMessage {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
-#[serde(tag = "type")]
+pub struct Request<T> {
+    pub request_id: Uuid,
+    pub message: T,
+}
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct Response<T> {
+    pub response_to_request_id: Uuid,
+    pub message: T,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", content = "message")]
 pub enum Message {
-    // RequestStatusUpdate { request_id: Uuid },
-    StartJob(StartJobRequest),
+    StartJob(StartJobMessage),
+
     StopJob(StopJobMessage),
-    Info(InfoMessage),
+
+    StatusRequest(Request<()>),
+    StatusResponse(Response<SupervisorStatus>),
+
+    SupervisorEvent(SupervisorEvent),
+}
+
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum ResponseMessage {
+    StatusResponse(SupervisorStatus),
+}
+
+impl Message {
+    pub fn request_id(&self) -> Option<Uuid> {
+        match self {
+            Message::StatusRequest(r) => Some(r.request_id),
+            Message::StartJob(_)
+            | Message::StopJob(_)
+            | Message::StatusResponse(_)
+            | Message::SupervisorEvent(_) => None,
+        }
+    }
+    pub fn to_response_message(self) -> Result<Response<ResponseMessage>, Message> {
+        match self {
+            Message::StatusResponse(Response {
+                response_to_request_id,
+                message,
+            }) => Ok(Response {
+                response_to_request_id,
+                message: ResponseMessage::StatusResponse(message),
+            }),
+            x => Err(x),
+        }
+    }
 }

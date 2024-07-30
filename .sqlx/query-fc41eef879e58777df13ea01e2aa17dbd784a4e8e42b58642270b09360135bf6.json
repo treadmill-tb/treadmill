@@ -1,0 +1,39 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO job_parameters (job_id, key, value)\n            SELECT $1, keys, values\n            FROM UNNEST($2::text[]) as keys,\n                 UNNEST($3::parameter_value[]) as values\n        ;\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        {
+          "Custom": {
+            "name": "parameter_value[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "parameter_value",
+                  "kind": {
+                    "Composite": [
+                      [
+                        "value",
+                        "Text"
+                      ],
+                      [
+                        "secret",
+                        "Bool"
+                      ]
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fc41eef879e58777df13ea01e2aa17dbd784a4e8e42b58642270b09360135bf6"
+}

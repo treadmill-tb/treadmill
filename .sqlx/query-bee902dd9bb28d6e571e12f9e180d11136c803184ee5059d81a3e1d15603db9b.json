@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT token_id, user_id, inherits_user_permissions, canceled as \"canceled: _\",\n                  expires_at\n           FROM api_tokens\n           WHERE token = $1\n           LIMIT 1;",
+  "query": "SELECT token_id, user_id, inherits_user_permissions, canceled as \"canceled: _\",\n                  expires_at\n            FROM api_tokens\n            WHERE token = $1\n            LIMIT 1;",
   "describe": {
     "columns": [
       {
@@ -58,5 +58,5 @@
       false
     ]
   },
-  "hash": "97d3dcb4ae76506f816616fc2b568b36416c4a095dc9b7fb3ed7abd9516d99a7"
+  "hash": "bee902dd9bb28d6e571e12f9e180d11136c803184ee5059d81a3e1d15603db9b"
 }

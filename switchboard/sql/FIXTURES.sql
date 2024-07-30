@@ -32,18 +32,16 @@ values ('{8752ca01-a650-4716-b0a1-d2f1860e4175}',
 
 -- insert a fake supervisor (
 insert into supervisors
-    (supervisor_id, name, last_connected_at, public_key, tags)
+    (supervisor_id, name, last_connected_at, auth_token, tags)
 values ('{7d55ec6d-15e7-4b84-8c04-7c085fe60df4}',
         'fake_supervisor_authtest',
         current_timestamp,
-        '-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAeuUgVpZLvlodcZFuyEJWx5PoDleQdX5sFkZl2DFmi6U=
------END PUBLIC KEY-----
-',
+           -- Authorization: Bearer "OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc"
+        '\x38292b85b0cc8941bbad8d4b9527f2c01be092a6f50b23add1d8c8828b3d403cfa5f221a3fe81807ad9727a1caefc7df3edbc35728bd6d18f8163d71555c857a2c593d6d1a9d4d342f3c77a9c9223f6e57b797196d94d7c4529f6fa89f1e9162f372b0906658aec695717b1fd4b73ad3b0ae7079d2bd9f7eb995129e1acde2b7',
         '{}');
 
 -- insert a fake token under fake_user1
-INSERT INTO public.api_tokens
+INSERT INTO api_tokens
 (token_id, token, user_id, inherits_user_permissions, canceled, created_at, expires_at)
 VALUES ('3be73eea-192f-46c0-af01-92f574290c81',
            -- tml-api-token: B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8
@@ -52,4 +50,8 @@ VALUES ('3be73eea-192f-46c0-af01-92f574290c81',
         true,
         NULL,
         '2024-07-12 13:56:50.616829-07',
-        '2034-07-12 13:56:50.616829-07');
+        '2124-07-12 13:56:50.616829-07');
+
+INSERT INTO user_privileges
+    (user_id, permission)
+VALUES ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'enqueue_ci_job:7d55ec6d-15e7-4b84-8c04-7c085fe60df4');

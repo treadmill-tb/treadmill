@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select supervisor_id, auth_token from supervisors where supervisor_id = $1 limit 1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "supervisor_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "auth_token",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "5010d8032c717958431bb59d4e88c0dfd5ce466d2134653f7f3e10e9030326c2"
+}

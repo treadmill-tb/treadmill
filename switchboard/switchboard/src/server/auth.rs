@@ -10,7 +10,7 @@
 //! In this system, permissions are represented by [`PrivilegedAction`], subjects are represented
 //! by [`Subject`]s, and privileges by [`Privilege`]s.
 
-use crate::server::token::{ApiToken, TokenError, TokenInfoBare};
+use crate::server::token::{ApiTokenInfo, SecurityToken, TokenError};
 use crate::server::AppState;
 use axum::extract::FromRequestParts;
 use axum::response::{IntoResponse, Response};
@@ -22,8 +22,8 @@ use headers::authorization::Bearer;
 use headers::Authorization;
 use http::request::Parts;
 use http::StatusCode;
-use sqlx::PgPool;
-use std::fmt::{Debug, Formatter};
+use sqlx::{PgExecutor, PgPool};
+use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use thiserror::Error;
@@ -36,11 +36,29 @@ impl From<UserId> for Uuid {
         value.0
     }
 }
+
 #[derive(Debug, Copy, Clone)]
 pub struct TokenId(#[allow(dead_code)] Uuid);
 impl From<TokenId> for Uuid {
     fn from(value: TokenId) -> Self {
         value.0
+    }
+}
+impl Display for TokenId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "token ({})", self.0)
+    }
+}
+
+impl TokenId {
+    pub async fn fetch_user(&self, db: impl PgExecutor<'_>) -> Result<UserId, sqlx::Error> {
+        sqlx::query!(
+            "select user_id from api_tokens where api_tokens.token_id = $1;",
+            self.0
+        )
+        .fetch_one(db)
+        .await
+        .map(|r| UserId(r.user_id))
     }
 }
 
@@ -49,7 +67,7 @@ impl From<TokenId> for Uuid {
 /// Accessible _subject_ information (see module docs).
 #[derive(Debug, Clone)]
 pub struct SubjectDetail {
-    token_info: Arc<TokenInfoBare>,
+    token_info: Arc<ApiTokenInfo>,
 }
 impl SubjectDetail {
     pub fn token_id(&self) -> TokenId {
@@ -93,18 +111,18 @@ impl FromRequestParts<AppState> for Subject {
                     TypedHeaderRejectionReason::Missing => None,
                     TypedHeaderRejectionReason::Error(e) => {
                         tracing::error!("failed to extract Authorization<Bearer>: {e:?}");
-                        return Err(rejection.into_response());
+                        return Err(StatusCode::UNAUTHORIZED.into_response());
                     }
                     _ => unreachable!(),
                 },
             },
         };
         if let Some(bearer) = maybe_bearer {
-            let token = ApiToken::try_from(bearer).map_err(|e| {
+            let token = SecurityToken::try_from(bearer).map_err(|e| {
                 tracing::warn!("failed to decode bearer token: {e}");
-                StatusCode::BAD_REQUEST.into_response()
+                StatusCode::UNAUTHORIZED.into_response()
             })?;
-            let token_info = match TokenInfoBare::lookup(&state.db_pool, token).await {
+            let token_info = match ApiTokenInfo::fetch(&state.db_pool, token).await {
                 Ok(tib) => tib,
                 Err(TokenError::InvalidToken) => {
                     tracing::warn!("failed to derive subject: invalid token {token}");

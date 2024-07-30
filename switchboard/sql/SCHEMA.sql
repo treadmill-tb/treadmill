@@ -9,8 +9,10 @@ drop type if exists exit_status;
 drop table if exists job_parameters;
 drop type if exists parameter_value;
 drop table if exists jobs;
-drop table if exists images;
+drop type if exists job_known_state;
+drop type if exists rendezvous_server_spec;
 drop type if exists restart_policy;
+drop table if exists images;
 
 drop table if exists supervisors;
 
@@ -55,7 +57,6 @@ create type api_token_cancellation as
     canceled_at         timestamp with time zone,
     cancellation_reason text
 );
-
 create table api_tokens
 (
 -- internal identifier of the token
@@ -101,44 +102,64 @@ create table supervisors
 
     last_connected_at timestamp with time zone not null,
 
-    public_key        text                     not null,
+    auth_token        bytea                    not null unique,
 
     tags              text[]                   not null
 );
 
 -- BUSINESS LOGIC ---------------- ---------------- ---------------- ---------------- ---------------- ----------------
 
-create type restart_policy as
-(
-    remaining_restart_count integer
-);
-
 create table images
 (
     image_id bytea not null primary key
 );
 
+create type restart_policy as
+(
+    remaining_restart_count integer
+);
+create type rendezvous_server_spec as
+(
+    client_id       uuid,
+    server_base_url text,
+    auth_token      text
+);
+-- Used to store information about the general state of a job so that in the case of disconnection between supervisor
+-- and switchboard, the switchboard is able to make informed decisions about whether it should try to restart the job or
+-- not.
+create type job_known_state as enum (
+    -- The job has not run yet
+    'queued',
+    -- The job is currently running. In a precise sense, the real meaning is "the job MAY be running", however, the
+    -- switchboard should treat "may be running" as "is running"; thus, this state is called 'running'.
+    'running',
+    -- The job has run to completion.
+    'finished');
 create table jobs
 (
-    job_id               uuid           not null primary key,
-    resume_job_id        uuid references jobs (job_id) on delete no action,
-    restart_job_id       uuid references jobs (job_id) on delete no action,
--- MC: for now, since image management isn't really worked out, just completely don't bother with this
---      reason: having the foreign key constraint makes testing fixtures more complicated
-    image_id             bytea, --references images (image_id) on delete no action,
+    job_id                 uuid                     not null primary key,
 
-    ssh_keys             text[]         not null,
+    resume_job_id          uuid references jobs (job_id) on delete no action,
+    restart_job_id         uuid references jobs (job_id) on delete no action,
+    image_id               bytea,
 
-    -- run_command          text,
-    restart_policy       restart_policy not null,
+    ssh_keys               text[]                   not null,
+    ssh_rendezvous_servers rendezvous_server_spec[] not null,
 
-    queued               bool           not null default true,
+    restart_policy         restart_policy           not null,
+    enqueued_by_token_id   uuid                     not null references api_tokens (token_id) on delete no action,
 
-    enqueued_by_token_id uuid           not null references api_tokens (token_id) on delete no action,
+    tag_config             text                     not null,
 
-    tag_config           text           not null,
+    known_state            job_known_state          not null,
+    timeout                interval                 not null,
+
     check
-        ((resume_job_id::int + restart_job_id::int + image_id::int) = 1)
+        (((resume_job_id is not null)::int
+        + (restart_job_id is not null)::int
+        + (image_id is not null)::int)
+        = 1
+        )
 );
 
 create type parameter_value as
