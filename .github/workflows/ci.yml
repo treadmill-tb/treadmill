@@ -1,40 +1,99 @@
-name: treadmill-code-ci
-env:
-  TERM: xterm # Makes tput work in actions output
-
-# Controls when the action will run. Triggers the workflow on push or pull request
-# events but only for the master branch
+name: treadmill-end-to-end-ci
 on:
-  push: # Run CI for all branches except GitHub merge queue tmp branches
+  push:
     branches-ignore:
-    - "gh-readonly-queue/**"
-  pull_request: # Run CI for PRs on any branch
-  merge_group: # Run CI for the GitHub merge queue
-
-permissions:
-  contents: read
-
+      - 'gh-readonly-queue/**'
+  pull_request:
+  merge_group:
+env:
+  TERM: xterm
+  POSTGRES_DB: tml_switchboard
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: postgres
 jobs:
+  e2e-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+      - name: Set up database
+        run: |
+          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMA.sql
+          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/FIXTURES.sql
+        env:
+          PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
+      - name: Build components
+        run: |
+          cargo build --package tml-switchboard
+          cargo build --package tml-mock-supervisor
+          cargo build --package tml-puppet
+      - name: Generate test configurations
+        run: |
+          cp switchboard/switchboard/config.example.toml switchboard_config.toml
+          cp supervisor/mock/config.example.toml mock_supervisor_config.toml
+          # Generate any necessary TLS certificates or keys
+      - name: Start switchboard
+        run: "cargo run --package tml-switchboard -- serve -c switchboard_config.toml &\necho $! > switchboard.pid\nsleep 5 \n"
+      - name: Start mock supervisor
+        run: "cargo run --package tml-mock-supervisor -- -c mock_supervisor_config.toml -p ./target/debug/tml-puppet &\necho $! > mock_supervisor.pid\nsleep 5 \n"
+      - name: Run CLI connector tests
+        run: |
+          cargo test --package tml-cli-connector
+      - name: Run WebSocket connector tests
+        run: |
+          cargo test --package tml-ws-connector
+      - name: Run API endpoint tests
+        run: |
+          echo "TODO"
+      - name: Run database interaction tests
+        run: |
+          echo "TODO"
+      - name: Run puppet communication tests
+        run: |
+          cargo test --package tml-puppet
+      - name: Collect and report results
+        run: ''
+      - name: Stop services
+        run: |
+          kill $(cat switchboard.pid)
+          kill $(cat mock_supervisor.pid)
+      - name: Upload test results
+        uses: actions/upload-artifact@v2
+        with:
+          name: test-results
+          path: |
+            test_results.txt
   ci-format:
     strategy:
       matrix:
         os: [ubuntu-latest]
-
     runs-on: ${{ matrix.os }}
-
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: rustfmt check
         uses: actions-rust-lang/rustfmt@v1
-
   ci-build:
     strategy:
       matrix:
         os: [ubuntu-latest]
-
     runs-on: ${{ matrix.os }}
-
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
