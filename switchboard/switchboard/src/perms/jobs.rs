@@ -68,11 +68,14 @@ pub async fn enqueue_ci_job(
         })?;
     let _ = sqlx::query!(
         r#"insert into user_privileges(user_id, permission)
-        select user_id, $2 from api_tokens
+        select user_id, unnest($2::text[]) from api_tokens
         where api_tokens.token_id = $1
     ;"#,
         Uuid::from(p.subject().token_id()),
-        format!("read_job_status:{job_id}"),
+        &[
+            format!("read_job_status:{job_id}"),
+            format!("stop_job:{job_id}"),
+        ]
     )
     .execute(transaction.as_mut())
     .await
