@@ -69,7 +69,7 @@ pub enum ControlSocket {
 }
 
 pub struct MockSupervisorJobRunningState {
-    start_job_req: connector::StartJobRequest,
+    start_job_req: connector::StartJobMessage,
 
     /// The puppet process handle:
     puppet_proc: tokio::process::Child,
@@ -147,7 +147,7 @@ impl MockSupervisor {
 impl connector::Supervisor for MockSupervisor {
     async fn start_job(
         this: &Arc<Self>,
-        msg: connector::StartJobRequest,
+        msg: connector::StartJobMessage,
     ) -> Result<(), connector::JobError> {
         // This method may be long-lived, but we should avoid performing
         // long-running, uninterruptible actions in here (as this will prevent
@@ -175,7 +175,6 @@ impl connector::Supervisor for MockSupervisor {
         // stopped first:
         if jobs_lg.get(&msg.job_id).is_some() {
             return Err(connector::JobError {
-                request_id: Some(msg.request_id),
                 error_kind: connector::JobErrorKind::AlreadyRunning,
                 description: format!(
                     "Job {:?} is already running and cannot be started again.",
@@ -187,7 +186,6 @@ impl connector::Supervisor for MockSupervisor {
         // Don't start more jobs than we're allowed to:
         if jobs_lg.len() > this.config.mock.max_parallel_jobs {
             return Err(connector::JobError {
-                request_id: Some(msg.request_id),
                 error_kind: connector::JobErrorKind::MaxConcurrentJobs,
                 description: format!(
                     "Supervisor {:?} cannot start any more concurrent jobs (running {}, max {}).",
@@ -277,7 +275,7 @@ impl connector::Supervisor for MockSupervisor {
 
     async fn stop_job(
         this: &Arc<Self>,
-        msg: connector::StopJobRequest,
+        msg: connector::StopJobMessage,
     ) -> Result<(), connector::JobError> {
         // We do not immediately remove the job from the global jobs HashMap, as
         // we want to deallocate all resources before a job with an identical ID
@@ -293,7 +291,6 @@ impl connector::Supervisor for MockSupervisor {
                 .get(&msg.job_id)
                 .cloned()
                 .ok_or(connector::JobError {
-                    request_id: Some(msg.request_id),
                     error_kind: connector::JobErrorKind::JobNotFound,
                     description: format!("Job {:?} not found, cannot stop.", msg.job_id),
                 })?
@@ -330,7 +327,6 @@ impl connector::Supervisor for MockSupervisor {
                 *job_lg = prev_state;
 
                 return Err(connector::JobError {
-                    request_id: Some(msg.request_id),
                     error_kind: connector::JobErrorKind::AlreadyStopping,
                     description: format!("Job {:?} is already stopping.", msg.job_id),
                 });
@@ -379,6 +375,11 @@ impl connector::Supervisor for MockSupervisor {
 
         Ok(())
     }
+    //
+    // async fn request_status(_this: &Arc<Self>) -> SupervisorStatus {
+    //     // MC: I genuinely have no idea how this should be implemented
+    //     todo!()
+    // }
 }
 
 #[async_trait]
@@ -446,7 +447,7 @@ impl control_socket::Supervisor for MockSupervisor {
             // Job not found:
             None => {
                 warn!(
-                    "Received puppet network config request for non-existant job: {:?}",
+                    "Received puppet network config request for non-existent job: {:?}",
                     tgt_job_id
                 );
                 None

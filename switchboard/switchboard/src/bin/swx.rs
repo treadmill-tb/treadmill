@@ -22,15 +22,8 @@ pub enum Command {
     CreateToken(CreateTokenCommand),
 }
 
-fn main() {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("Failed to build Tokio runtime, fatal")
-        .block_on(async { async_main().await });
-}
-
-async fn async_main() {
+#[tokio::main]
+async fn main() {
     let cli_args = Args::parse();
     match cli_args.command {
         Command::Serve(cmd) => {

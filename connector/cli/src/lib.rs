@@ -4,10 +4,12 @@ use std::sync::{Arc, Weak};
 use async_trait::async_trait;
 use log::{error, info};
 use serde::Deserialize;
-use uuid::Uuid;
 
 use treadmill_rs::api::switchboard_supervisor::ParameterValue;
+use treadmill_rs::api::switchboard_supervisor::{JobInitSpec, RestartPolicy};
 use treadmill_rs::connector;
+use treadmill_rs::image::manifest::ImageId;
+use uuid::Uuid;
 
 pub mod cli;
 pub mod edit_tree;
@@ -262,20 +264,22 @@ impl CliCommand {
 
                 let start_job_res = S::start_job(
                     supervisor,
-                    connector::StartJobRequest {
+                    connector::StartJobMessage {
                         job_id,
-                        resume_job: false,
-                        run_command: None,
                         // TODO: require image to be defined
-                        image_id: [
-                            0x04, 0x38, 0xdb, 0x44, 0x6d, 0x43, 0xf6, 0xa5, 0xc3, 0x17, 0xa7, 0x3a,
-                            0x10, 0x53, 0x0f, 0x35, 0xae, 0x41, 0xca, 0x71, 0x74, 0x63, 0xfb, 0xb4,
-                            0x36, 0x7f, 0x31, 0x93, 0x80, 0xa0, 0x5f, 0x2d,
-                        ],
+                        init_spec: JobInitSpec::Image {
+                            image_id: ImageId([
+                                0x04, 0x38, 0xdb, 0x44, 0x6d, 0x43, 0xf6, 0xa5, 0xc3, 0x17, 0xa7,
+                                0x3a, 0x10, 0x53, 0x0f, 0x35, 0xae, 0x41, 0xca, 0x71, 0x74, 0x63,
+                                0xfb, 0xb4, 0x36, 0x7f, 0x31, 0x93, 0x80, 0xa0, 0x5f, 0x2d,
+                            ]),
+                        },
                         ssh_keys,
+                        restart_policy: RestartPolicy {
+                            remaining_restart_count: 0,
+                        },
                         ssh_rendezvous_servers: vec![],
                         parameters,
-                        request_id: Uuid::new_v4(),
                     },
                 )
                 .await;
@@ -294,14 +298,8 @@ impl CliCommand {
                     return false;
                 };
 
-                let stop_job_res = S::stop_job(
-                    supervisor,
-                    connector::StopJobRequest {
-                        job_id,
-                        request_id: Uuid::new_v4(),
-                    },
-                )
-                .await;
+                let stop_job_res =
+                    S::stop_job(supervisor, connector::StopJobMessage { job_id }).await;
 
                 if let Err(stop_job_err) = stop_job_res {
                     error!("Failed to stop job: {:#?}", stop_job_err);

@@ -2,6 +2,7 @@
 //!
 //! See `switchboard/switchboard/config.example.toml` in the git repository for an example.
 
+use miette::{Context, IntoDiagnostic};
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -15,9 +16,7 @@ pub struct Config {
     /// How the database should handle logging output.
     pub logs: Logs,
     /// Server parameters for the public API server.
-    pub public_server: Server,
-    /// Server parameters for the internal control server.
-    pub internal_server: Server,
+    pub server: Server,
     /// Parameters for the websocket backend that supervisors communicate with.
     pub websocket: WebSocket,
     /// General configuration for specific features within the interface.
@@ -39,7 +38,7 @@ pub struct Database {
     /// Host address of the database server.
     pub address: String,
     /// Port at which to connect to the database server.
-    pub port: u16,
+    pub port: Option<u16>,
     /// Name of the database to connect to (while some databases like MySQL treat the current
     /// database context as changeable during a connected session, Postgres doesn't seem to like
     /// doing this so much).
@@ -67,6 +66,12 @@ pub enum DatabaseAuth {
 pub struct Server {
     /// Socket address to bind to.
     pub socket_addr: SocketAddr,
+    /// Optional development-only SSL mode.
+    pub dev_mode_ssl: Option<DevModeSsl>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DevModeSsl {
     /// Public key (for TLS). (currently unused)
     pub cert: PathBuf,
     /// Private key (for TLS). (currently unused)
@@ -92,10 +97,24 @@ pub struct WebSocketAuth {
 /// Api configuration details.
 #[derive(Debug, Deserialize)]
 pub struct Api {
-    /// How long a pre-login pseudo-session lasts for.
-    #[serde(with = "humantime_serde")]
-    pub auth_presession_timeout: Duration,
     /// How long a fully logged-in user session lasts for.
-    #[serde(with = "humantime_serde")]
-    pub auth_session_timeout: Duration,
+    #[serde(with = "treadmill_rs::util::chrono::duration")]
+    pub auth_session_timeout: chrono::TimeDelta,
+    /// Default per-job timeout.
+    #[serde(with = "treadmill_rs::util::chrono::duration")]
+    pub default_job_timeout: chrono::TimeDelta,
+}
+
+pub fn load_config(path: impl AsRef<std::path::Path>) -> miette::Result<Config> {
+    let cfg_text = std::fs::read_to_string(path.as_ref())
+        .into_diagnostic()
+        .wrap_err("Failed to open configuration file")?;
+    toml::from_str(&cfg_text)
+        .into_diagnostic()
+        .wrap_err_with(|| {
+            format!(
+                "Failed to parse configuration file {}",
+                path.as_ref().display()
+            )
+        })
 }
