@@ -70,9 +70,9 @@ jobs:
       - name: Run E2E API tests
         run: |
           # Set up variables
-          tml_supervisor="7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
-          tml_image_id="46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577"
-          tml_token="B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fy"
+          export tml_supervisor="7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
+          export tml_image_id="46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577"
+          export tml_token="B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fy"
 
           # Login and get a session token
           session_token=$(curl -s -X POST "http://localhost:8080/session/login" \
