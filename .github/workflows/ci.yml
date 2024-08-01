@@ -26,14 +26,13 @@ jobs:
           --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - uses: actions/checkout@v4
-      # - name: Install Nix
-      #   uses: cachix/install-nix-action@v22
-      #   with:
-      #     nix_path: nixpkgs=channel:nixos-unstable
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Install dependencies
-        run: "sudo apt-get update\nsudo apt-get install -y postgresql-client\nsudo apt-get install -y jq \n"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          sudo apt-get install -y jq
       - name: Install/Update httpie
         run: |
           sudo apt-get update
@@ -171,7 +170,6 @@ jobs:
       - name: Run puppet communication tests
         run: |
           echo "TODO"
-        # cargo test --package tml-puppet
       - name: Collect and report results
         run: ''
       - name: Stop services
