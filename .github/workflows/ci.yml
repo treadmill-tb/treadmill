@@ -37,6 +37,8 @@ jobs:
         run: |
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMA.sql
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/FIXTURES.sql
+          # Insert the token into the database
+          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -c "INSERT INTO api_tokens (token_id, token, user_id, inherits_user_permissions, created_at, expires_at) VALUES ('3be73eea-192f-46c0-af01-92f574290c81', decode('B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fy', 'base64'), '8752ca01-a650-4716-b0a1-d2f1860e4175', true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '1 year');"
         env:
           PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
       - name: Build components
@@ -45,15 +47,7 @@ jobs:
           cargo build --package tml-mock-supervisor
           cargo build --package tml-puppet
       - name: Generate test configurations
-        run: |
-          cp switchboard/switchboard/config.example.toml switchboard_config.toml
-          cp supervisor/mock/config.example.toml mock_supervisor_config.toml
-          # Edit switchboard config
-          sed -i 's/port = 5400/port = 5432/' switchboard_config.toml
-          sed -i 's/password = ""/password = "postgres"/' switchboard_config.toml
-          sed -i 's/socket_addr = "0.0.0.0:443"/socket_addr = "0.0.0.0:8080"/' switchboard_config.toml
-          # Edit mock supervisor config
-          sed -i 's/switchboard_uri = "wss:\/\/localhost:443"/switchboard_uri = "ws:\/\/localhost:8080"/' mock_supervisor_config.toml
+        run: "cp switchboard/switchboard/config.example.toml switchboard_config.toml\ncp supervisor/mock/config.example.toml mock_supervisor_config.toml\n# Edit switchboard config\nsed -i 's/port = 5400/port = 5432/' switchboard_config.toml\nsed -i 's/password = \"\"/password = \"postgres\"/' switchboard_config.toml\nsed -i 's/socket_addr = \"0.0.0.0:443\"/socket_addr = \"0.0.0.0:8080\"/' switchboard_config.toml\n# Edit mock supervisor config\nsed -i 's/switchboard_uri = \"wss:\\/\\/localhost:443\"/switchboard_uri = \"ws:\\/\\/localhost:8080\"/' mock_supervisor_config.toml\nsed -i 's/token = \"OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc\"/token = \"B1oy2ko1wVdGKbvKc\\/9dKi7ggZYLTLzdm2As4CWV15fy\"/' mock_supervisor_config.toml      \n"
       - name: Start switchboard
         run: |
           export RUST_LOG=debug
@@ -73,7 +67,7 @@ jobs:
           # Set up variables
           tml_supervisor="7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
           tml_image_id="46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577"
-          tml_token="B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fy"
+          tml_token="tml-api-token: B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fy"
 
           echo "Using pre-defined token: $tml_token"
 
