@@ -33,7 +33,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client
           sudo apt-get install -y jq
-          sudo apt-get update && sudo apt-get install -y httpie
+      #    sudo apt-get update && sudo apt-get install -y httpie
+      - name: Install/Update httpie
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip
+          pip3 install --upgrade httpie
       - name: Set up database
         run: |
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMA.sql
