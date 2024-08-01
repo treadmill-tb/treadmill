@@ -37,8 +37,8 @@ jobs:
         run: |
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMA.sql
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/FIXTURES.sql
-          # Insert the token into the database
-          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -c "INSERT INTO api_tokens (token_id, token, user_id, inherits_user_permissions, created_at, expires_at) VALUES ('3be73eea-192f-46c0-af01-92f574290c81', decode('B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fy', 'base64'), '8752ca01-a650-4716-b0a1-d2f1860e4175', true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '1 year');"
+          # Update the existing token in the database
+          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -c "UPDATE api_tokens SET token = decode('075a32da4a35c1574629bbca73ff5d2a2ee081960b4cbcdd9b602ce02595d797f2bb3bc7b1b0503af9cdfbf46907b3af5498d162185d952638885b0d66ae57a4ef1f5e2a9137a3bf827fa73f9700d49ea8c767768d5df64c6cda853640419505c08b08d753327be26eb3decbd5efa5dceff4c81b7fb32c2824517091454e157f', 'hex') WHERE token_id = '3be73eea-192f-46c0-af01-92f574290c81';"
         env:
           PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
       - name: Build components
@@ -47,7 +47,7 @@ jobs:
           cargo build --package tml-mock-supervisor
           cargo build --package tml-puppet
       - name: Generate test configurations
-        run: "cp switchboard/switchboard/config.example.toml switchboard_config.toml\ncp supervisor/mock/config.example.toml mock_supervisor_config.toml\n# Edit switchboard config\nsed -i 's/port = 5400/port = 5432/' switchboard_config.toml\nsed -i 's/password = \"\"/password = \"postgres\"/' switchboard_config.toml\nsed -i 's/socket_addr = \"0.0.0.0:443\"/socket_addr = \"0.0.0.0:8080\"/' switchboard_config.toml\n# Edit mock supervisor config\nsed -i 's/switchboard_uri = \"wss:\\/\\/localhost:443\"/switchboard_uri = \"ws:\\/\\/localhost:8080\"/' mock_supervisor_config.toml\nsed -i 's/token = \"OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc\"/token = \"B1oy2ko1wVdGKbvKc\\/9dKi7ggZYLTLzdm2As4CWV15fy\"/' mock_supervisor_config.toml      \n"
+        run: "cp switchboard/switchboard/config.example.toml switchboard_config.toml\ncp supervisor/mock/config.example.toml mock_supervisor_config.toml\n# Edit switchboard config\nsed -i 's/port = 5400/port = 5432/' switchboard_config.toml\nsed -i 's/password = \"\"/password = \"postgres\"/' switchboard_config.toml\nsed -i 's/socket_addr = \"0.0.0.0:443\"/socket_addr = \"0.0.0.0:8080\"/' switchboard_config.toml\n# Edit mock supervisor config\nsed -i 's/switchboard_uri = \"wss:\\/\\/localhost:443\"/switchboard_uri = \"ws:\\/\\/localhost:8080\"/' mock_supervisor_config.toml\nsed -i 's/token = \"OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc\"/token = \"B1oy2ko1wVdGKbvKc\\/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+\\/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O\\/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O\\/0yBt\\/sywoJFFwkUVOFX8\"/' mock_supervisor_config.toml      \n"
       - name: Start switchboard
         run: |
           export RUST_LOG=debug
@@ -67,9 +67,9 @@ jobs:
           # Set up variables
           tml_supervisor="7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
           tml_image_id="46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577"
-          tml_token="tml-api-token: B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fy"
+          tml_token="B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8"
 
-          echo "Using pre-defined token: $tml_token"
+          echo "Using token: $tml_token"
 
           # Create a job
           echo "Sending job creation request..."
