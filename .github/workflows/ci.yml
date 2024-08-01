@@ -52,11 +52,10 @@ jobs:
         run: "cargo run --package tml-switchboard -- serve -c switchboard_config.toml &\necho $! > switchboard.pid\nsleep 5 \n"
       - name: Start mock supervisor
         run: |
-          cargo run --package tml-mock-supervisor -- -c mock_supervisor_config.toml --puppet-binary ./target/debug/tml-puppet &
+          cargo build --package tml-puppet
+          nohup cargo run --package tml-mock-supervisor -- -c mock_supervisor_config.toml --puppet-binary ./target/debug/tml-puppet > mock_supervisor.log 2>&1 &
           echo $! > mock_supervisor.pid
-          sleep 5      - name: Run API endpoint tests
-          run: |
-            echo "TODO"
+          sleep 5
       - name: Run database interaction tests
         run: |
           echo "TODO"
@@ -68,14 +67,11 @@ jobs:
         run: ''
       - name: Stop services
         run: |
-          kill $(cat switchboard.pid)
-          kill $(cat mock_supervisor.pid)
-      - name: Upload test results
-        uses: actions/upload-artifact@v2
-        with:
-          name: test-results
-          path: |
-            test_results.txt
+          kill $(cat switchboard.pid) || true
+          kill $(cat mock_supervisor.pid) || true
+          cat mock_supervisor.log
+      - name: Check for errors in mock supervisor log
+        run: "if grep -i error mock_supervisor.log; then\n  echo \"Errors found in mock supervisor log\"\n  exit 1\nfi  \n"
   ci-format:
     strategy:
       matrix:
