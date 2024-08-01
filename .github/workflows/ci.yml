@@ -47,15 +47,25 @@ jobs:
         run: |
           cp switchboard/switchboard/config.example.toml switchboard_config.toml
           cp supervisor/mock/config.example.toml mock_supervisor_config.toml
-          # Generate any necessary TLS certificates or keys
+          # Edit switchboard config
+          sed -i 's/port = 5400/port = 5432/' switchboard_config.toml
+          sed -i 's/password = ""/password = "postgres"/' switchboard_config.toml
+          sed -i 's/socket_addr = "0.0.0.0:443"/socket_addr = "0.0.0.0:8080"/' switchboard_config.toml
+          # Edit mock supervisor config
+          sed -i 's/switchboard_uri = "wss:\/\/localhost:443"/switchboard_uri = "ws:\/\/localhost:8080"/' mock_supervisor_config.toml
       - name: Start switchboard
-        run: "cargo run --package tml-switchboard -- serve -c switchboard_config.toml &\necho $! > switchboard.pid\nsleep 5 \n"
+        run: |
+          cargo run --package tml-switchboard -- serve -c switchboard_config.toml &
+          echo $! > switchboard.pid
+          sleep 5
       - name: Start mock supervisor
         run: |
           cargo build --package tml-puppet
           nohup cargo run --package tml-mock-supervisor -- -c mock_supervisor_config.toml --puppet-binary ./target/debug/tml-puppet > mock_supervisor.log 2>&1 &
           echo $! > mock_supervisor.pid
           sleep 5
+      - name: Check mock supervisor log
+        run: cat mock_supervisor.log
       - name: Run database interaction tests
         run: |
           echo "TODO"
