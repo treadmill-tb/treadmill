@@ -98,9 +98,8 @@ jobs:
             exit $1
           }
 
-          # Create a job
           echo "Sending job creation request..."
-          if ! job_response=$(http --check-status --ignore-stdin --timeout=10 --print='HBhbm' -A bearer -a "${tml_token}" POST localhost:8080/api/v1/job/queue \
+          if ! job_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" POST localhost:8080/api/v1/job/queue \
             supervisor_id="${tml_supervisor}" \
             job_request[request_id]="$(uuidgen)" \
             job_request[init_spec][type]=image \
@@ -120,12 +119,11 @@ jobs:
           job_id=$(echo "$job_response" | jq -r '.job_id // empty')
 
           if [ -z "$job_id" ]; then
-            echo "Failed to create job"
+            echo "Failed to extract job ID from response"
             exit 1
           fi
 
           echo "Created job with ID: $job_id"
-
           # Wait for the job to start (you might need to adjust the sleep time)
           sleep 10
 
