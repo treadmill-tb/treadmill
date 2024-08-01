@@ -41,6 +41,18 @@ jobs:
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -c "UPDATE api_tokens SET token = decode('075a32da4a35c1574629bbca73ff5d2a2ee081960b4cbcdd9b602ce02595d797f2bb3bc7b1b0503af9cdfbf46907b3af5498d162185d952638885b0d66ae57a4ef1f5e2a9137a3bf827fa73f9700d49ea8c767768d5df64c6cda853640419505c08b08d753327be26eb3decbd5efa5dceff4c81b7fb32c2824517091454e157f', 'hex') WHERE token_id = '3be73eea-192f-46c0-af01-92f574290c81';"
         env:
           PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
+      - name: Verify token in database
+        run: |
+          token_from_db=$(psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -t -c "SELECT encode(token, 'base64') FROM api_tokens WHERE token_id = '3be73eea-192f-46c0-af01-92f574290c81';")
+          echo "Token from database: $token_from_db"
+          token_in_config=$(grep 'token =' mock_supervisor_config.toml | cut -d'"' -f2)
+          echo "Token in mock supervisor config: $token_in_config"
+          if [ "$token_from_db" != "$token_in_config" ]; then
+            echo "Tokens do not match!"
+            exit 1
+          fi
+        env:
+          PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
       - name: Build components
         run: |
           cargo build --package tml-switchboard
@@ -55,11 +67,7 @@ jobs:
           echo $! > switchboard.pid
           sleep 5
       - name: Start mock supervisor
-        run: |
-          cargo build --package tml-puppet
-          nohup cargo run --package tml-mock-supervisor -- -c mock_supervisor_config.toml --puppet-binary ./target/debug/tml-puppet > mock_supervisor.log 2>&1 &
-          echo $! > mock_supervisor.pid
-          sleep 5
+        run: "cargo build --package tml-puppet\nRUST_LOG=debug cargo run --package tml-mock-supervisor -- -c mock_supervisor_config.toml --puppet-binary ./target/debug/tml-puppet > mock_supervisor.log 2>&1 &\necho $! > mock_supervisor.pid\nsleep 5     \n"
       - name: Check mock supervisor log
         run: cat mock_supervisor.log
       - name: Run E2E API tests
@@ -70,8 +78,13 @@ jobs:
           tml_token="B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8"
 
           echo "Using token: $tml_token"
+          echo "Checking switchboard status..."
+          switchboard_status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+          if [ "$switchboard_status" != "200" ]; then
+            echo "Switchboard is not responding correctly. Status: $switchboard_status"
+            exit 1
+          fi
 
-          # Create a job
           echo "Sending job creation request..."
           job_response=$(curl -v -X POST "http://localhost:8080/api/v1/job/queue" \
             -H "Authorization: Bearer $tml_token" \
