@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_recursion::async_recursion;
@@ -8,14 +9,17 @@ use async_trait::async_trait;
 use clap::Parser;
 use log::{debug, info, warn};
 use serde::Deserialize;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 use uuid::Uuid;
 
+use treadmill_rs::api::switchboard_supervisor::JobInitSpec;
 use treadmill_rs::connector;
 use treadmill_rs::control_socket;
 use treadmill_rs::image;
 use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
-use treadmill_rs::api::switchboard_supervisor::JobInitSpec;
 
 use tml_tcp_control_socket_server::TcpControlSocket;
 
@@ -311,7 +315,6 @@ impl QemuSupervisor {
                 }
             };
 
-
         // Check whether the image store already holds this image. If it does,
         // we can pass the manifest to the `start_job_cont` function. Otherwise,
         // (continue) polling:
@@ -336,7 +339,11 @@ impl QemuSupervisor {
                 // The transition to `start_job_cont` will then report a
                 // subsequent status, such as `Allocating`.
 
-                let manifest = match this.image_store_client.image_manifest(fetching_image_state.image_id).await {
+                let manifest = match this
+                    .image_store_client
+                    .image_manifest(fetching_image_state.image_id)
+                    .await
+                {
                     Ok(manifest) => manifest,
                     Err(manifest_err) => {
                         // We could not retrieve the manifest, despite the image
@@ -374,7 +381,7 @@ impl QemuSupervisor {
                 // function from calling `start_job_cont` twice:
                 *job_lg = QemuSupervisorJobState::ImageFetched(QemuSupervisorImageFetchedState {
                     start_job_req: fetching_image_state.start_job_req,
-		    image_id: fetching_image_state.image_id,
+                    image_id: fetching_image_state.image_id,
                     manifest,
                 });
 
@@ -424,7 +431,10 @@ impl QemuSupervisor {
                         fetching_image_state.start_job_req.job_id,
                         connector::JobError {
                             error_kind: connector::JobErrorKind::InternalError,
-                            description: format!("Failed to fetch image {:?}: {:?}", fetching_image_state.image_id, e),
+                            description: format!(
+                                "Failed to fetch image {:?}: {:?}",
+                                fetching_image_state.image_id, e
+                            ),
                         },
                     )
                     .await;
@@ -808,7 +818,7 @@ impl QemuSupervisor {
         // return immediately:
         let QemuSupervisorImageFetchedState {
             start_job_req,
-	    image_id,
+            image_id,
             manifest,
         } = match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Starting) {
             QemuSupervisorJobState::ImageFetched(state) => state,
@@ -989,6 +999,47 @@ impl QemuSupervisor {
             qemu_proc,
         });
     }
+
+    async fn qemu_monitor_shutdown(qmp_socket_path: &str) -> Result<(), anyhow::Error> {
+        let mut stream = TcpStream::connect(qmp_socket_path).await?;
+
+        // send the shutdown command
+        stream
+            .write_all(b"{\"execute\": \"system_powerdown\"}\n")
+            .await?;
+
+        // Read the response
+        let mut buffer = [0; 1024];
+        let n = stream.read(&mut buffer).await?;
+        let response = std::str::from_utf8(&buffer[..n])?;
+
+        // parse the response to ensure the command was successful
+        if !response.contains("\"return\": {}") {
+            return Err(anyhow::anyhow!(
+                "Unexpected response from QEMU Monitor: {}",
+                response
+            ));
+        }
+
+        Ok(())
+    }
+
+    async fn request_puppet_shutdown(
+        _control_socket: &TcpControlSocket<QemuSupervisor>,
+    ) -> Result<(), anyhow::Error> {
+        // TODO Implement puppet shutdown request here
+        // This involves sending a specific command to the puppet via the control socket
+        unimplemented!("Implement puppet shutdown request");
+    }
+
+    #[allow(dead_code)]
+    async fn take_snapshot(
+        _job_id: Uuid,
+        _qemu_proc: &mut tokio::process::Child,
+    ) -> Result<(), anyhow::Error> {
+        // TODO Implement snapshot functionality here
+        unimplemented!("Implement QEMU snapshot functionality");
+    }
 }
 
 #[async_trait]
@@ -1083,15 +1134,17 @@ impl connector::Supervisor for QemuSupervisor {
         // job's lock in between these polling operations.
 
         let image_id = match start_job_req.init_spec {
-	    JobInitSpec::Image { image_id } => image_id,
-	    unsupported_init_spec => unimplemented!("Unsupported init spec: {:?}", unsupported_init_spec),
-	};
+            JobInitSpec::Image { image_id } => image_id,
+            unsupported_init_spec => {
+                unimplemented!("Unsupported init spec: {:?}", unsupported_init_spec)
+            }
+        };
 
         // Put the job into the `FetchingImage` state:
         let job_id = start_job_req.job_id; // Copy required below
         *job_lg = QemuSupervisorJobState::FetchingImage(QemuSupervisorFetchingImageState {
             start_job_req,
-	    image_id,
+            image_id,
             // Will be set to Some(...) when an asynchronous fetch operation is
             // kicked off:
             poll_task: None,
@@ -1129,44 +1182,9 @@ impl connector::Supervisor for QemuSupervisor {
 
         let mut job_lg = job.lock().await;
 
-        enum StopJobPrevState {
-            FetchingImage(QemuSupervisorFetchingImageState),
-            ImageFetched(QemuSupervisorImageFetchedState),
-            Running(QemuSupervisorJobRunningState),
-        }
-
         // Make sure the job is in a state in which we can stop it. If so, place
         // it into the `Stopping` state.
-        let prev_job_state = match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Stopping)
-        {
-            // Stoppable states:
-            QemuSupervisorJobState::FetchingImage(s) => StopJobPrevState::FetchingImage(s),
-            QemuSupervisorJobState::ImageFetched(s) => StopJobPrevState::ImageFetched(s),
-            QemuSupervisorJobState::Running(s) => StopJobPrevState::Running(s),
-
-            prev_state @ QemuSupervisorJobState::Starting => {
-                // Put back the previous state:
-                *job_lg = prev_state;
-
-                // We must never be able to acquire a lock over a job in
-                // this state. The job will atomically transition from
-                // `Starting` to some other state in the implementation of
-                // `start_job`. This state is just a placeholder in the
-                // global jobs map, such that no other job with the same ID
-                // can be started:
-                unreachable!("Job must not be in `Starting` state!");
-            }
-
-            prev_state @ QemuSupervisorJobState::Stopping => {
-                // Put back the previous state:
-                *job_lg = prev_state;
-
-                return Err(connector::JobError {
-                    error_kind: connector::JobErrorKind::AlreadyStopping,
-                    description: format!("Job {:?} is already stopping.", msg.job_id),
-                });
-            }
-        };
+        let prev_job_state = std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Stopping);
 
         // Job is stopping, let the coordinator know:
         this.connector
@@ -1180,44 +1198,77 @@ impl connector::Supervisor for QemuSupervisor {
 
         // Perform actions depending on the previous job state:
         match prev_job_state {
-            StopJobPrevState::FetchingImage(QemuSupervisorFetchingImageState {
-                start_job_req: _,
-		image_id: _,
-                poll_task,
-            }) => {
-                // Make sure that we don't have another poll task
-                // scheduled. This is potentially racy, where this abort() call
-                // can come right after an invocation of `Self::fetch_image` has
-                // been scheduled. However, that function will not do anything,
-                // given the job state is now `Stopping` instead of
-                // `FetchingImage`:
-                if let Some(handle) = poll_task {
+            QemuSupervisorJobState::FetchingImage(state) => {
+                if let Some(handle) = state.poll_task {
                     handle.abort();
                 }
             }
-
-            StopJobPrevState::ImageFetched(QemuSupervisorImageFetchedState {
-                start_job_req: _,
-		image_id: _,
-                manifest: _,
-            }) => {
+            QemuSupervisorJobState::ImageFetched(_) => {
                 // Nothing to do, the only time we're seeing this state is in
                 // between fetching image, and actually starting the job. Given
                 // that we've acquired the lock between those two functions, we
                 // don't need to deallocate, shut down or abort anything.
             }
-
-            StopJobPrevState::Running(QemuSupervisorJobRunningState {
-                start_job_req: _,
-                control_socket,
-                mut qemu_proc,
-            }) => {
+            QemuSupervisorJobState::Running(mut running_state) => {
                 // TODO: kindly request the puppet to shut down. Here we simply
                 // force it to quit (by using a SIGKILL). This is not nice.
-                qemu_proc.kill().await.unwrap();
+                let shutdown_result = async {
+                    // 1. Request puppet to initiate graceful shutdown
+                    QemuSupervisor::request_puppet_shutdown(&running_state.control_socket).await?;
+
+                    // 2. Use QEMU Monitor to initiate graceful shutdown
+                    let qmp_socket_path = format!("/path/to/qemu/{}_qmp.sock", msg.job_id);
+                    QemuSupervisor::qemu_monitor_shutdown(&qmp_socket_path).await?;
+
+                    // 3. Wait for QEMU to shut down (with timeout)
+                    let shutdown_timeout = Duration::from_secs(300); // 5 minutes
+                    match timeout(shutdown_timeout, running_state.qemu_proc.wait()).await {
+                        Ok(Ok(_)) => {
+                            info!("QEMU process for job {:?} shut down gracefully", msg.job_id);
+                            return Ok(());
+                        }
+                        Ok(Err(e)) => {
+                            return Err(anyhow::anyhow!(
+                                "Error waiting for QEMU to shut down: {:?}",
+                                e
+                            ))
+                        }
+                        Err(_) => {
+                            warn!("Graceful shutdown timed out for job {:?}", msg.job_id);
+                        }
+                    }
+
+                    // 4. If graceful shutdown times out, use SIGKILL as a last resort
+                    warn!("Sending SIGKILL to QEMU process for job {:?}", msg.job_id);
+                    running_state.qemu_proc.kill().await?;
+
+                    Ok(())
+                }
+                .await;
+
+                if let Err(e) = shutdown_result {
+                    warn!("Graceful shutdown failed for job {:?}: {:?}. Ensuring process is terminated.", msg.job_id, e);
+                    // Ensure the process is terminated
+                    let _ = running_state.qemu_proc.kill().await;
+                }
 
                 // Shut down the control socket server:
-                control_socket.shutdown().await.unwrap();
+                running_state.control_socket.shutdown().await.unwrap();
+            }
+            QemuSupervisorJobState::Starting => {
+                // We must never be able to acquire a lock over a job in
+                // this state. The job will atomically transition from
+                // `Starting` to some other state in the implementation of
+                // `start_job`. This state is just a placeholder in the
+                // global jobs map, such that no other job with the same ID
+                // can be started:
+                unreachable!("Job must not be in `Starting` state!");
+            }
+            QemuSupervisorJobState::Stopping => {
+                return Err(connector::JobError {
+                    error_kind: connector::JobErrorKind::AlreadyStopping,
+                    description: format!("Job {:?} is already stopping.", msg.job_id),
+                });
             }
         }
 
@@ -1415,7 +1466,7 @@ async fn main() -> Result<()> {
 
             Ok(())
         }
-	SupervisorCoordConnector::WsConnector => {
+        SupervisorCoordConnector::WsConnector => {
             let ws_connector_config = config.ws_connector.clone().ok_or(anyhow!(
                 "Requested WsConnector, but `ws_connector` config not present."
             ))?;
