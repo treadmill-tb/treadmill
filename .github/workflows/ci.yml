@@ -69,8 +69,6 @@ jobs:
       - name: Check mock supervisor log
         run: cat mock_supervisor.log
       - name: Run E2E API tests
-        run:
-          - name: Run E2E API tests
         run: |
           # Set up variables
           tml_supervisor="7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
