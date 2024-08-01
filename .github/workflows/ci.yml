@@ -96,6 +96,7 @@ jobs:
             esac
             exit $1
           }
+          http --print='HBhbm' GET localhost:8080/api/v1/health "Authorization: Bearer ${tml_token}"
 
           # Create a job
           echo "Sending job creation request..."
