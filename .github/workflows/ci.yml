@@ -76,6 +76,30 @@ jobs:
         run: cat mock_supervisor.log
       - name: Run E2E API tests
         run: |
+          # Function to generate job request JSON
+          generate_job_request() {
+            cat << EOF > job_request.json
+          {
+            "supervisor_id": "${tml_supervisor}",
+            "job_request": {
+              "request_id": "$(uuidgen)",
+              "init_spec": {
+                "type": "image",
+                "image_id": "${tml_image_id}"
+              },
+              "ssh_keys": [],
+              "restart_policy": {
+                "remaining_restart_count": 0
+              },
+              "ssh_rendezvous_servers": [],
+              "parameters": {},
+              "tag_config": "",
+              "override_timeout": null
+            }
+          }
+          EOF
+          }
+
           # Set up variables
           export tml_supervisor="7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
           export tml_image_id="46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577"
@@ -83,19 +107,12 @@ jobs:
 
           echo "Using pre-defined token: $tml_token"
 
+          # Generate job request JSON
+          generate_job_request
+
           # Create a job
           echo "Sending job creation request..."
-          job_response=$(http --print='HBhbm' -A bearer -a "${tml_token}" POST localhost:8080/api/v1/job/queue \
-            supervisor_id="${tml_supervisor}" \
-            job_request[request_id]="$(uuidgen)" \
-            job_request[init_spec][type]=image \
-            job_request[init_spec][image_id]="${tml_image_id}" \
-            job_request[ssh_keys]:='[]' \
-            job_request[restart_policy][remaining_restart_count]:=0 \
-            job_request[ssh_rendezvous_servers]:='[]' \
-            job_request[parameters]:='{}' \
-            job_request[tag_config]='' \
-            job_request[override_timeout]:=null)
+          job_response=$(http --print='HBhbm' -A bearer -a "${tml_token}" POST localhost:8080/api/v1/job/queue @job_request.json)
 
           echo "Create job response: $job_response"
 
@@ -142,6 +159,9 @@ jobs:
           fi
 
           echo "E2E API test completed successfully"
+
+          # Clean up
+          rm job_request.json
       - name: Run database interaction tests
         run: |
           echo "TODO"
