@@ -38,7 +38,7 @@ jobs:
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMA.sql
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/FIXTURES.sql
           # Update the existing token in the database
-          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -c "UPDATE api_tokens SET token = decode('075a32da4a35c1574629bbca73ff5d2a2ee081960b4cbcdd9b602ce02595d797f2bb3bc7b1b0503af9cdfbf46907b3af5498d162185d952638885b0d66ae57a4ef1f5e2a9137a3bf827fa73f9700d49ea8c767768d5df64c6cda853640419505c08b08d753327be26eb3decbd5efa5dceff4c81b7fb32c2824517091454e157f', 'hex') WHERE token_id = '3be73eea-192f-46c0-af01-92f574290c81';"
+          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -c "UPDATE api_tokens SET token = decode('B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8', 'base64') WHERE token_id = '3be73eea-192f-46c0-af01-92f574290c81';"
         env:
           PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
       - name: Build components
@@ -47,16 +47,18 @@ jobs:
           cargo build --package tml-mock-supervisor
           cargo build --package tml-puppet
       - name: Generate test configurations
-        run: "cp switchboard/switchboard/config.example.toml switchboard_config.toml\ncp supervisor/mock/config.example.toml mock_supervisor_config.toml\n# Edit switchboard config\nsed -i 's/port = 5400/port = 5432/' switchboard_config.toml\nsed -i 's/password = \"\"/password = \"postgres\"/' switchboard_config.toml\nsed -i 's/socket_addr = \"0.0.0.0:443\"/socket_addr = \"0.0.0.0:8080\"/' switchboard_config.toml\n# Edit mock supervisor config\nsed -i 's/switchboard_uri = \"wss:\\/\\/localhost:443\"/switchboard_uri = \"ws:\\/\\/localhost:8080\"/' mock_supervisor_config.toml\nsed -i 's/token = \"OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc\"/token = \"B1oy2ko1wVdGKbvKc\\/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+\\/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O\\/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O\\/0yBt\\/sywoJFFwkUVOFX8\"/' mock_supervisor_config.toml      \n"
+        run: "cp switchboard/switchboard/config.example.toml switchboard_config.toml\ncp supervisor/mock/config.example.toml mock_supervisor_config.toml\n\n# Edit switchboard config\nsed -i 's/port = 5400/port = 5432/' switchboard_config.toml\nsed -i 's/password = \"\"/password = \"postgres\"/' switchboard_config.toml\nsed -i 's/socket_addr = \"0.0.0.0:443\"/socket_addr = \"0.0.0.0:8080\"/' switchboard_config.toml\n\n# Comment out SSL configuration in switchboard config\nsed -i 's/^#*\\[server\\.dev_mode_ssl\\]/# [server.dev_mode_ssl]/' switchboard_config.toml\nsed -i 's/^#*cert/# cert/' switchboard_config.toml\nsed -i 's/^#*key/# key/' switchboard_config.toml\n\n# Edit mock supervisor config\nsed -i 's/switchboard_uri = \"wss:\\/\\/localhost:443\"/switchboard_uri = \"ws:\\/\\/localhost:8080\"/' mock_supervisor_config.toml\nsed -i 's|token = \".*\"|token = \"B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8\"|' mock_supervisor_config.toml\n\n# Display the contents of the configs for verification\necho \"Switchboard config:\"\ncat switchboard_config.toml\n\necho \"Mock supervisor config:\"\ncat mock_supervisor_config.toml      \n"
       - name: Verify token in database
         run: |
-          token_from_db=$(psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -t -c "SELECT encode(token, 'base64') FROM api_tokens WHERE token_id = '3be73eea-192f-46c0-af01-92f574290c81';")
+          token_from_db=$(psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -t -c "SELECT encode(token, 'base64') FROM api_tokens WHERE token_id = '3be73eea-192f-46c0-af01-92f574290c81';" | tr -d ' \n')
           echo "Token from database: $token_from_db"
           token_in_config=$(grep 'token =' mock_supervisor_config.toml | cut -d'"' -f2)
           echo "Token in mock supervisor config: $token_in_config"
           if [ "$token_from_db" != "$token_in_config" ]; then
             echo "Tokens do not match!"
             exit 1
+          else
+            echo "Tokens match successfully!"
           fi
         env:
           PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
@@ -194,3 +196,27 @@ jobs:
         run: |
           # Pass --locked to ensure that the lockfile in the repository stays current
           cargo build --locked
+
+#           cp switchboard/switchboard/config.example.toml switchboard_config.toml
+#           cp supervisor/mock/config.example.toml mock_supervisor_config.toml
+#
+#           # Edit switchboard config
+#           sed -i 's/port = 5400/port = 5432/' switchboard_config.toml
+#           sed -i 's/password = ""/password = "postgres"/' switchboard_config.toml
+#           sed -i 's/socket_addr = "0.0.0.0:443"/socket_addr = "0.0.0.0:8080"/' switchboard_config.toml
+#
+#           # Comment out SSL configuration in switchboard config
+#           sed -i 's/^#*\[server\.dev_mode_ssl\]/# [server.dev_mode_ssl]/' switchboard_config.toml
+#           sed -i 's/^#*cert/# cert/' switchboard_config.toml
+#           sed -i 's/^#*key/# key/' switchboard_config.toml
+#
+#           # Edit mock supervisor config
+#           sed -i 's/switchboard_uri = "wss:\/\/localhost:443"/switchboard_uri = "ws:\/\/localhost:8080"/' mock_supervisor_config.toml
+#           sed -i 's|token = ".*"|token = "B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8"|' mock_supervisor_config.toml
+#
+#           # Display the contents of the configs for verification
+#           echo "Switchboard config:"
+#           cat switchboard_config.toml
+#
+#           echo "Mock supervisor config:"
+#           cat mock_supervisor_config.toml
