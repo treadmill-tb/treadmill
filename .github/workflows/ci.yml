@@ -41,6 +41,13 @@ jobs:
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -c "UPDATE api_tokens SET token = decode('075a32da4a35c1574629bbca73ff5d2a2ee081960b4cbcdd9b602ce02595d797f2bb3bc7b1b0503af9cdfbf46907b3af5498d162185d952638885b0d66ae57a4ef1f5e2a9137a3bf827fa73f9700d49ea8c767768d5df64c6cda853640419505c08b08d753327be26eb3decbd5efa5dceff4c81b7fb32c2824517091454e157f', 'hex') WHERE token_id = '3be73eea-192f-46c0-af01-92f574290c81';"
         env:
           PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
+      - name: Build components
+        run: |
+          cargo build --package tml-switchboard
+          cargo build --package tml-mock-supervisor
+          cargo build --package tml-puppet
+      - name: Generate test configurations
+        run: "cp switchboard/switchboard/config.example.toml switchboard_config.toml\ncp supervisor/mock/config.example.toml mock_supervisor_config.toml\n# Edit switchboard config\nsed -i 's/port = 5400/port = 5432/' switchboard_config.toml\nsed -i 's/password = \"\"/password = \"postgres\"/' switchboard_config.toml\nsed -i 's/socket_addr = \"0.0.0.0:443\"/socket_addr = \"0.0.0.0:8080\"/' switchboard_config.toml\n# Edit mock supervisor config\nsed -i 's/switchboard_uri = \"wss:\\/\\/localhost:443\"/switchboard_uri = \"ws:\\/\\/localhost:8080\"/' mock_supervisor_config.toml\nsed -i 's/token = \"OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc\"/token = \"B1oy2ko1wVdGKbvKc\\/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+\\/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O\\/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O\\/0yBt\\/sywoJFFwkUVOFX8\"/' mock_supervisor_config.toml      \n"
       - name: Verify token in database
         run: |
           token_from_db=$(psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -t -c "SELECT encode(token, 'base64') FROM api_tokens WHERE token_id = '3be73eea-192f-46c0-af01-92f574290c81';")
@@ -53,13 +60,6 @@ jobs:
           fi
         env:
           PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
-      - name: Build components
-        run: |
-          cargo build --package tml-switchboard
-          cargo build --package tml-mock-supervisor
-          cargo build --package tml-puppet
-      - name: Generate test configurations
-        run: "cp switchboard/switchboard/config.example.toml switchboard_config.toml\ncp supervisor/mock/config.example.toml mock_supervisor_config.toml\n# Edit switchboard config\nsed -i 's/port = 5400/port = 5432/' switchboard_config.toml\nsed -i 's/password = \"\"/password = \"postgres\"/' switchboard_config.toml\nsed -i 's/socket_addr = \"0.0.0.0:443\"/socket_addr = \"0.0.0.0:8080\"/' switchboard_config.toml\n# Edit mock supervisor config\nsed -i 's/switchboard_uri = \"wss:\\/\\/localhost:443\"/switchboard_uri = \"ws:\\/\\/localhost:8080\"/' mock_supervisor_config.toml\nsed -i 's/token = \"OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc\"/token = \"B1oy2ko1wVdGKbvKc\\/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+\\/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O\\/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O\\/0yBt\\/sywoJFFwkUVOFX8\"/' mock_supervisor_config.toml      \n"
       - name: Start switchboard
         run: |
           export RUST_LOG=debug
