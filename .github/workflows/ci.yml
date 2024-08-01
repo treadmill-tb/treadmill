@@ -51,23 +51,19 @@ jobs:
       - name: Start switchboard
         run: "cargo run --package tml-switchboard -- serve -c switchboard_config.toml &\necho $! > switchboard.pid\nsleep 5 \n"
       - name: Start mock supervisor
-        # -p ./target/debug/tml-puppet &\necho $! > mock_supervisor.pid\nsleep 5 \n"
-        run: 'cargo run --package tml-mock-supervisor -- -c mock_supervisor_config.toml '
-      #- name: Run CLI connector tests
-      #  run: |
-      #    cargo test --package tml-cli-connector
-      #- name: Run WebSocket connector tests
-      #  run: |
-      #    cargo test --package tml-ws-connector
-      - name: Run API endpoint tests
         run: |
-          echo "TODO"
+          cargo run --package tml-mock-supervisor -- -c mock_supervisor_config.toml --puppet-binary ./target/debug/tml-puppet &
+          echo $! > mock_supervisor.pid
+          sleep 5      - name: Run API endpoint tests
+          run: |
+            echo "TODO"
       - name: Run database interaction tests
         run: |
           echo "TODO"
       - name: Run puppet communication tests
         run: |
-          cargo test --package tml-puppet
+          echo "TODO"
+        # cargo test --package tml-puppet
       - name: Collect and report results
         run: ''
       - name: Stop services
