@@ -32,6 +32,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql-client
+          sudo apt-get install -y jq
       - name: Set up database
         run: |
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMA.sql
@@ -66,6 +67,81 @@ jobs:
           sleep 5
       - name: Check mock supervisor log
         run: cat mock_supervisor.log
+      - name: Run E2E API tests
+        run: |
+          # Set up variables
+          tml_supervisor="7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
+          tml_image_id="46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577"
+          tml_token="B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fy"
+
+          # Login and get a session token
+          session_token=$(curl -s -X POST "http://localhost:8080/session/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"token\": \"$tml_token\"}" | jq -r '.token')
+
+          if [ -z "$session_token" ]; then
+            echo "Failed to obtain session token"
+            exit 1
+          fi
+
+          # Create a job
+          job_id=$(curl -s -X POST "http://localhost:8080/api/v1/job/queue" \
+            -H "Authorization: Bearer $session_token" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"supervisor_id\": \"$tml_supervisor\",
+              \"job_request\": {
+                \"request_id\": \"$(uuidgen)\",
+                \"init_spec\": {
+                  \"type\": \"image\",
+                  \"image_id\": \"$tml_image_id\"
+                },
+                \"ssh_keys\": [],
+                \"restart_policy\": {
+                  \"remaining_restart_count\": 0
+                },
+                \"ssh_rendezvous_servers\": [],
+                \"parameters\": {},
+                \"tag_config\": \"\",
+                \"override_timeout\": null
+              }
+            }" | jq -r '.job_id')
+
+          if [ -z "$job_id" ]; then
+            echo "Failed to create job"
+            exit 1
+          fi
+
+          echo "Created job with ID: $job_id"
+
+          # Wait for the job to start (you might need to adjust the sleep time)
+          sleep 10
+
+          # Check job status
+          job_status=$(curl -s -X GET "http://localhost:8080/api/v1/job/$job_id/status" \
+            -H "Authorization: Bearer $session_token" | jq -r '.state')
+
+          echo "Job status: $job_status"
+
+          # Cancel the job
+          curl -s -X DELETE "http://localhost:8080/api/v1/job/$job_id" \
+            -H "Authorization: Bearer $session_token"
+
+          echo "Cancelled job"
+
+          # Check job status again
+          job_status=$(curl -s -X GET "http://localhost:8080/api/v1/job/$job_id/status" \
+            -H "Authorization: Bearer $session_token" | jq -r '.state')
+
+          echo "Job status after cancellation: $job_status"
+
+          # Verify the job was cancelled
+          if [ "$job_status" != "Cancelled" ]; then
+            echo "Job was not cancelled successfully"
+            exit 1
+          fi
+
+          echo "E2E API test completed successfully"
       - name: Run database interaction tests
         run: |
           echo "TODO"
