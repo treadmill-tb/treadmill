@@ -3050,6 +3050,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "treadmill-rs",
+ "tungstenite 0.23.0",
  "uuid",
 ]
 

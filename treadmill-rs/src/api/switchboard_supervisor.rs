@@ -251,8 +251,8 @@ pub enum Message {
     SupervisorEvent(SupervisorEvent),
 }
 
-#[non_exhaustive]
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ResponseMessage {
     StatusResponse(SupervisorStatus),
 }
