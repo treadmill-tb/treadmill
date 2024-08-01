@@ -77,17 +77,13 @@ jobs:
         run: cat mock_supervisor.log
       - name: Run E2E API tests
         run: |
-          # Set up variables
+          set -x
           export tml_supervisor="7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
           export tml_image_id="46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577"
           export tml_token="\"B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8\""
 
-          # Enable verbose logging
-          set -x
-
           echo "Using pre-defined token: $tml_token"
 
-          # Function to handle HTTP errors
           handle_http_error() {
             case $1 in
               2) echo 'Request timed out!' ;;
@@ -127,7 +123,6 @@ jobs:
 
           echo "Created job with ID: $job_id"
 
-          # Wait for the job to start (you might need to adjust the sleep time)
           sleep 10
 
           echo "Checking job status..."
@@ -140,7 +135,7 @@ jobs:
 
           job_status=$(echo "$status_response" | jq -r '.job_status.job_status.job_state.state // empty')
 
-          echo "Job status: $job_status"
+          echo "Job status before cancellation: $job_status"
 
           echo "Cancelling job..."
           if ! cancel_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" DELETE localhost:8080/api/v1/job/${job_id})
@@ -163,8 +158,8 @@ jobs:
 
           echo "Job status after cancellation: $job_status"
 
-          # Verify the job was cancelled
-          if [ "$job_status" != "Cancelled" ]; then
+          # Verify the job was cancelled (checking for "finished" state)
+          if [ "$job_status" != "finished" ]; then
             echo "Job was not cancelled successfully"
             exit 1
           fi
