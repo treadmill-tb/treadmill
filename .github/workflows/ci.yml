@@ -34,12 +34,12 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Install dependencies
         run: "sudo apt-get update\nsudo apt-get install -y postgresql-client\nsudo apt-get install -y jq \n"
-      - name: Install/Update httpie
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-pip
-          pip3 install --upgrade httpie
-          pip3 install --upgrade httpie-jwt-auth
+      #- name: Install/Update httpie
+      #  run: |
+      #    sudo apt-get update
+      #    sudo apt-get install -y python3-pip
+      #    pip3 install --upgrade httpie
+      #    pip3 install --upgrade httpie-jwt-auth
       - name: Set up database
         run: |
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMA.sql
