@@ -38,7 +38,7 @@ jobs:
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMA.sql
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/FIXTURES.sql
           # Update the existing token in the database
-          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -c "UPDATE api_tokens SET token = decode('B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8', 'base64') WHERE token_id = '3be73eea-192f-46c0-af01-92f574290c81';"
+          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -c "UPDATE api_tokens SET token = decode('B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8=', 'base64') WHERE token_id = '3be73eea-192f-46c0-af01-92f574290c81';"
         env:
           PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
       - name: Build components
@@ -77,7 +77,7 @@ jobs:
           # Set up variables
           tml_supervisor="7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
           tml_image_id="46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577"
-          tml_token="B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8"
+          tml_token="B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8="
 
           echo "Using token: $tml_token"
           echo "Checking switchboard status..."
