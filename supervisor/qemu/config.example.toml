@@ -36,7 +36,7 @@ qemu_args = [
     "-drive", "file={main_disk_image},id=drive0,format=qcow2,if=none",
     "-device", "scsi-hd,drive=drive0,bus=scsi0.0",
     # Network:
-    "-netdev", "user,id=net0",
+    "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
     "-device", "virtio-net-pci,id=nic0,netdev=net0",
     # Treamill-specific attributes:
     # (10.0.2.2 is the host address in QEMU SLIRP networking)
