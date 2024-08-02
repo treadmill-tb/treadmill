@@ -181,10 +181,17 @@ jobs:
         run: |
           kill $(cat switchboard.pid) || true
           kill $(cat mock_supervisor.pid) || true
-          cat mock_supervisor.log
-      - name: Check for errors in mock supervisor log
+      - name: Check for supervisor panic
         run: |
-          if grep -i error mock_supervisor.log; then
-            echo "Errors found in mock supervisor log"
+          cat mock_supervisor.log
+          if grep -q "thread '.*' panicked at" mock_supervisor.log; then
+            echo "Supervisor panicked. Failing the CI."
+            exit 1
+          fi
+      - name: Check for switchboard panic
+        run: |
+          cat switchboard.log
+          if grep -q "thread '.*' panicked at" switchboard.log; then
+            echo "Switchboard panicked. Failing the CI."
             exit 1
           fi
