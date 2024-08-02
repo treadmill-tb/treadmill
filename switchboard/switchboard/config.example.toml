@@ -13,9 +13,9 @@ PasswordAuth = { username = "postgres", password = "" }
 socket_addr = "0.0.0.0:443"
 
 # Comment out this [server.dev_mode_ssl] table to disable dev-mode SSL
-[server.dev_mode_ssl]
-cert = "config/tls-certs/localhost-public.pem"
-key = "config/tls-certs/localhost.pem"
+#[server.dev_mode_ssl]
+#cert = "config/tls-certs/localhost-public.pem"
+#key = "config/tls-certs/localhost.pem"
 
 [websocket.auth]
 per_message_timeout = "10s"

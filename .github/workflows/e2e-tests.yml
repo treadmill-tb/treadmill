@@ -1,0 +1,186 @@
+name: E2E Tests
+on:
+  push:
+    branches-ignore:
+      - 'gh-readonly-queue/**'
+  pull_request:
+  merge_group:
+env:
+  TERM: xterm
+  POSTGRES_DB: tml_switchboard
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: postgres
+jobs:
+  e2e-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          sudo apt-get install -y jq
+      - name: Install/Update httpie
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip
+          pip3 install --upgrade httpie
+          pip3 install --upgrade httpie-jwt-auth
+      - name: Set up database
+        run: |
+          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMA.sql
+          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/FIXTURES.sql
+        env:
+          PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
+      - name: Build components
+        run: |
+          cargo build --package tml-switchboard
+          cargo build --package tml-mock-supervisor
+          cargo build --package tml-puppet
+      - name: Generate test configurations
+        run: |
+          cp switchboard/switchboard/config.example.toml switchboard_config.toml
+          cp supervisor/mock/config.example.toml mock_supervisor_config.toml
+          # Edit switchboard config
+          sed -i 's/port = 5400/port = 5432/' switchboard_config.toml
+          sed -i 's/password = ""/password = "postgres"/' switchboard_config.toml
+          sed -i 's/socket_addr = "0.0.0.0:443"/socket_addr = "0.0.0.0:8080"/' switchboard_config.toml
+          # Edit mock supervisor config
+          sed -i 's/switchboard_uri = "wss:\/\/localhost:443"/switchboard_uri = "ws:\/\/localhost:8080"/' mock_supervisor_config.toml
+          sed -i 's/coord_connector = "cli_connector"/coord_connector = "ws_connector"/' mock_supervisor_config.toml
+      - name: Start switchboard
+        run: |
+          export RUST_LOG=debug
+          cargo run --package tml-switchboard -- serve -c switchboard_config.toml > switchboard.log 2>&1 &
+          echo $! > switchboard.pid
+          sleep 5
+      - name: Start mock supervisor
+        run: |
+          cargo build --package tml-puppet
+          nohup cargo run --package tml-mock-supervisor -- -c mock_supervisor_config.toml --puppet-binary ./target/debug/tml-puppet > mock_supervisor.log 2>&1 &
+          echo $! > mock_supervisor.pid
+          sleep 5
+      - name: Check mock supervisor log
+        run: cat mock_supervisor.log
+      - name: Run E2E API tests
+        run: |
+          set -x
+          export tml_supervisor="7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
+          export tml_image_id="46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577"
+          export tml_token="\"B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8\""
+
+          echo "Using pre-defined token: $tml_token"
+
+          handle_http_error() {
+            case $1 in
+              2) echo 'Request timed out!' ;;
+              3) echo 'Unexpected HTTP 3xx Redirection!' ;;
+              4) echo 'HTTP 4xx Client Error!' ;;
+              5) echo 'HTTP 5xx Server Error!' ;;
+              6) echo 'Exceeded --max-redirects=<n> redirects!' ;;
+              *) echo 'Other Error!' ;;
+            esac
+            exit $1
+          }
+
+          echo "Sending job creation request..."
+          if ! job_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" POST localhost:8080/api/v1/job/queue \
+            supervisor_id="${tml_supervisor}" \
+            job_request[request_id]="$(uuidgen)" \
+            job_request[init_spec][type]=image \
+            job_request[init_spec][image_id]="${tml_image_id}" \
+            job_request[ssh_keys]:='[]' \
+            job_request[restart_policy][remaining_restart_count]:=0 \
+            job_request[ssh_rendezvous_servers]:='[]' \
+            job_request[parameters]:='{}' \
+            job_request[tag_config]='' \
+            job_request[override_timeout]:=null)
+          then
+            handle_http_error $?
+          fi
+
+          echo "Create job response: $job_response"
+
+          job_id=$(echo "$job_response" | jq -r '.job_id // empty')
+
+          if [ -z "$job_id" ]; then
+            echo "Failed to extract job ID from response"
+            exit 1
+          fi
+
+          echo "Created job with ID: $job_id"
+
+          sleep 10
+
+          echo "Checking job status..."
+          if ! status_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" GET localhost:8080/api/v1/job/${job_id}/status)
+          then
+            handle_http_error $?
+          fi
+
+          echo "Status response: $status_response"
+
+          job_status=$(echo "$status_response" | jq -r '.job_status.job_status.job_state.state // empty')
+
+          echo "Job status before cancellation: $job_status"
+
+          echo "Cancelling job..."
+          if ! cancel_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" DELETE localhost:8080/api/v1/job/${job_id})
+          then
+            handle_http_error $?
+          fi
+
+          echo "Cancel response: $cancel_response"
+          echo "Cancelled job"
+
+          echo "Checking job status after cancellation..."
+          if ! status_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" GET localhost:8080/api/v1/job/${job_id}/status)
+          then
+            handle_http_error $?
+          fi
+
+          echo "Status response after cancellation: $status_response"
+
+          job_status=$(echo "$status_response" | jq -r '.job_status.job_status.job_state.state // empty')
+
+          echo "Job status after cancellation: $job_status"
+
+          # Verify the job was cancelled (checking for "finished" state)
+          if [ "$job_status" != "finished" ]; then
+            echo "Job was not cancelled successfully"
+            exit 1
+          fi
+
+          echo "E2E API test completed successfully"
+      - name: Run database interaction tests
+        run: |
+          echo "TODO"
+      - name: Run puppet communication tests
+        run: |
+          echo "TODO"
+      - name: Collect and report results
+        run: ''
+      - name: Stop services
+        run: |
+          kill $(cat switchboard.pid) || true
+          kill $(cat mock_supervisor.pid) || true
+          cat mock_supervisor.log
+      - name: Check for errors in mock supervisor log
+        run: |
+          if grep -i error mock_supervisor.log; then
+            echo "Errors found in mock supervisor log"
+            exit 1
+          fi
