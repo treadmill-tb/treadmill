@@ -59,6 +59,12 @@ jobs:
         run: |
           cp switchboard/switchboard/config.example.toml switchboard_config.toml
           cp supervisor/mock/config.example.toml mock_supervisor_config.toml
+
+          echo "Original switchboard_config.toml:"
+          cat switchboard_config.toml
+          echo "Original mock_supervisor_config.toml:"
+          cat mock_supervisor_config.toml
+
           # Edit switchboard config
           dasel put -f switchboard_config.toml -t int -v 5432 'postgres.port'
           dasel put -f switchboard_config.toml -t string -v "postgres" 'postgres.password'
@@ -66,6 +72,11 @@ jobs:
           # Edit mock supervisor config
           dasel put -f mock_supervisor_config.toml -t string -v "ws://localhost:8080" 'ws_connector.switchboard_uri'
           dasel put -f mock_supervisor_config.toml -t string -v "ws_connector" 'base.coord_connector'
+
+          echo "Modified switchboard_config.toml:"
+          cat switchboard_config.toml
+          echo "Modified mock_supervisor_config.toml:"
+          cat mock_supervisor_config.toml
       - name: Start switchboard
         run: |
           export RUST_LOG=debug
