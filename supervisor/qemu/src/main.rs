@@ -133,6 +133,8 @@ pub struct QemuConfig {
     working_disk_max_bytes: u64,
 
     tcp_control_socket_listen_addr: std::net::SocketAddr,
+
+    start_script: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -694,7 +696,7 @@ impl QemuSupervisor {
         start_job_req: &connector::StartJobMessage,
         top_image_path: &Path,
         top_image_qemu_info: &QemuImgMetadata,
-    ) -> Result<PathBuf, connector::JobError> {
+    ) -> Result<(PathBuf, PathBuf), connector::JobError> {
         // Ensure that the state/jobs directory (and all recursive parents)
         // exists:
         let jobs_dir = self.config.qemu.state_dir.join("jobs");
@@ -778,7 +780,7 @@ impl QemuSupervisor {
                 ),
             })?;
 
-        Ok(disk_image_file)
+        Ok((job_dir, disk_image_file))
     }
 
     async fn start_job_cont(this: &Arc<Self>, job_id: Uuid) {
@@ -882,7 +884,7 @@ impl QemuSupervisor {
             };
 
         // Allocate the job's disk:
-        let job_disk_image_path = match this
+        let (job_workdir, job_disk_image_path) = match this
             .start_job_parse_manifest_allocate_disk(
                 &start_job_req,
                 &top_image_path,
@@ -912,10 +914,14 @@ impl QemuSupervisor {
             }
         };
 
-        // Template the QEMU arguments:
+        // Start script environment variables / QEMU command line
+        // parameter template strings:
         let mut qemu_arg_substs: HashMap<String, String> = HashMap::new();
         assert!(qemu_arg_substs
             .insert("job_id".to_string(), start_job_req.job_id.to_string())
+            .is_none());
+        assert!(qemu_arg_substs
+            .insert("job_workdir".to_string(), job_workdir.display().to_string())
             .is_none());
         assert!(qemu_arg_substs
             .insert(
@@ -923,6 +929,23 @@ impl QemuSupervisor {
                 job_disk_image_path.display().to_string()
             )
             .is_none());
+
+        if let Some(ref start_script) = this.config.qemu.start_script {
+            let start_script_res = tokio::process::Command::new(start_script)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .envs(
+                    qemu_arg_substs
+                        .iter()
+                        .map(|(k, v)| (format!("TML_{}", k.to_uppercase()), v)),
+                )
+                .output()
+                .await
+                .unwrap(); // TODO: remove panic!
+
+            assert!(start_script_res.status.success(), "Start script failed!");
+        }
 
         let qemu_args = match this
             .config
