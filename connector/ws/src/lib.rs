@@ -231,9 +231,8 @@ impl<S: connector::Supervisor> Inner<S> {
                     }
                 }
                 msg = socket.next() => {
-                    let msg = msg.unwrap();
                     match msg {
-                        Ok(msg) => {
+                        Some(Ok(msg)) => {
                             match msg {
                                 tungstenite::Message::Text(s) => {
                                     let msg : switchboard_supervisor::Message = match serde_json::from_str(&s) {
@@ -277,8 +276,13 @@ impl<S: connector::Supervisor> Inner<S> {
                                 tungstenite::Message::Frame(_) => {unreachable!()}
                             }
                         }
-                        Err(e) => {
+                        Some(Err(e)) => {
                             tracing::error!("Failed to receive message on websocket: {e}");
+                        }
+                        None => {
+                            tracing::warn!("WebSocket stream closed unexpectedly");
+                            return; // This is typically because the server closed the connection
+                                    // via a kill signal or similar event.
                         }
                     }
                 }
