@@ -103,7 +103,7 @@ jobs:
             exit 1
           }
 
-                    echo "Sending job creation request..."
+          echo "Sending job creation request..."
           job_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" POST localhost:8080/api/v1/job/queue \
             supervisor_id="${tml_supervisor}" \
             job_request[request_id]="$(uuidgen)" \
