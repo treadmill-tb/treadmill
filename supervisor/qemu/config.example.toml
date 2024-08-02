@@ -27,6 +27,8 @@ qemu_args = [
     # Base machine configuration:
     "-machine", "q35",
     "-m", "4G",
+    "-drive", "if=pflash,format=raw,readonly=on,file={job_workdir}/OVMF_CODE.fd",
+    "-drive", "if=pflash,format=raw,file={job_workdir}/OVMF_VARS.fd",
     # Storage:
     "-device", "virtio-scsi-pci,id=scsi0",
     "-drive", "file={main_disk_image},id=drive0,format=qcow2,if=none",
@@ -45,3 +47,5 @@ tcp_control_socket_listen_addr = "0.0.0.0:3859"
 # sufficient to support most images, even heavy-weight toolchains
 # (such as OpenTitan with Bazel and Vivado Lab tools)
 working_disk_max_bytes = 34359738368
+
+start_script = "./nix_ovmf-vars_start_script.sh"
