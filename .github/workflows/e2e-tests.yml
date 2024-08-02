@@ -75,8 +75,15 @@ jobs:
           sleep 5
       - name: Check mock supervisor log
         run: cat mock_supervisor.log
+      - name: Check for supervisor panic
+        run: |
+          if grep -q "thread '.*' panicked at" mock_supervisor.log; then
+            echo "Supervisor panicked. Failing the CI."
+            exit 1
+          fi
       - name: Run E2E API tests
         run: |
+          set -e
           set -x
           export tml_supervisor="7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
           export tml_image_id="46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577"
@@ -93,11 +100,11 @@ jobs:
               6) echo 'Exceeded --max-redirects=<n> redirects!' ;;
               *) echo 'Other Error!' ;;
             esac
-            exit $1
+            exit 1
           }
 
           echo "Sending job creation request..."
-          if ! job_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" POST localhost:8080/api/v1/job/queue \
+          job_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" POST localhost:8080/api/v1/job/queue \
             supervisor_id="${tml_supervisor}" \
             job_request[request_id]="$(uuidgen)" \
             job_request[init_spec][type]=image \
@@ -107,10 +114,7 @@ jobs:
             job_request[ssh_rendezvous_servers]:='[]' \
             job_request[parameters]:='{}' \
             job_request[tag_config]='' \
-            job_request[override_timeout]:=null)
-          then
-            handle_http_error $?
-          fi
+            job_request[override_timeout]:=null) || handle_http_error $?
 
           echo "Create job response: $job_response"
 
