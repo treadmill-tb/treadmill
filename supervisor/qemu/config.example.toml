@@ -1,0 +1,47 @@
+[base]
+supervisor_id = "7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
+coord_connector = "cli_connector"
+
+[cli_connector]
+# Doesn't do anything yet, but we require the images key to be present
+images = { }
+
+[image_store]
+# Doesn't do anything yet. This endpoint will be used to request
+# images to be downloaded etc. later on:
+http_endpoint = "https://localhost:8080"
+
+# Local mountpoint of the read-only image store:
+fs_endpoint = "./image-store"
+
+[qemu]
+qemu_binary = "qemu-kvm"
+qemu_img_binary = "qemu-img"
+
+state_dir = "./state"
+
+qemu_args = [
+    # Misc:
+    "-name", "tml-{job_id}",
+    "-nographic",
+    # Base machine configuration:
+    "-machine", "q35",
+    "-m", "4G",
+    # Storage:
+    "-device", "virtio-scsi-pci,id=scsi0",
+    "-drive", "file={main_disk_image},id=drive0,format=qcow2,if=none",
+    "-device", "scsi-hd,drive=drive0,bus=scsi0.0",
+    # Network:
+    "-netdev", "user,id=net0",
+    "-device", "virtio-net-pci,id=nic0,netdev=net0",
+    # Treamill-specific attributes:
+    # (10.0.2.2 is the host address in QEMU SLIRP networking)
+    "-fw_cfg", "name=opt/org.tockos.treadmill.tcp-ctrl-socket,string=10.0.2.2:3859",
+]
+
+tcp_control_socket_listen_addr = "0.0.0.0:3859"
+
+# Each VM will have at most 32GB to work with. This should be
+# sufficient to support most images, even heavy-weight toolchains
+# (such as OpenTitan with Bazel and Vivado Lab tools)
+working_disk_max_bytes = 34359738368

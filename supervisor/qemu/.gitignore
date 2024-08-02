@@ -1,0 +1,5 @@
+# State directory, for development with default config
+/state
+
+# Image store, for development with default config
+/image-store
