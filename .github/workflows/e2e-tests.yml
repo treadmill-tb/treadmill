@@ -52,8 +52,17 @@ jobs:
           cargo build --package tml-switchboard
           cargo build --package tml-mock-supervisor
           cargo build --package tml-puppet
-            - name: Generate test configurations
-        run: "cp switchboard/switchboard/config.example.toml switchboard_config.toml\ncp supervisor/mock/config.example.toml mock_supervisor_config.toml\n# Edit switchboard config\ntq -i -f switchboard_config.toml 'database.port = 5432'\ntq -i -f switchboard_config.toml 'database.password = \"postgres\"'\ntq -i -f switchboard_config.toml 'server.socket_addr = \"0.0.0.0:8080\"'\n# Edit mock supervisor config\ntq -i -f mock_supervisor_config.toml 'ws_connector.switchboard_uri = \"ws://localhost:8080\"'\ntq -i -f mock_supervisor_config.toml 'base.coord_connector = \"ws_connector\"'  \n"
+      - name: Generate test configurations
+        run: |
+          cp switchboard/switchboard/config.example.toml switchboard_config.toml
+          cp supervisor/mock/config.example.toml mock_supervisor_config.toml
+          # Edit switchboard config
+          tq -i -f switchboard_config.toml 'database.port = 5432'
+          tq -i -f switchboard_config.toml 'database.password = "postgres"'
+          tq -i -f switchboard_config.toml 'server.socket_addr = "0.0.0.0:8080"'
+          # Edit mock supervisor config
+          tq -i -f mock_supervisor_config.toml 'ws_connector.switchboard_uri = "ws://localhost:8080"'
+          tq -i -f mock_supervisor_config.toml 'base.coord_connector = "ws_connector"'
       - name: Start switchboard
         run: |
           export RUST_LOG=debug
