@@ -33,7 +33,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client
           sudo apt-get install -y jq
-          sudo apt-get install -y yq
+      - name: Install dasel
+        run: |
+          curl -sSLf "https://github.com/TomWright/dasel/releases/download/v2.8.1/dasel_linux_amd64" -o dasel
+          chmod +x dasel
+          sudo mv dasel /usr/local/bin/dasel
       - name: Install/Update httpie
         run: |
           sudo apt-get update
@@ -56,12 +60,12 @@ jobs:
           cp switchboard/switchboard/config.example.toml switchboard_config.toml
           cp supervisor/mock/config.example.toml mock_supervisor_config.toml
           # Edit switchboard config
-          yq -i '.postgres.port = 5432' switchboard_config.toml
-          yq -i '.postgres.password = "postgres"' switchboard_config.toml
-          yq -i '.socket_addr = "0.0.0.0:8080"' switchboard_config.toml
+          dasel put -f switchboard_config.toml -t int -v 5432 'postgres.port'
+          dasel put -f switchboard_config.toml -t string -v "postgres" 'postgres.password'
+          dasel put -f switchboard_config.toml -t string -v "0.0.0.0:8080" 'socket_addr'
           # Edit mock supervisor config
-          yq -i '.ws_connector.switchboard_uri = "ws://localhost:8080"' mock_supervisor_config.toml
-          yq -i '.base.coord_connector = "ws_connector"' mock_supervisor_config.toml
+          dasel put -f mock_supervisor_config.toml -t string -v "ws://localhost:8080" 'ws_connector.switchboard_uri'
+          dasel put -f mock_supervisor_config.toml -t string -v "ws_connector" 'base.coord_connector'
       - name: Start switchboard
         run: |
           export RUST_LOG=debug
