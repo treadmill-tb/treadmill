@@ -6,6 +6,10 @@ coord_connector = "cli_connector"
 # Doesn't do anything yet, but we require the images key to be present
 images = { }
 
+[ws_connector]
+token = "OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc"
+switchboard_uri = "ws://localhost:8081"
+
 [image_store]
 # Doesn't do anything yet. This endpoint will be used to request
 # images to be downloaded etc. later on:
@@ -34,7 +38,7 @@ qemu_args = [
     "-drive", "file={main_disk_image},id=drive0,format=qcow2,if=none",
     "-device", "scsi-hd,drive=drive0,bus=scsi0.0",
     # Network:
-    "-netdev", "user,id=net0",
+    "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
     "-device", "virtio-net-pci,id=nic0,netdev=net0",
     # Treamill-specific attributes:
     # (10.0.2.2 is the host address in QEMU SLIRP networking)
