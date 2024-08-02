@@ -2948,6 +2948,7 @@ name = "tml-cli-connector"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "hex",
  "inquire",
  "log",
  "serde",

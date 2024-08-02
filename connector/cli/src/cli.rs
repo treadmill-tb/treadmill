@@ -157,6 +157,12 @@ impl<'a, C, M: Clone> ParseChain<'a, C, M> {
         }
     }
 
+    pub fn get_unparsed(&self) -> &str {
+        let (_accepted_cmd, sub_cmd) = split_at_checked(self.input.cmd, self.input.offset).unwrap();
+        let (sub_cmd, _trimmed_offset) = trim_start_offset(sub_cmd);
+        sub_cmd
+    }
+
     pub fn parse_subcommands(
         mut self,
         available_subcommands: &[(
@@ -228,6 +234,13 @@ impl<'a, C, M: Clone> ParseChain<'a, C, M> {
             }
         } else {
             self
+        }
+    }
+
+    pub fn accept_discard_remaining(self, m: M) -> Self {
+        ParseChain {
+            exact_match: Some(m),
+            ..self
         }
     }
 
