@@ -39,6 +39,8 @@ jobs:
           sudo apt-get install -y python3-pip
           pip3 install --upgrade httpie
           pip3 install --upgrade httpie-jwt-auth
+      - name: Install tomlq
+        run: cargo install tomlq
       - name: Set up database
         run: |
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMA.sql
@@ -50,17 +52,8 @@ jobs:
           cargo build --package tml-switchboard
           cargo build --package tml-mock-supervisor
           cargo build --package tml-puppet
-      - name: Generate test configurations
-        run: |
-          cp switchboard/switchboard/config.example.toml switchboard_config.toml
-          cp supervisor/mock/config.example.toml mock_supervisor_config.toml
-          # Edit switchboard config
-          sed -i 's/port = 5400/port = 5432/' switchboard_config.toml
-          sed -i 's/password = ""/password = "postgres"/' switchboard_config.toml
-          sed -i 's/socket_addr = "0.0.0.0:443"/socket_addr = "0.0.0.0:8080"/' switchboard_config.toml
-          # Edit mock supervisor config
-          sed -i 's/switchboard_uri = "wss:\/\/localhost:443"/switchboard_uri = "ws:\/\/localhost:8080"/' mock_supervisor_config.toml
-          sed -i 's/coord_connector = "cli_connector"/coord_connector = "ws_connector"/' mock_supervisor_config.toml
+            - name: Generate test configurations
+        run: "cp switchboard/switchboard/config.example.toml switchboard_config.toml\ncp supervisor/mock/config.example.toml mock_supervisor_config.toml\n# Edit switchboard config\ntq -i -f switchboard_config.toml 'database.port = 5432'\ntq -i -f switchboard_config.toml 'database.password = \"postgres\"'\ntq -i -f switchboard_config.toml 'server.socket_addr = \"0.0.0.0:8080\"'\n# Edit mock supervisor config\ntq -i -f mock_supervisor_config.toml 'ws_connector.switchboard_uri = \"ws://localhost:8080\"'\ntq -i -f mock_supervisor_config.toml 'base.coord_connector = \"ws_connector\"'  \n"
       - name: Start switchboard
         run: |
           export RUST_LOG=debug
