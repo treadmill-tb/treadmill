@@ -1254,9 +1254,10 @@ impl control_socket::Supervisor for QemuSupervisor {
     async fn ssh_keys(&self, tgt_job_id: Uuid) -> Option<Vec<String>> {
         match self.jobs.lock().await.get(&tgt_job_id) {
             Some(job_state) => match &*job_state.lock().await {
-                // We don't actually store any SSH keys for the QemuSupervisor
-                // job, so just return an empty set:
-                QemuSupervisorJobState::Running(_) => Some(vec![]),
+                QemuSupervisorJobState::Running(QemuSupervisorJobRunningState {
+                    start_job_req,
+                    ..
+                }) => Some(start_job_req.ssh_keys.clone()),
 
                 // Only respond to host / puppet requests when the job is marked
                 // as "running":
