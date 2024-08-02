@@ -71,6 +71,48 @@ impl CliSelectJobCommand {
 }
 
 #[derive(Debug, Clone)]
+pub struct CliJobSetImageCommand {
+    image_id: [u8; 32],
+}
+
+impl CliJobSetImageCommand {
+    pub fn parse<'a>(input: cli::ParseInput<'a, CliState>) -> cli::ParseChain<'a, CliState, Self> {
+        match input.ctx.selected_job {
+            None => input.parse().error("Select a job first (job <uuid>)"),
+            Some(_) => {
+                let mut image_id = [0_u8; 32];
+                let parser = input.parse();
+                match hex::decode_to_slice(parser.get_unparsed(), &mut image_id[..]) {
+                    Ok(()) => parser.accept_discard_remaining(CliJobSetImageCommand { image_id }),
+                    Err(e) => parser.error(format!(
+                        "Supplied image ID is not a 32-byte hex string: {:?}",
+                        e
+                    )),
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum CliJobSetCommand {
+    SetImage(CliJobSetImageCommand),
+}
+impl CliJobSetCommand {
+    pub fn parse<'a>(input: cli::ParseInput<'a, CliState>) -> cli::ParseChain<'a, CliState, Self> {
+        match input.ctx.selected_job {
+            None => input.parse().error("Select a job first (job <uuid>)"),
+            Some(_) => input
+                .parse()
+                .missing_unknown_command_error()
+                .parse_subcommands(&[("image", &|input| {
+                    CliJobSetImageCommand::parse(input).map_match(CliJobSetCommand::SetImage)
+                })]),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct CliStartJobCommand;
 impl CliStartJobCommand {
     pub fn parse<'a>(input: cli::ParseInput<'a, CliState>) -> cli::ParseChain<'a, CliState, Self> {
@@ -156,6 +198,7 @@ pub enum CliCommand {
     StopJob(CliStopJobCommand),
     RebootJob(CliRebootJobCommand),
     ResetJob(CliResetJobCommand),
+    JobSet(CliJobSetCommand),
     EditTreeCommand(edit_tree::EditTreeCommand),
     EditTreeExit(CliEditTreeExitCommand),
 }
@@ -213,6 +256,9 @@ impl CliCommand {
                     ("reset", &|input| {
                         CliResetJobCommand::parse(input).map_match(CliCommand::ResetJob)
                     }),
+                    ("set", &|input| {
+                        CliJobSetCommand::parse(input).map_match(CliCommand::JobSet)
+                    }),
                 ])
         }
     }
@@ -230,6 +276,18 @@ impl CliCommand {
                 if let Some(id) = job_id {
                     state.jobs.entry(*id).or_insert(JobState::default());
                 }
+                false
+            }
+            CliCommand::JobSet(CliJobSetCommand::SetImage(CliJobSetImageCommand { image_id })) => {
+                let (_job_id, cli_job_state) = if let Some(id) = state.selected_job {
+                    (id, state.jobs.entry(id).or_insert(JobState::default()))
+                } else {
+                    error!("No job_id selected!");
+                    return false;
+                };
+
+                cli_job_state.image_id = *image_id;
+
                 false
             }
             CliCommand::StartJob(CliStartJobCommand) => {
@@ -266,13 +324,8 @@ impl CliCommand {
                     supervisor,
                     connector::StartJobMessage {
                         job_id,
-                        // TODO: require image to be defined
                         init_spec: JobInitSpec::Image {
-                            image_id: ImageId([
-                                0x04, 0x38, 0xdb, 0x44, 0x6d, 0x43, 0xf6, 0xa5, 0xc3, 0x17, 0xa7,
-                                0x3a, 0x10, 0x53, 0x0f, 0x35, 0xae, 0x41, 0xca, 0x71, 0x74, 0x63,
-                                0xfb, 0xb4, 0x36, 0x7f, 0x31, 0x93, 0x80, 0xa0, 0x5f, 0x2d,
-                            ]),
+                            image_id: ImageId(cli_job_state.image_id.clone()),
                         },
                         ssh_keys,
                         restart_policy: RestartPolicy {
@@ -336,6 +389,7 @@ pub struct JobState {
     // started: bool,
     // image: Option<String>,
     parameters: HashMap<String, String>,
+    image_id: [u8; 32],
 }
 
 #[derive(Default, Debug, Clone)]
