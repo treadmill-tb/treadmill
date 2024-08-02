@@ -33,14 +33,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client
           sudo apt-get install -y jq
+          sudo apt-get install -y yq
       - name: Install/Update httpie
         run: |
           sudo apt-get update
           sudo apt-get install -y python3-pip
           pip3 install --upgrade httpie
           pip3 install --upgrade httpie-jwt-auth
-      - name: Install tomlq
-        run: cargo install tomlq
       - name: Set up database
         run: |
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMA.sql
@@ -57,12 +56,12 @@ jobs:
           cp switchboard/switchboard/config.example.toml switchboard_config.toml
           cp supervisor/mock/config.example.toml mock_supervisor_config.toml
           # Edit switchboard config
-          tq -i -f switchboard_config.toml 'database.port = 5432'
-          tq -i -f switchboard_config.toml 'database.password = "postgres"'
-          tq -i -f switchboard_config.toml 'server.socket_addr = "0.0.0.0:8080"'
+          yq -i '.postgres.port = 5432' switchboard_config.toml
+          yq -i '.postgres.password = "postgres"' switchboard_config.toml
+          yq -i '.socket_addr = "0.0.0.0:8080"' switchboard_config.toml
           # Edit mock supervisor config
-          tq -i -f mock_supervisor_config.toml 'ws_connector.switchboard_uri = "ws://localhost:8080"'
-          tq -i -f mock_supervisor_config.toml 'base.coord_connector = "ws_connector"'
+          yq -i '.ws_connector.switchboard_uri = "ws://localhost:8080"' mock_supervisor_config.toml
+          yq -i '.base.coord_connector = "ws_connector"' mock_supervisor_config.toml
       - name: Start switchboard
         run: |
           export RUST_LOG=debug
