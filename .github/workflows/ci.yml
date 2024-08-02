@@ -55,12 +55,12 @@ jobs:
           cp switchboard/switchboard/config.example.toml switchboard_config.toml
           cp supervisor/mock/config.example.toml mock_supervisor_config.toml
           # Edit switchboard config
-          sed -i 's/port = 5400/port = 5432/' switchboard_config.toml
-          sed -i 's/password = ""/password = "postgres"/' switchboard_config.toml
-          sed -i 's/socket_addr = "0.0.0.0:443"/socket_addr = "0.0.0.0:8080"/' switchboard_config.toml
+          sed -i 's/^port = .*/port = 5432/' switchboard_config.toml
+          sed -i 's/^password = .*/password = "postgres"/' switchboard_config.toml
+          sed -i 's/^socket_addr = .*/socket_addr = "0.0.0.0:8080"/' switchboard_config.toml
           # Edit mock supervisor config
-          sed -i 's/switchboard_uri = "wss:\/\/localhost:443"/switchboard_uri = "ws:\/\/localhost:8080"/' mock_supervisor_config.toml
-          sed -i 's/coord_connector = "cli_connector"/coord_connector = "ws_connector"/' mock_supervisor_config.toml
+          sed -i 's/^switchboard_uri = .*/switchboard_uri = "ws:\/\/localhost:8080"/' mock_supervisor_config.toml
+          sed -i 's/^coord_connector = .*/coord_connector = "ws_connector"/' mock_supervisor_config.toml
       - name: Start switchboard
         run: |
           export RUST_LOG=debug
