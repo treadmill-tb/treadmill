@@ -5,7 +5,13 @@ use std::path::Path;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    pub api_url: String,
+    pub api: Api,
+}
+
+/// Api configuration.
+#[derive(Debug, Deserialize)]
+pub struct Api {
+    pub url: String,
 }
 
 pub fn load_config(config_path: Option<&str>) -> Result<Config> {

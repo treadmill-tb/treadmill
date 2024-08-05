@@ -26,6 +26,14 @@ async fn main() -> Result<()> {
                 .help("Sets a custom config file")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("api_url")
+                .short("u")
+                .long("api-url")
+                .value_name("URL")
+                .help("Sets the API URL directly")
+                .takes_value(true),
+        )
         .subcommand(
             SubCommand::with_name("login")
                 .about("Log in to the Switchboard API")
@@ -55,7 +63,25 @@ async fn main() -> Result<()> {
         )
         .get_matches();
 
-    let config = config::load_config(matches.value_of("config"))?;
+    let config = match (matches.value_of("config"), matches.value_of("api_url")) {
+        (Some(config_path), None) => config::load_config(Some(config_path))?,
+        (None, Some(api_url)) => config::Config {
+            api: config::Api {
+                url: api_url.to_string(),
+            },
+        },
+        (Some(config_path), Some(api_url)) => {
+            let mut config = config::load_config(Some(config_path))?;
+            config.api.url = api_url.to_string();
+            config
+        }
+        (None, None) => {
+            return Err(anyhow::anyhow!(
+                "Either a config file (-c/--config) or an API URL (-u/--api-url) must be provided"
+            ));
+        }
+    };
+
     let client = Client::new();
 
     match matches.subcommand() {
@@ -105,7 +131,7 @@ async fn login(
     };
 
     let response: LoginResponse = client
-        .post(&format!("{}/session/login", config.api_url))
+        .post(&format!("{}/session/login", config.api.url))
         .json(&login_request)
         .send()
         .await?
@@ -156,7 +182,7 @@ async fn enqueue_job(
     };
 
     let response = client
-        .post(&format!("{}/api/v1/job/queue", config.api_url))
+        .post(&format!("{}/api/v1/job/queue", config.api.url))
         .bearer_auth(token)
         .json(&enqueue_request)
         .send()
@@ -172,7 +198,7 @@ async fn get_job_status(client: &Client, config: &config::Config, job_id: Uuid) 
     let token = auth::get_token()?;
 
     let response: JobStatusResponse = client
-        .get(&format!("{}/api/v1/job/{}/status", config.api_url, job_id))
+        .get(&format!("{}/api/v1/job/{}/status", config.api.url, job_id))
         .bearer_auth(token)
         .send()
         .await?
@@ -187,7 +213,7 @@ async fn cancel_job(client: &Client, config: &config::Config, job_id: Uuid) -> R
     let token = auth::get_token()?;
 
     let response = client
-        .delete(&format!("{}/api/v1/job/{}", config.api_url, job_id))
+        .delete(&format!("{}/api/v1/job/{}", config.api.url, job_id))
         .bearer_auth(token)
         .send()
         .await?
