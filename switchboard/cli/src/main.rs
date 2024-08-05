@@ -156,6 +156,8 @@ async fn login(
         password: password.to_string(),
     };
 
+    debug!("Sending login request to url: {}", config.api.url);
+
     let response: LoginResponse = client
         .post(&format!("{}/session/login", config.api.url))
         .json(&login_request)
