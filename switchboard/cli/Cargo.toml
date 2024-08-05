@@ -17,6 +17,8 @@ shellexpand = "2.1"
 toml = "0.5"
 hex = "0.4"
 treadmill-rs = { path = "../../treadmill-rs" }
+log = "0.4.22"
+env_logger = "0.11.5"
 
 [dependencies.tml-switchboard]
 path = "../switchboard"

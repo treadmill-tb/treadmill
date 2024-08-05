@@ -1,13 +1,14 @@
 use anyhow::{Context, Result};
 use clap::{App, Arg, SubCommand};
+use log::{debug, error, info, warn};
 use reqwest::Client;
-use treadmill_rs::api::switchboard_supervisor::{JobInitSpec, RestartPolicy};
-use treadmill_rs::image::manifest::ImageId;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::{
     EnqueueJobRequest, JobRequest, JobStatusResponse, LoginRequest, LoginResponse,
 };
+use treadmill_rs::api::switchboard_supervisor::{JobInitSpec, RestartPolicy};
+use treadmill_rs::image::manifest::ImageId;
 
 mod auth;
 mod config;
@@ -33,6 +34,12 @@ async fn main() -> Result<()> {
                 .value_name("URL")
                 .help("Sets the API URL directly")
                 .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("log")
+                .long("log")
+                .help("Enable logging")
+                .takes_value(false),
         )
         .subcommand(
             SubCommand::with_name("login")
@@ -63,6 +70,10 @@ async fn main() -> Result<()> {
         )
         .get_matches();
 
+    if matches.is_present("log") {
+        env_logger::init();
+    }
+
     let config = match (matches.value_of("config"), matches.value_of("api_url")) {
         (Some(config_path), None) => config::load_config(Some(config_path))?,
         (None, Some(api_url)) => config::Config {
@@ -88,6 +99,7 @@ async fn main() -> Result<()> {
         ("login", Some(login_matches)) => {
             let username = login_matches.value_of("username").unwrap();
             let password = login_matches.value_of("password").unwrap();
+            info!("Attempting login for user: {}", username);
             login(&client, &config, username, password).await?;
         }
         ("job", Some(job_matches)) => match job_matches.subcommand() {
@@ -96,24 +108,37 @@ async fn main() -> Result<()> {
                     Uuid::parse_str(enqueue_matches.value_of("supervisor_id").unwrap())
                         .context("Invalid supervisor ID")?;
                 let image_id = enqueue_matches.value_of("image_id").unwrap();
+                info!(
+                    "Enqueueing job with supervisor ID: {} and image ID: {}",
+                    supervisor_id, image_id
+                );
                 enqueue_job(&client, &config, supervisor_id, image_id).await?;
             }
             ("list", Some(_)) => {
+                warn!("Job list functionality not implemented yet");
                 println!("Job list functionality not implemented yet");
             }
             ("status", Some(status_matches)) => {
                 let job_id = Uuid::parse_str(status_matches.value_of("job_id").unwrap())
                     .context("Invalid job ID")?;
+                info!("Getting status for job ID: {}", job_id);
                 get_job_status(&client, &config, job_id).await?;
             }
             ("cancel", Some(cancel_matches)) => {
                 let job_id = Uuid::parse_str(cancel_matches.value_of("job_id").unwrap())
                     .context("Invalid job ID")?;
+                info!("Cancelling job with ID: {}", job_id);
                 cancel_job(&client, &config, job_id).await?;
             }
-            _ => println!("Invalid job subcommand"),
+            _ => {
+                error!("Invalid job subcommand");
+                println!("Invalid job subcommand");
+            }
         },
-        _ => println!("Invalid command"),
+        _ => {
+            error!("Invalid command");
+            println!("Invalid command");
+        }
     }
 
     Ok(())
@@ -125,6 +150,7 @@ async fn login(
     username: &str,
     password: &str,
 ) -> Result<()> {
+    debug!("Creating login request for user: {}", username);
     let login_request = LoginRequest {
         user_identifier: username.to_string(),
         password: password.to_string(),
@@ -138,6 +164,10 @@ async fn login(
         .json()
         .await?;
 
+    info!(
+        "Login successful. Token expires at: {}",
+        response.expires_at
+    );
     println!(
         "Login successful. Token expires at: {}",
         response.expires_at
@@ -154,6 +184,7 @@ async fn enqueue_job(
     image_id: &str,
 ) -> Result<()> {
     let token = auth::get_token()?;
+    debug!("Retrieved auth token");
 
     let image_id_bytes = hex::decode(image_id).context("Invalid image ID")?;
     let image_id = if image_id_bytes.len() == 32 {
@@ -161,9 +192,11 @@ async fn enqueue_job(
         arr.copy_from_slice(&image_id_bytes);
         ImageId(arr)
     } else {
+        error!("Invalid image ID length");
         return Err(anyhow::anyhow!("Invalid image ID length"));
     };
 
+    debug!("Creating job request");
     let job_request = JobRequest {
         init_spec: JobInitSpec::Image { image_id },
         ssh_keys: vec![],
@@ -181,6 +214,7 @@ async fn enqueue_job(
         job_request,
     };
 
+    debug!("Sending enqueue job request");
     let response = client
         .post(&format!("{}/api/v1/job/queue", config.api.url))
         .bearer_auth(token)
@@ -190,6 +224,7 @@ async fn enqueue_job(
         .json::<serde_json::Value>()
         .await?;
 
+    info!("Job enqueued: {}", response);
     println!("Job enqueued: {}", response);
     Ok(())
 }

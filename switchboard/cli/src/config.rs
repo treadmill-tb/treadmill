@@ -8,7 +8,6 @@ pub struct Config {
     pub api: Api,
 }
 
-/// Api configuration.
 #[derive(Debug, Deserialize)]
 pub struct Api {
     pub url: String,

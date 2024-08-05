@@ -87,12 +87,13 @@ jobs:
           export tml_image_id="46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577"
           export tml_username="fake_user1"
           export tml_password="FAKEFAKE"
+          export RUST_LOG=debug
 
           echo "Logging in..."
-          ./switchboard-cli -c cli_config.toml login "\$tml_username" "\$tml_password"
+          ./switchboard-cli --log -c cli_config.toml login "\$tml_username" "\$tml_password"
 
           echo "Sending job creation request..."
-          job_response=\$(./switchboard-cli -c cli_config.toml job enqueue "\$tml_supervisor" "\$tml_image_id")
+          job_response=\$(./switchboard-cli --log -c cli_config.toml job enqueue "\$tml_supervisor" "\$tml_image_id")
           echo "Create job response: \$job_response"
 
           job_id=\$(echo "\$job_response" | grep -oP 'Job enqueued: \K[a-f0-9-]+')
@@ -107,7 +108,7 @@ jobs:
           sleep 10
 
           echo "Checking job status..."
-          status_response=\$(./switchboard-cli -c cli_config.toml job status "\$job_id")
+          status_response=\$(./switchboard-cli --log -c cli_config.toml job status "\$job_id")
           echo "Status response: \$status_response"
 
           job_status=\$(echo "\$status_response" | grep -oP 'Job status: \K\w+')
@@ -115,12 +116,12 @@ jobs:
           echo "Job status before cancellation: \$job_status"
 
           echo "Cancelling job..."
-          cancel_response=\$(./switchboard-cli -c cli_config.toml job cancel "\$job_id")
+          cancel_response=\$(./switchboard-cli --log -c cli_config.toml job cancel "\$job_id")
           echo "Cancel response: \$cancel_response"
           echo "Cancelled job"
 
           echo "Checking job status after cancellation..."
-          status_response=\$(./switchboard-cli -c cli_config.toml job status "\$job_id")
+          status_response=\$(./switchboard-cli --log -c cli_config.toml job status "\$job_id")
           echo "Status response after cancellation: \$status_response"
 
           job_status=\$(echo "\$status_response" | grep -oP 'Job status: \K\w+')
