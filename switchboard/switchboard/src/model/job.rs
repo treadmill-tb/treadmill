@@ -1,5 +1,5 @@
 use crate::server::auth::SubjectDetail;
-use chrono::TimeDelta;
+use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
 use sqlx::PgExecutor;
 use treadmill_rs::api::switchboard::JobRequest;
@@ -35,11 +35,11 @@ impl From<SqlRendezvousServerSpec> for RendezvousServerSpec {
     }
 }
 #[derive(Debug, Copy, Clone, Eq, PartialEq, sqlx::Type)]
-#[sqlx(type_name = "job_known_state", rename_all = "lowercase")]
+#[sqlx(type_name = "job_known_state", rename_all = "snake_case")]
 pub enum KnownState {
     Queued,
     Running,
-    Finished,
+    NotQueued,
 }
 #[derive(Debug)]
 pub struct JobModel {
@@ -54,6 +54,10 @@ pub struct JobModel {
     tag_config: String,
     known_state: KnownState,
     timeout: PgInterval,
+    #[allow(dead_code)]
+    queued_at: DateTime<Utc>,
+    #[allow(dead_code)]
+    started_at: Option<DateTime<Utc>>,
 }
 impl JobModel {
     pub fn id(&self) -> Uuid {
@@ -115,7 +119,7 @@ pub async fn fetch_by_job_id(id: Uuid, db: impl PgExecutor<'_>) -> Result<JobMod
         r#"SELECT job_id, resume_job_id, restart_job_id, image_id, ssh_keys,
                       ssh_rendezvous_servers as "ssh_rendezvous_servers: _",
                       restart_policy as "restart_policy: _", enqueued_by_token_id,
-                      tag_config, known_state as "known_state: _", timeout
+                      tag_config, known_state as "known_state: _", timeout, queued_at, started_at
                FROM jobs
                WHERE job_id = $1
                LIMIT 1;"#,
@@ -161,8 +165,6 @@ pub async fn insert(
             },
         )
         .collect();
-    // TODO
-    let tag_config = "";
     let timeout = jr
         .override_timeout
         .and_then(|td| PgInterval::try_from(td).ok())
@@ -170,12 +172,13 @@ pub async fn insert(
             PgInterval::try_from(default_timeout)
                 .expect("configured default job timeout could not be converted into PgInterval")
         });
+    let now = Utc::now();
     sqlx::query!(
         r#"INSERT INTO jobs
         (job_id, resume_job_id, restart_job_id, image_id,
          ssh_keys, ssh_rendezvous_servers, restart_policy, enqueued_by_token_id, tag_config,
-         known_state, timeout)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);"#,
+         known_state, timeout, queued_at, started_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, null);"#,
         &job_id,
         resume_job_id,
         restart_job_id,
@@ -184,9 +187,10 @@ pub async fn insert(
         srs.as_slice() as &[SqlRendezvousServerSpec],
         restart_policy.clone() as SqlRestartPolicy,
         token_id,
-        tag_config,
+        &jr.tag_config,
         KnownState::Queued as KnownState,
         &timeout,
+        now.clone(),
     )
     .execute(db)
     .await?;
@@ -199,9 +203,11 @@ pub async fn insert(
         ssh_rendezvous_servers: srs,
         restart_policy,
         enqueued_by_token_id: token_id,
-        tag_config: tag_config.to_string(),
+        tag_config: jr.tag_config.clone(),
         known_state: KnownState::Queued,
         timeout,
+        queued_at: now,
+        started_at: None,
     })
 }
 
@@ -271,4 +277,16 @@ pub mod params {
         .await
         .map(|_| ())
     }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, sqlx::Type)]
+#[sqlx(type_name = "exit_status", rename_all = "snake_case")]
+pub enum ExitStatus {
+    FailedToMatch,
+    QueueTimeout,
+    HostStartFailure,
+    HostTerminatedWithError,
+    HostTerminatedWithSuccess,
+    HostTerminatedTimeout,
+    JobCanceled,
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT job_id, resume_job_id, restart_job_id, image_id, ssh_keys,\n                      ssh_rendezvous_servers as \"ssh_rendezvous_servers: _\",\n                      restart_policy as \"restart_policy: _\", enqueued_by_token_id,\n                      tag_config, known_state as \"known_state: _\", timeout\n               FROM jobs\n               WHERE job_id = $1\n               LIMIT 1;",
+  "query": "SELECT job_id, resume_job_id, restart_job_id, image_id, ssh_keys,\n                      ssh_rendezvous_servers as \"ssh_rendezvous_servers: _\",\n                      restart_policy as \"restart_policy: _\", enqueued_by_token_id,\n                      tag_config, known_state as \"known_state: _\", timeout, queued_at, started_at\n               FROM jobs\n               WHERE job_id = $1\n               LIMIT 1;",
   "describe": {
     "columns": [
       {
@@ -97,7 +97,7 @@
               "Enum": [
                 "queued",
                 "running",
-                "finished"
+                "not_queued"
               ]
             }
           }
@@ -107,6 +107,16 @@
         "ordinal": 10,
         "name": "timeout",
         "type_info": "Interval"
+      },
+      {
+        "ordinal": 11,
+        "name": "queued_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "started_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
@@ -125,8 +135,10 @@
       false,
       false,
       false,
-      false
+      false,
+      false,
+      true
     ]
   },
-  "hash": "878efcf1737a08cc48ba217efe579238e14ebd62ffed88e331f406a319bd4202"
+  "hash": "2ff13a22fe2dcf5419982bc0315e41d7b9fba01f198a4fb1ed73c8c953cbfba6"
 }

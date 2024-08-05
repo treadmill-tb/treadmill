@@ -11,18 +11,19 @@ use axum::extract::ws::{CloseFrame, Message as WsMessage, WebSocket};
 use axum::Error;
 use dashmap::DashMap;
 use futures_util::StreamExt;
+use sqlx::PgExecutor;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::sync::{Arc, Weak};
 use thiserror::Error;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::sync::{mpsc, oneshot, watch, Mutex, OwnedMutexGuard, RwLock};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, OwnedMutexGuard, RwLock, RwLockReadGuard};
 use treadmill_rs::api::switchboard::JobStatus;
 use treadmill_rs::api::switchboard_supervisor;
 use treadmill_rs::api::switchboard_supervisor::{
     Request, ResponseMessage, SupervisorEvent, SupervisorStatus,
 };
-use treadmill_rs::connector::StartJobMessage;
+use treadmill_rs::connector::{StartJobMessage, StopJobMessage};
 use uuid::Uuid;
 
 type OutboxMessage = (
@@ -42,7 +43,7 @@ pub enum HerdError {
     SupervisorAlreadyReserved,
 }
 #[derive(Debug)]
-enum ConnectedSupervisor {
+pub enum ConnectedSupervisor {
     Reserved(Arc<SupervisorActor>),
     Idle(Arc<SupervisorActor>),
 }
@@ -66,14 +67,17 @@ impl ConnectedSupervisor {
         };
         *self = Self::Reserved(Arc::clone(actor));
     }
+    pub fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle(_))
+    }
 }
 #[derive(Debug)]
-enum SupervisorActorWrapper {
+pub enum SupervisorActorWrapper {
     Disconnected,
     Connected(ConnectedSupervisor),
 }
 impl SupervisorActorWrapper {
-    pub fn as_connected(&self) -> Option<&Arc<SupervisorActor>> {
+    fn as_connected(&self) -> Option<&Arc<SupervisorActor>> {
         if let Self::Connected(ref x) = self {
             Some(x.as_connected())
         } else {
@@ -86,6 +90,15 @@ struct HerdInner {
     supervisors: HashMap<Uuid, SupervisorActorWrapper>,
 }
 impl HerdInner {
+    async fn from_database(db: impl PgExecutor<'_>) -> Result<Self, sqlx::Error> {
+        let supervisors = sqlx::query!(r#"select supervisor_id from supervisors;"#)
+            .fetch_all(db)
+            .await?
+            .into_iter()
+            .map(|record| (record.supervisor_id, SupervisorActorWrapper::Disconnected))
+            .collect();
+        Ok(Self { supervisors })
+    }
     async fn supervisor_connected(
         &mut self,
         model: &SupervisorModel,
@@ -115,6 +128,7 @@ impl HerdInner {
             outbox,
             event_receiver: Arc::new(Mutex::new(event_receiver)),
             control_queue,
+            tags: model.tags().to_vec(),
         };
         *supervisor = SupervisorActorWrapper::Connected(ConnectedSupervisor::Idle(Arc::new(actor)));
 
@@ -153,7 +167,7 @@ impl HerdInner {
                 ref mut connected_supervisor @ ConnectedSupervisor::Idle(_),
             ) => {
                 connected_supervisor.make_reserved();
-                let ConnectedSupervisor::Idle(actor) = connected_supervisor else {
+                let ConnectedSupervisor::Reserved(actor) = connected_supervisor else {
                     unreachable!()
                 };
                 actor
@@ -183,8 +197,14 @@ impl HerdInner {
         connected_actor.make_idle();
     }
 }
+#[derive(Debug)]
 pub struct Herd(Arc<RwLock<HerdInner>>);
 impl Herd {
+    pub async fn from_database(db: impl PgExecutor<'_>) -> Result<Self, sqlx::Error> {
+        Ok(Self(Arc::new(RwLock::new(
+            HerdInner::from_database(db).await?,
+        ))))
+    }
     pub async fn supervisor_connected(
         self: &Arc<Self>,
         model: &SupervisorModel,
@@ -213,18 +233,48 @@ impl Herd {
         supervisor_id: Uuid,
     ) -> Result<SupervisorActorProxy, HerdError> {
         let mut lg = self.0.write().await;
+        tracing::debug!("RP1");
         lg.reserve_proxy(supervisor_id, Arc::downgrade(self)).await
     }
     async fn unreserve(&self, supervisor_id: Uuid) {
         let mut lg = self.0.write().await;
         lg.unreserve(supervisor_id);
     }
+    pub async fn lock_supervisors(&self) -> RwLockReadGuard<HashMap<Uuid, SupervisorActorWrapper>> {
+        RwLockReadGuard::map(self.0.read().await, |h| &h.supervisors)
+    }
+}
+pub struct HerdIter<'a> {
+    iter: std::collections::hash_map::Iter<'a, Uuid, SupervisorActorWrapper>,
+}
+impl<'a> HerdIter<'a> {
+    pub fn new<'guard: 'a>(
+        map_guard: &'guard RwLockReadGuard<'a, HashMap<Uuid, SupervisorActorWrapper>>,
+    ) -> Self {
+        let iter = map_guard.iter();
+        Self { iter }
+    }
+}
+impl<'a> Iterator for HerdIter<'a> {
+    type Item = (Uuid, &'a [String]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let (id, saw) = self.iter.next()?;
+            let SupervisorActorWrapper::Connected(connected_supervisor) = saw else {
+                continue;
+            };
+            if connected_supervisor.is_idle() {
+                return Some((*id, connected_supervisor.as_connected().tags.as_slice()));
+            }
+        }
+    }
 }
 
 /// Creates a Tokio task that forwards incoming events from `event_receiver`.
 /// All incoming events are forwarded to the [`mpsc::UnboundedReceiver`] returned, but job state updates
 /// and errors are copied onto the [`watch::Receiver`].
-/// When
+/// When either of the receivers is dropped, the spawned task will complete and exit.
 fn watch_job_status(
     mut event_receiver: OwnedMutexGuard<UnboundedReceiver<SupervisorEvent>>,
 ) -> (
@@ -273,12 +323,14 @@ fn watch_job_status(
     (status_rx, all_rx)
 }
 
+#[derive(Debug)]
 pub struct SupervisorActorProxy {
     supervisor_id: Uuid,
     outbox: UnboundedSender<OutboxMessage>,
     job_status_watch: watch::Receiver<JobStatus>,
     #[allow(dead_code)]
     event_receiver: UnboundedReceiver<SupervisorEvent>,
+    #[allow(dead_code)]
     herd: Weak<Herd>,
 }
 impl Drop for SupervisorActorProxy {
@@ -319,13 +371,24 @@ impl SupervisorActorProxy {
             Some(status)
         })
     }
+    pub async fn stop_current_job(&self, job_id: Uuid) -> Option<()> {
+        // If send returns None, then the supervisor watchdog already knows, and will have begun
+        // unregistering the supervisor.
+        self.outbox
+            .send((
+                switchboard_supervisor::Message::StopJob(StopJobMessage { job_id }),
+                None,
+            ))
+            .ok()
+    }
 }
 
 #[derive(Debug)]
-struct SupervisorActor {
+pub struct SupervisorActor {
     outbox: UnboundedSender<OutboxMessage>,
     event_receiver: Arc<Mutex<UnboundedReceiver<SupervisorEvent>>>,
     control_queue: UnboundedSender<ControlRequest>,
+    tags: Vec<String>,
 }
 impl SupervisorActor {
     async fn check_is_connected(&self) -> bool {

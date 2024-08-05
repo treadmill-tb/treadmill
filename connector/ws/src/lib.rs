@@ -297,9 +297,9 @@ impl<S: connector::Supervisor> Inner<S> {
         );
         {
             let mut lus_lg = self.last_updated_status.lock().await;
-            // MC: We do not currently handle this case, since there is no extant usage, and I am
-            //     unsure of the semantics of JobState::Failed.
-            assert!(!matches!(job_state, JobState::Failed { .. }));
+            // // MC: We do not currently handle this case, since there is no extant usage, and I am
+            // //     unsure of the semantics of JobState::Failed.
+            // assert!(!matches!(job_state, JobState::Failed { .. }));
             // Finished is an event, not a state.
             if matches!(job_state, JobState::Finished { .. }) {
                 *lus_lg = SupervisorStatus::Idle;

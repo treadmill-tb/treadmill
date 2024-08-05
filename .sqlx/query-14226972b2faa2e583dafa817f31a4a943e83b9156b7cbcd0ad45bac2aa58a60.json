@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO jobs\n        (job_id, resume_job_id, restart_job_id, image_id,\n         ssh_keys, ssh_rendezvous_servers, restart_policy, enqueued_by_token_id, tag_config,\n         known_state, timeout)\n               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);",
+  "query": "INSERT INTO jobs\n        (job_id, resume_job_id, restart_job_id, image_id,\n         ssh_keys, ssh_rendezvous_servers, restart_policy, enqueued_by_token_id, tag_config,\n         known_state, timeout, queued_at, started_at)\n               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, null);",
   "describe": {
     "columns": [],
     "parameters": {
@@ -60,15 +60,16 @@
               "Enum": [
                 "queued",
                 "running",
-                "finished"
+                "not_queued"
               ]
             }
           }
         },
-        "Interval"
+        "Interval",
+        "Timestamptz"
       ]
     },
     "nullable": []
   },
-  "hash": "4b8ab884ff07461a84afd90bf869c2b5316e2333eeb4b009c84222ae2a85bf07"
+  "hash": "14226972b2faa2e583dafa817f31a4a943e83b9156b7cbcd0ad45bac2aa58a60"
 }

@@ -76,25 +76,27 @@ pub struct JobRequest {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnqueueJobRequest {
-    /// Supervisor to enqueue job on.
-    pub supervisor_id: Uuid,
     /// Job request.
+    #[serde(flatten)]
     pub job_request: JobRequest,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum EnqueueJobResponse {
     /// Succeeded. (HTTP 200)
-    Ok { job_id: Uuid },
+    Ok {
+        job_id: Uuid,
+    },
     /// Requested supervisor does not exist. (HTTP 404)
     SupervisorNotFound,
     /// Authorization subject does not have sufficient privileges. (HTTP 401)
     Unauthorized,
     /// Job request is invalid. (HTTP 400)
-    Invalid { reason: String },
+    Invalid {
+        reason: String,
+    },
     /// Internal error. (HTTP 500)
     Internal,
-    /// Unable to fulfill request due to lack of available time slots.
     Conflict,
 }
 

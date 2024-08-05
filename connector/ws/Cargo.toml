@@ -31,5 +31,4 @@ toml = "0.8.14"
 thiserror = "1.0.61"
 miette = { version = "7.2.0", features = ["fancy"] }
 rand = { version = "0.9.0-alpha.1", features = ["getrandom"] }
-rand_chacha = "0.9.0-alpha.1"
 async-trait = "0.1.80"
