@@ -48,7 +48,11 @@ jobs:
         run: |
           cd switchboard/cli
           cargo build --release
-          cp target/release/switchboard-cli ../../switchboard-cli
+          find target/release -type f -name "switchboard-cli" -exec cp {} ../../switchboard-cli \;
+          if [ ! -f ../../switchboard-cli ]; then
+            echo "Failed to find or copy switchboard-cli binary"
+            exit 1
+          fi
       - name: Generate test configurations
         run: |
           cp switchboard/switchboard/config.example.toml switchboard_config.toml
