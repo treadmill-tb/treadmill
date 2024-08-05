@@ -93,7 +93,7 @@ jobs:
           echo "Sending job creation request..."
           job_response=$(./switchboard-cli --log -c cli_config.toml job enqueue "${tml_supervisor}" "${tml_image_id}")
           echo "Create job response: ${job_response}"
-          job_id=$(echo "${job_response}" | grep -oP 'Job enqueued: \K[a-f0-9-]+')
+          job_id=$(echo "${job_response}" | grep -oP '"job_id":"[a-f0-9-]+"' | cut -d'"' -f4)
           if [ -z "${job_id}" ]; then
             echo "Failed to extract job ID from response"
             exit 1
