@@ -44,15 +44,8 @@ jobs:
           cargo build --package tml-switchboard
           cargo build --package tml-mock-supervisor
           cargo build --package tml-puppet
-      - name: Build CLI tool
-        run: |
-          cd switchboard/cli
-          cargo build --release
-          find target/release -type f -name "switchboard-cli" -exec cp {} ../../switchboard-cli \;
-          if [ ! -f ../../switchboard-cli ]; then
-            echo "Failed to find or copy switchboard-cli binary"
-            exit 1
-          fi
+          cargo build --package tml-switchboard-cli
+          cp ./target/debug/tml-switchboard-cli ./switchboard-cli
       - name: Generate test configurations
         run: |
           cp switchboard/switchboard/config.example.toml switchboard_config.toml
