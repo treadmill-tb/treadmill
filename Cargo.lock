@@ -3023,25 +3023,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7401a30af6cb5818bb64852270bb722533397edcfc7344954a38f420819ece2"
 
 [[package]]
-name = "switchboard-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap 2.34.0",
- "dirs 3.0.2",
- "hex",
- "reqwest",
- "serde",
- "serde_json",
- "shellexpand",
- "tml-switchboard",
- "tokio",
- "toml 0.5.11",
- "treadmill-rs",
- "uuid",
-]
-
-[[package]]
 name = "syn"
 version = "2.0.72"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3317,6 +3298,25 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "treadmill-rs",
+ "uuid",
+]
+
+[[package]]
+name = "tml-switchboard-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap 2.34.0",
+ "dirs 3.0.2",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "shellexpand",
+ "tml-switchboard",
+ "tokio",
+ "toml 0.5.11",
  "treadmill-rs",
  "uuid",
 ]
