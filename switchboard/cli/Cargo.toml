@@ -1,5 +1,5 @@
 [package]
-name = "switchboard-cli"
+name = "tml-switchboard-cli"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
