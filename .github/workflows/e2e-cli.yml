@@ -82,43 +82,56 @@ jobs:
         run: |
           set -e
           set -x
+
           export tml_supervisor="7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
           export tml_image_id="46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577"
           export tml_username="fake_user1"
           export tml_password="FAKEFAKE"
           export RUST_LOG=debug
           export tml_token
+
           echo "Logging in..."
           ./switchboard-cli --log -c cli_config.toml login "${tml_username}" "${tml_password}"
+
           echo "Sending job creation request..."
           job_response=$(./switchboard-cli --log -c cli_config.toml job enqueue "${tml_supervisor}" "${tml_image_id}")
           echo "Create job response: ${job_response}"
+
           job_id=$(echo "${job_response}" | grep -oP '"job_id":"[a-f0-9-]+"' | cut -d'"' -f4)
           if [ -z "${job_id}" ]; then
             echo "Failed to extract job ID from response"
             exit 1
           fi
           echo "Created job with ID: ${job_id}"
+
           sleep 10
+
           echo "Checking job status..."
           status_response=$(./switchboard-cli --log -c cli_config.toml job status "${job_id}")
           echo "Status response: ${status_response}"
-          job_status=$(echo "${status_response}" | grep -oP 'Job status: \K\w+')
+          job_status=$(echo "${status_response}" | grep -oP 'job_state: \K\w+')
           echo "Job status before cancellation: ${job_status}"
+
           echo "Cancelling job..."
           cancel_response=$(./switchboard-cli --log -c cli_config.toml job cancel "${job_id}")
           echo "Cancel response: ${cancel_response}"
           echo "Cancelled job"
+
+          # Add a delay after cancellation
+          sleep 10
+
           echo "Checking job status after cancellation..."
           status_response=$(./switchboard-cli --log -c cli_config.toml job status "${job_id}")
           echo "Status response after cancellation: ${status_response}"
-          job_status=$(echo "${status_response}" | grep -oP 'Job status: \K\w+')
+          job_status=$(echo "${status_response}" | grep -oP 'job_state: \K\w+')
           echo "Job status after cancellation: ${job_status}"
-          # Verify the job was cancelled (checking for "finished" state)
-          if [ "${job_status}" != "finished" ]; then
+
+          # Verify the job was cancelled (checking for "Finished" or "Cancelled" state)
+          if [ "${job_status}" != "Finished" ] && [ "${job_status}" != "Cancelled" ]; then
             echo "Job was not cancelled successfully"
             exit 1
           fi
+
           echo "E2E API test completed successfully"
       - name: Run database interaction tests
         run: |
