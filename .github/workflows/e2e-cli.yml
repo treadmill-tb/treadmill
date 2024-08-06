@@ -1,4 +1,4 @@
-name: CLI E2E Tests
+name: CLI Tests
 on:
   push:
     branches-ignore:
@@ -11,7 +11,7 @@ env:
   POSTGRES_USER: postgres
   POSTGRES_PASSWORD: postgres
 jobs:
-  e2e-tests:
+  comprehensive-cli-tests:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -31,8 +31,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql-client
-          sudo apt-get install -y jq
+          sudo apt-get install -y postgresql-client jq
       - name: Set up database
         run: |
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMA.sql
@@ -51,11 +50,9 @@ jobs:
           cp switchboard/switchboard/config.example.toml switchboard_config.toml
           cp supervisor/mock/config.example.toml mock_supervisor_config.toml
           cp switchboard/cli/config.example.toml cli_config.toml
-          # Edit switchboard config
           sed -i 's/port = 5400/port = 5432/' switchboard_config.toml
           sed -i 's/password = ""/password = "postgres"/' switchboard_config.toml
           sed -i 's/socket_addr = "0.0.0.0:443"/socket_addr = "0.0.0.0:8080"/' switchboard_config.toml
-          # Edit mock supervisor config
           sed -i 's/switchboard_uri = "wss:\/\/localhost:443"/switchboard_uri = "ws:\/\/localhost:8080"/' mock_supervisor_config.toml
           sed -i 's/coord_connector = "cli_connector"/coord_connector = "ws_connector"/' mock_supervisor_config.toml
       - name: Start switchboard
@@ -78,7 +75,7 @@ jobs:
             echo "Supervisor panicked. Failing the CI."
             exit 1
           fi
-      - name: Run E2E API tests
+      - name: Run comprehensive CLI tests
         run: |
           set -e
           set -x
@@ -90,13 +87,14 @@ jobs:
           export RUST_LOG=debug
           export tml_token
 
-          echo "Logging in..."
+          # Test login
+          echo "Testing login..."
           ./switchboard-cli --log -c cli_config.toml login "${tml_username}" "${tml_password}"
 
-          echo "Sending job creation request..."
+          # Test job enqueue
+          echo "Testing job enqueue..."
           job_response=$(./switchboard-cli --log -c cli_config.toml job enqueue "${tml_supervisor}" "${tml_image_id}")
           echo "Create job response: ${job_response}"
-
           job_id=$(echo "${job_response}" | grep -oP '"job_id":"[a-f0-9-]+"' | cut -d'"' -f4)
           if [ -z "${job_id}" ]; then
             echo "Failed to extract job ID from response"
@@ -104,58 +102,81 @@ jobs:
           fi
           echo "Created job with ID: ${job_id}"
 
-          sleep 10
-
-          echo "Checking job status..."
+          # Test job status
+          echo "Testing job status..."
+          sleep 5
           status_response=$(./switchboard-cli --log -c cli_config.toml job status "${job_id}")
           echo "Status response: ${status_response}"
           job_status=$(echo "${status_response}" | grep -oP 'job_state: \K\w+')
-          echo "Job status before cancellation: ${job_status}"
+          echo "Job status: ${job_status}"
 
-          echo "Cancelling job..."
+          # Test job list
+          echo "Testing job list..."
+          list_response=$(./switchboard-cli --log -c cli_config.toml job list)
+          echo "Job list response: ${list_response}"
+          if ! echo "${list_response}" | grep -q "${job_id}"; then
+            echo "Created job not found in job list"
+            exit 1
+          fi
+
+          # Test job cancel
+          echo "Testing job cancel..."
           cancel_response=$(./switchboard-cli --log -c cli_config.toml job cancel "${job_id}")
           echo "Cancel response: ${cancel_response}"
-          echo "Cancelled job"
 
-          # Add a delay after cancellation
-          sleep 10
-
-          echo "Checking job status after cancellation..."
+          # Verify cancellation
+          sleep 5
           status_response=$(./switchboard-cli --log -c cli_config.toml job status "${job_id}")
-          echo "Status response after cancellation: ${status_response}"
           job_status=$(echo "${status_response}" | grep -oP 'job_state: \K\w+')
-          echo "Job status after cancellation: ${job_status}"
-
-          # Verify the job was cancelled (checking for "Finished" or "Cancelled" state)
           if [ "${job_status}" != "Finished" ] && [ "${job_status}" != "Cancelled" ]; then
             echo "Job was not cancelled successfully"
             exit 1
           fi
 
-          echo "E2E API test completed successfully"
-      - name: Run database interaction tests
-        run: |
-          echo "TODO"
-      - name: Run puppet communication tests
-        run: |
-          echo "TODO"
+          # Test with invalid inputs
+          echo "Testing with invalid inputs..."
+          if ./switchboard-cli --log -c cli_config.toml job enqueue "invalid-uuid" "${tml_image_id}"; then
+            echo "CLI accepted invalid supervisor UUID"
+            exit 1
+          fi
+
+          if ./switchboard-cli --log -c cli_config.toml job enqueue "${tml_supervisor}" "invalid-image-id"; then
+            echo "CLI accepted invalid image ID"
+            exit 1
+          fi
+
+          if ./switchboard-cli --log -c cli_config.toml job status "invalid-uuid"; then
+            echo "CLI accepted invalid job UUID for status check"
+            exit 1
+          fi
+
+          # Test with non-existent job
+          echo "Testing with non-existent job..."
+          non_existent_job_id="00000000-0000-0000-0000-000000000000"
+          if ./switchboard-cli --log -c cli_config.toml job status "${non_existent_job_id}"; then
+            echo "CLI did not handle non-existent job correctly"
+            exit 1
+          fi
+
+          echo "Comprehensive CLI tests completed successfully"
       - name: Collect and report results
-        run: ''
+        run: |
+          echo "Test results:"
+          echo "Switchboard log:"
+          cat switchboard.log
+          echo "Mock supervisor log:"
+          cat mock_supervisor.log
       - name: Stop services
         run: |
           kill $(cat switchboard.pid) || true
           kill $(cat mock_supervisor.pid) || true
-      - name: Check for supervisor panic
+      - name: Check for panics
         run: |
-          cat mock_supervisor.log
-          if grep -q "thread '.*' panicked at" mock_supervisor.log; then
-            echo "Supervisor panicked. Failing the CI."
-            exit 1
-          fi
-      - name: Check for switchboard panic
-        run: |
-          cat switchboard.log
           if grep -q "thread '.*' panicked at" switchboard.log; then
             echo "Switchboard panicked. Failing the CI."
+            exit 1
+          fi
+          if grep -q "thread '.*' panicked at" mock_supervisor.log; then
+            echo "Supervisor panicked. Failing the CI."
             exit 1
           fi
