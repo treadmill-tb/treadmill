@@ -51,51 +51,66 @@ async fn main() -> Result<()> {
                 .arg(Arg::with_name("password").required(true)),
         )
         .subcommand(
-            SubCommand::with_name("enqueue")
-                .about("Enqueue a new job")
-                .arg(Arg::with_name("supervisor_id").required(true))
-                .arg(Arg::with_name("image_id").required(true))
-                .arg(
-                    Arg::with_name("ssh_keys")
-                        .long("ssh-keys")
-                        .value_name("KEYS")
-                        .help("Comma-separated list of SSH public keys")
-                        .takes_value(true),
+            SubCommand::with_name("job")
+                .about("Job-related commands")
+                .subcommand(
+                    SubCommand::with_name("enqueue")
+                        .about("Enqueue a new job")
+                        .arg(Arg::with_name("supervisor_id").required(true))
+                        .arg(Arg::with_name("image_id").required(true))
+                        .arg(
+                            Arg::with_name("ssh_keys")
+                                .long("ssh-keys")
+                                .value_name("KEYS")
+                                .help("Comma-separated list of SSH public keys")
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("restart_count")
+                                .long("restart-count")
+                                .value_name("COUNT")
+                                .help("Remaining restart count")
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("rendezvous_servers")
+                                .long("rendezvous-servers")
+                                .value_name("SERVERS")
+                                .help("JSON array of rendezvous server specifications")
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("parameters")
+                                .long("parameters")
+                                .value_name("PARAMS")
+                                .help("JSON object of job parameters")
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("tag_config")
+                                .long("tag-config")
+                                .value_name("CONFIG")
+                                .help("Tag configuration")
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("override_timeout")
+                                .long("override-timeout")
+                                .value_name("TIMEOUT")
+                                .help("Override timeout in seconds")
+                                .takes_value(true),
+                        ),
                 )
-                .arg(
-                    Arg::with_name("restart_count")
-                        .long("restart-count")
-                        .value_name("COUNT")
-                        .help("Remaining restart count")
-                        .takes_value(true),
+                .subcommand(SubCommand::with_name("list").about("List all jobs"))
+                .subcommand(
+                    SubCommand::with_name("status")
+                        .about("Get job status")
+                        .arg(Arg::with_name("job_id").required(true)),
                 )
-                .arg(
-                    Arg::with_name("rendezvous_servers")
-                        .long("rendezvous-servers")
-                        .value_name("SERVERS")
-                        .help("JSON array of rendezvous server specifications")
-                        .takes_value(true),
-                )
-                .arg(
-                    Arg::with_name("parameters")
-                        .long("parameters")
-                        .value_name("PARAMS")
-                        .help("JSON object of job parameters")
-                        .takes_value(true),
-                )
-                .arg(
-                    Arg::with_name("tag_config")
-                        .long("tag-config")
-                        .value_name("CONFIG")
-                        .help("Tag configuration")
-                        .takes_value(true),
-                )
-                .arg(
-                    Arg::with_name("override_timeout")
-                        .long("override-timeout")
-                        .value_name("TIMEOUT")
-                        .help("Override timeout in seconds")
-                        .takes_value(true),
+                .subcommand(
+                    SubCommand::with_name("cancel")
+                        .about("Cancel a job")
+                        .arg(Arg::with_name("job_id").required(true)),
                 ),
         )
         .get_matches();
