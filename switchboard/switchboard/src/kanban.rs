@@ -90,11 +90,13 @@ impl JobActor {
     pub fn job_spec(&self) -> &JobSpec {
         &self.job_spec
     }
-    pub async fn cancel(&mut self) {
+    /// Returns true if the job is active, NOT if the supervisor was sent the message.
+    pub async fn send_stop_message(&mut self) -> bool {
         match &mut self.inner {
-            JobActorInner::Dormant(_) => (
+            JobActorInner::Dormant(_) => {
                 // TODO
-            ),
+                false
+            }
             JobActorInner::Active(active_job) => {
                 // if this is None, then that's fine. It'll have previously been marked as canceled,
                 // so whenself the supervisor reconnects, if it has an active job, we'll cancel the job.
@@ -102,7 +104,14 @@ impl JobActor {
                     .supervisor_actor_proxy
                     .stop_current_job(self.job_spec.job_id)
                     .await;
+                true
             }
+        }
+    }
+    pub fn running_on_supervisor_id(&self) -> Option<Uuid> {
+        match &self.inner {
+            JobActorInner::Dormant(_) => None,
+            JobActorInner::Active(aj) => Some(aj.supervisor_actor_proxy.supervisor_id()),
         }
     }
     pub fn is_active(&self) -> bool {
@@ -223,5 +232,15 @@ impl Kanban {
             .ok_or(KanbanError::NoSuchJob)?
             .lock_owned()
             .await)
+    }
+
+    pub async fn job_status(&self, job_id: Uuid) -> Result<JobStatus, KanbanError> {
+        let mut job_actor = self.lock_metadata(job_id).await?;
+        Ok(match &mut job_actor.inner {
+            JobActorInner::Dormant(_) => JobStatus::Inactive,
+            JobActorInner::Active(active_job) => {
+                active_job.watch_status().borrow_and_update().clone()
+            }
+        })
     }
 }

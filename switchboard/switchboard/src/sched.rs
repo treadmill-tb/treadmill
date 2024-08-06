@@ -1,5 +1,5 @@
 use crate::herd::{Herd, HerdError, HerdIter};
-use crate::jobs::{build_start_message, JobError, Kanban, KanbanError};
+use crate::kanban::{build_start_message, JobError, Kanban, KanbanError};
 use crate::model::job::{ExitStatus, JobModel};
 use crate::server::auth::DbPermSource;
 use sqlx::PgPool;
@@ -202,6 +202,10 @@ impl Scheduler {
         &self.herd
     }
 
+    pub fn kanban(&self) -> &Arc<Kanban> {
+        &self.kanban
+    }
+
     pub async fn enqueue(
         &self,
         job_model: JobModel,
@@ -250,7 +254,7 @@ impl Scheduler {
                 }
             }
         }
-        for (job_id, supervisor_id) in match_set {
+        for (job_id, supervisor_id) in match_set.iter().copied() {
             if let Err(e) = self.launch_with_watchdog(job_id, supervisor_id).await {
                 tracing::error!(
                     "Failed to launch job ({job_id}) on supervisor ({supervisor_id}): {e}"
@@ -265,7 +269,9 @@ impl Scheduler {
             .collect::<Vec<_>>()
             .join(" ");
 
-        tracing::debug!("Checked queue:\n\tJobs: {dd_jobs}\n\tSupervisors: {dd_supervisors}");
+        if !match_set.is_empty() {
+            tracing::debug!("Checked queue:\n\tJobs: {dd_jobs}\n\tSupervisors: {dd_supervisors}");
+        }
     }
 
     pub fn launch_queue_watchdog(self: &Arc<Self>) {
@@ -410,7 +416,7 @@ impl Scheduler {
             // switchboard will tell it to drop the job.
             if needs_cancel {
                 // if this errors, there's not much we can do.
-                if let Err(e) = this.cancel(job_id, supervisor_id, true).await {
+                if let Err(e) = this.cancel_active(job_id, supervisor_id, true).await {
                     tracing::error!("Failed to cancel job: {e}");
                 }
             }
@@ -459,8 +465,45 @@ impl Scheduler {
         todo!()
     }
 
-    /// This currently doesn't update `job_results`.
-    async fn cancel(
+    pub async fn stop_job(self: &Arc<Self>, job_id: Uuid) -> Result<(), SchedError> {
+        let lg = self.queue_lock.lock().await;
+
+        let maybe_supervisor_id = {
+            self.kanban
+                .lock_metadata(job_id)
+                .await
+                .map_err(SchedError::Kanban)?
+                .running_on_supervisor_id()
+        };
+        if let Some(supervisor_id) = maybe_supervisor_id {
+            self.cancel_active(job_id, supervisor_id, false).await?;
+        } else {
+            sqlx::query!(
+                r#"update jobs set known_state = 'not_queued' where job_id = $1;"#,
+                job_id
+            )
+            .execute(&self.db)
+            .await
+            .map_err(SchedError::Database)?;
+            sqlx::query!(
+                r#"insert into job_results (job_id, supervisor_id, exit_status, host_output, terminated_at)
+                values ($1, null, 'job_canceled', null, current_timestamp);
+                "#,
+                job_id,
+            )
+                .execute(&self.db)
+                .await
+                .map_err(SchedError::Database)?;
+            // since the job is dormant, no watchdogs have been launched, so we have to unregister it ourselves
+            self.kanban.unregister(job_id).map_err(SchedError::Kanban)?;
+        }
+
+        let _ = lg;
+
+        Ok(())
+    }
+
+    async fn cancel_active(
         self: &Arc<Self>,
         job_id: Uuid,
         supervisor_id: Uuid,
@@ -481,8 +524,8 @@ impl Scheduler {
             ExitStatus::JobCanceled
         };
         let _ = sqlx::query!(
-            "insert into job_results (job_id, supervisor_id, exit_status, host_output, terminated_at)\
-            values ($1, $2, $3, $4, current_timestamp)",
+            "insert into job_results (job_id, supervisor_id, exit_status, host_output, terminated_at)
+            values ($1, $2, $3, $4, current_timestamp);",
             job_id,
             supervisor_id,
             exit_status as ExitStatus,
@@ -493,7 +536,7 @@ impl Scheduler {
         .map_err(SchedError::Database)?;
         // Try to send a StopJobMessage
         if let Ok(mut job_actor) = self.kanban.lock_metadata(job_id).await {
-            job_actor.cancel().await;
+            job_actor.send_stop_message().await;
         } else {
             // Can't think of a circumstance where this would happen right now, but my gut says it
             // could if something panicked in the right place.

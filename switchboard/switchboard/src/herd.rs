@@ -344,6 +344,9 @@ impl Drop for SupervisorActorProxy {
     }
 }
 impl SupervisorActorProxy {
+    pub fn supervisor_id(&self) -> Uuid {
+        self.supervisor_id
+    }
     pub async fn start_job(&self, message: StartJobMessage) -> Option<()> {
         self.outbox
             .send((switchboard_supervisor::Message::StartJob(message), None))

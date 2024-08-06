@@ -1,5 +1,6 @@
 //! Privileged actions acting on jobs and the job queue.
 
+use crate::kanban::KanbanError;
 use crate::model;
 use crate::sched::SchedError;
 use crate::server::auth::{
@@ -8,7 +9,7 @@ use crate::server::auth::{
 use crate::server::AppState;
 use axum::async_trait;
 use std::fmt::Debug;
-use treadmill_rs::api::switchboard::JobRequest;
+use treadmill_rs::api::switchboard::{JobRequest, JobStatus};
 use uuid::Uuid;
 // enqueue_ci_job
 
@@ -90,89 +91,72 @@ pub async fn enqueue_ci_job(
         .enqueue(job_model, job.parameters, auth_source)
         .await
         .map_err(EnqueueJobError::Scheduler)?;
-    // let active_job = state
-    //     .herd()
-    //     .try_start_job(
-    //         StartJobMessage::from_job_request_with_id(job_id, job.clone()),
-    //         job_model,
-    //         p.action().supervisor_id,
-    //     )
-    //     .await
-    //     .map_err(|e| {
-    //         tracing::error!(
-    //             "Failed to start {job:?} on {}: {e}",
-    //             p.action().supervisor_id
-    //         );
-    //         EnqueueJobError::Herd(e)
-    //     })?;
-    // state.job_market().insert_active(active_job);
 
     Ok(job_id)
 }
 
 // read_job_status
 
-// #[derive(Debug, Clone)]
-// pub struct JobStatusAction {
-//     pub job_id: Uuid,
-// }
-// #[async_trait]
-// impl PrivilegedAction for JobStatusAction {
-//     async fn authorize<'source, PQE: PermissionQueryExecutor + Send>(
-//         self,
-//         perm_query_exec: PQE,
-//     ) -> Result<Privilege<'source, Self>, AuthorizationError> {
-//         perm_query_exec
-//             .query(format!("read_job_status:{}", &self.job_id))
-//             .await
-//             .try_into_privilege(self)
-//     }
-// }
-// #[derive(Debug)]
-// pub enum JobStatusError {
-//     JobNotFound,
-//     Herd(HerdError),
-//     Kanban(KanbanError),
-// }
-// pub async fn read_job_status(
-//     state: &AppState,
-//     p: Privilege<'_, JobStatusAction>,
-// ) -> Result<JobStatus, JobStatusError> {
-//     state
-//         .job_market()
-//         .job_status(p.action().job_id)
-//         .map_err(JobStatusError::JobMarket)
-// }
+#[derive(Debug, Clone)]
+pub struct JobStatusAction {
+    pub job_id: Uuid,
+}
+#[async_trait]
+impl PrivilegedAction for JobStatusAction {
+    async fn authorize<'source, PQE: PermissionQueryExecutor + Send>(
+        self,
+        perm_query_exec: PQE,
+    ) -> Result<Privilege<'source, Self>, AuthorizationError> {
+        perm_query_exec
+            .query(format!("read_job_status:{}", &self.job_id))
+            .await
+            .try_into_privilege(self)
+    }
+}
+#[derive(Debug)]
+pub enum JobStatusError {
+    JobNotFound,
+    Kanban(KanbanError),
+}
+pub async fn read_job_status(
+    state: &AppState,
+    p: Privilege<'_, JobStatusAction>,
+) -> Result<JobStatus, JobStatusError> {
+    state
+        .scheduler()
+        .kanban()
+        .job_status(p.action().job_id)
+        .await
+        .map_err(JobStatusError::Kanban)
+}
 
-// #[derive(Debug, Clone)]
-// pub struct StopJobAction {
-//     pub job_id: Uuid,
-// }
-// #[async_trait]
-// impl PrivilegedAction for StopJobAction {
-//     async fn authorize<'source, PQE: PermissionQueryExecutor + Send>(
-//         self,
-//         perm_query_exec: PQE,
-//     ) -> Result<Privilege<'source, Self>, AuthorizationError> {
-//         perm_query_exec
-//             .query(format!("stop_job:{}", &self.job_id))
-//             .await
-//             .try_into_privilege(self)
-//     }
-// }
-// #[derive(Debug)]
-// pub enum StopJobError {
-//     JobNotFound,
-//     Herd(HerdError),
-//     JobMarket(KanbanError),
-// }
-// pub async fn stop_job(
-//     state: &AppState,
-//     p: Privilege<'_, StopJobAction>,
-// ) -> Result<(), StopJobError> {
-//     state
-//         .job_market()
-//         .stop_job(p.action().job_id)
-//         .await
-//         .map_err(StopJobError::JobMarket)
-// }
+#[derive(Debug, Clone)]
+pub struct StopJobAction {
+    pub job_id: Uuid,
+}
+#[async_trait]
+impl PrivilegedAction for StopJobAction {
+    async fn authorize<'source, PQE: PermissionQueryExecutor + Send>(
+        self,
+        perm_query_exec: PQE,
+    ) -> Result<Privilege<'source, Self>, AuthorizationError> {
+        perm_query_exec
+            .query(format!("stop_job:{}", &self.job_id))
+            .await
+            .try_into_privilege(self)
+    }
+}
+#[derive(Debug)]
+pub enum StopJobError {
+    Sched(SchedError),
+}
+pub async fn stop_job(
+    state: &AppState,
+    p: Privilege<'_, StopJobAction>,
+) -> Result<(), StopJobError> {
+    state
+        .scheduler()
+        .stop_job(p.action().job_id)
+        .await
+        .map_err(StopJobError::Sched)
+}
