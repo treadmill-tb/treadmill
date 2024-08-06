@@ -324,6 +324,13 @@ async fn enqueue_job(
         .json::<serde_json::Value>()
         .await?;
 
+    if let Some(error_type) = response.get("type") {
+        if error_type == "Internal" {
+            error!("Internal server error occurred: {:?}", response);
+            return Err(anyhow::anyhow!("Internal server error: {:?}", response));
+        }
+    }
+
     info!("Job enqueued: {}", response);
     println!("Job enqueued: {}", response);
     Ok(())

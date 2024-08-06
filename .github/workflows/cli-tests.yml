@@ -91,7 +91,6 @@ jobs:
           echo "Testing login..."
           ./switchboard-cli --log -c cli_config.toml login "${tml_username}" "${tml_password}"
 
-          # Test job enqueue with all options
           echo "Testing job enqueue with all options..."
           job_response=$(./switchboard-cli --log -c cli_config.toml job enqueue "${tml_supervisor}" "${tml_image_id}" \
             --ssh-keys "ssh-rsa AAAAB3NzaC1yc2E...,ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..." \
@@ -101,6 +100,12 @@ jobs:
             --tag-config 'test_tag_config' \
             --override-timeout 3600)
           echo "Create job response: ${job_response}"
+
+          if echo "${job_response}" | grep -q "Internal server error"; then
+            echo "Job enqueue failed due to internal server error"
+            exit 1
+          fi
+
           job_id=$(echo "${job_response}" | grep -oP '"job_id":"[a-f0-9-]+"' | cut -d'"' -f4)
           if [ -z "${job_id}" ]; then
             echo "Failed to extract job ID from response"
