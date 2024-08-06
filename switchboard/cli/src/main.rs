@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
+use chrono::Duration;
 use clap::{App, Arg, SubCommand};
 use log::{debug, error, info, warn};
 use reqwest::Client;
+use std::collections::HashMap;
+use treadmill_rs::api::switchboard_supervisor::{ParameterValue, RendezvousServerSpec};
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::{
@@ -48,24 +51,51 @@ async fn main() -> Result<()> {
                 .arg(Arg::with_name("password").required(true)),
         )
         .subcommand(
-            SubCommand::with_name("job")
-                .about("Job-related commands")
-                .subcommand(
-                    SubCommand::with_name("enqueue")
-                        .about("Enqueue a new job")
-                        .arg(Arg::with_name("supervisor_id").required(true))
-                        .arg(Arg::with_name("image_id").required(true)),
+            SubCommand::with_name("enqueue")
+                .about("Enqueue a new job")
+                .arg(Arg::with_name("supervisor_id").required(true))
+                .arg(Arg::with_name("image_id").required(true))
+                .arg(
+                    Arg::with_name("ssh_keys")
+                        .long("ssh-keys")
+                        .value_name("KEYS")
+                        .help("Comma-separated list of SSH public keys")
+                        .takes_value(true),
                 )
-                .subcommand(SubCommand::with_name("list").about("List all jobs"))
-                .subcommand(
-                    SubCommand::with_name("status")
-                        .about("Get job status")
-                        .arg(Arg::with_name("job_id").required(true)),
+                .arg(
+                    Arg::with_name("restart_count")
+                        .long("restart-count")
+                        .value_name("COUNT")
+                        .help("Remaining restart count")
+                        .takes_value(true),
                 )
-                .subcommand(
-                    SubCommand::with_name("cancel")
-                        .about("Cancel a job")
-                        .arg(Arg::with_name("job_id").required(true)),
+                .arg(
+                    Arg::with_name("rendezvous_servers")
+                        .long("rendezvous-servers")
+                        .value_name("SERVERS")
+                        .help("JSON array of rendezvous server specifications")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("parameters")
+                        .long("parameters")
+                        .value_name("PARAMS")
+                        .help("JSON object of job parameters")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("tag_config")
+                        .long("tag-config")
+                        .value_name("CONFIG")
+                        .help("Tag configuration")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("override_timeout")
+                        .long("override-timeout")
+                        .value_name("TIMEOUT")
+                        .help("Override timeout in seconds")
+                        .takes_value(true),
                 ),
         )
         .get_matches();
@@ -108,11 +138,30 @@ async fn main() -> Result<()> {
                     Uuid::parse_str(enqueue_matches.value_of("supervisor_id").unwrap())
                         .context("Invalid supervisor ID")?;
                 let image_id = enqueue_matches.value_of("image_id").unwrap();
+                let ssh_keys = enqueue_matches.value_of("ssh_keys");
+                let restart_count = enqueue_matches.value_of("restart_count");
+                let rendezvous_servers = enqueue_matches.value_of("rendezvous_servers");
+                let parameters = enqueue_matches.value_of("parameters");
+                let tag_config = enqueue_matches.value_of("tag_config");
+                let override_timeout = enqueue_matches.value_of("override_timeout");
+
                 info!(
                     "Enqueueing job with supervisor ID: {} and image ID: {}",
                     supervisor_id, image_id
                 );
-                enqueue_job(&client, &config, supervisor_id, image_id).await?;
+                enqueue_job(
+                    &client,
+                    &config,
+                    supervisor_id,
+                    image_id,
+                    ssh_keys,
+                    restart_count,
+                    rendezvous_servers,
+                    parameters,
+                    tag_config,
+                    override_timeout,
+                )
+                .await?;
             }
             ("list", Some(_)) => {
                 warn!("Job list functionality not implemented yet");
@@ -184,6 +233,12 @@ async fn enqueue_job(
     config: &config::Config,
     supervisor_id: Uuid,
     image_id: &str,
+    ssh_keys: Option<&str>,
+    restart_count: Option<&str>,
+    rendezvous_servers: Option<&str>,
+    parameters: Option<&str>,
+    tag_config: Option<&str>,
+    override_timeout: Option<&str>,
 ) -> Result<()> {
     let token = auth::get_token()?;
     debug!("Retrieved auth token");
@@ -198,17 +253,45 @@ async fn enqueue_job(
         return Err(anyhow::anyhow!("Invalid image ID length"));
     };
 
+    let ssh_keys = ssh_keys
+        .map(|keys| keys.split(',').map(String::from).collect())
+        .unwrap_or_default();
+
+    let restart_count = restart_count
+        .map(|count| count.parse().context("Invalid restart count"))
+        .transpose()?
+        .unwrap_or(0);
+
+    let rendezvous_servers: Vec<RendezvousServerSpec> = rendezvous_servers
+        .map(|servers| serde_json::from_str(servers).context("Invalid rendezvous servers JSON"))
+        .transpose()?
+        .unwrap_or_default();
+
+    let parameters: HashMap<String, ParameterValue> = parameters
+        .map(|params| serde_json::from_str(params).context("Invalid parameters JSON"))
+        .transpose()?
+        .unwrap_or_default();
+
+    let tag_config = tag_config.unwrap_or("").to_string();
+
+    let override_timeout: Option<Duration> = override_timeout
+        .map(|timeout| -> Result<Duration> {
+            let seconds = timeout.parse::<i64>().context("Invalid timeout")?;
+            Ok(Duration::seconds(seconds))
+        })
+        .transpose()?;
+
     debug!("Creating job request");
     let job_request = JobRequest {
         init_spec: JobInitSpec::Image { image_id },
-        ssh_keys: vec![],
+        ssh_keys,
         restart_policy: RestartPolicy {
-            remaining_restart_count: 0,
+            remaining_restart_count: restart_count,
         },
-        ssh_rendezvous_servers: vec![],
-        parameters: Default::default(),
-        tag_config: String::new(),
-        override_timeout: None,
+        ssh_rendezvous_servers: rendezvous_servers,
+        parameters,
+        tag_config,
+        override_timeout,
     };
 
     let enqueue_request = EnqueueJobRequest {
