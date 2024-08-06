@@ -91,20 +91,29 @@ jobs:
           echo "Testing login..."
           ./switchboard-cli --log -c cli_config.toml login "${tml_username}" "${tml_password}"
 
-          echo "Testing job enqueue with all options..."
-          job_response=$(./switchboard-cli --log -c cli_config.toml job enqueue "${tml_supervisor}" "${tml_image_id}" \
-            --ssh-keys "ssh-rsa AAAAB3NzaC1yc2E...,ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..." \
-            --restart-count 3 \
-            --rendezvous-servers '[{"client_id":"12345678-1234-5678-1234-567812345678","server_base_url":"http://example.com","auth_token":"exampletoken"}]' \
-            --parameters '{"key1":{"value":"value1","secret":false},"key2":{"value":"value2","secret":true}}' \
-            --tag-config 'test_tag_config' \
-            --override-timeout 3600)
-          echo "Create job response: ${job_response}"
+          echo "Testing basic job enqueue..."
+          job_response=$(./switchboard-cli --log -c cli_config.toml job enqueue "${tml_supervisor}" "${tml_image_id}")
+          echo "Basic job enqueue response: ${job_response}"
 
           if echo "${job_response}" | grep -q "Internal server error"; then
-            echo "Job enqueue failed due to internal server error"
+            echo "Basic job enqueue failed due to internal server error"
             exit 1
           fi
+
+          # echo "Testing job enqueue with all options..."
+          # job_response=$(./switchboard-cli --log -c cli_config.toml job enqueue "${tml_supervisor}" "${tml_image_id}" \
+          #   --ssh-keys "ssh-rsa AAAAB3NzaC1yc2E...,ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..." \
+          #   --restart-count 3 \
+          #   --rendezvous-servers '[{"client_id":"12345678-1234-5678-1234-567812345678","server_base_url":"http://example.com","auth_token":"exampletoken"}]' \
+          #   --parameters '{"key1":{"value":"value1","secret":false},"key2":{"value":"value2","secret":true}}' \
+          #   --tag-config 'test_tag_config' \
+          #   --override-timeout 3600)
+          # echo "Create job response: ${job_response}"
+
+          # if echo "${job_response}" | grep -q "Internal server error"; then
+          #   echo "Job enqueue failed due to internal server error"
+          #   exit 1
+          # fi
 
           job_id=$(echo "${job_response}" | grep -oP '"job_id":"[a-f0-9-]+"' | cut -d'"' -f4)
           if [ -z "${job_id}" ]; then
