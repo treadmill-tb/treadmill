@@ -5,8 +5,6 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-console-subscriber = "0.4.0"
-
 # Utility
 uuid = { version = "1.9.1", features = ["serde", "fast-rng", "v4"] }
 chrono = { version = "0.4.38", features = ["serde"] }
@@ -24,7 +22,6 @@ http = "1.1.0"
 axum-server = { version = "0.6.0", features = ["tls-rustls"] }
 tower = { version = "0.4.13", features = ["default"] }
 tower-http = { version = "0.5.2", features = ["trace", "sensitive-headers"] }
-tungstenite = { version = "0.23.0" }
 
 # Tokio
 tokio = { version = "1.38.0", features = ["rt-multi-thread"] }
@@ -62,4 +59,3 @@ miette = { version = "7.2.0", features = ["fancy"] }
 base64 = "0.21.7"
 
 treadmill-rs = { path = "../../treadmill-rs" }
-parking_lot = "0.12.3"

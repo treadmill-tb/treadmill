@@ -1,5 +1,3 @@
-pub mod socket_auth;
-
 use async_trait::async_trait;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
