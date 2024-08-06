@@ -72,13 +72,13 @@ jobs:
           export RUST_LOG=debug
           cargo run --package tml-switchboard -- serve -c switchboard_config.toml > switchboard.log 2>&1 &
           echo $! > switchboard.pid
-          sleep 5
+          sleep 1
       - name: Start mock supervisor
         run: |
           cargo build --package tml-puppet
           nohup cargo run --package tml-mock-supervisor -- -c mock_supervisor_config.toml --puppet-binary ./target/debug/tml-puppet > mock_supervisor.log 2>&1 &
           echo $! > mock_supervisor.pid
-          sleep 5
+          sleep 1
       - name: Check mock supervisor log
         run: cat mock_supervisor.log
       - name: Check for supervisor panic
@@ -132,7 +132,7 @@ jobs:
 
           echo "Created job with ID: $job_id"
 
-          sleep 10
+          sleep 1
 
           echo "Checking job status..."
           if ! status_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" GET localhost:8080/api/v1/job/${job_id}/status)

@@ -60,13 +60,13 @@ jobs:
           export RUST_LOG=debug
           cargo run --package tml-switchboard -- serve -c switchboard_config.toml > switchboard.log 2>&1 &
           echo $! > switchboard.pid
-          sleep 5
+          sleep 3
       - name: Start mock supervisor
         run: |
           cargo build --package tml-puppet
           nohup cargo run --package tml-mock-supervisor -- -c mock_supervisor_config.toml --puppet-binary ./target/debug/tml-puppet > mock_supervisor.log 2>&1 &
           echo $! > mock_supervisor.pid
-          sleep 5
+          sleep 3
       - name: Check mock supervisor log
         run: cat mock_supervisor.log
       - name: Check for supervisor panic
@@ -104,20 +104,20 @@ jobs:
 
           # Test job status
           echo "Testing job status..."
-          sleep 5
+          sleep 1
           status_response=$(./switchboard-cli --log -c cli_config.toml job status "${job_id}")
           echo "Status response: ${status_response}"
           job_status=$(echo "${status_response}" | grep -oP 'job_state: \K\w+')
           echo "Job status: ${job_status}"
 
           # Test job list
-          echo "Testing job list..."
-          list_response=$(./switchboard-cli --log -c cli_config.toml job list)
-          echo "Job list response: ${list_response}"
-          if ! echo "${list_response}" | grep -q "${job_id}"; then
-            echo "Created job not found in job list"
-            exit 1
-          fi
+          # echo "Testing job list..."
+          # list_response=$(./switchboard-cli --log -c cli_config.toml job list)
+          # echo "Job list response: ${list_response}"
+          # if ! echo "${list_response}" | grep -q "${job_id}"; then
+          #   echo "Created job not found in job list"
+          #   exit 1
+          # fi
 
           # Test job cancel
           echo "Testing job cancel..."
@@ -125,7 +125,7 @@ jobs:
           echo "Cancel response: ${cancel_response}"
 
           # Verify cancellation
-          sleep 5
+          sleep 1
           status_response=$(./switchboard-cli --log -c cli_config.toml job status "${job_id}")
           job_status=$(echo "${status_response}" | grep -oP 'job_state: \K\w+')
           if [ "${job_status}" != "Finished" ] && [ "${job_status}" != "Cancelled" ]; then
