@@ -8,7 +8,7 @@ edition.workspace = true
 console-subscriber = "0.4.0"
 
 # Utility
-uuid = { version = "1.9.1", features = ["serde", "fast-rng"] }
+uuid = { version = "1.9.1", features = ["serde", "fast-rng", "v4"] }
 chrono = { version = "0.4.38", features = ["serde"] }
 # because cookie-rs has an unavoidable hard dependency on time::Duration
 time = "0.3.36"
