@@ -3330,6 +3330,7 @@ name = "tml-switchboard-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap 2.34.0",
  "dirs 3.0.2",
  "env_logger",
