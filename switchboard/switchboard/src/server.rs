@@ -73,7 +73,7 @@ pub struct ServeCommand {
 
 pub async fn database_from_config(cfg: &Config) -> miette::Result<PgPool> {
     let pg_options = PgConnectOptions::new()
-        .host(&cfg.database.address)
+        .host(&cfg.database.host)
         .database(&cfg.database.name)
         /*
             .ssl_mode(PgSslMode::VerifyFull)
@@ -121,7 +121,7 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
 
     // Bind TCP listeners.
 
-    let public_socket_addr = config.server.socket_addr;
+    let public_socket_addr = config.server.bind_address;
 
     // Build shared state
 

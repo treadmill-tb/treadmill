@@ -6,7 +6,6 @@ use miette::{Context, IntoDiagnostic};
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::Duration;
 
 /// Global configuration object.
 #[derive(Debug, Deserialize)]
@@ -17,8 +16,8 @@ pub struct Config {
     pub logs: Logs,
     /// Server parameters for the public API server.
     pub server: Server,
-    /// Parameters for the websocket backend that supervisors communicate with.
-    pub websocket: WebSocket,
+    // /// Parameters for the websocket backend that supervisors communicate with.
+    // pub websocket: WebSocket,
     /// General configuration for specific features within the interface.
     pub api: Api,
 }
@@ -35,9 +34,10 @@ pub struct Logs {
 /// foreseeable future.
 #[derive(Debug, Deserialize)]
 pub struct Database {
-    /// Host address of the database server.
-    pub address: String,
-    /// Port at which to connect to the database server.
+    /// IP address of the database server, or path to Unix socket.
+    pub host: String,
+    /// Port at which to connect to the database server. If `host` is a path to a unix socket, then
+    /// this should be None.
     pub port: Option<u16>,
     /// Name of the database to connect to (while some databases like MySQL treat the current
     /// database context as changeable during a connected session, Postgres doesn't seem to like
@@ -65,7 +65,7 @@ pub enum DatabaseAuth {
 #[derive(Debug, Deserialize)]
 pub struct Server {
     /// Socket address to bind to.
-    pub socket_addr: SocketAddr,
+    pub bind_address: SocketAddr,
     /// Optional development-only SSL mode.
     pub dev_mode_ssl: Option<DevModeSsl>,
 }
@@ -78,28 +78,18 @@ pub struct DevModeSsl {
     pub key: PathBuf,
 }
 
-/// Websocket configuration
-#[derive(Debug, Deserialize)]
-pub struct WebSocket {
-    /// Parameters which control the authentication process for the websockets endpoint that supervisors
-    /// can connect to.
-    pub auth: WebSocketAuth,
-}
-
-/// WebSocket authentication details.
-#[derive(Debug, Deserialize)]
-pub struct WebSocketAuth {
-    /// How long to keep the connection open while waiting for authentication.
-    #[serde(with = "humantime_serde")]
-    pub per_message_timeout: Duration,
-}
+// /// Websocket configuration
+// #[derive(Debug, Deserialize)]
+// pub struct WebSocket {
+//     //
+// }
 
 /// Api configuration details.
 #[derive(Debug, Deserialize)]
 pub struct Api {
     /// How long a fully logged-in user session lasts for.
     #[serde(with = "treadmill_rs::util::chrono::duration")]
-    pub auth_session_timeout: chrono::TimeDelta,
+    pub session_token_timeout: chrono::TimeDelta,
     /// Default per-job timeout.
     #[serde(with = "treadmill_rs::util::chrono::duration")]
     pub default_job_timeout: chrono::TimeDelta,

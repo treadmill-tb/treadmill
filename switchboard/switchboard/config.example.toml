@@ -2,7 +2,7 @@
 dir = "switchboard/logs"
 
 [database]
-address = "localhost"
+host = "localhost"
 port = 5400
 name = "tml_switchboard"
 
@@ -17,9 +17,6 @@ socket_addr = "0.0.0.0:443"
 #cert = "config/tls-certs/localhost-public.pem"
 #key = "config/tls-certs/localhost.pem"
 
-[websocket.auth]
-per_message_timeout = "10s"
-
 [api]
-auth_session_timeout = "5m"
+session_token_timeout = "5m"
 default_job_timeout = "30m"
