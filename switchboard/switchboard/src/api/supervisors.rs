@@ -11,6 +11,7 @@ pub async fn list(State(app_state): State<AppState>) -> Response {
         .lock_supervisors()
         .await
         .keys()
+        .copied()
         .collect();
     Json(supervisor_ids).into_response()
 }
