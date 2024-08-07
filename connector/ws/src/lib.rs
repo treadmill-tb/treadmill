@@ -59,6 +59,7 @@ struct Inner<S: connector::Supervisor> {
 
 impl<S: connector::Supervisor> WsConnector<S> {
     pub fn new(supervisor_id: Uuid, config: WsConnectorConfig, supervisor: Weak<S>) -> Self {
+        tracing::error!("UH OH");
         let (update_tx, update_rx) = mpsc::unbounded_channel();
         Self {
             inner: Arc::new(Inner {
@@ -110,9 +111,14 @@ impl<S: connector::Supervisor> Inner<S> {
             .body(())
             .unwrap();
 
+        tracing::debug!("Request = {req:?}");
+
         let (ws, resp) = tokio_tungstenite::connect_async_tls_with_config(req, None, false, None)
             .await
-            .map_err(|e| WsConnectorError::Connection(e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to connect: {e}");
+                WsConnectorError::Connection(e)
+            })?;
 
         tracing::debug!("Received response from switchboard: {resp:?}");
 

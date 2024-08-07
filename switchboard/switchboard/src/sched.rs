@@ -1,6 +1,6 @@
 use crate::herd::{Herd, HerdError, HerdIter};
 use crate::kanban::{build_start_message, JobError, Kanban, KanbanError};
-use crate::model::job::{ExitStatus, JobModel};
+use crate::model::job::{JobModel, SqlExitStatus};
 use crate::server::auth::DbPermSource;
 use sqlx::PgPool;
 use std::collections::HashMap;
@@ -71,6 +71,7 @@ fn wait_for_termination(
                     },
                     JobStatus::Error { .. } => true,
                     JobStatus::Inactive => false,
+                    JobStatus::Terminated(_) => unreachable!(),
                 })
                 .await;
             match final_status {
@@ -380,7 +381,7 @@ impl Scheduler {
                     tracing::error!("Failed to add UPDATE statement to transaction: {e}");
                     break;
                 };
-                let exit_status = ExitStatus::JobCanceled;
+                let exit_status = SqlExitStatus::JobCanceled;
                 let host_output: serde_json::Value = match serde_json::from_str("") {
                     Ok(ho) => ho,
                     Err(e) => {
@@ -392,7 +393,7 @@ impl Scheduler {
                     r#"insert into job_results (job_id, supervisor_id, exit_status, host_output, terminated_at) values ($1, $2, $3, $4, current_timestamp);"#,
                         job_id,
                         supervisor_id,
-                        exit_status as ExitStatus,
+                        exit_status as SqlExitStatus,
                         host_output,
                     )
                     .execute(tx.as_mut())
@@ -519,16 +520,16 @@ impl Scheduler {
         .await
         .map_err(SchedError::Database)?;
         let exit_status = if is_timeout {
-            ExitStatus::HostTerminatedTimeout
+            SqlExitStatus::HostTerminatedTimeout
         } else {
-            ExitStatus::JobCanceled
+            SqlExitStatus::JobCanceled
         };
         let _ = sqlx::query!(
             "insert into job_results (job_id, supervisor_id, exit_status, host_output, terminated_at)
             values ($1, $2, $3, $4, current_timestamp);",
             job_id,
             supervisor_id,
-            exit_status as ExitStatus,
+            exit_status as SqlExitStatus,
             // no host output for canceled jobs
             None as Option<sqlx::types::Json<()>>,
         ).execute(&self.db)

@@ -2,8 +2,8 @@ use super::{BifurcateProxy, IntoProxiedResponse, JsonProxiedResponse, ResponsePr
 use crate::herd::HerdError;
 use crate::kanban::{JobError, KanbanError};
 use crate::perms::jobs::{
-    enqueue_ci_job, read_job_status, stop_job, EnqueueCIJobAction, EnqueueJobError,
-    JobStatusAction, JobStatusError, StopJobAction, StopJobError,
+    enqueue_ci_job, read_job_status, stop_job, AccessQueueAction, EnqueueCIJobAction,
+    EnqueueJobError, JobStatusAction, JobStatusError, StopJobAction, StopJobError,
 };
 use crate::sched::SchedError;
 use crate::server::auth::{AuthSource, AuthorizationError, AuthorizationSource, DbPermSource};
@@ -14,6 +14,7 @@ use axum::{extract, Json};
 use http::StatusCode;
 use treadmill_rs::api::switchboard::{
     EnqueueJobRequest, EnqueueJobResponse, JobCancelResponse, JobStatusResponse,
+    ReadJobQueueResponse,
 };
 use uuid::Uuid;
 
@@ -86,15 +87,43 @@ pub async fn enqueue(
 }
 
 // GET /job/queue
-pub async fn get_queue(State(state): State<AppState>) -> Response {
-    let v: Vec<Uuid> = state
+impl JsonProxiedResponse for ReadJobQueueResponse {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            ReadJobQueueResponse::Ok { .. } => StatusCode::OK,
+            ReadJobQueueResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            ReadJobQueueResponse::Unauthorized => StatusCode::UNAUTHORIZED,
+        }
+    }
+}
+pub async fn get_queue(
+    State(state): State<AppState>,
+    AuthSource(auth_source): AuthSource<DbPermSource>,
+) -> BifurcateProxy<ReadJobQueueResponse> {
+    auth_source
+        .authorize(AccessQueueAction)
+        .await
+        .map_err(|e| match e {
+            AuthorizationError::Database(e) => {
+                tracing::error!("failed to check privilege: {e}");
+                ReadJobQueueResponse::Internal
+            }
+            AuthorizationError::Unauthorized(e) => {
+                tracing::error!("{auth_source:?} lacks privilege: {e}");
+                ReadJobQueueResponse::Unauthorized
+            }
+        })
+        .map_err(ResponseProxy)?;
+
+    let jobs: Vec<Uuid> = state
         .scheduler()
         .kanban()
         .jobs()
         .iter()
         .map(|j| *j.key())
         .collect();
-    Json(v).into_response()
+
+    super::bifurcated_ok!(ReadJobQueueResponse::Ok { jobs })
 }
 
 // GET /job/:id/info
@@ -123,6 +152,7 @@ impl From<JobStatusError> for JobStatusResponse {
                 KanbanError::JobAlreadyExists => unreachable!(),
                 KanbanError::NoSuchJob => JobStatusResponse::JobNotFound,
             },
+            JobStatusError::Database(_) => JobStatusResponse::Internal,
         }
     }
 }

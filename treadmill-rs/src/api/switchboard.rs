@@ -100,6 +100,27 @@ pub enum EnqueueJobResponse {
     Conflict,
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExitStatus {
+    FailedToMatch,
+    QueueTimeout,
+    HostStartFailure,
+    HostTerminatedWithError,
+    HostTerminatedWithSuccess,
+    HostTerminatedTimeout,
+    JobCanceled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobResult {
+    pub job_id: Uuid,
+    pub supervisor_id: Option<Uuid>,
+    pub exit_status: ExitStatus,
+    pub host_output: Option<serde_json::Value>,
+    pub terminated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum JobStatus {
@@ -112,6 +133,7 @@ pub enum JobStatus {
         job_error: JobError,
     },
     Inactive,
+    Terminated(JobResult),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,4 +154,12 @@ pub enum JobCancelResponse {
     SupervisorNotFound,
     Unauthorized,
     Internal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ReadJobQueueResponse {
+    Ok { jobs: Vec<Uuid> },
+    Internal,
+    Unauthorized,
 }

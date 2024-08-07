@@ -2,14 +2,16 @@
 
 use crate::kanban::KanbanError;
 use crate::model;
+use crate::model::job::SqlExitStatus;
 use crate::sched::SchedError;
 use crate::server::auth::{
     AuthorizationError, DbPermSource, PermissionQueryExecutor, Privilege, PrivilegedAction,
 };
 use crate::server::AppState;
 use axum::async_trait;
+use chrono::{DateTime, Utc};
 use std::fmt::Debug;
-use treadmill_rs::api::switchboard::{JobRequest, JobStatus};
+use treadmill_rs::api::switchboard::{ExitStatus, JobRequest, JobResult, JobStatus};
 use uuid::Uuid;
 // enqueue_ci_job
 
@@ -117,11 +119,48 @@ impl PrivilegedAction for JobStatusAction {
 pub enum JobStatusError {
     JobNotFound,
     Kanban(KanbanError),
+    Database(sqlx::Error),
 }
 pub async fn read_job_status(
     state: &AppState,
     p: Privilege<'_, JobStatusAction>,
 ) -> Result<JobStatus, JobStatusError> {
+    struct SqlJobResult {
+        job_id: Uuid,
+        supervisor_id: Option<Uuid>,
+        exit_status: SqlExitStatus,
+        host_output: Option<serde_json::Value>,
+        terminated_at: DateTime<Utc>,
+    }
+    let maybe_result = sqlx::query_as!(SqlJobResult,
+        r#"select job_id, supervisor_id, exit_status as "exit_status: _", host_output, terminated_at from job_results where job_id = $1 limit 1;"#,
+        p.action().job_id
+    )
+    .fetch_optional(state.pool())
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            "Failed to check results table for job ({})",
+            p.action().job_id
+        );
+        JobStatusError::Database(e)
+    })?;
+    if let Some(SqlJobResult {
+        job_id,
+        supervisor_id,
+        exit_status,
+        host_output,
+        terminated_at,
+    }) = maybe_result
+    {
+        return Ok(JobStatus::Terminated(JobResult {
+            job_id,
+            supervisor_id,
+            exit_status: ExitStatus::from(exit_status),
+            host_output,
+            terminated_at,
+        }));
+    }
     state
         .scheduler()
         .kanban()
@@ -159,4 +198,19 @@ pub async fn stop_job(
         .stop_job(p.action().job_id)
         .await
         .map_err(StopJobError::Sched)
+}
+
+#[derive(Debug, Clone)]
+pub struct AccessQueueAction;
+#[async_trait]
+impl PrivilegedAction for AccessQueueAction {
+    async fn authorize<'source, PQE: PermissionQueryExecutor + Send>(
+        self,
+        perm_query_exec: PQE,
+    ) -> Result<Privilege<'source, Self>, AuthorizationError> {
+        perm_query_exec
+            .query("access_job_queue".to_owned())
+            .await
+            .try_into_privilege(self)
+    }
 }

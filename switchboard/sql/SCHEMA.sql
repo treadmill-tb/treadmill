@@ -198,12 +198,12 @@ create type exit_status as enum (
 
 create table job_results
 (
-    job_id        uuid        not null references jobs (job_id),
+    job_id        uuid                     not null references jobs (job_id),
     -- will be null if job is not attached to supervisor
     supervisor_id uuid references supervisors (supervisor_id) on delete no action,
 
-    exit_status   exit_status not null,
+    exit_status   exit_status              not null,
     host_output   jsonb,
 
-    terminated_at timestamp with time zone
+    terminated_at timestamp with time zone not null
 );

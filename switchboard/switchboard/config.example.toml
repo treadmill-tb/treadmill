@@ -10,7 +10,7 @@ name = "tml_switchboard"
 PasswordAuth = { username = "postgres", password = "" }
 
 [server]
-socket_addr = "0.0.0.0:443"
+bind_address = "0.0.0.0:443"
 
 # Comment out this [server.dev_mode_ssl] table to disable dev-mode SSL
 #[server.dev_mode_ssl]

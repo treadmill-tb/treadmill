@@ -59,3 +59,4 @@ miette = { version = "7.2.0", features = ["fancy"] }
 base64 = "0.21.7"
 
 treadmill-rs = { path = "../../treadmill-rs" }
+tokio-stream = "0.1.15"

@@ -243,6 +243,20 @@ impl Herd {
     pub async fn lock_supervisors(&self) -> RwLockReadGuard<HashMap<Uuid, SupervisorActorWrapper>> {
         RwLockReadGuard::map(self.0.read().await, |h| &h.supervisors)
     }
+    pub async fn supervisor_status(
+        &self,
+        supervisor_id: Uuid,
+    ) -> Result<SupervisorStatus, HerdError> {
+        let lg = self.0.read().await;
+        lg.supervisors
+            .get(&supervisor_id)
+            .ok_or(HerdError::NoSuchSupervisor)?
+            .as_connected()
+            .ok_or(HerdError::SupervisorNotConnected)?
+            .request_supervisor_status()
+            .await
+            .ok_or(HerdError::SupervisorNotConnected)
+    }
 }
 pub struct HerdIter<'a> {
     iter: std::collections::hash_map::Iter<'a, Uuid, SupervisorActorWrapper>,
@@ -355,25 +369,6 @@ impl SupervisorActorProxy {
     pub fn job_status_watcher(&self) -> watch::Receiver<JobStatus> {
         self.job_status_watch.clone()
     }
-    pub async fn request_supervisor_status(&self) -> Option<SupervisorStatus> {
-        let (tx, rx) = oneshot::channel();
-        self.outbox
-            .send((
-                switchboard_supervisor::Message::StatusRequest(Request {
-                    request_id: Uuid::new_v4(),
-                    message: (),
-                }),
-                Some(tx),
-            ))
-            .ok()?;
-        rx.await.ok().and_then(|response| {
-            let ResponseMessage::StatusResponse(status) = response else {
-                tracing::error!("invalid response to StatusRequest: {response:?}");
-                return None;
-            };
-            Some(status)
-        })
-    }
     pub async fn stop_current_job(&self, job_id: Uuid) -> Option<()> {
         // If send returns None, then the supervisor watchdog already knows, and will have begun
         // unregistering the supervisor.
@@ -384,6 +379,31 @@ impl SupervisorActorProxy {
             ))
             .ok()
     }
+    pub async fn request_supervisor_status(&self) -> Option<SupervisorStatus> {
+        request_supervisor_status_with_outbox(&self.outbox).await
+    }
+}
+
+async fn request_supervisor_status_with_outbox(
+    outbox: &UnboundedSender<OutboxMessage>,
+) -> Option<SupervisorStatus> {
+    let (tx, rx) = oneshot::channel();
+    outbox
+        .send((
+            switchboard_supervisor::Message::StatusRequest(Request {
+                request_id: Uuid::new_v4(),
+                message: (),
+            }),
+            Some(tx),
+        ))
+        .ok()?;
+    rx.await.ok().and_then(|response| {
+        let ResponseMessage::StatusResponse(status) = response else {
+            tracing::error!("invalid response to StatusRequest: {response:?}");
+            return None;
+        };
+        Some(status)
+    })
 }
 
 #[derive(Debug)]
@@ -416,6 +436,9 @@ impl SupervisorActor {
                 false
             }
         }
+    }
+    pub async fn request_supervisor_status(&self) -> Option<SupervisorStatus> {
+        request_supervisor_status_with_outbox(&self.outbox).await
     }
 }
 

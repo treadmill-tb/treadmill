@@ -281,7 +281,7 @@ pub mod params {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, sqlx::Type)]
 #[sqlx(type_name = "exit_status", rename_all = "snake_case")]
-pub enum ExitStatus {
+pub(crate) enum SqlExitStatus {
     FailedToMatch,
     QueueTimeout,
     HostStartFailure,
@@ -289,4 +289,17 @@ pub enum ExitStatus {
     HostTerminatedWithSuccess,
     HostTerminatedTimeout,
     JobCanceled,
+}
+impl From<SqlExitStatus> for treadmill_rs::api::switchboard::ExitStatus {
+    fn from(value: SqlExitStatus) -> Self {
+        match value {
+            SqlExitStatus::FailedToMatch => Self::FailedToMatch,
+            SqlExitStatus::QueueTimeout => Self::QueueTimeout,
+            SqlExitStatus::HostStartFailure => Self::HostStartFailure,
+            SqlExitStatus::HostTerminatedWithError => Self::HostTerminatedWithError,
+            SqlExitStatus::HostTerminatedWithSuccess => Self::HostTerminatedWithSuccess,
+            SqlExitStatus::HostTerminatedTimeout => Self::HostTerminatedTimeout,
+            SqlExitStatus::JobCanceled => Self::JobCanceled,
+        }
+    }
 }
