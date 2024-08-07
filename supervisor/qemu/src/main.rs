@@ -933,7 +933,6 @@ impl QemuSupervisor {
         if let Some(ref start_script) = this.config.qemu.start_script {
             let start_script_res = tokio::process::Command::new(start_script)
                 .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::inherit())
                 .stderr(std::process::Stdio::inherit())
                 .envs(
                     qemu_arg_substs
@@ -945,6 +944,27 @@ impl QemuSupervisor {
                 .unwrap(); // TODO: remove panic!
 
             assert!(start_script_res.status.success(), "Start script failed!");
+
+            if let Ok(stdout) = std::str::from_utf8(&start_script_res.stdout) {
+                for line in stdout.lines() {
+                    if let Some(key_value) = line.strip_prefix("tml-set-variable:") {
+                        if let Some((key, value)) = key_value.split_once('=') {
+                            info!(
+                                "Adding variable {:?} to QEMU arg substs, value: {:?}",
+                                key, value
+                            );
+                            qemu_arg_substs.insert(key.to_string(), value.to_string());
+                        } else {
+                            warn!("Malformed tml-set-variable command: {:?}", line);
+                        }
+                    }
+                }
+            } else {
+                warn!(
+		    "Start script produced non-UTF8 characters on standard output, refusing to interpret: {:?}",
+		    String::from_utf8_lossy(&start_script_res.stdout)
+		);
+            }
         }
 
         let qemu_args = match this
