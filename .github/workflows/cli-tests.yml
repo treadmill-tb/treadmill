@@ -195,3 +195,22 @@ jobs:
             echo "Supervisor panicked. Failing the CI."
             exit 1
           fi
+      - name: Upload config files
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: config-files
+          path: |
+            switchboard_config.toml
+            mock_supervisor_config.toml
+            cli_config.toml
+          retention-days: 7
+      - name: Upload log files
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: log-files
+          path: |
+            switchboard.log
+            mock_supervisor.log
+          retention-days: 7
