@@ -116,7 +116,7 @@ jobs:
             exit 1
           fi
 
-          job_id=$(echo "${job_response}" | grep -oP '"job_id":"[a-f0-9-]+"' | cut -d'"' -f4)
+          job_id=$(echo "${job_response}" | jq -r '.job_id')
           if [ -z "${job_id}" ]; then
             echo "Failed to extract job ID from response"
             echo "Full response: ${job_response}"
@@ -129,7 +129,7 @@ jobs:
           sleep 1
           status_response=$(./tml --log -c cli_config.toml job status "${job_id}")
           echo "Status response: ${status_response}"
-          job_status=$(echo "${status_response}" | grep -oP 'job_state: \K\w+')
+          job_status=$(echo "${status_response}" | jq -r '.job_state')
           echo "Job status: ${job_status}"
 
           # Test job cancel
@@ -140,7 +140,7 @@ jobs:
           # Verify cancellation
           sleep 1
           status_response=$(./tml --log -c cli_config.toml job status "${job_id}")
-          job_status=$(echo "${status_response}" | grep -oP 'job_state: \K\w+')
+          job_status=$(echo "${status_response}" | jq -r '.job_state')
           if [ "${job_status}" != "Finished" ] && [ "${job_status}" != "Cancelled" ]; then
             echo "Job was not cancelled successfully"
             exit 1
