@@ -255,6 +255,7 @@ pub mod params {
     ) -> Result<(), sqlx::Error> {
         // https://github.com/launchbadge/sqlx/blob/main/FAQ.md#how-can-i-bind-an-array-to-a-values-clause-how-can-i-do-bulk-inserts
         let (keys, values): (Vec<String>, Vec<ParameterValue>) = items.into_iter().unzip();
+        tracing::info!("keys={keys:?}; values={values:?}");
         let values: Vec<SqlParamValue> = values
             .into_iter()
             .map(|ParameterValue { value, secret }| SqlParamValue { value, secret })
@@ -262,13 +263,10 @@ pub mod params {
 
         // since we have a uniform variable, we individually unnest the keys and values arrays
         sqlx::query!(
-            r#"
-        INSERT INTO job_parameters (job_id, key, value)
-            SELECT $1, keys, values
-            FROM UNNEST($2::text[]) as keys,
-                 UNNEST($3::parameter_value[]) as values
-        ;
-        "#,
+            r#"INSERT INTO job_parameters (job_id, key, value)
+                SELECT $1, (c_rec).unnest, row((c_rec).value, (c_rec).secret)::parameter_value
+                FROM UNNEST($2::text[], $3::parameter_value[]) as c_rec;
+            "#,
             job_id,
             keys.as_slice(),
             values.as_slice() as &[SqlParamValue]
