@@ -56,8 +56,14 @@ async fn main() -> Result<()> {
                 .subcommand(
                     SubCommand::with_name("enqueue")
                         .about("Enqueue a new job")
-                        .arg(Arg::with_name("supervisor_id").required(true))
                         .arg(Arg::with_name("image_id").required(true))
+                        .arg(
+                            Arg::with_name("request_id")
+                                .long("request-id")
+                                .value_name("REQUEST_ID")
+                                .help("Request ID (UUID)")
+                                .takes_value(true),
+                        )
                         .arg(
                             Arg::with_name("ssh_keys")
                                 .long("ssh-keys")
@@ -149,10 +155,11 @@ async fn main() -> Result<()> {
         }
         ("job", Some(job_matches)) => match job_matches.subcommand() {
             ("enqueue", Some(enqueue_matches)) => {
-                let supervisor_id =
-                    Uuid::parse_str(enqueue_matches.value_of("supervisor_id").unwrap())
-                        .context("Invalid supervisor ID")?;
                 let image_id = enqueue_matches.value_of("image_id").unwrap();
+                let request_id = enqueue_matches
+                    .value_of("request_id")
+                    .map(|id| Uuid::parse_str(id).context("Invalid request ID"))
+                    .transpose()?;
                 let ssh_keys = enqueue_matches.value_of("ssh_keys");
                 let restart_count = enqueue_matches.value_of("restart_count");
                 let rendezvous_servers = enqueue_matches.value_of("rendezvous_servers");
@@ -160,14 +167,11 @@ async fn main() -> Result<()> {
                 let tag_config = enqueue_matches.value_of("tag_config");
                 let override_timeout = enqueue_matches.value_of("override_timeout");
 
-                info!(
-                    "Enqueueing job with supervisor ID: {} and image ID: {}",
-                    supervisor_id, image_id
-                );
+                info!("Enqueueing job with image ID: {}", image_id);
                 enqueue_job(
                     &client,
                     &config,
-                    supervisor_id,
+                    request_id,
                     image_id,
                     ssh_keys,
                     restart_count,
@@ -246,7 +250,7 @@ async fn login(
 async fn enqueue_job(
     client: &Client,
     config: &config::Config,
-    supervisor_id: Uuid,
+    request_id: Option<Uuid>,
     image_id: &str,
     ssh_keys: Option<&str>,
     restart_count: Option<&str>,
@@ -310,7 +314,7 @@ async fn enqueue_job(
     };
 
     let enqueue_request = EnqueueJobRequest {
-        supervisor_id,
+        request_id: request_id.unwrap_or_else(Uuid::new_v4),
         job_request,
     };
 
