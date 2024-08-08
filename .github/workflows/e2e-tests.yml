@@ -111,16 +111,15 @@ jobs:
 
           echo "Sending job creation request..."
           job_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" POST localhost:8080/api/v1/job/queue \
-            supervisor_id="${tml_supervisor}" \
-            job_request[request_id]="$(uuidgen)" \
-            job_request[init_spec][type]=image \
-            job_request[init_spec][image_id]="${tml_image_id}" \
-            job_request[ssh_keys]:='[]' \
-            job_request[restart_policy][remaining_restart_count]:=0 \
-            job_request[ssh_rendezvous_servers]:='[]' \
-            job_request[parameters]:='{}' \
-            job_request[tag_config]='' \
-            job_request[override_timeout]:=null) || handle_http_error $?
+            request_id="$(uuidgen)" \
+            tag_config="supervisor:${tml_supervisor}" \
+            init_spec[type]=image \
+            init_spec[image_id]="${tml_image_id}" \
+            ssh_keys:='[]' \
+            restart_policy[remaining_restart_count]:=0 \
+            ssh_rendezvous_servers:='[]' \
+            parameters:='{}' \
+            override_timeout:=null) || handle_http_error $?
 
           echo "Create job response: $job_response"
 
