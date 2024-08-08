@@ -6,7 +6,7 @@ use log::LevelFilter;
 use log::{debug, error, info, warn};
 use reqwest::Client;
 use std::collections::HashMap;
-use treadmill_rs::api::switchboard_supervisor::{ParameterValue, RendezvousServerSpec};
+use treadmill_rs::api::switchboard_supervisor::ParameterValue;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::{

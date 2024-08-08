@@ -49,13 +49,3 @@ pub fn load_config(config_path: Option<&str>) -> Result<Config> {
 
     Ok(config)
 }
-
-pub fn save_config(config: &Config) -> Result<()> {
-    let xdg_dirs = BaseDirectories::with_prefix("switchboard")?;
-    let config_path = xdg_dirs.place_config_file("config.toml")?;
-
-    let toml = toml::to_string(config)?;
-    fs::write(&config_path, toml)?;
-
-    Ok(())
-}
