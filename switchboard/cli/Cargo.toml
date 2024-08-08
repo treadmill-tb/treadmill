@@ -4,6 +4,10 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "tml"
+path = "src/main.rs"
+
 [dependencies]
 clap = "2.33"
 reqwest = { version = "0.11", features = ["json"] }
