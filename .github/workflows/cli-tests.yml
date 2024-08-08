@@ -44,7 +44,7 @@ jobs:
           cargo build --package tml-mock-supervisor
           cargo build --package tml-puppet
           cargo build --package tml-switchboard-cli
-          cp ./target/debug/tml-switchboard-cli ./switchboard-cli
+          cp ./target/debug/tml ./tml
       - name: Generate test configurations
         run: |
           cp switchboard/switchboard/config.example.toml switchboard_config.toml
@@ -88,10 +88,10 @@ jobs:
 
           # Test login
           echo "Testing login..."
-          ./switchboard-cli --log -c cli_config.toml login "${tml_username}" "${tml_password}"
+          ./tml --log -c cli_config.toml login "${tml_username}" "${tml_password}"
 
           echo "Testing basic job enqueue..."
-          job_response=$(./switchboard-cli --log -c cli_config.toml job enqueue "${tml_image_id}")
+          job_response=$(./tml --log -c cli_config.toml job enqueue "${tml_image_id}")
           echo "Basic job enqueue response: ${job_response}"
 
           if echo "${job_response}" | grep -q "Internal server error"; then
@@ -100,7 +100,7 @@ jobs:
           fi
 
           echo "Testing job enqueue with all options..."
-          job_response=$(./switchboard-cli --log -c cli_config.toml job enqueue "${tml_image_id}" \
+          job_response=$(./tml --log -c cli_config.toml job enqueue "${tml_image_id}" \
             --request-id "$(uuidgen)" \
             --ssh-keys "ssh-rsa AAAAB3NzaC1yc2E...,ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..." \
             --restart-count 3 \
@@ -127,19 +127,19 @@ jobs:
           # Test job status
           echo "Testing job status..."
           sleep 1
-          status_response=$(./switchboard-cli --log -c cli_config.toml job status "${job_id}")
+          status_response=$(./tml --log -c cli_config.toml job status "${job_id}")
           echo "Status response: ${status_response}"
           job_status=$(echo "${status_response}" | grep -oP 'job_state: \K\w+')
           echo "Job status: ${job_status}"
 
           # Test job cancel
           echo "Testing job cancel..."
-          cancel_response=$(./switchboard-cli --log -c cli_config.toml job cancel "${job_id}")
+          cancel_response=$(./tml --log -c cli_config.toml job cancel "${job_id}")
           echo "Cancel response: ${cancel_response}"
 
           # Verify cancellation
           sleep 1
-          status_response=$(./switchboard-cli --log -c cli_config.toml job status "${job_id}")
+          status_response=$(./tml --log -c cli_config.toml job status "${job_id}")
           job_status=$(echo "${status_response}" | grep -oP 'job_state: \K\w+')
           if [ "${job_status}" != "Finished" ] && [ "${job_status}" != "Cancelled" ]; then
             echo "Job was not cancelled successfully"
@@ -148,12 +148,12 @@ jobs:
 
           # Test with invalid inputs
           echo "Testing with invalid inputs..."
-          if ./switchboard-cli --log -c cli_config.toml job enqueue "invalid-image-id"; then
+          if ./tml --log -c cli_config.toml job enqueue "invalid-image-id"; then
             echo "CLI accepted invalid image ID"
             exit 1
           fi
 
-          if ./switchboard-cli --log -c cli_config.toml job status "invalid-uuid"; then
+          if ./tml --log -c cli_config.toml job status "invalid-uuid"; then
             echo "CLI accepted invalid job UUID for status check"
             exit 1
           fi
@@ -161,7 +161,7 @@ jobs:
           # Test with non-existent job
           echo "Testing with non-existent job..."
           non_existent_job_id="00000000-0000-0000-0000-000000000000"
-          non_existent_job_response=$(./switchboard-cli --log -c cli_config.toml job status "${non_existent_job_id}")
+          non_existent_job_response=$(./tml --log -c cli_config.toml job status "${non_existent_job_id}")
           echo "Non-existent job response: ${non_existent_job_response}"
 
           if echo "${non_existent_job_response}" | grep -q "Unauthorized"; then
