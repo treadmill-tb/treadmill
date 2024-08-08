@@ -110,14 +110,16 @@ jobs:
             --override-timeout 3600)
           echo "Create job response: ${job_response}"
 
-          if echo "${job_response}" | grep -q "Internal server error"; then
+          if echo "${job_response}" | grep -q '"type":"internal"'; then
             echo "Job enqueue failed due to internal server error"
+            echo "Full response: ${job_response}"
             exit 1
           fi
 
           job_id=$(echo "${job_response}" | grep -oP '"job_id":"[a-f0-9-]+"' | cut -d'"' -f4)
           if [ -z "${job_id}" ]; then
             echo "Failed to extract job ID from response"
+            echo "Full response: ${job_response}"
             exit 1
           fi
           echo "Created job with ID: ${job_id}"
