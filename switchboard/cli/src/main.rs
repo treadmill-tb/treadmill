@@ -313,15 +313,16 @@ async fn enqueue_job(
         override_timeout,
     };
 
-    let enqueue_request = EnqueueJobRequest {
-        request_id: request_id.unwrap_or_else(Uuid::new_v4),
-        job_request,
-    };
+    let enqueue_request = EnqueueJobRequest { job_request };
 
     debug!("Sending enqueue job request");
     let response = client
         .post(&format!("{}/api/v1/job/queue", config.api.url))
         .bearer_auth(token)
+        .header(
+            "X-Request-ID",
+            request_id.unwrap_or_else(Uuid::new_v4).to_string(),
+        )
         .json(&enqueue_request)
         .send()
         .await?
