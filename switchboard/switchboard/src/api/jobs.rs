@@ -1,17 +1,20 @@
 use super::{BifurcateProxy, IntoProxiedResponse, JsonProxiedResponse, ResponseProxy};
+use crate::herd::HerdError;
+use crate::kanban::{JobError, KanbanError};
 use crate::perms::jobs::{
-    enqueue_ci_job, read_job_status, stop_job, EnqueueCIJobAction, EnqueueJobError,
-    JobStatusAction, JobStatusError, StopJobAction, StopJobError,
+    enqueue_ci_job, read_job_status, stop_job, AccessQueueAction, EnqueueCIJobAction,
+    EnqueueJobError, JobStatusAction, JobStatusError, StopJobAction, StopJobError,
 };
+use crate::sched::SchedError;
 use crate::server::auth::{AuthSource, AuthorizationError, AuthorizationSource, DbPermSource};
 use crate::server::AppState;
-use crate::supervisor::{HerdError, JobMarketError};
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::{extract, Json};
 use http::StatusCode;
 use treadmill_rs::api::switchboard::{
     EnqueueJobRequest, EnqueueJobResponse, JobCancelResponse, JobStatusResponse,
+    ReadJobQueueResponse,
 };
 use uuid::Uuid;
 
@@ -31,10 +34,25 @@ impl From<EnqueueJobError> for EnqueueJobResponse {
     fn from(value: EnqueueJobError) -> Self {
         match value {
             EnqueueJobError::Database => EnqueueJobResponse::Internal,
-            EnqueueJobError::SupervisorNotFound => EnqueueJobResponse::SupervisorNotFound,
-            EnqueueJobError::Herd(e) => match e {
-                HerdError::InvalidSupervisor => EnqueueJobResponse::SupervisorNotFound,
-                HerdError::BusySupervisor => EnqueueJobResponse::Conflict,
+            EnqueueJobError::Scheduler(s) => match s {
+                SchedError::Kanban(kanban_error) => match kanban_error {
+                    KanbanError::JobAlreadyExists => EnqueueJobResponse::Conflict,
+                    KanbanError::NoSuchJob => unreachable!(),
+                },
+                SchedError::Herd(herd_error) => match herd_error {
+                    HerdError::SupervisorAlreadyConnected => unreachable!(),
+                    HerdError::SupervisorNotConnected => EnqueueJobResponse::SupervisorNotFound,
+                    HerdError::NoSuchSupervisor => EnqueueJobResponse::SupervisorNotFound,
+                    HerdError::SupervisorAlreadyReserved => EnqueueJobResponse::Conflict,
+                },
+                SchedError::Job(job_error) => match job_error {
+                    JobError::JobAlreadyActive => EnqueueJobResponse::Conflict,
+                },
+                SchedError::FailedToSend => EnqueueJobResponse::SupervisorNotFound,
+                SchedError::InvalidTimeout => EnqueueJobResponse::Invalid {
+                    reason: "invalid timeout".to_owned(),
+                },
+                SchedError::Database(_) => EnqueueJobResponse::Internal,
             },
         }
     }
@@ -44,11 +62,9 @@ pub async fn enqueue(
     State(state): State<AppState>,
     Json(request): Json<EnqueueJobRequest>,
 ) -> BifurcateProxy<EnqueueJobResponse> {
-    // check that the supervisor exists (we don't check if it's online)
-
     let privilege = auth_source
         .authorize(EnqueueCIJobAction {
-            supervisor_id: request.supervisor_id,
+            // supervisor_id: request.supervisor_id,
         })
         .await
         .map_err(|e| match e {
@@ -63,7 +79,7 @@ pub async fn enqueue(
         })
         .map_err(ResponseProxy)?;
 
-    let job_id = enqueue_ci_job(&state, privilege, request.job_request)
+    let job_id = enqueue_ci_job(&state, privilege, request.job_request, auth_source.clone())
         .await
         .map_err(|e| ResponseProxy(EnqueueJobResponse::from(e)))?;
 
@@ -71,8 +87,43 @@ pub async fn enqueue(
 }
 
 // GET /job/queue
-pub async fn get_queue() {
-    unimplemented!()
+impl JsonProxiedResponse for ReadJobQueueResponse {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            ReadJobQueueResponse::Ok { .. } => StatusCode::OK,
+            ReadJobQueueResponse::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            ReadJobQueueResponse::Unauthorized => StatusCode::UNAUTHORIZED,
+        }
+    }
+}
+pub async fn get_queue(
+    State(state): State<AppState>,
+    AuthSource(auth_source): AuthSource<DbPermSource>,
+) -> BifurcateProxy<ReadJobQueueResponse> {
+    auth_source
+        .authorize(AccessQueueAction)
+        .await
+        .map_err(|e| match e {
+            AuthorizationError::Database(e) => {
+                tracing::error!("failed to check privilege: {e}");
+                ReadJobQueueResponse::Internal
+            }
+            AuthorizationError::Unauthorized(e) => {
+                tracing::error!("{auth_source:?} lacks privilege: {e}");
+                ReadJobQueueResponse::Unauthorized
+            }
+        })
+        .map_err(ResponseProxy)?;
+
+    let jobs: Vec<Uuid> = state
+        .scheduler()
+        .kanban()
+        .jobs()
+        .iter()
+        .map(|j| *j.key())
+        .collect();
+
+    super::bifurcated_ok!(ReadJobQueueResponse::Ok { jobs })
 }
 
 // GET /job/:id/info
@@ -97,16 +148,11 @@ impl From<JobStatusError> for JobStatusResponse {
     fn from(value: JobStatusError) -> Self {
         match value {
             JobStatusError::JobNotFound => JobStatusResponse::JobNotFound,
-            JobStatusError::Herd(e) => match e {
-                // TODO: better error for this case
-                HerdError::InvalidSupervisor => JobStatusResponse::SupervisorNotFound,
-                // shouldn't happen
-                HerdError::BusySupervisor => JobStatusResponse::Internal,
+            JobStatusError::Kanban(e) => match e {
+                KanbanError::JobAlreadyExists => unreachable!(),
+                KanbanError::NoSuchJob => JobStatusResponse::JobNotFound,
             },
-            JobStatusError::JobMarket(e) => match e {
-                JobMarketError::InvalidJob => JobStatusResponse::JobNotFound,
-                JobMarketError::Disconnect => JobStatusResponse::SupervisorNotFound,
-            },
+            JobStatusError::Database(_) => JobStatusResponse::Internal,
         }
     }
 }
@@ -132,7 +178,7 @@ pub async fn status(
 
     read_job_status(&state, privilege)
         .await
-        .map(|job_status| JobStatusResponse::Ok { job_status })
+        .map(|job_status| JobStatusResponse::Ok(job_status))
         .map(ResponseProxy)
         .map_err(JobStatusResponse::from)
         .map_err(ResponseProxy)
@@ -152,23 +198,19 @@ impl JsonProxiedResponse for JobCancelResponse {
 }
 impl From<StopJobError> for JobCancelResponse {
     fn from(value: StopJobError) -> Self {
+        let StopJobError::Sched(sched_error) = value;
+        tracing::error!("failed to stop job: {sched_error}");
         // TODO: redo this
-        match value {
-            StopJobError::JobNotFound => JobCancelResponse::JobNotFound,
-            StopJobError::Herd(e) => match e {
-                HerdError::InvalidSupervisor => {
-                    // shouldn't happen?
-                    panic!()
-                }
-                HerdError::BusySupervisor => {
-                    // shouldn't happen?
-                    panic!()
-                }
+        match sched_error {
+            SchedError::Kanban(kanban_error) => match kanban_error {
+                KanbanError::JobAlreadyExists => unreachable!(),
+                KanbanError::NoSuchJob => JobCancelResponse::JobNotFound,
             },
-            StopJobError::JobMarket(e) => match e {
-                JobMarketError::InvalidJob => JobCancelResponse::JobNotFound,
-                JobMarketError::Disconnect => JobCancelResponse::JobNotFound,
-            },
+            SchedError::Herd(_) => unreachable!(),
+            SchedError::Job(_) => unreachable!(),
+            SchedError::FailedToSend => JobCancelResponse::SupervisorNotFound,
+            SchedError::InvalidTimeout => unreachable!(),
+            SchedError::Database(_) => JobCancelResponse::Internal,
         }
     }
 }

@@ -76,30 +76,53 @@ pub struct JobRequest {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnqueueJobRequest {
-    /// Supervisor to enqueue job on.
-    pub supervisor_id: Uuid,
     /// Job request.
+    #[serde(flatten)]
     pub job_request: JobRequest,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnqueueJobResponse {
     /// Succeeded. (HTTP 200)
-    Ok { job_id: Uuid },
+    Ok {
+        job_id: Uuid,
+    },
     /// Requested supervisor does not exist. (HTTP 404)
     SupervisorNotFound,
     /// Authorization subject does not have sufficient privileges. (HTTP 401)
     Unauthorized,
     /// Job request is invalid. (HTTP 400)
-    Invalid { reason: String },
+    Invalid {
+        reason: String,
+    },
     /// Internal error. (HTTP 500)
     Internal,
-    /// Unable to fulfill request due to lack of available time slots.
     Conflict,
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExitStatus {
+    FailedToMatch,
+    QueueTimeout,
+    HostStartFailure,
+    HostTerminatedWithError,
+    HostTerminatedWithSuccess,
+    HostTerminatedTimeout,
+    JobCanceled,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+pub struct JobResult {
+    pub job_id: Uuid,
+    pub supervisor_id: Option<Uuid>,
+    pub exit_status: ExitStatus,
+    pub host_output: Option<serde_json::Value>,
+    pub terminated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum JobStatus {
     Active {
         // Not sure yet whether we should include this...
@@ -110,12 +133,13 @@ pub enum JobStatus {
         job_error: JobError,
     },
     Inactive,
+    Terminated(JobResult),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "job_status")]
+#[serde(tag = "type", content = "job_status", rename_all = "snake_case")]
 pub enum JobStatusResponse {
-    Ok { job_status: JobStatus },
+    Ok(JobStatus),
     JobNotFound,
     SupervisorNotFound,
     Unauthorized,
@@ -123,11 +147,19 @@ pub enum JobStatusResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum JobCancelResponse {
     Ok,
     JobNotFound,
     SupervisorNotFound,
     Unauthorized,
     Internal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReadJobQueueResponse {
+    Ok { jobs: Vec<Uuid> },
+    Internal,
+    Unauthorized,
 }

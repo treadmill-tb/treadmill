@@ -1,5 +1,3 @@
-pub mod socket_auth;
-
 use async_trait::async_trait;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -61,6 +59,7 @@ struct Inner<S: connector::Supervisor> {
 
 impl<S: connector::Supervisor> WsConnector<S> {
     pub fn new(supervisor_id: Uuid, config: WsConnectorConfig, supervisor: Weak<S>) -> Self {
+        tracing::error!("UH OH");
         let (update_tx, update_rx) = mpsc::unbounded_channel();
         Self {
             inner: Arc::new(Inner {
@@ -112,9 +111,14 @@ impl<S: connector::Supervisor> Inner<S> {
             .body(())
             .unwrap();
 
+        tracing::debug!("Request = {req:?}");
+
         let (ws, resp) = tokio_tungstenite::connect_async_tls_with_config(req, None, false, None)
             .await
-            .map_err(|e| WsConnectorError::Connection(e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to connect: {e}");
+                WsConnectorError::Connection(e)
+            })?;
 
         tracing::debug!("Received response from switchboard: {resp:?}");
 
@@ -297,9 +301,9 @@ impl<S: connector::Supervisor> Inner<S> {
         );
         {
             let mut lus_lg = self.last_updated_status.lock().await;
-            // MC: We do not currently handle this case, since there is no extant usage, and I am
-            //     unsure of the semantics of JobState::Failed.
-            assert!(!matches!(job_state, JobState::Failed { .. }));
+            // // MC: We do not currently handle this case, since there is no extant usage, and I am
+            // //     unsure of the semantics of JobState::Failed.
+            // assert!(!matches!(job_state, JobState::Failed { .. }));
             // Finished is an event, not a state.
             if matches!(job_state, JobState::Finished { .. }) {
                 *lus_lg = SupervisorStatus::Idle;

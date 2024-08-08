@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into job_results (job_id, supervisor_id, exit_status, host_output, terminated_at)\n            values ($1, $2, $3, $4, current_timestamp);",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "exit_status",
+            "kind": {
+              "Enum": [
+                "failed_to_match",
+                "queue_timeout",
+                "host_start_failure",
+                "host_terminated_with_error",
+                "host_terminated_with_success",
+                "host_terminated_timeout",
+                "job_canceled"
+              ]
+            }
+          }
+        },
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8fe21b87e1606399f5293785a7978074cd7c1b5d7c692c9113d06da9fc0528ea"
+}

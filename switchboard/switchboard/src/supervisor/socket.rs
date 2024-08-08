@@ -117,7 +117,9 @@ async fn launch_supervisor_actor(
     let model = model::supervisor::fetch_by_id(supervisor_id, state.pool())
         .await
         .expect("supervisor was deleted from database between authentication and model lookup");
-    state.herd().add_supervisor(&model, socket).await;
+    if let Err(e) = state.herd().supervisor_connected(&model, socket).await {
+        tracing::error!("Failed to add supervisor to herd: {e}");
+    }
 }
 
 pub async fn try_authenticate(

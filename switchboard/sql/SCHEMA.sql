@@ -133,8 +133,8 @@ create type job_known_state as enum (
     -- The job is currently running. In a precise sense, the real meaning is "the job MAY be running", however, the
     -- switchboard should treat "may be running" as "is running"; thus, this state is called 'running'.
     'running',
-    -- The job has run to completion.
-    'finished');
+    -- The job is not running and does not need to run.
+    'not_queued');
 create table jobs
 (
     job_id                 uuid                     not null primary key,
@@ -153,6 +153,9 @@ create table jobs
 
     known_state            job_known_state          not null,
     timeout                interval                 not null,
+
+    queued_at              timestamp with time zone not null,
+    started_at             timestamp with time zone,
 
     check
         (((resume_job_id is not null)::int
@@ -196,12 +199,11 @@ create type exit_status as enum (
 create table job_results
 (
     job_id        uuid                     not null references jobs (job_id),
-    supervisor_id uuid                     not null references supervisors (supervisor_id) on delete no action,
+    -- will be null if job is not attached to supervisor
+    supervisor_id uuid references supervisors (supervisor_id) on delete no action,
 
     exit_status   exit_status              not null,
     host_output   jsonb,
 
-    enqueued_at   timestamp with time zone not null,
-    started_at    timestamp with time zone not null,
     terminated_at timestamp with time zone not null
 );

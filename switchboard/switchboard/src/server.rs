@@ -2,12 +2,12 @@
 
 use crate::api;
 use crate::cfg::{Config, DatabaseAuth, PasswordAuth};
-use crate::supervisor::{socket, Herd, JobMarket};
-use axum::extract::FromRef;
+use crate::herd::Herd;
+use crate::sched::Scheduler;
+use crate::supervisor::socket;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::Router;
-use axum_extra::extract::cookie::Key;
 use axum_server::tls_rustls::RustlsConfig;
 use http::StatusCode;
 use miette::{IntoDiagnostic, WrapErr};
@@ -30,25 +30,20 @@ pub struct AppStateInner {
     /// Connection pool to the database server.
     db_pool: PgPool,
 
-    /// Supervisor herd
-    herd: Arc<Herd>,
-
-    job_market: Arc<JobMarket>,
+    scheduler: Arc<Scheduler>,
 
     /// Server configuration, set at startup
     config: Config,
-    /// Used for cookie signing; should not be touched
-    cookie_signing_key: Key,
 }
 impl AppStateInner {
     pub fn pool(&self) -> &PgPool {
         &self.db_pool
     }
-    pub fn herd(&self) -> Arc<Herd> {
-        self.herd.clone()
+    pub fn scheduler(&self) -> &Arc<Scheduler> {
+        &self.scheduler
     }
-    pub fn job_market(&self) -> Arc<JobMarket> {
-        self.job_market.clone()
+    pub fn herd(&self) -> &Arc<Herd> {
+        self.scheduler.herd()
     }
     pub fn config(&self) -> &Config {
         &self.config
@@ -68,11 +63,6 @@ impl Deref for AppState {
         self.0.deref()
     }
 }
-impl FromRef<AppState> for Key {
-    fn from_ref(input: &AppState) -> Self {
-        input.cookie_signing_key.clone()
-    }
-}
 
 #[derive(clap::Args, Debug)]
 pub struct ServeCommand {
@@ -83,7 +73,7 @@ pub struct ServeCommand {
 
 pub async fn database_from_config(cfg: &Config) -> miette::Result<PgPool> {
     let pg_options = PgConnectOptions::new()
-        .host(&cfg.database.address)
+        .host(&cfg.database.host)
         .database(&cfg.database.name)
         /*
             .ssl_mode(PgSslMode::VerifyFull)
@@ -114,34 +104,40 @@ pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
 
     // Tracing init
 
+    // console_subscriber::init();
     tracing_subscriber::fmt::init();
 
     // Load configuration
 
     // TODO: overlayed configuration
-    let cfg = crate::cfg::load_config(config_path)?;
+    let config = crate::cfg::load_config(config_path)?;
 
-    tracing::info!("Serving with configuration: {cfg:?}");
+    tracing::info!("Serving with configuration: {config:?}");
 
     // Connect to database
 
-    let pg_pool = database_from_config(&cfg).await?;
-    tracing::info!("Connected to database, poolsz_idle={}", pg_pool.num_idle());
+    let db_pool = database_from_config(&config).await?;
+    tracing::info!("Connected to database, poolsz_idle={}", db_pool.num_idle());
 
     // Bind TCP listeners.
 
-    let public_socket_addr = cfg.server.socket_addr;
+    let public_socket_addr = config.server.bind_address;
 
     // Build shared state
 
-    let dev_mode_ssl = cfg.server.dev_mode_ssl.clone();
+    let dev_mode_ssl = config.server.dev_mode_ssl.clone();
+
+    let scheduler = Arc::new(
+        Scheduler::with_database(db_pool.clone())
+            .await
+            .into_diagnostic()?,
+    );
+    scheduler.launch_queue_watchdog();
 
     let state_inner = AppStateInner {
-        db_pool: pg_pool,
-        herd: Arc::new(Herd::new()),
-        job_market: Arc::new(JobMarket::new()),
-        config: cfg,
-        cookie_signing_key: Key::generate(),
+        db_pool,
+        scheduler,
+        config,
     };
 
     let server_state = AppState(Arc::new(state_inner));

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into job_results (job_id, supervisor_id, exit_status, host_output, terminated_at)\n                values ($1, null, 'job_canceled', null, current_timestamp);\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8c21a7e72d2a75951b5f2bcbfaa91fce05931c47fa7e90c59ff60ef931dc2b85"
+}

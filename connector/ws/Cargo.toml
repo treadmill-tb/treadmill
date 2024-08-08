@@ -17,19 +17,11 @@ futures-util = { version = "0.3.30", features = ["sink"] }
 
 rustls = { version = "0.23.11", features = [] }
 
-ed25519-dalek = { version = "2.1.1", features = ["pkcs8", "pem", "serde"] }
-
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-
-clap = { version = "4.5.8", features = ["derive", "error-context"] }
 
 serde = "1.0.204"
 serde_json = "1.0.120"
-toml = "0.8.14"
 
 thiserror = "1.0.61"
-miette = { version = "7.2.0", features = ["fancy"] }
 rand = { version = "0.9.0-alpha.1", features = ["getrandom"] }
-rand_chacha = "0.9.0-alpha.1"
 async-trait = "0.1.80"

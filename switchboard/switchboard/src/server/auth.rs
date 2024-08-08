@@ -332,6 +332,14 @@ pub struct DbPermSource {
     db: PgPool,
     subject: Subject,
 }
+impl Clone for DbPermSource {
+    fn clone(&self) -> Self {
+        Self {
+            db: self.db.clone(),
+            subject: Subject(self.subject.0.clone()),
+        }
+    }
+}
 #[async_trait]
 impl AuthorizationSource for DbPermSource {
     fn from_state_with_subject(app_state: &AppState, subject: Subject) -> Self {

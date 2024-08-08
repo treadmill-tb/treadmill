@@ -126,7 +126,7 @@ pub async fn login_handler(
         app_state.pool(),
         user.user_id,
         true,
-        app_state.config.api.auth_session_timeout,
+        app_state.config.api.session_token_timeout,
     )
     .await
     .map_err(|e| {

@@ -11,40 +11,7 @@ use uuid::Uuid;
 
 /// Challenge-based authentication for switchboard-supervisor websocket connections.
 pub mod ws_challenge {
-    use serde::{Deserialize, Serialize};
-    use uuid::Uuid;
-
     pub static TREADMILL_WEBSOCKET_PROTOCOL: &str = "treadmillv1";
-
-    pub const NONCE_LEN: usize = 32;
-
-    #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-    pub struct ChallengeRequest {
-        pub uuid: Uuid,
-    }
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct Challenge {
-        pub switchboard_nonce: [u8; NONCE_LEN],
-    }
-    #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-    pub struct ChallengeResponse {
-        pub switchboard_nonce_signature: ed25519_dalek::Signature,
-    }
-    #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-    pub enum ChallengeResult {
-        Authenticated,
-        Unauthenticated,
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[serde(tag = "type")]
-    #[non_exhaustive]
-    pub enum ChallengeMessage {
-        ChallengeRequest(ChallengeRequest),
-        Challenge(Challenge),
-        ChallengeResponse(ChallengeResponse),
-        ChallengeResult(ChallengeResult),
-    }
 }
 
 // -- StartJobRequest ------------------------------------------------------------------------------
@@ -193,11 +160,21 @@ pub enum JobState {
         status_message: Option<String>,
     },
     Finished {
+        // Host output:
         status_message: Option<String>,
     },
-    Failed {
-        status_message: Option<String>,
-    },
+    // Treadmill (or at least, this part of it) doesn't really care about the success or failure of
+    // what it runs, but rather that the process of running goes successfully. If something goes
+    // wrong, and it's Treadmill's fault, then that should be reported as a JobError. Otherwise,
+    // it's JobState::Finished, and any further information can be extracted from the status message
+    // (which, incidentally, should be JSON?);
+    // Thus, the following variant is being removed since it is never constructed and nowhere
+    // referenced:
+    //
+    //      Failed { status_message: Option<String>, },
+    //
+    // Similarly, the following variant is being added:
+    Canceled,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -251,8 +228,8 @@ pub enum Message {
     SupervisorEvent(SupervisorEvent),
 }
 
-#[non_exhaustive]
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ResponseMessage {
     StatusResponse(SupervisorStatus),
 }
