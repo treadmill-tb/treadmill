@@ -1,7 +1,8 @@
 use anyhow::Result;
 use serde::Deserialize;
 use std::fs;
-use std::path::Path;
+use std::path::PathBuf;
+use xdg::BaseDirectories;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -14,13 +15,24 @@ pub struct Api {
 }
 
 pub fn load_config(config_path: Option<&str>) -> Result<Config> {
-    let config_path = config_path.unwrap_or("~/.switchboard_config.toml");
-    let config_str = fs::read_to_string(expand_tilde(config_path)?)?;
+    let xdg_dirs = BaseDirectories::with_prefix("switchboard")?;
+    let config_path = match config_path {
+        Some(path) => PathBuf::from(path),
+        None => xdg_dirs.place_config_file("config.toml")?.to_path_buf(),
+    };
+
+    let config_str = fs::read_to_string(&config_path)?;
     let config: Config = toml::from_str(&config_str)?;
     Ok(config)
 }
 
-fn expand_tilde<P: AsRef<Path>>(path_user_input: P) -> Result<String> {
-    let p = path_user_input.as_ref().to_str().unwrap();
-    Ok(shellexpand::tilde(p).into_owned())
+// default configuration
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            api: Api {
+                url: "https://api.treadmill.ci".to_string(),
+            },
+        }
+    }
 }

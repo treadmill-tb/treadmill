@@ -41,9 +41,10 @@ async fn main() -> Result<()> {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("log")
-                .long("log")
-                .help("Enable logging")
+            Arg::with_name("verbose")
+                .short("v")
+                .long("verbose")
+                .help("Enable verbose logging")
                 .takes_value(false),
         )
         .subcommand(
@@ -60,13 +61,6 @@ async fn main() -> Result<()> {
                         .about("Enqueue a new job")
                         .arg(Arg::with_name("image_id").required(true))
                         .arg(
-                            Arg::with_name("request_id")
-                                .long("request-id")
-                                .value_name("REQUEST_ID")
-                                .help("Request ID (UUID)")
-                                .takes_value(true),
-                        )
-                        .arg(
                             Arg::with_name("ssh_keys")
                                 .long("ssh-keys")
                                 .value_name("KEYS")
@@ -78,13 +72,6 @@ async fn main() -> Result<()> {
                                 .long("restart-count")
                                 .value_name("COUNT")
                                 .help("Remaining restart count")
-                                .takes_value(true),
-                        )
-                        .arg(
-                            Arg::with_name("rendezvous_servers")
-                                .long("rendezvous-servers")
-                                .value_name("SERVERS")
-                                .help("JSON array of rendezvous server specifications")
                                 .takes_value(true),
                         )
                         .arg(
@@ -123,10 +110,10 @@ async fn main() -> Result<()> {
         )
         .get_matches();
 
-    if matches.is_present("log") {
-        Builder::new().filter(None, LevelFilter::Info).init();
-    } else {
+    if matches.is_present("verbose") {
         Builder::new().filter(None, LevelFilter::Debug).init();
+    } else {
+        Builder::new().filter(None, LevelFilter::Info).init();
     }
 
     let config = match (matches.value_of("config"), matches.value_of("api_url")) {
@@ -141,11 +128,7 @@ async fn main() -> Result<()> {
             config.api.url = api_url.to_string();
             config
         }
-        (None, None) => {
-            return Err(anyhow::anyhow!(
-                "Either a config file (-c/--config) or an API URL (-u/--api-url) must be provided"
-            ));
-        }
+        (None, None) => config::load_config(None)?,
     };
 
     let client = Client::new();
@@ -160,13 +143,8 @@ async fn main() -> Result<()> {
         ("job", Some(job_matches)) => match job_matches.subcommand() {
             ("enqueue", Some(enqueue_matches)) => {
                 let image_id = enqueue_matches.value_of("image_id").unwrap();
-                let request_id = enqueue_matches
-                    .value_of("request_id")
-                    .map(|id| Uuid::parse_str(id).context("Invalid request ID"))
-                    .transpose()?;
                 let ssh_keys = enqueue_matches.value_of("ssh_keys");
                 let restart_count = enqueue_matches.value_of("restart_count");
-                let rendezvous_servers = enqueue_matches.value_of("rendezvous_servers");
                 let parameters = enqueue_matches.value_of("parameters");
                 let tag_config = enqueue_matches.value_of("tag_config");
                 let override_timeout = enqueue_matches.value_of("override_timeout");
@@ -175,11 +153,9 @@ async fn main() -> Result<()> {
                 enqueue_job(
                     &client,
                     &config,
-                    request_id,
                     image_id,
                     ssh_keys,
                     restart_count,
-                    rendezvous_servers,
                     parameters,
                     tag_config,
                     override_timeout,
@@ -254,11 +230,9 @@ async fn login(
 async fn enqueue_job(
     client: &Client,
     config: &config::Config,
-    request_id: Option<Uuid>,
     image_id: &str,
     ssh_keys: Option<&str>,
     restart_count: Option<&str>,
-    rendezvous_servers: Option<&str>,
     parameters: Option<&str>,
     tag_config: Option<&str>,
     override_timeout: Option<&str>,
@@ -285,11 +259,6 @@ async fn enqueue_job(
         .transpose()?
         .unwrap_or(0);
 
-    let rendezvous_servers: Vec<RendezvousServerSpec> = rendezvous_servers
-        .map(|servers| serde_json::from_str(servers).context("Invalid rendezvous servers JSON"))
-        .transpose()?
-        .unwrap_or_default();
-
     let parameters: HashMap<String, ParameterValue> = parameters
         .map(|params| serde_json::from_str(params).context("Invalid parameters JSON"))
         .transpose()?
@@ -311,7 +280,7 @@ async fn enqueue_job(
         restart_policy: RestartPolicy {
             remaining_restart_count: restart_count,
         },
-        ssh_rendezvous_servers: rendezvous_servers,
+        ssh_rendezvous_servers: Vec::new(),
         parameters,
         tag_config,
         override_timeout,
@@ -323,10 +292,6 @@ async fn enqueue_job(
     let response = client
         .post(&format!("{}/api/v1/job/queue", config.api.url))
         .bearer_auth(token)
-        .header(
-            "X-Request-ID",
-            request_id.unwrap_or_else(Uuid::new_v4).to_string(),
-        )
         .json(&enqueue_request)
         .send()
         .await?
