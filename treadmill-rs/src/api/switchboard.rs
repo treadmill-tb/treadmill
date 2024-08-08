@@ -81,7 +81,7 @@ pub struct EnqueueJobRequest {
     pub job_request: JobRequest,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnqueueJobResponse {
     /// Succeeded. (HTTP 200)
     Ok {
@@ -122,7 +122,7 @@ pub struct JobResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum JobStatus {
     Active {
         // Not sure yet whether we should include this...
@@ -137,7 +137,7 @@ pub enum JobStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "job_status")]
+#[serde(tag = "type", content = "job_status", rename_all = "snake_case")]
 pub enum JobStatusResponse {
     Ok(JobStatus),
     JobNotFound,
@@ -147,7 +147,7 @@ pub enum JobStatusResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum JobCancelResponse {
     Ok,
     JobNotFound,
@@ -157,7 +157,7 @@ pub enum JobCancelResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReadJobQueueResponse {
     Ok { jobs: Vec<Uuid> },
     Internal,

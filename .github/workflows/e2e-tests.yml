@@ -168,7 +168,7 @@ jobs:
           echo "Job status after cancellation: $job_status"
 
           # Verify the job was cancelled (checking for "finished" state)
-          if [ "$job_status" != "Terminated" ]; then
+          if [ "$job_status" != "terminated" ]; then
             echo "Job was not cancelled successfully"
             exit 1
           fi
