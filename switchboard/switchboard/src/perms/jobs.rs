@@ -12,6 +12,7 @@ use axum::async_trait;
 use chrono::{DateTime, Utc};
 use std::fmt::Debug;
 use treadmill_rs::api::switchboard::{ExitStatus, JobRequest, JobResult, JobStatus};
+use treadmill_rs::api::switchboard_supervisor::ParameterValue;
 use uuid::Uuid;
 // enqueue_ci_job
 
@@ -34,6 +35,7 @@ pub enum EnqueueJobError {
     Database,
     Scheduler(SchedError),
 }
+
 pub async fn enqueue_ci_job(
     state: &AppState,
     p: Privilege<'_, EnqueueCIJobAction>,
@@ -61,13 +63,15 @@ pub async fn enqueue_ci_job(
     for (key, value) in job.parameters.iter() {
         sqlx::query!(
             r#"
-            INSERT INTO job_parameters (job_id, key, value)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (job_id, key) DO UPDATE SET value = EXCLUDED.value
+            INSERT INTO job_parameters (job_id, key, value, secret)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (job_id, key) DO UPDATE 
+            SET value = EXCLUDED.value, secret = EXCLUDED.secret
             "#,
             job_id,
             key,
-            value as &ParameterValue
+            value.value,
+            value.secret
         )
         .execute(transaction.as_mut())
         .await

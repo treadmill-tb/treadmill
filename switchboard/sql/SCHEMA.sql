@@ -172,11 +172,11 @@ create type parameter_value as
 );
 create table job_parameters
 (
-    job_id uuid            not null references jobs (job_id) on delete cascade,
-    key    text            not null,
-    value  parameter_value not null,
-
-    primary key (job_id, key)
+    job_id UUID NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    secret BOOLEAN NOT NULL,
+    PRIMARY KEY (job_id, key)
 );
 
 create type exit_status as enum (
