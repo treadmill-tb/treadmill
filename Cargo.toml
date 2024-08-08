@@ -7,7 +7,7 @@ members = [
     "control-socket/tcp/server",
     "puppet",
     "supervisor/mock",
-    "supervisor/qemu",
+    "supervisor/qemu", "switchboard/cli",
     "switchboard/switchboard",
     "treadmill-rs",
 ]
