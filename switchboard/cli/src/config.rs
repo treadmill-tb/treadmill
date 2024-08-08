@@ -1,32 +1,19 @@
-use anyhow::Result;
-use serde::Deserialize;
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use xdg::BaseDirectories;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     pub api: Api,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Api {
     pub url: String,
 }
 
-pub fn load_config(config_path: Option<&str>) -> Result<Config> {
-    let xdg_dirs = BaseDirectories::with_prefix("switchboard")?;
-    let config_path = match config_path {
-        Some(path) => PathBuf::from(path),
-        None => xdg_dirs.place_config_file("config.toml")?.to_path_buf(),
-    };
-
-    let config_str = fs::read_to_string(&config_path)?;
-    let config: Config = toml::from_str(&config_str)?;
-    Ok(config)
-}
-
-// default configuration
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -35,4 +22,40 @@ impl Default for Config {
             },
         }
     }
+}
+
+pub fn load_config(config_path: Option<&str>) -> Result<Config> {
+    let xdg_dirs = BaseDirectories::with_prefix("switchboard")?;
+
+    let config_path = match config_path {
+        Some(path) => PathBuf::from(path),
+        None => xdg_dirs.find_config_file("config.toml").unwrap_or_else(|| {
+            xdg_dirs
+                .place_config_file("config.toml")
+                .expect("Failed to create config file")
+        }),
+    };
+
+    if !config_path.exists() {
+        let default_config = Config::default();
+        let toml = toml::to_string(&default_config)?;
+        fs::write(&config_path, toml)?;
+    }
+
+    let config_str = fs::read_to_string(&config_path)
+        .with_context(|| format!("Failed to read config file: {:?}", config_path))?;
+    let config: Config = toml::from_str(&config_str)
+        .with_context(|| format!("Failed to parse config file: {:?}", config_path))?;
+
+    Ok(config)
+}
+
+pub fn save_config(config: &Config) -> Result<()> {
+    let xdg_dirs = BaseDirectories::with_prefix("switchboard")?;
+    let config_path = xdg_dirs.place_config_file("config.toml")?;
+
+    let toml = toml::to_string(config)?;
+    fs::write(&config_path, toml)?;
+
+    Ok(())
 }
