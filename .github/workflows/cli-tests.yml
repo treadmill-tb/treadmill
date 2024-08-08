@@ -80,8 +80,7 @@ jobs:
           set -e
           set -x
 
-          export tml_supervisor="7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
-          export tml_image_id="e4673d891ecb0f40f89ec2a92677eeac6d06b746722df7e5d2b674068a7aa7f1"
+          export tml_image_id="46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577"
           export tml_username="fake_user1"
           export tml_password="FAKEFAKE"
           export RUST_LOG=debug
@@ -92,18 +91,27 @@ jobs:
           ./switchboard-cli --log -c cli_config.toml login "${tml_username}" "${tml_password}"
 
           echo "Testing basic job enqueue..."
-          job_response=$(./switchboard-cli --log -c cli_config.toml job enqueue \
-            --request-id "$(uuidgen)" \
-            --init-spec-type image \
-            --init-spec-image-id "${tml_image_id}" \
-            --ssh-keys "ssh-rsa AAAAB3NzaC1yc2E..." \
-            --restart-count 0 \
-            --tag-config "supervisor:${tml_supervisor}" \
-            "${tml_supervisor}")
+          job_response=$(./switchboard-cli --log -c cli_config.toml job enqueue "${tml_image_id}")
           echo "Basic job enqueue response: ${job_response}"
 
           if echo "${job_response}" | grep -q "Internal server error"; then
             echo "Basic job enqueue failed due to internal server error"
+            exit 1
+          fi
+
+          echo "Testing job enqueue with all options..."
+          job_response=$(./switchboard-cli --log -c cli_config.toml job enqueue "${tml_image_id}" \
+            --request-id "$(uuidgen)" \
+            --ssh-keys "ssh-rsa AAAAB3NzaC1yc2E...,ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..." \
+            --restart-count 3 \
+            --rendezvous-servers '[{"client_id":"12345678-1234-5678-1234-567812345678","server_base_url":"http://example.com","auth_token":"exampletoken"}]' \
+            --parameters '{"key1":{"value":"value1","secret":false},"key2":{"value":"value2","secret":true}}' \
+            --tag-config 'test_tag_config' \
+            --override-timeout 3600)
+          echo "Create job response: ${job_response}"
+
+          if echo "${job_response}" | grep -q "Internal server error"; then
+            echo "Job enqueue failed due to internal server error"
             exit 1
           fi
 
@@ -122,15 +130,6 @@ jobs:
           job_status=$(echo "${status_response}" | grep -oP 'job_state: \K\w+')
           echo "Job status: ${job_status}"
 
-          # Test job list
-          # echo "Testing job list..."
-          # list_response=$(./switchboard-cli --log -c cli_config.toml job list)
-          # echo "Job list response: ${list_response}"
-          # if ! echo "${list_response}" | grep -q "${job_id}"; then
-          #   echo "Created job not found in job list"
-          #   exit 1
-          # fi
-
           # Test job cancel
           echo "Testing job cancel..."
           cancel_response=$(./switchboard-cli --log -c cli_config.toml job cancel "${job_id}")
@@ -147,12 +146,7 @@ jobs:
 
           # Test with invalid inputs
           echo "Testing with invalid inputs..."
-          if ./switchboard-cli --log -c cli_config.toml job enqueue "invalid-uuid" "${tml_image_id}"; then
-            echo "CLI accepted invalid supervisor UUID"
-            exit 1
-          fi
-
-          if ./switchboard-cli --log -c cli_config.toml job enqueue "${tml_supervisor}" "invalid-image-id"; then
+          if ./switchboard-cli --log -c cli_config.toml job enqueue "invalid-image-id"; then
             echo "CLI accepted invalid image ID"
             exit 1
           fi
