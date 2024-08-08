@@ -109,11 +109,11 @@ jobs:
 
           # Test login
           echo "Testing login..."
-          login_response=$(./tml --log -c cli_config.toml login "${tml_username}" "${tml_password}")
+          login_response=$(./tml -v -c cli_config.toml login "${tml_username}" "${tml_password}")
           log_request_response "Login" "$login_response"
 
           echo "Testing basic job enqueue..."
-          job_response=$(./tml --log -c cli_config.toml job enqueue "${tml_image_id}")
+          job_response=$(./tml -v -c cli_config.toml job enqueue "${tml_image_id}")
           log_request_response "Basic job enqueue" "$job_response"
 
           if echo "${job_response}" | grep -q "Internal server error"; then
@@ -122,7 +122,7 @@ jobs:
           fi
 
           echo "Testing job enqueue with all options..."
-          job_response=$(./tml --log -c cli_config.toml job enqueue "${tml_image_id}" \
+          job_response=$(./tml -v -c cli_config.toml job enqueue "${tml_image_id}" \
             --ssh-keys "ssh-rsa AAAAB3NzaC1yc2E...,ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..." \
             --restart-count 3 \
             --parameters '{"key1":{"value":"value1","secret":false},"key2":{"value":"value2","secret":true}}' \
@@ -147,7 +147,7 @@ jobs:
           # Test job status
           echo "Testing job status..."
           sleep 1
-          status_response=$(./tml --log -c cli_config.toml job status "${job_id}")
+          status_response=$(./tml -v -c cli_config.toml job status "${job_id}")
           log_request_response "Job status" "$status_response"
 
           # Parse job status using the new function
@@ -156,12 +156,12 @@ jobs:
 
           # Test job cancel
           echo "Testing job cancel..."
-          cancel_response=$(./tml --log -c cli_config.toml job cancel "${job_id}")
+          cancel_response=$(./tml -v -c cli_config.toml job cancel "${job_id}")
           log_request_response "Job cancel" "$cancel_response"
 
           # Verify cancellation
           sleep 1
-          status_response=$(./tml --log -c cli_config.toml job status "${job_id}")
+          status_response=$(./tml -v -c cli_config.toml job status "${job_id}")
           log_request_response "Job status after cancellation" "$status_response"
 
           # Parse job status using the new function
@@ -177,16 +177,16 @@ jobs:
 
           # Test with invalid inputs
           echo "Testing with invalid inputs..."
-          invalid_response=$(./tml --log -c cli_config.toml job enqueue "invalid-image-id" || true)
+          invalid_response=$(./tml -v -c cli_config.toml job enqueue "invalid-image-id" || true)
           log_request_response "Invalid image ID" "$invalid_response"
 
-          invalid_status_response=$(./tml --log -c cli_config.toml job status "invalid-uuid" || true)
+          invalid_status_response=$(./tml -v -c cli_config.toml job status "invalid-uuid" || true)
           log_request_response "Invalid job UUID" "$invalid_status_response"
 
           # Test with non-existent job
           echo "Testing with non-existent job..."
           non_existent_job_id="00000000-0000-0000-0000-000000000000"
-          non_existent_job_response=$(./tml --log -c cli_config.toml job status "${non_existent_job_id}")
+          non_existent_job_response=$(./tml -v -c cli_config.toml job status "${non_existent_job_id}")
           log_request_response "Non-existent job" "$non_existent_job_response"
 
           if echo "${non_existent_job_response}" | grep -q "Unauthorized"; then
