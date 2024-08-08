@@ -139,7 +139,7 @@ pub enum JobStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "job_status")]
 pub enum JobStatusResponse {
-    Ok { job_status: JobStatus },
+    Ok(JobStatus),
     JobNotFound,
     SupervisorNotFound,
     Unauthorized,

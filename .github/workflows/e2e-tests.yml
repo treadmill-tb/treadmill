@@ -163,7 +163,7 @@ jobs:
 
           echo "Status response after cancellation: $status_response"
 
-          job_status=$(echo "$status_response" | jq -r '.job_status.job_status.job_state.type // empty')
+          job_status=$(echo "$status_response" | jq -r '.job_status.type // empty')
 
           echo "Job status after cancellation: $job_status"
 

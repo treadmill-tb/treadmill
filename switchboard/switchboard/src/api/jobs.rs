@@ -178,7 +178,7 @@ pub async fn status(
 
     read_job_status(&state, privilege)
         .await
-        .map(|job_status| JobStatusResponse::Ok { job_status })
+        .map(|job_status| JobStatusResponse::Ok(job_status))
         .map(ResponseProxy)
         .map_err(JobStatusResponse::from)
         .map_err(ResponseProxy)
