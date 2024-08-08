@@ -168,7 +168,7 @@ async fn main() -> Result<()> {
                 let override_timeout = enqueue_matches.value_of("override_timeout");
 
                 info!("Enqueueing job with image ID: {}", image_id);
-                enqueue_job(
+                match enqueue_job(
                     &client,
                     &config,
                     request_id,
@@ -180,7 +180,17 @@ async fn main() -> Result<()> {
                     tag_config,
                     override_timeout,
                 )
-                .await?;
+                .await
+                {
+                    Ok(_) => println!("Job enqueued successfully"),
+                    Err(e) => {
+                        error!("Failed to enqueue job: {:?}", e);
+                        println!("Error: {}", e);
+                        if let Some(cause) = e.source() {
+                            println!("\nCaused by:\n    {}", cause);
+                        }
+                    }
+                }
             }
             ("list", Some(_)) => {
                 warn!("Job list functionality not implemented yet");
@@ -287,7 +297,32 @@ async fn enqueue_job(
         .unwrap_or_default();
 
     let parameters: HashMap<String, ParameterValue> = parameters
-        .map(|params| serde_json::from_str(params).context("Invalid parameters JSON"))
+        .map(|params| {
+            let parsed: HashMap<String, serde_json::Value> =
+                serde_json::from_str(params).context("Invalid parameters JSON")?;
+            parsed
+                .into_iter()
+                .map(|(key, value)| {
+                    let param_value = if let serde_json::Value::Object(obj) = value {
+                        ParameterValue {
+                            value: obj
+                                .get("value")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            secret: obj.get("secret").and_then(|v| v.as_bool()).unwrap_or(false),
+                        }
+                    } else {
+                        // if it's not an object, assume it's just a string value and not secret
+                        ParameterValue {
+                            value: value.as_str().unwrap_or("").to_string(),
+                            secret: false,
+                        }
+                    };
+                    Ok((key, param_value))
+                })
+                .collect::<Result<HashMap<String, ParameterValue>>>()
+        })
         .transpose()?
         .unwrap_or_default();
 
