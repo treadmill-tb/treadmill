@@ -202,7 +202,7 @@ jobs:
           fi
       - name: Upload config files
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: config-files
           path: |
@@ -211,7 +211,7 @@ jobs:
           retention-days: 7
       - name: Upload log files
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: log-files
           path: |
