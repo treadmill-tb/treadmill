@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use chrono::Duration;
 use clap::{App, Arg, SubCommand};
+use env_logger::Builder;
+use log::LevelFilter;
 use log::{debug, error, info, warn};
 use reqwest::Client;
 use std::collections::HashMap;
@@ -122,7 +124,9 @@ async fn main() -> Result<()> {
         .get_matches();
 
     if matches.is_present("log") {
-        env_logger::init();
+        Builder::new().filter(None, LevelFilter::Info).init();
+    } else {
+        Builder::new().filter(None, LevelFilter::Debug).init();
     }
 
     let config = match (matches.value_of("config"), matches.value_of("api_url")) {
