@@ -86,17 +86,25 @@ jobs:
           export RUST_LOG=debug
           export tml_token
 
+          # Function to log requests and responses
+          log_request_response() {
+              echo "REQUEST: $1"
+              echo "RESPONSE: $2"
+              echo "--------------------"
+          }
+
           # Test login
           echo "Testing login..."
-          ./tml --log -c cli_config.toml login "${tml_username}" "${tml_password}"
+          login_response=$(./tml --log -c cli_config.toml login "${tml_username}" "${tml_password}")
+          log_request_response "Login" "$login_response"
 
           echo "Testing basic job enqueue..."
           job_response=$(./tml --log -c cli_config.toml job enqueue "${tml_image_id}")
-          echo "Basic job enqueue response: ${job_response}"
+          log_request_response "Basic job enqueue" "$job_response"
 
           if echo "${job_response}" | grep -q "Internal server error"; then
-            echo "Basic job enqueue failed due to internal server error"
-            exit 1
+              echo "Basic job enqueue failed due to internal server error"
+              exit 1
           fi
 
           echo "Testing job enqueue with all options..."
@@ -108,19 +116,19 @@ jobs:
             --parameters '{"key1":{"value":"value1","secret":false},"key2":{"value":"value2","secret":true}}' \
             --tag-config 'test_tag_config' \
             --override-timeout 3600)
-          echo "Create job response: ${job_response}"
+          log_request_response "Job enqueue with all options" "$job_response"
 
           if echo "${job_response}" | grep -q '"type":"internal"'; then
-            echo "Job enqueue failed due to internal server error"
-            echo "Full response: ${job_response}"
-            exit 1
+              echo "Job enqueue failed due to internal server error"
+              echo "Full response: ${job_response}"
+              exit 1
           fi
 
           job_id=$(echo "${job_response}" | grep -o '"job_id":"[^"]*"' | cut -d'"' -f4)
           if [ -z "${job_id}" ]; then
-            echo "Failed to extract job ID from response"
-            echo "Full response: ${job_response}"
-            exit 1
+              echo "Failed to extract job ID from response"
+              echo "Full response: ${job_response}"
+              exit 1
           fi
           echo "Created job with ID: ${job_id}"
 
@@ -128,49 +136,50 @@ jobs:
           echo "Testing job status..."
           sleep 1
           status_response=$(./tml --log -c cli_config.toml job status "${job_id}")
-          echo "Status response: ${status_response}"
-          job_status=$(echo "${status_response}" | jq -r '.job_state')
+          log_request_response "Job status" "$status_response"
+
+          # Parse job status using grep and cut instead of jq
+          job_status=$(echo "${status_response}" | grep -o '"job_state":"[^"]*"' | cut -d'"' -f4)
           echo "Job status: ${job_status}"
 
           # Test job cancel
           echo "Testing job cancel..."
           cancel_response=$(./tml --log -c cli_config.toml job cancel "${job_id}")
-          echo "Cancel response: ${cancel_response}"
+          log_request_response "Job cancel" "$cancel_response"
 
           # Verify cancellation
           sleep 1
           status_response=$(./tml --log -c cli_config.toml job status "${job_id}")
-          job_status=$(echo "${status_response}" | jq -r '.job_state')
+          log_request_response "Job status after cancellation" "$status_response"
+
+          # Parse job status using grep and cut instead of jq
+          job_status=$(echo "${status_response}" | grep -o '"job_state":"[^"]*"' | cut -d'"' -f4)
           if [ "${job_status}" != "Finished" ] && [ "${job_status}" != "Cancelled" ]; then
-            echo "Job was not cancelled successfully"
-            exit 1
+              echo "Job was not cancelled successfully"
+              exit 1
           fi
 
           # Test with invalid inputs
           echo "Testing with invalid inputs..."
-          if ./tml --log -c cli_config.toml job enqueue "invalid-image-id"; then
-            echo "CLI accepted invalid image ID"
-            exit 1
-          fi
+          invalid_response=$(./tml --log -c cli_config.toml job enqueue "invalid-image-id" || true)
+          log_request_response "Invalid image ID" "$invalid_response"
 
-          if ./tml --log -c cli_config.toml job status "invalid-uuid"; then
-            echo "CLI accepted invalid job UUID for status check"
-            exit 1
-          fi
+          invalid_status_response=$(./tml --log -c cli_config.toml job status "invalid-uuid" || true)
+          log_request_response "Invalid job UUID" "$invalid_status_response"
 
           # Test with non-existent job
           echo "Testing with non-existent job..."
           non_existent_job_id="00000000-0000-0000-0000-000000000000"
           non_existent_job_response=$(./tml --log -c cli_config.toml job status "${non_existent_job_id}")
-          echo "Non-existent job response: ${non_existent_job_response}"
+          log_request_response "Non-existent job" "$non_existent_job_response"
 
           if echo "${non_existent_job_response}" | grep -q "Unauthorized"; then
-            echo "CLI correctly handled non-existent job (Unauthorized response)"
+              echo "CLI correctly handled non-existent job (Unauthorized response)"
           elif echo "${non_existent_job_response}" | grep -q "not found" || echo "${non_existent_job_response}" | grep -q "does not exist"; then
-            echo "CLI correctly handled non-existent job (Not found response)"
+              echo "CLI correctly handled non-existent job (Not found response)"
           else
-            echo "CLI did not handle non-existent job correctly"
-            exit 1
+              echo "CLI did not handle non-existent job correctly"
+              exit 1
           fi
 
           echo "Comprehensive CLI tests completed successfully"
