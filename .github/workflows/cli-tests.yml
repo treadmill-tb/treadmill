@@ -116,7 +116,7 @@ jobs:
             exit 1
           fi
 
-          job_id=$(echo "${job_response}" | jq -r '.job_id')
+          job_id=$(echo "${job_response}" | grep -o '"job_id":"[^"]*"' | cut -d'"' -f4)
           if [ -z "${job_id}" ]; then
             echo "Failed to extract job ID from response"
             echo "Full response: ${job_response}"
