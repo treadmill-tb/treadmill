@@ -57,15 +57,30 @@ pub async fn enqueue_ci_job(
         tracing::error!("failed to add job ({}) to transaction: {e}", job_id);
         EnqueueJobError::Database
     })?;
-    model::job::params::insert(job_id, job.parameters.clone(), transaction.as_mut())
+
+    for (key, value) in job.parameters.iter() {
+        sqlx::query!(
+            r#"
+            INSERT INTO job_parameters (job_id, key, value)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (job_id, key) DO UPDATE SET value = EXCLUDED.value
+            "#,
+            job_id,
+            key,
+            value as &ParameterValue
+        )
+        .execute(transaction.as_mut())
         .await
         .map_err(|e| {
             tracing::error!(
-                "failed to add job ({}) parameters to transaction: {e}",
-                job_id
+                "failed to add job ({}) parameter {} to transaction: {e}",
+                job_id,
+                key
             );
             EnqueueJobError::Database
         })?;
+    }
+
     let _ = sqlx::query!(
         r#"insert into user_privileges(user_id, permission)
         select user_id, unnest($2::text[]) from api_tokens
