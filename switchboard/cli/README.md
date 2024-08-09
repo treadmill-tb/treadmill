@@ -1,6 +1,6 @@
-# Switchboard CLI
+# Treadmill CLI
 
-Switchboard CLI is a command-line interface tool for interacting with the Switchboard API. It provides functionality for user authentication and job management.
+Treadmill CLI is a command-line interface tool for interacting with the Treadmill test bench system. It provides functionality for user authentication and job management.
 
 ## Features
 
@@ -13,7 +13,7 @@ Switchboard CLI is a command-line interface tool for interacting with the Switch
 
 ## Installation
 
-The CLI tool is now named `tml`. Ensure it's in your system path or reference it directly using `./tml`.
+Ensure the CLI tool is in your system path or reference it directly using `./tml`.
 
 ## Usage
 
@@ -21,10 +21,11 @@ The CLI tool is now named `tml`. Ensure it's in your system path or reference it
 ./tml [OPTIONS] <SUBCOMMAND>
 ```
 
-### Options
+### Global Options
 
 - `-c, --config <FILE>`: Sets a custom config file
-- `--log`: Enable detailed logging (Debug level)
+- `-u, --api-url <URL>`: Sets the API URL directly
+- `-v, --verbose`: Enable verbose logging
 
 ### Subcommands
 
@@ -44,13 +45,11 @@ The CLI tool is now named `tml`. Ensure it's in your system path or reference it
 
      Options for job enqueue:
 
-     - `--request-id <REQUEST_ID>`: Request ID (UUID)
      - `--ssh-keys <KEYS>`: Comma-separated list of SSH public keys
      - `--restart-count <COUNT>`: Remaining restart count
-     - `--rendezvous-servers <SERVERS>`: JSON array of rendezvous server specifications
      - `--parameters <PARAMS>`: JSON object of job parameters
      - `--tag-config <CONFIG>`: Tag configuration
-     - `--override-timeout <TIMEOUT>`: Override timeout in seconds
+     - `--timeout <TIMEOUT>`: Override timeout in seconds
 
    - Check job status:
 
@@ -70,56 +69,58 @@ The CLI can be configured using a TOML file. You can specify the config file pat
 Example configuration:
 
 ```toml
+ssh_keys = "ssh-rsa AAAAB3NzaC1yc2E..., ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..."
+
 [api]
-url = "http://api.treadmill.ci"
+url = "https://api.treadmill.ci"
 ```
 
-## Building
+## SSH Key Handling
 
-To build the project:
+The CLI reads SSH keys from multiple sources:
 
-```
-cargo build --package tml-switchboard-cli
-```
+1. SSH agent
+2. Public key files in the user's `.ssh` directory
+3. Config file (as shown above)
+
+If no SSH keys are provided via the command-line argument, the CLI will automatically attempt to read keys from these sources.
 
 ## Examples
 
 1. Login:
 
    ```
-   ./tml -c cli_config.toml login fake_user1 FAKEFAKE
+   ./tml login fake_user1 FAKEFAKE
    ```
 
-2. Enqueue a job with all options:
+2. Enqueue a job:
 
    ```
-   ./tml -c cli_config.toml job enqueue 46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577 \
-     --request-id "$(uuidgen)" \
+   ./tml job enqueue 46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577 \
      --ssh-keys "ssh-rsa AAAAB3NzaC1yc2E...,ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..." \
      --restart-count 3 \
-     --rendezvous-servers '[{"client_id":"12345678-1234-5678-1234-567812345678","server_base_url":"http://example.com","auth_token":"exampletoken"}]' \
      --parameters '{"key1":{"value":"value1","secret":false},"key2":{"value":"value2","secret":true}}' \
      --tag-config 'test_tag_config' \
-     --override-timeout 3600
+     --timeout 3600
    ```
 
 3. Check job status:
 
    ```
-   ./tml -c cli_config.toml job status <JOB_ID>
+   ./tml job status <JOB_ID>
    ```
 
 4. Cancel a job:
    ```
-   ./tml -c cli_config.toml job cancel <JOB_ID>
+   ./tml job cancel <JOB_ID>
    ```
 
-## Logging
+## Verbose Logging
 
-To enable detailed logging, simply add the `--log` flag to your command:
+To enable verbose logging, add the `-v` or `--verbose` flag to your command:
 
 ```
-./tml --log -c cli_config.toml job enqueue <IMAGE_ID>
+./tml -v job enqueue <IMAGE_ID>
 ```
 
 This will output debug-level logs, which can be helpful for troubleshooting.
@@ -128,9 +129,7 @@ This will output debug-level logs, which can be helpful for troubleshooting.
 
 - The image ID should be a 64-character hexadecimal string.
 - Job IDs are UUIDs.
-- When using the `--rendezvous-servers` option, provide a valid JSON array of server specifications.
-- The --parameters option requires a JSON string in the format described in the "Job Parameters Format" section above. Each parameter must have a "value" (as a string) and a "secret" (as a boolean) field.
-- The --parameters option requires a specific JSON format:
+- The `--parameters` option requires a JSON string in the following format:
   ```json
   {
     "key1": { "value": "value1", "secret": false },
