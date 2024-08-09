@@ -102,6 +102,8 @@ jobs:
                   echo "Finished"
               elif echo "$status_response" | grep -q "Inactive"; then
                   echo "Inactive"
+              elif echo "$status_response" | grep -q "Active"; then
+                  echo "Active"
               else
                   echo "Unknown"
               fi
@@ -127,7 +129,7 @@ jobs:
             --restart-count 3 \
             --parameters '{"key1":{"value":"value1","secret":false},"key2":{"value":"value2","secret":true}}' \
             --tag-config 'test_tag_config' \
-            --override-timeout 3600)
+            --timeout 3600)
           log_request_response "Job enqueue with all options" "$job_response"
 
           if echo "${job_response}" | grep -q '"type":"internal"'; then
