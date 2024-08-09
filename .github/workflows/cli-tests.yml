@@ -118,8 +118,9 @@ jobs:
           job_response=$(./tml -v -c cli_config.toml job enqueue "${tml_image_id}")
           log_request_response "Basic job enqueue" "$job_response"
 
-          if echo "${job_response}" | grep -q "Internal server error"; then
-              echo "Basic job enqueue failed due to internal server error"
+          if echo "${job_response}" | grep -q "Error:"; then
+              echo "Basic job enqueue failed"
+              echo "Full response: ${job_response}"
               exit 1
           fi
 
@@ -185,13 +186,12 @@ jobs:
           invalid_status_response=$(./tml -v -c cli_config.toml job status "invalid-uuid" || true)
           log_request_response "Invalid job UUID" "$invalid_status_response"
 
-          # Test with non-existent job
           echo "Testing with non-existent job..."
           non_existent_job_id="00000000-0000-0000-0000-000000000000"
           non_existent_job_response=$(./tml -v -c cli_config.toml job status "${non_existent_job_id}")
           log_request_response "Non-existent job" "$non_existent_job_response"
 
-          if echo "${non_existent_job_response}" | grep -q "Unauthorized"; then
+          if echo "${non_existent_job_response}" | grep -q "unauthorized"; then
               echo "CLI correctly handled non-existent job (Unauthorized response)"
           elif echo "${non_existent_job_response}" | grep -q "not found" || echo "${non_existent_job_response}" | grep -q "does not exist"; then
               echo "CLI correctly handled non-existent job (Not found response)"
