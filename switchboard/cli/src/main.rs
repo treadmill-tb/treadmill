@@ -60,11 +60,10 @@ async fn main() -> Result<()> {
                     SubCommand::with_name("enqueue")
                         .about("Enqueue a new job")
                         .arg(Arg::with_name("image_id").required(true))
-                        .arg(
-                            Arg::with_name("ssh_keys")
+                        .arg(Arg::with_name("ssh_keys")
                                 .long("ssh-keys")
                                 .value_name("KEYS")
-                                .help("Comma-separated list of SSH public keys")
+                                .help("Comma-separated list of SSH public keys. If not provided, keys will be read from SSH agent, public key files, and config file.")
                                 .takes_value(true),
                         )
                         .arg(
@@ -89,8 +88,8 @@ async fn main() -> Result<()> {
                                 .takes_value(true),
                         )
                         .arg(
-                            Arg::with_name("override_timeout")
-                                .long("override-timeout")
+                            Arg::with_name("timeout")
+                                .long("timeout")
                                 .value_name("TIMEOUT")
                                 .help("Override timeout in seconds")
                                 .takes_value(true),
@@ -108,6 +107,7 @@ async fn main() -> Result<()> {
                         .arg(Arg::with_name("job_id").required(true)),
                 ),
         )
+        .setting(clap::AppSettings::SubcommandRequiredElseHelp)
         .get_matches();
 
     if matches.is_present("verbose") {
@@ -122,6 +122,7 @@ async fn main() -> Result<()> {
             api: config::Api {
                 url: api_url.to_string(),
             },
+            ssh_keys: None,
         },
         (Some(config_path), Some(api_url)) => {
             let mut config = config::load_config(Some(config_path))?;
@@ -147,7 +148,7 @@ async fn main() -> Result<()> {
                 let restart_count = enqueue_matches.value_of("restart_count");
                 let parameters = enqueue_matches.value_of("parameters");
                 let tag_config = enqueue_matches.value_of("tag_config");
-                let override_timeout = enqueue_matches.value_of("override_timeout");
+                let timeout = enqueue_matches.value_of("timeout");
 
                 info!("Enqueueing job with image ID: {}", image_id);
                 enqueue_job(
@@ -158,7 +159,7 @@ async fn main() -> Result<()> {
                     restart_count,
                     parameters,
                     tag_config,
-                    override_timeout,
+                    timeout,
                 )
                 .await?;
             }
@@ -181,11 +182,20 @@ async fn main() -> Result<()> {
             _ => {
                 error!("Invalid job subcommand");
                 println!("Invalid job subcommand");
+                if let Some(job_subcommand) = job_matches.subcommand_name() {
+                    if let Some(subcommand_matches) = job_matches.subcommand_matches(job_subcommand)
+                    {
+                        subcommand_matches.usage();
+                    }
+                } else {
+                    job_matches.usage();
+                }
             }
         },
         _ => {
             error!("Invalid command");
             println!("Invalid command");
+            matches.usage();
         }
     }
 
@@ -206,23 +216,28 @@ async fn login(
 
     debug!("Sending login request to url: {}", config.api.url);
 
-    let response: LoginResponse = client
+    let response = client
         .post(&format!("{}/session/login", config.api.url))
         .json(&login_request)
         .send()
-        .await?
-        .json()
         .await?;
 
-    info!(
-        "Login successful. Token expires at: {}",
-        response.expires_at
-    );
-    println!(
-        "Login successful. Token expires at: {}",
-        response.expires_at
-    );
-    auth::save_token(&response.token)?;
+    if response.status().is_success() {
+        let login_response: LoginResponse = response.json().await?;
+        info!(
+            "Login successful. Token expires at: {}",
+            login_response.expires_at
+        );
+        println!(
+            "Login successful. Token expires at: {}",
+            login_response.expires_at
+        );
+        auth::save_token(&login_response.token)?;
+    } else {
+        let error_text = response.text().await?;
+        error!("Login failed: {}", error_text);
+        println!("Login failed: {}", error_text);
+    }
 
     Ok(())
 }
@@ -235,7 +250,7 @@ async fn enqueue_job(
     restart_count: Option<&str>,
     parameters: Option<&str>,
     tag_config: Option<&str>,
-    override_timeout: Option<&str>,
+    timeout: Option<&str>,
 ) -> Result<()> {
     let token = auth::get_token()?;
     debug!("Retrieved auth token");
@@ -250,9 +265,11 @@ async fn enqueue_job(
         return Err(anyhow::anyhow!("Invalid image ID length"));
     };
 
-    let ssh_keys = ssh_keys
-        .map(|keys| keys.split(',').map(String::from).collect())
-        .unwrap_or_default();
+    let ssh_keys = if let Some(keys) = ssh_keys {
+        keys.split(',').map(String::from).collect()
+    } else {
+        auth::read_ssh_keys()?
+    };
 
     let restart_count = restart_count
         .map(|count| count.parse().context("Invalid restart count"))
@@ -266,7 +283,7 @@ async fn enqueue_job(
 
     let tag_config = tag_config.unwrap_or("").to_string();
 
-    let override_timeout: Option<Duration> = override_timeout
+    let override_timeout: Option<Duration> = timeout
         .map(|timeout| -> Result<Duration> {
             let seconds = timeout.parse::<i64>().context("Invalid timeout")?;
             Ok(Duration::seconds(seconds))
@@ -294,34 +311,40 @@ async fn enqueue_job(
         .bearer_auth(token)
         .json(&enqueue_request)
         .send()
-        .await?
-        .json::<serde_json::Value>()
         .await?;
 
-    if let Some(error_type) = response.get("type") {
-        if error_type == "Internal" {
-            error!("Internal server error occurred: {:?}", response);
-            return Err(anyhow::anyhow!("Internal server error: {:?}", response));
-        }
+    if response.status().is_success() {
+        let response_json: serde_json::Value = response.json().await?;
+        info!("Job enqueued: {}", response_json);
+        println!("Job enqueued: {}", response_json);
+    } else {
+        let error_text = response.text().await?;
+        error!("Failed to enqueue job: {}", error_text);
+        println!("Failed to enqueue job: {}", error_text);
     }
 
-    info!("Job enqueued: {}", response);
-    println!("Job enqueued: {}", response);
     Ok(())
 }
 
 async fn get_job_status(client: &Client, config: &config::Config, job_id: Uuid) -> Result<()> {
     let token = auth::get_token()?;
 
-    let response: JobStatusResponse = client
+    let response = client
         .get(&format!("{}/api/v1/job/{}/status", config.api.url, job_id))
         .bearer_auth(token)
         .send()
-        .await?
-        .json()
         .await?;
 
-    println!("Job status: {:?}", response);
+    if response.status().is_success() {
+        let job_status: JobStatusResponse = response.json().await?;
+        println!("Job status: {:?}", job_status);
+        // TODO: job state history display here when available from the API
+    } else {
+        let error_text = response.text().await?;
+        error!("Failed to get job status: {}", error_text);
+        println!("Failed to get job status: {}", error_text);
+    }
+
     Ok(())
 }
 
@@ -332,10 +355,16 @@ async fn cancel_job(client: &Client, config: &config::Config, job_id: Uuid) -> R
         .delete(&format!("{}/api/v1/job/{}", config.api.url, job_id))
         .bearer_auth(token)
         .send()
-        .await?
-        .text()
         .await?;
 
-    println!("Job cancellation response: {}", response);
+    if response.status().is_success() {
+        let response_text = response.text().await?;
+        println!("Job cancellation response: {}", response_text);
+    } else {
+        let error_text = response.text().await?;
+        error!("Failed to cancel job: {}", error_text);
+        println!("Failed to cancel job: {}", error_text);
+    }
+
     Ok(())
 }

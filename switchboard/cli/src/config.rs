@@ -7,6 +7,7 @@ use xdg::BaseDirectories;
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     pub api: Api,
+    pub ssh_keys: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -20,6 +21,7 @@ impl Default for Config {
             api: Api {
                 url: "https://api.treadmill.ci".to_string(),
             },
+            ssh_keys: None,
         }
     }
 }
