@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use log::warn;
 use serde::Deserialize;
+use tracing::{event, instrument, Level};
 
 use treadmill_rs::image::manifest::{ImageId, ImageManifest};
 
@@ -58,12 +58,14 @@ impl ImageStoreClient {
     }
 
     // TODO: authentication?
+    #[instrument(skip(self))]
     pub async fn fetch_image(
         &self,
         _remote_store_endpoints: Vec<String>,
         _image_id: ImageId,
     ) -> Result<FetchImageStatus> {
-        warn!(
+        event!(
+            Level::WARN,
             "Image store client was instructed to fetch an image, which is \
 	     currently unimplemented. Returning an unconditional \
 	     FetchImageStatus::Present."
@@ -72,6 +74,7 @@ impl ImageStoreClient {
         Ok(FetchImageStatus::Present)
     }
 
+    #[instrument(skip(self))]
     pub async fn image_manifest(&self, _image_id: ImageId) -> Result<ImageManifest> {
         bail!("Fetching image manifests via HTTP is not implement.")
     }
@@ -122,6 +125,7 @@ impl LocalImageStoreClient {
         )
     }
 
+    #[instrument(skip(self))]
     pub async fn fetch_image(
         &self,
         remote_store_endpoints: Vec<String>,
@@ -132,6 +136,7 @@ impl LocalImageStoreClient {
             .await
     }
 
+    #[instrument(skip(self))]
     pub async fn image_manifest(&self, image_id: ImageId) -> Result<ImageManifest> {
         // Only do a local lookup here. If the image store holds the image and
         // has a filesystem endpoint, it should also expose it there.

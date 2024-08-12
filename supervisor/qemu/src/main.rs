@@ -6,9 +6,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use async_recursion::async_recursion;
 use async_trait::async_trait;
 use clap::Parser;
-use log::{debug, info, warn};
 use serde::Deserialize;
 use tokio::sync::Mutex;
+use tracing::{event, instrument, Level};
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard_supervisor::JobInitSpec;
@@ -220,6 +220,7 @@ impl QemuSupervisorJobState {
     }
 }
 
+#[derive(Debug)]
 pub struct QemuSupervisor {
     /// Connector to the central coordinator. All communication is mediated
     /// through this connector.
@@ -255,12 +256,17 @@ impl QemuSupervisor {
         }
     }
 
+    #[instrument(skip(self))]
     async fn remove_job(&self, job_id: Uuid) -> Option<Arc<Mutex<QemuSupervisorJobState>>> {
+        event!(Level::DEBUG, "Removing job from jobs map");
         self.jobs.lock().await.remove(&job_id)
     }
 
+    #[instrument(skip(this))]
     #[async_recursion]
-    async fn fetch_image(this: &Arc<Self>, job_id: Uuid) {
+    async fn fetch_image(this: &Arc<Self>, job_id: Uuid, iteration: usize) {
+        event!(Level::DEBUG, "Entering fetch_image");
+
         // This function can either be called directly from `start_job`, or by
         // polling on the image fetch operation.
         //
@@ -276,13 +282,16 @@ impl QemuSupervisor {
 
         // If the job is no longer alive, return:
         let job = match job_opt {
-            Some(job) => job,
+            Some(job) => {
+                event!(Level::TRACE, "Retrieved job object reference");
+                job
+            }
             None => {
                 // This case should be pretty rare but does not indicate a bug
                 // per se, so let's issue a debug message just in case:
-                debug!(
-                    "Job {:?} vanished across invocations of `fetch_image`",
-                    job_id
+                event!(
+                    Level::DEBUG,
+                    "Job {job_id} vanished across invocations of `fetch_image`",
                 );
                 return;
             }
@@ -290,6 +299,7 @@ impl QemuSupervisor {
 
         // Acquire a lock on the job:
         let mut job_lg = job.lock().await;
+        event!(Level::DEBUG, "Acquired job object lock");
 
         // We swap in a state of `Starting` temporarily to please the Rust
         // borrow checker. Before we leave this function, we must replace this
@@ -297,37 +307,44 @@ impl QemuSupervisor {
         //
         // If the job is in any state other than `FetchingImage`, swap back and
         // return immediately:
-        let fetching_image_state =
-            match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Starting) {
-                QemuSupervisorJobState::FetchingImage(state) => state,
-                prev_state => {
-                    // Swap the old state back:
-                    *job_lg = prev_state;
+        let fetching_image_state = match std::mem::replace(
+            &mut *job_lg,
+            QemuSupervisorJobState::Starting,
+        ) {
+            QemuSupervisorJobState::FetchingImage(state) => state,
+            prev_state => {
+                // Swap the old state back:
+                *job_lg = prev_state;
 
-                    // Same as above, let's issue a debug message:
-                    debug!(
-                        "Job {:?} changed state across invocations of \
-			 `fetch_image`: {:?}",
-                        job_id, job,
+                // Same as above, let's issue a debug message:
+                event!(
+			Level::DEBUG,
+                        "Job not in FetchingImage state (likely changed state across invocations of `fetch_image`): {job:?}. Returning.",
                     );
 
-                    return;
-                }
-            };
+                return;
+            }
+        };
 
         // Check whether the image store already holds this image. If it does,
         // we can pass the manifest to the `start_job_cont` function. Otherwise,
         // (continue) polling:
+        let fetch_endpoints = vec![];
+        event!(Level::TRACE, ?fetch_endpoints, image_id = ?fetching_image_state.image_id, "Requesting that image_store_client fetch image");
         match this
             .image_store_client
             .fetch_image(
                 // TODO: pass remote store endpoints:
-                vec![],
+                fetch_endpoints,
                 fetching_image_state.image_id,
             )
             .await
         {
             Ok(image_store_client::FetchImageStatus::Present) => {
+                event!(
+                    Level::DEBUG,
+                    "image_store_client.fetch_image indicates that the image is present"
+                );
                 // Image is fetched, retrieve its manifest and pass it onto
                 // `start_job_cont`. Retrieving the manifest should not fail.
                 //
@@ -349,6 +366,7 @@ impl QemuSupervisor {
                         // We could not retrieve the manifest, despite the image
                         // being present. Don't attempt to recover from this
                         // error and mark the job as failed:
+                        event!(Level::WARN, ?manifest_err, "Failed to retrieve image manifest, reporting job error: {manifest_err:?}");
                         this.connector
                             .report_job_error(
                                 fetching_image_state.start_job_req.job_id,
@@ -379,6 +397,11 @@ impl QemuSupervisor {
                 // Place the job in the `ImageFetched` state and continue
                 // starting it. This prevents any other poll task firing this
                 // function from calling `start_job_cont` twice:
+                event!(
+                    Level::DEBUG,
+                    ?manifest,
+                    "Transitioning job into ImageFetched state"
+                );
                 *job_lg = QemuSupervisorJobState::ImageFetched(QemuSupervisorImageFetchedState {
                     start_job_req: fetching_image_state.start_job_req,
                     image_id: fetching_image_state.image_id,
@@ -392,6 +415,11 @@ impl QemuSupervisor {
             }
 
             Ok(image_store_client::FetchImageStatus::InProgress(msg)) => {
+                event!(
+                    Level::DEBUG,
+                    "Image manifest fetch in progress, polling: {msg:?}"
+                );
+
                 // We still need to wait a bit until the image is available.
                 // Poll again in 15 sec, and post this status to the
                 // coordinator.
@@ -403,7 +431,7 @@ impl QemuSupervisor {
                 let poll_task =
                     tokio::task::spawn(fuse(std::time::Duration::from_secs(15), async move {
                         if let Some(poll_task_this) = poll_task_this_weak.upgrade() {
-                            Self::fetch_image(&poll_task_this, job_id).await
+                            Self::fetch_image(&poll_task_this, job_id, iteration + 1).await
                         }
                     }));
 
@@ -418,6 +446,7 @@ impl QemuSupervisor {
                     .await;
 
                 // Put the job into the `FetchingImage` state:
+                event!(Level::DEBUG, "Transitioning job into FetchingImage state");
                 *job_lg = QemuSupervisorJobState::FetchingImage(QemuSupervisorFetchingImageState {
                     poll_task: Some(poll_task),
                     ..fetching_image_state
@@ -426,6 +455,7 @@ impl QemuSupervisor {
 
             Err(e) => {
                 // We could not fetch the image, report an error:
+                event!(Level::DEBUG, fetch_image_error = ?e, "Failed to fetch image, reporting job error: {e:?}");
                 this.connector
                     .report_job_error(
                         fetching_image_state.start_job_req.job_id,
@@ -447,15 +477,23 @@ impl QemuSupervisor {
                 this.remove_job(job_id).await;
 
                 // Prevent other tasks from further advancing this job's state:
+                event!(Level::DEBUG, "Transitioning job into Stopping state");
                 *job_lg = QemuSupervisorJobState::Stopping;
             }
         }
     }
 
+    #[instrument(skip(self, manifest), err(Debug, level = Level::WARN))]
     async fn start_job_parse_manifest_check_images(
         &self,
         manifest: &image::manifest::ImageManifest,
     ) -> Result<(PathBuf, QemuImgMetadata)> {
+        event!(
+            Level::DEBUG,
+            ?manifest,
+            "Checking & extracting head-image layer from image manifest"
+        );
+
         // Retrieve the "top-most" layer in the image manifest, from which we'll
         // create our "working" disk image overlay:
         let top_layer_label = manifest
@@ -498,6 +536,7 @@ impl QemuSupervisor {
                         format!("Failed to canonicalize image blob path {:?}", image_path)
                     })?;
 
+            event!(Level::DEBUG, qemu_img_binary = ?self.config.qemu.qemu_img_binary, file = ?image_path_canon, "Retrieving qcow2 file metadata");
             let metadata_output = tokio::process::Command::new(&self.config.qemu.qemu_img_binary)
                 .arg("info")
                 .arg("--format=qcow2")
@@ -530,7 +569,10 @@ impl QemuSupervisor {
                     )
                 })?;
 
-            top_image.get_or_insert_with(|| (image_path_canon.clone(), metadata.clone()));
+            top_image.get_or_insert_with(|| {
+		event!(Level::DEBUG, file = ?image_path_canon, ?metadata, "Setting image file as top-level");
+		(image_path_canon.clone(), metadata.clone())
+	    });
 
             // Make sure that the image has just one child, and that child's
             // filename is identical to the top-level filename. We do this as a
@@ -691,23 +733,34 @@ impl QemuSupervisor {
         Ok(top_image.unwrap())
     }
 
+    #[instrument(skip(self, start_job_req, top_image_qemu_info), err(Debug, level = Level::WARN))]
     async fn start_job_parse_manifest_allocate_disk(
         &self,
         start_job_req: &connector::StartJobMessage,
         top_image_path: &Path,
         top_image_qemu_info: &QemuImgMetadata,
     ) -> Result<(PathBuf, PathBuf), connector::JobError> {
-        // Ensure that the state/jobs directory (and all recursive parents)
-        // exists:
         let jobs_dir = self.config.qemu.state_dir.join("jobs");
-        tokio::fs::create_dir_all(&jobs_dir).await.unwrap();
-
-        // Create a new working directory for this job:
         let job_dir = jobs_dir.join(&start_job_req.job_id.to_string());
+
+        // Ensure that the state/jobs directory (and all recursive parents)
+        // exists and create a new working directory for this job:
+        event!(Level::DEBUG, ?job_dir, "Creating job state dir");
+
+        tokio::fs::create_dir_all(&jobs_dir)
+            .await
+            .map_err(|io_err| connector::JobError {
+                error_kind: connector::JobErrorKind::InternalError,
+                description: format!(
+                    "Failed to create state dir for job {}: {:?}",
+                    start_job_req.job_id, io_err,
+                ),
+            })?;
+
         match tokio::fs::create_dir(&job_dir).await {
             Ok(()) => (),
 
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(io_err) if io_err.kind() == std::io::ErrorKind::AlreadyExists => {
                 return Err(connector::JobError {
                     error_kind: connector::JobErrorKind::JobAlreadyExists,
                     description: format!(
@@ -717,9 +770,14 @@ impl QemuSupervisor {
                 });
             }
 
-            Err(e) => {
-                // TODO: avoid panics
-                panic!("Cannot create job directory {:?}: {:?}", job_dir, e);
+            Err(io_err) => {
+                return Err(connector::JobError {
+                    error_kind: connector::JobErrorKind::InternalError,
+                    description: format!(
+                        "Failed to create state dir for job {}: {:?}",
+                        start_job_req.job_id, io_err,
+                    ),
+                });
             }
         };
 
@@ -740,6 +798,7 @@ impl QemuSupervisor {
 
         // Create the disk, based on the top image layer:
         let disk_image_file = job_dir.join("disk.qcow2");
+        event!(Level::DEBUG, backing_image = ?top_image_path, ?disk_image_file, virtual_size_bytes = self.config.qemu.working_disk_max_bytes, "Creating job disk image");
         tokio::process::Command::new(&self.config.qemu.qemu_img_binary)
             .arg("create")
             // Image format:
@@ -783,6 +842,7 @@ impl QemuSupervisor {
         Ok((job_dir, disk_image_file))
     }
 
+    #[instrument(skip(this))]
     async fn start_job_cont(this: &Arc<Self>, job_id: Uuid) {
         // Obtain a reference to the job. It's possible for the job to have
         // transitioned from `ImageFetched` to any other state in between
@@ -795,13 +855,16 @@ impl QemuSupervisor {
 
         // If the job is no longer alive, return:
         let job = match job_opt {
-            Some(job) => job,
+            Some(job) => {
+                event!(Level::TRACE, "Retrieved job object reference");
+                job
+            }
             None => {
                 // This case should be pretty rare but does not indicate a bug
                 // per se, so let's issue a debug message just in case:
-                debug!(
-                    "Job {:?} vanished before `start_job_cont` could acquire its lock",
-                    job_id
+                event!(
+                    Level::DEBUG,
+                    "Job vanished before `start_job_cont` could acquire its lock",
                 );
                 return;
             }
@@ -809,6 +872,7 @@ impl QemuSupervisor {
 
         // Acquire a lock on the job:
         let mut job_lg = job.lock().await;
+        event!(Level::DEBUG, "Acquired job object lock");
 
         // We swap in a state of `Starting` temporarily to please the Rust
         // borrow checker. Before we leave this function, we must replace this
@@ -827,10 +891,9 @@ impl QemuSupervisor {
                 *job_lg = prev_state;
 
                 // Same as above, let's issue a debug message:
-                debug!(
-                    "Job {:?} changed state before `start_job_cont` could \
-			 aquire a lock: {:?}",
-                    job_id, job,
+                event!(
+		    Level::DEBUG,
+                    "Job not in ImageFetched state (likely changed state before `start_job_cont` could aquire a lock): {job:?}",
                 );
 
                 return;
@@ -916,6 +979,7 @@ impl QemuSupervisor {
 
         // Start script environment variables / QEMU command line
         // parameter template strings:
+        event!(Level::DEBUG, "Templating QEMU argument substitutions");
         let mut qemu_arg_substs: HashMap<String, String> = HashMap::new();
         assert!(qemu_arg_substs
             .insert("job_id".to_string(), start_job_req.job_id.to_string())
@@ -931,6 +995,7 @@ impl QemuSupervisor {
             .is_none());
 
         if let Some(ref start_script) = this.config.qemu.start_script {
+            event!(Level::DEBUG, ?start_script, "Executing start script");
             let start_script_res = tokio::process::Command::new(start_script)
                 .stdin(std::process::Stdio::null())
                 .stderr(std::process::Stdio::inherit())
@@ -949,21 +1014,28 @@ impl QemuSupervisor {
                 for line in stdout.lines() {
                     if let Some(key_value) = line.strip_prefix("tml-set-variable:") {
                         if let Some((key, value)) = key_value.split_once('=') {
-                            info!(
-                                "Adding variable {:?} to QEMU arg substs, value: {:?}",
-                                key, value
+                            event!(
+                                Level::DEBUG,
+                                key,
+                                value,
+                                "Adding variable {key} to QEMU arg substs",
                             );
                             qemu_arg_substs.insert(key.to_string(), value.to_string());
                         } else {
-                            warn!("Malformed tml-set-variable command: {:?}", line);
+                            event!(
+                                Level::WARN,
+                                command = line,
+                                "Malformed tml-set-variable command"
+                            );
                         }
                     }
                 }
             } else {
-                warn!(
-		    "Start script produced non-UTF8 characters on standard output, refusing to interpret: {:?}",
-		    String::from_utf8_lossy(&start_script_res.stdout)
-		);
+                event!(
+                    Level::WARN,
+                    stdout = %String::from_utf8_lossy(&start_script_res.stdout),
+                    "Start script produced non-UTF8 characters on standard output, refusing to interpret",
+                );
             }
         }
 
@@ -1013,6 +1085,7 @@ impl QemuSupervisor {
         .await
         .unwrap();
 
+        event!(Level::INFO, qemu_binary = ?this.config.qemu.qemu_binary, ?qemu_args, "Launching QEMU process");
         let qemu_proc = tokio::process::Command::new(&this.config.qemu.qemu_binary)
             .args(&qemu_args)
             .stdin(std::process::Stdio::null())
@@ -1044,10 +1117,13 @@ impl QemuSupervisor {
 
 #[async_trait]
 impl connector::Supervisor for QemuSupervisor {
+    #[instrument(skip(this, start_job_req), fields(job_id = ?start_job_req.job_id), err(Debug, level = Level::WARN))]
     async fn start_job(
         this: &Arc<Self>,
         start_job_req: connector::StartJobMessage,
     ) -> Result<(), connector::JobError> {
+        event!(Level::INFO, ?start_job_req);
+
         // This method may be long-lived, but we should avoid performing
         // long-running, uninterruptible actions in here (as this will prevent
         // other events from being delivered). We're provided an &Arc<Self> to
@@ -1152,11 +1228,12 @@ impl connector::Supervisor for QemuSupervisor {
 
         // Release our lock on the job and hand over to the fetch image method:
         std::mem::drop(job_lg);
-        Self::fetch_image(this, job_id).await;
+        Self::fetch_image(this, job_id, 0 /* first iteration */).await;
 
         Ok(())
     }
 
+    #[instrument(skip(this), err(Debug, level = Level::WARN))]
     async fn stop_job(
         this: &Arc<Self>,
         msg: connector::StopJobMessage,
@@ -1294,6 +1371,7 @@ impl connector::Supervisor for QemuSupervisor {
 
 #[async_trait]
 impl control_socket::Supervisor for QemuSupervisor {
+    #[instrument]
     async fn ssh_keys(&self, tgt_job_id: Uuid) -> Option<Vec<String>> {
         match self.jobs.lock().await.get(&tgt_job_id) {
             Some(job_state) => match &*job_state.lock().await {
@@ -1305,10 +1383,11 @@ impl control_socket::Supervisor for QemuSupervisor {
                 // Only respond to host / puppet requests when the job is marked
                 // as "running":
                 state => {
-                    warn!(
-                        "Received puppet SSH keys request for job {:?} in invalid state: {}",
-                        tgt_job_id,
-                        state.state_name()
+                    event!(
+			Level::WARN,
+                            "Received puppet SSH keys request for job {job_id} in invalid state {job_state}",
+                        job_id = tgt_job_id,
+                        job_state = state.state_name(),
                     );
                     None
                 }
@@ -1316,15 +1395,17 @@ impl control_socket::Supervisor for QemuSupervisor {
 
             // Job not found:
             None => {
-                warn!(
-                    "Received puppet SSH keys request for non-existant job: {:?}",
-                    tgt_job_id
+                event!(
+                    Level::WARN,
+                    "Received puppet SSH keys request for non-existant job {job_id}",
+                    job_id = tgt_job_id,
                 );
                 None
             }
         }
     }
 
+    #[instrument]
     async fn network_config(
         &self,
         tgt_job_id: Uuid,
@@ -1346,10 +1427,11 @@ impl control_socket::Supervisor for QemuSupervisor {
                 // Only respond to host / puppet requests when the job is marked
                 // as "running":
                 state => {
-                    warn!(
-                        "Received puppet network config request for job {:?} in invalid state: {}",
-                        tgt_job_id,
-                        state.state_name()
+                    event!(
+			Level::WARN,
+                        "Received puppet network config request for job {job_id} in invalid state {job_state}",
+                        job_id = tgt_job_id,
+                        job_state = state.state_name(),
                     );
                     None
                 }
@@ -1357,15 +1439,17 @@ impl control_socket::Supervisor for QemuSupervisor {
 
             // Job not found:
             None => {
-                warn!(
-                    "Received puppet network config request for non-existant job: {:?}",
-                    tgt_job_id
+                event!(
+                    Level::WARN,
+                    "Received puppet network config request for non-existant job {job_id}",
+                    job_id = tgt_job_id,
                 );
                 None
             }
         }
     }
 
+    #[instrument]
     async fn parameters(
         &self,
         tgt_job_id: Uuid,
@@ -1381,10 +1465,11 @@ impl control_socket::Supervisor for QemuSupervisor {
                 // Only respond to host / puppet requests when the job is marked
                 // as "running":
                 state => {
-                    warn!(
-                        "Received puppet parameters request for job {:?} in invalid state: {}",
-                        tgt_job_id,
-                        state.state_name()
+                    event!(
+			Level::WARN,
+                        "Received puppet parameters request for job {job_id} in invalid state {job_state}",
+                        job_id = tgt_job_id,
+                        job_state = state.state_name(),
                     );
                     None
                 }
@@ -1392,9 +1477,10 @@ impl control_socket::Supervisor for QemuSupervisor {
 
             // Job not found:
             None => {
-                warn!(
-                    "Received puppet parameters request for non-existant job: {:?}",
-                    tgt_job_id
+                event!(
+                    Level::WARN,
+                    "Received puppet parameters request for non-existant job {job_id}",
+                    job_id = tgt_job_id,
                 );
                 None
             }
@@ -1404,19 +1490,10 @@ impl control_socket::Supervisor for QemuSupervisor {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    use simplelog::{self, ColorChoice, LevelFilter, TermLogger, TerminalMode};
     use treadmill_rs::connector::SupervisorConnector;
 
-    TermLogger::init(
-        LevelFilter::Debug,
-        simplelog::ConfigBuilder::new()
-            .set_target_level(LevelFilter::Debug)
-            .build(),
-        TerminalMode::Mixed,
-        ColorChoice::Auto,
-    )
-    .unwrap();
-    info!("Treadmill Qemu Supervisor, Hello World!");
+    tracing_subscriber::fmt().init();
+    event!(Level::INFO, "Treadmill Qemu Supervisor, Hello World!");
 
     let args = QemuSupervisorArgs::parse();
 

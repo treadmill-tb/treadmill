@@ -58,7 +58,7 @@ pub struct JobError {
 /// [_connector_](SupervisorConnector). These connectors expect to be passed an
 /// instance of [`Supervisor`] to deliver requests and events.
 #[async_trait]
-pub trait Supervisor: Send + Sync + 'static {
+pub trait Supervisor: std::fmt::Debug + Send + Sync + 'static {
     /// Start a new job, based on the parameters supplied in the
     /// `StartJobRequest`.
     ///
@@ -99,7 +99,7 @@ pub trait Supervisor: Send + Sync + 'static {
 /// (implementing the [`Supervisor`] trait) to deliver events and issue requests
 /// to a coordinator, for instance to report their current status.
 #[async_trait]
-pub trait SupervisorConnector: Send + Sync + 'static {
+pub trait SupervisorConnector: std::fmt::Debug + Send + Sync + 'static {
     /// Start the connector's main loop.
     ///
     /// Supervisors are expected to execute this method after performing their
