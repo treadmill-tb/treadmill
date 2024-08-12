@@ -22,14 +22,22 @@ use treadmill_rs::connector::{self, JobError, JobState};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum WsConnectorConfigToken {
+    TokenFile { token_file: PathBuf },
+    Token { token: AuthToken },
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct WsConnectorConfig {
-    token: AuthToken,
+    #[serde(flatten)]
+    token: WsConnectorConfigToken,
     switchboard_uri: String,
 }
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    #[error("failed to read private key from {0}: {1}")]
+    #[error("failed to read token from {0}: {1}")]
     IoError(PathBuf, std::io::Error),
     #[error("invalid authorization token: {0}")]
     InvalidToken(String),
@@ -82,8 +90,31 @@ impl<S: connector::Supervisor> Inner<S> {
             .install_default()
             .unwrap();
 
-        let token_ser_string =
-            serde_json::to_string(&self.config.token).expect("failed to re-serialize token");
+        let token = match &self.config.token {
+            WsConnectorConfigToken::TokenFile { token_file } => {
+                let token_base64 = tokio::fs::read(&token_file).await.map_err(|io_err| {
+                    WsConnectorError::Config(ConfigError::IoError(token_file.clone(), io_err))
+                })?;
+
+                base64::prelude::BASE64_STANDARD
+                    .decode(token_base64.trim_ascii()) // Remove leading & trailing whitespace
+                    .map_err(|base64_decode_err| base64_decode_err.to_string())
+                    .and_then(|token_bytes| {
+                        Ok(AuthToken(token_bytes.as_slice().try_into().map_err(
+                            |length_mismatch_err: std::array::TryFromSliceError| {
+                                length_mismatch_err.to_string()
+                            },
+                        )?))
+                    })
+                    .map_err(|formatted_err| {
+                        WsConnectorError::Config(ConfigError::InvalidToken(formatted_err))
+                    })?
+            }
+
+            WsConnectorConfigToken::Token { token } => token.clone(),
+        };
+
+        let token_ser_string = serde_json::to_string(&token).expect("failed to re-serialize token");
 
         // As per RFC6455 §4.1:
         // As this is not a browser client and does not match the semantics of one, we do not send
