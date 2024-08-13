@@ -11,7 +11,7 @@ PasswordAuth = { username = "postgres", password = "" }
 
 [server]
 bind_address = "0.0.0.0:8080"
-tokio_console_server = true
+tokio_console_server = false
 
 # Comment out this [server.dev_mode_ssl] table to disable dev-mode SSL
 #[server.dev_mode_ssl]
