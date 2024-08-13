@@ -102,15 +102,18 @@ pub async fn database_from_config(cfg: &Config) -> miette::Result<PgPool> {
 pub async fn serve(cmd: ServeCommand) -> miette::Result<()> {
     let config_path = &cmd.cfg;
 
-    // Tracing init
-
-    // console_subscriber::init();
-    tracing_subscriber::fmt::init();
-
     // Load configuration
 
     // TODO: overlayed configuration
     let config = crate::cfg::load_config(config_path)?;
+
+    // Tracing init
+
+    if config.server.tokio_console_server {
+        console_subscriber::init();
+    } else {
+        tracing_subscriber::fmt::init();
+    }
 
     tracing::info!("Serving with configuration: {config:?}");
 
