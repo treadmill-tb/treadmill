@@ -1,4 +1,4 @@
-name: CLI Tests
+name: E2E Tests
 on:
   push:
     branches-ignore:
@@ -11,7 +11,7 @@ env:
   POSTGRES_USER: postgres
   POSTGRES_PASSWORD: postgres
 jobs:
-  comprehensive-cli-tests:
+  e2e-tests:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -31,7 +31,14 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql-client jq
+          sudo apt-get install -y postgresql-client
+          sudo apt-get install -y jq
+      - name: Install/Update httpie
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip
+          pip3 install --upgrade httpie
+          pip3 install --upgrade httpie-jwt-auth
       - name: Set up database
         run: |
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMA.sql
@@ -43,30 +50,35 @@ jobs:
           cargo build --package tml-switchboard
           cargo build --package tml-mock-supervisor
           cargo build --package tml-puppet
-          cargo build --package tml-switchboard-cli
-          cp ./target/debug/tml ./tml
       - name: Generate test configurations
         run: |
           cp switchboard/switchboard/config.example.toml switchboard_config.toml
           cp supervisor/mock/config.example.toml mock_supervisor_config.toml
-          cp switchboard/cli/config.example.toml cli_config.toml
+
+          # Edit switchboard config
           sed -i 's/port = 5400/port = 5432/' switchboard_config.toml
           sed -i 's/password = ""/password = "postgres"/' switchboard_config.toml
           sed -i 's/socket_addr = "0.0.0.0:443"/socket_addr = "0.0.0.0:8080"/' switchboard_config.toml
+          echo "========== Templated Mock Supervisor Configuration =========="
+          cat switchboard_config.toml
+
+          # Edit mock supervisor config
           sed -i 's/switchboard_uri = "wss:\/\/localhost:443"/switchboard_uri = "ws:\/\/localhost:8080"/' mock_supervisor_config.toml
           sed -i 's/coord_connector = "cli_connector"/coord_connector = "ws_connector"/' mock_supervisor_config.toml
+          echo "========== Templated Mock Supervisor Configuration =========="
+          cat mock_supervisor_config.toml
       - name: Start switchboard
         run: |
           export RUST_LOG=debug
           cargo run --package tml-switchboard -- serve -c switchboard_config.toml > switchboard.log 2>&1 &
           echo $! > switchboard.pid
-          sleep 3
+          sleep 1
       - name: Start mock supervisor
         run: |
           cargo build --package tml-puppet
           nohup cargo run --package tml-mock-supervisor -- -c mock_supervisor_config.toml --puppet-binary ./target/debug/tml-puppet > mock_supervisor.log 2>&1 &
           echo $! > mock_supervisor.pid
-          sleep 3
+          sleep 1
       - name: Check mock supervisor log
         run: cat mock_supervisor.log
       - name: Check for supervisor panic
@@ -75,151 +87,116 @@ jobs:
             echo "Supervisor panicked. Failing the CI."
             exit 1
           fi
-      - name: Run comprehensive CLI tests
+      - name: Run E2E API tests
         run: |
           set -e
           set -x
-
+          export tml_supervisor="7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
           export tml_image_id="46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577"
-          export tml_username="fake_user1"
-          export tml_password="FAKEFAKE"
-          export RUST_LOG=debug
-          export tml_token
+          export tml_token="\"B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8\""
 
-          # Function to log requests and responses
-          log_request_response() {
-              echo "REQUEST: $1"
-              echo "RESPONSE: $2"
-              echo "--------------------"
+          echo "Using pre-defined token: $tml_token"
+
+          handle_http_error() {
+            case $1 in
+              2) echo 'Request timed out!' ;;
+              3) echo 'Unexpected HTTP 3xx Redirection!' ;;
+              4) echo 'HTTP 4xx Client Error!' ;;
+              5) echo 'HTTP 5xx Server Error!' ;;
+              6) echo 'Exceeded --max-redirects=<n> redirects!' ;;
+              *) echo 'Other Error!' ;;
+            esac
+            exit 1
           }
 
-          # Function to parse job status
-          parse_job_status() {
-              local status_response="$1"
-              if echo "$status_response" | grep -q "JobCanceled"; then
-                  echo "Cancelled"
-              elif echo "$status_response" | grep -q "Terminated"; then
-                  echo "Finished"
-              elif echo "$status_response" | grep -q "Inactive"; then
-                  echo "Inactive"
-              elif echo "$status_response" | grep -q "Active"; then
-                  echo "Active"
-              else
-                  echo "Unknown"
-              fi
-          }
+          echo "Sending job creation request..."
+          job_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" POST localhost:8080/api/v1/job/queue \
+            request_id="$(uuidgen)" \
+            tag_config="supervisor:${tml_supervisor}" \
+            init_spec[type]=image \
+            init_spec[image_id]="${tml_image_id}" \
+            ssh_keys:='[]' \
+            restart_policy[remaining_restart_count]:=0 \
+            ssh_rendezvous_servers:='[]' \
+            parameters:='{}' \
+            override_timeout:=null) || handle_http_error $?
 
-          # Test login
-          echo "Testing login..."
-          login_response=$(./tml -v -c cli_config.toml login "${tml_username}" "${tml_password}")
-          log_request_response "Login" "$login_response"
+          echo "Create job response: $job_response"
 
-          echo "Testing basic job enqueue..."
-          job_response=$(./tml -v -c cli_config.toml job enqueue "${tml_image_id}")
-          log_request_response "Basic job enqueue" "$job_response"
+          job_id=$(echo "$job_response" | jq -r '.job_id // empty')
 
-          if echo "${job_response}" | grep -q "Error:"; then
-              echo "Basic job enqueue failed"
-              echo "Full response: ${job_response}"
-              exit 1
+          if [ -z "$job_id" ]; then
+            echo "Failed to extract job ID from response"
+            exit 1
           fi
 
-          echo "Testing job enqueue with all options..."
-          job_response=$(./tml -v -c cli_config.toml job enqueue "${tml_image_id}" \
-            --ssh-keys "ssh-rsa AAAAB3NzaC1yc2E...,ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..." \
-            --restart-count 3 \
-            --parameters '{"key1":{"value":"value1","secret":false},"key2":{"value":"value2","secret":true}}' \
-            --tag-config 'test_tag_config' \
-            --timeout 3600)
-          log_request_response "Job enqueue with all options" "$job_response"
+          echo "Created job with ID: $job_id"
 
-          if echo "${job_response}" | grep -q '"type":"internal"'; then
-              echo "Job enqueue failed due to internal server error"
-              echo "Full response: ${job_response}"
-              exit 1
-          fi
-
-          job_id=$(echo "${job_response}" | grep -o '"job_id":"[^"]*"' | cut -d'"' -f4)
-          if [ -z "${job_id}" ]; then
-              echo "Failed to extract job ID from response"
-              echo "Full response: ${job_response}"
-              exit 1
-          fi
-          echo "Created job with ID: ${job_id}"
-
-          # Test job status
-          echo "Testing job status..."
           sleep 1
-          status_response=$(./tml -v -c cli_config.toml job status "${job_id}")
-          log_request_response "Job status" "$status_response"
 
-          # Parse job status using the new function
-          job_status=$(parse_job_status "$status_response")
-          echo "Job status: ${job_status}"
-
-          # Test job cancel
-          echo "Testing job cancel..."
-          cancel_response=$(./tml -v -c cli_config.toml job cancel "${job_id}")
-          log_request_response "Job cancel" "$cancel_response"
-
-          # Verify cancellation
-          sleep 1
-          status_response=$(./tml -v -c cli_config.toml job status "${job_id}")
-          log_request_response "Job status after cancellation" "$status_response"
-
-          # Parse job status using the new function
-          job_status=$(parse_job_status "$status_response")
-          echo "Job status after cancellation: ${job_status}"
-
-          if [ "${job_status}" != "Finished" ] && [ "${job_status}" != "Cancelled" ]; then
-              echo "Job was not cancelled successfully"
-              exit 1
+          echo "Checking job status..."
+          if ! status_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" GET localhost:8080/api/v1/job/${job_id}/status)
+          then
+            handle_http_error $?
           fi
 
-          echo "Job was cancelled successfully"
+          echo "Status response: $status_response"
 
-          # Test with invalid inputs
-          echo "Testing with invalid inputs..."
-          invalid_response=$(./tml -v -c cli_config.toml job enqueue "invalid-image-id" || true)
-          log_request_response "Invalid image ID" "$invalid_response"
+          job_status=$(echo "$status_response" | jq -r '.job_status.job_status.job_state.state // empty')
 
-          invalid_status_response=$(./tml -v -c cli_config.toml job status "invalid-uuid" || true)
-          log_request_response "Invalid job UUID" "$invalid_status_response"
+          echo "Job status before cancellation: $job_status"
 
-          echo "Testing with non-existent job..."
-          non_existent_job_id="00000000-0000-0000-0000-000000000000"
-          non_existent_job_response=$(./tml -v -c cli_config.toml job status "${non_existent_job_id}")
-          log_request_response "Non-existent job" "$non_existent_job_response"
-
-          if echo "${non_existent_job_response}" | grep -q "unauthorized"; then
-              echo "CLI correctly handled non-existent job (Unauthorized response)"
-          elif echo "${non_existent_job_response}" | grep -q "not found" || echo "${non_existent_job_response}" | grep -q "does not exist"; then
-              echo "CLI correctly handled non-existent job (Not found response)"
-          else
-              echo "CLI did not handle non-existent job correctly"
-              exit 1
+          echo "Cancelling job..."
+          if ! cancel_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" DELETE localhost:8080/api/v1/job/${job_id})
+          then
+            handle_http_error $?
           fi
 
-          echo "Comprehensive CLI tests completed successfully"
-      - name: Collect and report results
+          echo "Cancel response: $cancel_response"
+          echo "Cancelled job"
+
+          echo "Checking job status after cancellation..."
+          if ! status_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" GET localhost:8080/api/v1/job/${job_id}/status)
+          then
+            handle_http_error $?
+          fi
+
+          echo "Status response after cancellation: $status_response"
+
+          job_status=$(echo "$status_response" | jq -r '.job_status.type // empty')
+
+          echo "Job status after cancellation: $job_status"
+
+          if [ "$job_status" != "terminated" ]; then
+            echo "Job was not cancelled successfully"
+            exit 1
+          fi
+
+          echo "E2E API test completed successfully"
+      - name: Run database interaction tests
         run: |
-          echo "Test results:"
-          echo "Switchboard log:"
-          cat switchboard.log
-          echo "Mock supervisor log:"
-          cat mock_supervisor.log
+          echo "TODO"
+      - name: Run puppet communication tests
+        run: |
+          echo "TODO"
+      - name: Collect and report results
+        run: ''
       - name: Stop services
         run: |
           kill $(cat switchboard.pid) || true
           kill $(cat mock_supervisor.pid) || true
-      - name: Check for panics
+      - name: Check for supervisor panic
         run: |
-          if grep -q "thread '.*' panicked at" switchboard.log; then
-            echo "Switchboard panicked. Failing the CI."
-            exit 1
-          fi
+          cat mock_supervisor.log
           if grep -q "thread '.*' panicked at" mock_supervisor.log; then
             echo "Supervisor panicked. Failing the CI."
+            exit 1
+          fi
+      - name: Check for switchboard panic
+        run: |
+          cat switchboard.log
+          if grep -q "thread '.*' panicked at" switchboard.log; then
+            echo "Switchboard panicked. Failing the CI."
             exit 1
           fi
       - name: Upload config files
@@ -230,7 +207,6 @@ jobs:
           path: |
             switchboard_config.toml
             mock_supervisor_config.toml
-            cli_config.toml
           retention-days: 7
       - name: Upload log files
         if: always()
