@@ -3301,6 +3301,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
+name = "tml-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "clap 2.34.0",
+ "dirs 3.0.2",
+ "env_logger",
+ "hex",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "shellexpand",
+ "ssh2",
+ "tokio",
+ "toml 0.5.11",
+ "treadmill-rs",
+ "uuid",
+ "xdg",
+]
+
+[[package]]
 name = "tml-cli-connector"
 version = "0.1.0"
 dependencies = [
@@ -3404,31 +3428,6 @@ dependencies = [
  "tracing-subscriber",
  "treadmill-rs",
  "uuid",
-]
-
-[[package]]
-name = "tml-switchboard-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "chrono",
- "clap 2.34.0",
- "dirs 3.0.2",
- "env_logger",
- "hex",
- "log",
- "reqwest",
- "serde",
- "serde_json",
- "shellexpand",
- "ssh2",
- "tml-switchboard",
- "tokio",
- "toml 0.5.11",
- "treadmill-rs",
- "uuid",
- "xdg",
 ]
 
 [[package]]
