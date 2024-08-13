@@ -68,6 +68,8 @@ pub struct Server {
     pub bind_address: SocketAddr,
     /// Optional development-only SSL mode.
     pub dev_mode_ssl: Option<DevModeSsl>,
+    /// Tokio console subscriber.
+    pub tokio_console_server: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
