@@ -147,6 +147,18 @@ jobs:
           fi
           echo "Created job with ID: ${job_id}"
 
+          # Test job list
+          echo "Testing job list..."
+          list_response=$(./tml -v -c cli_config.toml job list)
+          log_request_response "Job list" "$list_response"
+
+          if ! echo "${list_response}" | grep -q "${job_id}"; then
+              echo "Job list does not contain the created job ID"
+              echo "Full response: ${list_response}"
+              exit 1
+          fi
+          echo "Job list contains the created job ID"
+
           # Test job status
           echo "Testing job status..."
           sleep 1

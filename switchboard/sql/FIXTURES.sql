@@ -52,6 +52,15 @@ VALUES ('3be73eea-192f-46c0-af01-92f574290c81',
         '2024-07-12 13:56:50.616829-07',
         '2124-07-12 13:56:50.616829-07');
 
-INSERT INTO user_privileges
-    (user_id, permission)
-VALUES ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'enqueue_ci_job');
+
+INSERT INTO user_privileges (user_id, permission)
+VALUES 
+    ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'enqueue_ci_job'),
+    ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'access_job_queue'),
+    ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'read_job_status'),
+    ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'stop_job'),
+    ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'list_supervisors'),
+    ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'view_supervisor_status'),
+    ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'create_user'),
+    ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'create_token'),
+    ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'manage_supervisors');
