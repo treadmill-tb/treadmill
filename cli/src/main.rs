@@ -13,7 +13,7 @@ use treadmill_rs::api::switchboard::{
     EnqueueJobRequest, JobRequest, JobStatusResponse, LoginRequest, LoginResponse,
     ReadJobQueueResponse,
 };
-use treadmill_rs::api::switchboard_supervisor::{JobInitSpec, RestartPolicy};
+use treadmill_rs::api::switchboard_supervisor::{JobInitSpec, RestartPolicy, SupervisorStatus};
 use treadmill_rs::image::manifest::ImageId;
 
 mod auth;
@@ -108,6 +108,19 @@ async fn main() -> Result<()> {
                         .arg(Arg::with_name("job_id").required(true)),
                 ),
         )
+        .subcommand(
+            SubCommand::with_name("supervisor")
+                .about("Supervisor-related commands")
+                .subcommand(
+                    SubCommand::with_name("list")
+                        .about("List all supervisors")
+                )
+                .subcommand(
+                    SubCommand::with_name("status")
+                        .about("Get status of a specific supervisor")
+                        .arg(Arg::with_name("supervisor_id").required(true).help("The UUID of the supervisor"))
+                )
+        )
         .setting(clap::AppSettings::SubcommandRequiredElseHelp)
         .get_matches();
 
@@ -190,6 +203,30 @@ async fn main() -> Result<()> {
                     }
                 } else {
                     job_matches.usage();
+                }
+            }
+        },
+        ("supervisor", Some(supervisor_matches)) => match supervisor_matches.subcommand() {
+            ("list", Some(_)) => {
+                info!("Listing all supervisors");
+                list_supervisors(&client, &config).await?;
+            }
+            ("status", Some(status_matches)) => {
+                let supervisor_id =
+                    Uuid::parse_str(status_matches.value_of("supervisor_id").unwrap())
+                        .context("Invalid supervisor ID")?;
+                info!("Getting status for supervisor ID: {}", supervisor_id);
+                get_supervisor_status(&client, &config, supervisor_id).await?;
+            }
+            _ => {
+                error!("Invalid supervisor subcommand");
+                println!("Invalid supervisor subcommand");
+                if let Some(subcommand_matches) = supervisor_matches
+                    .subcommand_matches(supervisor_matches.subcommand_name().unwrap())
+                {
+                    subcommand_matches.usage();
+                } else {
+                    supervisor_matches.usage();
                 }
             }
         },
@@ -401,6 +438,68 @@ async fn list_jobs(client: &Client, config: &config::Config) -> Result<()> {
         let error_text = response.text().await?;
         error!("Failed to fetch job queue: {}", error_text);
         println!("Failed to fetch job queue: {}", error_text);
+    }
+
+    Ok(())
+}
+
+async fn list_supervisors(client: &Client, config: &config::Config) -> Result<()> {
+    let token = auth::get_token()?;
+
+    let response = client
+        .get(&format!("{}/api/v1/supervisor/list", config.api.url))
+        .bearer_auth(token)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let supervisor_ids: Vec<Uuid> = response.json().await?;
+        println!("Supervisors:");
+        for (index, supervisor_id) in supervisor_ids.iter().enumerate() {
+            println!("{}. {}", index + 1, supervisor_id);
+        }
+    } else {
+        let error_text = response.text().await?;
+        error!("Failed to fetch supervisor list: {}", error_text);
+        println!("Failed to fetch supervisor list: {}", error_text);
+    }
+
+    Ok(())
+}
+
+async fn get_supervisor_status(
+    client: &Client,
+    config: &config::Config,
+    supervisor_id: Uuid,
+) -> Result<()> {
+    let token = auth::get_token()?;
+
+    let response = client
+        .get(&format!(
+            "{}/api/v1/supervisor/{}/status",
+            config.api.url, supervisor_id
+        ))
+        .bearer_auth(token)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let status: SupervisorStatus = response.json().await?;
+        println!("Supervisor Status for {}:", supervisor_id);
+        match status {
+            SupervisorStatus::OngoingJob { job_id, job_state } => {
+                println!("  Status: Running Job");
+                println!("  Job ID: {}", job_id);
+                println!("  Job State: {:?}", job_state);
+            }
+            SupervisorStatus::Idle => {
+                println!("  Status: Idle");
+            }
+        }
+    } else {
+        let error_text = response.text().await?;
+        error!("Failed to fetch supervisor status: {}", error_text);
+        println!("Failed to fetch supervisor status: {}", error_text);
     }
 
     Ok(())
