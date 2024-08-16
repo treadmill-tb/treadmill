@@ -7,6 +7,7 @@ Treadmill CLI is a command-line interface tool for interacting with the Treadmil
 - User authentication (login)
 - Job management:
   - Enqueue new jobs with various parameters
+  - List all jobs in the queue
   - Check job status
   - Cancel jobs
 - Configurable via command-line arguments or config file
@@ -50,6 +51,12 @@ Ensure the CLI tool is in your system path or reference it directly using `./tml
      - `--parameters <PARAMS>`: JSON object of job parameters
      - `--tag-config <CONFIG>`: Tag configuration
      - `--timeout <TIMEOUT>`: Override timeout in seconds
+
+   - List all jobs:
+
+     ```
+     ./tml job list
+     ```
 
    - Check job status:
 
@@ -104,13 +111,19 @@ If no SSH keys are provided via the command-line argument, the CLI will automati
      --timeout 3600
    ```
 
-3. Check job status:
+3. List all jobs:
+
+   ```
+   ./tml job list
+   ```
+
+4. Check job status:
 
    ```
    ./tml job status <JOB_ID>
    ```
 
-4. Cancel a job:
+5. Cancel a job:
    ```
    ./tml job cancel <JOB_ID>
    ```

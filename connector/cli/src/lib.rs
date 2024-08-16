@@ -25,6 +25,7 @@ pub struct CliConnectorConfig {
 #[derive(Deserialize, Clone, Debug)]
 pub struct JobConfig {}
 
+#[derive(Debug)]
 pub struct CliConnector<S: connector::Supervisor> {
     _supervisor_id: Uuid,
     _config: CliConnectorConfig,

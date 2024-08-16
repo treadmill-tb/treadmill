@@ -3,7 +3,7 @@ use chrono::Duration;
 use clap::{App, Arg, SubCommand};
 use env_logger::Builder;
 use log::LevelFilter;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use reqwest::Client;
 use std::collections::HashMap;
 use treadmill_rs::api::switchboard_supervisor::ParameterValue;
@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::{
     EnqueueJobRequest, JobRequest, JobStatusResponse, LoginRequest, LoginResponse,
+    ReadJobQueueResponse,
 };
 use treadmill_rs::api::switchboard_supervisor::{JobInitSpec, RestartPolicy, SupervisorStatus};
 use treadmill_rs::image::manifest::ImageId;
@@ -177,8 +178,8 @@ async fn main() -> Result<()> {
                 .await?;
             }
             ("list", Some(_)) => {
-                warn!("Job list functionality not implemented yet");
-                println!("Job list functionality not implemented yet");
+                info!("Listing all jobs");
+                list_jobs(&client, &config).await?;
             }
             ("status", Some(status_matches)) => {
                 let job_id = Uuid::parse_str(status_matches.value_of("job_id").unwrap())
@@ -401,6 +402,42 @@ async fn cancel_job(client: &Client, config: &config::Config, job_id: Uuid) -> R
         let error_text = response.text().await?;
         error!("Failed to cancel job: {}", error_text);
         println!("Failed to cancel job: {}", error_text);
+    }
+
+    Ok(())
+}
+
+async fn list_jobs(client: &Client, config: &config::Config) -> Result<()> {
+    let token = auth::get_token()?;
+
+    let response = client
+        .get(&format!("{}/api/v1/job/queue", config.api.url))
+        .bearer_auth(token)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let job_queue: ReadJobQueueResponse = response.json().await?;
+        match job_queue {
+            ReadJobQueueResponse::Ok { jobs } => {
+                println!("Job Queue:");
+                for (index, job_id) in jobs.iter().enumerate() {
+                    println!("{}. {}", index + 1, job_id);
+                }
+            }
+            ReadJobQueueResponse::Internal => {
+                error!("Internal server error while fetching job queue");
+                println!("Failed to fetch job queue due to an internal server error");
+            }
+            ReadJobQueueResponse::Unauthorized => {
+                error!("Unauthorized to access job queue");
+                println!("You are not authorized to access the job queue");
+            }
+        }
+    } else {
+        let error_text = response.text().await?;
+        error!("Failed to fetch job queue: {}", error_text);
+        println!("Failed to fetch job queue: {}", error_text);
     }
 
     Ok(())

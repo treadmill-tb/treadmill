@@ -64,10 +64,12 @@ pub struct MockSupervisorConfig {
     mock: MockConfig,
 }
 
+#[derive(Debug)]
 pub enum ControlSocket {
     Tcp(TcpControlSocket<MockSupervisor>),
 }
 
+#[derive(Debug)]
 pub struct MockSupervisorJobRunningState {
     start_job_req: connector::StartJobMessage,
 
@@ -80,6 +82,7 @@ pub struct MockSupervisorJobRunningState {
     // ssh_rendezvous_proxies: Vec<rendezvous_proxy::RendezvousProxy>,
 }
 
+#[derive(Debug)]
 pub enum MockSupervisorJobState {
     /// State to indicate that the job is starting.
     ///
@@ -115,6 +118,7 @@ impl MockSupervisorJobState {
     }
 }
 
+#[derive(Debug)]
 pub struct MockSupervisor {
     /// Connector to the central coordinator. All communication is mediated
     /// through this connector.
