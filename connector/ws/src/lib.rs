@@ -14,6 +14,7 @@ use tokio_tungstenite::tungstenite::{
     http::{Request, Uri},
 };
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tracing::instrument;
 use treadmill_rs::api::switchboard::AuthToken;
 use treadmill_rs::api::switchboard_supervisor::{
     self, ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL, Response, SupervisorEvent, SupervisorStatus,
@@ -53,9 +54,12 @@ pub enum WsConnectorError {
     Authentication,
 }
 
+#[derive(Debug)]
 pub struct WsConnector<S: connector::Supervisor> {
     inner: Arc<Inner<S>>,
 }
+
+#[derive(Debug)]
 struct Inner<S: connector::Supervisor> {
     supervisor_id: Uuid,
     config: WsConnectorConfig,
@@ -67,7 +71,6 @@ struct Inner<S: connector::Supervisor> {
 
 impl<S: connector::Supervisor> WsConnector<S> {
     pub fn new(supervisor_id: Uuid, config: WsConnectorConfig, supervisor: Weak<S>) -> Self {
-        tracing::error!("UH OH");
         let (update_tx, update_rx) = mpsc::unbounded_channel();
         Self {
             inner: Arc::new(Inner {
@@ -83,6 +86,7 @@ impl<S: connector::Supervisor> WsConnector<S> {
 }
 
 impl<S: connector::Supervisor> Inner<S> {
+    #[instrument(skip(self))]
     async fn connect(
         &self,
     ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, WsConnectorError> {
@@ -173,6 +177,7 @@ impl<S: connector::Supervisor> Inner<S> {
 
         Ok(ws)
     }
+
     async fn handle(&self, message: switchboard_supervisor::Message) {
         match message {
             switchboard_supervisor::Message::StartJob(start_job_request) => {
