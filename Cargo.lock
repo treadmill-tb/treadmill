@@ -3533,6 +3533,7 @@ dependencies = [
  "tml-tcp-control-socket-client",
  "tokio",
  "treadmill-rs",
+ "uuid",
 ]
 
 [[package]]

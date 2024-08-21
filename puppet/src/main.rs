@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use log::{debug, error, info, warn};
+use uuid::Uuid;
 
 use treadmill_rs::api::supervisor_puppet::{CommandOutputStream, PuppetEvent, SupervisorEvent};
 
@@ -47,6 +48,32 @@ struct PuppetArgs {
 
     #[arg(long)]
     parameters_dir: Option<PathBuf>,
+
+    #[arg(long)]
+    job_id_file: Option<PathBuf>,
+}
+
+async fn update_job_id_file(args: &PuppetArgs, job_id: Uuid) -> Result<()> {
+    let job_id_path = match args.job_id_file {
+        Some(ref path) => path,
+        None => return Ok(()),
+    };
+
+    info!("Writing job_id to file {:?}", job_id_path);
+
+    tokio::fs::create_dir_all(
+        job_id_path
+            .parent()
+            .context("Retrieving parent directory of job_id file")?,
+    )
+    .await
+    .context("Creating parent directories of job_id file (recursively)")?;
+
+    tokio::fs::write(job_id_path, job_id.to_string().as_bytes())
+        .await
+        .context("Writing job_id file")?;
+
+    Ok(())
 }
 
 async fn update_parameters_dir(
@@ -575,6 +602,13 @@ async fn main() -> Result<()> {
         })()
         .await?,
     );
+
+    let job_id = client
+        .get_job_id()
+        .await
+        .context("Retrieving job_id from supervisor")?;
+    info!("Retrieved job_id from supervisor: {}", job_id);
+    update_job_id_file(&args, job_id).await?;
 
     // For certain requests and depending on some command line parameters, we'll
     // want to exit with an error if they fail. We provided these wrappers here

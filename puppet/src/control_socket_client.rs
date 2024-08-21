@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
+use uuid::Uuid;
 
 // TCP control socket transport implementation:
 #[cfg(feature = "transport_tcp")]
@@ -57,6 +58,20 @@ impl ControlSocketClient {
                     "Invalid supervisor response to SSH keys request: {:?}",
                     resp
                 );
+            }
+        }
+    }
+
+    pub async fn get_job_id(&self) -> Result<Uuid> {
+        let resp = self
+            .request(PuppetReq::JobId)
+            .await
+            .context("Sending job ID request to supervisor")?;
+
+        match resp {
+            SupervisorResp::JobId { job_id } => Ok(job_id),
+            _ => {
+                bail!("Invalid supervisor response to job ID request: {:?}", resp);
             }
         }
     }
