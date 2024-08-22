@@ -634,6 +634,8 @@ async fn main() -> Result<()> {
         .context("Reporting puppet ready status to supervisor")?;
 
     info!("Puppet started, waiting for supervisor events. Exit with CTRL+C");
+    sd_notify::notify(true, &[sd_notify::NotifyState::Ready])
+        .context("Notifying service manager that puppet is ready")?;
 
     // Create a HashMap with channels to the executor of a command which is
     // shared between all executors and this main loop. The purpose of this
