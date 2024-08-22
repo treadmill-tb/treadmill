@@ -67,6 +67,8 @@ pub trait Supervisor: Send + Sync + 'static {
         match req {
             PuppetReq::Ping => SupervisorResp::PingResp,
 
+            PuppetReq::JobId => SupervisorResp::JobId { job_id },
+
             PuppetReq::SSHKeys => SupervisorResp::SSHKeysResp {
                 ssh_keys: self.ssh_keys(job_id).await.unwrap_or_else(|| vec![]),
             },

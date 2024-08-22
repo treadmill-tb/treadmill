@@ -14,6 +14,7 @@ treadmill-rs = { path = "../treadmill-rs" }
 
 tml-tcp-control-socket-client = { path = "../control-socket/tcp/client", optional = true }
 
+uuid = { version = "1.6.1", features = ["serde"] }
 anyhow = "1.0.76"
 clap = { version = "4.4.11", features = ["derive"] }
 simplelog = "0.12.1"

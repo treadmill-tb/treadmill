@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub use super::switchboard_supervisor::ParameterValue;
 
@@ -13,6 +14,7 @@ pub use super::switchboard_supervisor::ParameterValue;
 #[non_exhaustive]
 pub enum PuppetReq {
     Ping,
+    JobId,
     SSHKeys,
     NetworkConfig,
     Parameters,
@@ -183,6 +185,9 @@ pub struct NetworkConfig {
 pub enum SupervisorResp {
     // Request reponses:
     PingResp,
+    JobId {
+        job_id: Uuid,
+    },
     SSHKeysResp {
         ssh_keys: Vec<String>,
     },
