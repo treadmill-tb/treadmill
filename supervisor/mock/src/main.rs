@@ -8,6 +8,7 @@ use clap::Parser;
 use log::{info, warn};
 use serde::Deserialize;
 use tokio::sync::Mutex;
+use tracing::{event, instrument, Level};
 use uuid::Uuid;
 
 use treadmill_rs::connector;
@@ -492,6 +493,94 @@ impl control_socket::Supervisor for MockSupervisor {
                 None
             }
         }
+    }
+
+    #[instrument(skip(self))]
+    async fn puppet_ready(&self, _puppet_event_id: u64, job_id: Uuid) {
+        event!(Level::INFO, "Received puppet ready event");
+
+        match self.jobs.lock().await.get(&job_id) {
+            Some(job_state) => match &*job_state.lock().await {
+                // Job is currently running, forward this event to a `JobState`
+                // change towards `Ready`:
+                MockSupervisorJobState::Running(_) => {
+                    self.connector
+                        .update_job_state(
+                            job_id,
+                            connector::JobState::Ready {
+                                // TODO: populate connection info
+                                connection_info: vec![],
+                                status_message: None,
+                            },
+                        )
+                        .await;
+                }
+
+                // Only respond to host / puppet requests when the job is marked
+                // as "running":
+                state => {
+                    event!(
+                        Level::WARN,
+                        "Received puppet ready event in invalid state {job_state}",
+                        job_state = state.state_name(),
+                    );
+                }
+            },
+
+            // Job not found:
+            None => {
+                event!(
+                    Level::WARN,
+                    "Received puppet parameters request for non-existant job",
+                );
+            }
+        }
+    }
+
+    #[instrument(skip(self))]
+    async fn puppet_shutdown(
+        &self,
+        _puppet_event_id: u64,
+        _supervisor_event_id: Option<u64>,
+        _job_id: Uuid,
+    ) {
+        event!(Level::INFO, "Received puppet shutdown event",);
+
+        // We don't want to do any proper job-state transition here, as this
+        // input is controlled by the puppet. It may simply claim to be
+        // rebooting or shutting down, but not actually doing this. We want the
+        // `JobState` transitions to be well-defined, and governed by the
+        // supervisor, not the host.
+        //
+        // As an alternative, we should -- in the `Ready` state -- introduce a
+        // new field that shows the reported state from the puppet, for instance
+        // whether it claims to be rebooting or shutting down.
+        //
+        // The `Stopping` state is then only set for when the QEMU process is
+        // stopped, or when a shutdown is invoked from within the supervisor.
+    }
+
+    #[instrument(skip(self))]
+    async fn puppet_reboot(
+        &self,
+        _puppet_event_id: u64,
+        _supervisor_event_id: Option<u64>,
+        _job_id: Uuid,
+    ) {
+        event!(Level::INFO, "Received puppet reboot event",);
+
+        // We don't want to do any proper job-state transition here, as this
+        // input is controlled by the puppet. It may simply claim to be
+        // rebooting or shutting down, but not actually doing this. We want the
+        // `JobState` transitions to be well-defined, and governed by the
+        // supervisor, not the host.
+        //
+        // As an alternative, we should -- in the `Ready` state -- introduce a
+        // new field that shows the reported state from the puppet, for instance
+        // whether it claims to be rebooting or shutting down.
+        //
+        // The `Stopping` state is then only set for when the QEMU process is
+        // stopped, or when a shutdown is invoked from within the supervisor.
     }
 }
 

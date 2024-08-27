@@ -135,10 +135,9 @@ impl<S: Supervisor> TcpControlSocket<S> {
                                     puppet_event_id,
                                     event,
                                 }) => {
-                                    info!(
-                                        "Received unhandled puppet event: {}, {:?}",
-                                        puppet_event_id, event
-                                    );
+                                    supervisor
+                                        .handle_event(puppet_event_id, event, job_id)
+                                        .await;
                                     None
                                 }
                                 Err(e) => Some(SupervisorMsg::Error {

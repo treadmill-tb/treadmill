@@ -3522,6 +3522,7 @@ dependencies = [
  "tml-ws-connector",
  "tokio",
  "toml 0.8.19",
+ "tracing",
  "treadmill-rs",
  "uuid",
 ]
@@ -3961,6 +3962,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "subtle",
+ "tracing",
  "uuid",
 ]
 

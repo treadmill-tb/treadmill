@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use tracing::{event, Level};
 use uuid::Uuid;
 
-use crate::api::supervisor_puppet::{self, PuppetReq, SupervisorResp};
+use crate::api::supervisor_puppet::{self, PuppetEvent, PuppetReq, SupervisorResp};
 
 /// Supervisor interface for control socket servers.
 ///
@@ -92,4 +93,43 @@ pub trait Supervisor: Send + Sync + 'static {
             // _ => SupervisorResp::UnsupportedRequest,
         }
     }
+
+    async fn handle_event(&self, puppet_event_id: u64, event: PuppetEvent, job_id: Uuid) {
+        match event {
+            PuppetEvent::Ready => self.puppet_ready(puppet_event_id, job_id).await,
+            PuppetEvent::Shutdown {
+                supervisor_event_id,
+            } => {
+                self.puppet_shutdown(puppet_event_id, supervisor_event_id, job_id)
+                    .await
+            }
+            PuppetEvent::Reboot {
+                supervisor_event_id,
+            } => {
+                self.puppet_reboot(puppet_event_id, supervisor_event_id, job_id)
+                    .await
+            }
+            _ => event!(
+                Level::TRACE,
+                ?job_id,
+                puppet_event_id,
+                "Received unhandled puppet event: {:?}",
+                event,
+            ),
+        }
+    }
+
+    async fn puppet_ready(&self, puppet_event_id: u64, job_id: Uuid);
+    async fn puppet_shutdown(
+        &self,
+        puppet_event_id: u64,
+        supervisor_event_id: Option<u64>,
+        job_id: Uuid,
+    );
+    async fn puppet_reboot(
+        &self,
+        puppet_event_id: u64,
+        supervisor_event_id: Option<u64>,
+        job_id: Uuid,
+    );
 }

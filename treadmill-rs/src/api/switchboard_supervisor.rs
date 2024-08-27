@@ -124,7 +124,7 @@ pub enum JobStartingStage {
     /// system according to the user-provided customizations.
     Provisioning,
 
-    /// The container is booting. The next transition should
+    /// The host is booting. The next transition should
     /// either be into the `Ready` or `Failed` states.
     Booting,
 }
