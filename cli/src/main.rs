@@ -354,7 +354,7 @@ async fn enqueue_job(
     if response.status().is_success() {
         let response_json: serde_json::Value = response.json().await?;
         info!("Job enqueued: {}", response_json);
-        println!("Job enqueued: {}", response_json);
+        println!("{}", response_json);
     } else {
         let error_text = response.text().await?;
         error!("Failed to enqueue job: {}", error_text);
