@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
 use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
 use subtle::{Choice, ConstantTimeEq};
 use uuid::Uuid;
 
@@ -111,6 +112,25 @@ pub enum ExitStatus {
     JobCanceled,
     UnregisteredSupervisor,
     HostDroppedJob,
+}
+impl Display for ExitStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                ExitStatus::FailedToMatch => "failed to match",
+                ExitStatus::QueueTimeout => "timed out in queue",
+                ExitStatus::HostStartFailure => "host start failure",
+                ExitStatus::HostTerminatedWithError => "host terminated with error",
+                ExitStatus::HostTerminatedWithSuccess => "host terminated with success",
+                ExitStatus::HostTerminatedTimeout => "timed out while running",
+                ExitStatus::JobCanceled => "canceled",
+                ExitStatus::UnregisteredSupervisor => "supervisor was unregistered",
+                ExitStatus::HostDroppedJob => "supervisor dropped job",
+            }
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

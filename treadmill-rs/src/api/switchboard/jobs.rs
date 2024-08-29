@@ -62,3 +62,35 @@ pub mod stop {
         Internal,
     }
 }
+
+pub mod list {
+    use crate::api::switchboard::JobStatus;
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+    use tml_switchboard_macros::HttpStatusCode;
+    use uuid::Uuid;
+
+    // #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+    // #[serde(rename_all = "snake_case")]
+    // pub enum Filter {
+    //     Ongoing,
+    //     Running,
+    //     Queued,
+    //     Finished,
+    // }
+
+    // Governing Permissions:
+    //  list_jobs
+    //  read_job_status:<ID>
+    #[derive(Debug, Clone, HttpStatusCode, Serialize, Deserialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    pub enum Response {
+        #[http(status = 200)]
+        Ok { jobs: HashMap<Uuid, JobStatus> },
+        /// User lacks the `list_jobs` permission.
+        #[http(status = 403)]
+        Unauthorized,
+        #[http(status = 500)]
+        Internal,
+    }
+}

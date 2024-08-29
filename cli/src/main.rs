@@ -9,12 +9,14 @@ use std::collections::HashMap;
 use treadmill_rs::api::switchboard_supervisor::ParameterValue;
 use uuid::Uuid;
 
+use treadmill_rs::api::switchboard::jobs::list::Response as ListJobsResponse;
 use treadmill_rs::api::switchboard::jobs::status::Response as JobStatusResponse;
 use treadmill_rs::api::switchboard::jobs::submit::Request as SubmitJobRequest;
 use treadmill_rs::api::switchboard::{
-    JobInitSpec, JobRequest, LoginRequest, LoginResponse, SupervisorStatus,
+    JobInitSpec, JobRequest, JobStatus, LoginRequest, LoginResponse, SupervisorStatus,
 };
 use treadmill_rs::api::switchboard_supervisor::RestartPolicy;
+use treadmill_rs::connector::JobState;
 use treadmill_rs::image::manifest::ImageId;
 
 mod auth;
@@ -407,42 +409,73 @@ async fn cancel_job(client: &Client, config: &config::Config, job_id: Uuid) -> R
     Ok(())
 }
 
-async fn list_jobs(_client: &Client, _config: &config::Config) -> Result<()> {
-    todo!("list jobs is not currently supported by the switchboard")
+async fn list_jobs(client: &Client, config: &config::Config) -> Result<()> {
+    let token = auth::get_token()?;
 
-    // let token = auth::get_token()?;
-    //
-    // let response = client
-    //     .get(&format!("{}/api/v1/job/queue", config.api.url))
-    //     .bearer_auth(token)
-    //     .send()
-    //     .await?;
-    //
-    // if response.status().is_success() {
-    //     let job_queue: ReadJobQueueResponse = response.json().await?;
-    //     match job_queue {
-    //         ReadJobQueueResponse::Ok { jobs } => {
-    //             println!("Job Queue:");
-    //             for (index, job_id) in jobs.iter().enumerate() {
-    //                 println!("{}. {}", index + 1, job_id);
-    //             }
-    //         }
-    //         ReadJobQueueResponse::Internal => {
-    //             error!("Internal server error while fetching job queue");
-    //             println!("Failed to fetch job queue due to an internal server error");
-    //         }
-    //         ReadJobQueueResponse::Unauthorized => {
-    //             error!("Unauthorized to access job queue");
-    //             println!("You are not authorized to access the job queue");
-    //         }
-    //     }
-    // } else {
-    //     let error_text = response.text().await?;
-    //     error!("Failed to fetch job queue: {}", error_text);
-    //     println!("Failed to fetch job queue: {}", error_text);
-    // }
-    //
-    // Ok(())
+    let response = client
+        .get(&format!("{}/api/v1/jobs", config.api.url))
+        .bearer_auth(token)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let job_queue: ListJobsResponse = response.json().await?;
+        match job_queue {
+            ListJobsResponse::Ok { jobs } => {
+                println!("Jobs:");
+                for (index, (job_id, status)) in jobs.iter().enumerate() {
+                    println!(
+                        "{}. {} ({})",
+                        index + 1,
+                        job_id,
+                        match status {
+                            JobStatus::Active { job_state } => {
+                                match job_state {
+                                    JobState::Starting { .. } => "starting".to_string(),
+                                    JobState::Ready { .. } => "ready".to_string(),
+                                    JobState::Stopping { .. } => "stopping".to_string(),
+                                    JobState::Finished { .. } => "finished".to_string(),
+                                    JobState::Canceled => "canceled".to_string(),
+                                }
+                            }
+                            JobStatus::Error { job_error } => {
+                                format!(
+                                    "error ({:?}): {}",
+                                    job_error.error_kind, job_error.description
+                                )
+                            }
+                            JobStatus::Inactive => {
+                                "queue".to_string()
+                            }
+                            JobStatus::Terminated(treadmill_rs::api::switchboard::JobResult {
+                                job_id: _,
+                                supervisor_id: _,
+                                exit_status,
+                                host_output: _,
+                                terminated_at,
+                            }) => {
+                                format!("terminated at {terminated_at}: {exit_status}")
+                            }
+                        }
+                    );
+                }
+            }
+            ListJobsResponse::Internal => {
+                error!("Internal server error while fetching job list");
+                println!("Failed to fetch job queue due to an internal server error");
+            }
+            ListJobsResponse::Unauthorized => {
+                error!("Unauthorized to access job list");
+                println!("You are not authorized to access the job list");
+            }
+        }
+    } else {
+        let error_text = response.text().await?;
+        error!("Failed to fetch job queue: {}", error_text);
+        println!("Failed to fetch job queue: {}", error_text);
+    }
+
+    Ok(())
 }
 
 async fn list_supervisors(client: &Client, config: &config::Config) -> Result<()> {

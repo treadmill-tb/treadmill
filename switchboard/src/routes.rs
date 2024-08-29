@@ -26,6 +26,7 @@ fn api_router() -> Router<AppState> {
         //  POST /jobs/new
         .route("/jobs/new", post(jobs::submit))
         //  GET /jobs (+ <FILTERS>)
+        .route("/jobs", get(jobs::list))
         //  GET /jobs/:id/status
         .route("/jobs/:id/status", get(jobs::status))
         //  GET /jobs/:id/info

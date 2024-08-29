@@ -7,7 +7,11 @@ use crate::serve::AppState;
 use crate::{impl_from_auth_err, perms, sql};
 use axum::extract::{Path, State};
 use axum::Json;
+use futures_util::stream::FuturesOrdered;
+use futures_util::StreamExt;
+use std::str::FromStr;
 use treadmill_rs::api::switchboard::jobs::{
+    list::Response as LJResponse,
     status::Response as JSResponse,
     stop::Response as SJResponse,
     submit::{Request as EJRequest, Response as EJResponse},
@@ -94,4 +98,42 @@ pub async fn stop(
         .map_err(proxy_err)?;
 
     proxy_val(SJResponse::Ok)
+}
+
+// -- list
+impl_from_auth_err!(LJResponse, Database => Internal, Unauthorized => Unauthorized);
+#[tracing::instrument(skip(state, auth))]
+pub async fn list(
+    State(state): State<AppState>,
+    AuthSource(auth): AuthSource<DbAuth>,
+) -> Proxied<LJResponse> {
+    let list_jobs = auth.authorize(perms::ListJobs).await.map_err(proxy_err)?;
+    // TODO: would be better to make this a method on DbAuth
+    // TODO: respect token privileges
+    let perms = sqlx::query!(
+        r#"
+        select permission from tml_switchboard.user_privileges
+        where user_id = $1 and permission like 'read_job_status:%';
+        "#,
+        list_jobs.subject().user_id()
+    )
+    .fetch_all(state.pool())
+    .await
+    .map_err(|_| LJResponse::Internal)
+    .map_err(proxy_err)?;
+    let job_ids: Vec<Uuid> = perms
+        .into_iter()
+        .map(|perm| Uuid::from_str(&perm.permission.split(':').skip(1).next().unwrap()).unwrap())
+        .collect();
+
+    let perm_queries: FuturesOrdered<_> = job_ids
+        .into_iter()
+        .map(|job_id| auth.authorize(perms::ReadJobStatus { job_id }))
+        .collect();
+    let job_perms: Vec<_> = perm_queries
+        .filter_map(|x| async move { x.ok() })
+        .collect()
+        .await;
+    let jobs = perms::list_jobs(&state, list_jobs, job_perms).await;
+    proxy_val(LJResponse::Ok { jobs })
 }
