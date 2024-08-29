@@ -177,3 +177,22 @@ pub async fn stop_job(state: &AppState, p: Privilege<'_, StopJob>) -> Result<(),
             StopJobError::Internal
         })
 }
+
+// -- list_jobs
+
+pub struct ListJobs;
+impl_simple_perm!(ListJobs, "list_jobs");
+pub async fn list_jobs(
+    state: &AppState,
+    _: Privilege<'_, ListJobs>,
+    jobs: Vec<Privilege<'_, ReadJobStatus>>,
+) -> HashMap<Uuid, JobStatus> {
+    let mut map = HashMap::new();
+    for job_perm in jobs {
+        let job_id = job_perm.action().job_id;
+        if let Ok(status) = read_job_status(state, job_perm).await {
+            map.insert(job_id, status);
+        }
+    }
+    map
+}

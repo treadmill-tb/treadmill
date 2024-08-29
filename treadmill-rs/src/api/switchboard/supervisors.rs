@@ -26,7 +26,7 @@ pub mod list {
 
     // Governing Permissions:
     //  list_supervisors
-    //  access_supervisor_status:<ID>
+    //  read_supervisor_status:<ID>
     #[derive(Debug, Clone, HttpStatusCode, Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
     pub enum Response {
