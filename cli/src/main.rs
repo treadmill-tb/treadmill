@@ -12,7 +12,7 @@ use uuid::Uuid;
 use treadmill_rs::api::switchboard::jobs::status::Response as JobStatusResponse;
 use treadmill_rs::api::switchboard::jobs::submit::Request as SubmitJobRequest;
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, LoginRequest, LoginResponse};
-use treadmill_rs::api::switchboard_supervisor::{ImageSpecification, RestartPolicy};
+use treadmill_rs::api::switchboard_supervisor::RestartPolicy;
 use treadmill_rs::image::manifest::ImageId;
 
 mod auth;

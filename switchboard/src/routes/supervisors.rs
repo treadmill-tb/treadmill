@@ -13,7 +13,7 @@ use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use axum_extra::TypedHeader;
 use futures_util::stream::FuturesOrdered;
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::StreamExt;
 use headers::authorization::Bearer;
 use headers::Authorization;
 use http::{HeaderValue, StatusCode};

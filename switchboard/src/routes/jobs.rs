@@ -1,7 +1,7 @@
 use crate::auth::db::DbAuth;
 use crate::auth::extract::AuthSource;
 use crate::auth::AuthorizationSource;
-use crate::perms::{read_supervisor_status, ReadJobStatusError, StopJobError, SubmitJobError};
+use crate::perms::{ReadJobStatusError, StopJobError, SubmitJobError};
 use crate::routes::proxy::{proxy_err, proxy_val, Proxied};
 use crate::serve::AppState;
 use crate::{impl_from_auth_err, perms, sql};
@@ -42,7 +42,7 @@ pub async fn submit(
         state.pool(),
     )
     .await
-    .map_err(|e| EJResponse::Internal)
+    .map_err(|_| EJResponse::Internal)
     .map_err(proxy_err)?;
 
     proxy_val(EJResponse::Ok { job_id })

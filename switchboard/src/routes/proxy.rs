@@ -1,4 +1,3 @@
-use crate::auth::AuthorizationError;
 use axum::extract;
 use axum::response::{IntoResponse, Response};
 use std::fmt::{Debug, Formatter};
@@ -32,6 +31,7 @@ pub fn proxy_err<E, T: IntoProxiedResponse + From<E>>(err: E) -> ResponseProxy<T
 }
 
 pub type Proxied<T> = Result<ResponseProxy<T>, ResponseProxy<T>>;
+#[allow(dead_code)]
 pub fn proxy<T: IntoProxiedResponse>(val: Result<T, T>) -> Proxied<T> {
     Result::map_err(Result::map(val, ResponseProxy), ResponseProxy)
 }
