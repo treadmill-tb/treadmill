@@ -1,6 +1,7 @@
 use crate::service::socket_connection::{ControlRequest, OutboxMessage};
 use axum::extract::ws::WebSocket;
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -18,6 +19,25 @@ enum SupervisorCondition {
     Disconnected,
     Idle(Arc<Mutex<ConnectedSupervisor>>),
     Reserved(Arc<Mutex<ConnectedSupervisor>>),
+}
+impl Debug for SupervisorCondition {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                SupervisorCondition::Disconnected => {
+                    "SupervisorCondition::Disconnected"
+                }
+                SupervisorCondition::Idle(_) => {
+                    "SupervisorCondition::Idle"
+                }
+                SupervisorCondition::Reserved(_) => {
+                    "SupervisorCondition::Reserved"
+                }
+            }
+        )
+    }
 }
 
 pub struct ConnectedSupervisor {
@@ -122,16 +142,30 @@ async fn build_reservation(
     }
 }
 
+#[derive(Debug)]
 pub struct Herd {
     supervisors: BTreeMap<Uuid, SupervisorCondition>,
     tag_sets: BTreeMap<Uuid, BTreeSet<String>>,
 }
 
 impl Herd {
+    #[tracing::instrument(skip(self))]
     pub(crate) fn is_supervisor_connected(&self, supervisor_id: Uuid) -> bool {
         if let Some(cond) = self.supervisors.get(&supervisor_id) {
+            match cond {
+                SupervisorCondition::Disconnected => {
+                    tracing::debug!("disconnected")
+                }
+                SupervisorCondition::Idle(_) => {
+                    tracing::debug!("idle")
+                }
+                SupervisorCondition::Reserved(_) => {
+                    tracing::debug!("reserved")
+                }
+            }
             !matches!(cond, SupervisorCondition::Disconnected)
         } else {
+            tracing::error!("Can't check connection: no such supervisor");
             false
         }
     }
