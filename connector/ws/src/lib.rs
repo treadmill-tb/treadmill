@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
@@ -61,9 +63,11 @@ pub enum WsConnectorError {
 // 'static `Fn`s, and due to the way that the SupervisorConnector is written (and the way it's used)
 // it can only use `&self`. Therefore, it is most convenient to use an `Arc` over an inner type
 // since this allows us to get `self: &Arc<Self>` which has 'static.
+#[derive(Debug)]
 pub struct WsConnector<S: connector::Supervisor> {
     inner: Arc<Inner<S>>,
 }
+#[derive(Debug)]
 struct Inner<S: connector::Supervisor> {
     supervisor_id: Uuid,
     config: WsConnectorConfig,
@@ -83,7 +87,6 @@ struct Inner<S: connector::Supervisor> {
 
 impl<S: connector::Supervisor> WsConnector<S> {
     pub fn new(supervisor_id: Uuid, config: WsConnectorConfig, supervisor: Weak<S>) -> Self {
-        tracing::error!("UH OH");
         let (update_tx, update_rx) = mpsc::unbounded_channel();
         Self {
             inner: Arc::new(Inner {
