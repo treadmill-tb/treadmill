@@ -1,0 +1,9 @@
+[package]
+name = "tml-switchboard-traits"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+http = "1.1.0"
+serde = { version = "1.0.209", features = ["derive"] }

@@ -134,28 +134,29 @@ create type job_known_state as enum (
     -- switchboard should treat "may be running" as "is running"; thus, this state is called 'running'.
     'running',
     -- The job is not running and does not need to run.
-    'not_queued');
+    'inactive');
 create table jobs
 (
-    job_id                 uuid                     not null primary key,
+    job_id                   uuid                     not null primary key,
 
-    resume_job_id          uuid references jobs (job_id) on delete no action,
-    restart_job_id         uuid references jobs (job_id) on delete no action,
-    image_id               bytea,
+    resume_job_id            uuid references jobs (job_id) on delete no action,
+    restart_job_id           uuid references jobs (job_id) on delete no action,
+    image_id                 bytea,
 
-    ssh_keys               text[]                   not null,
-    ssh_rendezvous_servers rendezvous_server_spec[] not null,
+    ssh_keys                 text[]                   not null,
+    ssh_rendezvous_servers   rendezvous_server_spec[] not null,
 
-    restart_policy         restart_policy           not null,
-    enqueued_by_token_id   uuid                     not null references api_tokens (token_id) on delete no action,
+    restart_policy           restart_policy           not null,
+    enqueued_by_token_id     uuid                     not null references api_tokens (token_id) on delete no action,
 
-    tag_config             text                     not null,
+    tag_config               text                     not null,
 
-    known_state            job_known_state          not null,
-    timeout                interval                 not null,
+    known_state              job_known_state          not null,
+    timeout                  interval                 not null,
 
-    queued_at              timestamp with time zone not null,
-    started_at             timestamp with time zone,
+    queued_at                timestamp with time zone not null,
+    started_at               timestamp with time zone,
+    running_on_supervisor_id uuid,
 
     check
         (((resume_job_id is not null)::int

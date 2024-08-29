@@ -11,6 +11,8 @@ members = [
     "supervisor/qemu",
     "switchboard/switchboard",
     "treadmill-rs",
+    "switchboard-macros",
+    "switchboard-traits",
 ]
 
 [workspace.package]
