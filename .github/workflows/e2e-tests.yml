@@ -189,7 +189,8 @@ jobs:
         run: |
           echo "TODO"
       - name: Collect and report results
-        run: ''
+        run: |
+          echo "TODO"
       - name: Stop services
         run: |
           kill $(cat switchboard.pid) || true

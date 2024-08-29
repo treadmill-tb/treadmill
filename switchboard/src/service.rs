@@ -189,6 +189,8 @@ impl Service {
                 )
                 .map_err(ServiceError::Herd)?;
         }
+
+        tracing::info!("herd: {:?}", state.herd);
         drop(state);
 
         tracing::info!("Successfully loaded supervisor table ({supervisor_count} supervisors).");

@@ -119,7 +119,7 @@ pub fn load_configuration(
     use figment::providers::{self, Format};
     figment::Figment::new()
         .merge(providers::Toml::file(&path))
-        .merge(providers::Env::prefixed("TML_").split("_"))
+        .merge(providers::Env::prefixed("TML_").split("__"))
         .extract()
         .into_diagnostic()
         .wrap_err("Failed to extract switchboard configuration")

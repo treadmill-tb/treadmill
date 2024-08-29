@@ -22,7 +22,7 @@ pub fn get_token() -> Result<String> {
         .with_context(|| format!("Failed to read token from {:?}", token_path))?;
     let token: AuthToken =
         serde_json::from_str(&token_str).with_context(|| "Failed to parse token JSON")?;
-    Ok(serde_json::to_string(&token)?)
+    Ok(token.encode_for_http())
 }
 
 fn get_token_path() -> Result<PathBuf> {
