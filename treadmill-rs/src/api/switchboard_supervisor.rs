@@ -1,7 +1,6 @@
 //! Types used in the interface between the coordinator and supervisor
 //! components.
 
-use crate::api::switchboard::JobRequest;
 use crate::connector::JobError;
 use crate::image::manifest::ImageId;
 use serde::{Deserialize, Serialize};
@@ -31,12 +30,9 @@ pub struct RendezvousServerSpec {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
-pub enum JobInitSpec {
+pub enum ImageSpecification {
     /// Whether to resume a previously started job.
     ResumeJob { job_id: Uuid },
-
-    /// Whether to restart a previously attempted job.
-    RestartJob { job_id: Uuid },
 
     /// Which image to base this job off. If the image is not locally cached
     /// at the supervisor, it will be fetched using its manifest prior to
@@ -44,6 +40,8 @@ pub enum JobInitSpec {
     ///
     /// Images are content-addressed by the SHA-256 digest of their
     /// manifest.
+    ///
+    /// Note that if a job is being restarted, it will use this variant.
     Image { image_id: ImageId },
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -63,7 +61,7 @@ pub struct StartJobMessage {
     /// and `resume_job` is asserted.
     pub job_id: Uuid,
 
-    pub init_spec: JobInitSpec,
+    pub image_spec: ImageSpecification,
 
     /// The set of initial SSH keys to deploy onto the image.
     ///
@@ -83,18 +81,6 @@ pub struct StartJobMessage {
     /// A hash map of parameters provided to this job execution. These
     /// parameters are provided to the puppet daemon.
     pub parameters: HashMap<String, ParameterValue>,
-}
-impl StartJobMessage {
-    pub fn from_job_request_with_id(job_id: Uuid, job_request: JobRequest) -> Self {
-        Self {
-            job_id,
-            init_spec: job_request.init_spec,
-            ssh_keys: job_request.ssh_keys,
-            restart_policy: job_request.restart_policy,
-            ssh_rendezvous_servers: job_request.ssh_rendezvous_servers,
-            parameters: job_request.parameters,
-        }
-    }
 }
 
 // -- StopJobRequest -------------------------------------------------------------------------------
@@ -179,7 +165,7 @@ pub enum JobState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
-pub enum SupervisorStatus {
+pub enum ReportedSupervisorStatus {
     OngoingJob { job_id: Uuid, job_state: JobState },
     Idle,
 }
@@ -223,7 +209,7 @@ pub enum Message {
     StopJob(StopJobMessage),
 
     StatusRequest(Request<()>),
-    StatusResponse(Response<SupervisorStatus>),
+    StatusResponse(Response<ReportedSupervisorStatus>),
 
     SupervisorEvent(SupervisorEvent),
 }
@@ -231,7 +217,7 @@ pub enum Message {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ResponseMessage {
-    StatusResponse(SupervisorStatus),
+    StatusResponse(ReportedSupervisorStatus),
 }
 
 impl Message {

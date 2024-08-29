@@ -1,0 +1,10 @@
+switchboard restart
+supervisor restart (subset of switchboard restart)
+/job/queue is currently not really
+want to have:
+- /user/:id/supervisors
+- /user/:id/jobs
+- /job/* -> /jobs/*
+- GET /jobs?{FILTERS}
+- /session/invalidate-api-token
+Improved status reporting (history)

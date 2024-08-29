@@ -651,7 +651,7 @@ async fn main() -> Result<()> {
             // weak Arc reference:
             let mut connector_opt = None;
 
-            let mock_supervisor = {
+            let _mock_supervisor = {
                 // Shadow, to avoid moving the variable:
                 let connector_opt = &mut connector_opt;
                 Arc::new_cyclic(move |weak_supervisor| {
@@ -667,11 +667,16 @@ async fn main() -> Result<()> {
 
             let connector = connector_opt.take().unwrap();
 
-            connector.run().await;
+            loop {
+                connector.run().await;
 
-            drop(mock_supervisor);
+                // TODO: backoff of some kind
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+            }
 
-            Ok(())
+            // drop(mock_supervisor);
+            //
+            // Ok(())
         }
         unsupported_connector => {
             bail!("Unsupported coord connector: {:?}", unsupported_connector);

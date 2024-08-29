@@ -6,7 +6,7 @@ use log::{error, info};
 use serde::Deserialize;
 
 use treadmill_rs::api::switchboard_supervisor::ParameterValue;
-use treadmill_rs::api::switchboard_supervisor::{JobInitSpec, RestartPolicy};
+use treadmill_rs::api::switchboard_supervisor::{ImageSpecification, RestartPolicy};
 use treadmill_rs::connector;
 use treadmill_rs::image::manifest::ImageId;
 use uuid::Uuid;
@@ -325,7 +325,7 @@ impl CliCommand {
                     supervisor,
                     connector::StartJobMessage {
                         job_id,
-                        init_spec: JobInitSpec::Image {
+                        image_spec: ImageSpecification::Image {
                             image_id: ImageId(cli_job_state.image_id.clone()),
                         },
                         ssh_keys,

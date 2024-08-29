@@ -1,0 +1,16 @@
+[package]
+name = "tml-switchboard-macros"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+quote = "1.0.37"
+proc-macro2 = "1.0.86"
+syn = "2.0.76"
+attribute-derive = "0.10.1"
+http = "1.1.0"
+tml-switchboard-traits = { path = "../switchboard-traits" }

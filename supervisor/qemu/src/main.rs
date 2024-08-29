@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use tracing::{event, instrument, Level};
 use uuid::Uuid;
 
-use treadmill_rs::api::switchboard_supervisor::JobInitSpec;
+use treadmill_rs::api::switchboard_supervisor::ImageSpecification;
 use treadmill_rs::connector;
 use treadmill_rs::control_socket;
 use treadmill_rs::image;
@@ -1209,8 +1209,8 @@ impl connector::Supervisor for QemuSupervisor {
         // we poll the image supervisor repeatedly, but don't hold onto the
         // job's lock in between these polling operations.
 
-        let image_id = match start_job_req.init_spec {
-            JobInitSpec::Image { image_id } => image_id,
+        let image_id = match start_job_req.image_spec {
+            ImageSpecification::Image { image_id } => image_id,
             unsupported_init_spec => {
                 unimplemented!("Unsupported init spec: {:?}", unsupported_init_spec)
             }

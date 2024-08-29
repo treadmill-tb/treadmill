@@ -1,0 +1,27 @@
+[database]
+host = "localhost"
+port = 5432
+database = "tml_switchboard"
+user = "postgres"
+auth.password = ""
+
+[server]
+bind_address = "0.0.0.0:8080"
+
+# Uncomment this to enable a TLS support.
+# DO NOT USE THIS IN PRODUCTION.
+#[server.testing_only_tls_config]
+#cert = "config/tls/localhost-public.pem"
+#key = "config/tls/localhost.pem"
+
+[service]
+default_token_timeout = "7d"
+default_job_timeout = "30m"
+default_queue_timeout = "30m"
+match_interval = "10s"
+ssh.rendezvous_servers = [
+    #    { client_id = "00000000-0000-0000-0000-00000000000", server_base_url = "example.com", auth_token = "" },
+]
+
+[log]
+use_tokio_console_subscriber = false
