@@ -5,7 +5,7 @@ mod tokens;
 
 use crate::serve::AppState;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use http::StatusCode;
 use tower_http::trace::TraceLayer;
@@ -24,11 +24,13 @@ fn api_router() -> Router<AppState> {
     Router::new()
         // job management group
         //  POST /jobs/new
-        .route("/jobs/new", post(jobs::new::submit))
+        .route("/jobs/new", post(jobs::submit))
         //  GET /jobs (+ <FILTERS>)
         //  GET /jobs/:id/status
+        .route("/jobs/:id/status", get(jobs::status))
         //  GET /jobs/:id/info
         //  DELETE /jobs/:id
+        .route("/jobs/:id", delete(jobs::stop))
         // supervisor management group
         //  GET /supervisors (+ <FILTERS>)
         .route("/supervisors", get(supervisors::list))

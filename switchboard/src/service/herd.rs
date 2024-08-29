@@ -120,6 +120,16 @@ pub struct Herd {
 }
 
 impl Herd {
+    pub(crate) fn is_supervisor_connected(&self, supervisor_id: Uuid) -> bool {
+        if let Some(cond) = self.supervisors.get(&supervisor_id) {
+            !matches!(cond, SupervisorCondition::Disconnected)
+        } else {
+            false
+        }
+    }
+}
+
+impl Herd {
     pub fn list_supervisors(&self) -> Vec<Uuid> {
         self.supervisors.keys().copied().collect()
     }
