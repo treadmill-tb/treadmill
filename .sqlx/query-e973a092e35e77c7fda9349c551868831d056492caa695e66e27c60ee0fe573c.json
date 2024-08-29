@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            select job_id, job_state as \"job_state: _\", logged_at\n            from tml_switchboard.job_state_history\n            where job_id = $1;\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "job_state: _",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 2,
+        "name": "logged_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e973a092e35e77c7fda9349c551868831d056492caa695e66e27c60ee0fe573c"
+}

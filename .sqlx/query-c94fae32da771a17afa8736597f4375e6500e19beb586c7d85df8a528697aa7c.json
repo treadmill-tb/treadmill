@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                insert into tml_switchboard.job_parameters\n                select $1, key, value\n                from tml_switchboard.job_parameters\n                where job_id = $2;\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c94fae32da771a17afa8736597f4375e6500e19beb586c7d85df8a528697aa7c"
+}

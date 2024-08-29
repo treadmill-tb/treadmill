@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "insert into job_results (job_id, supervisor_id, exit_status, host_output, terminated_at) values ($1, $2, $3, $4, current_timestamp);",
+  "query": "insert into tml_switchboard.job_results\n            values ($1, $2, $3, $4, $5);",
   "describe": {
     "columns": [],
     "parameters": {
@@ -9,7 +9,7 @@
         "Uuid",
         {
           "Custom": {
-            "name": "exit_status",
+            "name": "tml_switchboard.exit_status",
             "kind": {
               "Enum": [
                 "failed_to_match",
@@ -18,15 +18,18 @@
                 "host_terminated_with_error",
                 "host_terminated_with_success",
                 "host_terminated_timeout",
-                "job_canceled"
+                "job_canceled",
+                "unregistered_supervisor",
+                "host_dropped_job"
               ]
             }
           }
         },
-        "Jsonb"
+        "Jsonb",
+        "Timestamptz"
       ]
     },
     "nullable": []
   },
-  "hash": "73ea4ed5f8841e22e38669707f0d857146e131cc9574dc26f4e5d641671665a1"
+  "hash": "1de077e1d2252f764b187e7fad502e0d3d952c98a4c31241fe674f2ac48d53cb"
 }

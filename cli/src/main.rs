@@ -9,11 +9,10 @@ use std::collections::HashMap;
 use treadmill_rs::api::switchboard_supervisor::ParameterValue;
 use uuid::Uuid;
 
-use treadmill_rs::api::switchboard::{
-    EnqueueJobRequest, JobRequest, JobStatusResponse, LoginRequest, LoginResponse,
-    ReadJobQueueResponse,
-};
-use treadmill_rs::api::switchboard_supervisor::{JobInitSpec, RestartPolicy, SupervisorStatus};
+use treadmill_rs::api::switchboard::jobs::status::Response as JobStatusResponse;
+use treadmill_rs::api::switchboard::jobs::submit::Request as SubmitJobRequest;
+use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, LoginRequest, LoginResponse};
+use treadmill_rs::api::switchboard_supervisor::{ImageSpecification, RestartPolicy};
 use treadmill_rs::image::manifest::ImageId;
 
 mod auth;
@@ -255,7 +254,7 @@ async fn login(
     debug!("Sending login request to url: {}", config.api.url);
 
     let response = client
-        .post(&format!("{}/session/login", config.api.url))
+        .post(&format!("{}/api/v1/tokens/login", config.api.url))
         .json(&login_request)
         .send()
         .await?;
@@ -335,17 +334,16 @@ async fn enqueue_job(
         restart_policy: RestartPolicy {
             remaining_restart_count: restart_count,
         },
-        ssh_rendezvous_servers: Vec::new(),
         parameters,
         tag_config,
         override_timeout,
     };
 
-    let enqueue_request = EnqueueJobRequest { job_request };
+    let enqueue_request = SubmitJobRequest { job_request };
 
     debug!("Sending enqueue job request");
     let response = client
-        .post(&format!("{}/api/v1/job/queue", config.api.url))
+        .post(&format!("{}/api/v1/jobs/new", config.api.url))
         .bearer_auth(token)
         .json(&enqueue_request)
         .send()
@@ -368,7 +366,7 @@ async fn get_job_status(client: &Client, config: &config::Config, job_id: Uuid) 
     let token = auth::get_token()?;
 
     let response = client
-        .get(&format!("{}/api/v1/job/{}/status", config.api.url, job_id))
+        .get(&format!("{}/api/v1/jobs/{}/status", config.api.url, job_id))
         .bearer_auth(token)
         .send()
         .await?;
@@ -390,7 +388,7 @@ async fn cancel_job(client: &Client, config: &config::Config, job_id: Uuid) -> R
     let token = auth::get_token()?;
 
     let response = client
-        .delete(&format!("{}/api/v1/job/{}", config.api.url, job_id))
+        .delete(&format!("{}/api/v1/jobs/{}", config.api.url, job_id))
         .bearer_auth(token)
         .send()
         .await?;
@@ -407,47 +405,47 @@ async fn cancel_job(client: &Client, config: &config::Config, job_id: Uuid) -> R
     Ok(())
 }
 
-async fn list_jobs(client: &Client, config: &config::Config) -> Result<()> {
-    let token = auth::get_token()?;
-
-    let response = client
-        .get(&format!("{}/api/v1/job/queue", config.api.url))
-        .bearer_auth(token)
-        .send()
-        .await?;
-
-    if response.status().is_success() {
-        let job_queue: ReadJobQueueResponse = response.json().await?;
-        match job_queue {
-            ReadJobQueueResponse::Ok { jobs } => {
-                println!("Job Queue:");
-                for (index, job_id) in jobs.iter().enumerate() {
-                    println!("{}. {}", index + 1, job_id);
-                }
-            }
-            ReadJobQueueResponse::Internal => {
-                error!("Internal server error while fetching job queue");
-                println!("Failed to fetch job queue due to an internal server error");
-            }
-            ReadJobQueueResponse::Unauthorized => {
-                error!("Unauthorized to access job queue");
-                println!("You are not authorized to access the job queue");
-            }
-        }
-    } else {
-        let error_text = response.text().await?;
-        error!("Failed to fetch job queue: {}", error_text);
-        println!("Failed to fetch job queue: {}", error_text);
-    }
-
-    Ok(())
-}
+// async fn list_jobs(client: &Client, config: &config::Config) -> Result<()> {
+//     let token = auth::get_token()?;
+//
+//     let response = client
+//         .get(&format!("{}/api/v1/job/queue", config.api.url))
+//         .bearer_auth(token)
+//         .send()
+//         .await?;
+//
+//     if response.status().is_success() {
+//         let job_queue: ReadJobQueueResponse = response.json().await?;
+//         match job_queue {
+//             ReadJobQueueResponse::Ok { jobs } => {
+//                 println!("Job Queue:");
+//                 for (index, job_id) in jobs.iter().enumerate() {
+//                     println!("{}. {}", index + 1, job_id);
+//                 }
+//             }
+//             ReadJobQueueResponse::Internal => {
+//                 error!("Internal server error while fetching job queue");
+//                 println!("Failed to fetch job queue due to an internal server error");
+//             }
+//             ReadJobQueueResponse::Unauthorized => {
+//                 error!("Unauthorized to access job queue");
+//                 println!("You are not authorized to access the job queue");
+//             }
+//         }
+//     } else {
+//         let error_text = response.text().await?;
+//         error!("Failed to fetch job queue: {}", error_text);
+//         println!("Failed to fetch job queue: {}", error_text);
+//     }
+//
+//     Ok(())
+// }
 
 async fn list_supervisors(client: &Client, config: &config::Config) -> Result<()> {
     let token = auth::get_token()?;
 
     let response = client
-        .get(&format!("{}/api/v1/supervisor/list", config.api.url))
+        .get(&format!("{}/api/v1/supervisors", config.api.url))
         .bearer_auth(token)
         .send()
         .await?;
@@ -476,7 +474,7 @@ async fn get_supervisor_status(
 
     let response = client
         .get(&format!(
-            "{}/api/v1/supervisor/{}/status",
+            "{}/api/v1/supervisors/{}/status",
             config.api.url, supervisor_id
         ))
         .bearer_auth(token)

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tml_switchboard.jobs\n           set simple_state = 'running', started_at = $1, running_on_supervisor_id = $2\n           where job_id = $3;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "66034def3b2c74b608957002473319da48661da76c6d8a9d66ecd1b35d3cabf8"
+}

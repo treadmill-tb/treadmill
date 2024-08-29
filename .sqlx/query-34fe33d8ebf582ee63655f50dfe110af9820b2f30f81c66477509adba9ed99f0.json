@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "insert into api_tokens values ($1, $2, $3, $4, null, $5, $6);",
+  "query": "insert into tml_switchboard.api_tokens values ($1, $2, $3, $4, null, $5, $6);",
   "describe": {
     "columns": [],
     "parameters": {
@@ -15,5 +15,5 @@
     },
     "nullable": []
   },
-  "hash": "2399f759a94d1a8587a382afe9ad14a3c46ed6f68c433546704ca543433d657f"
+  "hash": "34fe33d8ebf582ee63655f50dfe110af9820b2f30f81c66477509adba9ed99f0"
 }
