@@ -111,13 +111,15 @@ pub fn load_configuration(
             );
             xdg_basedirs
                 .find_config_file("config.toml")
-                .ok_or(miette::miette!("couldn't find path to 'config.toml'"))
+                .ok_or(miette::miette!(
+                    "couldn't find path to 'config.toml' in XDG config dirs"
+                ))
         })?;
 
     use figment::providers::{self, Format};
     figment::Figment::new()
         .merge(providers::Toml::file(&path))
-        .merge(providers::Env::prefixed("TML_"))
+        .merge(providers::Env::prefixed("TML_").split("_"))
         .extract()
         .into_diagnostic()
         .wrap_err("Failed to extract switchboard configuration")
