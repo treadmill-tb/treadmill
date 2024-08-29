@@ -1,5 +1,4 @@
 use crate::service::socket_connection::{ControlRequest, OutboxMessage};
-use crate::service::ServiceError;
 use axum::extract::ws::WebSocket;
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -23,7 +22,11 @@ enum SupervisorCondition {
 
 pub struct ConnectedSupervisor {
     outbox_sender: UnboundedSender<OutboxMessage>,
+    // can be used to check connection status / sanity
+    #[allow(dead_code)]
     control_sender: UnboundedSender<ControlRequest>,
+    // for debugging
+    #[allow(dead_code)]
     event_stream: UnboundedReceiver<SupervisorEvent>,
     job_status_receiver: Arc<Mutex<UnboundedReceiver<JobStatus>>>,
 }
@@ -54,9 +57,14 @@ pub enum ReservationError {
     Disconnected,
 }
 pub struct Reservation {
+    // for debugging
+    #[allow(dead_code)]
     supervisor_id: Uuid,
     outbox_sender: UnboundedSender<OutboxMessage>,
     job_status_receiver: Option<UnboundedReceiver<JobStatus>>,
+    // not currently used; phased out in favor of reading directly from the database instead of
+    // risking race connnections (in the general case)
+    #[allow(dead_code)]
     job_status_watch: watch::Receiver<JobStatus>,
 }
 impl Reservation {

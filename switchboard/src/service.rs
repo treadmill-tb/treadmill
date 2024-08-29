@@ -1,5 +1,5 @@
 use crate::auth::db::DbAuth;
-use crate::auth::{AuthorizationSource, Privilege};
+use crate::auth::AuthorizationSource;
 use crate::config::ServiceConfig;
 use crate::perms::RunJobOnSupervisor;
 use crate::service::herd::{Herd, HerdError, ReservationError};
@@ -15,7 +15,7 @@ use futures_util::stream::FuturesOrdered;
 use futures_util::StreamExt;
 use sqlx::postgres::types::PgInterval;
 use sqlx::{PgExecutor, PgPool, Postgres};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -87,6 +87,8 @@ impl Service {
             service_config,
         });
 
+        // TODO: make sure there are no cases of multiple jobs running on the same supervisor
+
         // Load supervisor table from the database.
         this.load_supervisors().await?;
 
@@ -138,7 +140,7 @@ impl Service {
                     let mut matches = vec![];
 
                     {
-                        let mut state = self.state.lock().await;
+                        let state = self.state.lock().await;
                         let idle_set = state.herd.currently_idle();
                         let mut queued_jobs = state.kanban.get_queued_jobs();
                         for supervisor_id in idle_set {
@@ -1378,6 +1380,7 @@ async fn sql_set_job_state_to_running(
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn sql_fetch_running_jobs_by_supervisor_id(
     supervisor_id: Uuid,
     conn: impl PgExecutor<'_>,

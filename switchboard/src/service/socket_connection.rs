@@ -44,11 +44,12 @@ pub type OutboxMessage = (
 );
 
 pub enum ConnectionControlRequest {
+    #[allow(dead_code)]
     CheckConnection,
 }
 #[non_exhaustive]
 pub enum ConnectionControlResponse {
-    CheckConnection(ConnectionStatus),
+    CheckConnection(#[allow(dead_code)] ConnectionStatus),
 }
 pub enum ConnectionStatus {
     Connected,

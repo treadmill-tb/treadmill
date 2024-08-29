@@ -22,6 +22,8 @@ pub enum KanbanError {
 // - the watchdog to notify the scheduler when it times out
 pub struct QueuedJob {
     matched_supervisors: BTreeSet<Uuid>,
+    // not currently used; TODO: add timeout sanity checking and to the queue timeout watchdogs
+    #[allow(dead_code)]
     times_out_at: DateTime<Utc>,
     // Send on this to notify the service's queue timeout watchdog that the job is leaving early
     pub exit_notifier: oneshot::Sender<()>,

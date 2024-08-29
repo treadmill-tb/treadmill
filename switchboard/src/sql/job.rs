@@ -132,6 +132,7 @@ pub enum SqlSimpleState {
 pub struct SqlJob {
     job_id: Uuid,
     resume_job_id: Option<Uuid>,
+    #[allow(dead_code)]
     restart_job_id: Option<Uuid>,
     sql_image_id: Option<Vec<u8>>,
     ssh_keys: Vec<String>,

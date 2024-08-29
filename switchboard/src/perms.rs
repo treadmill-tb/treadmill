@@ -1,11 +1,9 @@
-use crate::auth::db::DbAuth;
 use crate::auth::Privilege;
+use crate::impl_simple_perm;
 use crate::serve::AppState;
 use crate::service::herd::HerdError;
 use crate::service::ServiceError;
-use crate::{impl_simple_perm, perms};
 use std::collections::HashMap;
-use thiserror::Error;
 use treadmill_rs::api::switchboard::supervisors::list::{ConnFilter, WorkFilter};
 use treadmill_rs::api::switchboard::{supervisors, JobRequest, JobStatus, SupervisorStatus};
 use uuid::Uuid;
@@ -166,6 +164,7 @@ impl_simple_perm!(StopJob, "stop_job:{}", self, self.job_id);
 pub enum StopJobError {
     Internal,
     // TODO
+    #[allow(dead_code)]
     NoSuchJob,
 }
 pub async fn stop_job(state: &AppState, p: Privilege<'_, StopJob>) -> Result<(), StopJobError> {
