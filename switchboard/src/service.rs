@@ -52,6 +52,8 @@ pub enum ServiceError {
     NoLongerQueued,
     #[error("No such job")]
     NoSuchJob,
+    #[error("Supervisor already connected")]
+    SupervisorAlreadyConnected,
 }
 
 struct State {
@@ -516,6 +518,10 @@ impl Service {
             return Err(ServiceError::Herd(e));
         }
 
+        if state.herd.is_supervisor_connected(supervisor_id) {
+            return Err(ServiceError::SupervisorAlreadyConnected);
+        }
+
         // Underlying job status extractor exits when the connected_supervisor has dropped and all
         // job status receivers have dropped.
         let (supervisor_termination_handle, connected_supervisor) =
@@ -771,7 +777,7 @@ impl Service {
     }
 
     #[instrument(skip(self))]
-    pub async fn unregister_job(&self, job_id: Uuid) -> Result<(), ServiceError> {
+    pub async fn cancel_job_external(&self, job_id: Uuid) -> Result<(), ServiceError> {
         // okay, need to terminate whatever is going on
         let mut state = self.state.lock().await;
         let sql_job = sql::job::fetch_by_job_id(job_id, &self.pool)
@@ -1000,7 +1006,10 @@ impl Service {
                     .map_err(ServiceError::Reservation)
                 {
                     // not connected, which is... fine?
+                    tracing::warn!("Failed to send stop message, believed disconnected");
                 }
+            } else {
+                tracing::warn!("Can't send stop message: no current reservation");
             }
         }
         if let Err(e) = state.herd.unreserve_supervisor(supervisor_id) {
@@ -1096,7 +1105,8 @@ impl Service {
 
             tracing::info!("Job ({job_id}) terminated with reason: {exit_reason:?}");
 
-            let send_stop_message = matches!(&exit_reason, ExitReason::Timeout);
+            // Actually, we always want to send a stop job message
+            //let send_stop_message = matches!(&exit_reason, ExitReason::Timeout);
 
             let job_result = build_job_result(job_id, supervisor_id, exit_reason);
 
@@ -1107,7 +1117,7 @@ impl Service {
                     supervisor_id,
                     job_result,
                     &mut state,
-                    send_stop_message,
+                    true,
                 )
                 .await
             {
@@ -1303,16 +1313,7 @@ fn launch_job_status_tee(
     let (tee_tx, tee_rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         while let Some(event) = jsr.recv().await {
-            let _ = sqlx::query!(
-                r#"
-                    insert into tml_switchboard.job_state_history
-                    values ($1, $2, current_timestamp);
-                    "#,
-                job_id,
-                sqlx::types::Json(event.clone()) as sqlx::types::Json<JobStatus>,
-            )
-            .execute(&pool)
-            .await;
+            let _ = sql::job::history::insert(job_id, event.clone(), Utc::now(), &pool).await;
             let _ = tee_tx.send(event);
         }
     });
@@ -1347,13 +1348,12 @@ async fn sql_finish_job(
     .execute(tx.as_mut())
     .await?;
     let job_id = job_result.job_id;
-    sqlx::query!(
-        r#"insert into tml_switchboard.job_state_history
-            values ($1, $2, current_timestamp);"#,
+    sql::job::history::insert(
         job_id,
-        sqlx::types::Json(job_result) as sqlx::types::Json<JobResult>,
+        JobStatus::Terminated(job_result),
+        Utc::now(),
+        tx.as_mut(),
     )
-    .execute(tx.as_mut())
     .await?;
 
     Ok(())

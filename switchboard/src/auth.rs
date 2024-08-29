@@ -30,6 +30,9 @@ impl SubjectDetail {
     pub fn token_id(&self) -> Uuid {
         self.token_info.token_id
     }
+    pub fn user_id(&self) -> Uuid {
+        self.token_info.user_id
+    }
 }
 
 /// Opaque _subject_ type (see module docs).

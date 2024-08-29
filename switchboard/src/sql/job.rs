@@ -328,7 +328,7 @@ pub mod history {
             from tml_switchboard.job_state_history
             where job_id = $1
             order by logged_at desc
-            limit 1 ;
+            limit 1;
             "#,
             job_id
         )
