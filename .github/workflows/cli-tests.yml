@@ -49,7 +49,7 @@ jobs:
         run: |
           cp switchboard/switchboard/config.example.toml switchboard_config.toml
           cp supervisor/mock/config.example.toml mock_supervisor_config.toml
-          cp switchboard/config.example.toml cli_config.toml
+          cp switchboard/cli/config.example.toml cli_config.toml
           sed -i 's/port = 5400/port = 5432/' switchboard_config.toml
           sed -i 's/password = ""/password = "postgres"/' switchboard_config.toml
           sed -i 's/socket_addr = "0.0.0.0:443"/socket_addr = "0.0.0.0:8080"/' switchboard_config.toml
