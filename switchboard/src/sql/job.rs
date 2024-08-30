@@ -287,6 +287,35 @@ pub mod parameters {
             })
             .collect())
     }
+
+    pub async fn insert(
+        job_id: Uuid,
+        parameters: HashMap<String, ParameterValue>,
+        conn: impl PgExecutor<'_>,
+    ) -> Result<(), sqlx::Error> {
+        let (keys, values): (Vec<String>, Vec<ParameterValue>) = parameters.into_iter().unzip();
+        let values: Vec<SqlJobParamValue> = values
+            .into_iter()
+            .map(|ParameterValue { value, secret }| SqlJobParamValue {
+                value,
+                is_secret: secret,
+            })
+            .collect();
+
+        // since we have a uniform variable, we individually unnest the keys and values arrays
+        sqlx::query!(
+            r#"INSERT INTO tml_switchboard.job_parameters (job_id, key, value)
+                SELECT $1, (c_rec).unnest, row((c_rec).value, (c_rec).is_secret)::tml_switchboard.parameter_value
+                FROM UNNEST($2::text[], $3::tml_switchboard.parameter_value[]) as c_rec;
+            "#,
+            job_id,
+            keys.as_slice(),
+            values.as_slice() as &[SqlJobParamValue]
+        )
+        .execute(conn)
+        .await
+        .map(|_| ())
+    }
 }
 
 pub mod history {
