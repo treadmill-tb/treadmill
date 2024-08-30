@@ -1499,6 +1499,7 @@ async fn sql_register_job(
     pool: &PgPool,
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
+    let params = job_request.parameters.clone();
     sql::job::insert(
         job_request,
         job_id,
@@ -1508,6 +1509,7 @@ async fn sql_register_job(
         &mut tx,
     )
     .await?;
+    sql::job::parameters::insert(job_id, params, tx.as_mut()).await?;
     sql::job::history::insert(job_id, JobStatus::Inactive, queued_at, tx.as_mut()).await?;
     tx.commit().await?;
 
