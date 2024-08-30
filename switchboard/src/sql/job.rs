@@ -304,9 +304,10 @@ pub mod parameters {
 
         // since we have a uniform variable, we individually unnest the keys and values arrays
         sqlx::query!(
-            r#"INSERT INTO tml_switchboard.job_parameters (job_id, key, value)
-                SELECT $1, (c_rec).unnest, row((c_rec).value, (c_rec).is_secret)::tml_switchboard.parameter_value
-                FROM UNNEST($2::text[], $3::tml_switchboard.parameter_value[]) as c_rec;
+            r#"
+            INSERT INTO tml_switchboard.job_parameters (job_id, key, value)
+            SELECT $1, (c_rec).unnest, row((c_rec).value, (c_rec).is_secret)::tml_switchboard.parameter_value
+            FROM UNNEST($2::text[], $3::tml_switchboard.parameter_value[]) as c_rec;
             "#,
             job_id,
             keys.as_slice(),
