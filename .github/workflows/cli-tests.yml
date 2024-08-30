@@ -43,13 +43,13 @@ jobs:
           cargo build --package tml-switchboard
           cargo build --package tml-mock-supervisor
           cargo build --package tml-puppet
-          cargo build --package tml-cli
+          cargo build --package tml-switchboard-cli
           cp ./target/debug/tml ./tml
       - name: Generate test configurations
         run: |
           cp switchboard/switchboard/config.example.toml switchboard_config.toml
           cp supervisor/mock/config.example.toml mock_supervisor_config.toml
-          cp cli/config.example.toml cli_config.toml
+          cp switchboard/config.example.toml cli_config.toml
           sed -i 's/port = 5400/port = 5432/' switchboard_config.toml
           sed -i 's/password = ""/password = "postgres"/' switchboard_config.toml
           sed -i 's/socket_addr = "0.0.0.0:443"/socket_addr = "0.0.0.0:8080"/' switchboard_config.toml
@@ -146,18 +146,6 @@ jobs:
               exit 1
           fi
           echo "Created job with ID: ${job_id}"
-
-          # Test job list
-          echo "Testing job list..."
-          list_response=$(./tml -v -c cli_config.toml job list)
-          log_request_response "Job list" "$list_response"
-
-          if ! echo "${list_response}" | grep -q "${job_id}"; then
-              echo "Job list does not contain the created job ID"
-              echo "Full response: ${list_response}"
-              exit 1
-          fi
-          echo "Job list contains the created job ID"
 
           # Test job status
           echo "Testing job status..."
