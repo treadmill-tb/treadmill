@@ -11,7 +11,11 @@ pub struct NaiveTagConfig {
 impl From<&'_ str> for NaiveTagConfig {
     fn from(value: &str) -> Self {
         Self {
-            inner: value.split(';').map(String::from).collect(),
+            inner: value
+                .split(';')
+                .map(String::from)
+                .filter(|s| !s.is_empty())
+                .collect(),
         }
     }
 }
