@@ -109,71 +109,79 @@ jobs:
             exit 1
           }
 
-          echo "Sending job creation request..."
-          job_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" POST localhost:8080/api/v1/job/queue \
-            request_id="$(uuidgen)" \
-            tag_config="supervisor:${tml_supervisor}" \
-            init_spec[type]=image \
-            init_spec[image_id]="${tml_image_id}" \
-            ssh_keys:='[]' \
-            restart_policy[remaining_restart_count]:=0 \
-            ssh_rendezvous_servers:='[]' \
-            parameters:='{}' \
-            override_timeout:=null) || handle_http_error $?
+          create_and_cancel_job() {
+            local job_number=$1
+            echo "Creating job $job_number..."
+            job_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" POST localhost:8080/api/v1/job/queue \
+              request_id="$(uuidgen)" \
+              tag_config="supervisor:${tml_supervisor}" \
+              init_spec[type]=image \
+              init_spec[image_id]="${tml_image_id}" \
+              ssh_keys:='[]' \
+              restart_policy[remaining_restart_count]:=0 \
+              ssh_rendezvous_servers:='[]' \
+              parameters:='{}' \
+              override_timeout:=null) || handle_http_error $?
 
-          echo "Create job response: $job_response"
+            echo "Create job $job_number response: $job_response"
 
-          job_id=$(echo "$job_response" | jq -r '.job_id // empty')
+            job_id=$(echo "$job_response" | jq -r '.job_id // empty')
 
-          if [ -z "$job_id" ]; then
-            echo "Failed to extract job ID from response"
-            exit 1
-          fi
+            if [ -z "$job_id" ]; then
+              echo "Failed to extract job ID from response for job $job_number"
+              exit 1
+            fi
 
-          echo "Created job with ID: $job_id"
+            echo "Created job $job_number with ID: $job_id"
 
-          sleep 1
+            sleep 1
 
-          echo "Checking job status..."
-          if ! status_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" GET localhost:8080/api/v1/job/${job_id}/status)
-          then
-            handle_http_error $?
-          fi
+            echo "Checking job $job_number status..."
+            if ! status_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" GET localhost:8080/api/v1/job/${job_id}/status)
+            then
+              handle_http_error $?
+            fi
 
-          echo "Status response: $status_response"
+            echo "Status response for job $job_number: $status_response"
 
-          job_status=$(echo "$status_response" | jq -r '.job_status.job_status.job_state.state // empty')
+            job_status=$(echo "$status_response" | jq -r '.job_status.job_status.job_state.state // empty')
 
-          echo "Job status before cancellation: $job_status"
+            echo "Job $job_number status before cancellation: $job_status"
 
-          echo "Cancelling job..."
-          if ! cancel_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" DELETE localhost:8080/api/v1/job/${job_id})
-          then
-            handle_http_error $?
-          fi
+            echo "Cancelling job $job_number..."
+            if ! cancel_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" DELETE localhost:8080/api/v1/job/${job_id})
+            then
+              handle_http_error $?
+            fi
 
-          echo "Cancel response: $cancel_response"
-          echo "Cancelled job"
+            echo "Cancel response for job $job_number: $cancel_response"
+            echo "Cancelled job $job_number"
 
-          echo "Checking job status after cancellation..."
-          if ! status_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" GET localhost:8080/api/v1/job/${job_id}/status)
-          then
-            handle_http_error $?
-          fi
+            echo "Checking job $job_number status after cancellation..."
+            if ! status_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" GET localhost:8080/api/v1/job/${job_id}/status)
+            then
+              handle_http_error $?
+            fi
 
-          echo "Status response after cancellation: $status_response"
+            echo "Status response after cancellation for job $job_number: $status_response"
 
-          job_status=$(echo "$status_response" | jq -r '.job_status.type // empty')
+            job_status=$(echo "$status_response" | jq -r '.job_status.type // empty')
 
-          echo "Job status after cancellation: $job_status"
+            echo "Job $job_number status after cancellation: $job_status"
 
-          # Verify the job was cancelled (checking for "finished" state)
-          if [ "$job_status" != "terminated" ]; then
-            echo "Job was not cancelled successfully"
-            exit 1
-          fi
+            if [ "$job_status" != "terminated" ]; then
+              echo "Job $job_number was not cancelled successfully"
+              exit 1
+            fi
 
-          echo "E2E API test completed successfully"
+            echo "Job $job_number E2E API test completed successfully"
+          }
+
+          create_and_cancel_job 1
+
+          create_and_cancel_job 2
+
+          echo "Both E2E API tests completed successfully"
       - name: Run database interaction tests
         run: |
           echo "TODO"
