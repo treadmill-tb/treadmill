@@ -709,6 +709,7 @@ impl Service {
                     // so, token was deleted (not just expired, but actually DELETE'd from the
                     // database).
                     // TODO: better error?
+                    tracing::warn!("Failed to build auth source: token was DELETE'd.");
                     return Err(ServiceError::FailedToMatch);
                 }
                 TokenError::Database(e) => {
@@ -742,6 +743,7 @@ impl Service {
         .await
         .map_err(ServiceError::Database)?;
         if matching_supervisor_ids.is_empty() {
+            tracing::warn!("Job matched to no supervisors");
             let mut tx = self.pool.begin().await.map_err(ServiceError::Database)?;
             sql_finish_job(
                 JobResult {
