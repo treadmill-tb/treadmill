@@ -54,7 +54,8 @@ VALUES
     -- general action perms
     ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'submit_job'),
     ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'list_supervisors'),
-    -- per-supervisor perms
+    ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'list_jobs'),
+-- per-supervisor perms
     ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'run_job_on_supervisor:7d55ec6d-15e7-4b84-8c04-7c085fe60df4'),
     ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'read_supervisor_status:7d55ec6d-15e7-4b84-8c04-7c085fe60df4')
 ;
