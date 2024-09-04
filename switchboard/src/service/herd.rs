@@ -1,4 +1,4 @@
-use crate::service::socket_connection::{ControlRequest, OutboxMessage};
+use crate::service::socket_connection::OutboxMessage;
 use axum::extract::ws::WebSocket;
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 use std::fmt::{Debug, Formatter};
@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 use treadmill_rs::api::switchboard::JobStatus;
 use treadmill_rs::api::switchboard_supervisor;
 use treadmill_rs::api::switchboard_supervisor::{
-    ReportedSupervisorStatus, Request, ResponseMessage, SupervisorEvent,
+    ReportedSupervisorStatus, Request, ResponseMessage, SocketConfig, SupervisorEvent,
 };
 use treadmill_rs::connector::{StartJobMessage, StopJobMessage};
 use uuid::Uuid;
@@ -42,9 +42,6 @@ impl Debug for SupervisorCondition {
 
 pub struct ConnectedSupervisor {
     outbox_sender: UnboundedSender<OutboxMessage>,
-    // can be used to check connection status / sanity
-    #[allow(dead_code)]
-    control_sender: UnboundedSender<ControlRequest>,
     // for debugging
     #[allow(dead_code)]
     event_stream: UnboundedReceiver<SupervisorEvent>,
@@ -154,13 +151,13 @@ impl Herd {
         if let Some(cond) = self.supervisors.get(&supervisor_id) {
             match cond {
                 SupervisorCondition::Disconnected => {
-                    tracing::debug!("disconnected")
+                    tracing::debug!("Checking connection; current state: disconnected")
                 }
                 SupervisorCondition::Idle(_) => {
-                    tracing::debug!("idle")
+                    tracing::debug!("Checking connection; current state: idle")
                 }
                 SupervisorCondition::Reserved(_) => {
-                    tracing::debug!("reserved")
+                    tracing::debug!("Checking connection; current state: reserved")
                 }
             }
             !matches!(cond, SupervisorCondition::Disconnected)
@@ -388,12 +385,13 @@ impl Herd {
 pub fn prepare_supervisor_connection(
     supervisor_id: Uuid,
     web_socket: WebSocket,
+    config: SocketConfig,
 ) -> (JoinHandle<()>, ConnectedSupervisor) {
     // Start a task that takes care of the sending and receiving messages, as well as monitoring for
     // the closure of the socket-which event will trigger the completion of the
     // `runloop_join_handle` Future.
-    let (runloop_join_handle, outbox_sender, control_sender, event_receiver) =
-        super::socket_connection::supervisor_run_loop(supervisor_id, web_socket);
+    let (runloop_join_handle, outbox_sender, event_receiver) =
+        super::socket_connection::supervisor_run_loop(supervisor_id, web_socket, config);
 
     // Jobs are interested in the status updates received from the supervisor, but not any other
     // kinds of events. Most saliently, they are only interested in the most recent status.
@@ -403,7 +401,6 @@ pub fn prepare_supervisor_connection(
 
     let connected_supervisor = ConnectedSupervisor {
         outbox_sender,
-        control_sender,
         event_stream: duplicated_event_stream,
         job_status_receiver: Arc::new(Mutex::new(job_status_receiver)),
     };

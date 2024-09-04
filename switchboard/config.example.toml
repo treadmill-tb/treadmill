@@ -23,5 +23,9 @@ ssh.rendezvous_servers = [
     #    { client_id = "00000000-0000-0000-0000-00000000000", server_base_url = "example.com", auth_token = "" },
 ]
 
+[service.socket.keepalive]
+ping_interval = "2s"
+keepalive = "10s"
+
 [log]
 use_tokio_console_subscriber = false

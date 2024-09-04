@@ -16,9 +16,10 @@ use tokio_tungstenite::tungstenite::{
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::instrument;
 use treadmill_rs::api::switchboard::AuthToken;
+use treadmill_rs::api::switchboard_supervisor::ws_challenge::TREADMILL_WEBSOCKET_CONFIG;
 use treadmill_rs::api::switchboard_supervisor::{
     self, ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL, ReportedSupervisorStatus, Response,
-    SupervisorEvent,
+    SocketConfig, SupervisorEvent,
 };
 use treadmill_rs::connector::{self, JobError, JobState};
 use uuid::Uuid;
@@ -57,6 +58,8 @@ pub enum WsConnectorError {
     TLSCryptoProvider,
     #[error("Couldn't parse URL built from configured values: {0}")]
     InvalidURL(String),
+    #[error("Failed to receive Treadmill socket configuration")]
+    SocketConfig,
 }
 
 // We need to spawn tokio tasks if we want to be able to parallelize jobs; however, this requires
@@ -140,7 +143,7 @@ impl<S: connector::Supervisor> Inner<S> {
     #[instrument(skip(self))]
     async fn connect(
         &self,
-    ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, WsConnectorError> {
+    ) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, SocketConfig), WsConnectorError> {
         assure_crypto_provider()?;
 
         let token = match &self.config.token {
@@ -237,8 +240,23 @@ impl<S: connector::Supervisor> Inner<S> {
                 return Err(WsConnectorError::Authentication);
             }
         }
+        let socket_config_val =
+            resp.headers()
+                .get(TREADMILL_WEBSOCKET_CONFIG)
+                .ok_or_else(|| {
+                    tracing::error!("Response did not include tml-socket-config header");
+                    WsConnectorError::SocketConfig
+                })?;
+        let socket_config_str = socket_config_val.to_str().map_err(|e| {
+            tracing::error!("Failed to parse tml-socket-config header value: {e}");
+            WsConnectorError::SocketConfig
+        })?;
+        let socket_config: SocketConfig = serde_json::from_str(socket_config_str).map_err(|e| {
+            tracing::error!("Failed to deserialize tml-socket-config header value: {e}");
+            WsConnectorError::SocketConfig
+        })?;
 
-        Ok(ws)
+        Ok((ws, socket_config))
     }
 
     /// Handle a message received from the switchboard.
@@ -293,7 +311,7 @@ impl<S: connector::Supervisor> Inner<S> {
 impl<S: connector::Supervisor> Inner<S> {
     // This function returns when the connection closes. Reconnection must be handled externally.
     async fn run(self: &Arc<Self>) {
-        let mut socket = match self.connect().await {
+        let (mut socket, socket_config) = match self.connect().await {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("Failed to connect: {e}");
@@ -307,11 +325,29 @@ impl<S: connector::Supervisor> Inner<S> {
         // supervisor's current job state is correct, which falls under the normal request handling
         // flow.
 
+        tracing::info!("Received switchboard socket configuration: {socket_config:?}");
+
+        let keepalive = socket_config.keepalive.keepalive.to_std().inspect_err(|e| {
+            tracing::error!("Switchboard-specified keepalive couldn't be converted to Duration: {e}; falling back to default 10s keepalive");
+        }).unwrap_or(tokio::time::Duration::from_secs(10));
+        let mut interval = tokio::time::interval(keepalive);
+        let mut last_received_ping = tokio::time::Instant::now();
+
         loop {
             tokio::select! {
+                _ = interval.tick() =>  {
+                    tracing::trace!(target: "tml_ws_connector:ping", "keepalive tick");
+                    let elapsed = last_received_ping.elapsed();
+                    if elapsed > keepalive {
+                        tracing::error!("Haven't received a PING in {elapsed:?}, exiting socket control loop");
+                        return
+                    }
+                }
                 msg = update_rx.recv() => {
                     let msg = msg.unwrap();
                     let stringified = serde_json::to_string(&msg).unwrap();
+
+                    tracing::debug!("Sending message: {msg:?}");
 
                     if let Err(e) = socket.send(tungstenite::Message::Text(stringified)).await {
                         tracing::error!("Failed to send message: {e}");
@@ -333,8 +369,10 @@ impl<S: connector::Supervisor> Inner<S> {
                             return;
                         }
                     };
+
                     match websocket_message {
                         tungstenite::Message::Text(s) => {
+                            tracing::debug!("Received text message from websocket: {s}");
                             let msg = match serde_json::from_str::<switchboard_supervisor::Message>(&s) {
                                 Ok(m) => m,
                                 Err(e) => {
@@ -357,13 +395,14 @@ impl<S: connector::Supervisor> Inner<S> {
                             let _jh = tokio::spawn(async move { this.handle(msg).await });
                         }
                         tungstenite::Message::Binary(_) => {
-                            unimplemented!()
+                            tracing::error!("Received binary message from switchboard");
                         }
                         tungstenite::Message::Ping(_) => {
-                            tracing::info!("PING");
+                            tracing::trace!(target: "tml_ws_connector:ping", "Received PING from switchboard");
+                            last_received_ping = tokio::time::Instant::now();
                         }
                         tungstenite::Message::Pong(_) => {
-                            tracing::info!("PONG");
+                            tracing::error!("Received PONG from switchboard");
                         }
                         tungstenite::Message::Close(cf) => {
                             if let Some(cf) = cf {
@@ -373,7 +412,11 @@ impl<S: connector::Supervisor> Inner<S> {
                             }
                             return
                         }
-                        tungstenite::Message::Frame(_) => {unreachable!()}
+                        tungstenite::Message::Frame(_) => {
+                            tracing::error!("Received `Frame` message from switchboard; this is almost certainly an error");
+                            // See the docs for Message::Frame
+                            unreachable!()
+                        }
                     }
                 }
             }

@@ -5,10 +5,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use clap::Parser;
-use log::{info, warn};
 use serde::Deserialize;
 use tokio::sync::Mutex;
-use tracing::{event, instrument, Level};
+use tracing::{event, info, instrument, warn, Level};
 use uuid::Uuid;
 
 use treadmill_rs::connector;
@@ -586,18 +585,10 @@ impl control_socket::Supervisor for MockSupervisor {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    use simplelog::{self, ColorChoice, LevelFilter, TermLogger, TerminalMode};
     use treadmill_rs::connector::SupervisorConnector;
 
-    TermLogger::init(
-        LevelFilter::Debug,
-        simplelog::ConfigBuilder::new()
-            .set_target_level(LevelFilter::Debug)
-            .build(),
-        TerminalMode::Mixed,
-        ColorChoice::Auto,
-    )
-    .unwrap();
+    tracing_subscriber::fmt::init();
+
     info!("Treadmill Mock Supervisor, Hello World!");
 
     let args = MockSupervisorArgs::parse();

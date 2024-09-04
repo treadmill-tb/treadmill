@@ -1,6 +1,6 @@
 pub mod auth;
 pub mod config;
-mod perms;
+pub mod perms;
 pub mod routes;
 pub mod serve;
 pub mod service;
