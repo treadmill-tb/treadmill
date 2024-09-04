@@ -1580,7 +1580,7 @@ impl control_socket::Supervisor for QemuSupervisor {
 async fn main() -> Result<()> {
     use treadmill_rs::connector::SupervisorConnector;
 
-    tracing_subscriber::fmt().init();
+    tracing_subscriber::fmt::init();
     event!(Level::INFO, "Treadmill Qemu Supervisor, Hello World!");
 
     let args = QemuSupervisorArgs::parse();
