@@ -1,3 +1,8 @@
+//! Handling of the actual WebSocket connection that is used between supervisor and switchboard.
+//!
+//! The key interface is the [`supervisor_run_loop`] function, which spawns a `tokio` task that
+//! handles the actual communication logic of the WebSocket, abstracting it into a set of channels.
+
 use axum::extract::ws;
 use axum::extract::ws::{CloseFrame, WebSocket};
 use dashmap::DashMap;
@@ -6,36 +11,42 @@ use std::ops::ControlFlow;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::{mpsc, oneshot};
 use treadmill_rs::api::switchboard_supervisor;
-use treadmill_rs::api::switchboard_supervisor::{ResponseMessage, SupervisorEvent};
+use treadmill_rs::api::switchboard_supervisor::{ResponseMessage, SocketConfig, SupervisorEvent};
 use uuid::Uuid;
 
-/// Returns (join_handle, outbox, ctl, event_queue)
+/// Spawns a tokio task that exchanges messages with the supervisor at the other end of the
+/// `socket`.
+///
+/// Returns `(join_handle, outbox_send, event_recv)`.
+/// - `join_handle` is a future that completes when the connection with the supervisor closes.
+/// - `outbox_send` is used for sending messages, and takes values of the form
+/// `(mesg, Option<resp_send>)`, where the optional one-shot response channel can be used to
+/// indicate that a response is expected, and pass the response back to the caller.
+/// - `event_recv` is used for receiving messages sent unilaterally from the supervisor.
 pub fn supervisor_run_loop(
     supervisor_id: Uuid,
     socket: WebSocket,
+    config: SocketConfig,
 ) -> (
     tokio::task::JoinHandle<()>,
     UnboundedSender<OutboxMessage>,
-    UnboundedSender<ControlRequest>,
     UnboundedReceiver<SupervisorEvent>,
 ) {
     let (outbox_tx, outbox_rx) = mpsc::unbounded_channel();
     let (event_report_queue_tx, event_report_queue_rx) = mpsc::unbounded_channel();
-    let (control_queue_tx, control_queue_rx) = mpsc::unbounded_channel();
 
     let mut conn = SupervisorConnection {
         supervisor_id,
         outbox: outbox_rx,
         event_report_queue: event_report_queue_tx,
         outstanding_requests: Default::default(),
-        control_queue: control_queue_rx,
     };
     let jh = tokio::spawn(async move {
-        conn.run(socket).await;
+        conn.run(socket, config).await;
         let _ = conn;
     });
 
-    (jh, outbox_tx, control_queue_tx, event_report_queue_rx)
+    (jh, outbox_tx, event_report_queue_rx)
 }
 
 pub type OutboxMessage = (
@@ -43,30 +54,12 @@ pub type OutboxMessage = (
     Option<oneshot::Sender<ResponseMessage>>,
 );
 
-pub enum ConnectionControlRequest {
-    #[allow(dead_code)]
-    CheckConnection,
-}
-#[non_exhaustive]
-pub enum ConnectionControlResponse {
-    CheckConnection(#[allow(dead_code)] ConnectionStatus),
-}
-pub enum ConnectionStatus {
-    Connected,
-    Disconnected,
-}
-
-pub type ControlRequest = (
-    ConnectionControlRequest,
-    oneshot::Sender<ConnectionControlResponse>,
-);
-
+/// Structure used internally to represent the supervisor connection.
 struct SupervisorConnection {
     supervisor_id: Uuid,
     outbox: UnboundedReceiver<OutboxMessage>,
     event_report_queue: UnboundedSender<SupervisorEvent>,
     outstanding_requests: DashMap<Uuid, oneshot::Sender<ResponseMessage>>,
-    control_queue: UnboundedReceiver<ControlRequest>,
 }
 impl SupervisorConnection {
     async fn try_close(
@@ -83,11 +76,36 @@ impl SupervisorConnection {
 
     /// Primary run-loop. This owns the actual WebSocket connection. When this exits, the connection
     /// is considered closed.
-    pub async fn run(&mut self, mut socket: WebSocket) {
+    async fn run(&mut self, mut socket: WebSocket, config: SocketConfig) {
         // TODO: need more robust method of error handling
         let supervisor_id = self.supervisor_id;
+
+        // Keepalive strategy
+        let ping_interval =
+            config.keepalive.ping_interval.to_std().expect(
+                "Configured WebSocket PING interval is out of range for core's Duration type",
+            );
+        let keepalive = config.keepalive.keepalive.to_std().expect(
+            "Configured WebSocket PONG keepalive period is out of range for core's Duration type",
+        );
+        let mut interval = tokio::time::interval(ping_interval);
+        let mut last_received_pong = tokio::time::Instant::now();
+
         loop {
             tokio::select! {
+                _ = interval.tick() => {
+                    tracing::trace!("Sending PING to supervisor ({supervisor_id})");
+                    // let ping_no_as_vec = ping_no.to_le_bytes().to_vec();
+                    let elapsed = last_received_pong.elapsed();
+                    if elapsed > keepalive {
+                        tracing::error!("Haven't received a PONG in {elapsed:?}, exiting socket control loop");
+                        return
+                    }
+                    if let Err(e) = socket.send(ws::Message::Ping(vec![])).await {
+                        tracing::error!("Failed to send PING to supervisor ({supervisor_id}): {e}.");
+                        return;
+                    }
+                }
                 out = self.outbox.recv() => {
                     if let Some(outbox_message) = out {
                         if self.handle_outgoing_message(&mut socket, outbox_message).await.is_break() {
@@ -97,48 +115,37 @@ impl SupervisorConnection {
                 }
                 r = socket.next() => {
                     if let Some(r) = r {
-                        if self.handle_incoming_message(&mut socket, supervisor_id, r).await.is_break() {
-                            return
+                        if let Ok(ws::Message::Pong(v)) = r {
+                            tracing::debug!("Received PONG from supervisor ({supervisor_id})");
+                            if !v.is_empty() {
+                                tracing::error!("Received PONG of nonzero size (size {})", v.len());
+                                return
+                            }
+                            last_received_pong = tokio::time::Instant::now();
+                            // if let Ok(recvd_ping_no) = v.try_into().map(u64::from_le_bytes) {
+                            //     // if ping_no == recvd_ping_no {
+                            //     //     ping_no = ping_no.wrapping_add(1);
+                            //     // } else {
+                            // } else {
+                            //     tracing::error!("Unexpected PONG size: {}", v.len());
+                            //     return
+                            // }
+                        } else {
+                            tracing::debug!("Received message from supervisor ({supervisor_id}): {r:?}.");
+                            if self.handle_incoming_message(&mut socket, supervisor_id, r).await.is_break() {
+                                return
+                            }
                         }
                     } else {
-                        // connection closed without close message
+                        // connection closed without close frame
+                        tracing::debug!("Supervisor ({supervisor_id}) closed connection without close frame");
                         break
-                    }
-                }
-                ctl = self.control_queue.recv() => {
-                    if let Some((ctl, ret)) = ctl {
-                        let resp = self.handle_control_message(ctl, &mut socket).await;
-                        let _ = ret.send(resp);
                     }
                 }
             }
         }
         // next() -> None - indicates -> connection closed
         tracing::error!("connection closed unexpectedly by supervisor");
-    }
-
-    async fn handle_control_message(
-        &mut self,
-        ctl: ConnectionControlRequest,
-        socket: &mut WebSocket,
-    ) -> ConnectionControlResponse {
-        match ctl {
-            ConnectionControlRequest::CheckConnection => {
-                // TODO: I think this works as a connection test, but I'm not 100% sure
-                if socket
-                    .send(ws::Message::Ping(vec![]))
-                    .await
-                    .inspect_err(|e| {
-                        tracing::warn!("Failed to checl connection: {e}");
-                    })
-                    .is_ok()
-                {
-                    ConnectionControlResponse::CheckConnection(ConnectionStatus::Disconnected)
-                } else {
-                    ConnectionControlResponse::CheckConnection(ConnectionStatus::Connected)
-                }
-            }
-        }
     }
 
     async fn handle_outgoing_message(
@@ -163,16 +170,18 @@ impl SupervisorConnection {
                 return ControlFlow::Break(());
             }
         }
-        let stringified = match serde_json::to_string(&m) {
+        let m_as_string = match serde_json::to_string(&m) {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("failed to serialize outgoing message: {e}");
                 return ControlFlow::Break(());
             }
         };
-        if let Err(e) = socket.send(ws::Message::Text(stringified)).await {
+        if let Err(e) = socket.send(ws::Message::Text(m_as_string)).await {
             tracing::error!("failed to send message over websocket: {e}");
             return ControlFlow::Break(());
+        } else {
+            tracing::debug!("Sent message to ({}): {m:?}", self.supervisor_id);
         }
         ControlFlow::Continue(())
     }

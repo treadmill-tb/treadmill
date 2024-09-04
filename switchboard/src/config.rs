@@ -2,7 +2,7 @@ use miette::{IntoDiagnostic, WrapErr};
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use treadmill_rs::api::switchboard_supervisor::RendezvousServerSpec;
+use treadmill_rs::api::switchboard_supervisor::{RendezvousServerSpec, SocketConfig};
 use treadmill_rs::util::chrono::duration as human_duration;
 use xdg::BaseDirectories;
 
@@ -71,6 +71,8 @@ pub struct ServiceConfig {
     /// Default interval between job-supervisor matching passes
     #[serde(with = "human_duration")]
     pub match_interval: chrono::TimeDelta,
+    /// Configuration for the switchboard end of switchboard-supervisor websockets.
+    pub socket: SocketConfig,
     /// Global configuration for SSH-related services provided by Switchboard.
     pub ssh: SshConfig,
 }

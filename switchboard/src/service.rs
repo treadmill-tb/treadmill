@@ -529,7 +529,12 @@ impl Service {
         // Underlying job status extractor exits when the connected_supervisor has dropped and all
         // job status receivers have dropped.
         let (supervisor_termination_handle, connected_supervisor) =
-            herd::prepare_supervisor_connection(supervisor_id, socket);
+            herd::prepare_supervisor_connection(
+                supervisor_id,
+                socket,
+                // TODO: make this an `Arc`
+                self.service_config.socket.clone(),
+            );
 
         let connected_supervisor = Arc::new(Mutex::new(connected_supervisor));
 

@@ -21,9 +21,10 @@ use std::net::SocketAddr;
 use tracing::instrument;
 use treadmill_rs::api::switchboard::supervisors::list::{Filter, Response as LSResponse};
 use treadmill_rs::api::switchboard::supervisors::status::Response as SSResponse;
-use treadmill_rs::api::switchboard_supervisor::ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL;
+use treadmill_rs::api::switchboard_supervisor::ws_challenge::{
+    TREADMILL_WEBSOCKET_CONFIG, TREADMILL_WEBSOCKET_PROTOCOL,
+};
 use uuid::Uuid;
-
 // -- status
 
 impl_from_auth_err!(SSResponse, Database => Internal, Unauthorized => Invalid);
@@ -131,28 +132,38 @@ pub async fn connect(
         false
     }
 
-    ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL])
-        .on_upgrade(move |mut web_socket| async move {
-            tokio::spawn(async move {
-                let maybe_subprotocol = web_socket.protocol();
-                if !check_protocol_header(maybe_subprotocol, socket_addr) {
-                    if let Err(e) = web_socket.send(ws::Message::Close(None)).await {
-                        tracing::error!(
+    let socket_config_json = serde_json::to_string(&state.config().service.socket)
+        .expect("Failed to serialize socket configuration");
+    let mut response =
+        ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL])
+            .on_upgrade(move |mut web_socket| async move {
+                tokio::spawn(async move {
+                    let maybe_subprotocol = web_socket.protocol();
+                    if !check_protocol_header(maybe_subprotocol, socket_addr) {
+                        if let Err(e) = web_socket.send(ws::Message::Close(None)).await {
+                            tracing::error!(
                             "Failed to send close frame (wrong subprotocol) to {socket_addr}: {e}."
                         );
-                        return;
+                            return;
+                        }
                     }
-                }
 
-                tracing::info!("Supervisor ({supervisor_id}) connecting from {socket_addr}.");
+                    tracing::info!("Supervisor ({supervisor_id}) connecting from {socket_addr}.");
 
-                if let Err(e) = state
-                    .service()
-                    .supervisor_connected(supervisor_id, web_socket)
-                    .await
-                {
-                    tracing::error!("Failed to connect supervisor ({supervisor_id}): {e}");
-                }
+                    if let Err(e) = state
+                        .service()
+                        .supervisor_connected(supervisor_id, web_socket)
+                        .await
+                    {
+                        tracing::error!("Failed to connect supervisor ({supervisor_id}): {e}");
+                    }
+                });
             });
-        })
+    response.headers_mut().insert(
+        TREADMILL_WEBSOCKET_CONFIG,
+        socket_config_json
+            .parse()
+            .expect("Failed to parse serialized socket configuration into HTTP header value"),
+    );
+    response
 }
