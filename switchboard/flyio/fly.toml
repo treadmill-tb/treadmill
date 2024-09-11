@@ -1,0 +1,38 @@
+# fly.toml app configuration file generated for treadmill-switchboard on 2024-09-09T13:35:33-04:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'treadmill-switchboard'
+primary_region = 'ewr'
+
+[build]
+  dockerfile = "./Dockerfile"
+
+[env]
+  TML_SERVER__BIND_ADDRESS = '[::]:8080'
+  TML_SERVICE__DEFAULT_TOKEN_TIMEOUT = '7d'
+  TML_SERVICE__DEFAULT_JOB_TIMEOUT = '30m'
+  TML_SERVICE__DEFAULT_QUEUE_TIMEOUT = '30m'
+  TML_SERVICE__MATCH_INTERVAL = '10s'
+  TML_SERVICE__SSH__RENDEZVOUS_SERVERS = '[]'
+  TML_SERVICE__SOCKET__KEEPALIVE__PING_INTERVAL = '2s'
+  TML_SERVICE__SOCKET__KEEPALIVE__KEEPALIVE = '10s'
+  TML_LOG__USE_TOKIO_CONSOLE_SUBSCRIBER = 'false'
+  TML_DATABASE__HOST = 'treadmill-switchboard-db.internal'
+  TML_DATABASE__PORT = '5432'
+  TML_DATABASE__DATABASE = 'treadmill_switchboard'
+  TML_DATABASE__USER = 'treadmill_switchboard'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  memory = '512mb'
+  cpu_kind = 'shared'
+  cpus = 2
