@@ -7,12 +7,10 @@ use std::net::SocketAddr;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
-use xdg::BaseDirectories;
 
 pub struct AppStateInner {
     pg_pool: PgPool,
     config: SwitchboardConfig,
-    base_directories: BaseDirectories,
     service: Arc<Service>,
 }
 impl AppStateInner {
@@ -21,9 +19,6 @@ impl AppStateInner {
     }
     pub fn config(&self) -> &SwitchboardConfig {
         &self.config
-    }
-    pub fn basedirs(&self) -> &BaseDirectories {
-        &self.base_directories
     }
     pub fn service(&self) -> &Arc<Service> {
         &self.service
@@ -64,13 +59,8 @@ pub async fn pg_pool_from_config(db_config: &DatabaseConfig) -> Result<PgPool, s
 }
 
 pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
-    let base_directories = BaseDirectories::with_prefix("tml_switchboard")
-        .into_diagnostic()
-        .wrap_err("couldn't find XDG base directories")?;
-    let config = super::config::load_configuration(
-        serve_command.config.as_ref().map(PathBuf::as_path),
-        &base_directories,
-    )?;
+    let config =
+        super::config::load_configuration(serve_command.config.as_ref().map(PathBuf::as_path))?;
 
     if config.log.use_tokio_console_subscriber {
         console_subscriber::init();
@@ -93,7 +83,6 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
     let app_state = AppState(Arc::new(AppStateInner {
         pg_pool,
         config,
-        base_directories,
         service,
     }));
     let router = super::routes::build_router(app_state);
