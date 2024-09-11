@@ -9,7 +9,7 @@ images = { }
 [ws_connector]
 token = "OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc"
 switchboard_uri = "ws://localhost:8080"
-# switchboard_uri = "wss://api.treadmill.ci"
+# switchboard_uri = "wss://swb.treadmill.ci"
 
 [mock]
 max_parallel_jobs = 1

@@ -19,7 +19,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             api: Api {
-                url: "https://api.treadmill.ci".to_string(),
+                url: "https://swb.treadmill.ci".to_string(),
             },
             ssh_keys: None,
         }

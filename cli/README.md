@@ -79,7 +79,7 @@ Example configuration:
 ssh_keys = "ssh-rsa AAAAB3NzaC1yc2E..., ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..."
 
 [api]
-url = "https://api.treadmill.ci"
+url = "https://swb.treadmill.ci"
 ```
 
 ## SSH Key Handling
