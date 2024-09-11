@@ -4,7 +4,6 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use treadmill_rs::api::switchboard_supervisor::{RendezvousServerSpec, SocketConfig};
 use treadmill_rs::util::chrono::duration as human_duration;
-use xdg::BaseDirectories;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SwitchboardConfig {
@@ -90,38 +89,25 @@ pub struct LogConfig {
 }
 
 /// Load the switchboard configuration.
-pub fn load_configuration(
-    path: Option<&Path>,
-    xdg_basedirs: &BaseDirectories,
-) -> miette::Result<SwitchboardConfig> {
-    let path = path
-        .and_then(|p| {
-            if p.exists() {
-                Some(p.to_path_buf())
-            } else {
-                tracing::warn!(
-                    "Specified configuration file '{}' does not exist",
-                    p.display()
-                );
-                None
-            }
-        })
-        .ok_or(())
-        .or_else(|()| {
-            tracing::warn!(
-                "Searching for tml_switchboard/config.toml in XDG configuration directories."
-            );
-            xdg_basedirs
-                .find_config_file("config.toml")
-                .ok_or(miette::miette!(
-                    "couldn't find path to 'config.toml' in XDG config dirs"
-                ))
-        })?;
-
+pub fn load_configuration(path: Option<&Path>) -> miette::Result<SwitchboardConfig> {
     use figment::providers::{self, Format};
-    figment::Figment::new()
-        .merge(providers::Toml::file(&path))
-        .merge(providers::Env::prefixed("TML_").split("__"))
+    let f = figment::Figment::new();
+
+    let f = if let Some(p) = path {
+        if !p.exists() {
+            return Err(miette::miette!(
+                "Specified configuration file '{}' does not exist",
+                p.display()
+            ));
+        }
+
+        f.merge(providers::Toml::file(&p))
+    } else {
+        tracing::info!("No configuration file specified");
+        f
+    };
+
+    f.merge(providers::Env::prefixed("TML_").split("__"))
         .extract()
         .into_diagnostic()
         .wrap_err("Failed to extract switchboard configuration")
