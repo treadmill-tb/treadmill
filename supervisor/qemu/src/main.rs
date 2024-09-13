@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use tracing::{event, instrument, Level};
 use uuid::Uuid;
 
-use treadmill_rs::api::switchboard_supervisor::ImageSpecification;
+use treadmill_rs::api::switchboard_supervisor::JobInitSpec;
 use treadmill_rs::connector;
 use treadmill_rs::control_socket;
 use treadmill_rs::image;
@@ -174,6 +174,9 @@ pub struct QemuSupervisorJobRunningState {
     /// The qemu process handle:
     qemu_proc: tokio::process::Child,
 
+    /// The monitoring task handle for the QEMU process.
+    qemu_monitor_task: tokio::task::JoinHandle<()>,
+
     /// Control socket handle:
     control_socket: TcpControlSocket<QemuSupervisor>,
     // /// Set of rendezvous proxy connections:
@@ -258,8 +261,23 @@ impl QemuSupervisor {
 
     #[instrument(skip(self))]
     async fn remove_job(&self, job_id: Uuid) -> Option<Arc<Mutex<QemuSupervisorJobState>>> {
-        event!(Level::DEBUG, "Removing job from jobs map");
-        self.jobs.lock().await.remove(&job_id)
+        event!(Level::DEBUG, "Removing job {job_id} from jobs map");
+        let job = self.jobs.lock().await.remove(&job_id);
+
+        if let Some(job_state) = &job {
+            let mut job_lg = job_state.lock().await;
+
+            // Perform any additional cleanup here if necessary
+            match &*job_lg {
+                QemuSupervisorJobState::Running(state) => {
+                    // Cancel the monitoring task if still running
+                    state.qemu_monitor_task.abort();
+                }
+                _ => {}
+            }
+        }
+
+        job
     }
 
     #[instrument(skip(this))]
@@ -1086,7 +1104,7 @@ impl QemuSupervisor {
         .unwrap();
 
         event!(Level::INFO, qemu_binary = ?this.config.qemu.qemu_binary, ?qemu_args, "Launching QEMU process");
-        let qemu_proc = tokio::process::Command::new(&this.config.qemu.qemu_binary)
+        let mut qemu_proc = tokio::process::Command::new(&this.config.qemu.qemu_binary)
             .args(&qemu_args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::inherit())
@@ -1094,24 +1112,101 @@ impl QemuSupervisor {
             .spawn()
             .unwrap();
 
+        // Wrap qemu_proc in an Arc<Mutex<_>> for shared access
+        let qemu_proc = Arc::new(Mutex::new(qemu_proc));
+
+        // Clone references for the monitoring task
+        let qemu_proc_clone = qemu_proc.clone();
+        let supervisor_clone = this.clone();
+        let job_id_clone = job_id;
+
+        // Spawn the monitoring task
+        let qemu_monitor_task = tokio::spawn(async move {
+            if let Err(e) = async {
+                let mut qemu_proc = qemu_proc_clone.lock().await;
+                let exit_status = qemu_proc.wait().await;
+                supervisor_clone
+                    .handle_qemu_exit(job_id_clone, exit_status)
+                    .await;
+                Ok::<(), Box<dyn std::error::Error>>(())
+            }
+            .await
+            {
+                event!(
+                    Level::ERROR,
+                    ?e,
+                    "Error in QEMU monitor task for job {job_id_clone}"
+                );
+            }
+        });
+
         // Job has been started, let the coordinator know:
         this.connector
             .update_job_state(
                 start_job_req.job_id,
                 connector::JobState::Starting {
-                    // Booting, but puppet has not yet reported "ready":
                     stage: connector::JobStartingStage::Booting,
                     status_message: None,
                 },
             )
             .await;
 
-        // Mark the job as started:
+        // Store the qemu_proc and qemu_monitor_task in the job state
         *job_lg = QemuSupervisorJobState::Running(QemuSupervisorJobRunningState {
             start_job_req,
             control_socket,
             qemu_proc,
+            qemu_monitor_task,
         });
+    }
+
+    async fn handle_qemu_exit(
+        &self,
+        job_id: Uuid,
+        exit_status: Result<ExitStatus, std::io::Error>,
+    ) {
+        // Log the exit status
+        event!(
+            Level::INFO,
+            ?exit_status,
+            "QEMU process for job {job_id} exited"
+        );
+
+        // Acquire the job from the jobs map
+        if let Some(job) = self.jobs.lock().await.get(&job_id).cloned() {
+            let mut job_lg = job.lock().await;
+
+            // Check if the job is in the Running state
+            if let QemuSupervisorJobState::Running(_) = *job_lg {
+                // Transition the job to the Stopping state
+                *job_lg = QemuSupervisorJobState::Stopping;
+
+                // Send a message via the connector
+                self.connector
+                    .update_job_state(
+                        job_id,
+                        connector::JobState::Finished {
+                            status_message: Some("QEMU process exited".to_string()),
+                        },
+                    )
+                    .await;
+
+                // Remove the job from the jobs map
+                self.remove_job(job_id).await;
+            } else {
+                // Job is not in Running state; possibly already stopped
+                event!(
+                    Level::WARN,
+                    "Job {job_id} is not in Running state during QEMU exit handling"
+                );
+            }
+        } else {
+            // Job not found in the jobs map
+            event!(
+                Level::WARN,
+                "Job {job_id} not found in jobs map during QEMU exit handling"
+            );
+        }
     }
 }
 
@@ -1209,8 +1304,8 @@ impl connector::Supervisor for QemuSupervisor {
         // we poll the image supervisor repeatedly, but don't hold onto the
         // job's lock in between these polling operations.
 
-        let image_id = match start_job_req.image_spec {
-            ImageSpecification::Image { image_id } => image_id,
+        let image_id = match start_job_req.init_spec {
+            JobInitSpec::Image { image_id } => image_id,
             unsupported_init_spec => {
                 unimplemented!("Unsupported init spec: {:?}", unsupported_init_spec)
             }
@@ -1296,6 +1391,17 @@ impl connector::Supervisor for QemuSupervisor {
                     description: format!("Job {:?} is already stopping.", msg.job_id),
                 });
             }
+
+            // Handle the case where the job might have already finished
+            prev_state => {
+                // Put back the previous state:
+                *job_lg = prev_state;
+
+                return Err(connector::JobError {
+                    error_kind: connector::JobErrorKind::JobNotRunning,
+                    description: format!("Job {:?} is not running.", msg.job_id),
+                });
+            }
         };
 
         // Job is stopping, let the coordinator know:
@@ -1340,11 +1446,25 @@ impl connector::Supervisor for QemuSupervisor {
             StopJobPrevState::Running(QemuSupervisorJobRunningState {
                 start_job_req: _,
                 control_socket,
-                mut qemu_proc,
+                qemu_proc,
+                qemu_monitor_task,
             }) => {
-                // TODO: kindly request the puppet to shut down. Here we simply
-                // force it to quit (by using a SIGKILL). This is not nice.
-                qemu_proc.kill().await.unwrap();
+                // Attempt to kill the QEMU process
+                {
+                    let mut qemu_proc = qemu_proc.lock().await;
+                    if let Err(e) = qemu_proc.kill().await {
+                        event!(
+                            Level::WARN,
+                            ?e,
+                            "Failed to kill QEMU process for job {job_id}"
+                        );
+                    }
+                }
+
+                // Wait for the monitoring task to complete
+                if let Err(e) = qemu_monitor_task.await {
+                    event!(Level::WARN, ?e, "QEMU monitor task for job {job_id} failed");
+                }
 
                 // Shut down the control socket server:
                 control_socket.shutdown().await.unwrap();
@@ -1580,7 +1700,7 @@ impl control_socket::Supervisor for QemuSupervisor {
 async fn main() -> Result<()> {
     use treadmill_rs::connector::SupervisorConnector;
 
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt().init();
     event!(Level::INFO, "Treadmill Qemu Supervisor, Hello World!");
 
     let args = QemuSupervisorArgs::parse();
@@ -1642,7 +1762,7 @@ async fn main() -> Result<()> {
             // weak Arc reference:
             let mut connector_opt = None;
 
-            let _qemu_supervisor = {
+            let qemu_supervisor = {
                 // Shadow, to avoid moving the variable:
                 let connector_opt = &mut connector_opt;
                 Arc::new_cyclic(move |weak_supervisor| {
@@ -1658,15 +1778,11 @@ async fn main() -> Result<()> {
 
             let connector = connector_opt.take().unwrap();
 
-            loop {
-                connector.run().await;
+            connector.run().await;
 
-                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-            }
+            drop(qemu_supervisor);
 
-            // drop(qemu_supervisor);
-            //
-            // Ok(())
+            Ok(())
         }
         unsupported_connector => {
             bail!("Unsupported coord connector: {:?}", unsupported_connector);
