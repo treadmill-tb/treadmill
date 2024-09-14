@@ -1,0 +1,24 @@
+name: tml-deploy-switchboard
+env:
+  TERM: xterm # Makes tput work in actions output
+
+# Controls when the action will run. Triggers the workflow on push or pull request
+# events but only for the master branch
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ['tml-static-checks']
+    types: [completed]
+    branches:
+      - 'beta'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only --config switchboard/flyio/fly.toml
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

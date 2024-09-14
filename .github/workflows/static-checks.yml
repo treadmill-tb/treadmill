@@ -1,4 +1,4 @@
-name: treadmill-code-ci
+name: tml-static-checks
 env:
   TERM: xterm # Makes tput work in actions output
 
