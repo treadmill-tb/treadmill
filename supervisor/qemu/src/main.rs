@@ -11,7 +11,8 @@ use tokio::sync::Mutex;
 use tracing::{event, instrument, Level};
 use uuid::Uuid;
 
-use treadmill_rs::api::switchboard_supervisor::JobInitSpec;
+use treadmill_rs::api::switchboard::ExitStatus as SwitchboardExitStatus;
+use treadmill_rs::api::switchboard::JobInitSpec;
 use treadmill_rs::connector;
 use treadmill_rs::control_socket;
 use treadmill_rs::image;
@@ -265,7 +266,7 @@ impl QemuSupervisor {
         let job = self.jobs.lock().await.remove(&job_id);
 
         if let Some(job_state) = &job {
-            let mut job_lg = job_state.lock().await;
+            let job_lg = job_state.lock().await;
 
             // Perform any additional cleanup here if necessary
             match &*job_lg {
@@ -1151,11 +1152,14 @@ impl QemuSupervisor {
             )
             .await;
 
+        // turn qemu_proc from Arc<Mutex<Child>> to Child
+        let qemu_proc_unwrapped = Arc::try_unwrap(qemu_proc).unwrap().into_inner();
+
         // Store the qemu_proc and qemu_monitor_task in the job state
         *job_lg = QemuSupervisorJobState::Running(QemuSupervisorJobRunningState {
             start_job_req,
             control_socket,
-            qemu_proc,
+            qemu_proc: oqemu_proc_unwrapped,
             qemu_monitor_task,
         });
     }
@@ -1163,7 +1167,7 @@ impl QemuSupervisor {
     async fn handle_qemu_exit(
         &self,
         job_id: Uuid,
-        exit_status: Result<ExitStatus, std::io::Error>,
+        exit_status: Result<std::process::ExitStatus, std::io::Error>,
     ) {
         // Log the exit status
         event!(
@@ -1453,17 +1457,13 @@ impl connector::Supervisor for QemuSupervisor {
                 {
                     let mut qemu_proc = qemu_proc.lock().await;
                     if let Err(e) = qemu_proc.kill().await {
-                        event!(
-                            Level::WARN,
-                            ?e,
-                            "Failed to kill QEMU process for job {job_id}"
-                        );
+                        event!(Level::WARN, ?e, "Failed to kill QEMU process for job",);
                     }
                 }
 
                 // Wait for the monitoring task to complete
                 if let Err(e) = qemu_monitor_task.await {
-                    event!(Level::WARN, ?e, "QEMU monitor task for job {job_id} failed");
+                    event!(Level::WARN, ?e, "QEMU monitor task for job has failed",);
                 }
 
                 // Shut down the control socket server:
