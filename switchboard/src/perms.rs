@@ -104,7 +104,7 @@ impl_simple_perm!(
 );
 pub enum SubmitJobError {
     Internal,
-    FailedToMatch,
+    SupervisorMatchError,
 }
 pub async fn submit_job(
     state: &AppState,
@@ -120,7 +120,7 @@ pub async fn submit_job(
         Err(e) => {
             tracing::error!("Failed to submit job: registration error: {e}");
             Err(match e {
-                ServiceError::FailedToMatch => SubmitJobError::FailedToMatch,
+                ServiceError::SupervisorMatchError => SubmitJobError::SupervisorMatchError,
                 _ => SubmitJobError::Internal,
             })
         }

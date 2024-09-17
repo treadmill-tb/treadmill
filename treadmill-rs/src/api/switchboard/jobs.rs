@@ -18,7 +18,7 @@ pub mod submit {
         Ok { job_id: Uuid },
         /// No supervisors currently registered can carry out the request.
         #[http(status = 404)]
-        FailedToMatch,
+        SupervisorMatchError,
         /// User does not have `submit_job` permission.
         #[http(status = 403)]
         Unauthorized,

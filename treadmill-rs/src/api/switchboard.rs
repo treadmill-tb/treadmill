@@ -105,7 +105,7 @@ pub struct JobRequest {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExitStatus {
-    FailedToMatch,
+    SupervisorMatchError,
     QueueTimeout,
     InternalSupervisorError,
     SupervisorHostStartFailure,
@@ -128,7 +128,7 @@ impl From<JobUserExitStatus> for ExitStatus {
 impl Display for ExitStatus {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            ExitStatus::FailedToMatch => "failed to match",
+            ExitStatus::SupervisorMatchError => "failed to match",
             ExitStatus::QueueTimeout => "timed out in queue",
             ExitStatus::InternalSupervisorError => "internal supervisor error",
             ExitStatus::SupervisorHostStartFailure => "supervisor/host start failure",
