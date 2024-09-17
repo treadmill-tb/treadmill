@@ -12,7 +12,7 @@ pub mod parameters;
 #[derive(Debug, Copy, Clone, sqlx::Type)]
 #[sqlx(type_name = "tml_switchboard.exit_status", rename_all = "snake_case")]
 pub enum SqlExitStatus {
-    FailedToMatch,
+    SupervisorMatchError,
     QueueTimeout,
     InternalSupervisorError,
     SupervisorHostStartError,
@@ -26,7 +26,7 @@ pub enum SqlExitStatus {
 impl From<SqlExitStatus> for ExitStatus {
     fn from(value: SqlExitStatus) -> Self {
         match value {
-            SqlExitStatus::FailedToMatch => ExitStatus::FailedToMatch,
+            SqlExitStatus::SupervisorMatchError => ExitStatus::SupervisorMatchError,
             SqlExitStatus::QueueTimeout => ExitStatus::QueueTimeout,
             SqlExitStatus::InternalSupervisorError => ExitStatus::InternalSupervisorError,
             SqlExitStatus::SupervisorHostStartError => ExitStatus::SupervisorHostStartFailure,
@@ -42,7 +42,7 @@ impl From<SqlExitStatus> for ExitStatus {
 impl From<ExitStatus> for SqlExitStatus {
     fn from(value: ExitStatus) -> Self {
         match value {
-            ExitStatus::FailedToMatch => SqlExitStatus::FailedToMatch,
+            ExitStatus::SupervisorMatchError => SqlExitStatus::SupervisorMatchError,
             ExitStatus::QueueTimeout => SqlExitStatus::QueueTimeout,
             ExitStatus::InternalSupervisorError => SqlExitStatus::InternalSupervisorError,
             ExitStatus::SupervisorHostStartFailure => SqlExitStatus::SupervisorHostStartError,

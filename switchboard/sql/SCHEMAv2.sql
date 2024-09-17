@@ -110,7 +110,7 @@ create type tml_switchboard.functional_state as enum (
 -- The exit status of the job. See the job lifecycle documentation in the internals section of the Treadmill book.
 create type tml_switchboard.exit_status as enum (
     -- INTERNAL
-    'failed_to_match',
+    'supervisor_match_error',
     'internal_supervisor_error',
     'supervisor_host_start_error',
     'supervisor_dropped_job',
@@ -196,7 +196,8 @@ create table tml_switchboard.jobs
     constraint valid_restart_policy check ((restart_policy).remaining_restart_count >= 0),
 -- Exit status vs. host output
     constraint exit_status_allows_host_output check (case
-                                                         when exit_status = 'failed_to_match' then host_output is null
+                                                         when exit_status = 'supervisor_match_error'
+                                                             then host_output is null
                                                          when exit_status = 'queue_timeout' then host_output is null
                                                          when exit_status = 'job_timeout' then host_output is null
                                                          when exit_status = 'job_canceled' then host_output is null

@@ -50,7 +50,7 @@ pub enum ServiceError {
     #[error("Kanban error: {0}")]
     Kanban(KanbanError),
     #[error("Job's tag configuration did not match any currently registered supervisors")]
-    FailedToMatch,
+    SupervisorMatchError,
     #[error("Job deleted between match and launch")]
     NoLongerQueued,
     #[error("No such job")]
@@ -761,7 +761,7 @@ impl Service {
                     // database).
                     // TODO: better error?
                     tracing::warn!("Failed to build auth source: token was DELETE'd.");
-                    return Err(ServiceError::FailedToMatch);
+                    return Err(ServiceError::SupervisorMatchError);
                 }
                 TokenError::Database(e) => {
                     return Err(ServiceError::Database(e));
@@ -800,7 +800,7 @@ impl Service {
             let job_result = JobResult {
                 job_id,
                 supervisor_id: None,
-                exit_status: ExitStatus::FailedToMatch,
+                exit_status: ExitStatus::SupervisorMatchError,
                 host_output: None,
                 terminated_at,
             };
@@ -810,7 +810,7 @@ impl Service {
             sql::job::history::insert(
                 job_id,
                 JobEvent::SetExitStatus {
-                    exit_status: ExitStatus::FailedToMatch,
+                    exit_status: ExitStatus::SupervisorMatchError,
                     status_message: None,
                 },
                 terminated_at,
@@ -828,7 +828,7 @@ impl Service {
             .map_err(ServiceError::Database)?;
             tx.commit().await.map_err(ServiceError::Database)?;
 
-            return Err(ServiceError::FailedToMatch);
+            return Err(ServiceError::SupervisorMatchError);
         }
 
         {
@@ -1742,7 +1742,7 @@ async fn sql_enforce_queue_timeout(job_id: Uuid, pool: &PgPool) -> Result<(), sq
 async fn sql_stop_orphaned_job(job_id: Uuid, pool: &PgPool) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     let terminated_at = Utc::now();
-    let exit_status = ExitStatus::FailedToMatch;
+    let exit_status = ExitStatus::SupervisorMatchError;
     let job_result = JobResult {
         job_id,
         supervisor_id: None,

@@ -34,7 +34,7 @@ pub async fn submit(
         .map_err(|e| {
             proxy_err(match e {
                 SubmitJobError::Internal => EJResponse::Internal,
-                SubmitJobError::FailedToMatch => EJResponse::FailedToMatch,
+                SubmitJobError::SupervisorMatchError => EJResponse::SupervisorMatchError,
             })
         })?;
     sql::perm::sql_add_user_privileges(
