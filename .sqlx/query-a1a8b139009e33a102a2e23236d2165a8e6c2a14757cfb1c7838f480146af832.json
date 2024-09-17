@@ -11,7 +11,7 @@
             "name": "tml_switchboard.exit_status",
             "kind": {
               "Enum": [
-                "failed_to_match",
+                "supervisor_match_error",
                 "internal_supervisor_error",
                 "supervisor_host_start_error",
                 "supervisor_dropped_job",
