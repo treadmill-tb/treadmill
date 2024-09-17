@@ -141,9 +141,10 @@ pub async fn read_job_status(
     state: &AppState,
     p: Privilege<'_, ReadJobStatus>,
 ) -> Result<JobStatus, ReadJobStatusError> {
+    // TODO: this should not be JobState; want more detail than this
     state
         .service()
-        .get_last_job_status_history(p.action().job_id)
+        .get_job_status(p.action().job_id)
         .await
         .map_err(|e| match e {
             ServiceError::NoSuchJob => ReadJobStatusError::NoSuchJob,
@@ -152,7 +153,6 @@ pub async fn read_job_status(
                 ReadJobStatusError::Internal
             }
         })
-        .map(|jsh| jsh.job_state)
 }
 
 // -- stop_job

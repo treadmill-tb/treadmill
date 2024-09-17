@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        select job_id, resume_job_id, restart_job_id, image_id as \"sql_image_id: _\", ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id, tag_config, job_timeout,\n        queued_at, simple_state as \"simple_state: _\", started_at, running_on_supervisor_id\n        from tml_switchboard.jobs where simple_state = 'running';\n        ",
+  "query": "\n        select job_id, resume_job_id, restart_job_id, image_id as \"sql_image_id: _\", ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id, tag_config, job_timeout,\n        queued_at, functional_state as \"functional_state: _\", started_at,\n        dispatched_on_supervisor_id, exit_status as \"exit_status: _\", host_output, terminated_at,\n        last_updated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
   "describe": {
     "columns": [
       {
@@ -67,15 +67,15 @@
       },
       {
         "ordinal": 10,
-        "name": "simple_state: _",
+        "name": "functional_state: _",
         "type_info": {
           "Custom": {
-            "name": "tml_switchboard.simple_state",
+            "name": "tml_switchboard.functional_state",
             "kind": {
               "Enum": [
                 "queued",
-                "running",
-                "inactive"
+                "dispatched",
+                "finalized"
               ]
             }
           }
@@ -88,12 +88,52 @@
       },
       {
         "ordinal": 12,
-        "name": "running_on_supervisor_id",
+        "name": "dispatched_on_supervisor_id",
         "type_info": "Uuid"
+      },
+      {
+        "ordinal": 13,
+        "name": "exit_status: _",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.exit_status",
+            "kind": {
+              "Enum": [
+                "failed_to_match",
+                "internal_supervisor_error",
+                "supervisor_host_start_error",
+                "supervisor_dropped_job",
+                "queue_timeout",
+                "job_timeout",
+                "job_canceled",
+                "workload_finished_success",
+                "workload_finished_error",
+                "workload_finished_unknown"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "host_output",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "terminated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 16,
+        "name": "last_updated_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Uuid"
+      ]
     },
     "nullable": [
       false,
@@ -108,8 +148,12 @@
       false,
       false,
       true,
-      true
+      true,
+      true,
+      true,
+      true,
+      false
     ]
   },
-  "hash": "fe60b304632f473873692b45ff78c06b8aa1059a32c8edf8e9dfc4113b653c10"
+  "hash": "e4fafff5b03606cefc69a4e20ba939884dce5f2068052ff9f4ae43a622c5fcad"
 }

@@ -87,10 +87,10 @@ impl AuthorizationSource for DbAuth {
         }
     }
 
-    async fn authorize<A: PrivilegedAction + Send>(
-        &self,
+    async fn authorize<'a, A: PrivilegedAction + Send>(
+        &'a self,
         action: A,
-    ) -> Result<Privilege<A>, AuthorizationError> {
+    ) -> Result<Privilege<'a, A>, AuthorizationError> {
         action
             .authorize(DbPermSearcher {
                 db: self.db.clone(),

@@ -438,10 +438,10 @@ impl QemuSupervisor {
                 this.connector
                     .update_job_state(
                         fetching_image_state.start_job_req.job_id,
-                        connector::JobState::Starting {
-                            stage: connector::JobStartingStage::FetchingImage,
-                            status_message: msg,
+                        connector::RunningJobState::Initializing {
+                            stage: connector::JobInitializingStage::FetchingImage,
                         },
+                        msg,
                     )
                     .await;
 
@@ -904,10 +904,10 @@ impl QemuSupervisor {
         this.connector
             .update_job_state(
                 start_job_req.job_id,
-                connector::JobState::Starting {
-                    stage: connector::JobStartingStage::Allocating,
-                    status_message: None,
+                connector::RunningJobState::Initializing {
+                    stage: connector::JobInitializingStage::Allocating,
                 },
+                None,
             )
             .await;
 
@@ -1098,11 +1098,11 @@ impl QemuSupervisor {
         this.connector
             .update_job_state(
                 start_job_req.job_id,
-                connector::JobState::Starting {
+                connector::RunningJobState::Initializing {
                     // Booting, but puppet has not yet reported "ready":
-                    stage: connector::JobStartingStage::Booting,
-                    status_message: None,
+                    stage: connector::JobInitializingStage::Booting,
                 },
+                None,
             )
             .await;
 
@@ -1193,12 +1193,12 @@ impl connector::Supervisor for QemuSupervisor {
         this.connector
             .update_job_state(
                 start_job_req.job_id,
-                connector::JobState::Starting {
+                connector::RunningJobState::Initializing {
                     // Generic starting stage. We don't fetch, allocate or provision any
                     // resources right now, so report a generic state instead:
-                    stage: connector::JobStartingStage::Starting,
-                    status_message: None,
+                    stage: connector::JobInitializingStage::Starting,
                 },
+                None,
             )
             .await;
 
@@ -1300,12 +1300,7 @@ impl connector::Supervisor for QemuSupervisor {
 
         // Job is stopping, let the coordinator know:
         this.connector
-            .update_job_state(
-                msg.job_id,
-                connector::JobState::Stopping {
-                    status_message: None,
-                },
-            )
+            .update_job_state(msg.job_id, connector::RunningJobState::Terminating, None)
             .await;
 
         // Perform actions depending on the previous job state:
@@ -1353,12 +1348,7 @@ impl connector::Supervisor for QemuSupervisor {
 
         // Job has been stopped, let the coordinator know:
         this.connector
-            .update_job_state(
-                msg.job_id,
-                connector::JobState::Finished {
-                    status_message: None,
-                },
-            )
+            .update_job_state(msg.job_id, connector::RunningJobState::Terminated, None)
             .await;
 
         // Finally, remove the job from the jobs HashMap. Eventually, all other
@@ -1499,11 +1489,11 @@ impl control_socket::Supervisor for QemuSupervisor {
                     self.connector
                         .update_job_state(
                             job_id,
-                            connector::JobState::Ready {
+                            connector::RunningJobState::Ready {
                                 // TODO: populate connection info
-                                connection_info: vec![],
-                                status_message: None,
+                                // connection_info: vec![],
                             },
+                            None,
                         )
                         .await;
                 }

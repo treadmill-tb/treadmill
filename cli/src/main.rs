@@ -6,18 +6,18 @@ use log::LevelFilter;
 use log::{debug, error, info};
 use reqwest::Client;
 use std::collections::HashMap;
-use treadmill_rs::api::switchboard_supervisor::ParameterValue;
-use uuid::Uuid;
-
+use treadmill_rs::api::switchboard;
 use treadmill_rs::api::switchboard::jobs::list::Response as ListJobsResponse;
 use treadmill_rs::api::switchboard::jobs::status::Response as JobStatusResponse;
 use treadmill_rs::api::switchboard::jobs::submit::Request as SubmitJobRequest;
 use treadmill_rs::api::switchboard::{
-    JobInitSpec, JobRequest, JobStatus, LoginRequest, LoginResponse, SupervisorStatus,
+    JobInitSpec, JobRequest, JobState, LoginRequest, LoginResponse, SupervisorStatus,
 };
+use treadmill_rs::api::switchboard_supervisor::ParameterValue;
 use treadmill_rs::api::switchboard_supervisor::RestartPolicy;
-use treadmill_rs::connector::JobState;
+use treadmill_rs::connector::RunningJobState;
 use treadmill_rs::image::manifest::ImageId;
+use uuid::Uuid;
 
 mod auth;
 mod config;
@@ -428,35 +428,71 @@ async fn list_jobs(client: &Client, config: &config::Config) -> Result<()> {
                         "{}. {} ({})",
                         index + 1,
                         job_id,
-                        match status {
-                            JobStatus::Active { job_state } => {
-                                match job_state {
-                                    JobState::Starting { .. } => "starting".to_string(),
-                                    JobState::Ready { .. } => "ready".to_string(),
-                                    JobState::Stopping { .. } => "stopping".to_string(),
-                                    JobState::Finished { .. } => "finished".to_string(),
-                                    JobState::Canceled => "canceled".to_string(),
+                        {
+                            match &status.state.state {
+                                JobState::Queued => "queued".to_string(),
+                                JobState::Scheduled => {
+                                    format!(
+                                        "scheduled (supervisor={})",
+                                        status.state.dispatched_to_supervisor.as_ref().unwrap()
+                                    )
+                                }
+                                JobState::Initializing { .. } => {
+                                    format!(
+                                        "starting (supervisor={})",
+                                        status.state.dispatched_to_supervisor.as_ref().unwrap()
+                                    )
+                                }
+                                JobState::Ready => {
+                                    format!(
+                                        "ready (supervisor={})",
+                                        status.state.dispatched_to_supervisor.as_ref().unwrap()
+                                    )
+                                }
+                                JobState::Terminating => {
+                                    format!(
+                                        "terminating (supervisor={})",
+                                        status.state.dispatched_to_supervisor.as_ref().unwrap()
+                                    )
+                                }
+                                JobState::Terminated => {
+                                    format!(
+                                        "terminated at {}: {}",
+                                        status.state.result.as_ref().unwrap().terminated_at,
+                                        status.state.result.as_ref().unwrap().exit_status,
+                                    )
                                 }
                             }
-                            JobStatus::Error { job_error } => {
-                                format!(
-                                    "error ({:?}): {}",
-                                    job_error.error_kind, job_error.description
-                                )
-                            }
-                            JobStatus::Inactive => {
-                                "queue".to_string()
-                            }
-                            JobStatus::Terminated(treadmill_rs::api::switchboard::JobResult {
-                                job_id: _,
-                                supervisor_id: _,
-                                exit_status,
-                                host_output: _,
-                                terminated_at,
-                            }) => {
-                                format!("terminated at {terminated_at}: {exit_status}")
-                            }
-                        }
+                        },
+                        // match status {
+                        // JobStatus::Active { job_state } => {
+                        //     match job_state {
+                        //         JobState::Starting { .. } => "starting".to_string(),
+                        //         JobState::Ready { .. } => "ready".to_string(),
+                        //         JobState::Stopping { .. } => "stopping".to_string(),
+                        //         JobState::Finished { .. } => "finished".to_string(),
+                        //         JobState::Canceled => "canceled".to_string(),
+                        //     }
+                        // }
+                        // JobStatus::Error { job_error } => {
+                        //     format!(
+                        //         "error ({:?}): {}",
+                        //         job_error.error_kind, job_error.description
+                        //     )
+                        // }
+                        // JobStatus::Inactive => {
+                        //     "queue".to_string()
+                        // }
+                        // JobStatus::Terminated(treadmill_rs::api::switchboard::JobResult {
+                        //     job_id: _,
+                        //     supervisor_id: _,
+                        //     exit_status,
+                        //     host_output: _,
+                        //     terminated_at,
+                        // }) => {
+                        //     format!("terminated at {terminated_at}: {exit_status}")
+                        // }
+                        // }
                     );
                 }
             }
@@ -488,10 +524,47 @@ async fn list_supervisors(client: &Client, config: &config::Config) -> Result<()
         .await?;
 
     if response.status().is_success() {
-        let supervisor_ids: Vec<Uuid> = response.json().await?;
+        let switchboard::supervisors::list::Response::Ok { supervisors } = response.json().await?
+        else {
+            unreachable!();
+        };
         println!("Supervisors:");
-        for (index, supervisor_id) in supervisor_ids.iter().enumerate() {
-            println!("{}. {}", index + 1, supervisor_id);
+        for (index, (supervisor_id, status)) in supervisors.iter().enumerate() {
+            println!(
+                "{}. {} ({})",
+                index + 1,
+                supervisor_id,
+                match status {
+                    SupervisorStatus::Busy { job_id, job_state } => {
+                        format!(
+                            "busy (job={job_id}, {})",
+                            match job_state {
+                                RunningJobState::Initializing { .. } => {
+                                    "starting"
+                                }
+                                RunningJobState::Ready => {
+                                    "ready"
+                                }
+                                RunningJobState::Terminating => {
+                                    "terminating"
+                                }
+                                RunningJobState::Terminated => {
+                                    "terminated (?)"
+                                }
+                            }
+                        )
+                    }
+                    SupervisorStatus::BusyDisconnected { job_id, .. } => {
+                        format!("busy (job={job_id}, disconnected)")
+                    }
+                    SupervisorStatus::Idle => {
+                        "idle".to_string()
+                    }
+                    SupervisorStatus::Disconnected => {
+                        "idle (disconnected)".to_string()
+                    }
+                }
+            );
         }
     } else {
         let error_text = response.text().await?;

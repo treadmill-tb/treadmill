@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            select job_id, job_state as \"job_state: _\", logged_at\n            from tml_switchboard.job_state_history\n            where job_id = $1;\n            ",
+  "query": "\n        select job_id, job_event as \"job_event: _\", logged_at\n        from tml_switchboard.job_events\n        where job_id = $1 and job_event->>'event_type' = 'state_transition'\n        order by logged_at desc\n        limit 1;\n        ",
   "describe": {
     "columns": [
       {
@@ -10,7 +10,7 @@
       },
       {
         "ordinal": 1,
-        "name": "job_state: _",
+        "name": "job_event: _",
         "type_info": "Jsonb"
       },
       {
@@ -30,5 +30,5 @@
       false
     ]
   },
-  "hash": "e973a092e35e77c7fda9349c551868831d056492caa695e66e27c60ee0fe573c"
+  "hash": "7baa0c1fb988dd83feb29ec7b036776fc96eedcd86cd3159b53b9cad5e033aa4"
 }

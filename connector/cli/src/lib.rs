@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use log::{error, info};
 use serde::Deserialize;
 
-use treadmill_rs::api::switchboard_supervisor::ParameterValue;
 use treadmill_rs::api::switchboard_supervisor::{ImageSpecification, RestartPolicy};
+use treadmill_rs::api::switchboard_supervisor::{ParameterValue, SupervisorEvent};
 use treadmill_rs::connector;
 use treadmill_rs::image::manifest::ImageId;
 use uuid::Uuid;
@@ -487,28 +487,7 @@ impl<S: connector::Supervisor> connector::SupervisorConnector for CliConnector<S
         }
     }
 
-    async fn update_job_state(&self, job_id: Uuid, job_state: connector::JobState) {
-        log::info!(
-            "Supervisor provides job state for job {}: {:#?}",
-            job_id,
-            job_state
-        );
-    }
-
-    async fn report_job_error(&self, job_id: Uuid, error: connector::JobError) {
-        log::info!(
-            "Supervisor provides job error: job {}, error: {:#?}",
-            job_id,
-            error,
-        );
-    }
-
-    async fn send_job_console_log(&self, job_id: Uuid, console_bytes: Vec<u8>) {
-        log::debug!(
-            "Supervisor provides console log: job {}, length: {}, message: {:?}",
-            job_id,
-            console_bytes.len(),
-            String::from_utf8_lossy(&console_bytes)
-        );
+    async fn update_event(&self, supervisor_event: SupervisorEvent) {
+        log::info!("Superisor provides event: {supervisor_event:?} ");
     }
 }
