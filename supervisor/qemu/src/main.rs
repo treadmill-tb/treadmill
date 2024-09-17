@@ -48,6 +48,16 @@ struct QemuImgMetadata {
     children: Vec<QemuImgChildMetadata>,
     encrypted: Option<bool>,
     backing_filename_format: Option<String>,
+    // According to [1], these attributes are described as
+    // - backing-filename: name of the backing file
+    // - full-backing-filename: full path of the backing file
+    //
+    // In practice it seems that `full-backing-filename` points to the
+    // resolved path of the backing file (relative to the current
+    // working directory), whereas `backing-filename` is just the raw
+    // attribute stored in the image.
+    //
+    // [1]: https://www.qemu.org/docs/master/interop/qemu-storage-daemon-qmp-ref.html
     backing_filename: Option<PathBuf>,
     full_backing_filename: Option<PathBuf>,
 }
@@ -86,24 +96,28 @@ pub struct QemuConfig {
     /// Main QEMU binary to execute for a job.
     qemu_binary: PathBuf,
 
-    /// qemu-img binary, to work with qcow2 files.
+    /// `qemu-img` binary, to work with qcow2 files.
     qemu_img_binary: PathBuf,
 
     /// Directory to keep state:
     state_dir: PathBuf,
 
+    /// Directory to keep state:
     /// List of arguments to pass to the QEMU binary.
     ///
     /// These arguments support template strings using the
-    /// [strfmt](https://docs.rs/strfmt/latest/strfmt/) crate.
+    /// [`strfmt`](https://docs.rs/strfmt/latest/strfmt/) crate.q
     ///
     /// The available template strings are:
     ///
-    /// - job_id: UUID as a hyphenated string
+    /// - `job_id`: UUID as a hyphenated string
     ///
-    /// - job_workdir: the working directory for the job
+    /// - `qcow2_disk`: main `qcow2` disk, which may be an overlay. In the case
+    ///   that it is an overlay, it is set up such that all other layers can be
+    ///   correctly resolved (relative to the current working directory)
     ///
-    /// - main_disk_image: path to the main disk image
+    /// - `tcp_control_socket_listen_addr: full socket address, with IPv6
+    ///   address properly enclosed in square brackets, e.g., `[::1]:8080`
     qemu_args: Vec<String>,
 
     /// Maximum "working" disk image to be allocated for a job, in bytes.
@@ -169,7 +183,7 @@ pub struct QemuSupervisorJobRunningState {
 pub enum QemuSupervisorJobState {
     /// State to indicate that the job is starting.
     ///
-    /// We use this to reserve a spot in the [QemuSupervisor]'s jobs map,
+    /// We use this to reserve a spot in the [`QemuSupervisor`]'s `jobs` map,
     /// such that we can release the global HashMap lock afterwards.
     Starting,
 
@@ -252,14 +266,14 @@ impl QemuSupervisor {
     async fn fetch_image(this: &Arc<Self>, job_id: Uuid, iteration: usize) {
         event!(Level::DEBUG, "Entering fetch_image");
 
-        // This function can either be called directly from start_job, or by
+        // This function can either be called directly from `start_job`, or by
         // polling on the image fetch operation.
         //
         // It may be possible that we cancel the poll task, but race with it
-        // already scheduling another invocation of this fetch_image function.
+        // already scheduling another invocation of this `fetch_image` function.
         // However, in this case, we'll also have transitioned the job into the
-        // ImageFetched state. Thus, if the job is in any state other than
-        // FetchingImage, we just exit without doing anything:
+        // `ImageFetched` state. Thus, if the job is in any state other than
+        // `FetchingImage`, we just exit without doing anything:
         let job_opt = {
             // Do not hold onto the global job's lock:
             this.jobs.lock().await.get(&job_id).cloned()
@@ -276,7 +290,7 @@ impl QemuSupervisor {
                 // per se, so let's issue a debug message just in case:
                 event!(
                     Level::DEBUG,
-                    "Job {job_id} vanished across invocations of fetch_image",
+                    "Job {job_id} vanished across invocations of `fetch_image`",
                 );
                 return;
             }
@@ -286,11 +300,11 @@ impl QemuSupervisor {
         let mut job_lg = job.lock().await;
         event!(Level::DEBUG, "Acquired job object lock");
 
-        // We swap in a state of Starting temporarily to please the Rust
+        // We swap in a state of `Starting` temporarily to please the Rust
         // borrow checker. Before we leave this function, we must replace this
         // state again!
         //
-        // If the job is in any state other than FetchingImage, swap back and
+        // If the job is in any state other than `FetchingImage`, swap back and
         // return immediately:
         let fetching_image_state = match std::mem::replace(
             &mut *job_lg,
@@ -312,7 +326,7 @@ impl QemuSupervisor {
         };
 
         // Check whether the image store already holds this image. If it does,
-        // we can pass the manifest to the start_job_cont function. Otherwise,
+        // we can pass the manifest to the `start_job_cont` function. Otherwise,
         // (continue) polling:
         let fetch_endpoints = vec![];
         event!(Level::TRACE, ?fetch_endpoints, image_id = ?fetching_image_state.image_id, "Requesting that image_store_client fetch image");
@@ -331,15 +345,15 @@ impl QemuSupervisor {
                     "image_store_client.fetch_image indicates that the image is present"
                 );
                 // Image is fetched, retrieve its manifest and pass it onto
-                // start_job_cont. Retrieving the manifest should not fail.
+                // `start_job_cont`. Retrieving the manifest should not fail.
                 //
                 // Don't need to post a status update to the coordinator
                 // here. If we didn't need to fetch an image, this will simply
-                // skip reporting the FetchingImage starting stage, and if we
+                // skip reporting the `FetchingImage` starting stage, and if we
                 // do need to fetch one this will be reported below.
                 //
-                // The transition to start_job_cont will then report a
-                // subsequent status, such as Allocating.
+                // The transition to `start_job_cont` will then report a
+                // subsequent status, such as `Allocating`.
 
                 let manifest = match this
                     .image_store_client
@@ -366,10 +380,10 @@ impl QemuSupervisor {
                             .await;
 
                         // No resources have been allocated (yet), so simply
-                        // remove the job and set its state to Stopping, in
+                        // remove the job and set its state to `Stopping`, in
                         // case anyone else has a reference to it still.
                         //
-                        // Safe to call, we don't hold a lock on this.jobs:
+                        // Safe to call, we don't hold a lock on `this.jobs`:
                         this.remove_job(job_id).await;
 
                         // Prevent other tasks from further advancing this job's state:
@@ -379,9 +393,9 @@ impl QemuSupervisor {
                     }
                 };
 
-                // Place the job in the ImageFetched state and continue
+                // Place the job in the `ImageFetched` state and continue
                 // starting it. This prevents any other poll task firing this
-                // function from calling start_job_cont twice:
+                // function from calling `start_job_cont` twice:
                 event!(
                     Level::DEBUG,
                     ?manifest,
@@ -430,7 +444,7 @@ impl QemuSupervisor {
                     )
                     .await;
 
-                // Put the job into the FetchingImage state:
+                // Put the job into the `FetchingImage` state:
                 event!(Level::DEBUG, "Transitioning job into FetchingImage state");
                 *job_lg = QemuSupervisorJobState::FetchingImage(QemuSupervisorFetchingImageState {
                     poll_task: Some(poll_task),
@@ -458,7 +472,7 @@ impl QemuSupervisor {
                 // job and set its state to Stopping, in case anyone else has
                 // a reference to it still.
                 //
-                // Safe to call, we don't hold a lock on this.jobs:
+                // Safe to call, we don't hold a lock on `this.jobs`:
                 this.remove_job(job_id).await;
 
                 // Prevent other tasks from further advancing this job's state:
@@ -491,7 +505,7 @@ impl QemuSupervisor {
         // want images to be able to reference arbitrary paths in our filesystem
         // as underlying layers.
         //
-        // We use qemu-img to retrieve the (partial) metadata of an image.
+        // We use `qemu-img` to retrieve the (partial) metadata of an image.
 
         // Now, for every image in the chain, parse the metadata and make sure
         // that the image file:
@@ -532,7 +546,7 @@ impl QemuSupervisor {
                 .await
                 .map_err(|e| anyhow::Error::from(e))
                 .and_then(|output| {
-                    // Ideally we'd want to use the nightly exit_ok() here:
+                    // Ideally we'd want to use the nightly `exit_ok()` here:
                     if !output.status.success() {
                         bail!(
                             "Running qemu-img failed with exit-code {:?}",
@@ -587,14 +601,14 @@ impl QemuSupervisor {
                 .get("org.tockos.treadmill.image.qemu_layered_v0.blob-virtual-size")
                 .ok_or_else(|| {
                     anyhow!(
-                        "Image blob {} missing blob-virtual-size attribute",
+                        "Image blob {} missing `blob-virtual-size` attribute",
                         current_image
                     )
                 })
                 .and_then(|size_bytes_str| {
                     u64::from_str_radix(size_bytes_str, 10).with_context(|| {
                         format!(
-                            "Parsing blob {}'s blob-virtual-size attribute as u64",
+                            "Parsing blob {}'s `blob-virtual-size` attribute as u64",
                             current_image
                         )
                     })
@@ -626,14 +640,14 @@ impl QemuSupervisor {
                 }
             }
 
-            // If the manifest has a lower attribute then this image must have
+            // If the manifest has a `lower` attribute then this image must have
             // a backing file attribute that's part of our image store, and the
             // qcow2 image's backing file path must resolve to the same file as
             // our image store lookup.
             //
-            // If the manifest doesn't have a lower attribute, then the qcow2
-            // file may not have either full_backing_filename nor a
-            // backing_filename:
+            // If the manifest doesn't have a `lower` attribute, then the qcow2
+            // file may not have either `full_backing_filename` nor a
+            // `backing_filename`:
             let blob_lower_opt = blob_spec
                 .attrs
                 .get("org.tockos.treadmill.image.qemu_layered_v0.lower");
@@ -697,7 +711,7 @@ impl QemuSupervisor {
                 // All checks passed, continue with the next layer:
                 current_image = blob_lower;
             } else {
-                // Image is not supposed to have any lower / backing layer:
+                // Image is not supported to have any lower / backing layer:
                 if metadata.backing_filename.is_some() || metadata.full_backing_filename.is_some() {
                     bail!(
                         "Image blob {} (file {:?}) does not have a \
@@ -803,7 +817,7 @@ impl QemuSupervisor {
             .await
             .map_err(|e| anyhow::Error::from(e))
             .and_then(|output| {
-                // Ideally we'd want to use the nightly exit_ok() here:
+                // Ideally we'd want to use the nightly `exit_ok()` here:
                 if !output.status.success() {
                     bail!(
                         "Running qemu-img failed with exit-code {:?}, stdout: {:?}, stderr: {:?}",
@@ -830,9 +844,9 @@ impl QemuSupervisor {
     #[instrument(skip(this))]
     async fn start_job_cont(this: &Arc<Self>, job_id: Uuid) {
         // Obtain a reference to the job. It's possible for the job to have
-        // transitioned from ImageFetched to any other state in between
-        // fetch_image releasing its lock and this function executing, so if
-        // the job is no longer alive or in the ImageFetched state, return.
+        // transitioned from `ImageFetched` to any other state in between
+        // `fetch_image` releasing its lock and this function executing, so if
+        // the job is no longer alive or in the `ImageFetched` state, return.
         let job_opt = {
             // Do not hold onto the global job's lock:
             this.jobs.lock().await.get(&job_id).cloned()
@@ -859,11 +873,11 @@ impl QemuSupervisor {
         let mut job_lg = job.lock().await;
         event!(Level::DEBUG, "Acquired job object lock");
 
-        // We swap in a state of Starting temporarily to please the Rust
+        // We swap in a state of `Starting` temporarily to please the Rust
         // borrow checker. Before we leave this function, we must replace this
         // state again!
         //
-        // If the job is in any state other than ImageFetched, swap back and
+        // If the job is in any state other than `ImageFetched`, swap back and
         // return immediately:
         let QemuSupervisorImageFetchedState {
             start_job_req,
@@ -897,7 +911,7 @@ impl QemuSupervisor {
             .await;
 
         // Parse the manifest and sanity-check all image layers. We do this in
-        // an async block such that we can use the ? operator:
+        // an async block such that we can use the ``?`` operator:
         let (top_image_path, top_image_qemu_info) =
             match this.start_job_parse_manifest_check_images(&manifest).await {
                 Ok(v) => v,
@@ -918,10 +932,10 @@ impl QemuSupervisor {
                         .await;
 
                     // No resources have been allocated (yet), so simply remove the
-                    // job and set its state to Stopping, in case anyone else has
+                    // job and set its state to `Stopping`, in case anyone else has
                     // a reference to it still.
                     //
-                    // Safe to call, we don't hold a lock on this.jobs:
+                    // Safe to call, we don't hold a lock on `this.jobs`:
                     this.remove_job(job_id).await;
 
                     // Prevent other tasks from further advancing this job's state:
@@ -949,10 +963,10 @@ impl QemuSupervisor {
                     .await;
 
                 // No resources have been allocated (yet), so simply remove the
-                // job and set its state to Stopping, in case anyone else has
+                // job and set its state to `Stopping`, in case anyone else has
                 // a reference to it still.
                 //
-                // Safe to call, we don't hold a lock on this.jobs:
+                // Safe to call, we don't hold a lock on `this.jobs`:
                 this.remove_job(job_id).await;
 
                 // Prevent other tasks from further advancing this job's state:
@@ -1197,7 +1211,7 @@ impl connector::Supervisor for QemuSupervisor {
 
         // Take a short-lived lock on the global jobs object to check that we're
         // not asked to double-start a job and whether we can fit another. If
-        // everything's good, insert a job into the HashMap and return its Arc
+        // everything's good, insert a job into the HashMap and return its `Arc`
         // reference. This way we don't hold the global lock for too long.
         //
         // We can't use a Rust scope, as we'll want to obtain a lock on the job
@@ -1205,7 +1219,7 @@ impl connector::Supervisor for QemuSupervisor {
         // risk of scheduling another action on this job when it's not yet
         // initialized fully.
         //
-        // ============ GLOBAL jobs HASHMAP LOCK ACQUIRE ==================
+        // ============ GLOBAL `jobs` HASHMAP LOCK ACQUIRE ==================
         //
         let mut jobs_lg = this.jobs.lock().await;
 
@@ -1237,7 +1251,7 @@ impl connector::Supervisor for QemuSupervisor {
             });
         }
 
-        // We're good to create this job, create it in the Starting state:
+        // We're good to create this job, create it in the `Starting` state:
         let job = Arc::new(Mutex::new(QemuSupervisorJobState::Starting));
 
         // Acquire a lock on the job. No one else has a reference yet, so this
@@ -1250,10 +1264,10 @@ impl connector::Supervisor for QemuSupervisor {
         // Release the global lock here:
         std::mem::drop(jobs_lg);
         //
-        // ========== GLOBAL jobs HASHMAP LOCK RELEASED ======================
+        // ========== GLOBAL `jobs` HASHMAP LOCK RELEASED ======================
 
         // The job was inserted into the jobs HashMap and initialized as
-        // Starting, let the coordinator know:
+        // `Starting`, let the coordinator know:
         this.connector
             .update_job_state(
                 start_job_req.job_id,
@@ -1280,7 +1294,7 @@ impl connector::Supervisor for QemuSupervisor {
             }
         };
 
-        // Put the job into the FetchingImage state:
+        // Put the job into the `FetchingImage` state:
         let job_id = start_job_req.job_id; // Copy required below
         *job_lg = QemuSupervisorJobState::FetchingImage(QemuSupervisorFetchingImageState {
             start_job_req,
@@ -1302,7 +1316,7 @@ impl connector::Supervisor for QemuSupervisor {
         this: &Arc<Self>,
         msg: connector::StopJobMessage,
     ) -> Result<(), connector::JobError> {
-        // Get a reference to this job by an ephemeral lock on jobs HashMap:
+        // Get a reference to this job by an emphemeral lock on `jobs` HashMap:
         let job: Arc<Mutex<QemuSupervisorJobState>> = {
             this.jobs
                 .lock()
@@ -1338,11 +1352,11 @@ impl connector::Supervisor for QemuSupervisor {
 
                 // We must never be able to acquire a lock over a job in
                 // this state. The job will atomically transition from
-                // Starting to some other state in the implementation of
-                // start_job. This state is just a placeholder in the
+                // `Starting` to some other state in the implementation of
+                // `start_job`. This state is just a placeholder in the
                 // global jobs map, such that no other job with the same ID
                 // can be started:
-                unreachable!("Job must not be in Starting state!");
+                unreachable!("Job must not be in `Starting state!");
             }
 
             prev_state @ QemuSupervisorJobState::Stopping => {
@@ -1375,10 +1389,10 @@ impl connector::Supervisor for QemuSupervisor {
             }) => {
                 // Make sure that we don't have another poll task
                 // scheduled. This is potentially racy, where this abort() call
-                // can come right after an invocation of Self::fetch_image has
+                // can come right after an invocation of `Self::fetch_image` has
                 // been scheduled. However, that function will not do anything,
-                // given the job state is now Stopping instead of
-                // FetchingImage:
+                // given the job state is now `Stopping` instead of
+                // `FetchingImage``:
                 if let Some(handle) = poll_task {
                     handle.abort();
                 }
@@ -1419,7 +1433,7 @@ impl connector::Supervisor for QemuSupervisor {
             .await;
 
         // Finally, remove the job from the jobs HashMap. Eventually, all other
-        // Arc references (including the one we hold) will get dropped.
+        // `Arc` references (including the one we hold) will get dropped.
         assert!(this.jobs.lock().await.remove(&msg.job_id).is_some());
 
         Ok(())
@@ -1550,8 +1564,8 @@ impl control_socket::Supervisor for QemuSupervisor {
 
         match self.jobs.lock().await.get(&job_id) {
             Some(job_state) => match &*job_state.lock().await {
-                // Job is currently running, forward this event to a JobState
-                // change towards Ready:
+                // Job is currently running, forward this event to a `JobState`
+                // change towards `Ready`:
                 QemuSupervisorJobState::Running(_) => {
                     self.connector
                         .update_job_state(
@@ -1598,8 +1612,15 @@ impl control_socket::Supervisor for QemuSupervisor {
         // We don't want to do any proper job-state transition here, as this
         // input is controlled by the puppet. It may simply claim to be
         // rebooting or shutting down, but not actually doing this. We want the
-        // JobState transitions to be well-defined, and governed by the
+        // `JobState` transitions to be well-defined, and governed by the
         // supervisor, not the host.
+        //
+        // As an alternative, we should -- in the `Ready` state -- introduce a
+        // new field that shows the reported state from the puppet, for instance
+        // whether it claims to be rebooting or shutting down.
+        //
+        // The `Stopping` state is then only set for when the QEMU process is
+        // stopped, or when a shutdown is invoked from within the supervisor.
     }
 
     #[instrument(skip(self))]
@@ -1611,7 +1632,18 @@ impl control_socket::Supervisor for QemuSupervisor {
     ) {
         event!(Level::INFO, "Received puppet reboot event");
 
-        // Same as above, we don't transition the job state based on puppet input.
+        // We don't want to do any proper job-state transition here, as this
+        // input is controlled by the puppet. It may simply claim to be
+        // rebooting or shutting down, but not actually doing this. We want the
+        // `JobState` transitions to be well-defined, and governed by the
+        // supervisor, not the host.
+        //
+        // As an alternative, we should -- in the `Ready` state -- introduce a
+        // new field that shows the reported state from the puppet, for instance
+        // whether it claims to be rebooting or shutting down.
+        //
+        // The `Stopping` state is then only set for when the QEMU process is
+        // stopped, or when a shutdown is invoked from within the supervisor.
     }
 }
 
@@ -1639,7 +1671,7 @@ async fn main() -> Result<()> {
     match config.base.coord_connector {
         SupervisorCoordConnector::CliConnector => {
             let cli_connector_config = config.cli_connector.clone().ok_or(anyhow!(
-                "Requested CliConnector, but cli_connector config not present."
+                "Requested CliConnector, but `cli_connector` config not present."
             ))?;
 
             // Both the supervisor and connectors have references to each other,
@@ -1674,7 +1706,7 @@ async fn main() -> Result<()> {
         }
         SupervisorCoordConnector::WsConnector => {
             let ws_connector_config = config.ws_connector.clone().ok_or(anyhow!(
-                "Requested WsConnector, but ws_connector config not present."
+                "Requested WsConnector, but `ws_connectort` config not present."
             ))?;
 
             // Both the supervisor and connectors have references to each other,
