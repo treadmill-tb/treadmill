@@ -155,6 +155,7 @@ pub enum JobStatus {
     },
     // Hasn't started yet
     Inactive,
+
     Terminated(JobResult),
 }
 impl JobStatus {

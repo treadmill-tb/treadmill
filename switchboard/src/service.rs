@@ -28,7 +28,7 @@ use treadmill_rs::api::switchboard::{
 };
 use treadmill_rs::api::switchboard_supervisor;
 use treadmill_rs::api::switchboard_supervisor::{ImageSpecification, ReportedSupervisorStatus};
-use treadmill_rs::connector::{JobError, JobState};
+use treadmill_rs::connector::{JobError, JobErrorKind, JobState};
 use uuid::Uuid;
 
 pub mod herd;
@@ -638,39 +638,45 @@ impl Service {
         Ok(())
     }
 
-    fn launch_disconnection_watchdog(
-        self: &Arc<Self>,
-        supervisor_id: Uuid,
-        supervisor_termination_handle: JoinHandle<()>,
-    ) {
-        let this = Arc::clone(self);
-        tokio::spawn({
-            let span = tracing::info_span!("(supervisor disconnection watchdog)", %supervisor_id);
-            async move {
-                if let Err(e) = supervisor_termination_handle.await {
-                    tracing::error!("supervisor ({supervisor_id}) run loop panicked: {e}");
-                } else {
-                    tracing::info!("supervisor ({supervisor_id}) run loop exited successfully");
-                }
-
-                let mut state = this.state.lock().await;
-
-                // if there's an active reservation, need to close that up
-                let maybe_job_id = state.kanban.get_active_job_on(supervisor_id);
-                if let Some(job_id) = maybe_job_id {
-                    let active_job = state.kanban.get_active_job(job_id).unwrap();
-                    active_job.current_reservation = None;
-
-                    // TODO: is there anything else that we need to clean up?
-                }
-
-                // TODO: I think it's safe to ignore the potential error returns
-                let _ = state.herd.supervisor_disconnected(supervisor_id);
-
-                // TODO: is there anything else that we need to clean up for this supervisor?
+    pub async fn handle_job_state_update(
+        &self,
+        job_id: Uuid,
+        job_state: JobStatus,
+    ) -> Result<(), ServiceError> {
+        match job_state {
+            JobStatus::Terminated(job_result) => self.cancel_job_internal(job_result).await,
+            JobStatus::Error { job_error } => {
+                // Job encountered an error
+                let job_result = JobResult {
+                    job_id,
+                    supervisor_id: None,
+                    exit_status: ExitStatus::HostTerminatedWithError,
+                    host_output: Some(serde_json::json!({ "error": job_error.description })),
+                    terminated_at: Utc::now(),
+                };
+                self.cancel_job_internal(job_result).await
             }
-            .instrument(span)
-        });
+            _ => {
+                // handle other states if necessary
+                Ok(())
+            }
+        }
+    }
+
+    async fn cancel_job_internal(&self, job_result: JobResult) -> Result<(), ServiceError> {
+        let mut state = self.state.lock().await;
+        let active_job = state
+            .kanban
+            .remove_active_job(job_result.job_id)
+            .map_err(ServiceError::Kanban)?;
+
+        // Update the job in the database
+        let mut tx = self.pool.begin().await.map_err(ServiceError::Database)?;
+        sql_finish_job(job_result, &mut tx)
+            .await
+            .map_err(ServiceError::Database)?;
+        tx.commit().await.map_err(ServiceError::Database)?;
+        Ok(())
     }
 }
 
@@ -838,6 +844,57 @@ impl Service {
         }
 
         Ok(())
+    }
+
+    fn launch_disconnection_watchdog(
+        self: &Arc<Self>,
+        supervisor_id: Uuid,
+        supervisor_termination_handle: JoinHandle<()>,
+    ) {
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            if let Err(e) = supervisor_termination_handle.await {
+                tracing::error!("Supervisor ({}) run loop panicked: {:?}", supervisor_id, e);
+            } else {
+                tracing::info!(
+                    "Supervisor ({}) run loop exited successfully",
+                    supervisor_id
+                );
+            }
+
+            let mut state = this.state.lock().await;
+
+            // Clean up the supervisor's state
+            let _ = state.herd.supervisor_disconnected(supervisor_id);
+
+            // Clean up any active jobs on this supervisor
+            if let Some(job_id) = state.kanban.get_active_job_on(supervisor_id) {
+                let active_job = state
+                    .kanban
+                    .remove_active_job(job_id)
+                    .expect("Active job should exist");
+
+                // Build job result indicating the host dropped the job
+                let job_result = JobResult {
+                    job_id,
+                    supervisor_id: Some(supervisor_id),
+                    exit_status: ExitStatus::HostDroppedJob,
+                    host_output: None,
+                    terminated_at: Utc::now(),
+                };
+
+                // Finalize the job without sending a stop message
+                if let Err(e) = this
+                    .stop_internal(job_id, supervisor_id, job_result, &mut state, false)
+                    .await
+                {
+                    tracing::error!(
+                        "Failed to finalize job after supervisor disconnect: {:?}",
+                        e
+                    );
+                }
+            }
+        });
     }
 }
 
@@ -1010,19 +1067,21 @@ impl Service {
             .kanban
             .remove_active_job(job_id)
             .map_err(ServiceError::Kanban)?;
+
         if send_stop_job_message {
             if let Some(res) = active_job.current_reservation {
                 if let Err(_e) = res
                     .stop_job(switchboard_supervisor::StopJobMessage { job_id })
                     .map_err(ServiceError::Reservation)
                 {
-                    // not connected, which is... fine?
+                    // Not connected, which is... fine?
                     tracing::warn!("Failed to send stop message, believed disconnected");
                 }
             } else {
                 tracing::warn!("Can't send stop message: no current reservation");
             }
         }
+
         if let Err(e) = state.herd.unreserve_supervisor(supervisor_id) {
             match e {
                 HerdError::NotRegistered => {
@@ -1054,101 +1113,47 @@ impl Service {
         close_tx: watch::Sender<()>,
         mut stop_rx: oneshot::Receiver<ExitStatus>,
     ) {
-        // can't #[instrument] a closure, so
         let span = tracing::info_span!("(job termination watchdog)", %job_id, %supervisor_id);
         let termination_watchdog_future = async move {
             let sleep = sleep_until(job_times_out_instant);
-            // Needed to `tokio::select!` on `sleep` in a loop
             tokio::pin!(sleep);
 
-            // Wait until job times out OR receives a termination status.
-            let exit_reason = loop {
-                let job_status = tokio::select! {
-                    event = jsr.recv() => {
-                        // received Option<JobStatus>
-                        if let Some(status) = event {
-                            status
-                        } else {
-                            // connection closed, which, uh, should only happen if JSR closes or
-                            // close_tx goes off, so in theory not possible here?
-                            unreachable!()
-                        }
-                    },
-                    () = &mut sleep => {
-                        // timeout
-                        break ExitReason::Timeout
-                    },
-                    // could either be Ok(()) or Err(oneshot::RecvError); we don't really care which
-                    // Err variant means the ActiveJob dropped or someone did a `mem::swap` or
-                    // something similar so /shrug
-                    reason = &mut stop_rx => {
-                        break match reason {
-                            Ok(reason) => match reason {
-                                ExitStatus::JobCanceled => ExitReason::Canceled,
-                                ExitStatus::HostDroppedJob => ExitReason::HostDropped,
-                                x => {
-                                    tracing::error!("termination watchdog for job ({job_id}): stop_rx received bad value: {x:?}");
-                                    ExitReason::Canceled
-                                }
+            let exit_reason = tokio::select! {
+                exit_status = jsr.recv() => {
+                    match exit_status {
+                        Some(JobStatus::Error { job_error }) =>
+                            ExitReason::Error { error: job_error },
+                        Some(JobStatus::Terminated(job_result)) =>
+                            ExitReason::Terminated { job_result },
+                        _ => ExitReason::Error {
+                            error: JobError {
+                                error_kind: JobErrorKind::InternalError,
+                                description: "Unexpected job status received".to_string(),
                             }
-                            Err(e) => {
-                                tracing::error!("termination watchdog for job ({job_id}): stop_rx failed: {e}");
-                                ExitReason::Canceled
-                            }
-                        }
+                        },
                     }
-                };
-                match job_status {
-                    JobStatus::Active {
-                        job_state: JobState::Finished { status_message },
-                    } => break ExitReason::Finished { status_message },
-                    JobStatus::Active {
-                        job_state: JobState::Canceled,
-                    } => break ExitReason::Canceled,
-                    JobStatus::Error { job_error } => break ExitReason::Error { error: job_error },
-                    JobStatus::Active { .. } => continue,
-                    JobStatus::Inactive => continue,
-                    JobStatus::Terminated(_) => {
-                        unreachable!()
-                    }
-                }
+                },
+                () = &mut sleep => ExitReason::Timeout,
+                _ = &mut stop_rx => ExitReason::Canceled,
             };
 
             tracing::info!("Job ({job_id}) terminated with reason: {exit_reason:?}");
 
-            // Actually, we always want to send a stop job message
-            //let send_stop_message = matches!(&exit_reason, ExitReason::Timeout);
-
             let job_result = build_job_result(job_id, supervisor_id, exit_reason);
 
-            let mut state = self.state.lock().await;
-            if let Err(e) = self
-                .stop_internal(
-                    job_id,
-                    supervisor_id,
-                    job_result,
-                    &mut state,
-                    true,
-                )
-                .await
-            {
-                // uh okay not much we can do tbh
-                tracing::error!("Failed to stop terminated job: {e}");
+            if let Err(e) = self.cancel_job_internal(job_result).await {
+                tracing::error!("Failed to cancel terminated job: {e}");
             } else {
-                tracing::debug!("Successfully stopped job ({job_id})");
+                tracing::debug!("Successfully cancelled job ({job_id})");
             }
 
-            // Close the JSR reloader and the job status tee
             if let Err(e) = close_tx.send(()) {
                 tracing::warn!("Failed to send close event to status confluence: {e}");
             }
 
-            // is there anything else we need to do?
-            // TODO: restart logic
-
             tracing::info!("Finished termination process for job ({job_id})");
         }
-            .instrument(span);
+        .instrument(span);
 
         tokio::spawn(termination_watchdog_future);
     }
@@ -1256,10 +1261,12 @@ enum ExitReason {
     Error { error: JobError },
     Timeout,
     HostDropped,
+    Terminated { job_result: JobResult },
 }
 
 fn build_job_result(job_id: Uuid, supervisor_id: Uuid, exit_reason: ExitReason) -> JobResult {
     match exit_reason {
+        ExitReason::Terminated { job_result } => job_result,
         ExitReason::Finished { status_message } => {
             let host_output = status_message.map(|s| {
                 serde_json::from_str(&s).unwrap_or_else(|e| {
@@ -1335,38 +1342,29 @@ fn launch_job_status_tee(
 // === GROUPING: SQL HELPERS
 // -------------------------------------------------------------------------------------------------
 
-async fn sql_finish_job(
+pub async fn sql_finish_job(
     job_result: JobResult,
-    tx: &mut sqlx::Transaction<'_, Postgres>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<(), sqlx::Error> {
+    // Example SQL query to update the job status
     sqlx::query!(
-        r#"update tml_switchboard.jobs
-            set simple_state = 'inactive'
-            where job_id = $1;"#,
-        job_result.job_id,
-    )
-    .execute(tx.as_mut())
-    .await?;
-    sqlx::query!(
-        r#"insert into tml_switchboard.job_results
-            values ($1, $2, $3, $4, $5);"#,
-        job_result.job_id,
+        r#"
+        UPDATE jobs
+        SET
+            supervisor_id = $1,
+            exit_status = $2,
+            host_output = $3,
+            terminated_at = $4
+        WHERE job_id = $5
+        "#,
         job_result.supervisor_id,
-        SqlExitStatus::from(job_result.exit_status) as SqlExitStatus,
+        job_result.exit_status as ExitStatusType, // Ensure proper type mapping
         job_result.host_output,
-        job_result.terminated_at
+        job_result.terminated_at,
+        job_result.job_id,
     )
-    .execute(tx.as_mut())
+    .execute(tx)
     .await?;
-    let job_id = job_result.job_id;
-    sql::job::history::insert(
-        job_id,
-        JobStatus::Terminated(job_result),
-        Utc::now(),
-        tx.as_mut(),
-    )
-    .await?;
-
     Ok(())
 }
 
