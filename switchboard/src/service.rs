@@ -1342,29 +1342,38 @@ fn launch_job_status_tee(
 // === GROUPING: SQL HELPERS
 // -------------------------------------------------------------------------------------------------
 
-pub async fn sql_finish_job(
+async fn sql_finish_job(
     job_result: JobResult,
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut sqlx::Transaction<'_, Postgres>,
 ) -> Result<(), sqlx::Error> {
-    // Example SQL query to update the job status
     sqlx::query!(
-        r#"
-        UPDATE jobs
-        SET
-            supervisor_id = $1,
-            exit_status = $2,
-            host_output = $3,
-            terminated_at = $4
-        WHERE job_id = $5
-        "#,
-        job_result.supervisor_id,
-        job_result.exit_status as ExitStatusType, // Ensure proper type mapping
-        job_result.host_output,
-        job_result.terminated_at,
+        r#"update tml_switchboard.jobs
+            set simple_state = 'inactive'
+            where job_id = $1;"#,
         job_result.job_id,
     )
-    .execute(tx)
+    .execute(tx.as_mut())
     .await?;
+    sqlx::query!(
+        r#"insert into tml_switchboard.job_results
+            values ($1, $2, $3, $4, $5);"#,
+        job_result.job_id,
+        job_result.supervisor_id,
+        SqlExitStatus::from(job_result.exit_status) as SqlExitStatus,
+        job_result.host_output,
+        job_result.terminated_at
+    )
+    .execute(tx.as_mut())
+    .await?;
+    let job_id = job_result.job_id;
+    sql::job::history::insert(
+        job_id,
+        JobStatus::Terminated(job_result),
+        Utc::now(),
+        tx.as_mut(),
+    )
+    .await?;
+
     Ok(())
 }
 
