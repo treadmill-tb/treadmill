@@ -21,7 +21,7 @@ use std::net::SocketAddr;
 use tracing::instrument;
 use treadmill_rs::api::switchboard::supervisors::list::{Filter, Response as LSResponse};
 use treadmill_rs::api::switchboard::supervisors::status::Response as SSResponse;
-use treadmill_rs::api::switchboard_supervisor::ws_challenge::{
+use treadmill_rs::api::switchboard_supervisor::websocket::{
     TREADMILL_WEBSOCKET_CONFIG, TREADMILL_WEBSOCKET_PROTOCOL,
 };
 use uuid::Uuid;

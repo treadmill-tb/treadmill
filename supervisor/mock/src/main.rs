@@ -18,6 +18,7 @@ use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 // use treadmill_sse_connector::SSEConnector;
 
 use tml_tcp_control_socket_server::TcpControlSocket;
+use treadmill_rs::api::switchboard_supervisor::{SupervisorEvent, SupervisorJobEvent};
 
 #[derive(Parser, Debug, Clone)]
 pub struct MockSupervisorArgs {
@@ -30,19 +31,19 @@ pub struct MockSupervisorArgs {
     puppet_binary: PathBuf,
 }
 
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub enum SSHPreferredIPVersion {
-    Unspecified,
-    V4,
-    V6,
-}
-
-impl Default for SSHPreferredIPVersion {
-    fn default() -> Self {
-        SSHPreferredIPVersion::Unspecified
-    }
-}
+// #[derive(Deserialize, Debug, Clone)]
+// #[serde(rename_all = "snake_case")]
+// pub enum SSHPreferredIPVersion {
+//     Unspecified,
+//     V4,
+//     V6,
+// }
+//
+// impl Default for SSHPreferredIPVersion {
+//     fn default() -> Self {
+//         SSHPreferredIPVersion::Unspecified
+//     }
+// }
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct MockConfig {
@@ -120,8 +121,8 @@ impl MockSupervisorJobState {
 
 #[derive(Debug)]
 pub struct MockSupervisor {
-    /// Connector to the central coordinator. All communication is mediated
-    /// through this connector.
+    /// Connector to the switchboard. All communication is mediated through
+    /// this connector.
     connector: Arc<dyn connector::SupervisorConnector>,
 
     /// We support running multiple jobs on one supervisor (in particular when
@@ -218,15 +219,17 @@ impl connector::Supervisor for MockSupervisor {
         // The job was inserted into the `jobs` HashMap and initialized as
         // `Starting`, let the coordinator know:
         this.connector
-            .update_job_state(
-                msg.job_id,
-                connector::JobState::Starting {
-                    // Generic starting stage. We don't fetch, allocate or provision any
-                    // resources right now, so report a generic state instead:
-                    stage: connector::JobStartingStage::Starting,
+            .update_event(SupervisorEvent::JobEvent {
+                job_id: msg.job_id,
+                event: SupervisorJobEvent::StateTransition {
+                    new_state: connector::RunningJobState::Initializing {
+                        // Generic starting stage. We don't fetch, allocate or provision any
+                        // resources right now, so report a generic state instead:
+                        stage: connector::JobInitializingStage::Starting,
+                    },
                     status_message: None,
                 },
-            )
+            })
             .await;
 
         // Start a control socket server on TCP port 20202
@@ -257,14 +260,16 @@ impl connector::Supervisor for MockSupervisor {
 
         // Job has been started, let the coordinator know:
         this.connector
-            .update_job_state(
-                msg.job_id,
-                connector::JobState::Starting {
-                    // Booting, but puppet has not yet reported "ready":
-                    stage: connector::JobStartingStage::Booting,
+            .update_event(SupervisorEvent::JobEvent {
+                job_id: msg.job_id,
+                event: SupervisorJobEvent::StateTransition {
+                    new_state: connector::RunningJobState::Initializing {
+                        // Booting, but puppet has not yet reported "ready":
+                        stage: connector::JobInitializingStage::Booting,
+                    },
                     status_message: None,
                 },
-            )
+            })
             .await;
 
         // Mark the job as started:
@@ -287,7 +292,7 @@ impl connector::Supervisor for MockSupervisor {
         // state and return a reference to it. We take ownership of the old job
         // state and destruct it.
 
-        // Get a reference to this job by an emphemeral lock on `jobs` HashMap:
+        // Get a reference to this job by an ephemeral lock on `jobs` HashMap:
         let job: Arc<Mutex<MockSupervisorJobState>> = {
             this.jobs
                 .lock()
@@ -339,12 +344,13 @@ impl connector::Supervisor for MockSupervisor {
 
         // Job is stopping, let the coordinator know:
         this.connector
-            .update_job_state(
-                msg.job_id,
-                connector::JobState::Stopping {
+            .update_event(SupervisorEvent::JobEvent {
+                job_id: msg.job_id,
+                event: SupervisorJobEvent::StateTransition {
+                    new_state: connector::RunningJobState::Terminating,
                     status_message: None,
                 },
-            )
+            })
             .await;
 
         // Right now, we only have the running state that can be returned above.
@@ -365,12 +371,13 @@ impl connector::Supervisor for MockSupervisor {
 
         // Job has been stopped, let the coordinator know:
         this.connector
-            .update_job_state(
-                msg.job_id,
-                connector::JobState::Finished {
+            .update_event(SupervisorEvent::JobEvent {
+                job_id: msg.job_id,
+                event: SupervisorJobEvent::StateTransition {
+                    new_state: connector::RunningJobState::Terminated,
                     status_message: None,
                 },
-            )
+            })
             .await;
 
         // Finally, remove the job from the jobs HashMap. Eventually, all other
@@ -504,14 +511,14 @@ impl control_socket::Supervisor for MockSupervisor {
                 // change towards `Ready`:
                 MockSupervisorJobState::Running(_) => {
                     self.connector
-                        .update_job_state(
+                        .update_event(SupervisorEvent::JobEvent {
                             job_id,
-                            connector::JobState::Ready {
-                                // TODO: populate connection info
-                                connection_info: vec![],
+                            event: SupervisorJobEvent::StateTransition {
+                                // TODO: connection info
+                                new_state: connector::RunningJobState::Ready,
                                 status_message: None,
                             },
-                        )
+                        })
                         .await;
                 }
 

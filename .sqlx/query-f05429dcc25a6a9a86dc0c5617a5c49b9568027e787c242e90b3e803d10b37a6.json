@@ -1,10 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                insert into tml_switchboard.jobs\n                values ($1, null, $2, $3, $4, $5, $6, $7, $8, $9, 'queued', null, null)\n                ",
+  "query": "\n        insert into tml_switchboard.jobs\n        values ($1, $2, $3, $4, $5, $6, $7, $8, $9,\n                'queued', $10, null, null, null, null, null, default)\n        ",
   "describe": {
     "columns": [],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid",
         "Uuid",
         "Bytea",
@@ -30,5 +31,5 @@
     },
     "nullable": []
   },
-  "hash": "c204e7e31eca772ba05c3ee0c60069162fde5c34a64a23f960801b84eac06044"
+  "hash": "f05429dcc25a6a9a86dc0c5617a5c49b9568027e787c242e90b3e803d10b37a6"
 }

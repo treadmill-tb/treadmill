@@ -9,10 +9,12 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use uuid::Uuid;
 
-pub mod ws_challenge {
+pub mod websocket {
     pub static TREADMILL_WEBSOCKET_PROTOCOL: &str = "treadmillv1";
     pub static TREADMILL_WEBSOCKET_CONFIG: &str = "tml-socket-config";
 }
+
+// -- (Configuration)  -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocketConfig {
@@ -109,10 +111,11 @@ pub struct StopJobMessage {
     pub job_id: Uuid,
 }
 
-// -- StatusInfo -----------------------------------------------------------------------------------
+// -- Job/Supervisor Status ------------------------------------------------------------------------
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
-pub enum JobStartingStage {
+pub enum JobInitializingStage {
     /// Generic starting stage, for when no other stage is applicable:
     Starting,
 
@@ -131,78 +134,81 @@ pub enum JobStartingStage {
     /// either be into the `Ready` or `Failed` states.
     Booting,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub enum JobSessionConnectionInfo {
-    #[serde(rename = "direct_ssh")]
-    DirectSSH {
-        hostname: String,
-        port: u16,
-        host_key_fingerprints: Vec<String>,
-    },
-    #[serde(rename = "rendezvous_ssh")]
-    RendezvousSSH {
-        hostname: String,
-        port: u16,
-        host_key_fingerprints: Vec<String>,
-    },
-}
+// #[derive(Serialize, Deserialize, Debug, Clone)]
+// #[serde(rename_all = "snake_case")]
+// pub enum JobSessionConnectionInfo {
+//     #[serde(rename = "direct_ssh")]
+//     DirectSSH {
+//         hostname: String,
+//         port: u16,
+//         host_key_fingerprints: Vec<String>,
+//     },
+//     #[serde(rename = "rendezvous_ssh")]
+//     RendezvousSSH {
+//         hostname: String,
+//         port: u16,
+//         host_key_fingerprints: Vec<String>,
+//     },
+// }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "state")]
 #[serde(rename_all = "snake_case")]
-pub enum JobState {
-    Starting {
-        stage: JobStartingStage,
-        status_message: Option<String>,
-    },
-    Ready {
-        connection_info: Vec<JobSessionConnectionInfo>,
-        status_message: Option<String>,
-    },
-    Stopping {
-        status_message: Option<String>,
-    },
-    Finished {
-        // Host output:
-        status_message: Option<String>,
-    },
-    // Treadmill (or at least, this part of it) doesn't really care about the success or failure of
-    // what it runs, but rather that the process of running goes successfully. If something goes
-    // wrong, and it's Treadmill's fault, then that should be reported as a JobError. Otherwise,
-    // it's JobState::Finished, and any further information can be extracted from the status message
-    // (which, incidentally, should be JSON?);
-    // Thus, the following variant is being removed since it is never constructed and nowhere
-    // referenced:
-    //
-    //      Failed { status_message: Option<String>, },
-    //
-    // Similarly, the following variant is being added:
-    Canceled,
+pub enum RunningJobState {
+    Initializing { stage: JobInitializingStage },
+    Ready,
+    // Ready { connection_info: Vec<JobSessionConnectionInfo>, },
+    Terminating,
+    Terminated,
 }
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum JobUserExitStatus {
+    Success,
+    Error,
+    Unknown,
+}
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisorJobEvent {
+    StateTransition {
+        new_state: RunningJobState,
+        status_message: Option<String>,
+    },
+    DeclareExitStatus {
+        user_exit_status: JobUserExitStatus,
+        host_output: Option<String>,
+    },
+    // Technically a state transition
+    Error {
+        error: JobError,
+    },
+    ConsoleLog {
+        console_bytes: Vec<u8>,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum ReportedSupervisorStatus {
-    OngoingJob { job_id: Uuid, job_state: JobState },
+    OngoingJob {
+        job_id: Uuid,
+        job_state: RunningJobState,
+    },
     Idle,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum SupervisorEvent {
-    UpdateJobState {
+    JobEvent {
         job_id: Uuid,
-        job_state: JobState,
-    },
-    ReportJobError {
-        job_id: Uuid,
-        error: JobError,
-    },
-    SendJobConsoleLog {
-        job_id: Uuid,
-        console_bytes: Vec<u8>,
+        event: SupervisorJobEvent,
     },
 }
+
+// -- General Request/Response ---------------------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
@@ -216,7 +222,6 @@ pub struct Response<T> {
     pub response_to_request_id: Uuid,
     pub message: T,
 }
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type", content = "message")]
@@ -230,13 +235,6 @@ pub enum Message {
 
     SupervisorEvent(SupervisorEvent),
 }
-
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum ResponseMessage {
-    StatusResponse(ReportedSupervisorStatus),
-}
-
 impl Message {
     pub fn request_id(&self) -> Option<Uuid> {
         match self {
@@ -259,4 +257,9 @@ impl Message {
             x => Err(x),
         }
     }
+}
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ResponseMessage {
+    StatusResponse(ReportedSupervisorStatus),
 }

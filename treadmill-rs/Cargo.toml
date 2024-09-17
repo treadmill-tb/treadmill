@@ -12,7 +12,6 @@ serde_with = { version = "3.8.1", features = ["hex", "base64"] }
 subtle = "2.6.1"
 chrono = { version = "0.4.38", features = ["serde"] }
 fundu = { version = "2.0.0", features = ["chrono", "serde"] }
-serde_json = "1.0.122"
 base64 = "0.22.1"
 http = "1.1.0"
 tml-switchboard-macros = { path = "../switchboard-macros" }

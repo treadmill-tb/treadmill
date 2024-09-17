@@ -6,31 +6,36 @@ use treadmill_rs::api::switchboard_supervisor::{ImageSpecification, RestartPolic
 use treadmill_rs::image::manifest::ImageId;
 use uuid::Uuid;
 
+pub mod history;
+pub mod parameters;
+
 #[derive(Debug, Copy, Clone, sqlx::Type)]
 #[sqlx(type_name = "tml_switchboard.exit_status", rename_all = "snake_case")]
 pub enum SqlExitStatus {
     FailedToMatch,
     QueueTimeout,
-    HostStartFailure,
-    HostTerminatedWithError,
-    HostTerminatedWithSuccess,
-    HostTerminatedTimeout,
+    InternalSupervisorError,
+    SupervisorHostStartError,
+    SupervisorDroppedJob,
     JobCanceled,
-    UnregisteredSupervisor,
-    HostDroppedJob,
+    JobTimeout,
+    WorkloadFinishedError,
+    WorkloadFinishedSuccess,
+    WorkloadFinishedUnknown,
 }
 impl From<SqlExitStatus> for ExitStatus {
     fn from(value: SqlExitStatus) -> Self {
         match value {
             SqlExitStatus::FailedToMatch => ExitStatus::FailedToMatch,
-            SqlExitStatus::HostStartFailure => ExitStatus::HostStartFailure,
-            SqlExitStatus::HostTerminatedTimeout => ExitStatus::HostTerminatedTimeout,
-            SqlExitStatus::HostTerminatedWithError => ExitStatus::HostTerminatedWithError,
-            SqlExitStatus::HostTerminatedWithSuccess => ExitStatus::HostTerminatedWithSuccess,
-            SqlExitStatus::JobCanceled => ExitStatus::JobCanceled,
             SqlExitStatus::QueueTimeout => ExitStatus::QueueTimeout,
-            SqlExitStatus::UnregisteredSupervisor => ExitStatus::UnregisteredSupervisor,
-            SqlExitStatus::HostDroppedJob => ExitStatus::HostDroppedJob,
+            SqlExitStatus::InternalSupervisorError => ExitStatus::InternalSupervisorError,
+            SqlExitStatus::SupervisorHostStartError => ExitStatus::SupervisorHostStartFailure,
+            SqlExitStatus::SupervisorDroppedJob => ExitStatus::SupervisorDroppedJob,
+            SqlExitStatus::JobCanceled => ExitStatus::JobCanceled,
+            SqlExitStatus::JobTimeout => ExitStatus::JobTimeout,
+            SqlExitStatus::WorkloadFinishedSuccess => ExitStatus::WorkloadFinishedSuccess,
+            SqlExitStatus::WorkloadFinishedError => ExitStatus::WorkloadFinishedError,
+            SqlExitStatus::WorkloadFinishedUnknown => ExitStatus::WorkloadFinishedUnknown,
         }
     }
 }
@@ -38,14 +43,15 @@ impl From<ExitStatus> for SqlExitStatus {
     fn from(value: ExitStatus) -> Self {
         match value {
             ExitStatus::FailedToMatch => SqlExitStatus::FailedToMatch,
-            ExitStatus::HostStartFailure => SqlExitStatus::HostStartFailure,
-            ExitStatus::HostTerminatedTimeout => SqlExitStatus::HostTerminatedTimeout,
-            ExitStatus::HostTerminatedWithError => SqlExitStatus::HostTerminatedWithError,
-            ExitStatus::HostTerminatedWithSuccess => SqlExitStatus::HostTerminatedWithSuccess,
-            ExitStatus::JobCanceled => SqlExitStatus::JobCanceled,
             ExitStatus::QueueTimeout => SqlExitStatus::QueueTimeout,
-            ExitStatus::UnregisteredSupervisor => SqlExitStatus::UnregisteredSupervisor,
-            ExitStatus::HostDroppedJob => SqlExitStatus::HostDroppedJob,
+            ExitStatus::InternalSupervisorError => SqlExitStatus::InternalSupervisorError,
+            ExitStatus::SupervisorHostStartFailure => SqlExitStatus::SupervisorHostStartError,
+            ExitStatus::SupervisorDroppedJob => SqlExitStatus::SupervisorDroppedJob,
+            ExitStatus::JobCanceled => SqlExitStatus::JobCanceled,
+            ExitStatus::JobTimeout => SqlExitStatus::JobTimeout,
+            ExitStatus::WorkloadFinishedSuccess => SqlExitStatus::WorkloadFinishedSuccess,
+            ExitStatus::WorkloadFinishedError => SqlExitStatus::WorkloadFinishedError,
+            ExitStatus::WorkloadFinishedUnknown => SqlExitStatus::WorkloadFinishedUnknown,
         }
     }
 }
@@ -53,7 +59,7 @@ impl From<ExitStatus> for SqlExitStatus {
 #[derive(Debug, Clone, sqlx::Type)]
 #[sqlx(type_name = "tml_switchboard.restart_policy")]
 pub struct SqlRestartPolicy {
-    pub(crate) remaining_restart_count: i32,
+    pub remaining_restart_count: i32,
 }
 impl From<SqlRestartPolicy> for RestartPolicy {
     fn from(value: SqlRestartPolicy) -> Self {
@@ -97,8 +103,9 @@ pub async fn insert(
     sqlx::query!(
         r#"
         insert into tml_switchboard.jobs
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', null, null)
-         "#,
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                'queued', $10, null, null, null, null, null, default)
+        "#,
         as_job_id,
         resume_job_id,
         restart_job_id,
@@ -122,11 +129,14 @@ pub async fn insert(
 }
 
 #[derive(Debug, Copy, Clone, sqlx::Type)]
-#[sqlx(type_name = "tml_switchboard.simple_state", rename_all = "snake_case")]
-pub enum SqlSimpleState {
+#[sqlx(
+    type_name = "tml_switchboard.functional_state",
+    rename_all = "snake_case"
+)]
+pub enum SqlFunctionalState {
     Queued,
-    Running,
-    Inactive,
+    Dispatched,
+    Finalized,
 }
 
 pub struct SqlJob {
@@ -135,15 +145,32 @@ pub struct SqlJob {
     #[allow(dead_code)]
     restart_job_id: Option<Uuid>,
     sql_image_id: Option<Vec<u8>>,
+
     ssh_keys: Vec<String>,
     sql_restart_policy: SqlRestartPolicy,
     enqueued_by_token_id: Uuid,
     tag_config: String,
     job_timeout: PgInterval,
+
+    functional_state: SqlFunctionalState,
+
+    // Filled out when initialized into `queued` functional state
     queued_at: DateTime<Utc>,
-    simple_state: SqlSimpleState,
+
+    // Filled out if and when transitioned into `dispatched` functional state
     started_at: Option<DateTime<Utc>>,
-    running_on_supervisor_id: Option<Uuid>,
+    dispatched_on_supervisor_id: Option<Uuid>,
+
+    // Filled out when transitioned into `finalized` functional state
+    #[allow(dead_code)]
+    exit_status: Option<SqlExitStatus>,
+    #[allow(dead_code)]
+    host_output: Option<String>,
+    #[allow(dead_code)]
+    terminated_at: Option<DateTime<Utc>>,
+
+    #[allow(dead_code)]
+    last_updated_at: DateTime<Utc>,
 }
 
 impl SqlJob {
@@ -194,11 +221,11 @@ impl SqlJob {
     pub fn started_at(&self) -> Option<&DateTime<Utc>> {
         self.started_at.as_ref()
     }
-    pub fn running_on_supervisor_id(&self) -> Option<Uuid> {
-        self.running_on_supervisor_id
+    pub fn dispatched_on_supervisor_id(&self) -> Option<Uuid> {
+        self.dispatched_on_supervisor_id
     }
-    pub fn simple_state(&self) -> SqlSimpleState {
-        self.simple_state
+    pub fn functional_state(&self) -> SqlFunctionalState {
+        self.functional_state
     }
 }
 
@@ -211,7 +238,9 @@ pub async fn fetch_by_job_id(
         r#"
         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
-        queued_at, simple_state as "simple_state: _", started_at, running_on_supervisor_id
+        queued_at, functional_state as "functional_state: _", started_at,
+        dispatched_on_supervisor_id, exit_status as "exit_status: _", host_output, terminated_at,
+        last_updated_at
         from tml_switchboard.jobs where job_id = $1;
         "#,
         job_id
@@ -226,163 +255,42 @@ pub async fn fetch_all_queued(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJob>, 
         r#"
         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
-        queued_at, simple_state as "simple_state: _", started_at, running_on_supervisor_id
-        from tml_switchboard.jobs where simple_state = 'queued';
+        queued_at, functional_state as "functional_state: _", started_at,
+        dispatched_on_supervisor_id, exit_status as "exit_status: _", host_output, terminated_at,
+        last_updated_at
+        from tml_switchboard.jobs where functional_state = 'queued';
         "#
     )
     .fetch_all(conn)
     .await
 }
 
-pub async fn fetch_all_running(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJob>, sqlx::Error> {
+pub async fn fetch_all_dispatched(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJob>, sqlx::Error> {
     sqlx::query_as!(
         SqlJob,
         r#"
         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
-        queued_at, simple_state as "simple_state: _", started_at, running_on_supervisor_id
-        from tml_switchboard.jobs where simple_state = 'running';
+        queued_at, functional_state as "functional_state: _", started_at,
+        dispatched_on_supervisor_id, exit_status as "exit_status: _", host_output, terminated_at,
+        last_updated_at
+        from tml_switchboard.jobs where functional_state = 'dispatched';
         "#
     )
     .fetch_all(conn)
     .await
 }
 
-pub mod parameters {
-    use sqlx::PgExecutor;
-    use std::collections::HashMap;
-    use treadmill_rs::api::switchboard_supervisor::ParameterValue;
-    use uuid::Uuid;
-
-    pub struct SqlJobParam {
-        pub key: String,
-        pub value: SqlJobParamValue,
-    }
-    #[derive(Debug, Clone, sqlx::Type)]
-    #[sqlx(type_name = "tml_switchboard.parameter_value")]
-    pub struct SqlJobParamValue {
-        pub value: String,
-        pub is_secret: bool,
-    }
-
-    pub async fn fetch_by_job_id(
-        job_id: Uuid,
-        conn: impl PgExecutor<'_>,
-    ) -> Result<HashMap<String, ParameterValue>, sqlx::Error> {
-        let records = sqlx::query_as!(SqlJobParam,
-        r#"select key, value as "value:_" from tml_switchboard.job_parameters where job_id = $1;"#,
-            job_id
-        ).fetch_all(conn)
-            .await?;
-        Ok(records
-            .into_iter()
-            .map(|record| {
-                (
-                    record.key,
-                    ParameterValue {
-                        value: record.value.value,
-                        secret: record.value.is_secret,
-                    },
-                )
-            })
-            .collect())
-    }
-
-    pub async fn insert(
-        job_id: Uuid,
-        parameters: HashMap<String, ParameterValue>,
-        conn: impl PgExecutor<'_>,
-    ) -> Result<(), sqlx::Error> {
-        let (keys, values): (Vec<String>, Vec<ParameterValue>) = parameters.into_iter().unzip();
-        let values: Vec<SqlJobParamValue> = values
-            .into_iter()
-            .map(|ParameterValue { value, secret }| SqlJobParamValue {
-                value,
-                is_secret: secret,
-            })
-            .collect();
-
-        // since we have a uniform variable, we individually unnest the keys and values arrays
-        sqlx::query!(
-            r#"
-            INSERT INTO tml_switchboard.job_parameters (job_id, key, value)
-            SELECT $1, (c_rec).unnest, row((c_rec).value, (c_rec).is_secret)::tml_switchboard.parameter_value
-            FROM UNNEST($2::text[], $3::tml_switchboard.parameter_value[]) as c_rec;
-            "#,
-            job_id,
-            keys.as_slice(),
-            values.as_slice() as &[SqlJobParamValue]
-        )
-        .execute(conn)
-        .await
-        .map(|_| ())
-    }
-}
-
-pub mod history {
-    use chrono::{DateTime, Utc};
-    use sqlx::types::Json;
-    use sqlx::PgExecutor;
-    use treadmill_rs::api::switchboard::JobStatus;
-    use uuid::Uuid;
-
-    pub struct SqlJobHistoryEntry {
-        pub job_id: Uuid,
-        pub job_state: Json<JobStatus>,
-        pub logged_at: DateTime<Utc>,
-    }
-
-    pub async fn fetch_by_job_id(
-        job_id: Uuid,
-        conn: impl PgExecutor<'_>,
-    ) -> Result<Vec<SqlJobHistoryEntry>, sqlx::Error> {
-        sqlx::query_as!(
-            SqlJobHistoryEntry,
-            r#"
-            select job_id, job_state as "job_state: _", logged_at
-            from tml_switchboard.job_state_history
-            where job_id = $1;
-            "#,
-            job_id
-        )
-        .fetch_all(conn)
-        .await
-    }
-    pub async fn fetch_most_recent_by_job_id(
-        job_id: Uuid,
-        conn: impl PgExecutor<'_>,
-    ) -> Result<Option<SqlJobHistoryEntry>, sqlx::Error> {
-        sqlx::query_as!(
-            SqlJobHistoryEntry,
-            r#"
-            select job_id, job_state as "job_state: _", logged_at
-            from tml_switchboard.job_state_history
-            where job_id = $1
-            order by logged_at desc
-            limit 1;
-            "#,
-            job_id
-        )
-        .fetch_optional(conn)
-        .await
-    }
-    pub async fn insert(
-        job_id: Uuid,
-        job_state: JobStatus,
-        logged_at: DateTime<Utc>,
-        conn: impl PgExecutor<'_>,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query!(
-            r#"
-            insert into tml_switchboard.job_state_history
-            values ($1, $2, $3)
-            "#,
-            job_id,
-            Json(job_state) as Json<JobStatus>,
-            logged_at
-        )
-        .execute(conn)
-        .await
-        .map(|_| ())
-    }
-}
+// #[derive(Debug, Copy, Clone, sqlx::Type)]
+// #[sqlx(
+//     type_name = "tml_switchboard.execution_status",
+//     rename_all = "snake_case"
+// )]
+// pub enum SqlExecutionStatus {
+//     Queued,
+//     Scheduled,
+//     Initializing,
+//     Ready,
+//     Terminating,
+//     Terminated,
+// }

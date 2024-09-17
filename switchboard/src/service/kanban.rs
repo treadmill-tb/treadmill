@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::{mpsc, oneshot, watch};
-use treadmill_rs::api::switchboard::{ExitStatus, JobStatus};
+use treadmill_rs::api::switchboard::ExitStatus;
+use treadmill_rs::api::switchboard_supervisor::SupervisorJobEvent;
 use uuid::Uuid;
 
 #[derive(Debug, Error)]
@@ -45,7 +46,7 @@ pub struct ActiveJob {
     pub current_reservation: Option<Reservation>,
 
     /// Whenever a new reservation is created, the UnboundedReceiver<JobStatus> should be sent here
-    pub job_status_receiver_sender: UnboundedSender<UnboundedReceiver<JobStatus>>,
+    pub job_status_receiver_sender: UnboundedSender<UnboundedReceiver<SupervisorJobEvent>>,
 
     /// Used to notify the termination watchdog that the job is being canceled
     pub stop_tx: Option<oneshot::Sender<ExitStatus>>,
@@ -97,7 +98,7 @@ impl Kanban {
         supervisor_id: Uuid,
         mut reservation: Option<Reservation>,
         stop_tx: oneshot::Sender<ExitStatus>,
-    ) -> Result<(UnboundedReceiver<JobStatus>, watch::Sender<()>), KanbanError> {
+    ) -> Result<(UnboundedReceiver<SupervisorJobEvent>, watch::Sender<()>), KanbanError> {
         if self.queued_jobs.contains_key(&job_id) {
             return Err(KanbanError::AlreadyExists);
         }
@@ -133,7 +134,7 @@ impl Kanban {
         supervisor_id: Uuid,
         reservation: Reservation,
         stop_tx: oneshot::Sender<ExitStatus>,
-    ) -> Result<(UnboundedReceiver<JobStatus>, watch::Sender<()>), KanbanError> {
+    ) -> Result<(UnboundedReceiver<SupervisorJobEvent>, watch::Sender<()>), KanbanError> {
         let queued_job = self.remove_queued_job(job_id)?;
         // Disarm the queue timeout watchdog
         let _ = queued_job.exit_notifier.send(());
@@ -195,12 +196,12 @@ impl Kanban {
 /// channel, or the channel drops, the channel reloading task will forward any remaining events it
 /// has access to, and then exit immediately.
 fn launch_channel_reloader() -> (
-    UnboundedSender<UnboundedReceiver<JobStatus>>,
-    UnboundedReceiver<JobStatus>,
+    UnboundedSender<UnboundedReceiver<SupervisorJobEvent>>,
+    UnboundedReceiver<SupervisorJobEvent>,
     watch::Sender<()>,
 ) {
-    let (jsr_tx, mut jsr_rx) = mpsc::unbounded_channel::<UnboundedReceiver<JobStatus>>();
-    let (job_status_tx, job_status_rx) = mpsc::unbounded_channel::<JobStatus>();
+    let (jsr_tx, mut jsr_rx) = mpsc::unbounded_channel::<UnboundedReceiver<SupervisorJobEvent>>();
+    let (job_status_tx, job_status_rx) = mpsc::unbounded_channel::<SupervisorJobEvent>();
     let (close_tx, mut close_rx) = watch::channel(());
 
     tokio::spawn(async move {

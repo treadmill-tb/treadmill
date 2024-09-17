@@ -5,12 +5,12 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::sync::{mpsc, oneshot, watch, Mutex, OwnedMutexGuard};
+use tokio::sync::{mpsc, oneshot, Mutex, OwnedMutexGuard};
 use tokio::task::JoinHandle;
-use treadmill_rs::api::switchboard::JobStatus;
 use treadmill_rs::api::switchboard_supervisor;
 use treadmill_rs::api::switchboard_supervisor::{
     ReportedSupervisorStatus, Request, ResponseMessage, SocketConfig, SupervisorEvent,
+    SupervisorJobEvent,
 };
 use treadmill_rs::connector::{StartJobMessage, StopJobMessage};
 use uuid::Uuid;
@@ -45,7 +45,7 @@ pub struct ConnectedSupervisor {
     // for debugging
     #[allow(dead_code)]
     event_stream: UnboundedReceiver<SupervisorEvent>,
-    job_status_receiver: Arc<Mutex<UnboundedReceiver<JobStatus>>>,
+    job_status_receiver: Arc<Mutex<UnboundedReceiver<SupervisorJobEvent>>>,
 }
 impl ConnectedSupervisor {
     pub async fn request_supervisor_status(&self) -> Result<ReportedSupervisorStatus, HerdError> {
@@ -66,6 +66,14 @@ impl ConnectedSupervisor {
         };
         Ok(status)
     }
+    pub fn stop_job(&self, stop_job_message: StopJobMessage) -> Result<(), HerdError> {
+        self.outbox_sender
+            .send((
+                switchboard_supervisor::Message::StopJob(stop_job_message),
+                None,
+            ))
+            .map_err(|_| HerdError::NotConnected)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -78,11 +86,11 @@ pub struct Reservation {
     #[allow(dead_code)]
     supervisor_id: Uuid,
     outbox_sender: UnboundedSender<OutboxMessage>,
-    job_status_receiver: Option<UnboundedReceiver<JobStatus>>,
+    job_status_receiver: Option<UnboundedReceiver<SupervisorJobEvent>>,
     // not currently used; phased out in favor of reading directly from the database instead of
     // risking race connnections (in the general case)
-    #[allow(dead_code)]
-    job_status_watch: watch::Receiver<JobStatus>,
+    // #[allow(dead_code)]
+    // job_status_watch: watch::Receiver<JobStatus>,
 }
 impl Reservation {
     pub fn start_job(&self, start_job_message: StartJobMessage) -> Result<(), ReservationError> {
@@ -101,7 +109,7 @@ impl Reservation {
             ))
             .map_err(|_| ReservationError::Disconnected)
     }
-    pub fn take_job_status_receiver(&mut self) -> Option<UnboundedReceiver<JobStatus>> {
+    pub fn take_job_status_receiver(&mut self) -> Option<UnboundedReceiver<SupervisorJobEvent>> {
         self.job_status_receiver.take()
     }
 }
@@ -129,13 +137,12 @@ async fn build_reservation(
         outbox_sender = lg.outbox_sender.clone();
         job_status_receiver = lg.job_status_receiver.clone().lock_owned().await;
     }
-    let (job_status_receiver, job_status_watch) = watch_latest_job_status(job_status_receiver);
+    let (job_status_receiver /*job_status_watch*/,) = watch_latest_job_status(job_status_receiver);
 
     Reservation {
         supervisor_id,
         outbox_sender,
         job_status_receiver: Some(job_status_receiver),
-        job_status_watch,
     }
 }
 
@@ -397,7 +404,7 @@ pub fn prepare_supervisor_connection(
     // kinds of events. Most saliently, they are only interested in the most recent status.
     // Therefore, we introduce a splitter onto the supervisor event stream that performs this
     // filtering.
-    let (job_status_receiver, duplicated_event_stream) = extract_job_status(event_receiver);
+    let (job_status_receiver, duplicated_event_stream) = extract_job_events(event_receiver);
 
     let connected_supervisor = ConnectedSupervisor {
         outbox_sender,
@@ -411,28 +418,35 @@ pub fn prepare_supervisor_connection(
 /// Copies the input `OwnedMutexGuard<UnboundedReceiver<JobStatus>>` onto an [`UnboundedReceiver`]
 /// as well as a [`watch::Receiver`], so that both the entire backlog of values _and_ the latest
 /// value are conveniently available.
+///
+/// XXX(mc): currently only duplicates event stream.
 fn watch_latest_job_status(
-    mut event_receiver: OwnedMutexGuard<UnboundedReceiver<JobStatus>>,
-) -> (UnboundedReceiver<JobStatus>, watch::Receiver<JobStatus>) {
+    mut event_receiver: OwnedMutexGuard<UnboundedReceiver<SupervisorJobEvent>>,
+) -> (
+    UnboundedReceiver<SupervisorJobEvent>, /*watch::Receiver<JobStatus>*/
+) {
     let (dupe_tx, dupe_rx) = mpsc::unbounded_channel();
-    let (watch_tx, watch_rx) = watch::channel(JobStatus::Inactive);
+    // let (watch_tx, watch_rx) = watch::channel(JobStatus {
+    //     state: JobState::Queued,
+    //     at_time: Utc::now(),
+    // });
 
     tokio::spawn(async move {
         while let Some(event) = tokio::select! {
             event = event_receiver.recv() => { event }
             _ = dupe_tx.closed() => { None }
-            _ = watch_tx.closed() => { None }
+            // _ = watch_tx.closed() => { None }
         } {
-            if watch_tx.send(event.clone()).is_err() {
-                return;
-            }
+            // if watch_tx.send(event.clone()).is_err() {
+            //     return;
+            // }
             if dupe_tx.send(event.clone()).is_err() {
                 return;
             }
         }
     });
 
-    (dupe_rx, watch_rx)
+    (dupe_rx /*watch_rx*/,)
 }
 
 /// Creates a Tokio task that forwards incoming events from `event_receiver`.
@@ -440,10 +454,10 @@ fn watch_latest_job_status(
 /// state updates and errors are copied onto the `UnboundedReceiver<JobStatus>`.
 /// When either of the receivers is dropped, the spawned task will complete and exit, dropping the
 /// senders for both of the returned `Receiver`s.
-fn extract_job_status(
+fn extract_job_events(
     mut event_receiver: UnboundedReceiver<SupervisorEvent>,
 ) -> (
-    UnboundedReceiver<JobStatus>,
+    UnboundedReceiver<SupervisorJobEvent>,
     UnboundedReceiver<SupervisorEvent>,
 ) {
     let (status_tx, status_rx) = mpsc::unbounded_channel();
@@ -457,27 +471,11 @@ fn extract_job_status(
             _ = status_tx.closed() => { None }
         } {
             match &event {
-                SupervisorEvent::UpdateJobState { job_state, .. } => {
-                    if status_tx
-                        .send(JobStatus::Active {
-                            job_state: job_state.clone(),
-                        })
-                        .is_err()
-                    {
+                SupervisorEvent::JobEvent { job_id: _, event } => {
+                    if status_tx.send(event.clone()).is_err() {
                         break;
                     }
                 }
-                SupervisorEvent::ReportJobError { error, .. } => {
-                    if status_tx
-                        .send(JobStatus::Error {
-                            job_error: error.clone(),
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                SupervisorEvent::SendJobConsoleLog { .. } => {}
             }
             if all_tx.send(event).is_err() {
                 break;

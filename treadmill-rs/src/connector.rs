@@ -1,12 +1,12 @@
+pub use crate::api::switchboard_supervisor::JobInitializingStage;
+pub use crate::api::switchboard_supervisor::RunningJobState;
+pub use crate::api::switchboard_supervisor::StartJobMessage;
+pub use crate::api::switchboard_supervisor::StopJobMessage;
+use crate::api::switchboard_supervisor::{SupervisorEvent, SupervisorJobEvent};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
-
-pub use crate::api::switchboard_supervisor::JobStartingStage;
-pub use crate::api::switchboard_supervisor::JobState;
-pub use crate::api::switchboard_supervisor::StartJobMessage;
-pub use crate::api::switchboard_supervisor::StopJobMessage;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -87,9 +87,6 @@ pub trait Supervisor: std::fmt::Debug + Send + Sync + 'static {
     /// report on progress while starting or stopping a job, or performing
     /// similar actions.
     async fn stop_job(this: &Arc<Self>, request: StopJobMessage) -> Result<(), JobError>;
-
-    // For now, the tracking of supervisor status is done in the SupervisorConnector.
-    //async fn request_status(this: &Arc<Self>) -> SupervisorStatus;
 }
 
 /// Connector to a coordinator.
@@ -107,11 +104,38 @@ pub trait SupervisorConnector: std::fmt::Debug + Send + Sync + 'static {
     /// intends the supervisor to shut down.
     async fn run(&self);
 
-    async fn update_job_state(&self, job_id: Uuid, job_state: JobState);
-    async fn report_job_error(&self, job_id: Uuid, error: JobError);
+    async fn update_event(&self, supervisor_event: SupervisorEvent);
 
+    async fn update_job_state(
+        &self,
+        job_id: Uuid,
+        job_state: RunningJobState,
+        status_message: Option<String>,
+    ) {
+        self.update_event(SupervisorEvent::JobEvent {
+            job_id,
+            event: SupervisorJobEvent::StateTransition {
+                new_state: job_state,
+                status_message,
+            },
+        })
+        .await
+    }
+    async fn report_job_error(&self, job_id: Uuid, error: JobError) {
+        self.update_event(SupervisorEvent::JobEvent {
+            job_id,
+            event: SupervisorJobEvent::Error { error },
+        })
+        .await
+    }
     // TODO: we'll likely want to remove this method from here, and instead have
     // supervisors directly interact with log servers to push events. Or have
     // connectors perform these interactions for them...
-    async fn send_job_console_log(&self, job_id: Uuid, console_bytes: Vec<u8>);
+    async fn send_job_console_log(&self, job_id: Uuid, console_bytes: Vec<u8>) {
+        self.update_event(SupervisorEvent::JobEvent {
+            job_id,
+            event: SupervisorJobEvent::ConsoleLog { console_bytes },
+        })
+        .await
+    }
 }

@@ -116,7 +116,7 @@ impl SupervisorConnection {
                 r = socket.next() => {
                     if let Some(r) = r {
                         if let Ok(ws::Message::Pong(v)) = r {
-                            tracing::debug!("Received PONG from supervisor ({supervisor_id})");
+                            tracing::trace!("Received PONG from supervisor ({supervisor_id})");
                             if !v.is_empty() {
                                 tracing::error!("Received PONG of nonzero size (size {})", v.len());
                                 return

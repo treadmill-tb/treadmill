@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO tml_switchboard.job_parameters (job_id, key, value)\n            SELECT $1, (c_rec).unnest, row((c_rec).value, (c_rec).is_secret)::tml_switchboard.parameter_value\n            FROM UNNEST($2::text[], $3::tml_switchboard.parameter_value[]) as c_rec;\n            ",
+  "query": "\n        INSERT INTO tml_switchboard.job_parameters (job_id, key, value)\n        SELECT $1, (c_rec).unnest, row((c_rec).value, (c_rec).is_secret)::tml_switchboard.parameter_value\n        FROM UNNEST($2::text[], $3::tml_switchboard.parameter_value[]) as c_rec;\n        ",
   "describe": {
     "columns": [],
     "parameters": {
@@ -35,5 +35,5 @@
     },
     "nullable": []
   },
-  "hash": "bfd043747fa8553f5126ed23e5fd3974b54afa80b6cc8cabd829b5610604be7f"
+  "hash": "4e858765a87b2858cb074247d63fa7408831e02433d93837f3c3e7d4027a647c"
 }

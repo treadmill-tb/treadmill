@@ -2,8 +2,9 @@ pub mod jobs;
 pub mod supervisors;
 
 use crate::api::supervisor_puppet::ParameterValue;
-use crate::api::switchboard_supervisor::RestartPolicy;
-use crate::connector::{JobError, JobState};
+use crate::api::switchboard_supervisor::{
+    JobInitializingStage, JobUserExitStatus, RestartPolicy, RunningJobState,
+};
 use crate::image::manifest::ImageId;
 use base64::Engine;
 use chrono::{DateTime, Utc};
@@ -100,75 +101,121 @@ pub struct JobRequest {
     pub override_timeout: Option<chrono::Duration>,
 }
 
+// In accordance with the Job Lifecycle document.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExitStatus {
     FailedToMatch,
     QueueTimeout,
-    HostStartFailure,
-    HostTerminatedWithError,
-    HostTerminatedWithSuccess,
-    HostTerminatedTimeout,
+    InternalSupervisorError,
+    SupervisorHostStartFailure,
+    SupervisorDroppedJob,
     JobCanceled,
-    UnregisteredSupervisor,
-    HostDroppedJob,
+    JobTimeout,
+    WorkloadFinishedSuccess,
+    WorkloadFinishedError,
+    WorkloadFinishedUnknown,
+}
+impl From<JobUserExitStatus> for ExitStatus {
+    fn from(value: JobUserExitStatus) -> Self {
+        match value {
+            JobUserExitStatus::Success => Self::WorkloadFinishedSuccess,
+            JobUserExitStatus::Error => Self::WorkloadFinishedError,
+            JobUserExitStatus::Unknown => Self::WorkloadFinishedUnknown,
+        }
+    }
 }
 impl Display for ExitStatus {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                ExitStatus::FailedToMatch => "failed to match",
-                ExitStatus::QueueTimeout => "timed out in queue",
-                ExitStatus::HostStartFailure => "host start failure",
-                ExitStatus::HostTerminatedWithError => "host terminated with error",
-                ExitStatus::HostTerminatedWithSuccess => "host terminated with success",
-                ExitStatus::HostTerminatedTimeout => "timed out while running",
-                ExitStatus::JobCanceled => "canceled",
-                ExitStatus::UnregisteredSupervisor => "supervisor was unregistered",
-                ExitStatus::HostDroppedJob => "supervisor dropped job",
+        let s = match self {
+            ExitStatus::FailedToMatch => "failed to match",
+            ExitStatus::QueueTimeout => "timed out in queue",
+            ExitStatus::InternalSupervisorError => "internal supervisor error",
+            ExitStatus::SupervisorHostStartFailure => "supervisor/host start failure",
+            ExitStatus::SupervisorDroppedJob => "supervisor dropped job",
+            ExitStatus::WorkloadFinishedError => "user-defined workload terminated with error",
+            ExitStatus::WorkloadFinishedSuccess => "user-defined workload terminated with success",
+            ExitStatus::WorkloadFinishedUnknown => {
+                "user-defined workload terminated with unknown status"
             }
-        )
+            ExitStatus::JobCanceled => "canceled",
+            ExitStatus::JobTimeout => "job timed out while dispatched",
+        };
+        f.write_str(s)
     }
 }
-
+/// Represents the finalized state of a job.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobResult {
+    /// The job's ID.
     pub job_id: Uuid,
+    /// If the job was dispatched, the ID of the supervisor it was dispatched on.
+    /// Otherwise [`None`].
     pub supervisor_id: Option<Uuid>,
+    /// Exit status of the job.
     pub exit_status: ExitStatus,
-    pub host_output: Option<serde_json::Value>,
+    /// Optional output.
+    pub host_output: Option<String>,
+    /// Time at which the switchboard processed the termination.
     pub terminated_at: DateTime<Utc>,
 }
-
+/// Represents a point in a job's lifecycle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum JobStatus {
-    Active {
-        // Not sure yet whether we should include this...
-        // on_supervisor_id: Uuid,
-        job_state: JobState,
-    },
-    Error {
-        job_error: JobError,
-    },
-    // Hasn't started yet
-    Inactive,
-    Terminated(JobResult),
+pub enum JobState {
+    Queued,
+    Scheduled,
+    Initializing { stage: JobInitializingStage },
+    Ready,
+    Terminating,
+    Terminated,
 }
-impl JobStatus {
-    pub fn did_terminate(&self) -> bool {
-        match self {
-            JobStatus::Active { job_state } => match job_state {
-                JobState::Finished { .. } | JobState::Canceled => true,
-                _ => false,
-            },
-            JobStatus::Error { .. } => true,
-            JobStatus::Inactive => false,
-            JobStatus::Terminated(_) => true,
+impl TryFrom<JobState> for RunningJobState {
+    type Error = JobState;
+
+    fn try_from(value: JobState) -> Result<Self, Self::Error> {
+        match value {
+            JobState::Queued => Err(value),
+            JobState::Scheduled => Err(value),
+            JobState::Initializing { stage } => Ok(Self::Initializing { stage }),
+            JobState::Ready => Ok(Self::Ready),
+            JobState::Terminating => Ok(Self::Terminating),
+            JobState::Terminated => Err(value),
         }
     }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event_type", rename_all = "snake_case")]
+pub enum JobEvent {
+    StateTransition {
+        state: JobState,
+        status_message: Option<String>,
+    },
+    DeclareWorkloadExitStatus {
+        workload_exit_status: JobUserExitStatus,
+        workload_output: Option<String>,
+    },
+    SetExitStatus {
+        exit_status: ExitStatus,
+        status_message: Option<String>,
+    },
+    FinalizeResult {
+        job_result: JobResult,
+    },
+}
+
+/// This is exclusively an API type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtendedJobState {
+    pub state: JobState,
+    pub dispatched_to_supervisor: Option<Uuid>,
+    pub result: Option<JobResult>,
+}
+/// Represents the status of a job as of some point in time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobStatus {
+    pub state: ExtendedJobState,
+    pub as_of: DateTime<Utc>,
 }
 
 /// Note the difference with [`switchboard_supervisor`](super::switchboard_supervisor)'s
@@ -179,8 +226,14 @@ impl JobStatus {
 #[serde(tag = "status")]
 #[serde(rename_all = "snake_case")]
 pub enum SupervisorStatus {
-    Busy { job_id: Uuid, job_state: JobState },
-    BusyDisconnected { job_id: Uuid, job_state: JobState },
+    Busy {
+        job_id: Uuid,
+        job_state: RunningJobState,
+    },
+    BusyDisconnected {
+        job_id: Uuid,
+        job_state: RunningJobState,
+    },
     Idle,
     Disconnected,
 }

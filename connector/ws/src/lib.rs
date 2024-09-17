@@ -16,12 +16,12 @@ use tokio_tungstenite::tungstenite::{
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::instrument;
 use treadmill_rs::api::switchboard::AuthToken;
-use treadmill_rs::api::switchboard_supervisor::ws_challenge::TREADMILL_WEBSOCKET_CONFIG;
+use treadmill_rs::api::switchboard_supervisor::websocket::TREADMILL_WEBSOCKET_CONFIG;
 use treadmill_rs::api::switchboard_supervisor::{
-    self, ws_challenge::TREADMILL_WEBSOCKET_PROTOCOL, ReportedSupervisorStatus, Response,
-    SocketConfig, SupervisorEvent,
+    self, websocket::TREADMILL_WEBSOCKET_PROTOCOL, JobUserExitStatus, ReportedSupervisorStatus,
+    Response, SocketConfig, SupervisorEvent, SupervisorJobEvent,
 };
-use treadmill_rs::connector::{self, JobError, JobState};
+use treadmill_rs::connector::{self, JobError, RunningJobState};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -111,16 +111,29 @@ impl<S: connector::Supervisor> connector::SupervisorConnector for WsConnector<S>
         Inner::run(&self.inner).await
     }
 
-    async fn update_job_state(&self, job_id: Uuid, job_state: JobState) {
-        self.inner.update_job_state(job_id, job_state).await
-    }
-
-    async fn report_job_error(&self, job_id: Uuid, error: JobError) {
-        self.inner.report_job_error(job_id, error).await
-    }
-
-    async fn send_job_console_log(&self, job_id: Uuid, console_bytes: Vec<u8>) {
-        self.inner.send_job_console_log(job_id, console_bytes).await
+    async fn update_event(&self, supervisor_event: SupervisorEvent) {
+        match supervisor_event {
+            SupervisorEvent::JobEvent { job_id, event } => match event {
+                SupervisorJobEvent::StateTransition {
+                    new_state,
+                    status_message: _, /* TODO: handle */
+                } => self.inner.update_job_state(job_id, new_state).await,
+                SupervisorJobEvent::DeclareExitStatus {
+                    user_exit_status,
+                    host_output,
+                } => {
+                    self.inner
+                        .declare_exit_status(job_id, user_exit_status, host_output)
+                        .await
+                }
+                SupervisorJobEvent::Error { error } => {
+                    self.inner.report_job_error(job_id, error).await
+                }
+                SupervisorJobEvent::ConsoleLog { console_bytes } => {
+                    self.inner.send_job_console_log(job_id, console_bytes).await
+                }
+            },
+        }
     }
 }
 
@@ -424,7 +437,8 @@ impl<S: connector::Supervisor> Inner<S> {
 
         // unreachable
     }
-    async fn update_job_state(&self, job_id: Uuid, job_state: JobState) {
+
+    async fn update_job_state(&self, job_id: Uuid, job_state: RunningJobState) {
         tracing::info!(
             "Supervisor provides job state for job {}: {:#?}",
             job_id,
@@ -434,7 +448,7 @@ impl<S: connector::Supervisor> Inner<S> {
         {
             let mut lus_lg = self.last_updated_status.lock().await;
             // Finished is an event, not a state.
-            if matches!(job_state, JobState::Finished { .. }) {
+            if matches!(job_state, RunningJobState::Terminated) {
                 *lus_lg = ReportedSupervisorStatus::Idle;
             } else {
                 *lus_lg = ReportedSupervisorStatus::OngoingJob {
@@ -447,10 +461,43 @@ impl<S: connector::Supervisor> Inner<S> {
         if let Err(e) = self
             .update_tx
             .send(switchboard_supervisor::Message::SupervisorEvent(
-                SupervisorEvent::UpdateJobState { job_id, job_state },
+                SupervisorEvent::JobEvent {
+                    job_id,
+                    event: SupervisorJobEvent::StateTransition {
+                        new_state: job_state,
+                        status_message: None,
+                    },
+                },
             ))
         {
             tracing::error!("failed to send job state update to runloop: {e}")
+        }
+    }
+
+    async fn declare_exit_status(
+        &self,
+        job_id: Uuid,
+        user_exit_status: JobUserExitStatus,
+        host_output: Option<String>,
+    ) {
+        tracing::info!(
+            "Supervisor provides exit status: job {}, status {:#?}",
+            job_id,
+            user_exit_status
+        );
+        if let Err(e) = self
+            .update_tx
+            .send(switchboard_supervisor::Message::SupervisorEvent(
+                SupervisorEvent::JobEvent {
+                    job_id,
+                    event: SupervisorJobEvent::DeclareExitStatus {
+                        user_exit_status,
+                        host_output,
+                    },
+                },
+            ))
+        {
+            tracing::error!("failed to send job exit status update to runloop: {e}");
         }
     }
 
@@ -471,7 +518,10 @@ impl<S: connector::Supervisor> Inner<S> {
         if let Err(e) = self
             .update_tx
             .send(switchboard_supervisor::Message::SupervisorEvent(
-                SupervisorEvent::ReportJobError { job_id, error },
+                SupervisorEvent::JobEvent {
+                    job_id,
+                    event: SupervisorJobEvent::Error { error },
+                },
             ))
         {
             tracing::error!("failed to report job error to runloop: {e}")
@@ -490,9 +540,9 @@ impl<S: connector::Supervisor> Inner<S> {
         if let Err(e) = self
             .update_tx
             .send(switchboard_supervisor::Message::SupervisorEvent(
-                SupervisorEvent::SendJobConsoleLog {
+                SupervisorEvent::JobEvent {
                     job_id,
-                    console_bytes,
+                    event: SupervisorJobEvent::ConsoleLog { console_bytes },
                 },
             ))
         {
