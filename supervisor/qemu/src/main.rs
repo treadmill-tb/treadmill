@@ -1111,7 +1111,6 @@ impl QemuSupervisor {
         // Clone necessary variables for the monitoring task
         let supervisor_clone = Arc::clone(this);
         let job_id_clone = job_id;
-        let start_job_req_clone = start_job_req.clone();
 
         // Spawn the monitoring task
         tokio::spawn(async move {

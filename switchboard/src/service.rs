@@ -28,7 +28,7 @@ use treadmill_rs::api::switchboard::{
 };
 use treadmill_rs::api::switchboard_supervisor;
 use treadmill_rs::api::switchboard_supervisor::{ImageSpecification, ReportedSupervisorStatus};
-use treadmill_rs::connector::{JobError, JobErrorKind, JobState};
+use treadmill_rs::connector::{JobError, JobErrorKind};
 use uuid::Uuid;
 
 pub mod herd;
@@ -665,7 +665,7 @@ impl Service {
 
     async fn cancel_job_internal(&self, job_result: JobResult) -> Result<(), ServiceError> {
         let mut state = self.state.lock().await;
-        let active_job = state
+        state
             .kanban
             .remove_active_job(job_result.job_id)
             .map_err(ServiceError::Kanban)?;
@@ -869,7 +869,7 @@ impl Service {
 
             // Clean up any active jobs on this supervisor
             if let Some(job_id) = state.kanban.get_active_job_on(supervisor_id) {
-                let active_job = state
+                state
                     .kanban
                     .remove_active_job(job_id)
                     .expect("Active job should exist");
@@ -1255,6 +1255,7 @@ fn datetime_to_instant_approx(datetime: DateTime<Utc>) -> Result<Instant, chrono
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum ExitReason {
     Finished { status_message: Option<String> },
     Canceled,
