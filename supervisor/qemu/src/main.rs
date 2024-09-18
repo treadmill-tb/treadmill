@@ -1705,7 +1705,7 @@ async fn main() -> Result<()> {
         }
         SupervisorCoordConnector::WsConnector => {
             let ws_connector_config = config.ws_connector.clone().ok_or(anyhow!(
-                "Requested WsConnector, but `ws_connectort` config not present."
+                "Requested WsConnector, but `ws_connector` config not present."
             ))?;
 
             // Both the supervisor and connectors have references to each other,
