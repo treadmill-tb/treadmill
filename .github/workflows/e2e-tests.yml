@@ -41,8 +41,8 @@ jobs:
           pip3 install --upgrade httpie-jwt-auth
       - name: Set up database
         run: |
-          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMA.sql
-          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/FIXTURES.sql
+          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMAv2.sql
+          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/FIXTURESv2.sql
         env:
           PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
       - name: Build components
