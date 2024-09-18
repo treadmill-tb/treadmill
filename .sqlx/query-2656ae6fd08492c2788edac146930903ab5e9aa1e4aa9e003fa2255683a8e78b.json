@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT token_id, user_id, inherits_user_permissions, canceled as \"canceled: _\",\n                  expires_at\n            FROM tml_switchboard.api_tokens\n            WHERE token_id = $1\n            LIMIT 1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "token_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "inherits_user_permissions",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "canceled: _",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.api_token_cancellation",
+            "kind": {
+              "Composite": [
+                [
+                  "canceled_at",
+                  "Timestamptz"
+                ],
+                [
+                  "cancellation_reason",
+                  "Text"
+                ]
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "2656ae6fd08492c2788edac146930903ab5e9aa1e4aa9e003fa2255683a8e78b"
+}

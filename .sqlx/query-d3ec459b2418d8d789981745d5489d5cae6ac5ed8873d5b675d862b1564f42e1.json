@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select key, value as \"value:_\" from tml_switchboard.job_parameters where job_id = $1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "value:_",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.parameter_value",
+            "kind": {
+              "Composite": [
+                [
+                  "value",
+                  "Text"
+                ],
+                [
+                  "is_secret",
+                  "Bool"
+                ]
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d3ec459b2418d8d789981745d5489d5cae6ac5ed8873d5b675d862b1564f42e1"
+}

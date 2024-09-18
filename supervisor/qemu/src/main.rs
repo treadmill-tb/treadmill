@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use tracing::{event, instrument, Level};
 use uuid::Uuid;
 
-use treadmill_rs::api::switchboard_supervisor::JobInitSpec;
+use treadmill_rs::api::switchboard_supervisor::ImageSpecification;
 use treadmill_rs::connector;
 use treadmill_rs::control_socket;
 use treadmill_rs::image;
@@ -438,10 +438,10 @@ impl QemuSupervisor {
                 this.connector
                     .update_job_state(
                         fetching_image_state.start_job_req.job_id,
-                        connector::JobState::Starting {
-                            stage: connector::JobStartingStage::FetchingImage,
-                            status_message: msg,
+                        connector::RunningJobState::Initializing {
+                            stage: connector::JobInitializingStage::FetchingImage,
                         },
+                        msg,
                     )
                     .await;
 
@@ -904,10 +904,10 @@ impl QemuSupervisor {
         this.connector
             .update_job_state(
                 start_job_req.job_id,
-                connector::JobState::Starting {
-                    stage: connector::JobStartingStage::Allocating,
-                    status_message: None,
+                connector::RunningJobState::Initializing {
+                    stage: connector::JobInitializingStage::Allocating,
                 },
+                None,
             )
             .await;
 
@@ -1098,11 +1098,11 @@ impl QemuSupervisor {
         this.connector
             .update_job_state(
                 start_job_req.job_id,
-                connector::JobState::Starting {
+                connector::RunningJobState::Initializing {
                     // Booting, but puppet has not yet reported "ready":
-                    stage: connector::JobStartingStage::Booting,
-                    status_message: None,
+                    stage: connector::JobInitializingStage::Booting,
                 },
+                None,
             )
             .await;
 
@@ -1193,12 +1193,12 @@ impl connector::Supervisor for QemuSupervisor {
         this.connector
             .update_job_state(
                 start_job_req.job_id,
-                connector::JobState::Starting {
+                connector::RunningJobState::Initializing {
                     // Generic starting stage. We don't fetch, allocate or provision any
                     // resources right now, so report a generic state instead:
-                    stage: connector::JobStartingStage::Starting,
-                    status_message: None,
+                    stage: connector::JobInitializingStage::Starting,
                 },
+                None,
             )
             .await;
 
@@ -1209,8 +1209,8 @@ impl connector::Supervisor for QemuSupervisor {
         // we poll the image supervisor repeatedly, but don't hold onto the
         // job's lock in between these polling operations.
 
-        let image_id = match start_job_req.init_spec {
-            JobInitSpec::Image { image_id } => image_id,
+        let image_id = match start_job_req.image_spec {
+            ImageSpecification::Image { image_id } => image_id,
             unsupported_init_spec => {
                 unimplemented!("Unsupported init spec: {:?}", unsupported_init_spec)
             }
@@ -1300,12 +1300,7 @@ impl connector::Supervisor for QemuSupervisor {
 
         // Job is stopping, let the coordinator know:
         this.connector
-            .update_job_state(
-                msg.job_id,
-                connector::JobState::Stopping {
-                    status_message: None,
-                },
-            )
+            .update_job_state(msg.job_id, connector::RunningJobState::Terminating, None)
             .await;
 
         // Perform actions depending on the previous job state:
@@ -1353,12 +1348,7 @@ impl connector::Supervisor for QemuSupervisor {
 
         // Job has been stopped, let the coordinator know:
         this.connector
-            .update_job_state(
-                msg.job_id,
-                connector::JobState::Finished {
-                    status_message: None,
-                },
-            )
+            .update_job_state(msg.job_id, connector::RunningJobState::Terminated, None)
             .await;
 
         // Finally, remove the job from the jobs HashMap. Eventually, all other
@@ -1499,11 +1489,11 @@ impl control_socket::Supervisor for QemuSupervisor {
                     self.connector
                         .update_job_state(
                             job_id,
-                            connector::JobState::Ready {
+                            connector::RunningJobState::Ready {
                                 // TODO: populate connection info
-                                connection_info: vec![],
-                                status_message: None,
+                                // connection_info: vec![],
                             },
+                            None,
                         )
                         .await;
                 }
@@ -1580,7 +1570,7 @@ impl control_socket::Supervisor for QemuSupervisor {
 async fn main() -> Result<()> {
     use treadmill_rs::connector::SupervisorConnector;
 
-    tracing_subscriber::fmt().init();
+    tracing_subscriber::fmt::init();
     event!(Level::INFO, "Treadmill Qemu Supervisor, Hello World!");
 
     let args = QemuSupervisorArgs::parse();
@@ -1642,7 +1632,7 @@ async fn main() -> Result<()> {
             // weak Arc reference:
             let mut connector_opt = None;
 
-            let qemu_supervisor = {
+            let _qemu_supervisor = {
                 // Shadow, to avoid moving the variable:
                 let connector_opt = &mut connector_opt;
                 Arc::new_cyclic(move |weak_supervisor| {
@@ -1658,11 +1648,15 @@ async fn main() -> Result<()> {
 
             let connector = connector_opt.take().unwrap();
 
-            connector.run().await;
+            loop {
+                connector.run().await;
 
-            drop(qemu_supervisor);
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+            }
 
-            Ok(())
+            // drop(qemu_supervisor);
+            //
+            // Ok(())
         }
         unsupported_connector => {
             bail!("Unsupported coord connector: {:?}", unsupported_connector);

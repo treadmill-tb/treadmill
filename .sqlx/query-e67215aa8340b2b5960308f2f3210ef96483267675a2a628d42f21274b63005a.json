@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        select job_id, job_event as \"job_event: _\", logged_at\n        from tml_switchboard.job_events\n        where job_id = $1 and job_event ->> 'event_type' = 'finalize_result'\n        order by logged_at desc\n        limit 1;\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "job_event: _",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 2,
+        "name": "logged_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e67215aa8340b2b5960308f2f3210ef96483267675a2a628d42f21274b63005a"
+}

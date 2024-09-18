@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select token_id,permission from tml_switchboard.api_token_privileges where token_id = $1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "token_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "permission",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "7f2f81bab5e07c72bab00b3232d124b8656c2d43372348416560523ccd946144"
+}

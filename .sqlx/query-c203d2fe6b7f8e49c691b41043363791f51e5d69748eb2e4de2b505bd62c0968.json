@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        insert into tml_switchboard.jobs\n        values ($1, null, $2, $3, $4, $5, $6, $7, $8, 'queued', $9, null, null, null, null, null, default)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "TextArray",
+        {
+          "Custom": {
+            "name": "tml_switchboard.restart_policy",
+            "kind": {
+              "Composite": [
+                [
+                  "remaining_restart_count",
+                  "Int4"
+                ]
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "Text",
+        "Interval",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c203d2fe6b7f8e49c691b41043363791f51e5d69748eb2e4de2b505bd62c0968"
+}

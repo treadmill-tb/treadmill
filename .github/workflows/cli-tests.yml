@@ -34,8 +34,8 @@ jobs:
           sudo apt-get install -y postgresql-client jq
       - name: Set up database
         run: |
-          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMA.sql
-          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/FIXTURES.sql
+          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMAv2.sql
+          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/FIXTURESv2.sql
         env:
           PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
       - name: Build components
@@ -45,22 +45,23 @@ jobs:
           cargo build --package tml-puppet
           cargo build --package tml-cli
           cp ./target/debug/tml ./tml
+        env:
+          DATABASE_URL: postgres://${{ env.POSTGRES_USER }}:${{ env.POSTGRES_PASSWORD }}@127.0.0.1:5432/${{ env.POSTGRES_DB }}
       - name: Generate test configurations
         run: |
-          cp switchboard/switchboard/config.example.toml switchboard_config.toml
+          cp switchboard/config.example.toml switchboard_config.toml
           cp supervisor/mock/config.example.toml mock_supervisor_config.toml
           cp cli/config.example.toml cli_config.toml
-          sed -i 's/port = 5400/port = 5432/' switchboard_config.toml
           sed -i 's/password = ""/password = "postgres"/' switchboard_config.toml
-          sed -i 's/socket_addr = "0.0.0.0:443"/socket_addr = "0.0.0.0:8080"/' switchboard_config.toml
-          sed -i 's/switchboard_uri = "wss:\/\/localhost:443"/switchboard_uri = "ws:\/\/localhost:8080"/' mock_supervisor_config.toml
           sed -i 's/coord_connector = "cli_connector"/coord_connector = "ws_connector"/' mock_supervisor_config.toml
       - name: Start switchboard
         run: |
-          export RUST_LOG=debug
-          cargo run --package tml-switchboard -- serve -c switchboard_config.toml > switchboard.log 2>&1 &
+          export RUST_LOG=debug,sqlx=info
+          cargo run --package tml-switchboard -- serve -c switchboard_config.toml > switchboard.log &
           echo $! > switchboard.pid
           sleep 3
+        env:
+          TML__DATABASE__AUTH__PASSWORD: ${{ env.POSTGRES_PASSWORD }}
       - name: Start mock supervisor
         run: |
           cargo build --package tml-puppet
@@ -129,7 +130,7 @@ jobs:
             --ssh-keys "ssh-rsa AAAAB3NzaC1yc2E...,ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..." \
             --restart-count 3 \
             --parameters '{"key1":{"value":"value1","secret":false},"key2":{"value":"value2","secret":true}}' \
-            --tag-config 'test_tag_config' \
+            --tag-config 'supervisor:7d55ec6d-15e7-4b84-8c04-7c085fe60df4' \
             --timeout 3600)
           log_request_response "Job enqueue with all options" "$job_response"
 
@@ -205,8 +206,8 @@ jobs:
 
           if echo "${non_existent_job_response}" | grep -q "unauthorized"; then
               echo "CLI correctly handled non-existent job (Unauthorized response)"
-          elif echo "${non_existent_job_response}" | grep -q "not found" || echo "${non_existent_job_response}" | grep -q "does not exist"; then
-              echo "CLI correctly handled non-existent job (Not found response)"
+          elif echo "${non_existent_job_response}" | grep -q "invalid"; then
+              echo "CLI correctly handled non-existent job (error type: invalid)"
           else
               echo "CLI did not handle non-existent job correctly"
               exit 1

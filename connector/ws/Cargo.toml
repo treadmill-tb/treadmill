@@ -8,9 +8,8 @@ edition.workspace = true
 treadmill-rs = { path = "../../treadmill-rs" }
 
 uuid = { version = "1.9.1", features = ["v4", "rng"] }
-chrono = "0.4.38"
 
-tokio = { version = "1.38.0", features = ["rt", "rt-multi-thread", "macros", "sync", "fs"] }
+tokio = { version = "1.38.0", features = ["rt", "rt-multi-thread", "macros", "sync", "fs", "time"] }
 tokio-tungstenite = { version = "0.23.1", features = ["rustls-tls-native-roots"] }
 base64 = "0.22.1"
 futures-util = { version = "0.3.30", features = ["sink"] }

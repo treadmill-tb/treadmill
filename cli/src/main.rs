@@ -6,15 +6,18 @@ use log::LevelFilter;
 use log::{debug, error, info};
 use reqwest::Client;
 use std::collections::HashMap;
-use treadmill_rs::api::switchboard_supervisor::ParameterValue;
-use uuid::Uuid;
-
+use treadmill_rs::api::switchboard;
+use treadmill_rs::api::switchboard::jobs::list::Response as ListJobsResponse;
+use treadmill_rs::api::switchboard::jobs::status::Response as JobStatusResponse;
+use treadmill_rs::api::switchboard::jobs::submit::Request as SubmitJobRequest;
 use treadmill_rs::api::switchboard::{
-    EnqueueJobRequest, JobRequest, JobStatusResponse, LoginRequest, LoginResponse,
-    ReadJobQueueResponse,
+    JobInitSpec, JobRequest, JobState, LoginRequest, LoginResponse, SupervisorStatus,
 };
-use treadmill_rs::api::switchboard_supervisor::{JobInitSpec, RestartPolicy, SupervisorStatus};
+use treadmill_rs::api::switchboard_supervisor::ParameterValue;
+use treadmill_rs::api::switchboard_supervisor::RestartPolicy;
+use treadmill_rs::connector::RunningJobState;
 use treadmill_rs::image::manifest::ImageId;
+use uuid::Uuid;
 
 mod auth;
 mod config;
@@ -62,10 +65,10 @@ async fn main() -> Result<()> {
                         .about("Enqueue a new job")
                         .arg(Arg::with_name("image_id").required(true))
                         .arg(Arg::with_name("ssh_keys")
-                                .long("ssh-keys")
-                                .value_name("KEYS")
-                                .help("Comma-separated list of SSH public keys. If not provided, keys will be read from SSH agent, public key files, and config file.")
-                                .takes_value(true),
+                                 .long("ssh-keys")
+                                 .value_name("KEYS")
+                                 .help("Comma-separated list of SSH public keys. If not provided, keys will be read from SSH agent, public key files, and config file.")
+                                 .takes_value(true),
                         )
                         .arg(
                             Arg::with_name("restart_count")
@@ -255,7 +258,7 @@ async fn login(
     debug!("Sending login request to url: {}", config.api.url);
 
     let response = client
-        .post(&format!("{}/session/login", config.api.url))
+        .post(&format!("{}/api/v1/tokens/login", config.api.url))
         .json(&login_request)
         .send()
         .await?;
@@ -335,17 +338,16 @@ async fn enqueue_job(
         restart_policy: RestartPolicy {
             remaining_restart_count: restart_count,
         },
-        ssh_rendezvous_servers: Vec::new(),
         parameters,
         tag_config,
         override_timeout,
     };
 
-    let enqueue_request = EnqueueJobRequest { job_request };
+    let enqueue_request = SubmitJobRequest { job_request };
 
     debug!("Sending enqueue job request");
     let response = client
-        .post(&format!("{}/api/v1/job/queue", config.api.url))
+        .post(&format!("{}/api/v1/jobs/new", config.api.url))
         .bearer_auth(token)
         .json(&enqueue_request)
         .send()
@@ -368,7 +370,7 @@ async fn get_job_status(client: &Client, config: &config::Config, job_id: Uuid) 
     let token = auth::get_token()?;
 
     let response = client
-        .get(&format!("{}/api/v1/job/{}/status", config.api.url, job_id))
+        .get(&format!("{}/api/v1/jobs/{}/status", config.api.url, job_id))
         .bearer_auth(token)
         .send()
         .await?;
@@ -390,7 +392,7 @@ async fn cancel_job(client: &Client, config: &config::Config, job_id: Uuid) -> R
     let token = auth::get_token()?;
 
     let response = client
-        .delete(&format!("{}/api/v1/job/{}", config.api.url, job_id))
+        .delete(&format!("{}/api/v1/jobs/{}", config.api.url, job_id))
         .bearer_auth(token)
         .send()
         .await?;
@@ -411,27 +413,96 @@ async fn list_jobs(client: &Client, config: &config::Config) -> Result<()> {
     let token = auth::get_token()?;
 
     let response = client
-        .get(&format!("{}/api/v1/job/queue", config.api.url))
+        .get(&format!("{}/api/v1/jobs", config.api.url))
         .bearer_auth(token)
         .send()
         .await?;
 
     if response.status().is_success() {
-        let job_queue: ReadJobQueueResponse = response.json().await?;
+        let job_queue: ListJobsResponse = response.json().await?;
         match job_queue {
-            ReadJobQueueResponse::Ok { jobs } => {
-                println!("Job Queue:");
-                for (index, job_id) in jobs.iter().enumerate() {
-                    println!("{}. {}", index + 1, job_id);
+            ListJobsResponse::Ok { jobs } => {
+                println!("Jobs:");
+                for (index, (job_id, status)) in jobs.iter().enumerate() {
+                    println!(
+                        "{}. {} ({})",
+                        index + 1,
+                        job_id,
+                        {
+                            match &status.state.state {
+                                JobState::Queued => "queued".to_string(),
+                                JobState::Scheduled => {
+                                    format!(
+                                        "scheduled (supervisor={})",
+                                        status.state.dispatched_to_supervisor.as_ref().unwrap()
+                                    )
+                                }
+                                JobState::Initializing { .. } => {
+                                    format!(
+                                        "starting (supervisor={})",
+                                        status.state.dispatched_to_supervisor.as_ref().unwrap()
+                                    )
+                                }
+                                JobState::Ready => {
+                                    format!(
+                                        "ready (supervisor={})",
+                                        status.state.dispatched_to_supervisor.as_ref().unwrap()
+                                    )
+                                }
+                                JobState::Terminating => {
+                                    format!(
+                                        "terminating (supervisor={})",
+                                        status.state.dispatched_to_supervisor.as_ref().unwrap()
+                                    )
+                                }
+                                JobState::Terminated => {
+                                    format!(
+                                        "terminated at {}: {}",
+                                        status.state.result.as_ref().unwrap().terminated_at,
+                                        status.state.result.as_ref().unwrap().exit_status,
+                                    )
+                                }
+                            }
+                        },
+                        // match status {
+                        // JobStatus::Active { job_state } => {
+                        //     match job_state {
+                        //         JobState::Starting { .. } => "starting".to_string(),
+                        //         JobState::Ready { .. } => "ready".to_string(),
+                        //         JobState::Stopping { .. } => "stopping".to_string(),
+                        //         JobState::Finished { .. } => "finished".to_string(),
+                        //         JobState::Canceled => "canceled".to_string(),
+                        //     }
+                        // }
+                        // JobStatus::Error { job_error } => {
+                        //     format!(
+                        //         "error ({:?}): {}",
+                        //         job_error.error_kind, job_error.description
+                        //     )
+                        // }
+                        // JobStatus::Inactive => {
+                        //     "queue".to_string()
+                        // }
+                        // JobStatus::Terminated(treadmill_rs::api::switchboard::JobResult {
+                        //     job_id: _,
+                        //     supervisor_id: _,
+                        //     exit_status,
+                        //     host_output: _,
+                        //     terminated_at,
+                        // }) => {
+                        //     format!("terminated at {terminated_at}: {exit_status}")
+                        // }
+                        // }
+                    );
                 }
             }
-            ReadJobQueueResponse::Internal => {
-                error!("Internal server error while fetching job queue");
+            ListJobsResponse::Internal => {
+                error!("Internal server error while fetching job list");
                 println!("Failed to fetch job queue due to an internal server error");
             }
-            ReadJobQueueResponse::Unauthorized => {
-                error!("Unauthorized to access job queue");
-                println!("You are not authorized to access the job queue");
+            ListJobsResponse::Unauthorized => {
+                error!("Unauthorized to access job list");
+                println!("You are not authorized to access the job list");
             }
         }
     } else {
@@ -447,16 +518,53 @@ async fn list_supervisors(client: &Client, config: &config::Config) -> Result<()
     let token = auth::get_token()?;
 
     let response = client
-        .get(&format!("{}/api/v1/supervisor/list", config.api.url))
+        .get(&format!("{}/api/v1/supervisors", config.api.url))
         .bearer_auth(token)
         .send()
         .await?;
 
     if response.status().is_success() {
-        let supervisor_ids: Vec<Uuid> = response.json().await?;
+        let switchboard::supervisors::list::Response::Ok { supervisors } = response.json().await?
+        else {
+            unreachable!();
+        };
         println!("Supervisors:");
-        for (index, supervisor_id) in supervisor_ids.iter().enumerate() {
-            println!("{}. {}", index + 1, supervisor_id);
+        for (index, (supervisor_id, status)) in supervisors.iter().enumerate() {
+            println!(
+                "{}. {} ({})",
+                index + 1,
+                supervisor_id,
+                match status {
+                    SupervisorStatus::Busy { job_id, job_state } => {
+                        format!(
+                            "busy (job={job_id}, {})",
+                            match job_state {
+                                RunningJobState::Initializing { .. } => {
+                                    "starting"
+                                }
+                                RunningJobState::Ready => {
+                                    "ready"
+                                }
+                                RunningJobState::Terminating => {
+                                    "terminating"
+                                }
+                                RunningJobState::Terminated => {
+                                    "terminated (?)"
+                                }
+                            }
+                        )
+                    }
+                    SupervisorStatus::BusyDisconnected { job_id, .. } => {
+                        format!("busy (job={job_id}, disconnected)")
+                    }
+                    SupervisorStatus::Idle => {
+                        "idle".to_string()
+                    }
+                    SupervisorStatus::Disconnected => {
+                        "idle (disconnected)".to_string()
+                    }
+                }
+            );
         }
     } else {
         let error_text = response.text().await?;
@@ -476,7 +584,7 @@ async fn get_supervisor_status(
 
     let response = client
         .get(&format!(
-            "{}/api/v1/supervisor/{}/status",
+            "{}/api/v1/supervisors/{}/status",
             config.api.url, supervisor_id
         ))
         .bearer_auth(token)
@@ -487,12 +595,13 @@ async fn get_supervisor_status(
         let status: SupervisorStatus = response.json().await?;
         println!("Supervisor Status for {}:", supervisor_id);
         match status {
-            SupervisorStatus::OngoingJob { job_id, job_state } => {
+            SupervisorStatus::Busy { job_id, job_state }
+            | SupervisorStatus::BusyDisconnected { job_id, job_state } => {
                 println!("  Status: Running Job");
                 println!("  Job ID: {}", job_id);
                 println!("  Job State: {:?}", job_state);
             }
-            SupervisorStatus::Idle => {
+            SupervisorStatus::Idle | SupervisorStatus::Disconnected => {
                 println!("  Status: Idle");
             }
         }
