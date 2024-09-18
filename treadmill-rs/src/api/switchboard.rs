@@ -207,6 +207,7 @@ pub enum JobEvent {
 /// This is exclusively an API type
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtendedJobState {
+    #[serde(flatten)]
     pub state: JobState,
     pub dispatched_to_supervisor: Option<Uuid>,
     pub result: Option<JobResult>,
