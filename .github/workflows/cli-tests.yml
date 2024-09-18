@@ -130,7 +130,7 @@ jobs:
             --ssh-keys "ssh-rsa AAAAB3NzaC1yc2E...,ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..." \
             --restart-count 3 \
             --parameters '{"key1":{"value":"value1","secret":false},"key2":{"value":"value2","secret":true}}' \
-            --tag-config 'test_tag_config' \
+            --tag-config 'supervisor:7d55ec6d-15e7-4b84-8c04-7c085fe60df4' \
             --timeout 3600)
           log_request_response "Job enqueue with all options" "$job_response"
 

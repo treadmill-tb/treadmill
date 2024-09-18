@@ -52,19 +52,15 @@ jobs:
           cargo build --package tml-puppet
       - name: Generate test configurations
         run: |
-          cp switchboard/switchboard/config.example.toml switchboard_config.toml
+          cp switchboard/config.example.toml switchboard_config.toml
           cp supervisor/mock/config.example.toml mock_supervisor_config.toml
 
           # Edit switchboard config
-          sed -i 's/port = 5400/port = 5432/' switchboard_config.toml
-          sed -i 's/password = ""/password = "postgres"/' switchboard_config.toml
-          sed -i 's/socket_addr = "0.0.0.0:443"/socket_addr = "0.0.0.0:8080"/' switchboard_config.toml
+          sed -i 's/auth.password = ""/auth.password = "postgres"/' switchboard_config.toml
           echo "========== Templated Mock Supervisor Configuration =========="
           cat switchboard_config.toml
 
           # Edit mock supervisor config
-          sed -i 's/switchboard_uri = "wss:\/\/localhost:443"/switchboard_uri = "ws:\/\/localhost:8080"/' mock_supervisor_config.toml
-          sed -i 's/coord_connector = "cli_connector"/coord_connector = "ws_connector"/' mock_supervisor_config.toml
           echo "========== Templated Mock Supervisor Configuration =========="
           cat mock_supervisor_config.toml
       - name: Start switchboard
