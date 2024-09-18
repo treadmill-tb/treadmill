@@ -106,7 +106,7 @@ jobs:
           }
 
           echo "Sending job creation request..."
-          job_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" POST localhost:8080/api/v1/job/new \
+          job_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" POST localhost:8080/api/v1/jobs/new \
             request_id="$(uuidgen)" \
             tag_config="supervisor:${tml_supervisor}" \
             init_spec[type]=image \
