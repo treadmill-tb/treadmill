@@ -10,7 +10,7 @@ on:
     workflows: ['tml-static-checks']
     types: [completed]
     branches:
-      - 'beta'
+      - 'main'
 
 jobs:
   deploy:
