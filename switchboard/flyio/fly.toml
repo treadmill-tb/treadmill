@@ -10,6 +10,7 @@ primary_region = 'ewr'
   dockerfile = "./Dockerfile"
 
 [env]
+  RUST_LOG = 'debug,sqlx=info'
   TML_SERVER__BIND_ADDRESS = '[::]:8080'
   TML_SERVICE__DEFAULT_TOKEN_TIMEOUT = '7d'
   TML_SERVICE__DEFAULT_JOB_TIMEOUT = '30m'
