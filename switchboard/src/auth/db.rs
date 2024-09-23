@@ -33,7 +33,9 @@ impl PermissionQueryExecutor for DbPermSearcher {
                 Ok(v) => v,
                 Err(e) => return PermissionResult::unauthorized(AuthorizationError::Database(e)),
             };
-            perms.iter().any(|r| r.permission == perm_str)
+            perms
+                .iter()
+                .any(|r| r.permission == "admin" || r.permission == perm_str)
         } else {
             let perms = match sqlx::query!(
                 r#"select token_id,permission from tml_switchboard.api_token_privileges where token_id = $1;"#,
@@ -47,7 +49,9 @@ impl PermissionQueryExecutor for DbPermSearcher {
                     return PermissionResult::unauthorized(AuthorizationError::Database(e));
                 }
             };
-            perms.iter().any(|r| r.permission == perm_str)
+            perms
+                .iter()
+                .any(|r| r.permission == "admin" || r.permission == perm_str)
         };
 
         if ok {
