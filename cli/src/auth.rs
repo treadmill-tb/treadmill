@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::fs;
 use std::path::PathBuf;
 use treadmill_rs::api::switchboard::AuthToken;
@@ -17,12 +17,35 @@ pub fn save_token(token: &AuthToken) -> Result<()> {
 }
 
 pub fn get_token() -> Result<String> {
-    let token_path = get_token_path()?;
-    let token_str = fs::read_to_string(&token_path)
-        .with_context(|| format!("Failed to read token from {:?}", token_path))?;
-    let token: AuthToken =
-        serde_json::from_str(&token_str).with_context(|| "Failed to parse token JSON")?;
-    Ok(token.encode_for_http())
+    match std::env::var("TML_API_TOKEN") {
+        Ok(token_b64) => {
+            let token_bytes = base64::engine::general_purpose::STANDARD
+                .decode(token_b64)
+                .context("Decoding Base64-encoded TML_API_TOKEN variable")?;
+
+            let token_array: [u8; 128] = token_bytes.try_into().map_err(|vec: Vec<u8>| {
+                anyhow!(
+                    "TML_API_TOKEN has invalid length ({} bytes instead of 128 bytes)",
+                    vec.len()
+                )
+            })?;
+
+            Ok(AuthToken(token_array).encode_for_http())
+        }
+
+        Err(std::env::VarError::NotUnicode(_)) => {
+            bail!("Supplied TML_API_TOKEN is not valid UTF-8");
+        }
+
+        Err(std::env::VarError::NotPresent) => {
+            let token_path = get_token_path()?;
+            let token_str = fs::read_to_string(&token_path)
+                .with_context(|| format!("Failed to read token from {:?}", token_path))?;
+            let token: AuthToken =
+                serde_json::from_str(&token_str).with_context(|| "Failed to parse token JSON")?;
+            Ok(token.encode_for_http())
+        }
+    }
 }
 
 fn get_token_path() -> Result<PathBuf> {
