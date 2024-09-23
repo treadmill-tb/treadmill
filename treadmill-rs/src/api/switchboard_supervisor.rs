@@ -6,7 +6,6 @@ use crate::image::manifest::ImageId;
 use crate::util::chrono::duration as human_duration;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt::Debug;
 use uuid::Uuid;
 
 pub mod websocket {
@@ -34,11 +33,36 @@ pub struct KeepaliveConfig {
 
 // -- StartJobRequest ------------------------------------------------------------------------------
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ParameterValue {
     pub value: String,
     pub secret: bool,
 }
+
+impl std::fmt::Debug for ParameterValue {
+    /// Custom implementation of [`std::fmt::Debug`] for [`ParameterValue`] to
+    /// avoid leaking secrets in logs:
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        let mut debug_struct = f.debug_struct("ParameterValue");
+        debug_struct.field("secret", &self.secret);
+
+        // TODO: Requires nightly feature debug_closure_helpers
+        // debug_struct.field_with("value", |f| {
+        //     if self.secret {
+        //         write!(f, "***")
+        //     } else {
+        //         <String as std::fmt::Debug>::fmt(&self.value, f)
+        //     }
+        // });
+
+        // For now, print the secret as if it were a string (with
+        // quotation marks) with contents "***":
+        debug_struct.field("value", if self.secret { &"***" } else { &self.value });
+
+        debug_struct.finish()
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct RendezvousServerSpec {
