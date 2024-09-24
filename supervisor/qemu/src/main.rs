@@ -1836,7 +1836,7 @@ async fn main() -> Result<()> {
             // weak Arc reference:
             let mut connector_opt = None;
 
-            let qemu_supervisor = {
+            let _qemu_supervisor = {
                 // Shadow, to avoid moving the variable:
                 let connector_opt = &mut connector_opt;
                 Arc::new_cyclic(move |weak_supervisor| {
@@ -1852,7 +1852,10 @@ async fn main() -> Result<()> {
 
             let connector = connector_opt.take().unwrap();
 
-            connector.run().await;
+            loop {
+                connector.run().await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+            }
 
             // when connector.run() can error replace with this code
             // loop {
@@ -1868,9 +1871,9 @@ async fn main() -> Result<()> {
             // Must drop qemu_supervisor reference _after_ connector.run(), as
             // that'll upgrade its Weak into an Arc. Otherwise we're dropping
             // the only reference to it:
-            std::mem::drop(qemu_supervisor);
+            // std::mem::drop(qemu_supervisor);
 
-            Ok(())
+            // Ok(())
         }
         unsupported_connector => {
             bail!("Unsupported coord connector: {:?}", unsupported_connector);
