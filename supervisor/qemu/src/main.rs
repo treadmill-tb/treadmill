@@ -1854,6 +1854,7 @@ async fn main() -> Result<()> {
 
             connector.run().await;
 
+            // when connector.run() can error replace with this code
             // loop {
             //     if let Err(e) = connector.run().await {
             //         eprintln!("Connection error: {:?}", e);
