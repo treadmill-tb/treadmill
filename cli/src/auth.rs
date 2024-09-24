@@ -49,7 +49,7 @@ pub fn get_token() -> Result<String> {
 }
 
 fn get_token_path() -> Result<PathBuf> {
-    let xdg_dirs = BaseDirectories::with_prefix("switchboard")
+    let xdg_dirs = BaseDirectories::with_prefix("treadmill-tb")
         .context("Failed to initialize XDG base directories")?;
 
     let token_path = xdg_dirs

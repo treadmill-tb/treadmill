@@ -27,7 +27,7 @@ impl Default for Config {
 }
 
 pub fn load_config(config_path: Option<&str>) -> Result<Config> {
-    let xdg_dirs = BaseDirectories::with_prefix("switchboard")?;
+    let xdg_dirs = BaseDirectories::with_prefix("treadmill-tb")?;
 
     let config_path = match config_path {
         Some(path) => PathBuf::from(path),

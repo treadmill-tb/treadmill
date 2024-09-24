@@ -24,10 +24,9 @@ mod config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let matches = App::new("Switchboard CLI")
+    let matches = App::new("Treadmill Testbed CLI")
         .version("1.0")
-        .author("Benjamin Prevor")
-        .about("CLI for Switchboard API")
+        .author("Treadmill Project Developers <treadmill@tockos.org>")
         .arg(
             Arg::with_name("config")
                 .short("c")
