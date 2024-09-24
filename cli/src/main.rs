@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
         )
         .subcommand(
             SubCommand::with_name("login")
-                .about("Log in to the Switchboard API")
+                .about("Log in to the Treadmill CLI")
                 .arg(Arg::with_name("username").required(true))
                 .arg(Arg::with_name("password").required(true)),
         )
