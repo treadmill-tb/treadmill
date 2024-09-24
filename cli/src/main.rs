@@ -24,10 +24,9 @@ mod config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let matches = App::new("Switchboard CLI")
+    let matches = App::new("Treadmill Testbed CLI")
         .version("1.0")
-        .author("Benjamin Prevor")
-        .about("CLI for Switchboard API")
+        .author("Treadmill Project Developers <treadmill@tockos.org>")
         .arg(
             Arg::with_name("config")
                 .short("c")
@@ -53,7 +52,7 @@ async fn main() -> Result<()> {
         )
         .subcommand(
             SubCommand::with_name("login")
-                .about("Log in to the Switchboard API")
+                .about("Log in to the Treadmill CLI")
                 .arg(Arg::with_name("username").required(true))
                 .arg(Arg::with_name("password").required(true)),
         )
