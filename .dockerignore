@@ -1,3 +1,4 @@
-fly.toml
+fly.prod.toml
+fly.dev.toml
 .git
 /target
