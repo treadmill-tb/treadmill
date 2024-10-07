@@ -182,7 +182,10 @@ jobs:
               restart_policy[remaining_restart_count]:=0 \
               ssh_rendezvous_servers:='[]' \
               parameters:='{}' \
-              override_timeout:=60) || handle_http_error $?
+              override_timeout="60") || {
+                echo "Error creating job: $job_response"
+                return 1
+              }
 
             echo "Create job response: $job_response"
 
@@ -190,7 +193,7 @@ jobs:
 
             if [ -z "$job_id" ]; then
               echo "Failed to extract job ID from response"
-              exit 1
+              return 1
             fi
 
             echo "Created job with ID: $job_id"
@@ -205,10 +208,13 @@ jobs:
 
               if [ $elapsed -ge $timeout ]; then
                 echo "Timeout waiting for job to complete"
-                exit 1
+                return 1
               fi
 
-              status_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" GET localhost:8080/api/v1/jobs/${job_id}/status) || handle_http_error $?
+              status_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" GET localhost:8080/api/v1/jobs/${job_id}/status) || {
+                echo "Error getting job status: $status_response"
+                return 1
+              }
               job_status=$(echo "$status_response" | jq -r '.job_status.state.type // empty')
 
               echo "Job status: $job_status"
@@ -229,7 +235,12 @@ jobs:
           create_and_cancel_job 2
 
           # Test job timeout
-          create_job_and_wait_for_timeout
+          if create_job_and_wait_for_timeout; then
+            echo "Job timeout test passed"
+          else
+            echo "Job timeout test failed"
+            exit 1
+          fi
 
           # Start a new supervisor
           echo "Starting a new supervisor..."
