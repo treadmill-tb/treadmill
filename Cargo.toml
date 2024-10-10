@@ -9,10 +9,11 @@ members = [
     "puppet",
     "supervisor/mock",
     "supervisor/qemu",
+    "supervisor/nbd-netboot",
     "switchboard",
     "treadmill-rs",
     "switchboard-macros",
-    "switchboard-traits",
+    "switchboard-traits", "supervisor/lib",
 ]
 
 [workspace.package]

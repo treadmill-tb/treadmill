@@ -7,6 +7,7 @@ use async_recursion::async_recursion;
 use async_trait::async_trait;
 use clap::Parser;
 use serde::Deserialize;
+use tokio::fs;
 use tokio::sync::Mutex;
 use tracing::{event, instrument, Level};
 use uuid::Uuid;
@@ -74,7 +75,7 @@ async fn fuse<R>(duration: std::time::Duration, fire: impl std::future::Future<O
 }
 
 #[derive(Parser, Debug, Clone)]
-pub struct QemuSupervisorArgs {
+pub struct NbdNetbootSupervisorArgs {
     /// Path to the TOML configuration file
     #[arg(short, long)]
     config_file: PathBuf,
@@ -95,33 +96,15 @@ impl Default for SSHPreferredIPVersion {
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct QemuConfig {
-    /// Main QEMU binary to execute for a job.
-    qemu_binary: PathBuf,
+pub struct NbdNetbootConfig {
+    /// QEMU NBD server binary.
+    qemu_nbd_binary: PathBuf,
 
     /// `qemu-img` binary, to work with qcow2 files.
     qemu_img_binary: PathBuf,
 
     /// Directory to keep state:
     state_dir: PathBuf,
-
-    /// Directory to keep state:
-    /// List of arguments to pass to the QEMU binary.
-    ///
-    /// These arguments support template strings using the
-    /// [`strfmt`](https://docs.rs/strfmt/latest/strfmt/) crate.q
-    ///
-    /// The available template strings are:
-    ///
-    /// - `job_id`: UUID as a hyphenated string
-    ///
-    /// - `qcow2_disk`: main `qcow2` disk, which may be an overlay. In the case
-    ///   that it is an overlay, it is set up such that all other layers can be
-    ///   correctly resolved (relative to the current working directory)
-    ///
-    /// - `tcp_control_socket_listen_addr: full socket address, with IPv6
-    ///   address properly enclosed in square brackets, e.g., `[::1]:8080`
-    qemu_args: Vec<String>,
 
     /// Maximum "working" disk image to be allocated for a job, in bytes.
     ///
@@ -138,11 +121,24 @@ pub struct QemuConfig {
 
     tcp_control_socket_listen_addr: std::net::SocketAddr,
 
-    start_script: Option<PathBuf>,
+    /// TFTP boot file system path.
+    tftp_boot_dir: PathBuf,
+
+    /// Start the netboot target.
+    ///
+    /// This script should ensure that the netboot target is powered on. If it
+    /// is already powered on, it must power-cycle it.
+    start_script: PathBuf,
+
+    /// Stop the netboot target.
+    ///
+    /// This script should ensure that the netboot target is powered off. If it
+    /// is already powered off, it must power-cycle it.
+    stop_script: PathBuf,
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct QemuSupervisorConfig {
+pub struct NbdNetbootSupervisorConfig {
     /// Base configuration, identical across all supervisors:
     base: SupervisorBaseConfig,
 
@@ -154,55 +150,55 @@ pub struct QemuSupervisorConfig {
 
     image_store: image_store_client::LocalImageStoreConfig,
 
-    qemu: QemuConfig,
+    nbd_netboot: NbdNetbootConfig,
 }
 
 #[derive(Debug)]
-pub struct QemuSupervisorFetchingImageState {
+pub struct NbdNetbootSupervisorFetchingImageState {
     start_job_req: connector::StartJobMessage,
     image_id: image::manifest::ImageId,
     poll_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[derive(Debug)]
-pub struct QemuSupervisorImageFetchedState {
+pub struct NbdNetbootSupervisorImageFetchedState {
     start_job_req: connector::StartJobMessage,
     image_id: image::manifest::ImageId,
     manifest: image::manifest::ImageManifest,
 }
 
 #[derive(Debug)]
-pub struct QemuSupervisorJobRunningState {
+pub struct NbdNetbootSupervisorJobRunningState {
     start_job_req: connector::StartJobMessage,
 
     /// Control socket handle:
-    control_socket: TcpControlSocket<QemuSupervisor>,
+    control_socket: TcpControlSocket<NbdNetbootSupervisor>,
 
     /// Sender to signal the monitoring task to stop the process.
     ///
     /// Only one message may be sent, after which is will turn into a `None`:
-    shutdown_tx: Option<tokio::sync::oneshot::Sender<QemuSupervisorJobRunningState>>,
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<NbdNetbootSupervisorJobRunningState>>,
 }
 
 #[derive(Debug)]
-pub enum QemuSupervisorJobState {
+pub enum NbdNetbootSupervisorJobState {
     /// State to indicate that the job is starting.
     ///
-    /// We use this to reserve a spot in the [`QemuSupervisor`]'s `jobs` map,
+    /// We use this to reserve a spot in the [`NbdNetbootSupervisor`]'s `jobs` map,
     /// such that we can release the global HashMap lock afterwards.
     Starting,
 
     /// State to indicate that we're currently waiting on the image to
     /// be fetched. This state polls the image store with a fixed
     /// interval.
-    FetchingImage(QemuSupervisorFetchingImageState),
+    FetchingImage(NbdNetbootSupervisorFetchingImageState),
 
     /// The job's image has been fully fetched, and we're allocating resources
     /// and starting it. It's not fully up and running yet.
-    ImageFetched(QemuSupervisorImageFetchedState),
+    ImageFetched(NbdNetbootSupervisorImageFetchedState),
 
     /// State to indicate that the job is running.
-    Running(QemuSupervisorJobRunningState),
+    Running(NbdNetbootSupervisorJobRunningState),
 
     /// State to indicate that the job is currently shutting down.
     ///
@@ -212,20 +208,20 @@ pub enum QemuSupervisorJobState {
     Stopping,
 }
 
-impl QemuSupervisorJobState {
+impl NbdNetbootSupervisorJobState {
     fn state_name(&self) -> &'static str {
         match self {
-            QemuSupervisorJobState::Starting => "Starting",
-            QemuSupervisorJobState::FetchingImage(_) => "FetchingImage",
-            QemuSupervisorJobState::ImageFetched(_) => "ImageFetched",
-            QemuSupervisorJobState::Running(_) => "Running",
-            QemuSupervisorJobState::Stopping => "Stopping",
+            NbdNetbootSupervisorJobState::Starting => "Starting",
+            NbdNetbootSupervisorJobState::FetchingImage(_) => "FetchingImage",
+            NbdNetbootSupervisorJobState::ImageFetched(_) => "ImageFetched",
+            NbdNetbootSupervisorJobState::Running(_) => "Running",
+            NbdNetbootSupervisorJobState::Stopping => "Stopping",
         }
     }
 }
 
 #[derive(Debug)]
-pub struct QemuSupervisor {
+pub struct NbdNetbootSupervisor {
     /// Connector to the central coordinator. All communication is mediated
     /// through this connector.
     connector: Arc<dyn connector::SupervisorConnector>,
@@ -238,20 +234,20 @@ pub struct QemuSupervisor {
     /// We support running multiple jobs on one supervisor (in particular when
     /// not sharing hardware resources), so use a map of `Arc`s behind a mutex
     /// to avoid locking the map across long-running calls.
-    jobs: Mutex<HashMap<Uuid, Arc<Mutex<QemuSupervisorJobState>>>>,
+    jobs: Mutex<HashMap<Uuid, Arc<Mutex<NbdNetbootSupervisorJobState>>>>,
 
-    _args: QemuSupervisorArgs,
-    config: QemuSupervisorConfig,
+    _args: NbdNetbootSupervisorArgs,
+    config: NbdNetbootSupervisorConfig,
 }
 
-impl QemuSupervisor {
+impl NbdNetbootSupervisor {
     pub fn new(
         connector: Arc<dyn connector::SupervisorConnector>,
         image_store_client: image_store_client::LocalImageStoreClient,
-        args: QemuSupervisorArgs,
-        config: QemuSupervisorConfig,
+        args: NbdNetbootSupervisorArgs,
+        config: NbdNetbootSupervisorConfig,
     ) -> Self {
-        QemuSupervisor {
+        NbdNetbootSupervisor {
             connector,
             image_store_client,
             jobs: Mutex::new(HashMap::new()),
@@ -261,7 +257,7 @@ impl QemuSupervisor {
     }
 
     #[instrument(skip(self))]
-    async fn remove_job(&self, job_id: Uuid) -> Option<Arc<Mutex<QemuSupervisorJobState>>> {
+    async fn remove_job(&self, job_id: Uuid) -> Option<Arc<Mutex<NbdNetbootSupervisorJobState>>> {
         event!(Level::DEBUG, "Removing job from jobs map");
         self.jobs.lock().await.remove(&job_id)
     }
@@ -313,9 +309,9 @@ impl QemuSupervisor {
         // return immediately:
         let fetching_image_state = match std::mem::replace(
             &mut *job_lg,
-            QemuSupervisorJobState::Starting,
+            NbdNetbootSupervisorJobState::Starting,
         ) {
-            QemuSupervisorJobState::FetchingImage(state) => state,
+            NbdNetbootSupervisorJobState::FetchingImage(state) => state,
             prev_state => {
                 // Swap the old state back:
                 *job_lg = prev_state;
@@ -392,7 +388,7 @@ impl QemuSupervisor {
                         this.remove_job(job_id).await;
 
                         // Prevent other tasks from further advancing this job's state:
-                        *job_lg = QemuSupervisorJobState::Stopping;
+                        *job_lg = NbdNetbootSupervisorJobState::Stopping;
 
                         return;
                     }
@@ -406,11 +402,13 @@ impl QemuSupervisor {
                     ?manifest,
                     "Transitioning job into ImageFetched state"
                 );
-                *job_lg = QemuSupervisorJobState::ImageFetched(QemuSupervisorImageFetchedState {
-                    start_job_req: fetching_image_state.start_job_req,
-                    image_id: fetching_image_state.image_id,
-                    manifest,
-                });
+                *job_lg = NbdNetbootSupervisorJobState::ImageFetched(
+                    NbdNetbootSupervisorImageFetchedState {
+                        start_job_req: fetching_image_state.start_job_req,
+                        image_id: fetching_image_state.image_id,
+                        manifest,
+                    },
+                );
 
                 // Release the lock before continuing to start, otherwise this
                 // will deadlock:
@@ -451,10 +449,12 @@ impl QemuSupervisor {
 
                 // Put the job into the `FetchingImage` state:
                 event!(Level::DEBUG, "Transitioning job into FetchingImage state");
-                *job_lg = QemuSupervisorJobState::FetchingImage(QemuSupervisorFetchingImageState {
-                    poll_task: Some(poll_task),
-                    ..fetching_image_state
-                });
+                *job_lg = NbdNetbootSupervisorJobState::FetchingImage(
+                    NbdNetbootSupervisorFetchingImageState {
+                        poll_task: Some(poll_task),
+                        ..fetching_image_state
+                    },
+                );
             }
 
             Err(e) => {
@@ -482,7 +482,7 @@ impl QemuSupervisor {
 
                 // Prevent other tasks from further advancing this job's state:
                 event!(Level::DEBUG, "Transitioning job into Stopping state");
-                *job_lg = QemuSupervisorJobState::Stopping;
+                *job_lg = NbdNetbootSupervisorJobState::Stopping;
             }
         }
     }
@@ -491,7 +491,7 @@ impl QemuSupervisor {
     async fn start_job_parse_manifest_check_images(
         &self,
         manifest: &image::manifest::ImageManifest,
-    ) -> Result<(PathBuf, QemuImgMetadata)> {
+    ) -> Result<(PathBuf, PathBuf, QemuImgMetadata)> {
         event!(
             Level::DEBUG,
             ?manifest,
@@ -502,13 +502,32 @@ impl QemuSupervisor {
         // create our "working" disk image overlay:
         let top_layer_label = manifest
             .attrs
-            .get("org.tockos.treadmill.image.qemu_layered_v0.head")
+            .get("org.tockos.treadmill.image.nbd_qcow2_layered_v0.head")
             .ok_or(anyhow!("Image does not have a head layer defined"))?;
 
-        // Now step through each image layer, making sure that it exists and (if
-        // it has a predecessor defined) it points to that predecessor. We don't
-        // want images to be able to reference arbitrary paths in our filesystem
-        // as underlying layers.
+        // Check that we have a boot archive defined:
+        let boot_blob_label = format!("{}-boot", top_layer_label);
+        let boot_blob_spec = manifest
+            .blobs
+            .get(&boot_blob_label)
+            .ok_or_else(|| anyhow!("Image missing blob {}", boot_blob_label))?;
+
+        // Get the path to the boot archive:
+        let boot_blob_path = self
+            .image_store_client
+            .blob_path(&boot_blob_spec.sha256_digest)
+            .await;
+
+        let boot_blob_path_canon = tokio::fs::canonicalize(&boot_blob_path)
+            .await
+            .with_context(|| {
+                format!("Failed to canonicalize boot blob path {:?}", boot_blob_path)
+            })?;
+
+        // Now step through each image layer, making sure that it has a root
+        // disk and (if that has a predecessor defined) the current root blob
+        // points to that predecessor. We don't want images to be able to
+        // reference arbitrary paths in our filesystem as underlying layers.
         //
         // We use `qemu-img` to retrieve the (partial) metadata of an image.
 
@@ -518,14 +537,14 @@ impl QemuSupervisor {
         // - Exists,
         // - Matches its specification in the manifest, and
         // - Only references its defined predecessor.
-        let mut top_image = None;
-        let mut current_image = top_layer_label;
+        let mut top_root_image = None;
+        let mut current_root_image = format!("{}-root", top_layer_label);
         loop {
             // Acquire the manifest metadata for this image blob:
             let blob_spec = manifest
                 .blobs
-                .get(current_image)
-                .ok_or_else(|| anyhow!("Image missing blob {}", current_image))?;
+                .get(&current_root_image)
+                .ok_or_else(|| anyhow!("Image missing blob {}", current_root_image))?;
 
             // Try to read image attributes with `qemu-img`:
             let image_path = self
@@ -540,29 +559,32 @@ impl QemuSupervisor {
                         format!("Failed to canonicalize image blob path {:?}", image_path)
                     })?;
 
-            event!(Level::DEBUG, qemu_img_binary = ?self.config.qemu.qemu_img_binary, file = ?image_path_canon, "Retrieving qcow2 file metadata");
-            let metadata_output = tokio::process::Command::new(&self.config.qemu.qemu_img_binary)
-                .arg("info")
-                .arg("--format=qcow2")
-                .arg("--output=json")
-                .arg("--")
-                .arg(&image_path_canon)
-                .output()
-                .await
-                .map_err(|e| anyhow::Error::from(e))
-                .and_then(|output| {
-                    // Ideally we'd want to use the nightly `exit_ok()` here:
-                    if !output.status.success() {
-                        bail!(
-                            "Running qemu-img failed with exit-code {:?}",
-                            output.status.code()
-                        );
-                    }
+            event!(Level::DEBUG, qemu_img_binary = ?self.config.nbd_netboot.qemu_img_binary, file = ?image_path_canon, "Retrieving qcow2 file metadata");
+            let metadata_output =
+                tokio::process::Command::new(&self.config.nbd_netboot.qemu_img_binary)
+                    .arg("info")
+                    .arg("--format=qcow2")
+                    .arg("--output=json")
+                    .arg("--")
+                    .arg(&image_path_canon)
+                    .output()
+                    .await
+                    .map_err(|e| anyhow::Error::from(e))
+                    .and_then(|output| {
+                        // Ideally we'd want to use the nightly `exit_ok()` here:
+                        if !output.status.success() {
+                            bail!(
+                                "Running qemu-img failed with exit-code {:?}",
+                                output.status.code()
+                            );
+                        }
 
-                    // Don't care about stderr:
-                    Ok(output.stdout)
-                })
-                .with_context(|| format!("Failed to query image metadata for {:?}", image_path))?;
+                        // Don't care about stderr:
+                        Ok(output.stdout)
+                    })
+                    .with_context(|| {
+                        format!("Failed to query image metadata for {:?}", image_path)
+                    })?;
 
             let metadata: QemuImgMetadata =
                 serde_json::from_slice(&metadata_output).with_context(|| {
@@ -573,7 +595,7 @@ impl QemuSupervisor {
                     )
                 })?;
 
-            top_image.get_or_insert_with(|| {
+            top_root_image.get_or_insert_with(|| {
                 event!(Level::DEBUG, file = ?image_path_canon, ?metadata, "Setting image file as top-level");
                 (image_path_canon.clone(), metadata.clone())
             });
@@ -603,18 +625,18 @@ impl QemuSupervisor {
             // what we hold in the manifest:
             let blob_virtual_size: u64 = blob_spec
                 .attrs
-                .get("org.tockos.treadmill.image.qemu_layered_v0.blob-virtual-size")
+                .get("org.tockos.treadmill.image.nbd_qcow2_layered_v0.blob-virtual-size")
                 .ok_or_else(|| {
                     anyhow!(
                         "Image blob {} missing `blob-virtual-size` attribute",
-                        current_image
+                        current_root_image
                     )
                 })
                 .and_then(|size_bytes_str| {
                     u64::from_str_radix(size_bytes_str, 10).with_context(|| {
                         format!(
                             "Parsing blob {}'s `blob-virtual-size` attribute as u64",
-                            current_image
+                            current_root_image
                         )
                     })
                 })?;
@@ -655,14 +677,14 @@ impl QemuSupervisor {
             // `backing_filename`:
             let blob_lower_opt = blob_spec
                 .attrs
-                .get("org.tockos.treadmill.image.qemu_layered_v0.lower");
+                .get("org.tockos.treadmill.image.nbd_qcow2_layered_v0.lower");
             if let Some(blob_lower) = blob_lower_opt {
                 // We do have a lower blob, look it up in the image store:
                 let lower_blob_spec = manifest.blobs.get(blob_lower).ok_or_else(|| {
                     anyhow!(
                         "Image missing blob {}, referenced by blob {}",
                         blob_lower,
-                        current_image,
+                        current_root_image,
                     )
                 })?;
 
@@ -686,14 +708,14 @@ impl QemuSupervisor {
                         format!(
                             "Failed to canonicalize image blob path {:?},
                                      referenced by qcow image file {}",
-                            f, current_image,
+                            f, current_root_image,
                         )
                     })?
                 } else {
                     bail!(
                         "Image {} supposed to reference blob {}, but \
                          qemu-img references no backing file",
-                        current_image,
+                        current_root_image,
                         blob_lower,
                     );
                 };
@@ -708,20 +730,20 @@ impl QemuSupervisor {
                          backing file instead.",
                         blob_lower,
                         image_store_path_canon,
-                        current_image,
+                        current_root_image,
                         full_backing_filename_canon,
                     );
                 }
 
                 // All checks passed, continue with the next layer:
-                current_image = blob_lower;
+                current_root_image = blob_lower.to_string();
             } else {
                 // Image is not supported to have any lower / backing layer:
                 if metadata.backing_filename.is_some() || metadata.full_backing_filename.is_some() {
                     bail!(
                         "Image blob {} (file {:?}) does not have a \
                          lower-blob specified but references a backing file",
-                        current_image,
+                        current_root_image,
                         image_path_canon,
                     );
                 }
@@ -732,19 +754,85 @@ impl QemuSupervisor {
             }
         }
 
-        // If we reach this point, we must have a path to the top
-        // layer of the image. Return it:
-        Ok(top_image.unwrap())
+        // If we reach this point, we must have a path to the top root layer of
+        // the image. Return it and the boot archive:
+        let (top_root_image_path, top_root_image_metadata) = top_root_image.unwrap();
+        Ok((
+            boot_blob_path_canon,
+            top_root_image_path,
+            top_root_image_metadata,
+        ))
     }
 
-    #[instrument(skip(self, start_job_req, top_image_qemu_info), err(Debug, level = Level::WARN))]
-    async fn start_job_parse_manifest_allocate_disk(
+    #[instrument(skip(self, start_job_req, boot_archive_path), err(Debug, level = Level::WARN))]
+    async fn start_job_unpack_boot_archive(
         &self,
         start_job_req: &connector::StartJobMessage,
-        top_image_path: &Path,
-        top_image_qemu_info: &QemuImgMetadata,
+        boot_archive_path: &Path,
+    ) -> Result<(), connector::JobError> {
+        let tftp_boot_dir = &self.config.nbd_netboot.tftp_boot_dir;
+
+        event!(
+            Level::DEBUG,
+            ?tftp_boot_dir,
+            "Ensuring that TFTP boot directory exists"
+        );
+        fs::create_dir_all(tftp_boot_dir)
+            .await
+            .map_err(|io_err| connector::JobError {
+                error_kind: connector::JobErrorKind::InternalError,
+                description: format!(
+                    "Unable to create (parents of) TFTP boot directory at {:?}: {:?}",
+                    tftp_boot_dir, io_err
+                ),
+            })?;
+
+        // We need to empty this directory without deleting the directory itself
+        // (which may reside on a special mountpoint / volume or have directory
+        // attributes that we should preserve):
+        event!(Level::DEBUG, ?tftp_boot_dir, "Emptying TFTP boot directory");
+
+        // TODO: we wrap this into a function to map the IOError onto a JobError
+        // below. Once try-blocks are stabilized, this can be turned into a
+        // simple block: https://doc.rust-lang.org/unstable-book/language-features/try-blocks.html
+        async fn empty_tftp_boot_dir(tftp_boot_dir: &Path) -> tokio::io::Result<()> {
+            let mut entries = fs::read_dir(tftp_boot_dir).await?;
+
+            // New errors may be encountered while iterating over the file
+            // system entries themselves:
+            while let Some(entry) = entries.next_entry().await? {
+                // Delete the entry. We need to distinguish between directories
+                // and other files:
+                if entry.file_type().await?.is_dir() {
+                    fs::remove_dir_all(entry.path()).await?;
+                } else {
+                    fs::remove_file(entry.path()).await?;
+                }
+            }
+
+            Ok(())
+        }
+        empty_tftp_boot_dir(tftp_boot_dir)
+            .await
+            .map_err(|io_err| connector::JobError {
+                error_kind: connector::JobErrorKind::InternalError,
+                description: format!(
+                    "Unable to delete files of TFTP boot directory at {:?}: {:?}",
+                    tftp_boot_dir, io_err
+                ),
+            })?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self, start_job_req, top_root_image_qemu_info), err(Debug, level = Level::WARN))]
+    async fn start_job_parse_manifest_allocate_root_disk(
+        &self,
+        start_job_req: &connector::StartJobMessage,
+        top_root_image_path: &Path,
+        top_root_image_qemu_info: &QemuImgMetadata,
     ) -> Result<(PathBuf, PathBuf), connector::JobError> {
-        let jobs_dir = self.config.qemu.state_dir.join("jobs");
+        let jobs_dir = self.config.nbd_netboot.state_dir.join("jobs");
         let job_dir = jobs_dir.join(&start_job_req.job_id.to_string());
 
         // Ensure that the state/jobs directory (and all recursive parents)
@@ -790,7 +878,7 @@ impl QemuSupervisor {
         //
         // We want to make sure that the new CoW disk image layer is not smaller
         // than the one specified in the manifest for the image.
-        if top_image_qemu_info.virtual_size > self.config.qemu.working_disk_max_bytes {
+        if top_root_image_qemu_info.virtual_size > self.config.nbd_netboot.working_disk_max_bytes {
             return Err(connector::JobError {
                 error_kind: connector::JobErrorKind::JobAlreadyExists,
                 description: format!(
@@ -802,8 +890,14 @@ impl QemuSupervisor {
 
         // Create the disk, based on the top image layer:
         let disk_image_file = job_dir.join("disk.qcow2");
-        event!(Level::DEBUG, backing_image = ?top_image_path, ?disk_image_file, virtual_size_bytes = self.config.qemu.working_disk_max_bytes, "Creating job disk image");
-        tokio::process::Command::new(&self.config.qemu.qemu_img_binary)
+        event!(
+            Level::DEBUG,
+            backing_image = ?top_root_image_path,
+            ?disk_image_file,
+            virtual_size_bytes = self.config.nbd_netboot.working_disk_max_bytes,
+            "Creating job disk image"
+        );
+        tokio::process::Command::new(&self.config.nbd_netboot.qemu_img_binary)
             .arg("create")
             // Image format:
             .arg("-f")
@@ -813,11 +907,11 @@ impl QemuSupervisor {
             .arg("qcow2")
             // Backing file:
             .arg("-b")
-            .arg(&top_image_path)
+            .arg(&top_root_image_path)
             // New image file:
             .arg(&disk_image_file)
             // New image size (in bytes, without suffix):
-            .arg(&self.config.qemu.working_disk_max_bytes.to_string())
+            .arg(&self.config.nbd_netboot.working_disk_max_bytes.to_string())
             .output()
             .await
             .map_err(|e| anyhow::Error::from(e))
@@ -884,12 +978,12 @@ impl QemuSupervisor {
         //
         // If the job is in any state other than `ImageFetched`, swap back and
         // return immediately:
-        let QemuSupervisorImageFetchedState {
+        let NbdNetbootSupervisorImageFetchedState {
             start_job_req,
             image_id,
             manifest,
-        } = match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Starting) {
-            QemuSupervisorJobState::ImageFetched(state) => state,
+        } = match std::mem::replace(&mut *job_lg, NbdNetbootSupervisorJobState::Starting) {
+            NbdNetbootSupervisorJobState::ImageFetched(state) => state,
             prev_state => {
                 // Swap the old state back:
                 *job_lg = prev_state;
@@ -917,7 +1011,7 @@ impl QemuSupervisor {
 
         // Parse the manifest and sanity-check all image layers. We do this in
         // an async block such that we can use the ``?`` operator:
-        let (top_image_path, top_image_qemu_info) =
+        let (boot_archive_path, top_root_image_path, top_root_image_qemu_info) =
             match this.start_job_parse_manifest_check_images(&manifest).await {
                 Ok(v) => v,
 
@@ -944,7 +1038,7 @@ impl QemuSupervisor {
                     this.remove_job(job_id).await;
 
                     // Prevent other tasks from further advancing this job's state:
-                    *job_lg = QemuSupervisorJobState::Stopping;
+                    *job_lg = NbdNetbootSupervisorJobState::Stopping;
 
                     return;
                 }
@@ -952,10 +1046,10 @@ impl QemuSupervisor {
 
         // Allocate the job's disk:
         let (job_workdir, job_disk_image_path) = match this
-            .start_job_parse_manifest_allocate_disk(
+            .start_job_parse_manifest_allocate_root_disk(
                 &start_job_req,
-                &top_image_path,
-                &top_image_qemu_info,
+                &top_root_image_path,
+                &top_root_image_qemu_info,
             )
             .await
         {
@@ -975,7 +1069,7 @@ impl QemuSupervisor {
                 this.remove_job(job_id).await;
 
                 // Prevent other tasks from further advancing this job's state:
-                *job_lg = QemuSupervisorJobState::Stopping;
+                *job_lg = NbdNetbootSupervisorJobState::Stopping;
 
                 return;
             }
@@ -998,100 +1092,55 @@ impl QemuSupervisor {
             )
             .is_none());
 
-        if let Some(ref start_script) = this.config.qemu.start_script {
-            event!(Level::DEBUG, ?start_script, "Executing start script");
-            let start_script_res = tokio::process::Command::new(start_script)
-                .stdin(std::process::Stdio::null())
-                .stderr(std::process::Stdio::inherit())
-                .envs(
-                    qemu_arg_substs
-                        .iter()
-                        .map(|(k, v)| (format!("TML_{}", k.to_uppercase()), v)),
-                )
-                .output()
-                .await
-                .unwrap(); // TODO: remove panic!
+        // let qemu_args = match this
+        //     .config
+        //     .nbd_netboot
+        //     .qemu_args
+        //     .iter()
+        //     .map(|argstr| strfmt::strfmt(argstr, &qemu_arg_substs))
+        //     .collect::<Result<Vec<String>, strfmt::FmtError>>()
+        // {
+        //     Ok(templated) => templated,
 
-            assert!(start_script_res.status.success(), "Start script failed!");
+        //     Err(format_error) => {
+        //         // Image is invalid, report an error:
+        //         this.connector
+        //             .report_job_error(
+        //                 start_job_req.job_id,
+        //                 connector::JobError {
+        //                     error_kind: connector::JobErrorKind::InternalError,
+        //                     description: format!(
+        //                         "Failed to generate QEMU command line arguments: {:?}",
+        //                         format_error,
+        //                     ),
+        //                 },
+        //             )
+        //             .await;
 
-            if let Ok(stdout) = std::str::from_utf8(&start_script_res.stdout) {
-                for line in stdout.lines() {
-                    if let Some(key_value) = line.strip_prefix("tml-set-variable:") {
-                        if let Some((key, value)) = key_value.split_once('=') {
-                            event!(
-                                Level::DEBUG,
-                                key,
-                                value,
-                                "Adding variable {key} to QEMU arg substs",
-                            );
-                            qemu_arg_substs.insert(key.to_string(), value.to_string());
-                        } else {
-                            event!(
-                                Level::WARN,
-                                command = line,
-                                "Malformed tml-set-variable command"
-                            );
-                        }
-                    }
-                }
-            } else {
-                event!(
-                    Level::WARN,
-                    stdout = %String::from_utf8_lossy(&start_script_res.stdout),
-                    "Start script produced non-UTF8 characters on standard output, refusing to interpret",
-                );
-            }
-        }
+        //         // TODO: remove job resources here.
 
-        let qemu_args = match this
-            .config
-            .qemu
-            .qemu_args
-            .iter()
-            .map(|argstr| strfmt::strfmt(argstr, &qemu_arg_substs))
-            .collect::<Result<Vec<String>, strfmt::FmtError>>()
-        {
-            Ok(templated) => templated,
+        //         // Safe to call, we don't hold a lock on `this.jobs`:
+        //         this.remove_job(job_id).await;
 
-            Err(format_error) => {
-                // Image is invalid, report an error:
-                this.connector
-                    .report_job_error(
-                        start_job_req.job_id,
-                        connector::JobError {
-                            error_kind: connector::JobErrorKind::InternalError,
-                            description: format!(
-                                "Failed to generate QEMU command line arguments: {:?}",
-                                format_error,
-                            ),
-                        },
-                    )
-                    .await;
+        //         // Prevent other tasks from further advancing this job's state:
+        //         *job_lg = NbdNetbootSupervisorJobState::Stopping;
 
-                // TODO: remove job resources here.
-
-                // Safe to call, we don't hold a lock on `this.jobs`:
-                this.remove_job(job_id).await;
-
-                // Prevent other tasks from further advancing this job's state:
-                *job_lg = QemuSupervisorJobState::Stopping;
-
-                return;
-            }
-        };
+        //         return;
+        //     }
+        // };
 
         // Start a TCP control socket on the specified listen addr:
         let control_socket = TcpControlSocket::new(
             start_job_req.job_id,
-            this.config.qemu.tcp_control_socket_listen_addr,
+            this.config.nbd_netboot.tcp_control_socket_listen_addr,
             this.clone(),
         )
         .await
         .unwrap();
 
-        event!(Level::INFO, qemu_binary = ?this.config.qemu.qemu_binary, ?qemu_args, "Launching QEMU process");
-        let qemu_proc = tokio::process::Command::new(&this.config.qemu.qemu_binary)
-            .args(&qemu_args)
+        event!(Level::INFO, qemu_nbd_binary = ?this.config.nbd_netboot.qemu_nbd_binary, /* ?qemu_args, */ "Launching qemu-nbd server");
+        let qemu_proc = tokio::process::Command::new(&this.config.nbd_netboot.qemu_nbd_binary)
+            // .args(&qemu_args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit())
@@ -1112,7 +1161,7 @@ impl QemuSupervisor {
 
         // Create a oneshot channel to signal shutdown
         let (shutdown_tx, shutdown_rx) =
-            tokio::sync::oneshot::channel::<QemuSupervisorJobRunningState>();
+            tokio::sync::oneshot::channel::<NbdNetbootSupervisorJobRunningState>();
 
         // Clone necessary variables for the monitoring task
         let supervisor_clone = Arc::clone(this);
@@ -1132,7 +1181,7 @@ impl QemuSupervisor {
         });
 
         // Update the job state
-        *job_lg = QemuSupervisorJobState::Running(QemuSupervisorJobRunningState {
+        *job_lg = NbdNetbootSupervisorJobState::Running(NbdNetbootSupervisorJobRunningState {
             start_job_req,
             control_socket,
             shutdown_tx: Some(shutdown_tx),
@@ -1142,11 +1191,11 @@ impl QemuSupervisor {
     async fn process_monitor(
         this: &Arc<Self>,
         job_id: Uuid,
-        job: Arc<Mutex<QemuSupervisorJobState>>,
+        job: Arc<Mutex<NbdNetbootSupervisorJobState>>,
         mut qemu_proc: tokio::process::Child,
-        mut shutdown_rx: tokio::sync::oneshot::Receiver<QemuSupervisorJobRunningState>,
+        mut shutdown_rx: tokio::sync::oneshot::Receiver<NbdNetbootSupervisorJobRunningState>,
     ) {
-        let (terminate_message, job_running_state): (String, QemuSupervisorJobRunningState) = loop {
+        let (terminate_message, job_running_state): (String, NbdNetbootSupervisorJobRunningState) = loop {
             tokio::select! {
                 // When the QEMU process has exited but, at the time of
                 // receiving this event the job was no longer in the stopping
@@ -1257,8 +1306,8 @@ impl QemuSupervisor {
                     );
                     let mut job_lg = job.lock().await;
 
-                    match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Stopping) {
-                        QemuSupervisorJobState::Running(s) => {
+                    match std::mem::replace(&mut *job_lg, NbdNetbootSupervisorJobState::Stopping) {
+                        NbdNetbootSupervisorJobState::Running(s) => {
                             break (terminate_message, s);
                         }
 
@@ -1292,14 +1341,14 @@ impl QemuSupervisor {
     async fn finish_running_job_shutdown(
         &self,
         job_id: Uuid,
-        _job: Arc<Mutex<QemuSupervisorJobState>>,
+        _job: Arc<Mutex<NbdNetbootSupervisorJobState>>,
         terminate_message: String,
-        job_running_state: QemuSupervisorJobRunningState,
+        job_running_state: NbdNetbootSupervisorJobRunningState,
     ) {
         // When we reach this function, the QEMU process has already
         // exited. Perform the remaining deallocation and shutdown procedures:
 
-        let QemuSupervisorJobRunningState {
+        let NbdNetbootSupervisorJobRunningState {
             control_socket,
             shutdown_tx: _,
             start_job_req: _,
@@ -1320,7 +1369,7 @@ impl QemuSupervisor {
 }
 
 #[async_trait]
-impl connector::Supervisor for QemuSupervisor {
+impl connector::Supervisor for NbdNetbootSupervisor {
     #[instrument(skip(this, start_job_req), fields(job_id = ?start_job_req.job_id), err(Debug, level = Level::WARN))]
     async fn start_job(
         this: &Arc<Self>,
@@ -1378,7 +1427,7 @@ impl connector::Supervisor for QemuSupervisor {
         }
 
         // We're good to create this job, create it in the `Starting` state:
-        let job = Arc::new(Mutex::new(QemuSupervisorJobState::Starting));
+        let job = Arc::new(Mutex::new(NbdNetbootSupervisorJobState::Starting));
 
         // Acquire a lock on the job. No one else has a reference yet, so this
         // should succeed immediately:
@@ -1422,13 +1471,14 @@ impl connector::Supervisor for QemuSupervisor {
 
         // Put the job into the `FetchingImage` state:
         let job_id = start_job_req.job_id; // Copy required below
-        *job_lg = QemuSupervisorJobState::FetchingImage(QemuSupervisorFetchingImageState {
-            start_job_req,
-            image_id,
-            // Will be set to Some(...) when an asynchronous fetch operation is
-            // kicked off:
-            poll_task: None,
-        });
+        *job_lg =
+            NbdNetbootSupervisorJobState::FetchingImage(NbdNetbootSupervisorFetchingImageState {
+                start_job_req,
+                image_id,
+                // Will be set to Some(...) when an asynchronous fetch operation is
+                // kicked off:
+                poll_task: None,
+            });
 
         // Release our lock on the job and hand over to the fetch image method:
         std::mem::drop(job_lg);
@@ -1444,7 +1494,7 @@ impl connector::Supervisor for QemuSupervisor {
         msg: connector::StopJobMessage,
     ) -> Result<(), connector::JobError> {
         // Get a reference to this job by an emphemeral lock on `jobs` HashMap:
-        let job: Arc<Mutex<QemuSupervisorJobState>> = {
+        let job: Arc<Mutex<NbdNetbootSupervisorJobState>> = {
             this.jobs
                 .lock()
                 .await
@@ -1459,43 +1509,45 @@ impl connector::Supervisor for QemuSupervisor {
         let mut job_lg = job.lock().await;
 
         enum StopJobPrevState {
-            FetchingImage(QemuSupervisorFetchingImageState),
-            ImageFetched(QemuSupervisorImageFetchedState),
-            Running(QemuSupervisorJobRunningState),
+            FetchingImage(NbdNetbootSupervisorFetchingImageState),
+            ImageFetched(NbdNetbootSupervisorImageFetchedState),
+            Running(NbdNetbootSupervisorJobRunningState),
         }
 
         // Make sure the job is in a state in which we can stop it. If so, place
         // it into the Stopping state.
-        let prev_job_state = match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Stopping)
-        {
-            // Stoppable states:
-            QemuSupervisorJobState::FetchingImage(s) => StopJobPrevState::FetchingImage(s),
-            QemuSupervisorJobState::ImageFetched(s) => StopJobPrevState::ImageFetched(s),
-            QemuSupervisorJobState::Running(s) => StopJobPrevState::Running(s),
+        let prev_job_state =
+            match std::mem::replace(&mut *job_lg, NbdNetbootSupervisorJobState::Stopping) {
+                // Stoppable states:
+                NbdNetbootSupervisorJobState::FetchingImage(s) => {
+                    StopJobPrevState::FetchingImage(s)
+                }
+                NbdNetbootSupervisorJobState::ImageFetched(s) => StopJobPrevState::ImageFetched(s),
+                NbdNetbootSupervisorJobState::Running(s) => StopJobPrevState::Running(s),
 
-            prev_state @ QemuSupervisorJobState::Starting => {
-                // Put back the previous state:
-                *job_lg = prev_state;
+                prev_state @ NbdNetbootSupervisorJobState::Starting => {
+                    // Put back the previous state:
+                    *job_lg = prev_state;
 
-                // We must never be able to acquire a lock over a job in
-                // this state. The job will atomically transition from
-                // `Starting` to some other state in the implementation of
-                // `start_job`. This state is just a placeholder in the
-                // global jobs map, such that no other job with the same ID
-                // can be started:
-                unreachable!("Job must not be in `Starting state!");
-            }
+                    // We must never be able to acquire a lock over a job in
+                    // this state. The job will atomically transition from
+                    // `Starting` to some other state in the implementation of
+                    // `start_job`. This state is just a placeholder in the
+                    // global jobs map, such that no other job with the same ID
+                    // can be started:
+                    unreachable!("Job must not be in `Starting state!");
+                }
 
-            prev_state @ QemuSupervisorJobState::Stopping => {
-                // Put back the previous state:
-                *job_lg = prev_state;
+                prev_state @ NbdNetbootSupervisorJobState::Stopping => {
+                    // Put back the previous state:
+                    *job_lg = prev_state;
 
-                return Err(connector::JobError {
-                    error_kind: connector::JobErrorKind::AlreadyStopping,
-                    description: format!("Job {:?} is already stopping.", msg.job_id),
-                });
-            }
-        };
+                    return Err(connector::JobError {
+                        error_kind: connector::JobErrorKind::AlreadyStopping,
+                        description: format!("Job {:?} is already stopping.", msg.job_id),
+                    });
+                }
+            };
 
         // Job is stopping, let the coordinator know:
         this.connector
@@ -1508,7 +1560,7 @@ impl connector::Supervisor for QemuSupervisor {
 
         // Perform actions depending on the previous job state:
         let terminate_message = match prev_job_state {
-            StopJobPrevState::FetchingImage(QemuSupervisorFetchingImageState {
+            StopJobPrevState::FetchingImage(NbdNetbootSupervisorFetchingImageState {
                 start_job_req: _,
                 image_id: _,
                 poll_task,
@@ -1526,7 +1578,7 @@ impl connector::Supervisor for QemuSupervisor {
                 "Job stopped during `FetchingImage` stage.".to_string()
             }
 
-            StopJobPrevState::ImageFetched(QemuSupervisorImageFetchedState {
+            StopJobPrevState::ImageFetched(NbdNetbootSupervisorImageFetchedState {
                 start_job_req: _,
                 image_id: _,
                 manifest: _,
@@ -1571,12 +1623,12 @@ impl connector::Supervisor for QemuSupervisor {
 }
 
 #[async_trait]
-impl control_socket::Supervisor for QemuSupervisor {
+impl control_socket::Supervisor for NbdNetbootSupervisor {
     #[instrument(skip(self))]
     async fn ssh_keys(&self, tgt_job_id: Uuid) -> Option<Vec<String>> {
         match self.jobs.lock().await.get(&tgt_job_id) {
             Some(job_state) => match &*job_state.lock().await {
-                QemuSupervisorJobState::Running(QemuSupervisorJobRunningState {
+                NbdNetbootSupervisorJobState::Running(NbdNetbootSupervisorJobRunningState {
                     start_job_req,
                     ..
                 }) => Some(start_job_req.ssh_keys.clone()),
@@ -1614,11 +1666,11 @@ impl control_socket::Supervisor for QemuSupervisor {
         match self.jobs.lock().await.get(&tgt_job_id) {
             Some(job_state) => match &*job_state.lock().await {
                 // Job is currently running, respond with its assigned hostname:
-                QemuSupervisorJobState::Running(_) => {
+                NbdNetbootSupervisorJobState::Running(_) => {
                     let hostname = format!("job-{}", format!("{}", tgt_job_id).split_at(10).0);
                     Some(treadmill_rs::api::supervisor_puppet::NetworkConfig {
                         hostname,
-                        // QemuSupervisor, don't supply a network interface to configure:
+                        // NbdNetbootSupervisor, don't supply a network interface to configure:
                         interface: None,
                         ipv4: None,
                         ipv6: None,
@@ -1658,7 +1710,7 @@ impl control_socket::Supervisor for QemuSupervisor {
         match self.jobs.lock().await.get(&tgt_job_id) {
             Some(job_state) => match &*job_state.lock().await {
                 // Job is currently running:
-                QemuSupervisorJobState::Running(QemuSupervisorJobRunningState {
+                NbdNetbootSupervisorJobState::Running(NbdNetbootSupervisorJobRunningState {
                     start_job_req,
                     ..
                 }) => Some(start_job_req.parameters.clone()),
@@ -1696,7 +1748,7 @@ impl control_socket::Supervisor for QemuSupervisor {
             Some(job_state) => match &*job_state.lock().await {
                 // Job is currently running, forward this event to a `JobState`
                 // change towards `Ready`:
-                QemuSupervisorJobState::Running(_) => {
+                NbdNetbootSupervisorJobState::Running(_) => {
                     self.connector
                         .update_job_state(job_id, RunningJobState::Ready, None)
                         .await;
@@ -1775,12 +1827,12 @@ async fn main() -> Result<()> {
     use treadmill_rs::connector::SupervisorConnector;
 
     tracing_subscriber::fmt::init();
-    event!(Level::INFO, "Treadmill Qemu Supervisor, Hello World!");
+    event!(Level::INFO, "Treadmill NbdNetboot Supervisor, Hello World!");
 
-    let args = QemuSupervisorArgs::parse();
+    let args = NbdNetbootSupervisorArgs::parse();
 
     let config_str = std::fs::read_to_string(&args.config_file).unwrap();
-    let config: QemuSupervisorConfig = toml::from_str(&config_str).unwrap();
+    let config: NbdNetbootSupervisorConfig = toml::from_str(&config_str).unwrap();
 
     let image_store =
         image_store_client::ImageStoreClient::new(config.image_store.http_endpoint.clone())
@@ -1811,7 +1863,7 @@ async fn main() -> Result<()> {
                         weak_supervisor.clone(),
                     ));
                     *connector_opt = Some(connector.clone());
-                    QemuSupervisor::new(connector, image_store, args, config)
+                    NbdNetbootSupervisor::new(connector, image_store, args, config)
                 })
             };
 
@@ -1846,7 +1898,7 @@ async fn main() -> Result<()> {
                         weak_supervisor.clone(),
                     ));
                     *connector_opt = Some(connector.clone());
-                    QemuSupervisor::new(connector, image_store, args, config)
+                    NbdNetbootSupervisor::new(connector, image_store, args, config)
                 })
             };
 

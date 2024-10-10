@@ -3927,6 +3927,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tml-nbd-netboot-supervisor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-recursion",
+ "async-trait",
+ "clap 4.5.16",
+ "serde",
+ "serde_json",
+ "strfmt",
+ "tml-cli-connector",
+ "tml-supervisor-lib",
+ "tml-tcp-control-socket-server",
+ "tml-ws-connector",
+ "tokio",
+ "toml 0.8.19",
+ "tracing",
+ "tracing-subscriber",
+ "treadmill-rs",
+ "uuid",
+]
+
+[[package]]
 name = "tml-puppet"
 version = "0.1.0"
 dependencies = [
@@ -3954,6 +3977,7 @@ dependencies = [
  "serde_json",
  "strfmt",
  "tml-cli-connector",
+ "tml-supervisor-lib",
  "tml-tcp-control-socket-server",
  "tml-ws-connector",
  "tokio",
@@ -3962,6 +3986,18 @@ dependencies = [
  "tracing-subscriber",
  "treadmill-rs",
  "uuid",
+]
+
+[[package]]
+name = "tml-supervisor-lib"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "tokio",
+ "toml 0.8.19",
+ "tracing",
+ "treadmill-rs",
 ]
 
 [[package]]
