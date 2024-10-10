@@ -214,7 +214,7 @@ pub struct GenericImageManifest<T: ManifestType> {
     pub description: String,
     #[serde(rename = "org.tockos.treadmill.manifest-ext.base.blobs")]
     pub blobs: HashMap<String, ImageBlobSpec<T>>,
-    #[serde(rename = "org.tockos.treadmill.manifest-ext.base.attrs")]
+    #[serde(default, rename = "org.tockos.treadmill.manifest-ext.base.attrs")]
     pub attrs: HashMap<String, String>,
 }
 
@@ -253,7 +253,7 @@ pub struct ImageBlobSpec<T: ManifestType> {
     pub sha256_digest: [u8; 32],
     #[serde(rename = "org.tockos.treadmill.manifest-ext.base.size")]
     pub size: u64,
-    #[serde(rename = "org.tockos.treadmill.manifest-ext.base.attrs")]
+    #[serde(default, rename = "org.tockos.treadmill.manifest-ext.base.attrs")]
     pub attrs: HashMap<String, String>,
     #[serde(flatten)]
     pub source_ext: T::BlobSpecSourceExt,
