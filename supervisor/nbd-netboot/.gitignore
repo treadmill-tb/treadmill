@@ -1,0 +1,9 @@
+# State directory, for development with default config
+/state
+
+# TFTP boot directory, for development with default config
+/tftp-boot
+
+
+# Image store, for development with default config
+/image-store

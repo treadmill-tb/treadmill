@@ -1,0 +1,39 @@
+[base]
+supervisor_id = "7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
+coord_connector = "cli_connector"
+
+[cli_connector]
+# Doesn't do anything yet, but we require the images key to be present
+images = { }
+
+[ws_connector]
+token = "OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc"
+switchboard_uri = "ws://localhost:8081"
+
+[image_store]
+# Doesn't do anything yet. This endpoint will be used to request
+# images to be downloaded etc. later on:
+http_endpoint = "https://localhost:8080"
+
+# Local mountpoint of the read-only image store:
+fs_endpoint = "./image-store"
+
+[nbd_netboot]
+qemu_nbd_binary = "qemu-nbd"
+qemu_img_binary = "qemu-img"
+tar_binary = "tar"
+
+state_dir = "./state"
+
+tcp_control_socket_listen_addr = "0.0.0.0:3859"
+nbd_server_listen_addr = "0.0.0.0:10809"
+
+tftp_boot_dir = "./tftp-boot"
+
+stop_script = "true"
+start_script = "true"
+
+# Each VM will have at most 32GB to work with. This should be
+# sufficient to support most images, even heavy-weight toolchains
+# (such as OpenTitan with Bazel and Vivado Lab tools)
+working_disk_max_bytes = 34359738368
