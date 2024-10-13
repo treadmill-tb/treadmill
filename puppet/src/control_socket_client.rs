@@ -113,4 +113,11 @@ impl ControlSocketClient {
     pub async fn report_ready(&self) -> Result<()> {
         self.send_event(PuppetEvent::Ready).await
     }
+
+    pub async fn terminate_job(&self) -> Result<()> {
+        self.send_event(PuppetEvent::TerminateJob {
+            supervisor_event_id: None,
+        })
+        .await
+    }
 }

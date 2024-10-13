@@ -7,9 +7,10 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use log::{debug, error, info, warn};
 use uuid::Uuid;
+use zbus::interface;
 
 use treadmill_rs::api::supervisor_puppet::{CommandOutputStream, PuppetEvent, SupervisorEvent};
 
@@ -26,8 +27,28 @@ enum PuppetControlSocketTransport {
     AutoDiscover,
 }
 
+#[derive(Debug, Clone, ValueEnum)]
+enum PuppetDaemonDbusBus {
+    Session,
+    System,
+    None,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum PuppetDbusBus {
+    Session,
+    System,
+}
+
 #[derive(Debug, Clone, Parser)]
-struct PuppetArgs {
+struct ClientBusOptions {
+    /// The D-Bus to connect to:
+    #[arg(long, default_value = "system")]
+    dbus_bus: PuppetDbusBus,
+}
+
+#[derive(Debug, Clone, Parser)]
+struct PuppetDaemonArgs {
     #[arg(long, short = 't')]
     transport: PuppetControlSocketTransport,
 
@@ -51,9 +72,12 @@ struct PuppetArgs {
 
     #[arg(long)]
     job_id_file: Option<PathBuf>,
+
+    #[arg(long, default_value = "system")]
+    dbus_bus: PuppetDaemonDbusBus,
 }
 
-async fn update_job_id_file(args: &PuppetArgs, job_id: Uuid) -> Result<()> {
+async fn update_job_id_file(args: &PuppetDaemonArgs, job_id: Uuid) -> Result<()> {
     let job_id_path = match args.job_id_file {
         Some(ref path) => path,
         None => return Ok(()),
@@ -76,8 +100,64 @@ async fn update_job_id_file(args: &PuppetArgs, job_id: Uuid) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Parser)]
+struct PuppetJobTerminateCommand;
+
+#[derive(Debug, Clone, Subcommand)]
+enum PuppetJobSubcommands {
+    /// Request the current job to be terminated.
+    Terminate(PuppetJobTerminateCommand),
+}
+
+#[derive(Debug, Clone, Parser)]
+struct PuppetJobCommand {
+    #[clap(flatten)]
+    bus_options: ClientBusOptions,
+
+    #[clap(subcommand)]
+    job_command: PuppetJobSubcommands,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum PuppetCommands {
+    /// Run a puppet daemon, connecting to a supervisor control socket
+    /// and establishing a DBus socket.
+    Daemon(PuppetDaemonArgs),
+
+    /// Commands related to the job currently executed on this supervisor.
+    Job(PuppetJobCommand),
+}
+
+#[derive(Debug, Clone, Parser)]
+struct PuppetCli {
+    #[clap(subcommand)]
+    puppet_command: PuppetCommands,
+}
+
+struct DbusPuppet {
+    control_socket_client: Arc<control_socket_client::ControlSocketClient>,
+}
+
+#[interface(
+    name = "ci.treadmill.Puppet1",
+    proxy(
+        gen_blocking = false,
+        default_path = "/ci/treadmill/Puppet",
+        default_service = "ci.treadmill.Puppet",
+    )
+)]
+impl DbusPuppet {
+    async fn terminate_job(&self) -> zbus::fdo::Result<()> {
+        info!("Received D-bus request to terminate job, forwarding to supervisor.");
+        self.control_socket_client
+            .terminate_job()
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+}
+
 async fn update_parameters_dir(
-    args: &PuppetArgs,
+    args: &PuppetDaemonArgs,
     client: &control_socket_client::ControlSocketClient,
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
@@ -146,7 +226,7 @@ async fn update_parameters_dir(
 }
 
 async fn update_authorized_keys(
-    args: &PuppetArgs,
+    args: &PuppetDaemonArgs,
     client: &control_socket_client::ControlSocketClient,
 ) -> Result<()> {
     if let Some(ref authorized_keys_file) = args.authorized_keys_file {
@@ -198,7 +278,7 @@ async fn update_authorized_keys(
 }
 
 async fn configure_network(
-    args: &PuppetArgs,
+    args: &PuppetDaemonArgs,
     client: &control_socket_client::ControlSocketClient,
 ) -> Result<()> {
     // Request the network configuration, dump it into environment variables and
@@ -552,22 +632,7 @@ async fn run_command(
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    use simplelog::{
-        ColorChoice, Config as SimpleLogConfig, LevelFilter, TermLogger, TerminalMode,
-    };
-
-    TermLogger::init(
-        LevelFilter::Debug,
-        SimpleLogConfig::default(),
-        TerminalMode::Mixed,
-        ColorChoice::Auto,
-    )
-    .unwrap();
-
-    let args = PuppetArgs::parse();
-
+async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
     let mut client = Arc::new(
         (|| async {
             match args.transport {
@@ -615,7 +680,7 @@ async fn main() -> Result<()> {
     // that selectively either log or forward errors:
 
     async fn update_authorized_keys_wrapper(
-        args: &PuppetArgs,
+        args: &PuppetDaemonArgs,
         client: &control_socket_client::ControlSocketClient,
     ) -> Result<()> {
         let msg = "Failed to update the SSH authorized_keys database";
@@ -634,7 +699,7 @@ async fn main() -> Result<()> {
     }
 
     async fn configure_network_wrapper(
-        args: &PuppetArgs,
+        args: &PuppetDaemonArgs,
         client: &control_socket_client::ControlSocketClient,
     ) -> Result<()> {
         let msg = "Failed to configure the network using the provided script";
@@ -660,6 +725,30 @@ async fn main() -> Result<()> {
     update_parameters_dir(&args, &client)
         .await
         .context("Failed to create / update parameters directory")?;
+
+    // Register as a DBus service:
+    let dbus_builder_opt = match args.dbus_bus {
+        PuppetDaemonDbusBus::Session => Some(zbus::connection::Builder::session()?),
+        PuppetDaemonDbusBus::System => Some(zbus::connection::Builder::system()?),
+        PuppetDaemonDbusBus::None => None,
+    };
+
+    let _dbus_conn = if let Some(dbus_builder) = dbus_builder_opt {
+        Some(
+            dbus_builder
+                .name("ci.treadmill.Puppet")?
+                .serve_at(
+                    "/ci/treadmill/Puppet",
+                    DbusPuppet {
+                        control_socket_client: client.clone(),
+                    },
+                )?
+                .build()
+                .await?,
+        )
+    } else {
+        None
+    };
 
     // Report the puppet as ready:
     client
@@ -872,4 +961,52 @@ async fn main() -> Result<()> {
     info!("Shutdown complete.");
 
     Ok(())
+}
+
+async fn handle_job_command(job_args: &PuppetJobCommand, proxy: DbusPuppetProxy<'_>) -> Result<()> {
+    match job_args.job_command {
+        PuppetJobSubcommands::Terminate(PuppetJobTerminateCommand) => {
+            info!("Requesting job termination.");
+            proxy
+                .terminate_job()
+                .await
+                .context("Requesting job termination")
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    use simplelog::{
+        ColorChoice, Config as SimpleLogConfig, LevelFilter, TermLogger, TerminalMode,
+    };
+
+    TermLogger::init(
+        LevelFilter::Debug,
+        SimpleLogConfig::default(),
+        TerminalMode::Mixed,
+        ColorChoice::Auto,
+    )
+    .unwrap();
+
+    let args = PuppetCli::parse();
+
+    async fn client_dbus_connect(bus_options: &ClientBusOptions) -> Result<DbusPuppetProxy> {
+        let conn = match bus_options.dbus_bus {
+            PuppetDbusBus::System => zbus::Connection::system().await?,
+            PuppetDbusBus::Session => zbus::Connection::session().await?,
+        };
+
+        let proxy = DbusPuppetProxy::new(&conn).await?;
+
+        Ok(proxy)
+    }
+
+    match args.puppet_command {
+        PuppetCommands::Daemon(daemon_args) => daemon_main(daemon_args).await,
+        PuppetCommands::Job(job_args) => {
+            let proxy = client_dbus_connect(&job_args.bus_options).await?;
+            handle_job_command(&job_args, proxy).await
+        }
+    }
 }
