@@ -81,6 +81,17 @@ pub enum PuppetEvent {
         exit_code: Option<i32>,
         killed: bool,
     },
+
+    /// Ask the supervisor to terminate this job.
+    ///
+    /// This is an infallible operation, and the puppet will not have a chance
+    /// to be notified of the successful completion of this operation. Thus we
+    /// implement it as an event, not as a request.
+    ///
+    /// If this termination is performed in response to a request by a
+    /// supervisor, the puppet should include this original supervisor event ID
+    /// here:
+    TerminateJob { supervisor_event_id: Option<u64> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

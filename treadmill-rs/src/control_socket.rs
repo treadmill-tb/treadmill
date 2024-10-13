@@ -97,25 +97,44 @@ pub trait Supervisor: Send + Sync + 'static {
     async fn handle_event(&self, puppet_event_id: u64, event: PuppetEvent, job_id: Uuid) {
         match event {
             PuppetEvent::Ready => self.puppet_ready(puppet_event_id, job_id).await,
+
             PuppetEvent::Shutdown {
                 supervisor_event_id,
             } => {
                 self.puppet_shutdown(puppet_event_id, supervisor_event_id, job_id)
                     .await
             }
+
             PuppetEvent::Reboot {
                 supervisor_event_id,
             } => {
                 self.puppet_reboot(puppet_event_id, supervisor_event_id, job_id)
                     .await
             }
-            _ => event!(
-                Level::TRACE,
-                ?job_id,
-                puppet_event_id,
-                "Received unhandled puppet event: {:?}",
-                event,
-            ),
+
+            PuppetEvent::TerminateJob {
+                supervisor_event_id,
+            } => {
+                self.terminate_job(puppet_event_id, supervisor_event_id, job_id)
+                    .await
+            }
+
+            PuppetEvent::RunCommandError { .. }
+            | PuppetEvent::RunCommandOutput { .. }
+            | PuppetEvent::RunCommandExitCode { .. } => {
+                event!(
+                    Level::WARN,
+                    ?job_id,
+                    puppet_event_id,
+                    "Received unhandled puppet event: {:?}",
+                    event,
+                )
+            } // Would be required for consumers of this type outside of this
+              // crate, as it's marked with `#[non_exhaustive]`. However here we
+              // can exhaustively list all event types and force compile-errors
+              // if we add some in the future.
+              //
+              // _ => warn!(Unhandled puppet event!),
         }
     }
 
@@ -127,6 +146,14 @@ pub trait Supervisor: Send + Sync + 'static {
         job_id: Uuid,
     );
     async fn puppet_reboot(
+        &self,
+        puppet_event_id: u64,
+        supervisor_event_id: Option<u64>,
+        job_id: Uuid,
+    );
+
+    /// Puppet requests job to be terminated.
+    async fn terminate_job(
         &self,
         puppet_event_id: u64,
         supervisor_event_id: Option<u64>,

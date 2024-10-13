@@ -1289,6 +1289,129 @@ impl QemuSupervisor {
             .await
     }
 
+    async fn stop_job_internal(&self, job_id: Uuid) -> Result<(), connector::JobError> {
+        // Get a reference to this job by an emphemeral lock on `jobs` HashMap:
+        let job: Arc<Mutex<QemuSupervisorJobState>> = {
+            self.jobs
+                .lock()
+                .await
+                .get(&job_id)
+                .cloned()
+                .ok_or(connector::JobError {
+                    error_kind: connector::JobErrorKind::JobNotFound,
+                    description: format!("Job {:?} not found, cannot stop.", job_id),
+                })?
+        };
+
+        let mut job_lg = job.lock().await;
+
+        enum StopJobPrevState {
+            FetchingImage(QemuSupervisorFetchingImageState),
+            ImageFetched(QemuSupervisorImageFetchedState),
+            Running(QemuSupervisorJobRunningState),
+        }
+
+        // Make sure the job is in a state in which we can stop it. If so, place
+        // it into the Stopping state.
+        let prev_job_state = match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Stopping)
+        {
+            // Stoppable states:
+            QemuSupervisorJobState::FetchingImage(s) => StopJobPrevState::FetchingImage(s),
+            QemuSupervisorJobState::ImageFetched(s) => StopJobPrevState::ImageFetched(s),
+            QemuSupervisorJobState::Running(s) => StopJobPrevState::Running(s),
+
+            prev_state @ QemuSupervisorJobState::Starting => {
+                // Put back the previous state:
+                *job_lg = prev_state;
+
+                // We must never be able to acquire a lock over a job in
+                // this state. The job will atomically transition from
+                // `Starting` to some other state in the implementation of
+                // `start_job`. This state is just a placeholder in the
+                // global jobs map, such that no other job with the same ID
+                // can be started:
+                unreachable!("Job must not be in `Starting state!");
+            }
+
+            prev_state @ QemuSupervisorJobState::Stopping => {
+                // Put back the previous state:
+                *job_lg = prev_state;
+
+                return Err(connector::JobError {
+                    error_kind: connector::JobErrorKind::AlreadyStopping,
+                    description: format!("Job {:?} is already stopping.", job_id),
+                });
+            }
+        };
+
+        // Job is stopping, let the coordinator know:
+        self.connector
+            .update_job_state(
+                job_id,
+                RunningJobState::Terminating,
+                Some("Stop job requested".to_string()),
+            )
+            .await;
+
+        // Perform actions depending on the previous job state:
+        let terminate_message = match prev_job_state {
+            StopJobPrevState::FetchingImage(QemuSupervisorFetchingImageState {
+                start_job_req: _,
+                image_id: _,
+                poll_task,
+            }) => {
+                // Make sure that we don't have another poll task
+                // scheduled. This is potentially racy, where this abort() call
+                // can come right after an invocation of `Self::fetch_image` has
+                // been scheduled. However, that function will not do anything,
+                // given the job state is now `Stopping` instead of
+                // `FetchingImage``:
+                if let Some(handle) = poll_task {
+                    handle.abort();
+                }
+
+                "Job stopped during `FetchingImage` stage.".to_string()
+            }
+
+            StopJobPrevState::ImageFetched(QemuSupervisorImageFetchedState {
+                start_job_req: _,
+                image_id: _,
+                manifest: _,
+            }) => {
+                // Nothing to do, the only time we're seeing this state is in
+                // between fetching image, and actually starting the job. Given
+                // that we've acquired the lock between those two functions, we
+                // don't need to deallocate, shut down or abort anything.
+                "Job stopped during `ImageFetched` stage.".to_string()
+            }
+
+            StopJobPrevState::Running(mut running_state) => {
+                let shutdown_tx = running_state.shutdown_tx.take().expect(
+                    "`shutdown_tx` must not be None, only one such message \
+                         may be sent while the job is in the running state",
+                );
+
+                // Send the shutdown signal
+                let _ = shutdown_tx.send(running_state);
+
+                // The `finish_running_job_shutdown` takes care of the remaining
+                // shutdown procedure, including removing the job. We return here:
+                return Ok(());
+            }
+        };
+
+        // Job has been stopped, let the coordinator know:
+        self.connector
+            .update_job_state(job_id, RunningJobState::Terminated, Some(terminate_message))
+            .await;
+
+        // Finally, remove the job from the jobs HashMap. Eventually, all other
+        // `Arc` references (including the one we hold) will get dropped.
+        assert!(self.remove_job(job_id).await.is_some());
+
+        Ok(())
+    }
+
     async fn finish_running_job_shutdown(
         &self,
         job_id: Uuid,
@@ -1443,130 +1566,7 @@ impl connector::Supervisor for QemuSupervisor {
         this: &Arc<Self>,
         msg: connector::StopJobMessage,
     ) -> Result<(), connector::JobError> {
-        // Get a reference to this job by an emphemeral lock on `jobs` HashMap:
-        let job: Arc<Mutex<QemuSupervisorJobState>> = {
-            this.jobs
-                .lock()
-                .await
-                .get(&msg.job_id)
-                .cloned()
-                .ok_or(connector::JobError {
-                    error_kind: connector::JobErrorKind::JobNotFound,
-                    description: format!("Job {:?} not found, cannot stop.", msg.job_id),
-                })?
-        };
-
-        let mut job_lg = job.lock().await;
-
-        enum StopJobPrevState {
-            FetchingImage(QemuSupervisorFetchingImageState),
-            ImageFetched(QemuSupervisorImageFetchedState),
-            Running(QemuSupervisorJobRunningState),
-        }
-
-        // Make sure the job is in a state in which we can stop it. If so, place
-        // it into the Stopping state.
-        let prev_job_state = match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Stopping)
-        {
-            // Stoppable states:
-            QemuSupervisorJobState::FetchingImage(s) => StopJobPrevState::FetchingImage(s),
-            QemuSupervisorJobState::ImageFetched(s) => StopJobPrevState::ImageFetched(s),
-            QemuSupervisorJobState::Running(s) => StopJobPrevState::Running(s),
-
-            prev_state @ QemuSupervisorJobState::Starting => {
-                // Put back the previous state:
-                *job_lg = prev_state;
-
-                // We must never be able to acquire a lock over a job in
-                // this state. The job will atomically transition from
-                // `Starting` to some other state in the implementation of
-                // `start_job`. This state is just a placeholder in the
-                // global jobs map, such that no other job with the same ID
-                // can be started:
-                unreachable!("Job must not be in `Starting state!");
-            }
-
-            prev_state @ QemuSupervisorJobState::Stopping => {
-                // Put back the previous state:
-                *job_lg = prev_state;
-
-                return Err(connector::JobError {
-                    error_kind: connector::JobErrorKind::AlreadyStopping,
-                    description: format!("Job {:?} is already stopping.", msg.job_id),
-                });
-            }
-        };
-
-        // Job is stopping, let the coordinator know:
-        this.connector
-            .update_job_state(
-                msg.job_id,
-                RunningJobState::Terminating,
-                Some("Stop job requested".to_string()),
-            )
-            .await;
-
-        // Perform actions depending on the previous job state:
-        let terminate_message = match prev_job_state {
-            StopJobPrevState::FetchingImage(QemuSupervisorFetchingImageState {
-                start_job_req: _,
-                image_id: _,
-                poll_task,
-            }) => {
-                // Make sure that we don't have another poll task
-                // scheduled. This is potentially racy, where this abort() call
-                // can come right after an invocation of `Self::fetch_image` has
-                // been scheduled. However, that function will not do anything,
-                // given the job state is now `Stopping` instead of
-                // `FetchingImage``:
-                if let Some(handle) = poll_task {
-                    handle.abort();
-                }
-
-                "Job stopped during `FetchingImage` stage.".to_string()
-            }
-
-            StopJobPrevState::ImageFetched(QemuSupervisorImageFetchedState {
-                start_job_req: _,
-                image_id: _,
-                manifest: _,
-            }) => {
-                // Nothing to do, the only time we're seeing this state is in
-                // between fetching image, and actually starting the job. Given
-                // that we've acquired the lock between those two functions, we
-                // don't need to deallocate, shut down or abort anything.
-                "Job stopped during `ImageFetched` stage.".to_string()
-            }
-
-            StopJobPrevState::Running(mut running_state) => {
-                let shutdown_tx = running_state.shutdown_tx.take().expect(
-                    "`shutdown_tx` must not be None, only one such message \
-                         may be sent while the job is in the running state",
-                );
-
-                // Send the shutdown signal
-                let _ = shutdown_tx.send(running_state);
-
-                // The `finish_running_job_shutdown` takes care of the remaining
-                // shutdown procedure, including removing the job. We return here:
-                return Ok(());
-            }
-        };
-
-        // Job has been stopped, let the coordinator know:
-        this.connector
-            .update_job_state(
-                msg.job_id,
-                RunningJobState::Terminated,
-                Some(terminate_message),
-            )
-            .await;
-
-        // Finally, remove the job from the jobs HashMap. Eventually, all other
-        // `Arc` references (including the one we hold) will get dropped.
-        assert!(this.remove_job(msg.job_id).await.is_some());
-
-        Ok(())
+        this.stop_job_internal(msg.job_id).await
     }
 }
 
@@ -1767,6 +1767,24 @@ impl control_socket::Supervisor for QemuSupervisor {
         //
         // The `Stopping` state is then only set for when the QEMU process is
         // stopped, or when a shutdown is invoked from within the supervisor.
+    }
+
+    #[instrument(skip(self))]
+    async fn terminate_job(
+        &self,
+        _puppet_event_id: u64,
+        _supervisor_event_id: Option<u64>,
+        job_id: Uuid,
+    ) {
+        event!(
+            Level::INFO,
+            ?job_id,
+            "Received puppet event to terminate job",
+        );
+
+        if let Err(e) = self.stop_job_internal(job_id).await {
+            event!(Level::WARN, "Failed to stop job: {:?}", e);
+        }
     }
 }
 

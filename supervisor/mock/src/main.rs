@@ -146,6 +146,99 @@ impl MockSupervisor {
             config,
         }
     }
+
+    async fn stop_job_internal(
+        &self,
+        job_id: Uuid,
+        job: Arc<Mutex<MockSupervisorJobState>>,
+    ) -> Result<(), connector::JobError> {
+        // We do not immediately remove the job from the global jobs HashMap, as
+        // we want to deallocate all resources before a job with an identical ID
+        // can be resumed again. Thus, first transition it into a `Stopping`
+        // state and return a reference to it. We take ownership of the old job
+        // state and destruct it.
+
+        let mut job_lg = job.lock().await;
+
+        // Make sure the job is in a state in which we can stop it. If so, place
+        // it into the `Stopping` state.
+        let prev_job_state = match std::mem::replace(&mut *job_lg, MockSupervisorJobState::Stopping)
+        {
+            prev_state @ MockSupervisorJobState::Starting => {
+                // Put back the previous state:
+                *job_lg = prev_state;
+
+                // We must never be able to acquire a lock over a job in
+                // this state. The job will atomically transition from
+                // `Starting` to some other state in the implementation of
+                // `start_job`. This state is just a placeholder in the
+                // global jobs map, such that no other job with the same ID
+                // can be started:
+                unreachable!("Job must not be in `Starting` state!");
+            }
+
+            MockSupervisorJobState::Running(running_state) => {
+                // Right now, only the Running state can be stopped, and
+                // thus we can just return this type here, no need for any
+                // additional wrapping:
+                running_state
+            }
+
+            prev_state @ MockSupervisorJobState::Stopping => {
+                // Put back the previous state:
+                *job_lg = prev_state;
+
+                return Err(connector::JobError {
+                    error_kind: connector::JobErrorKind::AlreadyStopping,
+                    description: format!("Job {:?} is already stopping.", job_id),
+                });
+            }
+        };
+
+        // Job is stopping, let the coordinator know:
+        self.connector
+            .update_event(SupervisorEvent::JobEvent {
+                job_id,
+                event: SupervisorJobEvent::StateTransition {
+                    new_state: connector::RunningJobState::Terminating,
+                    status_message: None,
+                },
+            })
+            .await;
+
+        // Right now, we only have the running state that can be returned above.
+        let MockSupervisorJobRunningState {
+            start_job_req: _,
+            control_socket,
+            mut puppet_proc,
+        } = prev_job_state;
+
+        // TODO: kindly request the puppet to shut down. Here we simply force it
+        // to quit (by using a SIGKILL). This is not nice.
+        puppet_proc.kill().await.unwrap();
+
+        // Shut down the control socket server:
+        match control_socket {
+            ControlSocket::Tcp(cs) => cs.shutdown().await.unwrap(),
+        }
+
+        // Job has been stopped, let the coordinator know:
+        self.connector
+            .update_event(SupervisorEvent::JobEvent {
+                job_id,
+                event: SupervisorJobEvent::StateTransition {
+                    new_state: connector::RunningJobState::Terminated,
+                    status_message: None,
+                },
+            })
+            .await;
+
+        // Finally, remove the job from the jobs HashMap. Eventually, all other
+        // `Arc` references (including the one we hold) will get dropped.
+        assert!(self.jobs.lock().await.remove(&job_id).is_some());
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -247,16 +340,19 @@ impl connector::Supervisor for MockSupervisor {
             //env!("CARGO_BIN_FILE_TML_PUPPET_tml-puppet")
             &this.args.puppet_binary,
         )
+        .arg("daemon")
         .arg("--transport")
         .arg("tcp")
         .arg("--tcp-control-socket-addr")
         .arg(SOCKET_ADDR_STR)
-        // .env("TML_CTRLSOCK_UNIXSEQPACKET", &control_socket_path)
+        .arg("--dbus-bus")
+        .arg("session")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .spawn()
         .unwrap();
+        // .env("TML_CTRLSOCK_UNIXSEQPACKET", &control_socket_path)
 
         // Job has been started, let the coordinator know:
         this.connector
@@ -286,12 +382,6 @@ impl connector::Supervisor for MockSupervisor {
         this: &Arc<Self>,
         msg: connector::StopJobMessage,
     ) -> Result<(), connector::JobError> {
-        // We do not immediately remove the job from the global jobs HashMap, as
-        // we want to deallocate all resources before a job with an identical ID
-        // can be resumed again. Thus, first transition it into a `Stopping`
-        // state and return a reference to it. We take ownership of the old job
-        // state and destruct it.
-
         // Get a reference to this job by an ephemeral lock on `jobs` HashMap:
         let job: Arc<Mutex<MockSupervisorJobState>> = {
             this.jobs
@@ -305,86 +395,7 @@ impl connector::Supervisor for MockSupervisor {
                 })?
         };
 
-        let mut job_lg = job.lock().await;
-
-        // Make sure the job is in a state in which we can stop it. If so, place
-        // it into the `Stopping` state.
-        let prev_job_state = match std::mem::replace(&mut *job_lg, MockSupervisorJobState::Stopping)
-        {
-            prev_state @ MockSupervisorJobState::Starting => {
-                // Put back the previous state:
-                *job_lg = prev_state;
-
-                // We must never be able to acquire a lock over a job in
-                // this state. The job will atomically transition from
-                // `Starting` to some other state in the implementation of
-                // `start_job`. This state is just a placeholder in the
-                // global jobs map, such that no other job with the same ID
-                // can be started:
-                unreachable!("Job must not be in `Starting` state!");
-            }
-
-            MockSupervisorJobState::Running(running_state) => {
-                // Right now, only the Running state can be stopped, and
-                // thus we can just return this type here, no need for any
-                // additional wrapping:
-                running_state
-            }
-
-            prev_state @ MockSupervisorJobState::Stopping => {
-                // Put back the previous state:
-                *job_lg = prev_state;
-
-                return Err(connector::JobError {
-                    error_kind: connector::JobErrorKind::AlreadyStopping,
-                    description: format!("Job {:?} is already stopping.", msg.job_id),
-                });
-            }
-        };
-
-        // Job is stopping, let the coordinator know:
-        this.connector
-            .update_event(SupervisorEvent::JobEvent {
-                job_id: msg.job_id,
-                event: SupervisorJobEvent::StateTransition {
-                    new_state: connector::RunningJobState::Terminating,
-                    status_message: None,
-                },
-            })
-            .await;
-
-        // Right now, we only have the running state that can be returned above.
-        let MockSupervisorJobRunningState {
-            start_job_req: _,
-            control_socket,
-            mut puppet_proc,
-        } = prev_job_state;
-
-        // TODO: kindly request the puppet to shut down. Here we simply force it
-        // to quit (by using a SIGKILL). This is not nice.
-        puppet_proc.kill().await.unwrap();
-
-        // Shut down the control socket server:
-        match control_socket {
-            ControlSocket::Tcp(cs) => cs.shutdown().await.unwrap(),
-        }
-
-        // Job has been stopped, let the coordinator know:
-        this.connector
-            .update_event(SupervisorEvent::JobEvent {
-                job_id: msg.job_id,
-                event: SupervisorJobEvent::StateTransition {
-                    new_state: connector::RunningJobState::Terminated,
-                    status_message: None,
-                },
-            })
-            .await;
-
-        // Finally, remove the job from the jobs HashMap. Eventually, all other
-        // `Arc` references (including the one we hold) will get dropped.
-        assert!(this.jobs.lock().await.remove(&msg.job_id).is_some());
-
-        Ok(())
+        this.stop_job_internal(msg.job_id, job).await
     }
     //
     // async fn request_status(_this: &Arc<Self>) -> SupervisorStatus {
@@ -587,6 +598,32 @@ impl control_socket::Supervisor for MockSupervisor {
         //
         // The `Stopping` state is then only set for when the QEMU process is
         // stopped, or when a shutdown is invoked from within the supervisor.
+    }
+
+    #[instrument(skip(self))]
+    async fn terminate_job(
+        &self,
+        _puppet_event_id: u64,
+        _supervisor_event_id: Option<u64>,
+        job_id: Uuid,
+    ) {
+        event!(Level::INFO, "Received puppet event to terminate job",);
+
+        // Get a reference to this job by an ephemeral lock on `jobs` HashMap:
+        let job = if let Some(job) = self.jobs.lock().await.get(&job_id).cloned() {
+            job
+        } else {
+            event!(
+                Level::WARN,
+                "Received puppet terminate job request for non-existant job {:?}",
+                job_id,
+            );
+            return;
+        };
+
+        if let Err(e) = self.stop_job_internal(job_id, job).await {
+            event!(Level::WARN, "Failed to stop job: {:?}", e);
+        }
     }
 }
 
