@@ -1,5 +1,5 @@
 [package]
-name = "tml-cli"
+name = "treadmill-cli"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

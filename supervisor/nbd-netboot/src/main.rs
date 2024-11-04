@@ -21,9 +21,9 @@ use treadmill_rs::control_socket;
 use treadmill_rs::image;
 use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 
-use tml_tcp_control_socket_server::TcpControlSocket;
+use treadmill_tcp_control_socket_server::TcpControlSocket;
 
-use tml_supervisor_lib::image_store_client;
+use treadmill_supervisor_lib::image_store_client;
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case")]
@@ -148,9 +148,9 @@ pub struct NbdNetbootSupervisorConfig {
 
     /// Configurations for individual connector implementations. All are
     /// optional, and not all of them have to be supported:
-    cli_connector: Option<tml_cli_connector::CliConnectorConfig>,
+    cli_connector: Option<treadmill_cli_connector::CliConnectorConfig>,
 
-    ws_connector: Option<tml_ws_connector::WsConnectorConfig>,
+    ws_connector: Option<treadmill_ws_connector::WsConnectorConfig>,
 
     image_store: image_store_client::LocalImageStoreConfig,
 
@@ -2009,7 +2009,7 @@ async fn main() -> Result<()> {
                 // Shadow, to avoid moving the variable:
                 let connector_opt = &mut connector_opt;
                 Arc::new_cyclic(move |weak_supervisor| {
-                    let connector = Arc::new(tml_cli_connector::CliConnector::new(
+                    let connector = Arc::new(treadmill_cli_connector::CliConnector::new(
                         config.base.supervisor_id,
                         cli_connector_config,
                         weak_supervisor.clone(),
@@ -2044,7 +2044,7 @@ async fn main() -> Result<()> {
                 // Shadow, to avoid moving the variable:
                 let connector_opt = &mut connector_opt;
                 Arc::new_cyclic(move |weak_supervisor| {
-                    let connector = Arc::new(tml_ws_connector::WsConnector::new(
+                    let connector = Arc::new(treadmill_ws_connector::WsConnector::new(
                         config.base.supervisor_id,
                         ws_connector_config,
                         weak_supervisor.clone(),

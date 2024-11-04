@@ -1,15 +1,15 @@
 [package]
-name = "tml-qemu-supervisor"
+name = "treadmill-qemu-supervisor"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
 [dependencies]
 treadmill-rs = { path = "../../treadmill-rs" }
-tml-tcp-control-socket-server = { path = "../../control-socket/tcp/server" }
-tml-cli-connector = { path = "../../connector/cli" }
-tml-ws-connector = { path = "../../connector/ws" }
-tml-supervisor-lib = { path = "../lib" }
+treadmill-tcp-control-socket-server = { path = "../../control-socket/tcp/server" }
+treadmill-cli-connector = { path = "../../connector/cli" }
+treadmill-ws-connector = { path = "../../connector/ws" }
+treadmill-supervisor-lib = { path = "../lib" }
 
 tokio = { version = "1.35.1", default-features = false, features = ["rt-multi-thread", "process", "fs"] }
 toml = "0.8.8"

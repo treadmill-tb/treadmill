@@ -1,5 +1,5 @@
 [package]
-name = "tml-tcp-control-socket-server"
+name = "treadmill-tcp-control-socket-server"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
