@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 // TCP control socket transport implementation:
 #[cfg(feature = "transport_tcp")]
-pub use tml_tcp_control_socket_client as tcp;
+pub use treadmill_tcp_control_socket_client as tcp;
 
 use treadmill_rs::api::supervisor_puppet::{
     NetworkConfig, ParameterValue, PuppetEvent, PuppetReq, SupervisorEvent, SupervisorResp,

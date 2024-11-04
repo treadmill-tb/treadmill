@@ -47,9 +47,9 @@ jobs:
           PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
       - name: Build components
         run: |
-          cargo build --package tml-switchboard
-          cargo build --package tml-mock-supervisor
-          cargo build --package tml-puppet
+          cargo build --package treadmill-switchboard
+          cargo build --package treadmill-mock-supervisor
+          cargo build --package treadmill-puppet
       - name: Generate test configurations
         run: |
           cp switchboard/config.example.toml switchboard_config.toml
@@ -66,13 +66,13 @@ jobs:
       - name: Start switchboard
         run: |
           export RUST_LOG=debug
-          cargo run --package tml-switchboard -- serve -c switchboard_config.toml > switchboard.log 2>&1 &
+          cargo run --package treadmill-switchboard -- serve -c switchboard_config.toml > switchboard.log 2>&1 &
           echo $! > switchboard.pid
           sleep 1
       - name: Start mock supervisor
         run: |
-          cargo build --package tml-puppet
-          nohup cargo run --package tml-mock-supervisor -- -c mock_supervisor_config.toml --puppet-binary ./target/debug/tml-puppet > mock_supervisor.log 2>&1 &
+          cargo build --package treadmill-puppet
+          nohup cargo run --package treadmill-mock-supervisor -- -c mock_supervisor_config.toml --puppet-binary ./target/debug/treadmill-puppet > mock_supervisor.log 2>&1 &
           echo $! > mock_supervisor.pid
           sleep 1
       - name: Check mock supervisor log

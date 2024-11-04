@@ -1,5 +1,5 @@
 [package]
-name = "tml-supervisor-lib"
+name = "treadmill-supervisor-lib"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

@@ -1,7 +1,7 @@
 //! Switchboard runner. Run as a command-line tool.
 
 use clap::{Parser, Subcommand};
-use tml_switchboard::serve::ServeCommand;
+use treadmill_switchboard::serve::ServeCommand;
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
@@ -17,7 +17,7 @@ pub enum Command {
 impl Command {
     async fn run(self) -> miette::Result<()> {
         match self {
-            Command::Serve(serve_cmd) => tml_switchboard::serve::serve(serve_cmd).await,
+            Command::Serve(serve_cmd) => treadmill_switchboard::serve::serve(serve_cmd).await,
         }
     }
 }

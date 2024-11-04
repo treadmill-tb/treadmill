@@ -1,18 +1,22 @@
 [package]
-name = "tml-puppet"
+name = "treadmill-puppet"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "tml-puppet"
+path = "src/main.rs"
+
 [features]
 default = ["transport_tcp"]
 
-transport_tcp = ["tml-tcp-control-socket-client"]
+transport_tcp = ["treadmill-tcp-control-socket-client"]
 
 [dependencies]
 treadmill-rs = { path = "../treadmill-rs" }
 
-tml-tcp-control-socket-client = { path = "../control-socket/tcp/client", optional = true }
+treadmill-tcp-control-socket-client = { path = "../control-socket/tcp/client", optional = true }
 
 uuid = { version = "1.6.1", features = ["serde"] }
 anyhow = "1.0.76"
