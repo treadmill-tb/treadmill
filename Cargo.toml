@@ -7,13 +7,12 @@ members = [
     "control-socket/tcp/client",
     "control-socket/tcp/server",
     "puppet",
+    "supervisor/lib",
     "supervisor/mock",
-    "supervisor/qemu",
     "supervisor/nbd-netboot",
+    "supervisor/qemu",
     "switchboard",
     "treadmill-rs",
-    "switchboard-macros",
-    "switchboard-traits", "supervisor/lib",
 ]
 
 [workspace.package]

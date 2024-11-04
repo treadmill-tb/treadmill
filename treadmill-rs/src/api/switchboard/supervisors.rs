@@ -1,8 +1,8 @@
 pub mod list {
     use crate::api::switchboard::SupervisorStatus;
+    use http::StatusCode;
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
-    use tml_switchboard_macros::HttpStatusCode;
     use uuid::Uuid;
 
     #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
@@ -27,35 +27,51 @@ pub mod list {
     // Governing Permissions:
     //  list_supervisors
     //  read_supervisor_status:<ID>
-    #[derive(Debug, Clone, HttpStatusCode, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
     pub enum Response {
-        #[http(status = 200)]
         Ok {
             supervisors: HashMap<Uuid, SupervisorStatus>,
         },
         /// User lacks the `list_supervisors` permission.
-        #[http(status = 403)]
         Unauthorized,
-        #[http(status = 500)]
         Internal,
+    }
+
+    impl crate::api::switchboard::JsonProxiedStatus for Response {
+        fn status_code(&self) -> StatusCode {
+            match self {
+                Response::Ok { .. } => StatusCode::OK,
+                Response::Unauthorized => StatusCode::FORBIDDEN,
+                Response::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            }
+        }
     }
 }
 
 pub mod status {
     use crate::api::switchboard::SupervisorStatus;
+    use http::StatusCode;
     use serde::{Deserialize, Serialize};
-    use tml_switchboard_macros::HttpStatusCode;
 
-    #[derive(Debug, Clone, HttpStatusCode, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
     pub enum Response {
-        #[http(status = 200)]
-        Ok { status: SupervisorStatus },
+        Ok {
+            status: SupervisorStatus,
+        },
         /// User does not have access to a supervisor with that ID.
-        #[http(status = 404)]
         Invalid,
-        #[http(status = 500)]
         Internal,
+    }
+
+    impl crate::api::switchboard::JsonProxiedStatus for Response {
+        fn status_code(&self) -> StatusCode {
+            match self {
+                Response::Ok { .. } => StatusCode::OK,
+                Response::Invalid => StatusCode::NOT_FOUND,
+                Response::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            }
+        }
     }
 }

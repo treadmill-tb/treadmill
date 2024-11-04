@@ -1,7 +1,7 @@
 use axum::extract;
 use axum::response::{IntoResponse, Response};
 use std::fmt::{Debug, Formatter};
-pub use tml_switchboard_traits::JsonProxiedStatus;
+pub use treadmill_rs::api::switchboard::JsonProxiedStatus;
 
 pub trait IntoProxiedResponse {
     fn into_proxied_response(self) -> Response;
