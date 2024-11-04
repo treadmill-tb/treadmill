@@ -8,12 +8,17 @@ use crate::api::switchboard_supervisor::{
 use crate::image::manifest::ImageId;
 use base64::Engine;
 use chrono::{DateTime, Utc};
+use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use subtle::{Choice, ConstantTimeEq};
 use uuid::Uuid;
+
+pub trait JsonProxiedStatus: Serialize + for<'de> Deserialize<'de> {
+    fn status_code(&self) -> StatusCode;
+}
 
 /// Request Body that [`login_handler`] expects.
 #[derive(Debug, Clone, Serialize, Deserialize)]

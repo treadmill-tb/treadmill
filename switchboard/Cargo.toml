@@ -64,7 +64,6 @@ miette = { version = "7.2.0", features = ["fancy"] }
 base64 = "0.22.1"
 
 treadmill-rs = { path = "../treadmill-rs" }
-tml-switchboard-traits = { path = "../switchboard-traits" }
 
 [dev-dependencies]
 sqlx-cli = { version = "0.8.0", features = ["postgres", "rustls", "completions"] }
