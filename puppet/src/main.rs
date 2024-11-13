@@ -257,8 +257,13 @@ async fn update_authorized_keys(
             )
         })?;
 
-        let mut authorized_keys = ssh_keys.join("\n");
-        authorized_keys.push_str("\n");
+        let authorized_keys = format!(
+            "# WARNING: this file is managed by tml-puppet and may be overwritten.\n\
+	     # Please add your own SSH keys to an alternative authorized_keys file\n\
+	     # (such as ~/.ssh/authorized_keys2)\n\
+	     {}\n",
+            ssh_keys.join("\n"),
+        );
         tokio::fs::write(authorized_keys_file, authorized_keys.as_bytes())
             .await
             .with_context(|| {
