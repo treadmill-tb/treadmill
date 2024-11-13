@@ -257,7 +257,8 @@ async fn update_authorized_keys(
             )
         })?;
 
-        let authorized_keys = ssh_keys.join("\n");
+        let mut authorized_keys = ssh_keys.join("\n");
+        authorized_keys.push_str("\n");
         tokio::fs::write(authorized_keys_file, authorized_keys.as_bytes())
             .await
             .with_context(|| {
