@@ -39,7 +39,7 @@ subtle = "2.6.1"
 # Used for password verification
 argon2 = { version = "0.6.0-pre.0", features = [] }
 # CSPRNG
-rand = { version = "0.9.0-alpha.1", features = ["getrandom"] }
+rand = { version = "0.9.0-alpha.1", features = ["getrandom", "std", "std_rng"] }
 
 # Logging facilities
 tracing = { version = "0.1.40" }
