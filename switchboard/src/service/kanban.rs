@@ -23,6 +23,7 @@ pub enum KanbanError {
 // - the watchdog to notify the scheduler when it times out
 pub struct QueuedJob {
     matched_supervisors: BTreeSet<Uuid>,
+    queued_at: DateTime<Utc>,
     // not currently used; TODO: add timeout sanity checking and to the queue timeout watchdogs
     #[allow(dead_code)]
     times_out_at: DateTime<Utc>,
@@ -84,6 +85,7 @@ impl Kanban {
             job_id,
             QueuedJob {
                 matched_supervisors,
+                queued_at,
                 times_out_at,
                 exit_notifier: exit_tx,
             },
@@ -167,8 +169,12 @@ impl Kanban {
         self.active_jobs.get_mut(&job_id)
     }
 
+    /// Get queued jobs, sorted by enqueue time:
     pub fn get_queued_jobs(&self) -> Vec<(Uuid, &BTreeSet<Uuid>)> {
-        self.queued_jobs
+        let mut queued_jobs_vec: Vec<(Uuid, &QueuedJob)> =
+            self.queued_jobs.iter().map(|(i, v)| (*i, v)).collect();
+        queued_jobs_vec.sort_by_key(|(_, job)| job.queued_at);
+        queued_jobs_vec
             .iter()
             .map(|(i, v)| (*i, &v.matched_supervisors))
             .collect()
