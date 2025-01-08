@@ -26,25 +26,37 @@ jobs:
           --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@v1.10.19
+
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql-client
           sudo apt-get install -y jq
+
       - name: Install/Update httpie
         run: |
           sudo apt-get update
           sudo apt-get install -y python3-pip
           pip3 install --upgrade httpie
           pip3 install --upgrade httpie-jwt-auth
+
       - name: Set up database
         run: |
-          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/SCHEMAv2.sql
-          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f switchboard/sql/FIXTURESv2.sql
+          pushd ./switchboard
+          cargo binstall sqlx-cli
+          sqlx migrate run
+          psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f FIXTURES.sql
+          popd
         env:
+          DATABASE_URL: 'postgresql://${{ env.POSTGRES_USER }}:${{ env.POSTGRES_PASSWORD }}@localhost:5432/${{ env.POSTGRES_DB }}'
           PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
+
       - name: Build components
         run: |
           cargo build --package treadmill-switchboard
