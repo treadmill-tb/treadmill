@@ -112,5 +112,10 @@ in
       export PGUSER="$(whoami)"
       export PGDATABASE="postgres"
       export DATABASE_URL="postgresql://''${PGUSER}@''${PGHOST_URIENCODE}/''${PGDATABASE}"
+
+      # Set the config parameters for running the Switchboard on this ephemeral DB:
+      export TML_DATABASE__HOST="$PGHOST"
+      export TML_DATABASE__DATABASE="$PGDATABASE"
+      export TML_DATABASE__USER="$PGUSER"
     '';
   }
