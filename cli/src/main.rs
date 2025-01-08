@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
 use chrono::Duration;
-use clap::{App, Arg, SubCommand};
+use clap::{Parser, Subcommand};
 use env_logger::Builder;
 use log::LevelFilter;
 use log::{debug, error, info};
 use reqwest::Client;
 use std::collections::HashMap;
+#[allow(unused_imports)]
 use treadmill_rs::api::switchboard;
 use treadmill_rs::api::switchboard::jobs::list::Response as ListJobsResponse;
 use treadmill_rs::api::switchboard::jobs::status::Response as JobStatusResponse;
@@ -22,117 +23,108 @@ use uuid::Uuid;
 mod auth;
 mod config;
 
+#[derive(Parser, Debug)]
+#[command(
+    name = "tml",
+    version = "2.0",
+    author = "Treadmill Project Developers <treadmill@tockos.org>",
+    about = "Treadmill Testbed CLI",
+    long_about = "A command-line interface tool for interacting with the Treadmill test bench system."
+)]
+struct Cli {
+    /// Sets a custom config file
+    #[arg(short = 'c', long = "config", value_name = "FILE")]
+    config: Option<String>,
+
+    /// Sets the API URL directly
+    #[arg(short = 'u', long = "api-url", value_name = "URL")]
+    api_url: Option<String>,
+
+    /// Enable verbose logging
+    #[arg(short = 'v', long = "verbose")]
+    verbose: bool,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    Login {
+        /// Username for login
+        username: String,
+        /// Password for login
+        password: String,
+    },
+    Job {
+        #[command(subcommand)]
+        job_command: JobCommands,
+    },
+    Supervisor {
+        #[command(subcommand)]
+        supervisor_command: SupervisorCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum JobCommands {
+    /// Enqueue a new job
+    Enqueue {
+        /// The 64-character hex-encoded image ID
+        image_id: String,
+
+        /// Comma-separated list of SSH public keys
+        #[arg(long = "ssh-keys", value_name = "KEYS")]
+        ssh_keys: Option<String>,
+
+        /// Remaining restart count
+        #[arg(long = "restart-count", value_name = "COUNT")]
+        restart_count: Option<String>,
+
+        /// JSON object of job parameters
+        #[arg(long = "parameters", value_name = "PARAMS")]
+        parameters: Option<String>,
+
+        /// Tag configuration
+        #[arg(long = "tag-config", value_name = "CONFIG")]
+        tag_config: Option<String>,
+
+        /// Override timeout in seconds
+        #[arg(long = "timeout", value_name = "TIMEOUT")]
+        timeout: Option<String>,
+    },
+    List,
+    Status {
+        /// The UUID of the job
+        job_id: String,
+    },
+    Cancel {
+        /// The UUID of the job
+        job_id: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SupervisorCommands {
+    List,
+    Status {
+        /// The UUID of the supervisor
+        supervisor_id: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let matches = App::new("Treadmill Testbed CLI")
-        .version("1.0")
-        .author("Treadmill Project Developers <treadmill@tockos.org>")
-        .arg(
-            Arg::with_name("config")
-                .short("c")
-                .long("config")
-                .value_name("FILE")
-                .help("Sets a custom config file")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("api_url")
-                .short("u")
-                .long("api-url")
-                .value_name("URL")
-                .help("Sets the API URL directly")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("verbose")
-                .short("v")
-                .long("verbose")
-                .help("Enable verbose logging")
-                .takes_value(false),
-        )
-        .subcommand(
-            SubCommand::with_name("login")
-                .about("Log in to the Treadmill CLI")
-                .arg(Arg::with_name("username").required(true))
-                .arg(Arg::with_name("password").required(true)),
-        )
-        .subcommand(
-            SubCommand::with_name("job")
-                .about("Job-related commands")
-                .subcommand(
-                    SubCommand::with_name("enqueue")
-                        .about("Enqueue a new job")
-                        .arg(Arg::with_name("image_id").required(true))
-                        .arg(Arg::with_name("ssh_keys")
-                                 .long("ssh-keys")
-                                 .value_name("KEYS")
-                                 .help("Comma-separated list of SSH public keys. If not provided, keys will be read from SSH agent, public key files, and config file.")
-                                 .takes_value(true),
-                        )
-                        .arg(
-                            Arg::with_name("restart_count")
-                                .long("restart-count")
-                                .value_name("COUNT")
-                                .help("Remaining restart count")
-                                .takes_value(true),
-                        )
-                        .arg(
-                            Arg::with_name("parameters")
-                                .long("parameters")
-                                .value_name("PARAMS")
-                                .help("JSON object of job parameters")
-                                .takes_value(true),
-                        )
-                        .arg(
-                            Arg::with_name("tag_config")
-                                .long("tag-config")
-                                .value_name("CONFIG")
-                                .help("Tag configuration")
-                                .takes_value(true),
-                        )
-                        .arg(
-                            Arg::with_name("timeout")
-                                .long("timeout")
-                                .value_name("TIMEOUT")
-                                .help("Override timeout in seconds")
-                                .takes_value(true),
-                        ),
-                )
-                .subcommand(SubCommand::with_name("list").about("List all jobs"))
-                .subcommand(
-                    SubCommand::with_name("status")
-                        .about("Get job status")
-                        .arg(Arg::with_name("job_id").required(true)),
-                )
-                .subcommand(
-                    SubCommand::with_name("cancel")
-                        .about("Cancel a job")
-                        .arg(Arg::with_name("job_id").required(true)),
-                ),
-        )
-        .subcommand(
-            SubCommand::with_name("supervisor")
-                .about("Supervisor-related commands")
-                .subcommand(
-                    SubCommand::with_name("list")
-                        .about("List all supervisors")
-                )
-                .subcommand(
-                    SubCommand::with_name("status")
-                        .about("Get status of a specific supervisor")
-                        .arg(Arg::with_name("supervisor_id").required(true).help("The UUID of the supervisor"))
-                )
-        )
-        .setting(clap::AppSettings::SubcommandRequiredElseHelp)
-        .get_matches();
+    let cli = Cli::parse();
 
-    if matches.is_present("verbose") {
+    if cli.verbose {
         Builder::new().filter(None, LevelFilter::Debug).init();
     } else {
         Builder::new().filter(None, LevelFilter::Info).init();
     }
 
-    let config = match (matches.value_of("config"), matches.value_of("api_url")) {
+    // Determine config from CLI flags or XDG paths
+    let config = match (cli.config.as_deref(), cli.api_url.as_deref()) {
         (Some(config_path), None) => config::load_config(Some(config_path))?,
         (None, Some(api_url)) => config::Config {
             api: config::Api {
@@ -141,102 +133,80 @@ async fn main() -> Result<()> {
             ssh_keys: None,
         },
         (Some(config_path), Some(api_url)) => {
-            let mut config = config::load_config(Some(config_path))?;
-            config.api.url = api_url.to_string();
-            config
+            let mut cfg = config::load_config(Some(config_path))?;
+            cfg.api.url = api_url.to_string();
+            cfg
         }
         (None, None) => config::load_config(None)?,
     };
 
     let client = Client::new();
 
-    match matches.subcommand() {
-        ("login", Some(login_matches)) => {
-            let username = login_matches.value_of("username").unwrap();
-            let password = login_matches.value_of("password").unwrap();
-            info!("Attempting login for user: {}", username);
-            login(&client, &config, username, password).await?;
+    match cli.command {
+        // tml login <USERNAME> <PASSWORD>
+        Commands::Login { username, password } => {
+            info!("Attempting login for user: {username}");
+            login(&client, &config, &username, &password).await?;
         }
-        ("job", Some(job_matches)) => match job_matches.subcommand() {
-            ("enqueue", Some(enqueue_matches)) => {
-                let image_id = enqueue_matches.value_of("image_id").unwrap();
-                let ssh_keys = enqueue_matches.value_of("ssh_keys");
-                let restart_count = enqueue_matches.value_of("restart_count");
-                let parameters = enqueue_matches.value_of("parameters");
-                let tag_config = enqueue_matches.value_of("tag_config");
-                let timeout = enqueue_matches.value_of("timeout");
 
-                info!("Enqueueing job with image ID: {}", image_id);
+        // tml job ...
+        Commands::Job { job_command } => match job_command {
+            // tml job enqueue <IMAGE_ID> [--ssh-keys ...] [--restart-count ...] ...
+            JobCommands::Enqueue {
+                image_id,
+                ssh_keys,
+                restart_count,
+                parameters,
+                tag_config,
+                timeout,
+            } => {
+                info!("Enqueueing job with image ID: {image_id}");
                 enqueue_job(
                     &client,
                     &config,
-                    image_id,
-                    ssh_keys,
-                    restart_count,
-                    parameters,
-                    tag_config,
-                    timeout,
+                    &image_id,
+                    ssh_keys.as_deref(),
+                    restart_count.as_deref(),
+                    parameters.as_deref(),
+                    tag_config.as_deref(),
+                    timeout.as_deref(),
                 )
                 .await?;
             }
-            ("list", Some(_)) => {
+            // tml job list
+            JobCommands::List => {
                 info!("Listing all jobs");
                 list_jobs(&client, &config).await?;
             }
-            ("status", Some(status_matches)) => {
-                let job_id = Uuid::parse_str(status_matches.value_of("job_id").unwrap())
-                    .context("Invalid job ID")?;
-                info!("Getting status for job ID: {}", job_id);
-                get_job_status(&client, &config, job_id).await?;
+            // tml job status <JOB_ID>
+            JobCommands::Status { job_id } => {
+                let job_id_parsed = Uuid::parse_str(&job_id).context("Invalid job ID")?;
+                info!("Getting status for job ID: {job_id_parsed}");
+                get_job_status(&client, &config, job_id_parsed).await?;
             }
-            ("cancel", Some(cancel_matches)) => {
-                let job_id = Uuid::parse_str(cancel_matches.value_of("job_id").unwrap())
-                    .context("Invalid job ID")?;
-                info!("Cancelling job with ID: {}", job_id);
-                cancel_job(&client, &config, job_id).await?;
-            }
-            _ => {
-                error!("Invalid job subcommand");
-                println!("Invalid job subcommand");
-                if let Some(job_subcommand) = job_matches.subcommand_name() {
-                    if let Some(subcommand_matches) = job_matches.subcommand_matches(job_subcommand)
-                    {
-                        subcommand_matches.usage();
-                    }
-                } else {
-                    job_matches.usage();
-                }
+            // tml job cancel <JOB_ID>
+            JobCommands::Cancel { job_id } => {
+                let job_id_parsed = Uuid::parse_str(&job_id).context("Invalid job ID")?;
+                info!("Cancelling job with ID: {job_id_parsed}");
+                cancel_job(&client, &config, job_id_parsed).await?;
             }
         },
-        ("supervisor", Some(supervisor_matches)) => match supervisor_matches.subcommand() {
-            ("list", Some(_)) => {
+
+        // tml supervisor ...
+        Commands::Supervisor { supervisor_command } => match supervisor_command {
+            // tml supervisor list
+            SupervisorCommands::List => {
                 info!("Listing all supervisors");
                 list_supervisors(&client, &config).await?;
             }
-            ("status", Some(status_matches)) => {
-                let supervisor_id =
-                    Uuid::parse_str(status_matches.value_of("supervisor_id").unwrap())
-                        .context("Invalid supervisor ID")?;
-                info!("Getting status for supervisor ID: {}", supervisor_id);
-                get_supervisor_status(&client, &config, supervisor_id).await?;
-            }
-            _ => {
-                error!("Invalid supervisor subcommand");
-                println!("Invalid supervisor subcommand");
-                if let Some(subcommand_matches) = supervisor_matches
-                    .subcommand_matches(supervisor_matches.subcommand_name().unwrap())
-                {
-                    subcommand_matches.usage();
-                } else {
-                    supervisor_matches.usage();
-                }
+            // tml supervisor status <SUPERVISOR_ID>
+            SupervisorCommands::Status { supervisor_id } => {
+                let supervisor_id_parsed =
+                    Uuid::parse_str(&supervisor_id).context("Invalid supervisor ID")?;
+                info!("Getting status for supervisor ID: {supervisor_id_parsed}");
+                get_supervisor_status(&client, &config, supervisor_id_parsed).await?;
             }
         },
-        _ => {
-            error!("Invalid command");
-            println!("Invalid command");
-            matches.usage();
-        }
     }
 
     Ok(())
@@ -295,6 +265,7 @@ async fn enqueue_job(
     let token = auth::get_token()?;
     debug!("Retrieved auth token");
 
+    // Validate image_id
     let image_id_bytes = hex::decode(image_id).context("Invalid image ID")?;
     let image_id = if image_id_bytes.len() == 32 {
         let mut arr = [0u8; 32];
@@ -305,6 +276,7 @@ async fn enqueue_job(
         return Err(anyhow::anyhow!("Invalid image ID length"));
     };
 
+    // Gather SSH keys
     let ssh_keys = if let Some(keys) = ssh_keys {
         keys.split(',').map(String::from).collect()
     } else {
@@ -324,8 +296,8 @@ async fn enqueue_job(
     let tag_config = tag_config.unwrap_or("").to_string();
 
     let override_timeout: Option<Duration> = timeout
-        .map(|timeout| -> Result<Duration> {
-            let seconds = timeout.parse::<i64>().context("Invalid timeout")?;
+        .map(|seconds_str| -> Result<Duration> {
+            let seconds = seconds_str.parse::<i64>().context("Invalid timeout")?;
             Ok(Duration::seconds(seconds))
         })
         .transpose()?;
@@ -377,7 +349,6 @@ async fn get_job_status(client: &Client, config: &config::Config, job_id: Uuid) 
     if response.status().is_success() {
         let job_status: JobStatusResponse = response.json().await?;
         println!("Job status: {:?}", job_status);
-        // TODO: job state history display here when available from the API
     } else {
         let error_text = response.text().await?;
         error!("Failed to get job status: {}", error_text);
@@ -423,79 +394,33 @@ async fn list_jobs(client: &Client, config: &config::Config) -> Result<()> {
             ListJobsResponse::Ok { jobs } => {
                 println!("Jobs:");
                 for (index, (job_id, status)) in jobs.iter().enumerate() {
-                    println!(
-                        "{}. {} ({})",
-                        index + 1,
-                        job_id,
-                        {
-                            match &status.state.state {
-                                JobState::Queued => "queued".to_string(),
-                                JobState::Scheduled => {
-                                    format!(
-                                        "scheduled (supervisor={})",
-                                        status.state.dispatched_to_supervisor.as_ref().unwrap()
-                                    )
-                                }
-                                JobState::Initializing { .. } => {
-                                    format!(
-                                        "starting (supervisor={})",
-                                        status.state.dispatched_to_supervisor.as_ref().unwrap()
-                                    )
-                                }
-                                JobState::Ready => {
-                                    format!(
-                                        "ready (supervisor={})",
-                                        status.state.dispatched_to_supervisor.as_ref().unwrap()
-                                    )
-                                }
-                                JobState::Terminating => {
-                                    format!(
-                                        "terminating (supervisor={})",
-                                        status.state.dispatched_to_supervisor.as_ref().unwrap()
-                                    )
-                                }
-                                JobState::Terminated => {
-                                    if let Some(res) = &status.state.result {
-                                        format!(
-                                            "terminated at {}: {}",
-                                            res.terminated_at, res.exit_status,
-                                        )
-                                    } else {
-                                        "terminated".to_string()
-                                    }
-                                }
+                    let desc = match &status.state.state {
+                        JobState::Queued => "queued".to_string(),
+                        JobState::Scheduled => format!(
+                            "scheduled (supervisor={})",
+                            status.state.dispatched_to_supervisor.as_ref().unwrap()
+                        ),
+                        JobState::Initializing { .. } => format!(
+                            "starting (supervisor={})",
+                            status.state.dispatched_to_supervisor.as_ref().unwrap()
+                        ),
+                        JobState::Ready => format!(
+                            "ready (supervisor={})",
+                            status.state.dispatched_to_supervisor.as_ref().unwrap()
+                        ),
+                        JobState::Terminating => format!(
+                            "terminating (supervisor={})",
+                            status.state.dispatched_to_supervisor.as_ref().unwrap()
+                        ),
+                        JobState::Terminated => {
+                            if let Some(res) = &status.state.result {
+                                format!("terminated at {}: {}", res.terminated_at, res.exit_status,)
+                            } else {
+                                "terminated".to_string()
                             }
-                        },
-                        // match status {
-                        // JobStatus::Active { job_state } => {
-                        //     match job_state {
-                        //         JobState::Starting { .. } => "starting".to_string(),
-                        //         JobState::Ready { .. } => "ready".to_string(),
-                        //         JobState::Stopping { .. } => "stopping".to_string(),
-                        //         JobState::Finished { .. } => "finished".to_string(),
-                        //         JobState::Canceled => "canceled".to_string(),
-                        //     }
-                        // }
-                        // JobStatus::Error { job_error } => {
-                        //     format!(
-                        //         "error ({:?}): {}",
-                        //         job_error.error_kind, job_error.description
-                        //     )
-                        // }
-                        // JobStatus::Inactive => {
-                        //     "queue".to_string()
-                        // }
-                        // JobStatus::Terminated(treadmill_rs::api::switchboard::JobResult {
-                        //     job_id: _,
-                        //     supervisor_id: _,
-                        //     exit_status,
-                        //     host_output: _,
-                        //     terminated_at,
-                        // }) => {
-                        //     format!("terminated at {terminated_at}: {exit_status}")
-                        // }
-                        // }
-                    );
+                        }
+                    };
+                    println!("{}. {} ({})", index + 1, job_id, desc);
                 }
             }
             ListJobsResponse::Internal => {
@@ -526,47 +451,29 @@ async fn list_supervisors(client: &Client, config: &config::Config) -> Result<()
         .await?;
 
     if response.status().is_success() {
-        let switchboard::supervisors::list::Response::Ok { supervisors } = response.json().await?
-        else {
+        use treadmill_rs::api::switchboard::supervisors::list::Response;
+        let Response::Ok { supervisors } = response.json().await? else {
             unreachable!();
         };
         println!("Supervisors:");
         for (index, (supervisor_id, status)) in supervisors.iter().enumerate() {
-            println!(
-                "{}. {} ({})",
-                index + 1,
-                supervisor_id,
-                match status {
-                    SupervisorStatus::Busy { job_id, job_state } => {
-                        format!(
-                            "busy (job={job_id}, {})",
-                            match job_state {
-                                RunningJobState::Initializing { .. } => {
-                                    "starting"
-                                }
-                                RunningJobState::Ready => {
-                                    "ready"
-                                }
-                                RunningJobState::Terminating => {
-                                    "terminating"
-                                }
-                                RunningJobState::Terminated => {
-                                    "terminated (?)"
-                                }
-                            }
-                        )
-                    }
-                    SupervisorStatus::BusyDisconnected { job_id, .. } => {
-                        format!("busy (job={job_id}, disconnected)")
-                    }
-                    SupervisorStatus::Idle => {
-                        "idle".to_string()
-                    }
-                    SupervisorStatus::Disconnected => {
-                        "idle (disconnected)".to_string()
-                    }
+            let desc = match status {
+                SupervisorStatus::Busy { job_id, job_state } => {
+                    let jstate = match job_state {
+                        RunningJobState::Initializing { .. } => "starting",
+                        RunningJobState::Ready => "ready",
+                        RunningJobState::Terminating => "terminating",
+                        RunningJobState::Terminated => "terminated (?)",
+                    };
+                    format!("busy (job={job_id}, {jstate})")
                 }
-            );
+                SupervisorStatus::BusyDisconnected { job_id, .. } => {
+                    format!("busy (job={job_id}, disconnected)")
+                }
+                SupervisorStatus::Idle => "idle".to_string(),
+                SupervisorStatus::Disconnected => "idle (disconnected)".to_string(),
+            };
+            println!("{}. {} ({})", index + 1, supervisor_id, desc);
         }
     } else {
         let error_text = response.text().await?;
@@ -595,13 +502,13 @@ async fn get_supervisor_status(
 
     if response.status().is_success() {
         let status: SupervisorStatus = response.json().await?;
-        println!("Supervisor Status for {}:", supervisor_id);
+        println!("Supervisor Status for {supervisor_id}:");
         match status {
             SupervisorStatus::Busy { job_id, job_state }
             | SupervisorStatus::BusyDisconnected { job_id, job_state } => {
                 println!("  Status: Running Job");
-                println!("  Job ID: {}", job_id);
-                println!("  Job State: {:?}", job_state);
+                println!("  Job ID: {job_id}");
+                println!("  Job State: {job_state:?}");
             }
             SupervisorStatus::Idle | SupervisorStatus::Disconnected => {
                 println!("  Status: Idle");
