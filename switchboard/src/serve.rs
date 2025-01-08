@@ -73,6 +73,16 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
         .await
         .into_diagnostic()
         .wrap_err("failed to connect to database")?;
+
+    // Apply database migrations automatically. The migrations are embedded in
+    // this binary, and any changes to ./migrations (from the project root) will
+    // be picked up by the build.rs script:
+    sqlx::migrate!()
+        .run(&pg_pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("failed to migrate database")?;
+
     let bind_address = config.server.bind_address;
     let tls_config = config.server.testing_only_tls_config.clone();
 
