@@ -1,5 +1,3 @@
-drop schema if exists tml_switchboard cascade;
-
 create schema tml_switchboard;
 
 -- We want to be able to distinguish system activity from user activity, hence the differentiation between normal and
