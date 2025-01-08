@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
 use chrono::Duration;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use env_logger::Builder;
 use log::LevelFilter;
 use log::{debug, error, info};
 use reqwest::Client;
 use std::collections::HashMap;
+use std::env;
 #[allow(unused_imports)]
 use treadmill_rs::api::switchboard;
 use treadmill_rs::api::switchboard::jobs::list::Response as ListJobsResponse;
@@ -53,7 +54,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    Login,
+    Login(LoginArgs),
     Job {
         #[command(subcommand)]
         job_command: JobCommands,
@@ -111,6 +112,23 @@ enum SupervisorCommands {
     },
 }
 
+#[derive(Args, Debug)]
+pub struct LoginArgs {
+    /// Optional positional username
+    username: Option<String>,
+
+    /// Optional positional password
+    password: Option<String>,
+
+    /// Optional named flag for username
+    #[arg(long)]
+    user: Option<String>,
+
+    /// Optional named flag for password
+    #[arg(long)]
+    password_flag: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -142,10 +160,11 @@ async fn main() -> Result<()> {
 
     match cli.command {
         // tml login
-        Commands::Login => {
-            // Prompt the user for credentials
-            let (username, password) = prompt_for_credentials()?;
-            info!("Attempting login for user: {username}");
+        Commands::Login(login_args) => {
+            // Merge user & password from flags, positionals, env vars, or prompt
+            let (username, password) = resolve_login_args(&login_args)?;
+            log::info!("Attempting login for user: {}", username);
+
             login(&client, &config, &username, &password).await?;
         }
 
@@ -212,20 +231,59 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn prompt_for_credentials() -> Result<(String, String)> {
-    print!("Username: ");
-    io::stdout().flush()?; // need to immediadely flush output so that Username is displayed before
-                           // prompt
-    let mut username = String::new();
-    io::stdin().read_line(&mut username)?;
-    let username = username.trim().to_owned();
+/// The order of precedence is:
+/// - For username:
+///   1) `login_args.user` (the --user flag)
+///   2) `login_args.username` (positional arg #1)
+///   3) `TML_USER` env var
+///   4) prompt
+///
+/// - For password:
+///   1) `login_args.password_flag` (the --password flag)
+///   2) `login_args.password` (positional arg #2)
+///   3) `TML_PASSWORD` env var
+///   4) prompt
+pub fn resolve_login_args(login_args: &LoginArgs) -> Result<(String, String)> {
+    let username = match &login_args.user {
+        Some(u) => u.clone(),
+        None => match &login_args.username {
+            Some(u) => u.clone(),
+            None => match env::var("TML_USER") {
+                Ok(u) => u,
+                Err(_) => prompt_for_input("Username")?,
+            },
+        },
+    };
 
-    // rpassword for hidden input
-    print!("Password: ");
-    io::stdout().flush()?;
-    let password = read_password()?.trim().to_owned();
+    let password = match &login_args.password_flag {
+        Some(p) => p.clone(),
+        None => match &login_args.password {
+            Some(p) => p.clone(),
+            None => match env::var("TML_PASSWORD") {
+                Ok(p) => p,
+                Err(_) => prompt_for_password("Password")?,
+            },
+        },
+    };
 
     Ok((username, password))
+}
+
+/// Prompts for unhidden text input (e.g., username).
+fn prompt_for_input(prompt: &str) -> Result<String> {
+    print!("{}: ", prompt);
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
+}
+
+/// Prompts for password input (hidden) using rpassword.
+fn prompt_for_password(prompt: &str) -> Result<String> {
+    print!("{}: ", prompt);
+    io::stdout().flush()?;
+    let password = read_password()?;
+    Ok(password.trim().to_string())
 }
 
 async fn login(

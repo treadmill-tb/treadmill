@@ -36,6 +36,16 @@ Ensure the CLI tool is in your system path or reference it directly using `./tml
    ./tml login
    ```
 
+   Or, optionally:
+
+   ```
+   ./tml login <USERNAME> [<PASSWORD>]
+   ```
+
+   ```
+   ./tml login --user <USERNAME> --password <PASSWORD>
+   ```
+
 2. Job Management
 
    - Enqueue a job:
@@ -69,6 +79,103 @@ Ensure the CLI tool is in your system path or reference it directly using `./tml
      ./tml job cancel <JOB_ID>
      ```
 
+## Login Options
+
+Treadmill CLI allows you to log in using **several** different methods, **in order of precedence**:
+
+1. **Command-Line Flags**
+
+   - `--user <USERNAME>`
+   - `--password <PASSWORD>`  
+     Example:
+
+   ```
+   ./tml login --user ben --password supersecret
+   ```
+
+2. **Positional Arguments**
+
+   - `<USERNAME> [<PASSWORD>]`  
+     Examples:
+
+   ```
+   ./tml login ben mypassword
+   ```
+
+   ```
+   ./tml login ben
+   ```
+
+   In the second example, you’ll be prompted for `mypassword`.
+
+3. **Environment Variables**
+
+   - `TML_USER`
+   - `TML_PASSWORD`  
+     Example:
+
+   ```
+   export TML_USER=ben
+   export TML_PASSWORD=supersecret
+   ./tml login
+   ```
+
+   If these environment variables are set, the CLI will use them **unless** the above command-line arguments override them.
+
+4. **Interactive Prompt**
+   - If username and/or password aren’t provided by flags, positional arguments, or environment variables, the CLI will prompt you interactively.
+
+### Examples
+
+- **Fully Interactive**:
+
+  ```
+  ./tml login
+  ```
+
+  - Prompts for username, then password.
+
+- **Username Positional + Prompt for Password**:
+
+  ```
+  ./tml login ben
+  ```
+
+  - Username is `ben`
+  - Prompts for password.
+
+- **Username & Password Positional**:
+
+  ```
+  ./tml login ben mypassword
+  ```
+
+  - Username is `ben`
+  - Password is `mypassword`
+  - No prompt needed.
+
+- **Flags**:
+
+  ```
+  ./tml login --user ben --password supersecret
+  ```
+
+  - Username is `ben`
+  - Password is `supersecret`
+  - No prompt needed.
+
+- **Environment Variables**:
+  ```
+  export TML_USER=ben
+  export TML_PASSWORD=supersecret
+  ./tml login
+  ```
+  - Username is `ben`
+  - Password is `supersecret`
+  - No prompt needed.
+
+**Note**: The CLI always checks for **flags first**, **then** any **positional arguments**, **then** environment variables, **finally** falling back to prompts for whichever piece is still missing. This flexibility makes the CLI suitable for both interactive and CI-based automation.
+
 ## Configuration
 
 The CLI can be configured using a TOML file. You can specify the config file path using the `-c` option.
@@ -100,7 +207,7 @@ If no SSH keys are provided via the command-line argument, the CLI will automati
    ./tml login
    ```
 
-   CLI will prompt you safely for you username and password
+   CLI will prompt you safely for your username and password if they are not provided by any other means.
 
 2. Enqueue a job:
 
