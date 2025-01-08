@@ -20,6 +20,9 @@ use treadmill_rs::connector::RunningJobState;
 use treadmill_rs::image::manifest::ImageId;
 use uuid::Uuid;
 
+use rpassword::read_password;
+use std::io::{self, Write};
+
 mod auth;
 mod config;
 
@@ -50,12 +53,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    Login {
-        /// Username for login
-        username: String,
-        /// Password for login
-        password: String,
-    },
+    Login,
     Job {
         #[command(subcommand)]
         job_command: JobCommands,
@@ -143,8 +141,10 @@ async fn main() -> Result<()> {
     let client = Client::new();
 
     match cli.command {
-        // tml login <USERNAME> <PASSWORD>
-        Commands::Login { username, password } => {
+        // tml login
+        Commands::Login => {
+            // Prompt the user for credentials
+            let (username, password) = prompt_for_credentials()?;
             info!("Attempting login for user: {username}");
             login(&client, &config, &username, &password).await?;
         }
@@ -210,6 +210,22 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn prompt_for_credentials() -> Result<(String, String)> {
+    print!("Username: ");
+    io::stdout().flush()?; // need to immediadely flush output so that Username is displayed before
+                           // prompt
+    let mut username = String::new();
+    io::stdin().read_line(&mut username)?;
+    let username = username.trim().to_owned();
+
+    // rpassword for hidden input
+    print!("Password: ");
+    io::stdout().flush()?;
+    let password = read_password()?.trim().to_owned();
+
+    Ok((username, password))
 }
 
 async fn login(

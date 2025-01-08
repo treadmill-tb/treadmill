@@ -33,7 +33,7 @@ Ensure the CLI tool is in your system path or reference it directly using `./tml
 1. Login
 
    ```
-   ./tml login <USERNAME> <PASSWORD>
+   ./tml login
    ```
 
 2. Job Management
@@ -97,8 +97,10 @@ If no SSH keys are provided via the command-line argument, the CLI will automati
 1. Login:
 
    ```
-   ./tml login fake_user1 FAKEFAKE
+   ./tml login
    ```
+
+   CLI will prompt you safely for you username and password
 
 2. Enqueue a job:
 
