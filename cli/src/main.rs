@@ -119,14 +119,6 @@ pub struct LoginArgs {
 
     /// Optional positional password
     password: Option<String>,
-
-    /// Optional named flag for username
-    #[arg(long)]
-    user: Option<String>,
-
-    /// Optional named flag for password
-    #[arg(long)]
-    password_flag: Option<String>,
 }
 
 #[tokio::main]
@@ -233,42 +225,33 @@ async fn main() -> Result<()> {
 
 /// The order of precedence is:
 /// - For username:
-///   1) `login_args.user` (the --user flag)
-///   2) `login_args.username` (positional arg #1)
-///   3) `TML_USER` env var
-///   4) prompt
+///   1) `login_args.username` (positional arg #1)
+///   2) `TML_USER` env var
+///   3) prompt
 ///
 /// - For password:
-///   1) `login_args.password_flag` (the --password flag)
-///   2) `login_args.password` (positional arg #2)
-///   3) `TML_PASSWORD` env var
-///   4) prompt
+///   1) `login_args.password` (positional arg #2)
+///   2) `TML_PASSWORD` env var
+///   3) prompt
 pub fn resolve_login_args(login_args: &LoginArgs) -> Result<(String, String)> {
-    let username = match &login_args.user {
+    let username = match &login_args.username {
         Some(u) => u.clone(),
-        None => match &login_args.username {
-            Some(u) => u.clone(),
-            None => match env::var("TML_USER") {
-                Ok(u) => u,
-                Err(_) => prompt_for_input("Username")?,
-            },
+        None => match env::var("TML_USER") {
+            Ok(u) => u,
+            Err(_) => prompt_for_input("Username")?,
         },
     };
 
-    let password = match &login_args.password_flag {
+    let password = match &login_args.password {
         Some(p) => p.clone(),
-        None => match &login_args.password {
-            Some(p) => p.clone(),
-            None => match env::var("TML_PASSWORD") {
-                Ok(p) => p,
-                Err(_) => prompt_for_password("Password")?,
-            },
+        None => match env::var("TML_PASSWORD") {
+            Ok(p) => p,
+            Err(_) => prompt_for_password("Password")?,
         },
     };
 
     Ok((username, password))
 }
-
 /// Prompts for unhidden text input (e.g., username).
 fn prompt_for_input(prompt: &str) -> Result<String> {
     print!("{}: ", prompt);
