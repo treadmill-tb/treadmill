@@ -43,7 +43,7 @@ Ensure the CLI tool is in your system path or reference it directly using `./tml
    ```
 
    ```
-   ./tml login --user <USERNAME> --password <PASSWORD>
+   ./tml login <USERNAME> <PASSWORD>
    ```
 
 2. Job Management
@@ -83,17 +83,7 @@ Ensure the CLI tool is in your system path or reference it directly using `./tml
 
 Treadmill CLI allows you to log in using **several** different methods, **in order of precedence**:
 
-1. **Command-Line Flags**
-
-   - `--user <USERNAME>`
-   - `--password <PASSWORD>`  
-     Example:
-
-   ```
-   ./tml login --user ben --password supersecret
-   ```
-
-2. **Positional Arguments**
+1. **Positional Arguments**
 
    - `<USERNAME> [<PASSWORD>]`  
      Examples:
@@ -108,7 +98,7 @@ Treadmill CLI allows you to log in using **several** different methods, **in ord
 
    In the second example, you’ll be prompted for `mypassword`.
 
-3. **Environment Variables**
+2. **Environment Variables**
 
    - `TML_USER`
    - `TML_PASSWORD`  
@@ -122,7 +112,7 @@ Treadmill CLI allows you to log in using **several** different methods, **in ord
 
    If these environment variables are set, the CLI will use them **unless** the above command-line arguments override them.
 
-4. **Interactive Prompt**
+3. **Interactive Prompt**
    - If username and/or password aren’t provided by flags, positional arguments, or environment variables, the CLI will prompt you interactively.
 
 ### Examples
@@ -152,16 +142,6 @@ Treadmill CLI allows you to log in using **several** different methods, **in ord
 
   - Username is `ben`
   - Password is `mypassword`
-  - No prompt needed.
-
-- **Flags**:
-
-  ```
-  ./tml login --user ben --password supersecret
-  ```
-
-  - Username is `ben`
-  - Password is `supersecret`
   - No prompt needed.
 
 - **Environment Variables**:
