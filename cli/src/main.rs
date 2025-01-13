@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::Duration;
 use clap::{Args, Parser, Subcommand};
 use env_logger::Builder;
@@ -101,6 +101,11 @@ enum JobCommands {
         /// The UUID of the job
         job_id: String,
     },
+
+    Ssh {
+        /// The user@IP string of the running job, e.g. "root@10.42.0.123"
+        target: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -201,6 +206,9 @@ async fn main() -> Result<()> {
                 info!("Cancelling job with ID: {job_id_parsed}");
                 cancel_job(&client, &config, job_id_parsed).await?;
             }
+            JobCommands::Ssh { target } => {
+                ssh_into_job(&target).await?;
+            }
         },
 
         // tml supervisor ...
@@ -267,6 +275,73 @@ fn prompt_for_password(prompt: &str) -> Result<String> {
     io::stdout().flush()?;
     let password = read_password()?;
     Ok(password.trim().to_string())
+}
+
+// Fix #2: import OsRng from rand_core (or rand::rngs)
+use rand_core::OsRng;
+use ssh_key::{Algorithm, LineEnding, PrivateKey};
+
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+fn generate_ed25519_key(key_path: &Path) -> Result<()> {
+    // Create an RNG
+    let mut rng = OsRng;
+
+    // Fix #3: correct argument order: first &mut rng, then Algorithm
+    let private_key = PrivateKey::random(&mut rng, Algorithm::Ed25519)
+        .map_err(|e| anyhow!("Failed to generate Ed25519 key: {e}"))?;
+
+    // Convert to OpenSSH format
+    let openssh_private_key = private_key
+        .to_openssh(LineEnding::LF)
+        .map_err(|e| anyhow!("Failed to convert to OpenSSH format: {e}"))?;
+
+    fs::write(&key_path, openssh_private_key)?;
+    let mut perms = fs::metadata(&key_path)?.permissions();
+    perms.set_mode(0o600);
+    fs::set_permissions(&key_path, perms)?;
+
+    Ok(())
+}
+
+async fn ssh_into_job(target: &str) -> Result<()> {
+    // Expect target in the format "<user>@<ip>"
+    let (user, ip) = target
+        .split_once('@')
+        .ok_or_else(|| anyhow!("Target must be in the form <user>@<ip>"))?;
+
+    // 1. Where to store the private key:
+    let xdg_dirs = xdg::BaseDirectories::with_prefix("treadmill-tb")
+        .context("Failed to initialize XDG base directories")?;
+    let key_path: PathBuf = xdg_dirs
+        .place_data_file("ssh-key")
+        .context("Failed to place treadmill ssh-key file")?;
+
+    // 2. If it does not exist, generate it
+    if !key_path.exists() {
+        generate_ed25519_key(&key_path).context("Failed to generate treadmill SSH key")?;
+        println!("Generated new Ed25519 SSH key at: {:?}", key_path);
+    }
+
+    // 3. Call 'ssh' with that key
+    println!("Connecting via SSH to {target} using key {:?}", key_path);
+    let status = Command::new("ssh")
+        .arg("-i")
+        .arg(key_path)
+        .arg(format!("{user}@{ip}"))
+        .status()
+        .context("Failed to spawn SSH process")?;
+
+    if !status.success() {
+        eprintln!("SSH process exited with status: {:?}", status.code());
+    }
+
+    Ok(())
 }
 
 async fn login(

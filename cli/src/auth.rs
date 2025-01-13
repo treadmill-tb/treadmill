@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
+use ssh_key::{PrivateKey, PublicKey};
 use std::fs;
 use std::path::PathBuf;
 use treadmill_rs::api::switchboard::AuthToken;
@@ -65,12 +66,14 @@ fn get_token_path() -> Result<PathBuf> {
 pub fn read_ssh_keys() -> Result<Vec<String>> {
     let mut keys = Vec::new();
 
+    // 1. Attempt to read from SSH agent
     if let Ok(session) = Session::new() {
         if let Ok(mut agent) = session.agent() {
             if agent.connect().is_ok() {
                 if let Ok(identities) = agent.identities() {
                     for identity in identities {
                         let pubkey = identity.blob();
+                        // store as raw base64 (same as existing code)
                         keys.push(general_purpose::STANDARD.encode(pubkey));
                     }
                 }
@@ -78,6 +81,7 @@ pub fn read_ssh_keys() -> Result<Vec<String>> {
         }
     }
 
+    // 2. Attempt to read .pub files from ~/.ssh
     let ssh_dir = dirs::home_dir()
         .map(|home| home.join(".ssh"))
         .unwrap_or_default();
@@ -93,10 +97,40 @@ pub fn read_ssh_keys() -> Result<Vec<String>> {
         }
     }
 
+    // 3. Attempt to read from config file
     if let Ok(config) = crate::config::load_config(None) {
         if let Some(config_keys) = config.ssh_keys {
             keys.extend(config_keys);
         }
+    }
+
+    // 4. Attempt to read the Treadmill-managed private key, if it exists
+    //    Then extract and append the public portion in OpenSSH format.
+    let xdg_dirs = xdg::BaseDirectories::with_prefix("treadmill-tb")
+        .context("Failed to initialize XDG base directories")?;
+    let treadmill_private_key_path = xdg_dirs
+        .place_data_file("ssh-key")
+        .context("Failed to place treadmill ssh-key file")?;
+
+    if treadmill_private_key_path.exists() {
+        let private_key_bytes = fs::read(&treadmill_private_key_path).with_context(|| {
+            format!(
+                "Failed to read treadmill private key: {:?}",
+                treadmill_private_key_path
+            )
+        })?;
+        let private_key = PrivateKey::from_openssh(&private_key_bytes)
+            .context("Failed to parse treadmill private key")?;
+
+        let public_key: PublicKey = private_key.public_key().clone();
+        // Convert public key to OpenSSH format.
+        // NOTE: `to_openssh` returns Result<String, ssh_key::Error>.
+        let pub_openssh = public_key
+            .to_openssh()
+            .context("Failed to convert treadmill public key to OpenSSH format")?;
+
+        // Clean it up and push it
+        keys.push(pub_openssh.trim().to_string());
     }
 
     Ok(keys)
