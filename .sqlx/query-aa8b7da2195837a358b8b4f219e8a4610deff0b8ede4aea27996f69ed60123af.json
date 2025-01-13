@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        select job_id, resume_job_id, restart_job_id, image_id as \"sql_image_id: _\", ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id, tag_config, job_timeout,\n        queued_at, functional_state as \"functional_state: _\", started_at,\n        dispatched_on_supervisor_id, exit_status as \"exit_status: _\", host_output, terminated_at,\n        last_updated_at\n        from tml_switchboard.jobs where functional_state = 'queued';\n        ",
+  "query": "\n        select job_id, resume_job_id, restart_job_id, image_id as \"sql_image_id: _\", ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id, tag_config, job_timeout,\n        queued_at, functional_state as \"functional_state: _\", started_at,\n        dispatched_on_supervisor_id, ssh_endpoints, exit_status as \"exit_status: _\", host_output,\n        terminated_at, last_updated_at\n        from tml_switchboard.jobs where functional_state = 'dispatched';\n        ",
   "describe": {
     "columns": [
       {
@@ -93,6 +93,11 @@
       },
       {
         "ordinal": 13,
+        "name": "ssh_endpoints",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 14,
         "name": "exit_status: _",
         "type_info": {
           "Custom": {
@@ -115,17 +120,17 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "host_output",
         "type_info": "Text"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "terminated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "last_updated_at",
         "type_info": "Timestamptz"
       }
@@ -150,8 +155,9 @@
       true,
       true,
       true,
+      true,
       false
     ]
   },
-  "hash": "f92770dbdba7d88e72643b0eb7ab8a4b15bc2fd714c78ba7814ac90fdb1d42ac"
+  "hash": "aa8b7da2195837a358b8b4f219e8a4610deff0b8ede4aea27996f69ed60123af"
 }

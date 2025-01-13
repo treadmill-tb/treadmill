@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        insert into tml_switchboard.jobs\n        (\n          job_id,\n          resume_job_id,\n          restart_job_id,\n          image_id,\n          ssh_keys,\n          restart_policy,\n          enqueued_by_token_id,\n          tag_config,\n          job_timeout,\n          functional_state,\n          queued_at,\n          started_at,\n          dispatched_on_supervisor_id,\n          ssh_endpoints,\n          exit_status,\n          host_output,\n          terminated_at,\n          last_updated_at\n        )\n        values (\n          $1,       -- job_id\n          $2,\t    -- resume_job_id\n          $3,\t    -- restart_job_id\n          $4,\t    -- image_id\n          $5,\t    -- ssh_keys\n          $6,\t    -- restart_policy\n          $7,\t    -- enqueued_by_token_id\n          $8,\t    -- tag_config\n          $9,\t    -- job_timeout\n          'queued', -- functional_state\n          $10,\t    -- queued_at\n          null,\t    -- started_at\n          null,\t    -- dispatched_on_supervisor_id\n          null,\t    -- ssh_endpoints\n          null,\t    -- exit_status\n          null,\t    -- host_output\n          null,\t    -- terminated_at\n          default   -- last_updated_at\n        )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "TextArray",
+        {
+          "Custom": {
+            "name": "tml_switchboard.restart_policy",
+            "kind": {
+              "Composite": [
+                [
+                  "remaining_restart_count",
+                  "Int4"
+                ]
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "Text",
+        "Interval",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f6a3ab64765709f87583d39a037d7192b1cd99aaac5a8a6f4ccc01cb825ecd3c"
+}

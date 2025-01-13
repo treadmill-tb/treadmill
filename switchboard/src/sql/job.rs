@@ -103,8 +103,46 @@ pub async fn insert(
     sqlx::query!(
         r#"
         insert into tml_switchboard.jobs
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-                'queued', $10, null, null, null, null, null, default)
+        (
+          job_id,
+          resume_job_id,
+          restart_job_id,
+          image_id,
+          ssh_keys,
+          restart_policy,
+          enqueued_by_token_id,
+          tag_config,
+          job_timeout,
+          functional_state,
+          queued_at,
+          started_at,
+          dispatched_on_supervisor_id,
+          ssh_endpoints,
+          exit_status,
+          host_output,
+          terminated_at,
+          last_updated_at
+        )
+        values (
+          $1,       -- job_id
+          $2,	    -- resume_job_id
+          $3,	    -- restart_job_id
+          $4,	    -- image_id
+          $5,	    -- ssh_keys
+          $6,	    -- restart_policy
+          $7,	    -- enqueued_by_token_id
+          $8,	    -- tag_config
+          $9,	    -- job_timeout
+          'queued', -- functional_state
+          $10,	    -- queued_at
+          null,	    -- started_at
+          null,	    -- dispatched_on_supervisor_id
+          null,	    -- ssh_endpoints
+          null,	    -- exit_status
+          null,	    -- host_output
+          null,	    -- terminated_at
+          default   -- last_updated_at
+        )
         "#,
         as_job_id,
         resume_job_id,
@@ -160,6 +198,7 @@ pub struct SqlJob {
     // Filled out if and when transitioned into `dispatched` functional state
     started_at: Option<DateTime<Utc>>,
     dispatched_on_supervisor_id: Option<Uuid>,
+    ssh_endpoints: Option<Vec<String>>,
 
     // Filled out when transitioned into `finalized` functional state
     #[allow(dead_code)]
@@ -224,6 +263,9 @@ impl SqlJob {
     pub fn dispatched_on_supervisor_id(&self) -> Option<Uuid> {
         self.dispatched_on_supervisor_id
     }
+    pub fn ssh_endpoints(&self) -> Option<&Vec<String>> {
+        self.ssh_endpoints.as_ref()
+    }
     pub fn functional_state(&self) -> SqlFunctionalState {
         self.functional_state
     }
@@ -239,8 +281,8 @@ pub async fn fetch_by_job_id(
         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
         queued_at, functional_state as "functional_state: _", started_at,
-        dispatched_on_supervisor_id, exit_status as "exit_status: _", host_output, terminated_at,
-        last_updated_at
+        dispatched_on_supervisor_id, ssh_endpoints, exit_status as "exit_status: _", host_output,
+        terminated_at, last_updated_at
         from tml_switchboard.jobs where job_id = $1;
         "#,
         job_id
@@ -256,8 +298,8 @@ pub async fn fetch_all_queued(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJob>, 
         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
         queued_at, functional_state as "functional_state: _", started_at,
-        dispatched_on_supervisor_id, exit_status as "exit_status: _", host_output, terminated_at,
-        last_updated_at
+        dispatched_on_supervisor_id, ssh_endpoints, exit_status as "exit_status: _", host_output,
+        terminated_at, last_updated_at
         from tml_switchboard.jobs where functional_state = 'queued';
         "#
     )
@@ -272,8 +314,8 @@ pub async fn fetch_all_dispatched(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJo
         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
         queued_at, functional_state as "functional_state: _", started_at,
-        dispatched_on_supervisor_id, exit_status as "exit_status: _", host_output, terminated_at,
-        last_updated_at
+        dispatched_on_supervisor_id, ssh_endpoints, exit_status as "exit_status: _", host_output,
+        terminated_at, last_updated_at
         from tml_switchboard.jobs where functional_state = 'dispatched';
         "#
     )

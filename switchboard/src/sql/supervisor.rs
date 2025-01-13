@@ -50,18 +50,22 @@ pub async fn insert(
     name: String,
     auth_token: SecurityToken,
     tag_set: &BTreeSet<String>,
+    ssh_endpoints: Vec<String>,
     conn: impl PgExecutor<'_>,
 ) -> Result<(), sqlx::Error> {
     let tag_vec: Vec<String> = tag_set.iter().cloned().collect();
     sqlx::query!(
         r#"
         insert into tml_switchboard.supervisors
-        values ($1, $2, $3, $4);
+        (supervisor_id, name, auth_token, tags, ssh_endpoints)
+        values
+        ($1, $2, $3, $4, $5);
         "#,
         supervisor_id,
         name,
         auth_token.as_bytes(),
-        tag_vec.as_slice()
+        tag_vec.as_slice(),
+        ssh_endpoints.as_slice(),
     )
     .execute(conn)
     .await

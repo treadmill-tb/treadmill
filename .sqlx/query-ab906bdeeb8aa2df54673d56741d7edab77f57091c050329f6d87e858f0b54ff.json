@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        select job_id, resume_job_id, restart_job_id, image_id as \"sql_image_id: _\", ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id, tag_config, job_timeout,\n        queued_at, functional_state as \"functional_state: _\", started_at,\n        dispatched_on_supervisor_id, exit_status as \"exit_status: _\", host_output, terminated_at,\n        last_updated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
+  "query": "\n        select job_id, resume_job_id, restart_job_id, image_id as \"sql_image_id: _\", ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id, tag_config, job_timeout,\n        queued_at, functional_state as \"functional_state: _\", started_at,\n        dispatched_on_supervisor_id, ssh_endpoints, exit_status as \"exit_status: _\", host_output,\n        terminated_at, last_updated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
   "describe": {
     "columns": [
       {
@@ -93,6 +93,11 @@
       },
       {
         "ordinal": 13,
+        "name": "ssh_endpoints",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 14,
         "name": "exit_status: _",
         "type_info": {
           "Custom": {
@@ -115,17 +120,17 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "host_output",
         "type_info": "Text"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "terminated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "last_updated_at",
         "type_info": "Timestamptz"
       }
@@ -152,8 +157,9 @@
       true,
       true,
       true,
+      true,
       false
     ]
   },
-  "hash": "e4fafff5b03606cefc69a4e20ba939884dce5f2068052ff9f4ae43a622c5fcad"
+  "hash": "ab906bdeeb8aa2df54673d56741d7edab77f57091c050329f6d87e858f0b54ff"
 }

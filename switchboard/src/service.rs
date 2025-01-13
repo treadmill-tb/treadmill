@@ -1526,6 +1526,7 @@ impl Service {
                 state: ExtendedJobState {
                     state: JobState::Terminated,
                     dispatched_to_supervisor: job.dispatched_on_supervisor_id(),
+                    ssh_endpoints: job.ssh_endpoints().cloned(),
                     result: Some(result),
                 },
                 as_of,
@@ -1540,6 +1541,7 @@ impl Service {
                     state: ExtendedJobState {
                         state,
                         dispatched_to_supervisor: job.dispatched_on_supervisor_id(),
+                        ssh_endpoints: job.ssh_endpoints().cloned(),
                         result: None,
                     },
                     as_of,
@@ -1661,6 +1663,10 @@ async fn sql_set_job_state_to_scheduled(
             functional_state = 'dispatched',
             started_at = $1,
             dispatched_on_supervisor_id = $2,
+            ssh_endpoints = (
+              select ssh_endpoints from tml_switchboard.supervisors
+              where supervisor_id = $2
+            ),
             last_updated_at = default
         where job_id = $3;"#,
         started_at,
@@ -1811,7 +1817,47 @@ async fn sql_build_job_restart(
     sqlx::query!(
         r#"
         insert into tml_switchboard.jobs
-        values ($1, null, $2, $3, $4, $5, $6, $7, $8, 'queued', $9, null, null, null, null, null, default)
+        (
+          job_id,
+          resume_job_id,
+          restart_job_id,
+          image_id,
+          ssh_keys,
+          restart_policy,
+          enqueued_by_token_id,
+          tag_config,
+          job_timeout,
+          functional_state,
+          queued_at,
+          started_at,
+          dispatched_on_supervisor_id,
+          ssh_endpoints,
+          exit_status,
+          host_output,
+          terminated_at,
+          last_updated_at
+        )
+        values
+        (
+          $1,       -- job_id
+          null,	    -- resume_job_id
+          $2,	    -- restart_job_id
+          $3,	    -- image_id
+          $4,	    -- ssh_keys
+          $5,	    -- restart_policy
+          $6,	    -- enqueued_by_token_id
+          $7,	    -- tag_config
+          $8,	    -- job_timeout
+          'queued', -- functional_state
+          $9,	    -- queued_at
+          null,	    -- started_at
+          null,	    -- dispatched_on_supervisor_id
+          null,	    -- ssh_endpoints
+          null,	    -- exit_status
+          null,	    -- host_output
+          null,	    -- terminated_at
+          default   -- last_updated_at
+        )
         "#,
         new_job_id,
         original.job_id(),
