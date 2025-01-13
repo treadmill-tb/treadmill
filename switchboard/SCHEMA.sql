@@ -86,6 +86,16 @@ create table tml_switchboard.supervisors
     auth_token    bytea  not null unique,
     tags          text[] not null,
 
+    -- SSH endpoints that all jobs executing on this host are reachable
+    -- under. Currently this mapping is static, in the future we may change it
+    -- to use a different endpoint per job, even if running on the same
+    -- host. Thus, each job also contains its own endpoint table, populated from
+    -- this set of host endpoints.
+    --
+    -- Each endpoint is a "hostname:port" tuple. IPv6 addreses are to be
+    -- enclosed in square brackets, such as "[::1]:22".
+    ssh_endpoints text[] not null,
+
     check (octet_length(auth_token) = 128)
 );
 
@@ -195,6 +205,15 @@ create table tml_switchboard.jobs
     -- failure of the job; otherwise, the only recourse of the user is to wait
     -- for the job to time out.
     dispatched_on_supervisor_id uuid,
+
+    -- SSH endpoints that this job is reachable under.
+    --
+    -- This field will be populated once this job is scheduled on a
+    -- host, if that host exposes any SSH endpoints.
+    --
+    -- Each endpoint is a "hostname:port" tuple. IPv6 addreses are to be
+    -- enclosed in square brackets, such as "[::1]:22".
+    ssh_endpoints               text[],
 
     exit_status                 tml_switchboard.exit_status,
     -- Optional host output
