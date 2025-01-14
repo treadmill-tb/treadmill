@@ -49,7 +49,7 @@ jobs:
       - name: Set up database
         run: |
           pushd ./switchboard
-          cargo binstall sqlx-cli
+          cargo binstall --force sqlx-cli
           sqlx migrate run
           psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f FIXTURES.sql
           popd
