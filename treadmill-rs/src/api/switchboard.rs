@@ -215,6 +215,8 @@ pub struct ExtendedJobState {
     #[serde(flatten)]
     pub state: JobState,
     pub dispatched_to_supervisor: Option<Uuid>,
+    #[serde(default)]
+    pub ssh_endpoints: Option<Vec<String>>,
     pub result: Option<JobResult>,
 }
 /// Represents the status of a job as of some point in time.

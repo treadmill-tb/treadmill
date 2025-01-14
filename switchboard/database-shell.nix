@@ -108,7 +108,6 @@ in
       # Export the PostgreSQL connection details
       export PGHOST="$PG_BASE_DIR"
       export PGHOST_URIENCODE="$(printf '%s' "$PGHOST" | ${pkgs.jq}/bin/jq -sRr @uri)"
-      export PGPORT=""
       export PGUSER="$(whoami)"
       export PGDATABASE="postgres"
       export DATABASE_URL="postgresql://''${PGUSER}@''${PGHOST_URIENCODE}/''${PGDATABASE}"
