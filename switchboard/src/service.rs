@@ -964,7 +964,6 @@ impl Service {
             image_spec: sql_job.read_image_spec(),
             ssh_keys: sql_job.ssh_keys().to_vec(),
             restart_policy: sql_job.restart_policy(),
-            ssh_rendezvous_servers: self.service_config.ssh.rendezvous_servers.clone(),
             parameters: sql_params,
         };
 

@@ -332,7 +332,6 @@ impl CliCommand {
                         restart_policy: RestartPolicy {
                             remaining_restart_count: 0,
                         },
-                        ssh_rendezvous_servers: vec![],
                         parameters,
                     },
                 )

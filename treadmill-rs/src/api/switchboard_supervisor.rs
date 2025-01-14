@@ -64,13 +64,6 @@ impl std::fmt::Debug for ParameterValue {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub struct RendezvousServerSpec {
-    pub client_id: Uuid,
-    pub server_base_url: String,
-    pub auth_token: String,
-}
-#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum ImageSpecification {
@@ -114,13 +107,6 @@ pub struct StartJobMessage {
 
     pub restart_policy: RestartPolicy,
 
-    /// A set of SSH rendezvous servers to tunnel inbound SSH connections
-    /// through. Leave empty to avoid using SSH rendezvouz
-    /// servers. Supervisors may not support this, in which case they will
-    /// not report back any SSH endpoints reachable through the rendezvous
-    /// endpoints listed here:
-    pub ssh_rendezvous_servers: Vec<RendezvousServerSpec>,
-
     /// A hash map of parameters provided to this job execution. These
     /// parameters are provided to the puppet daemon.
     pub parameters: HashMap<String, ParameterValue>,
@@ -158,22 +144,7 @@ pub enum JobInitializingStage {
     /// either be into the `Ready` or `Failed` states.
     Booting,
 }
-// #[derive(Serialize, Deserialize, Debug, Clone)]
-// #[serde(rename_all = "snake_case")]
-// pub enum JobSessionConnectionInfo {
-//     #[serde(rename = "direct_ssh")]
-//     DirectSSH {
-//         hostname: String,
-//         port: u16,
-//         host_key_fingerprints: Vec<String>,
-//     },
-//     #[serde(rename = "rendezvous_ssh")]
-//     RendezvousSSH {
-//         hostname: String,
-//         port: u16,
-//         host_key_fingerprints: Vec<String>,
-//     },
-// }
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "state")]
 #[serde(rename_all = "snake_case")]
