@@ -110,8 +110,7 @@ pub async fn get_job_ssh_endpoints(
                 job_status: status,
                 ..
             } => {
-                // TODO fix
-                if let Some(endpoints) = status.ssh_endpoints {
+                if let Some(endpoints) = status.state.ssh_endpoints {
                     Ok(endpoints)
                 } else {
                     Err(anyhow!("No SSH endpoints available for this job"))
