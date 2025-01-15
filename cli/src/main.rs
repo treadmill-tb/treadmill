@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
 use chrono::Duration;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use env_logger::Builder;
 use log::LevelFilter;
 use log::{debug, error, info};
 use reqwest::Client;
 use std::collections::HashMap;
+use std::env;
 #[allow(unused_imports)]
 use treadmill_rs::api::switchboard;
 use treadmill_rs::api::switchboard::jobs::list::Response as ListJobsResponse;
@@ -19,6 +20,9 @@ use treadmill_rs::api::switchboard_supervisor::RestartPolicy;
 use treadmill_rs::connector::RunningJobState;
 use treadmill_rs::image::manifest::ImageId;
 use uuid::Uuid;
+
+use rpassword::read_password;
+use std::io::{self, Write};
 
 mod auth;
 mod config;
@@ -50,12 +54,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    Login {
-        /// Username for login
-        username: String,
-        /// Password for login
-        password: String,
-    },
+    Login(LoginArgs),
     Job {
         #[command(subcommand)]
         job_command: JobCommands,
@@ -113,6 +112,15 @@ enum SupervisorCommands {
     },
 }
 
+#[derive(Args, Debug)]
+pub struct LoginArgs {
+    /// Optional positional username
+    username: Option<String>,
+
+    /// Optional positional password
+    password: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -143,9 +151,12 @@ async fn main() -> Result<()> {
     let client = Client::new();
 
     match cli.command {
-        // tml login <USERNAME> <PASSWORD>
-        Commands::Login { username, password } => {
-            info!("Attempting login for user: {username}");
+        // tml login
+        Commands::Login(login_args) => {
+            // Merge user & password from flags, positionals, env vars, or prompt
+            let (username, password) = resolve_login_args(&login_args)?;
+            log::info!("Attempting login for user: {}", username);
+
             login(&client, &config, &username, &password).await?;
         }
 
@@ -210,6 +221,52 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The order of precedence is:
+/// - For username:
+///   1) `login_args.username` (positional arg #1)
+///   2) `TML_USER` env var
+///   3) prompt
+///
+/// - For password:
+///   1) `login_args.password` (positional arg #2)
+///   2) `TML_PASSWORD` env var
+///   3) prompt
+pub fn resolve_login_args(login_args: &LoginArgs) -> Result<(String, String)> {
+    let username = match &login_args.username {
+        Some(u) => u.clone(),
+        None => match env::var("TML_USER") {
+            Ok(u) => u,
+            Err(_) => prompt_for_input("Username")?,
+        },
+    };
+
+    let password = match &login_args.password {
+        Some(p) => p.clone(),
+        None => match env::var("TML_PASSWORD") {
+            Ok(p) => p,
+            Err(_) => prompt_for_password("Password")?,
+        },
+    };
+
+    Ok((username, password))
+}
+/// Prompts for unhidden text input (e.g., username).
+fn prompt_for_input(prompt: &str) -> Result<String> {
+    print!("{}: ", prompt);
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
+}
+
+/// Prompts for password input (hidden) using rpassword.
+fn prompt_for_password(prompt: &str) -> Result<String> {
+    print!("{}: ", prompt);
+    io::stdout().flush()?;
+    let password = read_password()?;
+    Ok(password.trim().to_string())
 }
 
 async fn login(
