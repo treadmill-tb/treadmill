@@ -105,10 +105,6 @@ enum JobCommands {
     Ssh {
         /// The UUID of the job to connect to
         job_id: String,
-
-        /// Optional username (defaults to "root")
-        #[arg(long = "user", default_value = "root")]
-        username: String,
     },
 }
 
@@ -210,9 +206,9 @@ async fn main() -> Result<()> {
                 info!("Cancelling job with ID: {job_id_parsed}");
                 cancel_job(&client, &config, job_id_parsed).await?;
             }
-            JobCommands::Ssh { job_id, username } => {
-                info!("Connecting to job {} as user {}", job_id, username);
-                ssh_into_job(&client, &config, &job_id, &username).await?;
+            JobCommands::Ssh { job_id } => {
+                info!("Connecting to job {}", job_id);
+                ssh_into_job(&client, &config, &job_id).await?;
             }
         },
 
@@ -302,12 +298,7 @@ fn prompt_for_password(prompt: &str) -> Result<String> {
 //    Ok(())
 //}
 
-async fn ssh_into_job(
-    client: &Client,
-    config: &config::Config,
-    job_id: &str,
-    username: &str,
-) -> Result<()> {
+async fn ssh_into_job(client: &Client, config: &config::Config, job_id: &str) -> Result<()> {
     let job_id = Uuid::parse_str(job_id).context("Invalid job ID")?;
 
     // Get the job's SSH endpoints
@@ -333,14 +324,14 @@ async fn ssh_into_job(
     }
 
     println!(
-        "Connecting via SSH to {}@{} using key {:?}",
-        username, endpoint, key_path
+        "Connecting via SSH to {} using key {:?}",
+        endpoint, key_path
     );
 
     let status = std::process::Command::new("ssh")
         .arg("-i")
         .arg(&key_path)
-        .arg(format!("{}@{}", username, endpoint))
+        .arg(endpoint)
         .status()
         .context("Failed to spawn SSH process")?;
 
