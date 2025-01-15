@@ -4,9 +4,13 @@ use clap::{Args, Parser, Subcommand};
 use env_logger::Builder;
 use log::LevelFilter;
 use log::{debug, error, info};
+use rand_core::OsRng;
 use reqwest::Client;
+use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use std::collections::HashMap;
 use std::env;
+
+use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 #[allow(unused_imports)]
 use treadmill_rs::api::switchboard;
 use treadmill_rs::api::switchboard::jobs::list::Response as ListJobsResponse;
@@ -281,35 +285,25 @@ fn prompt_for_password(prompt: &str) -> Result<String> {
     Ok(password.trim().to_string())
 }
 
-use rand_core::OsRng;
-use ssh_key::{Algorithm, LineEnding, PrivateKey};
-
-use std::{
-    fs,
-    os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
-    process::Command,
-};
-
-fn generate_ed25519_key(key_path: &Path) -> Result<()> {
-    // Create an RNG
-    let mut rng = OsRng;
-
-    let private_key = PrivateKey::random(&mut rng, Algorithm::Ed25519)
-        .map_err(|e| anyhow!("Failed to generate Ed25519 key: {e}"))?;
-
-    // Convert to OpenSSH format
-    let openssh_private_key = private_key
-        .to_openssh(LineEnding::LF)
-        .map_err(|e| anyhow!("Failed to convert to OpenSSH format: {e}"))?;
-
-    fs::write(&key_path, openssh_private_key)?;
-    let mut perms = fs::metadata(&key_path)?.permissions();
-    perms.set_mode(0o600);
-    fs::set_permissions(&key_path, perms)?;
-
-    Ok(())
-}
+//fn generate_ed25519_key(key_path: &Path) -> Result<()> {
+//    // Create an RNG
+//    let mut rng = OsRng;
+//
+//    let private_key = PrivateKey::random(&mut rng, Algorithm::Ed25519)
+//        .map_err(|e| anyhow!("Failed to generate Ed25519 key: {e}"))?;
+//
+//    // Convert to OpenSSH format
+//    let openssh_private_key = private_key
+//        .to_openssh(LineEnding::LF)
+//        .map_err(|e| anyhow!("Failed to convert to OpenSSH format: {e}"))?;
+//
+//    fs::write(&key_path, openssh_private_key)?;
+//    let mut perms = fs::metadata(&key_path)?.permissions();
+//    perms.set_mode(0o600);
+//    fs::set_permissions(&key_path, perms)?;
+//
+//    Ok(())
+//}
 
 async fn ssh_into_job(
     client: &Client,
