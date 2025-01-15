@@ -1,14 +1,13 @@
+// auth.rs
+
 use anyhow::{anyhow, bail, Context, Result};
-use ssh_key::{PrivateKey, PublicKey};
+use base64::Engine; // Add Engine trait
+use ssh_key::{LineEnding, PrivateKey}; // Remove unused PublicKey import
 use std::fs;
+use std::os::unix::fs::PermissionsExt; // Add PermissionsExt trait
 use std::path::PathBuf;
 use treadmill_rs::api::switchboard::AuthToken;
 use xdg::BaseDirectories;
-
-use base64::{engine::general_purpose, Engine as _};
-use ssh2::Session;
-
-const TOKEN_FILE: &str = "token.json";
 
 pub fn save_token(token: &AuthToken) -> Result<()> {
     let token_path = get_token_path()?;
@@ -33,11 +32,9 @@ pub fn get_token() -> Result<String> {
 
             Ok(AuthToken(token_array).encode_for_http())
         }
-
         Err(std::env::VarError::NotUnicode(_)) => {
             bail!("Supplied TML_API_TOKEN is not valid UTF-8");
         }
-
         Err(std::env::VarError::NotPresent) => {
             let token_path = get_token_path()?;
             let token_str = fs::read_to_string(&token_path)
@@ -52,86 +49,77 @@ pub fn get_token() -> Result<String> {
 fn get_token_path() -> Result<PathBuf> {
     let xdg_dirs = BaseDirectories::with_prefix("treadmill-tb")
         .context("Failed to initialize XDG base directories")?;
-
-    let token_path = xdg_dirs
-        .place_data_file(TOKEN_FILE)
-        .context("Failed to determine token file path")?;
-
-    Ok(token_path)
+    Ok(xdg_dirs
+        .place_data_file("token.json")
+        .context("Failed to determine token file path")?)
 }
 
-// Attempt to read keys from the SSH agent, if available.
-// Read public key files from the user's .ssh directory.
-// Read keys from the config file, if present.
-pub fn read_ssh_keys() -> Result<Vec<String>> {
-    let mut keys = Vec::new();
+// Generate a new Ed25519 key pair for jobs
+pub fn generate_job_ssh_key() -> Result<(PrivateKey, String)> {
+    let private_key = PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+        .map_err(|e| anyhow!("Failed to generate Ed25519 key: {}", e))?;
 
-    // 1. Attempt to read from SSH agent
-    if let Ok(session) = Session::new() {
-        if let Ok(mut agent) = session.agent() {
-            if agent.connect().is_ok() {
-                if let Ok(identities) = agent.identities() {
-                    for identity in identities {
-                        let pubkey = identity.blob();
-                        // store as raw base64 (same as existing code)
-                        keys.push(general_purpose::STANDARD.encode(pubkey));
-                    }
+    let public_key = private_key.public_key();
+    let public_key_str = public_key
+        .to_openssh()
+        .map_err(|e| anyhow!("Failed to convert public key to OpenSSH format: {}", e))?;
+
+    Ok((private_key, public_key_str))
+}
+
+// Save the private key to the Treadmill data directory
+pub fn save_private_key(private_key: &PrivateKey) -> Result<PathBuf> {
+    let xdg_dirs = BaseDirectories::with_prefix("treadmill-tb")
+        .context("Failed to initialize XDG base directories")?;
+
+    let key_path = xdg_dirs
+        .place_data_file("ssh-key")
+        .context("Failed to determine SSH key path")?;
+
+    let openssh_private_key = private_key
+        .to_openssh(LineEnding::LF)
+        .map_err(|e| anyhow!("Failed to convert private key to OpenSSH format: {}", e))?;
+
+    fs::write(&key_path, openssh_private_key)?;
+    let mut perms = fs::metadata(&key_path)?.permissions();
+    perms.set_mode(0o600);
+    fs::set_permissions(&key_path, perms)?;
+
+    Ok(key_path)
+}
+
+// Read the job's SSH endpoints from the switchboard API
+pub async fn get_job_ssh_endpoints(
+    client: &reqwest::Client,
+    config: &crate::config::Config,
+    job_id: uuid::Uuid,
+) -> Result<Vec<String>> {
+    let token = get_token()?;
+
+    let response = client
+        .get(&format!("{}/api/v1/jobs/{}/status", config.api.url, job_id))
+        .bearer_auth(token)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let status: treadmill_rs::api::switchboard::jobs::status::Response =
+            response.json().await?;
+        match status {
+            treadmill_rs::api::switchboard::jobs::status::Response::Ok {
+                job_status: status,
+                ..
+            } => {
+                // TODO fix
+                if let Some(endpoints) = status.ssh_endpoints {
+                    Ok(endpoints)
+                } else {
+                    Err(anyhow!("No SSH endpoints available for this job"))
                 }
             }
+            _ => Err(anyhow!("Failed to get job status")),
         }
+    } else {
+        Err(anyhow!("Failed to get job status: {}", response.status()))
     }
-
-    // 2. Attempt to read .pub files from ~/.ssh
-    let ssh_dir = dirs::home_dir()
-        .map(|home| home.join(".ssh"))
-        .unwrap_or_default();
-    if ssh_dir.exists() {
-        for entry in fs::read_dir(ssh_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("pub") {
-                let key = fs::read_to_string(&path)
-                    .with_context(|| format!("Failed to read SSH key file: {:?}", path))?;
-                keys.push(key.trim().to_string());
-            }
-        }
-    }
-
-    // 3. Attempt to read from config file
-    if let Ok(config) = crate::config::load_config(None) {
-        if let Some(config_keys) = config.ssh_keys {
-            keys.extend(config_keys);
-        }
-    }
-
-    // 4. Attempt to read the Treadmill-managed private key, if it exists
-    //    Then extract and append the public portion in OpenSSH format.
-    let xdg_dirs = xdg::BaseDirectories::with_prefix("treadmill-tb")
-        .context("Failed to initialize XDG base directories")?;
-    let treadmill_private_key_path = xdg_dirs
-        .place_data_file("ssh-key")
-        .context("Failed to place treadmill ssh-key file")?;
-
-    if treadmill_private_key_path.exists() {
-        let private_key_bytes = fs::read(&treadmill_private_key_path).with_context(|| {
-            format!(
-                "Failed to read treadmill private key: {:?}",
-                treadmill_private_key_path
-            )
-        })?;
-        let private_key = PrivateKey::from_openssh(&private_key_bytes)
-            .context("Failed to parse treadmill private key")?;
-
-        let public_key: PublicKey = private_key.public_key().clone();
-        // Convert public key to OpenSSH format.
-        // NOTE: `to_openssh` returns Result<String, ssh_key::Error>.
-        let pub_openssh = public_key
-            .to_openssh()
-            .context("Failed to convert treadmill public key to OpenSSH format")?;
-
-        // Clean it up and push it
-        keys.push(pub_openssh.trim().to_string());
-    }
-
-    Ok(keys)
 }
