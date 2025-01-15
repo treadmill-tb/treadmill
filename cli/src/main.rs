@@ -4,13 +4,10 @@ use clap::{Args, Parser, Subcommand};
 use env_logger::Builder;
 use log::LevelFilter;
 use log::{debug, error, info};
-use rand_core::OsRng;
 use reqwest::Client;
-use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use std::collections::HashMap;
 use std::env;
 
-use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 #[allow(unused_imports)]
 use treadmill_rs::api::switchboard;
 use treadmill_rs::api::switchboard::jobs::list::Response as ListJobsResponse;
