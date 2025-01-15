@@ -72,9 +72,9 @@ enum JobCommands {
         /// The 64-character hex-encoded image ID
         image_id: String,
 
-        /// Comma-separated list of SSH public keys
-        #[arg(long = "ssh-keys", value_name = "KEYS")]
-        ssh_keys: Option<String>,
+        /// Optional SSH public key to use (if not provided, one will be generated)
+        #[arg(long = "ssh-key", value_name = "KEY")]
+        ssh_key: Option<String>,
 
         /// Remaining restart count
         #[arg(long = "restart-count", value_name = "COUNT")]
@@ -101,10 +101,13 @@ enum JobCommands {
         /// The UUID of the job
         job_id: String,
     },
-
     Ssh {
-        /// The user@IP string of the running job, e.g. "root@10.42.0.123"
-        target: String,
+        /// The UUID of the job to connect to
+        job_id: String,
+
+        /// Optional username (defaults to "root")
+        #[arg(long = "user", default_value = "root")]
+        username: String,
     },
 }
 
@@ -168,9 +171,10 @@ async fn main() -> Result<()> {
         // tml job ...
         Commands::Job { job_command } => match job_command {
             // tml job enqueue <IMAGE_ID> [--ssh-keys ...] [--restart-count ...] ...
+            // tml job list
             JobCommands::Enqueue {
                 image_id,
-                ssh_keys,
+                ssh_key,
                 restart_count,
                 parameters,
                 tag_config,
@@ -181,7 +185,7 @@ async fn main() -> Result<()> {
                     &client,
                     &config,
                     &image_id,
-                    ssh_keys.as_deref(),
+                    ssh_key.as_deref(),
                     restart_count.as_deref(),
                     parameters.as_deref(),
                     tag_config.as_deref(),
@@ -189,7 +193,6 @@ async fn main() -> Result<()> {
                 )
                 .await?;
             }
-            // tml job list
             JobCommands::List => {
                 info!("Listing all jobs");
                 list_jobs(&client, &config).await?;
@@ -206,8 +209,9 @@ async fn main() -> Result<()> {
                 info!("Cancelling job with ID: {job_id_parsed}");
                 cancel_job(&client, &config, job_id_parsed).await?;
             }
-            JobCommands::Ssh { target } => {
-                ssh_into_job(&target).await?;
+            JobCommands::Ssh { job_id, username } => {
+                info!("Connecting to job {} as user {}", job_id, username);
+                ssh_into_job(&client, &config, &job_id, &username).await?;
             }
         },
 
@@ -277,7 +281,6 @@ fn prompt_for_password(prompt: &str) -> Result<String> {
     Ok(password.trim().to_string())
 }
 
-// Fix #2: import OsRng from rand_core (or rand::rngs)
 use rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 
@@ -292,7 +295,6 @@ fn generate_ed25519_key(key_path: &Path) -> Result<()> {
     // Create an RNG
     let mut rng = OsRng;
 
-    // Fix #3: correct argument order: first &mut rng, then Algorithm
     let private_key = PrivateKey::random(&mut rng, Algorithm::Ed25519)
         .map_err(|e| anyhow!("Failed to generate Ed25519 key: {e}"))?;
 
@@ -309,36 +311,53 @@ fn generate_ed25519_key(key_path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn ssh_into_job(target: &str) -> Result<()> {
-    // Expect target in the format "<user>@<ip>"
-    let (user, ip) = target
-        .split_once('@')
-        .ok_or_else(|| anyhow!("Target must be in the form <user>@<ip>"))?;
+async fn ssh_into_job(
+    client: &Client,
+    config: &config::Config,
+    job_id: &str,
+    username: &str,
+) -> Result<()> {
+    let job_id = Uuid::parse_str(job_id).context("Invalid job ID")?;
 
-    // 1. Where to store the private key:
-    let xdg_dirs = xdg::BaseDirectories::with_prefix("treadmill-tb")
-        .context("Failed to initialize XDG base directories")?;
-    let key_path: PathBuf = xdg_dirs
-        .place_data_file("ssh-key")
-        .context("Failed to place treadmill ssh-key file")?;
+    // Get the job's SSH endpoints
+    let endpoints = auth::get_job_ssh_endpoints(client, config, job_id).await?;
 
-    // 2. If it does not exist, generate it
-    if !key_path.exists() {
-        generate_ed25519_key(&key_path).context("Failed to generate treadmill SSH key")?;
-        println!("Generated new Ed25519 SSH key at: {:?}", key_path);
+    if endpoints.is_empty() {
+        return Err(anyhow!("No SSH endpoints available for this job"));
     }
 
-    // 3. Call 'ssh' with that key
-    println!("Connecting via SSH to {target} using key {:?}", key_path);
-    let status = Command::new("ssh")
+    // Use the first available endpoint
+    let endpoint = &endpoints[0];
+
+    // Get the path to our private key
+    let xdg_dirs = xdg::BaseDirectories::with_prefix("treadmill-tb")
+        .context("Failed to initialize XDG base directories")?;
+    let key_path = xdg_dirs.get_data_file("ssh-key");
+
+    // Ensure the key exists
+    if !key_path.exists() {
+        return Err(anyhow!(
+            "SSH key not found. Please enqueue a job first to generate one."
+        ));
+    }
+
+    println!(
+        "Connecting via SSH to {}@{} using key {:?}",
+        username, endpoint, key_path
+    );
+
+    let status = std::process::Command::new("ssh")
         .arg("-i")
-        .arg(key_path)
-        .arg(format!("{user}@{ip}"))
+        .arg(&key_path)
+        .arg(format!("{}@{}", username, endpoint))
         .status()
         .context("Failed to spawn SSH process")?;
 
     if !status.success() {
-        eprintln!("SSH process exited with status: {:?}", status.code());
+        return Err(anyhow!(
+            "SSH process exited with status: {:?}",
+            status.code()
+        ));
     }
 
     Ok(())
@@ -388,14 +407,13 @@ async fn enqueue_job(
     client: &Client,
     config: &config::Config,
     image_id: &str,
-    ssh_keys: Option<&str>,
+    ssh_key: Option<&str>,
     restart_count: Option<&str>,
     parameters: Option<&str>,
     tag_config: Option<&str>,
     timeout: Option<&str>,
 ) -> Result<()> {
     let token = auth::get_token()?;
-    debug!("Retrieved auth token");
 
     // Validate image_id
     let image_id_bytes = hex::decode(image_id).context("Invalid image ID")?;
@@ -404,15 +422,16 @@ async fn enqueue_job(
         arr.copy_from_slice(&image_id_bytes);
         ImageId(arr)
     } else {
-        error!("Invalid image ID length");
         return Err(anyhow::anyhow!("Invalid image ID length"));
     };
 
-    // Gather SSH keys
-    let ssh_keys = if let Some(keys) = ssh_keys {
-        keys.split(',').map(String::from).collect()
+    // Generate or use provided SSH key
+    let ssh_keys = if let Some(key) = ssh_key {
+        vec![key.to_string()]
     } else {
-        auth::read_ssh_keys()?
+        let (private_key, public_key) = auth::generate_job_ssh_key()?;
+        auth::save_private_key(&private_key)?;
+        vec![public_key]
     };
 
     let restart_count = restart_count
@@ -434,7 +453,6 @@ async fn enqueue_job(
         })
         .transpose()?;
 
-    debug!("Creating job request");
     let job_request = JobRequest {
         init_spec: JobInitSpec::Image { image_id },
         ssh_keys,
@@ -448,7 +466,6 @@ async fn enqueue_job(
 
     let enqueue_request = SubmitJobRequest { job_request };
 
-    debug!("Sending enqueue job request");
     let response = client
         .post(&format!("{}/api/v1/jobs/new", config.api.url))
         .bearer_auth(token)
@@ -458,12 +475,10 @@ async fn enqueue_job(
 
     if response.status().is_success() {
         let response_json: serde_json::Value = response.json().await?;
-        info!("Job enqueued: {}", response_json);
-        println!("{}", response_json);
+        println!("Job enqueued successfully: {}", response_json);
     } else {
         let error_text = response.text().await?;
-        error!("Failed to enqueue job: {}", error_text);
-        println!("Failed to enqueue job: {}", error_text);
+        return Err(anyhow!("Failed to enqueue job: {}", error_text));
     }
 
     Ok(())
