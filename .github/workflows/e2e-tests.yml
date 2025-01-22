@@ -126,7 +126,6 @@ jobs:
               init_spec[image_id]="${tml_image_id}" \
               ssh_keys:='[]' \
               restart_policy[remaining_restart_count]:=0 \
-              ssh_rendezvous_servers:='[]' \
               parameters:='{}' \
               override_timeout:=null) || handle_http_error $?
 

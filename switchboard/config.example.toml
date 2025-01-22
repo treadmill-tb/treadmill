@@ -19,9 +19,6 @@ default_token_timeout = "7d"
 default_job_timeout = "30m"
 default_queue_timeout = "30m"
 match_interval = "10s"
-ssh.rendezvous_servers = [
-    #    { client_id = "00000000-0000-0000-0000-00000000000", server_base_url = "example.com", auth_token = "" },
-]
 
 [service.socket.keepalive]
 ping_interval = "2s"

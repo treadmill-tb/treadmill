@@ -79,8 +79,6 @@ pub struct MockSupervisorJobRunningState {
 
     /// Control socket handle:
     control_socket: ControlSocket,
-    // /// Set of rendezvous proxy connections:
-    // ssh_rendezvous_proxies: Vec<rendezvous_proxy::RendezvousProxy>,
 }
 
 #[derive(Debug)]
