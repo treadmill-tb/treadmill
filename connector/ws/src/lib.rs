@@ -86,6 +86,9 @@ struct Inner<S: connector::Supervisor> {
     update_tx: mpsc::UnboundedSender<switchboard_supervisor::Message>,
     /// The most recent status that was received from the supervisor.
     last_updated_status: Mutex<ReportedSupervisorStatus>,
+
+    /// Set to `true` once we want to gracefully stop and exit when no job is running.
+    shutdown_requested: AtomicBool,
 }
 
 impl<S: connector::Supervisor> WsConnector<S> {
@@ -99,8 +102,21 @@ impl<S: connector::Supervisor> WsConnector<S> {
                 update_rx: Mutex::new(update_rx),
                 update_tx,
                 last_updated_status: Mutex::new(ReportedSupervisorStatus::Idle),
+                shutdown_requested: AtomicBool::new(false),
             }),
         }
+    }
+
+    /// Call this if we have received SIGHUP or otherwise want to gracefully stop.
+    /// After the connector finishes its current job (i.e. transitions to Idle),
+    /// it will exit `run()`.
+    pub fn request_shutdown(&self) {
+        self.inner.shutdown_requested.store(true, Ordering::SeqCst);
+    }
+
+    /// Check if a shutdown has been requested.
+    pub fn shutdown_requested(&self) -> bool {
+        self.inner.shutdown_requested.load(Ordering::SeqCst)
     }
 }
 // As mentioned above, the `connector::SupervisorConnector` implementation is not capable of
@@ -347,6 +363,15 @@ impl<S: connector::Supervisor> Inner<S> {
         let mut last_received_ping = tokio::time::Instant::now();
 
         loop {
+            // Check if we should exit** because (1) a shutdown is requested
+            // and (2) we are currently idle (no job is running).
+            if self.shutdown_requested.load(Ordering::SeqCst) {
+                let st = self.last_updated_status.lock().await.clone();
+                if matches!(st, ReportedSupervisorStatus::Idle) {
+                    tracing::info!("Shutdown requested, and no job is active; exiting run().");
+                    return;
+                }
+            }
             tokio::select! {
                 _ = interval.tick() =>  {
                     tracing::trace!(target: "tml_ws_connector:ping", "keepalive tick");

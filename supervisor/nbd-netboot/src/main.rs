@@ -2000,13 +2000,8 @@ async fn main() -> Result<()> {
                 "Requested CliConnector, but `cli_connector` config not present."
             ))?;
 
-            // Both the supervisor and connectors have references to each other,
-            // so we break the cyclic dependency with an initially unoccupied
-            // weak Arc reference:
             let mut connector_opt = None;
-
             let qemu_supervisor = {
-                // Shadow, to avoid moving the variable:
                 let connector_opt = &mut connector_opt;
                 Arc::new_cyclic(move |weak_supervisor| {
                     let connector = Arc::new(treadmill_cli_connector::CliConnector::new(
@@ -2021,27 +2016,23 @@ async fn main() -> Result<()> {
 
             let connector = connector_opt.take().unwrap();
 
+            // For CLI we just run once:
             connector.run().await;
 
-            // Must drop qemu_supervisor reference _after_ connector.run(), as
-            // that'll upgrade its Weak into an Arc. Otherwise we're dropping
-            // the only reference to it:
             std::mem::drop(qemu_supervisor);
-
             Ok(())
         }
+
         SupervisorCoordConnector::WsConnector => {
+            use tokio::signal::unix::{signal, SignalKind};
+
             let ws_connector_config = config.ws_connector.clone().ok_or(anyhow!(
                 "Requested WsConnector, but `ws_connector` config not present."
             ))?;
 
-            // Both the supervisor and connectors have references to each other,
-            // so we break the cyclic dependency with an initially unoccupied
-            // weak Arc reference:
+            // Create the supervisor and connector with cyclical references
             let mut connector_opt = None;
-
-            let _qemu_supervisor = {
-                // Shadow, to avoid moving the variable:
+            let qemu_supervisor = {
                 let connector_opt = &mut connector_opt;
                 Arc::new_cyclic(move |weak_supervisor| {
                     let connector = Arc::new(treadmill_ws_connector::WsConnector::new(
@@ -2050,35 +2041,44 @@ async fn main() -> Result<()> {
                         weak_supervisor.clone(),
                     ));
                     *connector_opt = Some(connector.clone());
+
                     NbdNetbootSupervisor::new(connector, image_store, args, config)
                 })
             };
 
             let connector = connector_opt.take().unwrap();
 
+            // === 1) Setup a SIGHUP handler to request graceful shutdown ===
+            let mut hup_signal =
+                signal(SignalKind::hangup()).expect("Failed to register SIGHUP handler");
+            let connector_for_signal = connector.clone();
+            tokio::spawn(async move {
+                while hup_signal.recv().await.is_some() {
+                    tracing::info!("Received SIGHUP => requesting graceful shutdown (after current job finishes).");
+                    connector_for_signal.request_shutdown();
+                }
+            });
+
+            // === 2) Repeatedly call `connector.run()`. If `shutdown_requested()`,
+            //         break out once `run()` returns. ===
             loop {
                 connector.run().await;
-                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
+                if connector.shutdown_requested() {
+                    tracing::info!("Connector indicates shutdown => exiting main loop");
+                    break;
+                }
+
+                // Otherwise, wait a bit and possibly reconnect or do other logic
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             }
 
-            // when connector.run() can error replace with this code
-            // loop {
-            //     if let Err(e) = connector.run().await {
-            //         eprintln!("Connection error: {:?}", e);
-            //         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            //     } else {
-            //         // Connection ended gracefully
-            //         break;
-            //     }
-            // }
+            // === 3) Clean up any references and exit. ===
+            std::mem::drop(qemu_supervisor);
 
-            // Must drop qemu_supervisor reference _after_ connector.run(), as
-            // that'll upgrade its Weak into an Arc. Otherwise we're dropping
-            // the only reference to it:
-            // std::mem::drop(qemu_supervisor);
-
-            // Ok(())
+            Ok(())
         }
+
         unsupported_connector => {
             bail!("Unsupported coord connector: {:?}", unsupported_connector);
         }
