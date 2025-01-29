@@ -2048,28 +2048,29 @@ async fn main() -> Result<()> {
 
             let connector = connector_opt.take().unwrap();
 
-            // === 1) Setup a SIGHUP handler to request graceful shutdown ===
+            // === 1) SIGHUP handler => request graceful shutdown
             let mut hup_signal =
                 signal(SignalKind::hangup()).expect("Failed to register SIGHUP handler");
             let connector_for_signal = connector.clone();
             tokio::spawn(async move {
                 while hup_signal.recv().await.is_some() {
-                    tracing::info!("Received SIGHUP => requesting graceful shutdown (after current job finishes).");
+                    tracing::info!("Received SIGHUP => requesting graceful shutdown...");
                     connector_for_signal.request_shutdown();
                 }
             });
 
-            // === 2) Repeatedly call `connector.run()`. If `shutdown_requested()`,
-            //         break out once `run()` returns. ===
+            // === 2) Repeatedly call `connector.run()`. Once shutdown is requested,
+            //         and `run()` returns, we can break.
             loop {
                 connector.run().await;
 
+                // If the connector now indicates it's done shutting down, exit.
                 if connector.shutdown_requested() {
                     tracing::info!("Connector indicates shutdown => exiting main loop");
                     break;
                 }
 
-                // Otherwise, wait a bit and possibly reconnect or do other logic
+                // Otherwise, wait a bit (for example, to do a reconnect).
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             }
 

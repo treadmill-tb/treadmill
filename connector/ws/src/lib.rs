@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use thiserror::Error;
 use tokio::net::TcpStream;
+use tokio::sync::watch;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::{
     self,
@@ -69,6 +70,7 @@ pub enum WsConnectorError {
 #[derive(Debug)]
 pub struct WsConnector<S: connector::Supervisor> {
     inner: Arc<Inner<S>>,
+    shutdown_tx: watch::Sender<bool>,
 }
 #[derive(Debug)]
 struct Inner<S: connector::Supervisor> {
@@ -87,13 +89,16 @@ struct Inner<S: connector::Supervisor> {
     /// The most recent status that was received from the supervisor.
     last_updated_status: Mutex<ReportedSupervisorStatus>,
 
-    /// Set to `true` once we want to gracefully stop and exit when no job is running.
-    shutdown_requested: AtomicBool,
+    shutdown_rx: watch::Receiver<bool>,
 }
 
 impl<S: connector::Supervisor> WsConnector<S> {
     pub fn new(supervisor_id: Uuid, config: WsConnectorConfig, supervisor: Weak<S>) -> Self {
         let (update_tx, update_rx) = mpsc::unbounded_channel();
+
+        // Create a watch channel with an initial value of `false` (i.e., not shutting down yet)
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
         Self {
             inner: Arc::new(Inner {
                 supervisor_id,
@@ -102,23 +107,24 @@ impl<S: connector::Supervisor> WsConnector<S> {
                 update_rx: Mutex::new(update_rx),
                 update_tx,
                 last_updated_status: Mutex::new(ReportedSupervisorStatus::Idle),
-                shutdown_requested: AtomicBool::new(false),
+                shutdown_rx,
             }),
+            shutdown_tx,
         }
     }
 
-    /// Call this if we have received SIGHUP or otherwise want to gracefully stop.
-    /// After the connector finishes its current job (i.e. transitions to Idle),
-    /// it will exit `run()`.
+    /// Signal that we want to shut down gracefully. We can ignore errors from `send`,
+    /// because it only errors if all receivers have dropped, which can’t really happen
+    /// here unless the process is already shutting down.
     pub fn request_shutdown(&self) {
-        self.inner.shutdown_requested.store(true, Ordering::SeqCst);
+        let _ = self.shutdown_tx.send(true);
     }
 
-    /// Check if a shutdown has been requested.
     pub fn shutdown_requested(&self) -> bool {
-        self.inner.shutdown_requested.load(Ordering::SeqCst)
+        *self.inner.shutdown_rx.borrow()
     }
 }
+
 // As mentioned above, the `connector::SupervisorConnector` implementation is not capable of
 // implementing the functionality, so we forward to `Inner`, which is.
 #[async_trait]
@@ -349,6 +355,8 @@ impl<S: connector::Supervisor> Inner<S> {
         };
         let mut update_rx = self.update_rx.lock().await;
 
+        let mut shutdown_rx = self.shutdown_rx.clone();
+
         // No special on-connection behaviour is necessary: the switchboard will request the
         // supervisor status, and use that to determine if the information it has on file for this
         // supervisor's current job state is correct, which falls under the normal request handling
@@ -363,16 +371,27 @@ impl<S: connector::Supervisor> Inner<S> {
         let mut last_received_ping = tokio::time::Instant::now();
 
         loop {
-            // Check if we should exit** because (1) a shutdown is requested
-            // and (2) we are currently idle (no job is running).
-            if self.shutdown_requested.load(Ordering::SeqCst) {
-                let st = self.last_updated_status.lock().await.clone();
-                if matches!(st, ReportedSupervisorStatus::Idle) {
-                    tracing::info!("Shutdown requested, and no job is active; exiting run().");
-                    return;
-                }
+            // Check if the watch channel has changed
+            if *self.shutdown_rx.borrow() && self.is_idle().await {
+                tracing::info!("Shutdown requested, and supervisor is idle; exiting run().");
+                return;
             }
+
             tokio::select! {
+                // Check if the watch channel has changed
+                changed_result = shutdown_rx.changed() => {
+                    if changed_result.is_ok() {
+                        // We got a new value in the watch channel. Check if it's `true`:
+                        let shutdown_requested = *self.shutdown_rx.borrow();
+                        if shutdown_requested && self.is_idle().await {
+                            tracing::info!("Shutdown requested (watch changed) and idle => exit run().");
+                            return;
+                        }
+                    } else {
+                        // If `changed()` errors, it means all watch senders have dropped. Probably safe to ignore.
+                        tracing::warn!("shutdown_rx.changed() returned an error (sender dropped?)");
+                    }
+                }
                 _ = interval.tick() =>  {
                     tracing::trace!(target: "tml_ws_connector:ping", "keepalive tick");
                     let elapsed = last_received_ping.elapsed();
@@ -461,6 +480,11 @@ impl<S: connector::Supervisor> Inner<S> {
         }
 
         // unreachable
+    }
+
+    async fn is_idle(&self) -> bool {
+        let st = self.last_updated_status.lock().await;
+        matches!(*st, ReportedSupervisorStatus::Idle)
     }
 
     async fn update_job_state(&self, job_id: Uuid, job_state: RunningJobState) {
