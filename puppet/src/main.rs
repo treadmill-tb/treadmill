@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use log::{debug, error, info, warn};
-use uuid::Uuid;
 use zbus::interface;
 
-use treadmill_rs::api::supervisor_puppet::{CommandOutputStream, PuppetEvent, SupervisorEvent};
+use treadmill_rs::api::supervisor_puppet::{
+    CommandOutputStream, JobInfo, PuppetEvent, SupervisorEvent,
+};
 
 mod control_socket_client;
 
@@ -71,31 +72,33 @@ struct PuppetDaemonArgs {
     parameters_dir: Option<PathBuf>,
 
     #[arg(long)]
-    job_id_file: Option<PathBuf>,
+    job_info_dir: Option<PathBuf>,
 
     #[arg(long, default_value = "system")]
     dbus_bus: PuppetDaemonDbusBus,
 }
 
-async fn update_job_id_file(args: &PuppetDaemonArgs, job_id: Uuid) -> Result<()> {
-    let job_id_path = match args.job_id_file {
+async fn update_job_info_files(args: &PuppetDaemonArgs, job_info: JobInfo) -> Result<()> {
+    let job_info_dir = match args.job_info_dir {
         Some(ref path) => path,
         None => return Ok(()),
     };
 
-    info!("Writing job_id to file {:?}", job_id_path);
-
-    tokio::fs::create_dir_all(
-        job_id_path
-            .parent()
-            .context("Retrieving parent directory of job_id file")?,
-    )
-    .await
-    .context("Creating parent directories of job_id file (recursively)")?;
-
-    tokio::fs::write(job_id_path, job_id.to_string().as_bytes())
+    tokio::fs::create_dir_all(job_info_dir)
         .await
-        .context("Writing job_id file")?;
+        .context("Creating job_info_dir directory (recursively)")?;
+
+    let job_id_path = job_info_dir.join("job-id");
+    info!("Writing job id to file {:?}", job_id_path);
+    tokio::fs::write(job_id_path, job_info.job_id.to_string().as_bytes())
+        .await
+        .context("Writing job id to file")?;
+
+    let host_id_path = job_info_dir.join("host-id");
+    info!("Writing host id to file {:?}", host_id_path);
+    tokio::fs::write(host_id_path, job_info.host_id.to_string().as_bytes())
+        .await
+        .context("Writing host id to file")?;
 
     Ok(())
 }
@@ -674,12 +677,12 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
         .await?,
     );
 
-    let job_id = client
-        .get_job_id()
+    let job_info = client
+        .get_job_info()
         .await
         .context("Retrieving job_id from supervisor")?;
-    info!("Retrieved job_id from supervisor: {}", job_id);
-    update_job_id_file(&args, job_id).await?;
+    info!("Retrieved job info message from supervisor: {:?}", job_info);
+    update_job_info_files(&args, job_info).await?;
 
     // For certain requests and depending on some command line parameters, we'll
     // want to exit with an error if they fail. We provided these wrappers here

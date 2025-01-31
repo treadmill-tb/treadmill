@@ -1156,6 +1156,7 @@ impl NbdNetbootSupervisor {
 
         // Start a TCP control socket on the specified listen addr:
         let control_socket = TcpControlSocket::new(
+            this.config.base.supervisor_id,
             start_job_req.job_id,
             this.config.nbd_netboot.tcp_control_socket_listen_addr,
             this.clone(),
@@ -1759,7 +1760,7 @@ impl connector::Supervisor for NbdNetbootSupervisor {
 #[async_trait]
 impl control_socket::Supervisor for NbdNetbootSupervisor {
     #[instrument(skip(self))]
-    async fn ssh_keys(&self, tgt_job_id: Uuid) -> Option<Vec<String>> {
+    async fn ssh_keys(&self, _host_id: Uuid, tgt_job_id: Uuid) -> Option<Vec<String>> {
         match self.jobs.lock().await.get(&tgt_job_id) {
             Some(job_state) => match &*job_state.lock().await {
                 NbdNetbootSupervisorJobState::Running(NbdNetbootSupervisorJobRunningState {
@@ -1795,6 +1796,7 @@ impl control_socket::Supervisor for NbdNetbootSupervisor {
     #[instrument(skip(self))]
     async fn network_config(
         &self,
+        _host_id: Uuid,
         tgt_job_id: Uuid,
     ) -> Option<treadmill_rs::api::supervisor_puppet::NetworkConfig> {
         match self.jobs.lock().await.get(&tgt_job_id) {
@@ -1839,6 +1841,7 @@ impl control_socket::Supervisor for NbdNetbootSupervisor {
     #[instrument(skip(self))]
     async fn parameters(
         &self,
+        _host_id: Uuid,
         tgt_job_id: Uuid,
     ) -> Option<HashMap<String, treadmill_rs::api::supervisor_puppet::ParameterValue>> {
         match self.jobs.lock().await.get(&tgt_job_id) {
@@ -1875,7 +1878,7 @@ impl control_socket::Supervisor for NbdNetbootSupervisor {
     }
 
     #[instrument(skip(self))]
-    async fn puppet_ready(&self, _puppet_event_id: u64, job_id: Uuid) {
+    async fn puppet_ready(&self, _puppet_event_id: u64, _host_id: Uuid, job_id: Uuid) {
         event!(Level::INFO, "Received puppet ready event");
 
         match self.jobs.lock().await.get(&job_id) {
@@ -1914,6 +1917,7 @@ impl control_socket::Supervisor for NbdNetbootSupervisor {
         &self,
         _puppet_event_id: u64,
         _supervisor_event_id: Option<u64>,
+        _host_id: Uuid,
         _job_id: Uuid,
     ) {
         event!(Level::INFO, "Received puppet shutdown event");
@@ -1937,6 +1941,7 @@ impl control_socket::Supervisor for NbdNetbootSupervisor {
         &self,
         _puppet_event_id: u64,
         _supervisor_event_id: Option<u64>,
+        _host_id: Uuid,
         _job_id: Uuid,
     ) {
         event!(Level::INFO, "Received puppet reboot event");
@@ -1960,6 +1965,7 @@ impl control_socket::Supervisor for NbdNetbootSupervisor {
         &self,
         _puppet_event_id: u64,
         _supervisor_event_id: Option<u64>,
+        _host_id: Uuid,
         job_id: Uuid,
     ) {
         event!(
