@@ -1,14 +1,13 @@
 use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
-use uuid::Uuid;
 
 // TCP control socket transport implementation:
 #[cfg(feature = "transport_tcp")]
 pub use treadmill_tcp_control_socket_client as tcp;
 
 use treadmill_rs::api::supervisor_puppet::{
-    NetworkConfig, ParameterValue, PuppetEvent, PuppetReq, SupervisorEvent, SupervisorResp,
+    JobInfo, NetworkConfig, ParameterValue, PuppetEvent, PuppetReq, SupervisorEvent, SupervisorResp,
 };
 
 pub enum ControlSocketClient {
@@ -62,16 +61,19 @@ impl ControlSocketClient {
         }
     }
 
-    pub async fn get_job_id(&self) -> Result<Uuid> {
+    pub async fn get_job_info(&self) -> Result<JobInfo> {
         let resp = self
-            .request(PuppetReq::JobId)
+            .request(PuppetReq::JobInfo)
             .await
-            .context("Sending job ID request to supervisor")?;
+            .context("Sending job info request to supervisor")?;
 
         match resp {
-            SupervisorResp::JobId { job_id } => Ok(job_id),
+            SupervisorResp::JobInfo(job_info) => Ok(job_info),
             _ => {
-                bail!("Invalid supervisor response to job ID request: {:?}", resp);
+                bail!(
+                    "Invalid supervisor response to job info request: {:?}",
+                    resp
+                );
             }
         }
     }

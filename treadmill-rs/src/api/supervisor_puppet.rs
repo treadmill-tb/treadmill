@@ -14,7 +14,7 @@ pub use super::switchboard_supervisor::ParameterValue;
 #[non_exhaustive]
 pub enum PuppetReq {
     Ping,
-    JobId,
+    JobInfo,
     SSHKeys,
     NetworkConfig,
     Parameters,
@@ -191,14 +191,19 @@ pub struct NetworkConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+pub struct JobInfo {
+    pub job_id: Uuid,
+    pub host_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 #[serde(tag = "type")]
 #[non_exhaustive]
 pub enum SupervisorResp {
     // Request reponses:
     PingResp,
-    JobId {
-        job_id: Uuid,
-    },
+    JobInfo(JobInfo),
     SSHKeysResp {
         ssh_keys: Vec<String>,
     },

@@ -17,6 +17,7 @@ enum ControlSocketTaskCommand {
 }
 
 pub struct TcpControlSocket<S: Supervisor> {
+    host_id: Uuid,
     job_id: Uuid,
     task_handle: JoinHandle<Result<()>>,
     task_cmd_chan: tokio::sync::mpsc::Sender<ControlSocketTaskCommand>,
@@ -27,12 +28,14 @@ impl<S: Supervisor> fmt::Debug for TcpControlSocket<S> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("TcpControlSocket")
             .field("job_id", &self.job_id)
+            .field("host_id", &self.host_id)
             .finish()
     }
 }
 
 impl<S: Supervisor> TcpControlSocket<S> {
     pub async fn new(
+        host_id: Uuid,
         job_id: Uuid,
         bind_addr: std::net::SocketAddr,
         supervisor: Arc<S>,
@@ -128,7 +131,7 @@ impl<S: Supervisor> TcpControlSocket<S> {
                                 }) => Some(SupervisorMsg::Response {
                                     request_id,
                                     response: supervisor
-                                        .handle_request(request_id, request, job_id)
+                                        .handle_request(request_id, request, host_id, job_id)
                                         .await,
                                 }),
                                 Ok(PuppetMsg::Event {
@@ -136,7 +139,7 @@ impl<S: Supervisor> TcpControlSocket<S> {
                                     event,
                                 }) => {
                                     supervisor
-                                        .handle_event(puppet_event_id, event, job_id)
+                                        .handle_event(puppet_event_id, event, host_id, job_id)
                                         .await;
                                     None
                                 }
@@ -180,6 +183,7 @@ impl<S: Supervisor> TcpControlSocket<S> {
         });
 
         Ok(TcpControlSocket {
+            host_id,
             job_id,
             task_handle,
             task_cmd_chan: task_cmd_chan_tx,

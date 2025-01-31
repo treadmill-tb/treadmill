@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use tracing::{event, Level};
 use uuid::Uuid;
 
-use crate::api::supervisor_puppet::{self, PuppetEvent, PuppetReq, SupervisorResp};
+use crate::api::supervisor_puppet::{self, JobInfo, PuppetEvent, PuppetReq, SupervisorResp};
 
 /// Supervisor interface for control socket servers.
 ///
@@ -25,7 +25,7 @@ pub trait Supervisor: Send + Sync + 'static {
     /// later point in time when the supervisor ever returned `None`. If a
     /// supervisor is able to provide SSH authorized keys generally, but
     /// currently has none configured, it should instead return `Some(vec![])`.
-    async fn ssh_keys(&self, job_id: Uuid) -> Option<Vec<String>>;
+    async fn ssh_keys(&self, host_id: Uuid, job_id: Uuid) -> Option<Vec<String>>;
 
     /// Puppet network configuration request.
     ///
@@ -39,7 +39,11 @@ pub trait Supervisor: Send + Sync + 'static {
     /// If this endpoint is supported by the supervisor, it must at least supply
     /// the host's hostname, and may optionally provide IPv4 and IPv6 addresses,
     /// gateways, and a DNS server.
-    async fn network_config(&self, job_id: Uuid) -> Option<supervisor_puppet::NetworkConfig>;
+    async fn network_config(
+        &self,
+        host_id: Uuid,
+        job_id: Uuid,
+    ) -> Option<supervisor_puppet::NetworkConfig>;
 
     /// Puppet job parameters request.
     ///
@@ -51,6 +55,7 @@ pub trait Supervisor: Send + Sync + 'static {
     /// `HashMap`.
     async fn parameters(
         &self,
+        host_id: Uuid,
         job_id: Uuid,
     ) -> Option<HashMap<String, supervisor_puppet::ParameterValue>>;
 
@@ -63,26 +68,30 @@ pub trait Supervisor: Send + Sync + 'static {
         &self,
         _request_id: u64,
         req: PuppetReq,
+        host_id: Uuid,
         job_id: Uuid,
     ) -> SupervisorResp {
         match req {
             PuppetReq::Ping => SupervisorResp::PingResp,
 
-            PuppetReq::JobId => SupervisorResp::JobId { job_id },
+            PuppetReq::JobInfo => SupervisorResp::JobInfo(JobInfo { job_id, host_id }),
 
             PuppetReq::SSHKeys => SupervisorResp::SSHKeysResp {
-                ssh_keys: self.ssh_keys(job_id).await.unwrap_or_else(|| vec![]),
+                ssh_keys: self
+                    .ssh_keys(host_id, job_id)
+                    .await
+                    .unwrap_or_else(|| vec![]),
             },
 
             PuppetReq::Parameters => self
-                .parameters(job_id)
+                .parameters(host_id, job_id)
                 .await
                 .map_or(SupervisorResp::JobNotFound, |parameters| {
                     SupervisorResp::Parameters { parameters }
                 }),
 
             PuppetReq::NetworkConfig => self
-                .network_config(job_id)
+                .network_config(host_id, job_id)
                 .await
                 .map_or(SupervisorResp::JobNotFound, SupervisorResp::NetworkConfig),
             // Would be required for consumers of this type outside of this
@@ -94,28 +103,34 @@ pub trait Supervisor: Send + Sync + 'static {
         }
     }
 
-    async fn handle_event(&self, puppet_event_id: u64, event: PuppetEvent, job_id: Uuid) {
+    async fn handle_event(
+        &self,
+        puppet_event_id: u64,
+        event: PuppetEvent,
+        host_id: Uuid,
+        job_id: Uuid,
+    ) {
         match event {
-            PuppetEvent::Ready => self.puppet_ready(puppet_event_id, job_id).await,
+            PuppetEvent::Ready => self.puppet_ready(puppet_event_id, host_id, job_id).await,
 
             PuppetEvent::Shutdown {
                 supervisor_event_id,
             } => {
-                self.puppet_shutdown(puppet_event_id, supervisor_event_id, job_id)
+                self.puppet_shutdown(puppet_event_id, supervisor_event_id, host_id, job_id)
                     .await
             }
 
             PuppetEvent::Reboot {
                 supervisor_event_id,
             } => {
-                self.puppet_reboot(puppet_event_id, supervisor_event_id, job_id)
+                self.puppet_reboot(puppet_event_id, supervisor_event_id, host_id, job_id)
                     .await
             }
 
             PuppetEvent::TerminateJob {
                 supervisor_event_id,
             } => {
-                self.terminate_job(puppet_event_id, supervisor_event_id, job_id)
+                self.terminate_job(puppet_event_id, supervisor_event_id, host_id, job_id)
                     .await
             }
 
@@ -138,17 +153,19 @@ pub trait Supervisor: Send + Sync + 'static {
         }
     }
 
-    async fn puppet_ready(&self, puppet_event_id: u64, job_id: Uuid);
+    async fn puppet_ready(&self, puppet_event_id: u64, host_id: Uuid, job_id: Uuid);
     async fn puppet_shutdown(
         &self,
         puppet_event_id: u64,
         supervisor_event_id: Option<u64>,
+        host_id: Uuid,
         job_id: Uuid,
     );
     async fn puppet_reboot(
         &self,
         puppet_event_id: u64,
         supervisor_event_id: Option<u64>,
+        host_id: Uuid,
         job_id: Uuid,
     );
 
@@ -157,6 +174,7 @@ pub trait Supervisor: Send + Sync + 'static {
         &self,
         puppet_event_id: u64,
         supervisor_event_id: Option<u64>,
+        host_id: Uuid,
         job_id: Uuid,
     );
 }
