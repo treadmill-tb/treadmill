@@ -21,7 +21,7 @@ RENAME COLUMN "ssh_endpoints" TO "_ssh_endpoints_old";
 
 
 ALTER TABLE "tml_switchboard"."supervisors"
-ADD COLUMN "ssh_endpoints" tml_switchboard.ssh_endpoint[] NOT NULL;
+ADD COLUMN "ssh_endpoints" tml_switchboard.ssh_endpoint[];
 
 
 UPDATE "tml_switchboard"."supervisors" AS s
@@ -40,6 +40,11 @@ SET
                     unnest(s._ssh_endpoints_old)
             ) AS derivedTable
     );
+
+
+ALTER TABLE "tml_switchboard"."supervisors"
+ALTER COLUMN "ssh_endpoints"
+SET NOT NULL;
 
 
 ALTER TABLE "tml_switchboard"."supervisors"
