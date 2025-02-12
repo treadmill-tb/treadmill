@@ -6,7 +6,7 @@ use ssh_key::{LineEnding, PrivateKey}; // Remove unused PublicKey import
 use std::fs;
 use std::os::unix::fs::PermissionsExt; // Add PermissionsExt trait
 use std::path::PathBuf;
-use treadmill_rs::api::switchboard::AuthToken;
+use treadmill_rs::api::switchboard::{AuthToken, JobSshEndpoint};
 use xdg::BaseDirectories;
 
 pub fn save_token(token: &AuthToken) -> Result<()> {
@@ -89,11 +89,11 @@ pub fn save_private_key(private_key: &PrivateKey) -> Result<PathBuf> {
 }
 
 // Read the job's SSH endpoints from the switchboard API
-pub async fn get_job_ssh_endpoints(
+pub async fn get_job_ssh_user_endpoints(
     client: &reqwest::Client,
     config: &crate::config::Config,
     job_id: uuid::Uuid,
-) -> Result<Vec<String>> {
+) -> Result<(Option<String>, Vec<JobSshEndpoint>)> {
     let token = get_token()?;
 
     let response = client
@@ -109,13 +109,10 @@ pub async fn get_job_ssh_endpoints(
             treadmill_rs::api::switchboard::jobs::status::Response::Ok {
                 job_status: status,
                 ..
-            } => {
-                if let Some(endpoints) = status.state.ssh_endpoints {
-                    Ok(endpoints)
-                } else {
-                    Err(anyhow!("No SSH endpoints available for this job"))
-                }
-            }
+            } => Ok((
+                status.state.ssh_user,
+                status.state.ssh_endpoints.unwrap_or_else(|| vec![]),
+            )),
             _ => Err(anyhow!("Failed to get job status")),
         }
     } else {

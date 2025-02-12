@@ -302,7 +302,10 @@ async fn ssh_into_job(client: &Client, config: &config::Config, job_id: &str) ->
     let job_id = Uuid::parse_str(job_id).context("Invalid job ID")?;
 
     // Get the job's SSH endpoints
-    let endpoints = auth::get_job_ssh_endpoints(client, config, job_id).await?;
+    let (ssh_user_opt, endpoints) =
+        auth::get_job_ssh_user_endpoints(client, config, job_id).await?;
+
+    let ssh_user = ssh_user_opt.ok_or(anyhow!("No SSH user specified for this job!"))?;
 
     if endpoints.is_empty() {
         return Err(anyhow!("No SSH endpoints available for this job"));
@@ -324,14 +327,23 @@ async fn ssh_into_job(client: &Client, config: &config::Config, job_id: &str) ->
     }
 
     println!(
-        "Connecting via SSH to {} using key {:?}",
-        endpoint, key_path
+        "Connecting via SSH to {}@{}, port {}, using key {:?}",
+        ssh_user, endpoint.host, endpoint.port, key_path
     );
 
+    // For now, we instruct SSH to accept any host key and don't use the
+    // system's host key database (as that would be polluted with a new host key
+    // for each job, and raise an error when connecting to a subsequent
+    // different job on the same host). We can change this as soon as the
+    // switchboard propagates the SSH host key.
     let status = std::process::Command::new("ssh")
+        .arg("-oStrictHostKeyChecking=no")
+        .arg("-oUserKnownHostsFile=/dev/null")
         .arg("-i")
         .arg(&key_path)
-        .arg(endpoint)
+        .arg("-p")
+        .arg(&format!("{}", endpoint.port))
+        .arg(&format!("{}@{}", ssh_user, endpoint.host))
         .status()
         .context("Failed to spawn SSH process")?;
 
