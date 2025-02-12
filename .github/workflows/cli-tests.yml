@@ -138,7 +138,8 @@ jobs:
 
           echo "Testing job enqueue with all options..."
           job_response=$(./tml -v -c cli_config.toml job enqueue "${tml_image_id}" \
-            --ssh-keys "ssh-rsa AAAAB3NzaC1yc2E...,ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..." \
+            --ssh-key "ssh-rsa AAAAB3NzaC1yc2E..." \
+            --ssh-key "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..." \
             --restart-count 3 \
             --parameters '{"key1":{"value":"value1","secret":false},"key2":{"value":"value2","secret":true}}' \
             --tag-config 'supervisor:7d55ec6d-15e7-4b84-8c04-7c085fe60df4' \

@@ -1,3 +1,4 @@
+use super::SqlSshEndpoint;
 use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
 use sqlx::{PgExecutor, Postgres, Transaction};
@@ -198,7 +199,7 @@ pub struct SqlJob {
     // Filled out if and when transitioned into `dispatched` functional state
     started_at: Option<DateTime<Utc>>,
     dispatched_on_supervisor_id: Option<Uuid>,
-    ssh_endpoints: Option<Vec<String>>,
+    ssh_endpoints: Option<Vec<SqlSshEndpoint>>,
 
     // Filled out when transitioned into `finalized` functional state
     #[allow(dead_code)]
@@ -263,7 +264,7 @@ impl SqlJob {
     pub fn dispatched_on_supervisor_id(&self) -> Option<Uuid> {
         self.dispatched_on_supervisor_id
     }
-    pub fn ssh_endpoints(&self) -> Option<&Vec<String>> {
+    pub fn ssh_endpoints(&self) -> Option<&Vec<SqlSshEndpoint>> {
         self.ssh_endpoints.as_ref()
     }
     pub fn functional_state(&self) -> SqlFunctionalState {
@@ -281,8 +282,8 @@ pub async fn fetch_by_job_id(
         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
         queued_at, functional_state as "functional_state: _", started_at,
-        dispatched_on_supervisor_id, ssh_endpoints, exit_status as "exit_status: _", host_output,
-        terminated_at, last_updated_at
+        dispatched_on_supervisor_id, ssh_endpoints as "ssh_endpoints: _",
+        exit_status as "exit_status: _", host_output, terminated_at, last_updated_at
         from tml_switchboard.jobs where job_id = $1;
         "#,
         job_id
@@ -298,8 +299,8 @@ pub async fn fetch_all_queued(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJob>, 
         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
         queued_at, functional_state as "functional_state: _", started_at,
-        dispatched_on_supervisor_id, ssh_endpoints, exit_status as "exit_status: _", host_output,
-        terminated_at, last_updated_at
+        dispatched_on_supervisor_id, ssh_endpoints as "ssh_endpoints: _",
+        exit_status as "exit_status: _", host_output, terminated_at, last_updated_at
         from tml_switchboard.jobs where functional_state = 'queued';
         "#
     )
@@ -314,8 +315,8 @@ pub async fn fetch_all_dispatched(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJo
         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
         queued_at, functional_state as "functional_state: _", started_at,
-        dispatched_on_supervisor_id, ssh_endpoints, exit_status as "exit_status: _", host_output,
-        terminated_at, last_updated_at
+        dispatched_on_supervisor_id, ssh_endpoints as "ssh_endpoints: _",
+        exit_status as "exit_status: _", host_output, terminated_at, last_updated_at
         from tml_switchboard.jobs where functional_state = 'dispatched';
         "#
     )

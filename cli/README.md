@@ -10,6 +10,7 @@ Treadmill CLI is a command-line interface tool for interacting with the Treadmil
   - List all jobs in the queue
   - Check job status
   - Cancel jobs
+  - SSH into a running job or device with an automatically generated key
 - Configurable via command-line arguments or config file
 
 ## Installation
@@ -30,15 +31,25 @@ Ensure the CLI tool is in your system path or reference it directly using `./tml
 
 ### Subcommands
 
-1. Login
+1. **Login**
+
+   ```
+   ./tml login
+   ```
+
+   Or, optionally:
+
+   ```
+   ./tml login <USERNAME> [<PASSWORD>]
+   ```
 
    ```
    ./tml login <USERNAME> <PASSWORD>
    ```
 
-2. Job Management
+2. **Job Management**
 
-   - Enqueue a job:
+   - **Enqueue a job**:
 
      ```
      ./tml job enqueue <IMAGE_ID> [OPTIONS]
@@ -52,22 +63,114 @@ Ensure the CLI tool is in your system path or reference it directly using `./tml
      - `--tag-config <CONFIG>`: Tag configuration
      - `--timeout <TIMEOUT>`: Override timeout in seconds
 
-   - List all jobs:
+   - **List all jobs**:
 
      ```
      ./tml job list
      ```
 
-   - Check job status:
+   - **Check job status**:
 
      ```
      ./tml job status <JOB_ID>
      ```
 
-   - Cancel a job:
+   - **Cancel a job**:
+
      ```
      ./tml job cancel <JOB_ID>
      ```
+
+   - **SSH into a running job**:
+
+     ```
+     ./tml job ssh <USER@IP>
+     ```
+
+     - If you run `tml job ssh root@10.42.0.123`, the CLI will:
+
+       1. Check if a Treadmill-managed Ed25519 SSH key exists in `~/.local/share/treadmill-tb/ssh-key`.
+       2. If **no key** is found, automatically generate one and store it there with file permissions 0600.
+       3. Invoke `ssh -i ~/.local/share/treadmill-tb/ssh-key root@10.42.0.123`.
+
+     - If the key **already exists**, it reuses that key to connect.
+
+## Login Options
+
+Treadmill CLI allows you to log in using **several** different methods, **in order of precedence**:
+
+1. **Positional Arguments**
+
+   - `<USERNAME> [<PASSWORD>]`  
+     Examples:
+
+   ```
+   ./tml login ben mypassword
+   ```
+
+   ```
+   ./tml login ben
+   ```
+
+   In the second example, you’ll be prompted for the password.
+
+2. **Environment Variables**
+
+   - `TML_USER`
+   - `TML_PASSWORD`  
+     Example:
+
+   ```
+   export TML_USER=ben
+   export TML_PASSWORD=supersecret
+   ./tml login
+   ```
+
+   If these environment variables are set, the CLI will use them **unless** the above command-line arguments override them.
+
+3. **Interactive Prompt**
+   - If username and/or password aren’t provided by flags, positional arguments, or environment variables, the CLI will prompt you interactively.
+
+### Examples
+
+- **Fully Interactive**:
+
+  ```
+  ./tml login
+  ```
+
+  - Prompts for username, then password.
+
+- **Username Positional + Prompt for Password**:
+
+  ```
+  ./tml login ben
+  ```
+
+  - Username is `ben`
+  - Prompts for password.
+
+- **Username & Password Positional**:
+
+  ```
+  ./tml login ben mypassword
+  ```
+
+  - Username is `ben`
+  - Password is `mypassword`
+  - No prompt needed.
+
+- **Environment Variables**:
+  ```
+  export TML_USER=ben
+  export TML_PASSWORD=supersecret
+  ./tml login
+  ```
+  - Username is `ben`
+  - Password is `supersecret`
+  - No prompt needed.
+
+**Note**: The CLI always checks for **flags first**, **then** any **positional arguments**, **then** environment variables, **finally** falling back to prompts for whichever piece is still missing. This flexibility makes the CLI suitable for both interactive and CI-based automation.
 
 ## Configuration
 
@@ -86,21 +189,33 @@ url = "https://swb.treadmill.ci"
 
 The CLI reads SSH keys from multiple sources:
 
-1. SSH agent
-2. Public key files in the user's `.ssh` directory
-3. Config file (as shown above)
+1. **SSH agent**
+2. **Public key files** in the user's `.ssh` directory
+3. **Config file** (as shown above)
 
 If no SSH keys are provided via the command-line argument, the CLI will automatically attempt to read keys from these sources.
 
+### Automatic Ed25519 Key Generation
+
+When you run `tml job ssh <USER@IP>`, Treadmill CLI will:
+
+- Check for an existing private key at `~/.local/share/treadmill-tb/ssh-key`.
+- If not found, generate a **new Ed25519 key** and store it securely (file mode `0600`).
+- Invoke the system `ssh` command with `-i ~/.local/share/treadmill-tb/ssh-key <USER@IP>`.
+
+This ensures a consistent, Treadmill-managed SSH key without interfering with your other SSH configurations.
+
 ## Examples
 
-1. Login:
+1. **Login**:
 
    ```
-   ./tml login fake_user1 FAKEFAKE
+   ./tml login
    ```
 
-2. Enqueue a job:
+   CLI will prompt you for your username and password if they are not provided by any other means.
+
+2. **Enqueue a job**:
 
    ```
    ./tml job enqueue 46ebc6946f7c4a10922bf1f539cd7351ce8670781e081d18babf1affdef6f577 \
@@ -111,22 +226,35 @@ If no SSH keys are provided via the command-line argument, the CLI will automati
      --timeout 3600
    ```
 
-3. List all jobs:
+3. **List all jobs**:
 
    ```
    ./tml job list
    ```
 
-4. Check job status:
+4. **Check job status**:
 
    ```
    ./tml job status <JOB_ID>
    ```
 
-5. Cancel a job:
+5. **Cancel a job**:
+
    ```
    ./tml job cancel <JOB_ID>
    ```
+
+6. **SSH into a running job**:
+
+   ```
+   # Example: connect to user root at IP 10.42.0.123
+   ./tml job ssh root@10.42.0.123
+   ```
+
+   - The CLI will generate or reuse an Ed25519 key at `~/.local/share/treadmill-tb/ssh-key` and then run:
+     ```
+     ssh -i ~/.local/share/treadmill-tb/ssh-key root@10.42.0.123
+     ```
 
 ## Verbose Logging
 

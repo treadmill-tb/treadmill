@@ -209,14 +209,24 @@ pub enum JobEvent {
     },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobSshEndpoint {
+    pub host: String,
+    pub port: u16,
+}
+
 /// This is exclusively an API type
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtendedJobState {
     #[serde(flatten)]
     pub state: JobState,
     pub dispatched_to_supervisor: Option<Uuid>,
-    #[serde(default)]
-    pub ssh_endpoints: Option<Vec<String>>,
+    #[serde(default)] // Backwards-compatibility with clients which do not expect this field
+    pub ssh_endpoints: Option<Vec<JobSshEndpoint>>,
+    #[serde(default)] // Backwards-compatibility with clients which do not expect this field
+    pub ssh_user: Option<String>,
+    #[serde(default)] // Backwards-compatibility with clients which do not expect this field
+    pub ssh_host_keys: Option<Vec<String>>,
     pub result: Option<JobResult>,
 }
 /// Represents the status of a job as of some point in time.
