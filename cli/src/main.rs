@@ -73,9 +73,18 @@ enum JobCommands {
         /// The 64-character hex-encoded image ID
         image_id: String,
 
-        /// Optional SSH public key to use (if not provided, one will be generated)
+        /// Do not generate or add internal SSH public key to authorized keys.
+        ///
+        /// By default, this tool generates an internal SSH that is added as an
+        /// authorized key job. This key is used by the `job ssh` to connect to
+        /// the host. Use this option to disable generating this key and adding
+        /// it to the set of SSH keys for this job.
+        #[arg(long)]
+        disable_internal_ssh_key: bool,
+
+        /// Additional SSH authorized key(s) for this job (can be supplied multiple times).
         #[arg(long = "ssh-key", value_name = "KEY")]
-        ssh_key: Option<String>,
+        ssh_keys: Vec<String>,
 
         /// Remaining restart count
         #[arg(long = "restart-count", value_name = "COUNT")]
@@ -171,7 +180,8 @@ async fn main() -> Result<()> {
             // tml job list
             JobCommands::Enqueue {
                 image_id,
-                ssh_key,
+                disable_internal_ssh_key,
+                ssh_keys,
                 restart_count,
                 parameters,
                 tag_config,
@@ -182,7 +192,8 @@ async fn main() -> Result<()> {
                     &client,
                     &config,
                     &image_id,
-                    ssh_key.as_deref(),
+                    disable_internal_ssh_key,
+                    &ssh_keys,
                     restart_count.as_deref(),
                     parameters.as_deref(),
                     tag_config.as_deref(),
@@ -401,7 +412,8 @@ async fn enqueue_job(
     client: &Client,
     config: &config::Config,
     image_id: &str,
-    ssh_key: Option<&str>,
+    disable_internal_ssh_key: bool,
+    ssh_keys: &Vec<String>,
     restart_count: Option<&str>,
     parameters: Option<&str>,
     tag_config: Option<&str>,
@@ -420,12 +432,11 @@ async fn enqueue_job(
     };
 
     // Generate or use provided SSH key
-    let ssh_keys = if let Some(key) = ssh_key {
-        vec![key.to_string()]
-    } else {
+    let mut ssh_keys = ssh_keys.clone();
+    if !disable_internal_ssh_key {
         let (private_key, public_key) = auth::generate_job_ssh_key()?;
         auth::save_private_key(&private_key)?;
-        vec![public_key]
+        ssh_keys.push(public_key);
     };
 
     let restart_count = restart_count
