@@ -69,6 +69,19 @@ create table tml_switchboard.api_token_privileges
     primary key (token_id, permission)
 );
 
+-- Host + Port tuple for ssh_endpoints of a supervisor.
+create domain tml_switchboard.port as integer
+check (value >= 0 and value < 65535);
+create domain tml_switchboard.ssh_host as text
+check (value is not null);
+create domain tml_switchboard.ssh_port as tml_switchboard.port
+check (value is not null);
+create type tml_switchboard.ssh_endpoint as
+(
+    ssh_host tml_switchboard.ssh_host,
+    ssh_port tml_switchboard.ssh_port
+);
+
 -- All hosts must be registered with the switchboard database: any host not
 -- registered will be turned away at the gate, so to speak.
 --
@@ -94,7 +107,7 @@ create table tml_switchboard.supervisors
     --
     -- Each endpoint is a "hostname:port" tuple. IPv6 addreses are to be
     -- enclosed in square brackets, such as "[::1]:22".
-    ssh_endpoints text[] not null,
+    ssh_endpoints tml_switchboard.ssh_endpoint[] not null,
 
     check (octet_length(auth_token) = 128)
 );
@@ -213,7 +226,7 @@ create table tml_switchboard.jobs
     --
     -- Each endpoint is a "hostname:port" tuple. IPv6 addreses are to be
     -- enclosed in square brackets, such as "[::1]:22".
-    ssh_endpoints               text[],
+    ssh_endpoints               tml_switchboard.ssh_endpoint[],
 
     exit_status                 tml_switchboard.exit_status,
     -- Optional host output

@@ -1,8 +1,10 @@
-use crate::auth::token::SecurityToken;
 use sqlx::PgExecutor;
 use std::collections::BTreeSet;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
+
+use super::SqlSshEndpoint;
+use crate::auth::token::SecurityToken;
 
 pub async fn try_authenticate_supervisor(
     supervisor_id: Uuid,
@@ -32,6 +34,7 @@ pub struct SqlSupervisor {
     pub supervisor_id: Uuid,
     pub name: String,
     pub tags: Vec<String>,
+    pub ssh_endpoints: Vec<SqlSshEndpoint>,
 }
 
 pub async fn fetch_all_supervisors(
@@ -39,7 +42,7 @@ pub async fn fetch_all_supervisors(
 ) -> Result<Vec<SqlSupervisor>, sqlx::Error> {
     sqlx::query_as!(
         SqlSupervisor,
-        r#"select supervisor_id, name, tags from tml_switchboard.supervisors"#
+        r#"select supervisor_id, name, tags, ssh_endpoints as "ssh_endpoints: _" from tml_switchboard.supervisors"#
     )
     .fetch_all(conn)
     .await
@@ -50,7 +53,7 @@ pub async fn insert(
     name: String,
     auth_token: SecurityToken,
     tag_set: &BTreeSet<String>,
-    ssh_endpoints: Vec<String>,
+    ssh_endpoints: Vec<SqlSshEndpoint>,
     conn: impl PgExecutor<'_>,
 ) -> Result<(), sqlx::Error> {
     let tag_vec: Vec<String> = tag_set.iter().cloned().collect();
@@ -65,7 +68,7 @@ pub async fn insert(
         name,
         auth_token.as_bytes(),
         tag_vec.as_slice(),
-        ssh_endpoints.as_slice(),
+        ssh_endpoints.as_slice() as &[SqlSshEndpoint],
     )
     .execute(conn)
     .await

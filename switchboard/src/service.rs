@@ -5,10 +5,10 @@ use crate::perms::RunJobOnSupervisor;
 use crate::service::herd::{Herd, HerdError, ReservationError};
 use crate::service::kanban::{Kanban, KanbanError};
 use crate::service::tag::NaiveTagConfig;
-use crate::sql;
 use crate::sql::api_token::TokenError;
 use crate::sql::job::history::SqlJobEvent;
 use crate::sql::job::{SqlExitStatus, SqlFunctionalState, SqlJob, SqlRestartPolicy};
+use crate::sql::{self, SqlSshEndpoint};
 use axum::extract::ws::WebSocket;
 use chrono::{DateTime, TimeDelta, Utc};
 use futures_util::stream::FuturesOrdered;
@@ -24,8 +24,8 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep_until, Instant};
 use tracing::{instrument, Instrument};
 use treadmill_rs::api::switchboard::{
-    ExitStatus, ExtendedJobState, JobEvent, JobRequest, JobResult, JobState, JobStatus,
-    SupervisorStatus,
+    ExitStatus, ExtendedJobState, JobEvent, JobRequest, JobResult, JobSshEndpoint, JobState,
+    JobStatus, SupervisorStatus,
 };
 use treadmill_rs::api::switchboard_supervisor;
 use treadmill_rs::api::switchboard_supervisor::{
@@ -1513,19 +1513,35 @@ impl Service {
     // }
 
     pub async fn get_job_status(&self, job_id: Uuid) -> Result<JobStatus, ServiceError> {
+        let sql_ssh_endpoints_to_api = |sql_ssh_endpoints: Option<&Vec<SqlSshEndpoint>>| {
+            sql_ssh_endpoints.map(|e| {
+                e.iter()
+                    .map(|sql_ssh_endpoint| JobSshEndpoint {
+                        host: sql_ssh_endpoint.ssh_host.clone().into(),
+                        port: sql_ssh_endpoint.ssh_port.into(),
+                    })
+                    .collect()
+            })
+        };
+
         let job = sql::job::fetch_by_job_id(job_id, &self.pool)
             .await
             .map_err(ServiceError::Database)?;
+
         let as_of = Utc::now();
+
         let finalized_result = sql::job::history::fetch_finalized_result(job_id, &self.pool)
             .await
             .map_err(ServiceError::Database)?;
+
         Ok(if let Some(result) = finalized_result {
             JobStatus {
                 state: ExtendedJobState {
                     state: JobState::Terminated,
                     dispatched_to_supervisor: job.dispatched_on_supervisor_id(),
-                    ssh_endpoints: job.ssh_endpoints().cloned(),
+                    ssh_endpoints: sql_ssh_endpoints_to_api(job.ssh_endpoints()),
+                    ssh_user: Some("tml".to_string()), // TODO: determine this from image
+                    ssh_host_keys: None,               // TODO: allow supervisor to report host keys
                     result: Some(result),
                 },
                 as_of,
@@ -1540,7 +1556,9 @@ impl Service {
                     state: ExtendedJobState {
                         state,
                         dispatched_to_supervisor: job.dispatched_on_supervisor_id(),
-                        ssh_endpoints: job.ssh_endpoints().cloned(),
+                        ssh_endpoints: sql_ssh_endpoints_to_api(job.ssh_endpoints()),
+                        ssh_user: Some("tml".to_string()), // TODO: determine this from image
+                        ssh_host_keys: None, // TODO: allow supervisor to report host keys
                         result: None,
                     },
                     as_of,

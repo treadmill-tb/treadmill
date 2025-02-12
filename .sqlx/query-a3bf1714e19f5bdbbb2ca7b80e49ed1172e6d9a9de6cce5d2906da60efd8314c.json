@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        select job_id, resume_job_id, restart_job_id, image_id as \"sql_image_id: _\", ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id, tag_config, job_timeout,\n        queued_at, functional_state as \"functional_state: _\", started_at,\n        dispatched_on_supervisor_id, ssh_endpoints, exit_status as \"exit_status: _\", host_output,\n        terminated_at, last_updated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
+  "query": "\n        select job_id, resume_job_id, restart_job_id, image_id as \"sql_image_id: _\", ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id, tag_config, job_timeout,\n        queued_at, functional_state as \"functional_state: _\", started_at,\n        dispatched_on_supervisor_id, ssh_endpoints as \"ssh_endpoints: _\",\n        exit_status as \"exit_status: _\", host_output, terminated_at, last_updated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
   "describe": {
     "columns": [
       {
@@ -93,8 +93,52 @@
       },
       {
         "ordinal": 13,
-        "name": "ssh_endpoints",
-        "type_info": "TextArray"
+        "name": "ssh_endpoints: _",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.ssh_endpoint[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "tml_switchboard.ssh_endpoint",
+                  "kind": {
+                    "Composite": [
+                      [
+                        "ssh_host",
+                        {
+                          "Custom": {
+                            "name": "tml_switchboard.ssh_host",
+                            "kind": {
+                              "Domain": "Text"
+                            }
+                          }
+                        }
+                      ],
+                      [
+                        "ssh_port",
+                        {
+                          "Custom": {
+                            "name": "tml_switchboard.ssh_port",
+                            "kind": {
+                              "Domain": {
+                                "Custom": {
+                                  "name": "tml_switchboard.port",
+                                  "kind": {
+                                    "Domain": "Int4"
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
       },
       {
         "ordinal": 14,
@@ -161,5 +205,5 @@
       false
     ]
   },
-  "hash": "ab906bdeeb8aa2df54673d56741d7edab77f57091c050329f6d87e858f0b54ff"
+  "hash": "a3bf1714e19f5bdbbb2ca7b80e49ed1172e6d9a9de6cce5d2906da60efd8314c"
 }

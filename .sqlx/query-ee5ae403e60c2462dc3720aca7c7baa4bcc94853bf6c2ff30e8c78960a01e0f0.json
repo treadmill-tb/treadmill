@@ -1,15 +1,27 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        insert into tml_switchboard.supervisors\n        (supervisor_id, name, auth_token, tags, ssh_endpoints)\n        values\n        ($1, $2, $3, $4, $5);\n        ",
+  "query": "select supervisor_id, name, tags, ssh_endpoints as \"ssh_endpoints: _\" from tml_switchboard.supervisors",
   "describe": {
-    "columns": [],
-    "parameters": {
-      "Left": [
-        "Uuid",
-        "Text",
-        "Bytea",
-        "TextArray",
-        {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "supervisor_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "tags",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 3,
+        "name": "ssh_endpoints: _",
+        "type_info": {
           "Custom": {
             "name": "tml_switchboard.ssh_endpoint[]",
             "kind": {
@@ -54,9 +66,17 @@
             }
           }
         }
-      ]
+      }
+    ],
+    "parameters": {
+      "Left": []
     },
-    "nullable": []
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
   },
-  "hash": "aa8cecf478d662b8ab5b200bacfbb1090d9a481d13210445ee88cf11e62616c9"
+  "hash": "ee5ae403e60c2462dc3720aca7c7baa4bcc94853bf6c2ff30e8c78960a01e0f0"
 }
