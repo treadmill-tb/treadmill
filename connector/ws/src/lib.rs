@@ -8,13 +8,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use thiserror::Error;
 use tokio::net::TcpStream;
+use tokio::sync::watch;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::{
     self,
     http::{Request, StatusCode, Uri},
 };
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use tracing::instrument;
+use tracing::{instrument, warn};
 use treadmill_rs::api::switchboard::AuthToken;
 use treadmill_rs::api::switchboard_supervisor::websocket::TREADMILL_WEBSOCKET_CONFIG;
 use treadmill_rs::api::switchboard_supervisor::{
@@ -69,6 +70,7 @@ pub enum WsConnectorError {
 #[derive(Debug)]
 pub struct WsConnector<S: connector::Supervisor> {
     inner: Arc<Inner<S>>,
+    shutdown_tx: watch::Sender<bool>,
 }
 #[derive(Debug)]
 struct Inner<S: connector::Supervisor> {
@@ -86,11 +88,17 @@ struct Inner<S: connector::Supervisor> {
     update_tx: mpsc::UnboundedSender<switchboard_supervisor::Message>,
     /// The most recent status that was received from the supervisor.
     last_updated_status: Mutex<ReportedSupervisorStatus>,
+
+    shutdown_rx: watch::Receiver<bool>,
 }
 
 impl<S: connector::Supervisor> WsConnector<S> {
     pub fn new(supervisor_id: Uuid, config: WsConnectorConfig, supervisor: Weak<S>) -> Self {
         let (update_tx, update_rx) = mpsc::unbounded_channel();
+
+        // Create a watch channel with an initial value of `false` (i.e., not shutting down yet)
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
         Self {
             inner: Arc::new(Inner {
                 supervisor_id,
@@ -99,15 +107,25 @@ impl<S: connector::Supervisor> WsConnector<S> {
                 update_rx: Mutex::new(update_rx),
                 update_tx,
                 last_updated_status: Mutex::new(ReportedSupervisorStatus::Idle),
+                shutdown_rx,
             }),
+            shutdown_tx,
         }
     }
+
+    /// Signal that we want to shut down gracefully. We can ignore errors from `send`,
+    /// because it only errors if all receivers have dropped, which can’t really happen
+    /// here unless the process is already shutting down.
+    pub fn request_shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
+    }
 }
+
 // As mentioned above, the `connector::SupervisorConnector` implementation is not capable of
 // implementing the functionality, so we forward to `Inner`, which is.
 #[async_trait]
 impl<S: connector::Supervisor> connector::SupervisorConnector for WsConnector<S> {
-    async fn run(&self) {
+    async fn run(&self) -> Result<(), ()> {
         Inner::run(&self.inner).await
     }
 
@@ -322,13 +340,16 @@ impl<S: connector::Supervisor> Inner<S> {
 }
 
 impl<S: connector::Supervisor> Inner<S> {
-    // This function returns when the connection closes. Reconnection must be handled externally.
-    async fn run(self: &Arc<Self>) {
+    // This function returns `Ok(())` when a shutdown was explicitly requested,
+    // and an error otherwise. Reconnection must be handled externally.
+    async fn run(self: &Arc<Self>) -> Result<(), ()> {
+        use futures_util::FutureExt;
+
         let (mut socket, socket_config) = match self.connect().await {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("Failed to connect: {e}");
-                return;
+                return Err(());
             }
         };
         let mut update_rx = self.update_rx.lock().await;
@@ -346,14 +367,42 @@ impl<S: connector::Supervisor> Inner<S> {
         let mut interval = tokio::time::interval(keepalive);
         let mut last_received_ping = tokio::time::Instant::now();
 
+        // Clone the shutdown channel for us to be able to mutably borrow it:
+        let mut shutdown_rx = self.shutdown_rx.clone();
+
+        // The handle to the connector might be dropped before self (`Inner`,
+        // which we hold a strong reference to). This will cause errors trying
+        // to observe the shutdown channel. Once such an error occurred, avoid
+        // polling it again.
+        let mut shutdown_channel_dropped = false;
+
         loop {
+            let is_idle: bool = self.is_idle().await;
+
+            #[rustfmt::skip]
             tokio::select! {
+                // We get lifetime errors when trying to leak the returned
+                // reference into the result of awaiting this future, thus
+                // .map() it away:
+                wait_for_res = shutdown_rx
+                    .wait_for(|shutdown_req| *shutdown_req)
+                    .map(|res| res.map(|_|())), if is_idle && !shutdown_channel_dropped =>
+                {
+                    if let Err(recv_error) = wait_for_res {
+                        warn!("Supervisor connector shutdown channel was closed, it will be impossible to shutdown the supervisor: {:?}", recv_error);
+                        shutdown_channel_dropped = true;
+                    } else {
+                        tracing::info!("Supervisor connector is idle and shutdown was requested, exiting run() loop.");
+                        return Ok(());
+                    }
+                },
+
                 _ = interval.tick() =>  {
                     tracing::trace!(target: "tml_ws_connector:ping", "keepalive tick");
                     let elapsed = last_received_ping.elapsed();
                     if elapsed > keepalive {
                         tracing::error!("Haven't received a PING in {elapsed:?}, exiting socket control loop");
-                        return
+                        return Err(());
                     }
                 }
                 msg = update_rx.recv() => {
@@ -379,7 +428,7 @@ impl<S: connector::Supervisor> Inner<S> {
                             tracing::warn!("WebSocket stream closed unexpectedly");
                             // This is typically because the server closed the connection via a kill
                             // signal or similar event.
-                            return;
+                            return Err(());
                         }
                     };
 
@@ -423,7 +472,7 @@ impl<S: connector::Supervisor> Inner<S> {
                             } else {
                                 tracing::warn!("Received close message with no close frame");
                             }
-                            return
+                            return Err(());
                         }
                         tungstenite::Message::Frame(_) => {
                             tracing::error!("Received `Frame` message from switchboard; this is almost certainly an error");
@@ -436,6 +485,11 @@ impl<S: connector::Supervisor> Inner<S> {
         }
 
         // unreachable
+    }
+
+    async fn is_idle(&self) -> bool {
+        let st = self.last_updated_status.lock().await;
+        matches!(*st, ReportedSupervisorStatus::Idle)
     }
 
     async fn update_job_state(&self, job_id: Uuid, job_state: RunningJobState) {
