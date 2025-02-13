@@ -100,9 +100,12 @@ pub trait SupervisorConnector: std::fmt::Debug + Send + Sync + 'static {
     /// Start the connector's main loop.
     ///
     /// Supervisors are expected to execute this method after performing their
-    /// startup initialization. A connector will return from this method when it
-    /// intends the supervisor to shut down.
-    async fn run(&self);
+    /// startup initialization. A connector will return with `Ok(())` when it
+    /// intends the supervisor to shut down, and with `Err(())` in case an error
+    /// occurred communicating with the switchboard. In the latter case,
+    /// supervisors may or may not try to reconnect by calling `run()` in the
+    /// loop.
+    async fn run(&self) -> Result<(), ()>;
 
     async fn update_event(&self, supervisor_event: SupervisorEvent);
 

@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use clap::Parser;
 use serde::Deserialize;
 use tokio::sync::Mutex;
-use tracing::{event, instrument, Level};
+use tracing::{event, info, instrument, warn, Level};
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard_supervisor::{
@@ -1835,7 +1835,10 @@ async fn main() -> Result<()> {
 
             let connector = connector_opt.take().unwrap();
 
-            connector.run().await;
+            connector
+                .run()
+                .await
+                .map_err(|_| anyhow!("Error in CLI connector run loop"))?;
 
             // Must drop qemu_supervisor reference _after_ connector.run(), as
             // that'll upgrade its Weak into an Arc. Otherwise we're dropping
@@ -1854,7 +1857,7 @@ async fn main() -> Result<()> {
             // weak Arc reference:
             let mut connector_opt = None;
 
-            let _qemu_supervisor = {
+            let qemu_supervisor = {
                 // Shadow, to avoid moving the variable:
                 let connector_opt = &mut connector_opt;
                 Arc::new_cyclic(move |weak_supervisor| {
@@ -1871,27 +1874,21 @@ async fn main() -> Result<()> {
             let connector = connector_opt.take().unwrap();
 
             loop {
-                connector.run().await;
-                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                if let Err(()) = connector.run().await {
+                    warn!("Run method exited with error, trying to reconnect in 1 second...");
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else {
+                    info!("Run method exited, shutting down supervisor...");
+                    break;
+                }
             }
-
-            // when connector.run() can error replace with this code
-            // loop {
-            //     if let Err(e) = connector.run().await {
-            //         eprintln!("Connection error: {:?}", e);
-            //         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            //     } else {
-            //         // Connection ended gracefully
-            //         break;
-            //     }
-            // }
 
             // Must drop qemu_supervisor reference _after_ connector.run(), as
             // that'll upgrade its Weak into an Arc. Otherwise we're dropping
             // the only reference to it:
-            // std::mem::drop(qemu_supervisor);
+            std::mem::drop(qemu_supervisor);
 
-            // Ok(())
+            Ok(())
         }
         unsupported_connector => {
             bail!("Unsupported coord connector: {:?}", unsupported_connector);

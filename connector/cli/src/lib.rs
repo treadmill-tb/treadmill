@@ -412,7 +412,7 @@ impl<S: connector::Supervisor> CliConnector<S> {
 
 #[async_trait]
 impl<S: connector::Supervisor> connector::SupervisorConnector for CliConnector<S> {
-    async fn run(&self) {
+    async fn run(&self) -> Result<(), ()> {
         // Acquire a "strong" Arc<> reference to the supervisor. Not holding
         // onto a strong reference beyond invocations of "run" will ensure that
         // the contained supervisor can be deallocated properly.
@@ -468,7 +468,7 @@ impl<S: connector::Supervisor> connector::SupervisorConnector for CliConnector<S
                     if let Some(matched) = parsed.exact_match {
                         if matched.execute(&mut cli_state, &supervisor).await {
                             // Asked to quit:
-                            return;
+                            return Ok(());
                         }
                     } else {
                         error!("Internal error: parser did not produce a match for the entered command: {:#?}", parsed);
@@ -476,7 +476,7 @@ impl<S: connector::Supervisor> connector::SupervisorConnector for CliConnector<S
                 }
                 Err(inquire::error::InquireError::OperationCanceled) => {
                     // Asked to quit:
-                    return;
+                    return Ok(());
                 }
                 Err(inquire::error::InquireError::OperationInterrupted) => {
                     // Nop, just print a new command line:

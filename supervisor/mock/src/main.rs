@@ -665,7 +665,10 @@ async fn main() -> Result<()> {
 
             let connector = connector_opt.take().unwrap();
 
-            connector.run().await;
+            connector
+                .run()
+                .await
+                .map_err(|_| anyhow!("Error in CLI connector run loop"))?;
 
             // Must drop mock_supervisor reference _after_ connector.run(), as
             // that'll upgrade its Weak into an Arc. Otherwise we're dropping
@@ -684,7 +687,7 @@ async fn main() -> Result<()> {
             // weak Arc reference:
             let mut connector_opt = None;
 
-            let _mock_supervisor = {
+            let mock_supervisor = {
                 // Shadow, to avoid moving the variable:
                 let connector_opt = &mut connector_opt;
                 Arc::new_cyclic(move |weak_supervisor| {
@@ -701,15 +704,18 @@ async fn main() -> Result<()> {
             let connector = connector_opt.take().unwrap();
 
             loop {
-                connector.run().await;
-
-                // TODO: backoff of some kind
-                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                if let Err(()) = connector.run().await {
+                    warn!("Run method exited with error, trying to reconnect in 1 second...");
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else {
+                    info!("Run method exited, shutting down supervisor...");
+                    break;
+                }
             }
 
-            // drop(mock_supervisor);
-            //
-            // Ok(())
+            std::mem::drop(mock_supervisor);
+
+            Ok(())
         }
         unsupported_connector => {
             bail!("Unsupported coord connector: {:?}", unsupported_connector);

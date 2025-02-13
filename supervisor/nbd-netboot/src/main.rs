@@ -9,7 +9,7 @@ use clap::Parser;
 use serde::Deserialize;
 use tokio::fs;
 use tokio::sync::Mutex;
-use tracing::{event, instrument, Level};
+use tracing::{event, info, instrument, warn, Level};
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard_supervisor::{
@@ -2017,7 +2017,10 @@ async fn main() -> Result<()> {
             let connector = connector_opt.take().unwrap();
 
             // For CLI we just run once:
-            connector.run().await;
+            connector
+                .run()
+                .await
+                .map_err(|_| anyhow!("Error in CLI connector run loop"))?;
 
             std::mem::drop(qemu_supervisor);
             Ok(())
@@ -2062,16 +2065,13 @@ async fn main() -> Result<()> {
             // === 2) Repeatedly call `connector.run()`. Once shutdown is requested,
             //         and `run()` returns, we can break.
             loop {
-                connector.run().await;
-
-                // If the connector now indicates it's done shutting down, exit.
-                if connector.shutdown_requested() {
-                    tracing::info!("Connector indicates shutdown => exiting main loop");
+                if let Err(()) = connector.run().await {
+                    warn!("Run method exited with error, trying to reconnect in 1 second...");
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else {
+                    info!("Run method exited, shutting down supervisor...");
                     break;
                 }
-
-                // Otherwise, wait a bit (for example, to do a reconnect).
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             }
 
             // === 3) Clean up any references and exit. ===
