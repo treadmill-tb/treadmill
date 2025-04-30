@@ -1,6 +1,6 @@
 [package]
 name = "treadmill-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 
 authors.workspace = true
@@ -38,5 +38,5 @@ rand_core = { version = "0.6.4", features = ["getrandom"] }
 
 [dependencies.treadmill-rs]
 package = "treadmill-rs"
-version = "0.1.0"
+version = "0.2.0"
 path = "../treadmill-rs"
