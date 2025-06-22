@@ -148,8 +148,6 @@ pub struct QemuSupervisorConfig {
 
     /// Configurations for individual connector implementations. All are
     /// optional, and not all of them have to be supported:
-    cli_connector: Option<treadmill_cli_connector::CliConnectorConfig>,
-
     ws_connector: Option<treadmill_ws_connector::WsConnectorConfig>,
 
     image_store: image_store_client::LocalImageStoreConfig,
@@ -1815,44 +1813,6 @@ async fn main() -> Result<()> {
             .unwrap();
 
     match config.base.coord_connector {
-        SupervisorCoordConnector::CliConnector => {
-            let cli_connector_config = config.cli_connector.clone().ok_or(anyhow!(
-                "Requested CliConnector, but `cli_connector` config not present."
-            ))?;
-
-            // Both the supervisor and connectors have references to each other,
-            // so we break the cyclic dependency with an initially unoccupied
-            // weak Arc reference:
-            let mut connector_opt = None;
-
-            let qemu_supervisor = {
-                // Shadow, to avoid moving the variable:
-                let connector_opt = &mut connector_opt;
-                Arc::new_cyclic(move |weak_supervisor| {
-                    let connector = Arc::new(treadmill_cli_connector::CliConnector::new(
-                        config.base.supervisor_id,
-                        cli_connector_config,
-                        weak_supervisor.clone(),
-                    ));
-                    *connector_opt = Some(connector.clone());
-                    QemuSupervisor::new(connector, image_store, args, config)
-                })
-            };
-
-            let connector = connector_opt.take().unwrap();
-
-            connector
-                .run()
-                .await
-                .map_err(|_| anyhow!("Error in CLI connector run loop"))?;
-
-            // Must drop qemu_supervisor reference _after_ connector.run(), as
-            // that'll upgrade its Weak into an Arc. Otherwise we're dropping
-            // the only reference to it:
-            std::mem::drop(qemu_supervisor);
-
-            Ok(())
-        }
         SupervisorCoordConnector::WsConnector => {
             let ws_connector_config = config.ws_connector.clone().ok_or(anyhow!(
                 "Requested WsConnector, but `ws_connector` config not present."

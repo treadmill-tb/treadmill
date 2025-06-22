@@ -64,7 +64,6 @@ jobs:
           cp supervisor/mock/config.example.toml mock_supervisor_config.toml
           cp cli/config.example.toml cli_config.toml
           sed -i 's/password = ""/password = "postgres"/' switchboard_config.toml
-          sed -i 's/coord_connector = "cli_connector"/coord_connector = "ws_connector"/' mock_supervisor_config.toml
       - name: Start switchboard
         run: |
           export RUST_LOG=debug,sqlx=info

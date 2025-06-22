@@ -6,7 +6,6 @@ use uuid::Uuid;
 #[non_exhaustive]
 pub enum SupervisorCoordConnector {
     RestSSEConnector,
-    CliConnector,
     WsConnector,
 }
 
@@ -18,9 +17,9 @@ pub enum SupervisorCoordConnector {
 /// ```toml
 /// [base]
 /// supervisor_id = "e5e7258e-c18b-471d-bc03-8385495b29e4"
-/// coord_connector = "cli_connector"
+/// coord_connector = "ws_connector"
 ///
-/// [cli_connector]
+/// [ws_connector]
 /// some_option = "foo"
 ///
 /// [other_section]
