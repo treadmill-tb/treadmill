@@ -7,7 +7,6 @@ edition.workspace = true
 [dependencies]
 treadmill-rs = { path = "../../treadmill-rs" }
 treadmill-tcp-control-socket-server = { path = "../../control-socket/tcp/server" }
-treadmill-cli-connector = { path = "../../connector/cli" }
 treadmill-ws-connector = { path = "../../connector/ws" }
 treadmill-supervisor-lib = { path = "../lib" }
 

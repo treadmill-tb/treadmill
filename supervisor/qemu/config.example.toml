@@ -1,10 +1,6 @@
 [base]
 supervisor_id = "7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
-coord_connector = "cli_connector"
-
-[cli_connector]
-# Doesn't do anything yet, but we require the images key to be present
-images = { }
+coord_connector = "ws_connector"
 
 [ws_connector]
 token = "OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc"

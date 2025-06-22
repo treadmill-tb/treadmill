@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "cli",
-    "connector/cli",
     "connector/ws",
     "control-socket/tcp/client",
     "control-socket/tcp/server",
