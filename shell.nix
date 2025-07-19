@@ -9,8 +9,8 @@ with builtins; let
   rust_overlay = import "${pkgs.fetchFromGitHub {
     owner = "nix-community";
     repo = "fenix";
-    rev = "9e13860d50cbfd42e79101a516e1939c7723f093";
-    sha256 = "sha256-RkRHXZaMgOMGgkW2YmEqxxDDYRiGFbfr1JuaI0VrCKo=";
+    rev = "e91719882d0e4366202cc9058eb21df74c0bdb92";
+    sha256 = "sha256-rSw0b/ahoZebcp+AZG7uoScB5Q59TYEE5Kx8k0pZp9E=";
   }}/overlay.nix";
 
   nixpkgs = import <nixpkgs> {overlays = [rust_overlay];};

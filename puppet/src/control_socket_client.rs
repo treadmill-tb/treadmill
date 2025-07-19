@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 // TCP control socket transport implementation:
 #[cfg(feature = "transport_tcp")]

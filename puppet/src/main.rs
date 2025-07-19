@@ -6,7 +6,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use log::{debug, error, info, warn};
 use zbus::interface;
@@ -89,13 +89,13 @@ async fn update_job_info_files(args: &PuppetDaemonArgs, job_info: JobInfo) -> Re
         .context("Creating job_info_dir directory (recursively)")?;
 
     let job_id_path = job_info_dir.join("job-id");
-    info!("Writing job id to file {:?}", job_id_path);
+    info!("Writing job id to file {job_id_path:?}");
     tokio::fs::write(job_id_path, job_info.job_id.to_string().as_bytes())
         .await
         .context("Writing job id to file")?;
 
     let host_id_path = job_info_dir.join("host-id");
-    info!("Writing host id to file {:?}", host_id_path);
+    info!("Writing host id to file {host_id_path:?}");
     tokio::fs::write(host_id_path, job_info.host_id.to_string().as_bytes())
         .await
         .context("Writing host id to file")?;
@@ -170,7 +170,7 @@ async fn update_parameters_dir(
         None => return Ok(()),
     };
 
-    info!("Updating parameters dir: {:?}", parameters_dir_path);
+    info!("Updating parameters dir: {parameters_dir_path:?}");
 
     // First, make sure that the directory exists:
     tokio::fs::create_dir_all(&parameters_dir_path)
@@ -219,8 +219,7 @@ async fn update_parameters_dir(
             .await
             .with_context(|| {
                 format!(
-                    "Renaming temporary parameter file {:?} to target file {:?}",
-                    tmpfile_path, sanitized_path
+                    "Renaming temporary parameter file {tmpfile_path:?} to target file {sanitized_path:?}"
                 )
             })?;
     }
@@ -233,10 +232,7 @@ async fn update_authorized_keys(
     client: &control_socket_client::ControlSocketClient,
 ) -> Result<()> {
     if let Some(ref authorized_keys_file) = args.authorized_keys_file {
-        info!(
-            "Updating SSH authorized_keys file: {:?}",
-            authorized_keys_file
-        );
+        info!("Updating SSH authorized_keys file: {authorized_keys_file:?}");
 
         // Request the set of SSH authorized keys from the supervisor:
         let ssh_keys = client
@@ -254,10 +250,7 @@ async fn update_authorized_keys(
         })?)
         .await
         .with_context(|| {
-            format!(
-                "Creating parent directories of authorized_keys file {:?}",
-                authorized_keys_file
-            )
+            format!("Creating parent directories of authorized_keys file {authorized_keys_file:?}")
         })?;
 
         let authorized_keys = format!(
@@ -272,7 +265,7 @@ async fn update_authorized_keys(
             .with_context(|| {
                 format!(
                     "Writing authorized_keys ({} bytes) to {:?}",
-                    authorized_keys.as_bytes().len(),
+                    authorized_keys.len(),
                     authorized_keys_file
                 )
             })?;
@@ -317,15 +310,15 @@ async fn configure_network(
             cmd.env("IPV4_ADDRESS", format!("{}", v4_config.address));
             cmd.env("IPV4_PREFIX_LENGTH", format!("{}", v4_config.prefix_length));
             if let Some(ref v4_gw) = v4_config.gateway {
-                cmd.env("IPV4_GATEWAY", format!("{}", v4_gw));
+                cmd.env("IPV4_GATEWAY", format!("{v4_gw}"));
             }
             let nameserver_str: String = v4_config
                 .nameservers
                 .iter()
-                .map(|addr| format!("{}", addr))
+                .map(|addr| format!("{addr}"))
                 // This is much cleaner with the nightly-only .intersperse
                 .fold(String::new(), |acc, nameserver| {
-                    let sep = if acc.len() != 0 { "|" } else { "" };
+                    let sep = if !acc.is_empty() { "|" } else { "" };
                     acc + sep + &nameserver
                 });
             cmd.env("IPV4_NAMESERVERS", nameserver_str);
@@ -335,43 +328,41 @@ async fn configure_network(
             cmd.env("IPV6_ADDRESS", format!("{}", v6_config.address));
             cmd.env("IPV6_PREFIX_LENGTH", format!("{}", v6_config.prefix_length));
             if let Some(ref v6_gw) = v6_config.gateway {
-                cmd.env("IPV6_GATEWAY", format!("{}", v6_gw));
+                cmd.env("IPV6_GATEWAY", format!("{v6_gw}"));
             }
             let nameserver_str: String = v6_config
                 .nameservers
                 .iter()
-                .map(|addr| format!("{}", addr))
+                .map(|addr| format!("{addr}"))
                 // This is much cleaner with the nightly-only .intersperse
                 .fold(String::new(), |acc, nameserver| {
-                    let sep = if acc.len() != 0 { "|" } else { "" };
+                    let sep = if !acc.is_empty() { "|" } else { "" };
                     acc + sep + &nameserver
                 });
             cmd.env("IPV6_NAMESERVERS", nameserver_str);
         }
 
-        info!(
-            "Updating network configuration using the provided configuration script: {:?}",
-            script
-        );
+        info!("Updating network configuration using the provided configuration script: {script:?}");
         match cmd.spawn() {
-            Ok(mut child) => {
-                match child.wait().await {
-                    Ok(status) => {
-                        if let Some(code) = status.code() {
-                            if code == 0 {
-                                info!("Successfully configured networking.");
-                            } else {
-                                bail!("Network configuration script reported non-zero exit status: {}", code);
-                            }
+            Ok(mut child) => match child.wait().await {
+                Ok(status) => {
+                    if let Some(code) = status.code() {
+                        if code == 0 {
+                            info!("Successfully configured networking.");
                         } else {
-                            bail!("Network configuration script terminated by a signal.");
+                            bail!(
+                                "Network configuration script reported non-zero exit status: {}",
+                                code
+                            );
                         }
-                    }
-                    Err(e) => {
-                        bail!("Error running network configuration script: {:?}", e);
+                    } else {
+                        bail!("Network configuration script terminated by a signal.");
                     }
                 }
-            }
+                Err(e) => {
+                    bail!("Error running network configuration script: {:?}", e);
+                }
+            },
 
             Err(e) => {
                 bail!("Error spawning network configuration script: {:?}", e);
@@ -547,8 +538,7 @@ async fn run_command(
                     if let Err(e) = res {
                         warn!(
                             "Failed to send command log output to \
-			     supervisor, discarding: {:?}",
-                            e,
+			     supervisor, discarding: {e:?}",
                         );
                     }
                 } else {
@@ -561,7 +551,7 @@ async fn run_command(
             }
 
             ReadConsoleRes::Error(e) => {
-                panic!("Unhandled error reading process output: {:?}", e);
+                panic!("Unhandled error reading process output: {e:?}");
             }
 
             ReadConsoleRes::CommandExecutorChan(CommandExecutorMsg::Kill) => {
@@ -569,10 +559,10 @@ async fn run_command(
                 // specifying exactly how the subprocess should be killed
                 // (e.g. SIGTERM or SIGKILL), so we'll start with a graceful
                 // terminate request and then proceed to kill with SIGKILL:
-                if !sigkill_at.is_some() {
+                if sigkill_at.is_none() {
                     // Send a SIGTERM first:
                     if let Some(pid) = child.id() {
-                        info!("Sending SIGTERM to command #{} (PID {:?})", event_id, pid);
+                        info!("Sending SIGTERM to command #{event_id} (PID {pid:?})");
                         let _ = nix::sys::signal::kill(
                             nix::unistd::Pid::from_raw(pid.try_into().unwrap()),
                             nix::sys::signal::Signal::SIGTERM,
@@ -618,7 +608,7 @@ async fn run_command(
             Ok(None) => None,
             // Couldn't determine the exit status:
             Err(e) => {
-                panic!("Error while determining whether child exited: {:?}", e);
+                panic!("Error while determining whether child exited: {e:?}");
             }
         };
 
@@ -631,7 +621,7 @@ async fn run_command(
         if let Some(t) = sigkill_at {
             if t < Instant::now() {
                 // Send a SIGKILL to the child:
-                info!("Sending SIGKILL to command #{}", event_id);
+                info!("Sending SIGKILL to command #{event_id}");
                 child.kill().await.context("Killing command with SIGKILL")?;
 
                 // Report that the child has been killed with SIGKILL:
@@ -643,13 +633,13 @@ async fn run_command(
 
 async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
     let mut client = Arc::new(
-        (|| async {
+        async {
             match args.transport {
                 #[cfg(feature = "transport_tcp")]
                 PuppetControlSocketTransport::Tcp => {
                     Ok(control_socket_client::ControlSocketClient::Tcp(
                         control_socket_client::tcp::TcpControlSocketClient::new(
-                            args.tcp_control_socket_addr.clone().unwrap(),
+                            args.tcp_control_socket_addr.unwrap(),
                             SUPERVISOR_EVENT_CHANNEL_CAP,
                         )
                         .await?,
@@ -670,10 +660,10 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
                     }
 
                     // We did not autodiscover a control socket to connect to, give up:
-                    return Err(anyhow!("Auto-discovery of control socket endpoint failed."));
+                    Err(anyhow!("Auto-discovery of control socket endpoint failed."))
                 }
             }
-        })()
+        }
         .await?,
     );
 
@@ -681,7 +671,7 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
         .get_job_info()
         .await
         .context("Retrieving job_id from supervisor")?;
-    info!("Retrieved job info message from supervisor: {:?}", job_info);
+    info!("Retrieved job info message from supervisor: {job_info:?}");
     update_job_info_files(&args, job_info).await?;
 
     // For certain requests and depending on some command line parameters, we'll
@@ -693,14 +683,14 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
         client: &control_socket_client::ControlSocketClient,
     ) -> Result<()> {
         let msg = "Failed to update the SSH authorized_keys database";
-        let res = update_authorized_keys(&args, &client).await;
+        let res = update_authorized_keys(args, client).await;
 
         if args.exit_on_authorized_keys_update_error {
             // Forward the raw Result with additional context:
             res.context(msg)
         } else if let Err(e) = res {
             // Simply log errors with the context part of the log message:
-            warn!("{}: {:?}", msg, e);
+            warn!("{msg}: {e:?}");
             Ok(())
         } else {
             Ok(())
@@ -712,14 +702,14 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
         client: &control_socket_client::ControlSocketClient,
     ) -> Result<()> {
         let msg = "Failed to configure the network using the provided script";
-        let res = configure_network(&args, &client).await;
+        let res = configure_network(args, client).await;
 
         if args.exit_on_network_config_error {
             // Forward the raw Result with additional context:
             res.context(msg)
         } else if let Err(e) = res {
             // Simply log errors with the context part of the log message:
-            warn!("{}: {:?}", msg, e);
+            warn!("{msg}: {e:?}");
             Ok(())
         } else {
             Ok(())
@@ -828,11 +818,11 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
 
                     // This can be more elegant with the Nightly-only `try_insert`:
                     let mut ec_lg = executor_channels.lock().await;
-                    if ec_lg.contains_key(&event_id) {
-                        None
-                    } else {
-                        assert!(ec_lg.insert(event_id, command_executor_tx).is_none());
+                    if let std::collections::hash_map::Entry::Vacant(e) = ec_lg.entry(event_id) {
+                        e.insert(command_executor_tx);
                         Some(command_executor_rx)
+                    } else {
+                        None
                     }
                 };
 
@@ -852,7 +842,9 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
                         // Command finished. Report error or retcode:
                         match res {
                             Err(e) => {
-                                warn!("Failed to run command #{}: {:?}, reporting back to supervisor.", event_id, e);
+                                warn!(
+                                    "Failed to run command #{event_id}: {e:?}, reporting back to supervisor."
+                                );
                                 let send_res = match client_weak
 				    .upgrade()
 				    .ok_or(anyhow!("Cannot upgrade weak client ref to report command error back to supervisor"))
@@ -860,17 +852,21 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
 				    Ok(c) => c.send_event(
 					PuppetEvent::RunCommandError {
 					    supervisor_event_id: event_id,
-					    error: format!("{:?}", e),
+					    error: format!("{e:?}"),
 					}).await,
 				    Err(e) => Err(e),
 				};
 
                                 if let Err(send_e) = send_res {
-                                    warn!("Failed reporting command #{} error back to supervisor: {:?}", event_id, send_e);
+                                    warn!(
+                                        "Failed reporting command #{event_id} error back to supervisor: {send_e:?}"
+                                    );
                                 }
                             }
                             Ok((exit_code, killed)) => {
-                                info!("Finished command #{} with return code {:?}, reporting back to supervisor.", event_id, exit_code);
+                                info!(
+                                    "Finished command #{event_id} with return code {exit_code:?}, reporting back to supervisor."
+                                );
 
                                 let send_res = match client_weak
 				    .upgrade()
@@ -885,7 +881,9 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
 				};
 
                                 if let Err(send_e) = send_res {
-                                    warn!("Failed reporting command #{} exit status back to supervisor: {:?}", event_id, send_e);
+                                    warn!(
+                                        "Failed reporting command #{event_id} exit status back to supervisor: {send_e:?}"
+                                    );
                                 }
                             }
                         }
@@ -893,18 +891,19 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
                         // Either way, the command finished. Remove the tx
                         // channel from the executor channels map. We drop the
                         // lock immediately afterwards:
-                        assert!(executor_channels_cloned
-                            .lock()
-                            .await
-                            .remove(&event_id)
-                            .is_some());
+                        assert!(
+                            executor_channels_cloned
+                                .lock()
+                                .await
+                                .remove(&event_id)
+                                .is_some()
+                        );
                     });
                 } else {
                     error!(
-                        "Supervisor requested starting command with ID {}, but \
+                        "Supervisor requested starting command with ID {event_id}, but \
 			 such a command is already running! Discarding this \
 			 request.",
-                        event_id,
                     );
                 }
             }
@@ -912,38 +911,32 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
             SupervisorEvent::KillCommand {
                 supervisor_event_id,
             } => {
-                info!(
-                    "Supervisor requested to kill command with id #{}",
-                    supervisor_event_id
-                );
+                info!("Supervisor requested to kill command with id #{supervisor_event_id}");
 
-                if let Some(ref command_executor_tx) =
+                if let Some(command_executor_tx) =
                     executor_channels.lock().await.get(&supervisor_event_id)
                 {
                     if let Err(e) = command_executor_tx.try_send(CommandExecutorMsg::Kill) {
                         warn!(
-                            "Failed to forward kill-request to command executor #{}: {:?}",
-                            supervisor_event_id, e
+                            "Failed to forward kill-request to command executor #{supervisor_event_id}: {e:?}"
                         );
                     }
                 } else {
                     warn!(
-                        "Command executor for id #{} not found. Perhaps it's already dead?",
-                        supervisor_event_id
+                        "Command executor for id #{supervisor_event_id} not found. Perhaps it's already dead?"
                     );
                 }
             }
 
             _ => {
-                warn!(
-                    "Received unhandled supervisor event (id #{}): {:?}",
-                    event_id, event
-                );
+                warn!("Received unhandled supervisor event (id #{event_id}): {event:?}");
             }
         }
     }
 
-    info!("Shutting down, waiting for all other active control socket client references to go out of scope...");
+    info!(
+        "Shutting down, waiting for all other active control socket client references to go out of scope..."
+    );
 
     loop {
         match Arc::try_unwrap(client) {

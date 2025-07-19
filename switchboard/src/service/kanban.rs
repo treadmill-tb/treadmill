@@ -58,6 +58,12 @@ pub struct Kanban {
     active_jobs: BTreeMap<Uuid, ActiveJob>,
 }
 
+impl Default for Kanban {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Kanban {
     pub fn new() -> Self {
         Self {

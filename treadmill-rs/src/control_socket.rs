@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use tracing::{event, Level};
+use tracing::{Level, event};
 use uuid::Uuid;
 
 use crate::api::supervisor_puppet::{self, JobInfo, PuppetEvent, PuppetReq, SupervisorResp};
@@ -80,7 +80,7 @@ pub trait Supervisor: Send + Sync + 'static {
                 ssh_keys: self
                     .ssh_keys(host_id, job_id)
                     .await
-                    .unwrap_or_else(|| vec![]),
+                    .unwrap_or_else(std::vec::Vec::new),
             },
 
             PuppetReq::Parameters => self

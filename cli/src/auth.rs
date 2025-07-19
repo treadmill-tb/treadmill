@@ -1,6 +1,6 @@
 // auth.rs
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine; // Add Engine trait
 use ssh_key::{LineEnding, PrivateKey}; // Remove unused PublicKey import
 use std::fs;
@@ -12,7 +12,7 @@ use xdg::BaseDirectories;
 pub fn save_token(token: &AuthToken) -> Result<()> {
     let token_path = get_token_path()?;
     fs::write(&token_path, serde_json::to_string(token)?)
-        .with_context(|| format!("Failed to write token to {:?}", token_path))?;
+        .with_context(|| format!("Failed to write token to {token_path:?}"))?;
     Ok(())
 }
 
@@ -38,7 +38,7 @@ pub fn get_token() -> Result<String> {
         Err(std::env::VarError::NotPresent) => {
             let token_path = get_token_path()?;
             let token_str = fs::read_to_string(&token_path)
-                .with_context(|| format!("Failed to read token from {:?}", token_path))?;
+                .with_context(|| format!("Failed to read token from {token_path:?}"))?;
             let token: AuthToken =
                 serde_json::from_str(&token_str).with_context(|| "Failed to parse token JSON")?;
             Ok(token.encode_for_http())
@@ -49,9 +49,9 @@ pub fn get_token() -> Result<String> {
 fn get_token_path() -> Result<PathBuf> {
     let xdg_dirs = BaseDirectories::with_prefix("treadmill-tb")
         .context("Failed to initialize XDG base directories")?;
-    Ok(xdg_dirs
+    xdg_dirs
         .place_data_file("token.json")
-        .context("Failed to determine token file path")?)
+        .context("Failed to determine token file path")
 }
 
 // Generate a new Ed25519 key pair for jobs
@@ -97,7 +97,7 @@ pub async fn get_job_ssh_user_endpoints(
     let token = get_token()?;
 
     let response = client
-        .get(&format!("{}/api/v1/jobs/{}/status", config.api.url, job_id))
+        .get(format!("{}/api/v1/jobs/{}/status", config.api.url, job_id))
         .bearer_auth(token)
         .send()
         .await?;
@@ -111,7 +111,10 @@ pub async fn get_job_ssh_user_endpoints(
                 ..
             } => Ok((
                 status.state.ssh_user,
-                status.state.ssh_endpoints.unwrap_or_else(|| vec![]),
+                status
+                    .state
+                    .ssh_endpoints
+                    .unwrap_or_else(std::vec::Vec::new),
             )),
             _ => Err(anyhow!("Failed to get job status")),
         }

@@ -11,3 +11,6 @@ anyhow = "1.0.76"
 toml = "0.8.8"
 tracing = "0.1.40"
 tokio = { version = "1.35.1", default-features = false, features = ["fs"] }
+
+[lints]
+workspace = true

@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use clap::Parser;
 use serde::Deserialize;
 use tokio::sync::Mutex;
-use tracing::{event, info, instrument, warn, Level};
+use tracing::{Level, event, info, instrument, warn};
 use uuid::Uuid;
 
 use treadmill_rs::connector;
@@ -186,7 +186,7 @@ impl MockSupervisor {
 
                 return Err(connector::JobError {
                     error_kind: connector::JobErrorKind::AlreadyStopping,
-                    description: format!("Job {:?} is already stopping.", job_id),
+                    description: format!("Job {job_id:?} is already stopping."),
                 });
             }
         };
@@ -446,7 +446,7 @@ impl control_socket::Supervisor for MockSupervisor {
             Some(job_state) => match &*job_state.lock().await {
                 // Job is currently running, respond with its assigned hostname:
                 MockSupervisorJobState::Running(_) => {
-                    let hostname = format!("job-{}", format!("{}", tgt_job_id).split_at(10).0);
+                    let hostname = format!("job-{}", format!("{tgt_job_id}").split_at(10).0);
                     Some(treadmill_rs::api::supervisor_puppet::NetworkConfig {
                         hostname,
                         // MockSupervisor, don't supply a network interface to configure:

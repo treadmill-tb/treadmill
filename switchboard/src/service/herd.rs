@@ -1,11 +1,11 @@
 use crate::service::socket_connection::OutboxMessage;
 use axum::extract::ws::WebSocket;
-use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::sync::{mpsc, oneshot, Mutex, OwnedMutexGuard};
+use tokio::sync::{Mutex, OwnedMutexGuard, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use treadmill_rs::api::switchboard_supervisor;
 use treadmill_rs::api::switchboard_supervisor::{
@@ -62,7 +62,9 @@ impl ConnectedSupervisor {
         let ResponseMessage::StatusResponse(status) =
             rx.await.map_err(|_| HerdError::NotConnected)?
         else {
-            panic!("Received incorrect but type-safe response from supervisor in response to status request");
+            panic!(
+                "Received incorrect but type-safe response from supervisor in response to status request"
+            );
         };
         Ok(status)
     }
@@ -178,6 +180,12 @@ impl Herd {
 impl Herd {
     pub fn list_supervisors(&self) -> Vec<Uuid> {
         self.supervisors.keys().copied().collect()
+    }
+}
+
+impl Default for Herd {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

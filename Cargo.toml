@@ -17,4 +17,12 @@ members = [
 [workspace.package]
 version = "0.1.0"
 authors = ["Treadmill Project Developers <treadmill@tockos.org>"]
-edition = "2021"
+edition = "2024"
+
+[workspace.lints.clippy]
+complexity = { level = "deny", priority = -1 }
+type_complexity = "allow"
+result_large_err = "allow"
+too_many_arguments = "allow"
+large_enum_variant = "allow"
+from_str_radix_10 = "allow"

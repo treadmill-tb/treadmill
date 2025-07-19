@@ -9,7 +9,7 @@ use std::sync::{Arc, Weak};
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::sync::watch;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::tungstenite::{
     self,
     http::{Request, StatusCode, Uri},
@@ -19,8 +19,8 @@ use tracing::{instrument, warn};
 use treadmill_rs::api::switchboard::AuthToken;
 use treadmill_rs::api::switchboard_supervisor::websocket::TREADMILL_WEBSOCKET_CONFIG;
 use treadmill_rs::api::switchboard_supervisor::{
-    self, websocket::TREADMILL_WEBSOCKET_PROTOCOL, JobUserExitStatus, ReportedSupervisorStatus,
-    Response, SocketConfig, SupervisorEvent, SupervisorJobEvent,
+    self, JobUserExitStatus, ReportedSupervisorStatus, Response, SocketConfig, SupervisorEvent,
+    SupervisorJobEvent, websocket::TREADMILL_WEBSOCKET_PROTOCOL,
 };
 use treadmill_rs::connector::{self, JobError, RunningJobState};
 use uuid::Uuid;
@@ -198,7 +198,7 @@ impl<S: connector::Supervisor> Inner<S> {
                     })?
             }
 
-            WsConnectorConfigToken::Token { token } => token.clone(),
+            WsConnectorConfigToken::Token { token } => *token,
         };
 
         // .expect() is okay here: the token was originally base64-encoded so there really doesn't
@@ -210,7 +210,7 @@ impl<S: connector::Supervisor> Inner<S> {
 
         // sec-websocket-key is 16 random bytes, encoded with the standard base64.
         let key_buf: [u8; 16] = rand::random();
-        let base64_key = base64::prelude::BASE64_STANDARD.encode(&key_buf);
+        let base64_key = base64::prelude::BASE64_STANDARD.encode(key_buf);
         let uri = Uri::from_str(&format!(
             "{}/api/v1/supervisors/{}/connect",
             self.config.switchboard_uri, self.supervisor_id,

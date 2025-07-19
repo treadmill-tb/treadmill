@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
-use sqlx::types::Json;
 use sqlx::PgExecutor;
+use sqlx::types::Json;
 use treadmill_rs::api::switchboard::{JobEvent, JobResult, JobState};
 use uuid::Uuid;
 

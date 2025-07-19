@@ -45,9 +45,9 @@ pub fn load_config(config_path: Option<&str>) -> Result<Config> {
     }
 
     let config_str = fs::read_to_string(&config_path)
-        .with_context(|| format!("Failed to read config file: {:?}", config_path))?;
+        .with_context(|| format!("Failed to read config file: {config_path:?}"))?;
     let config: Config = toml::from_str(&config_str)
-        .with_context(|| format!("Failed to parse config file: {:?}", config_path))?;
+        .with_context(|| format!("Failed to parse config file: {config_path:?}"))?;
 
     Ok(config)
 }
