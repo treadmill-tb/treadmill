@@ -6,7 +6,7 @@ user = "postgres"
 auth.password = ""
 
 [server]
-bind_address = "0.0.0.0:8080"
+bind_address = "0.0.0.0:8081"
 
 # Uncomment this to enable a TLS support.
 # DO NOT USE THIS IN PRODUCTION.

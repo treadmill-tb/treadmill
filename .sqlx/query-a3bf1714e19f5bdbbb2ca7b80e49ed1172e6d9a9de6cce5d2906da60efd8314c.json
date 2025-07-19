@@ -6,27 +6,57 @@
       {
         "ordinal": 0,
         "name": "job_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "job_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "resume_job_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "resume_job_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "restart_job_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "restart_job_id"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "sql_image_id: _",
-        "type_info": "Bytea"
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "image_id"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "ssh_keys",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "ssh_keys"
+          }
+        }
       },
       {
         "ordinal": 5,
@@ -43,27 +73,57 @@
               ]
             }
           }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "restart_policy"
+          }
         }
       },
       {
         "ordinal": 6,
         "name": "enqueued_by_token_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "enqueued_by_token_id"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "tag_config",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "tag_config"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "job_timeout",
-        "type_info": "Interval"
+        "type_info": "Interval",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "job_timeout"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "queued_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "queued_at"
+          }
+        }
       },
       {
         "ordinal": 10,
@@ -79,17 +139,35 @@
               ]
             }
           }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "functional_state"
+          }
         }
       },
       {
         "ordinal": 11,
         "name": "started_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "started_at"
+          }
+        }
       },
       {
         "ordinal": 12,
         "name": "dispatched_on_supervisor_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "dispatched_on_supervisor_id"
+          }
+        }
       },
       {
         "ordinal": 13,
@@ -138,6 +216,12 @@
               }
             }
           }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "ssh_endpoints"
+          }
         }
       },
       {
@@ -161,22 +245,46 @@
               ]
             }
           }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "exit_status"
+          }
         }
       },
       {
         "ordinal": 15,
         "name": "host_output",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "host_output"
+          }
+        }
       },
       {
         "ordinal": 16,
         "name": "terminated_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "terminated_at"
+          }
+        }
       },
       {
         "ordinal": 17,
         "name": "last_updated_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "last_updated_at"
+          }
+        }
       }
     ],
     "parameters": {

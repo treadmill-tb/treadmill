@@ -1,3 +1,5 @@
+-- -*- fill-column: 80; -*-
+
 create schema tml_switchboard;
 
 -- We want to be able to distinguish system activity from user activity, hence
@@ -94,10 +96,10 @@ create type tml_switchboard.ssh_endpoint as
 -- TODO: The tags remain ill-specified.
 create table tml_switchboard.supervisors
 (
-    supervisor_id uuid   not null primary key,
-    name          text   not null,
-    auth_token    bytea  not null unique,
-    tags          text[] not null,
+    supervisor_id      uuid   not null primary key,
+    name               text   not null,
+    auth_token         bytea  not null unique,
+    tags               text[] not null,
 
     -- SSH endpoints that all jobs executing on this host are reachable
     -- under. Currently this mapping is static, in the future we may change it
@@ -107,9 +109,31 @@ create table tml_switchboard.supervisors
     --
     -- Each endpoint is a "hostname:port" tuple. IPv6 addreses are to be
     -- enclosed in square brackets, such as "[::1]:22".
-    ssh_endpoints tml_switchboard.ssh_endpoint[] not null,
+    ssh_endpoints      tml_switchboard.ssh_endpoint[] not null,
 
-    check (octet_length(auth_token) = 128)
+    -- A supervisor can either be idle or have a job assigned. This column keeps
+    -- track of this state. If a job is assigned, then the supervisor is not
+    -- idle, and the "sub-state" is determined through the job's state data.
+    --
+    -- This column is irrespective of whether the supervisor is currently
+    -- connected to the switchboard. Even if it is disconnected, this field
+    -- tracks the last-known supervisor state. It will be reconciled and updated
+    -- when the supervisor next reconnects.
+    --
+    -- Foreign key constrained added after `jobs` is defined below.
+    current_job        uuid,
+
+    -- Each connected supervisor is serviced by a worker. To prevent multiple
+    -- concurrent workers claiming ownership of the same supervisor, we use the
+    -- database to assign each supervisor--worker combination a unique "worker
+    -- instance ID". This monotonically increasing value is obtained when a
+    -- supervisor connects, and checked against by any subsequent database
+    -- operation performed by that worker. If it changes, the worker assumes
+    -- that a newer instance exists and terminates.
+    worker_instance_id bigint NOT NULL DEFAULT 0,
+
+    check (octet_length(auth_token) = 128),
+    check (worker_instance_id >= 0)
 );
 
 -- The job table is the beating heart of the switchboard.
@@ -293,6 +317,10 @@ create table tml_switchboard.jobs
       (exit_status is not null) = (functional_state = 'finalized')
     )
 );
+
+ALTER TABLE tml_switchboard.supervisors
+    ADD FOREIGN KEY (current_job)
+    REFERENCES tml_switchboard.jobs (job_id) ON DELETE NO ACTION;
 
 create type tml_switchboard.parameter_value as
 (

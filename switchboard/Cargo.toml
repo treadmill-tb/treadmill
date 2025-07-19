@@ -79,6 +79,7 @@ thiserror = { workspace = true }
 # TODO: Phase out
 miette = { version = "7.6", features = ["fancy"] }
 base64 = { workspace = true }
+anyhow.workspace = true
 
 [dev-dependencies]
 sqlx-cli = { version = "0.9.0", features = [

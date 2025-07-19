@@ -1,0 +1,2 @@
+-- Modify "supervisors" table
+ALTER TABLE "tml_switchboard"."supervisors" ADD CONSTRAINT "supervisors_worker_instance_id_check" CHECK (worker_instance_id >= 0), ADD COLUMN "current_job" uuid NULL, ADD COLUMN "worker_instance_id" bigint NOT NULL DEFAULT 0, ADD CONSTRAINT "supervisors_current_job_fkey" FOREIGN KEY ("current_job") REFERENCES "tml_switchboard"."jobs" ("job_id") ON UPDATE NO ACTION ON DELETE NO ACTION;

@@ -6,17 +6,35 @@
       {
         "ordinal": 0,
         "name": "job_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.job_events",
+            "name": "job_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "job_event: _",
-        "type_info": "Jsonb"
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.job_events",
+            "name": "job_event"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "logged_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.job_events",
+            "name": "logged_at"
+          }
+        }
       }
     ],
     "parameters": {
