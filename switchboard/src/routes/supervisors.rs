@@ -60,19 +60,22 @@ pub async fn list(
         .authorize(perms::ListSupervisors { filter })
         .await
         .map_err(proxy_err)?;
-    let perm_queries: FuturesOrdered<_> = state
-        .service()
-        .list_supervisors()
-        .await
-        .into_iter()
-        .map(|supervisor_id| auth.authorize(perms::ReadSupervisorStatus { supervisor_id }))
-        .collect();
-    let supervisor_perms: Vec<_> = perm_queries
-        .filter_map(|x| async move { x.ok() })
-        .collect()
-        .await;
-    let supervisors = perms::list_supervisors(&state, list_supervisors, supervisor_perms).await;
-    proxy_val(LSResponse::Ok { supervisors })
+
+    todo!();
+
+    // let perm_queries: FuturesOrdered<_> = state
+    //     .service()
+    //     .list_supervisors()
+    //     .await
+    //     .into_iter()
+    //     .map(|supervisor_id| auth.authorize(perms::ReadSupervisorStatus { supervisor_id }))
+    //     .collect();
+    // let supervisor_perms: Vec<_> = perm_queries
+    //     .filter_map(|x| async move { x.ok() })
+    //     .collect()
+    //     .await;
+    // let supervisors = perms::list_supervisors(&state, list_supervisors, supervisor_perms).await;
+    // proxy_val(LSResponse::Ok { supervisors })
 }
 
 // -- connect
@@ -138,38 +141,40 @@ pub async fn connect(
         false
     }
 
-    let socket_config_json = serde_json::to_string(&state.config().service.socket)
-        .expect("Failed to serialize socket configuration");
-    let mut response = ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL]).on_upgrade(
-        move |mut web_socket| async move {
-            tokio::spawn(async move {
-                let maybe_subprotocol = web_socket.protocol();
-                if !check_protocol_header(maybe_subprotocol, socket_addr) {
-                    if let Err(e) = web_socket.send(ws::Message::Close(None)).await {
-                        tracing::error!(
-                            "Failed to send close frame (wrong subprotocol) to {socket_addr}: {e}."
-                        );
-                        return;
-                    }
-                }
+    todo!()
 
-                tracing::info!("Supervisor ({supervisor_id}) connecting from {socket_addr}.");
+    // let socket_config_json = serde_json::to_string(&state.config().service.socket)
+    //     .expect("Failed to serialize socket configuration");
+    // let mut response = ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL]).on_upgrade(
+    //     move |mut web_socket| async move {
+    //         tokio::spawn(async move {
+    //             let maybe_subprotocol = web_socket.protocol();
+    //             if !check_protocol_header(maybe_subprotocol, socket_addr) {
+    //                 if let Err(e) = web_socket.send(ws::Message::Close(None)).await {
+    //                     tracing::error!(
+    //                         "Failed to send close frame (wrong subprotocol) to {socket_addr}: {e}."
+    //                     );
+    //                     return;
+    //                 }
+    //             }
 
-                if let Err(e) = state
-                    .service()
-                    .supervisor_connected(supervisor_id, web_socket)
-                    .await
-                {
-                    tracing::error!("Failed to connect supervisor ({supervisor_id}): {e}");
-                }
-            });
-        },
-    );
-    response.headers_mut().insert(
-        TREADMILL_WEBSOCKET_CONFIG,
-        socket_config_json
-            .parse()
-            .expect("Failed to parse serialized socket configuration into HTTP header value"),
-    );
-    response
+    //             tracing::info!("Supervisor ({supervisor_id}) connecting from {socket_addr}.");
+
+    //             if let Err(e) = state
+    //                 .service()
+    //                 .supervisor_connected(supervisor_id, web_socket)
+    //                 .await
+    //             {
+    //                 tracing::error!("Failed to connect supervisor ({supervisor_id}): {e}");
+    //             }
+    //         });
+    //     },
+    // );
+    // response.headers_mut().insert(
+    //     TREADMILL_WEBSOCKET_CONFIG,
+    //     socket_config_json
+    //         .parse()
+    //         .expect("Failed to parse serialized socket configuration into HTTP header value"),
+    // );
+    // response
 }

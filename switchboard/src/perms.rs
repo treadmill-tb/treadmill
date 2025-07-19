@@ -1,8 +1,6 @@
 use crate::auth::Privilege;
 use crate::impl_simple_perm;
 use crate::serve::AppState;
-use crate::service::ServiceError;
-use crate::service::herd::HerdError;
 use std::collections::HashMap;
 use treadmill_rs::api::switchboard::supervisors::list::{ConnFilter, WorkFilter};
 use treadmill_rs::api::switchboard::{JobRequest, JobStatus, SupervisorStatus, supervisors};
@@ -77,16 +75,18 @@ pub async fn read_supervisor_status(
     state: &AppState,
     supervisor: Privilege<'_, ReadSupervisorStatus>,
 ) -> Result<SupervisorStatus, ReadSupervisorStatusError> {
-    state
-        .service()
-        .get_supervisor_status(supervisor.action().supervisor_id)
-        .await
-        .map_err(|e| match e {
-            ServiceError::Herd(HerdError::NotRegistered) => {
-                ReadSupervisorStatusError::InvalidSupervisor
-            }
-            _ => ReadSupervisorStatusError::Internal,
-        })
+    todo!()
+
+    // state
+    //     .service()
+    //     .get_supervisor_status(supervisor.action().supervisor_id)
+    //     .await
+    //     .map_err(|e| match e {
+    //         ServiceError::Herd(HerdError::NotRegistered) => {
+    //             ReadSupervisorStatusError::InvalidSupervisor
+    //         }
+    //         _ => ReadSupervisorStatusError::Internal,
+    //     })
 }
 
 // -- submit_job
@@ -111,20 +111,22 @@ pub async fn submit_job(
     p: Privilege<'_, SubmitJob>,
     job_request: JobRequest,
 ) -> Result<Uuid, SubmitJobError> {
-    match state
-        .service()
-        .register_job(job_request, p.subject().token_id())
-        .await
-    {
-        Ok(job_id) => Ok(job_id),
-        Err(e) => {
-            tracing::error!("Failed to submit job: registration error: {e}");
-            Err(match e {
-                ServiceError::SupervisorMatchError => SubmitJobError::SupervisorMatchError,
-                _ => SubmitJobError::Internal,
-            })
-        }
-    }
+    todo!()
+
+    // match state
+    //     .service()
+    //     .register_job(job_request, p.subject().token_id())
+    //     .await
+    // {
+    //     Ok(job_id) => Ok(job_id),
+    //     Err(e) => {
+    //         tracing::error!("Failed to submit job: registration error: {e}");
+    //         Err(match e {
+    //             ServiceError::SupervisorMatchError => SubmitJobError::SupervisorMatchError,
+    //             _ => SubmitJobError::Internal,
+    //         })
+    //     }
+    // }
 }
 
 // -- read_job_status
@@ -141,18 +143,20 @@ pub async fn read_job_status(
     state: &AppState,
     p: Privilege<'_, ReadJobStatus>,
 ) -> Result<JobStatus, ReadJobStatusError> {
-    // TODO: this should not be JobState; want more detail than this
-    state
-        .service()
-        .get_job_status(p.action().job_id)
-        .await
-        .map_err(|e| match e {
-            ServiceError::NoSuchJob => ReadJobStatusError::NoSuchJob,
-            e => {
-                tracing::error!("Failed to read most recent job state history: {e}");
-                ReadJobStatusError::Internal
-            }
-        })
+    todo!()
+
+    // // TODO: this should not be JobState; want more detail than this
+    // state
+    //     .service()
+    //     .get_job_status(p.action().job_id)
+    //     .await
+    //     .map_err(|e| match e {
+    //         ServiceError::NoSuchJob => ReadJobStatusError::NoSuchJob,
+    //         e => {
+    //             tracing::error!("Failed to read most recent job state history: {e}");
+    //             ReadJobStatusError::Internal
+    //         }
+    //     })
 }
 
 // -- stop_job
@@ -168,14 +172,16 @@ pub enum StopJobError {
     NoSuchJob,
 }
 pub async fn stop_job(state: &AppState, p: Privilege<'_, StopJob>) -> Result<(), StopJobError> {
-    state
-        .service()
-        .cancel_job_external(p.action().job_id)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to stop job ({}): {e}", p.action().job_id);
-            StopJobError::Internal
-        })
+    todo!()
+
+    // state
+    //     .service()
+    //     .cancel_job_external(p.action().job_id)
+    //     .await
+    //     .map_err(|e| {
+    //         tracing::error!("Failed to stop job ({}): {e}", p.action().job_id);
+    //         StopJobError::Internal
+    //     })
 }
 
 // -- list_jobs

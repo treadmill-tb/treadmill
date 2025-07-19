@@ -1,5 +1,4 @@
 use crate::config::{DatabaseConfig, DatabaseCredentials, SwitchboardConfig};
-use crate::service::Service;
 use miette::{IntoDiagnostic, WrapErr};
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
@@ -11,17 +10,14 @@ use std::sync::Arc;
 pub struct AppStateInner {
     pg_pool: PgPool,
     config: SwitchboardConfig,
-    service: Arc<Service>,
 }
+
 impl AppStateInner {
     pub fn pool(&self) -> &PgPool {
         &self.pg_pool
     }
     pub fn config(&self) -> &SwitchboardConfig {
         &self.config
-    }
-    pub fn service(&self) -> &Arc<Service> {
-        &self.service
     }
 }
 
@@ -85,15 +81,7 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
     let bind_address = config.server.bind_address;
     let tls_config = config.server.testing_only_tls_config.clone();
 
-    let service = Service::new(pg_pool.clone(), config.service.clone())
-        .await
-        .into_diagnostic()?;
-
-    let app_state = AppState(Arc::new(AppStateInner {
-        pg_pool,
-        config,
-        service,
-    }));
+    let app_state = AppState(Arc::new(AppStateInner { pg_pool, config }));
     let router = super::routes::build_router(app_state);
 
     enum Server {
