@@ -1,3 +1,29 @@
+use std::net::SocketAddr;
+
+use axum::extract::Query;
+use axum::extract::{ConnectInfo, WebSocketUpgrade, ws};
+use axum::extract::{Path, State};
+use axum::response::{IntoResponse, Response};
+use axum_extra::TypedHeader;
+
+use futures_util::StreamExt;
+use futures_util::stream::FuturesOrdered;
+
+use headers::Authorization;
+use headers::authorization::Bearer;
+
+use http::{HeaderValue, StatusCode};
+
+use tracing::instrument;
+
+use treadmill_rs::api::switchboard::supervisors::list::{Filter, Response as LSResponse};
+use treadmill_rs::api::switchboard::supervisors::status::Response as SSResponse;
+use treadmill_rs::api::switchboard_supervisor::websocket::{
+    TREADMILL_WEBSOCKET_CONFIG, TREADMILL_WEBSOCKET_PROTOCOL,
+};
+
+use uuid::Uuid;
+
 use crate::auth::AuthorizationSource;
 use crate::auth::db::DbAuth;
 use crate::auth::extract::AuthSource;
@@ -6,25 +32,9 @@ use crate::perms::read_supervisor_status;
 use crate::routes::proxy::{Proxied, proxy_err, proxy_val};
 use crate::serve::AppState;
 use crate::sql;
+use crate::supervisor_ws_worker::SupervisorWSWorker;
 use crate::{impl_from_auth_err, perms};
-use axum::extract::Query;
-use axum::extract::{ConnectInfo, WebSocketUpgrade, ws};
-use axum::extract::{Path, State};
-use axum::response::{IntoResponse, Response};
-use axum_extra::TypedHeader;
-use futures_util::StreamExt;
-use futures_util::stream::FuturesOrdered;
-use headers::Authorization;
-use headers::authorization::Bearer;
-use http::{HeaderValue, StatusCode};
-use std::net::SocketAddr;
-use tracing::instrument;
-use treadmill_rs::api::switchboard::supervisors::list::{Filter, Response as LSResponse};
-use treadmill_rs::api::switchboard::supervisors::status::Response as SSResponse;
-use treadmill_rs::api::switchboard_supervisor::websocket::{
-    TREADMILL_WEBSOCKET_CONFIG, TREADMILL_WEBSOCKET_PROTOCOL,
-};
-use uuid::Uuid;
+
 // -- status
 
 impl_from_auth_err!(SSResponse, Database => Internal, Unauthorized => Invalid);
@@ -98,18 +108,14 @@ pub async fn connect(
             return StatusCode::FORBIDDEN.into_response();
         }
     };
+
     let auth_result =
         sql::supervisor::try_authenticate_supervisor(supervisor_id, auth_token, state.pool()).await;
     match auth_result {
-        Ok(b) => {
-            if b {
-                //
-            } else {
-                tracing::warn!(
-                    "invalid supervisor-token ({supervisor_id}, {auth_token}) combination"
-                );
-                return StatusCode::FORBIDDEN.into_response();
-            }
+        Ok(true) => (), // Success!
+        Ok(false) => {
+            tracing::warn!("invalid supervisor-token ({supervisor_id}, {auth_token}) combination");
+            return StatusCode::FORBIDDEN.into_response();
         }
         Err(e) => {
             tracing::error!(
@@ -123,58 +129,56 @@ pub async fn connect(
     fn check_protocol_header(protocol: Option<&HeaderValue>, socket_addr: SocketAddr) -> bool {
         if let Some(protocol) = protocol {
             if protocol != HeaderValue::from_static(TREADMILL_WEBSOCKET_PROTOCOL) {
-                let protocol_str = protocol.to_str().unwrap_or_else(|e| {
-                    tracing::error!("Websocket connection from {socket_addr} specifies Sec-Websocket-Protocol that cannot be converted to a string: {e}, closing.");
-                    "<invalid>"
-                });
                 tracing::error!(
-                    "Websocket connection from {socket_addr} specifies `Sec-Websocket-Protocol: {protocol_str}`, which is not recognized. Closing."
+                    "Websocket connection from {socket_addr} specifies \
+		     `Sec-Websocket-Protocol: {protocol:?}`, which is not \
+		     recognized. Closing."
                 );
+                false
             } else {
-                return true;
+                true
             }
         } else {
             tracing::error!(
-                "Websocket connection from {socket_addr} does not specify Sec-Websocket-Protocol, closing."
+                "Websocket connection from {socket_addr} does not specify \
+		 Sec-Websocket-Protocol, closing."
             );
+            false
         }
-        false
     }
 
-    todo!()
+    let worker_state = state.clone();
+    let mut response = ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL]).on_upgrade(
+        move |mut web_socket| async move {
+            tokio::spawn(async move {
+                let maybe_subprotocol = web_socket.protocol();
+                if !check_protocol_header(maybe_subprotocol, socket_addr) {
+                    if let Err(e) = web_socket.send(ws::Message::Close(None)).await {
+                        tracing::error!(
+                            "Failed to send close frame (wrong subprotocol) to {socket_addr}: {e}."
+                        );
+                        return;
+                    }
+                }
 
-    // let socket_config_json = serde_json::to_string(&state.config().service.socket)
-    //     .expect("Failed to serialize socket configuration");
-    // let mut response = ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL]).on_upgrade(
-    //     move |mut web_socket| async move {
-    //         tokio::spawn(async move {
-    //             let maybe_subprotocol = web_socket.protocol();
-    //             if !check_protocol_header(maybe_subprotocol, socket_addr) {
-    //                 if let Err(e) = web_socket.send(ws::Message::Close(None)).await {
-    //                     tracing::error!(
-    //                         "Failed to send close frame (wrong subprotocol) to {socket_addr}: {e}."
-    //                     );
-    //                     return;
-    //                 }
-    //             }
+                tracing::info!(
+                    "Starting SupervisorWSWorker for supervisor \
+		     ({supervisor_id}), connecting from {socket_addr}."
+                );
 
-    //             tracing::info!("Supervisor ({supervisor_id}) connecting from {socket_addr}.");
+                SupervisorWSWorker::run(worker_state, supervisor_id, web_socket).await
+            });
+        },
+    );
 
-    //             if let Err(e) = state
-    //                 .service()
-    //                 .supervisor_connected(supervisor_id, web_socket)
-    //                 .await
-    //             {
-    //                 tracing::error!("Failed to connect supervisor ({supervisor_id}): {e}");
-    //             }
-    //         });
-    //     },
-    // );
-    // response.headers_mut().insert(
-    //     TREADMILL_WEBSOCKET_CONFIG,
-    //     socket_config_json
-    //         .parse()
-    //         .expect("Failed to parse serialized socket configuration into HTTP header value"),
-    // );
-    // response
+    let socket_config_json = serde_json::to_string(&state.config().service.socket)
+        .expect("Failed to serialize socket configuration");
+    response.headers_mut().insert(
+        TREADMILL_WEBSOCKET_CONFIG,
+        socket_config_json
+            .parse()
+            .expect("Failed to parse serialized socket configuration into HTTP header value"),
+    );
+
+    response
 }

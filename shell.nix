@@ -25,8 +25,9 @@ in
       rustBuild
       openssl
       pkg-config
-      # --- CI support packages ---
-      # qemu
+
+      # --- Helper Utilities ---
+      httpie
     ];
     shellHook = ''
       export PKG_CONFIG_PATH="${pkgs.openssl.dev}/lib/pkgconfig:$PKG_CONFIG_PATH"

@@ -64,6 +64,7 @@ miette = { version = "7.2.0", features = ["fancy"] }
 base64 = "0.22.1"
 
 treadmill-rs = { path = "../treadmill-rs" }
+anyhow = "1.0.98"
 
 [dev-dependencies]
 sqlx-cli = { version = "0.8.0", features = ["postgres", "rustls", "completions"] }
