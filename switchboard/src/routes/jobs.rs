@@ -123,7 +123,7 @@ pub async fn list(
     .map_err(proxy_err)?;
     let job_ids: Vec<Uuid> = perms
         .into_iter()
-        .map(|perm| Uuid::from_str(&perm.permission.split(':').skip(1).next().unwrap()).unwrap())
+        .map(|perm| Uuid::from_str(perm.permission.split(':').nth(1).unwrap()).unwrap())
         .collect();
 
     let perm_queries: FuturesOrdered<_> = job_ids

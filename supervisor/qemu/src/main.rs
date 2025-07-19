@@ -82,16 +82,12 @@ pub struct QemuSupervisorArgs {
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SSHPreferredIPVersion {
+    #[default]
     Unspecified,
     V4,
     V6,
-}
-
-impl Default for SSHPreferredIPVersion {
-    fn default() -> Self {
-        SSHPreferredIPVersion::Unspecified
-    }
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -539,7 +535,7 @@ impl QemuSupervisor {
                 tokio::fs::canonicalize(&image_path)
                     .await
                     .with_context(|| {
-                        format!("Failed to canonicalize image blob path {:?}", image_path)
+                        format!("Failed to canonicalize image blob path {image_path:?}")
                     })?;
 
             event!(Level::DEBUG, qemu_img_binary = ?self.config.qemu.qemu_img_binary, file = ?image_path_canon, "Retrieving qcow2 file metadata");
@@ -551,7 +547,7 @@ impl QemuSupervisor {
                 .arg(&image_path_canon)
                 .output()
                 .await
-                .map_err(|e| anyhow::Error::from(e))
+                .map_err(anyhow::Error::from)
                 .and_then(|output| {
                     // Ideally we'd want to use the nightly `exit_ok()` here:
                     if !output.status.success() {
@@ -564,7 +560,7 @@ impl QemuSupervisor {
                     // Don't care about stderr:
                     Ok(output.stdout)
                 })
-                .with_context(|| format!("Failed to query image metadata for {:?}", image_path))?;
+                .with_context(|| format!("Failed to query image metadata for {image_path:?}"))?;
 
             let metadata: QemuImgMetadata =
                 serde_json::from_slice(&metadata_output).with_context(|| {
@@ -583,7 +579,7 @@ impl QemuSupervisor {
             // Make sure that the image has just one child, and that child's
             // filename is identical to the top-level filename. We do this as a
             // precaution to images referencing other paths on our machine.
-            if metadata.children.len() != 1 || metadata.children[0].info.children.len() != 0 {
+            if metadata.children.len() != 1 || !metadata.children[0].info.children.is_empty() {
                 bail!(
                     "Image file {:?} does not have exactly one (recursive) child in qemu-img output",
                     image_path
@@ -615,8 +611,7 @@ impl QemuSupervisor {
                 .and_then(|size_bytes_str| {
                     u64::from_str_radix(size_bytes_str, 10).with_context(|| {
                         format!(
-                            "Parsing blob {}'s `blob-virtual-size` attribute as u64",
-                            current_image
+                            "Parsing blob {current_image}'s `blob-virtual-size` attribute as u64"
                         )
                     })
                 })?;
@@ -677,18 +672,16 @@ impl QemuSupervisor {
                     .await
                     .with_context(|| {
                         format!(
-                            "Failed to canonicalize image blob path {:?},
-                             returned by image store lookup for blob {}",
-                            image_store_path, blob_lower,
+                            "Failed to canonicalize image blob path {image_store_path:?},
+                             returned by image store lookup for blob {blob_lower}",
                         )
                     })?;
 
                 let full_backing_filename_canon = if let Some(f) = &metadata.full_backing_filename {
                     tokio::fs::canonicalize(f).await.with_context(|| {
                         format!(
-                            "Failed to canonicalize image blob path {:?},
-                                     referenced by qcow image file {}",
-                            f, current_image,
+                            "Failed to canonicalize image blob path {f:?},
+                                     referenced by qcow image file {current_image}",
                         )
                     })?
                 } else {
@@ -747,7 +740,7 @@ impl QemuSupervisor {
         top_image_qemu_info: &QemuImgMetadata,
     ) -> Result<(PathBuf, PathBuf), connector::JobError> {
         let jobs_dir = self.config.qemu.state_dir.join("jobs");
-        let job_dir = jobs_dir.join(&start_job_req.job_id.to_string());
+        let job_dir = jobs_dir.join(start_job_req.job_id.to_string());
 
         // Ensure that the state/jobs directory (and all recursive parents)
         // exists and create a new working directory for this job:
@@ -815,14 +808,14 @@ impl QemuSupervisor {
             .arg("qcow2")
             // Backing file:
             .arg("-b")
-            .arg(&top_image_path)
+            .arg(top_image_path)
             // New image file:
             .arg(&disk_image_file)
             // New image size (in bytes, without suffix):
-            .arg(&self.config.qemu.working_disk_max_bytes.to_string())
+            .arg(self.config.qemu.working_disk_max_bytes.to_string())
             .output()
             .await
-            .map_err(|e| anyhow::Error::from(e))
+            .map_err(anyhow::Error::from)
             .and_then(|output| {
                 // Ideally we'd want to use the nightly `exit_ok()` here:
                 if !output.status.success() {
@@ -919,38 +912,37 @@ impl QemuSupervisor {
 
         // Parse the manifest and sanity-check all image layers. We do this in
         // an async block such that we can use the ``?`` operator:
-        let (top_image_path, top_image_qemu_info) =
-            match this.start_job_parse_manifest_check_images(&manifest).await {
-                Ok(v) => v,
+        let (top_image_path, top_image_qemu_info) = match this
+            .start_job_parse_manifest_check_images(&manifest)
+            .await
+        {
+            Ok(v) => v,
 
-                Err(e) => {
-                    // Image is invalid, report an error:
-                    this.connector
-                        .report_job_error(
-                            start_job_req.job_id,
-                            connector::JobError {
-                                error_kind: connector::JobErrorKind::ImageInvalid,
-                                description: format!(
-                                    "Validation of image {:?} failed: {:?}",
-                                    image_id, e
-                                ),
-                            },
-                        )
-                        .await;
+            Err(e) => {
+                // Image is invalid, report an error:
+                this.connector
+                    .report_job_error(
+                        start_job_req.job_id,
+                        connector::JobError {
+                            error_kind: connector::JobErrorKind::ImageInvalid,
+                            description: format!("Validation of image {image_id:?} failed: {e:?}"),
+                        },
+                    )
+                    .await;
 
-                    // No resources have been allocated (yet), so simply remove the
-                    // job and set its state to `Stopping`, in case anyone else has
-                    // a reference to it still.
-                    //
-                    // Safe to call, we don't hold a lock on `this.jobs`:
-                    this.remove_job(job_id).await;
+                // No resources have been allocated (yet), so simply remove the
+                // job and set its state to `Stopping`, in case anyone else has
+                // a reference to it still.
+                //
+                // Safe to call, we don't hold a lock on `this.jobs`:
+                this.remove_job(job_id).await;
 
-                    // Prevent other tasks from further advancing this job's state:
-                    *job_lg = QemuSupervisorJobState::Stopping;
+                // Prevent other tasks from further advancing this job's state:
+                *job_lg = QemuSupervisorJobState::Stopping;
 
-                    return;
-                }
-            };
+                return;
+            }
+        };
 
         // Allocate the job's disk:
         let (job_workdir, job_disk_image_path) = match this
@@ -1069,8 +1061,7 @@ impl QemuSupervisor {
                         connector::JobError {
                             error_kind: connector::JobErrorKind::InternalError,
                             description: format!(
-                                "Failed to generate QEMU command line arguments: {:?}",
-                                format_error,
+                                "Failed to generate QEMU command line arguments: {format_error:?}",
                             ),
                         },
                     )
@@ -1182,7 +1173,7 @@ impl QemuSupervisor {
                     // process:
                     if let Err(e) = qemu_proc.kill().await {
                         // We were unable to terminate the QEMU process:
-                        let message = format!("Failed to wait on QEMU process: {:?}", e);
+                        let message = format!("Failed to wait on QEMU process: {e:?}");
 
                         this.connector.report_job_error(
                             job_id,
@@ -1214,7 +1205,7 @@ impl QemuSupervisor {
                                 "QEMU process exited successfully.".to_string()
                             } else {
                                 // Notify failure
-                                let message = format!("QEMU process had an internal error with status: {:?}", status);
+                                let message = format!("QEMU process had an internal error with status: {status:?}");
 
                                 this.connector.report_job_error(
                                     job_id,
@@ -1230,7 +1221,7 @@ impl QemuSupervisor {
                         }
                         Err(e) => {
                             // Failed to wait on QEMU process
-                            let message = format!("Failed to wait on QEMU process: {:?}", e);
+                            let message = format!("Failed to wait on QEMU process: {e:?}");
 
                             this.connector.report_job_error(
                                 job_id,
@@ -1308,7 +1299,7 @@ impl QemuSupervisor {
                 .cloned()
                 .ok_or(connector::JobError {
                     error_kind: connector::JobErrorKind::JobNotFound,
-                    description: format!("Job {:?} not found, cannot stop.", job_id),
+                    description: format!("Job {job_id:?} not found, cannot stop."),
                 })?
         };
 
@@ -1348,7 +1339,7 @@ impl QemuSupervisor {
 
                 return Err(connector::JobError {
                     error_kind: connector::JobErrorKind::AlreadyStopping,
-                    description: format!("Job {:?} is already stopping.", job_id),
+                    description: format!("Job {job_id:?} is already stopping."),
                 });
             }
         };
@@ -1625,7 +1616,7 @@ impl control_socket::Supervisor for QemuSupervisor {
             Some(job_state) => match &*job_state.lock().await {
                 // Job is currently running, respond with its assigned hostname:
                 QemuSupervisorJobState::Running(_) => {
-                    let hostname = format!("job-{}", format!("{}", tgt_job_id).split_at(10).0);
+                    let hostname = format!("job-{}", format!("{tgt_job_id}").split_at(10).0);
                     Some(treadmill_rs::api::supervisor_puppet::NetworkConfig {
                         hostname,
                         // QemuSupervisor, don't supply a network interface to configure:

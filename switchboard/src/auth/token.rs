@@ -19,9 +19,9 @@ use treadmill_rs::api::switchboard::AuthToken;
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Copy, Clone)]
 #[serde(transparent)]
 pub struct SecurityToken(AuthToken);
-impl Into<AuthToken> for SecurityToken {
-    fn into(self) -> AuthToken {
-        self.0
+impl From<SecurityToken> for AuthToken {
+    fn from(val: SecurityToken) -> Self {
+        val.0
     }
 }
 impl SecurityToken {
@@ -72,6 +72,6 @@ impl TryFrom<Bearer> for SecurityToken {
 }
 impl Display for SecurityToken {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&BASE64_STANDARD.encode(&self.0.0))
+        f.write_str(&BASE64_STANDARD.encode(self.0.0))
     }
 }

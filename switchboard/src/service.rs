@@ -1556,26 +1556,24 @@ impl Service {
                 },
                 as_of,
             }
-        } else {
-            if let Some((state, _msg)) =
-                sql::job::history::fetch_most_recent_state_by_job_id(job_id, &self.pool)
-                    .await
-                    .map_err(ServiceError::Database)?
-            {
-                JobStatus {
-                    state: ExtendedJobState {
-                        state,
-                        dispatched_to_supervisor: job.dispatched_on_supervisor_id(),
-                        ssh_endpoints: sql_ssh_endpoints_to_api(job.ssh_endpoints()),
-                        ssh_user: Some("tml".to_string()), // TODO: determine this from image
-                        ssh_host_keys: None, // TODO: allow supervisor to report host keys
-                        result: None,
-                    },
-                    as_of,
-                }
-            } else {
-                return Err(ServiceError::NoSuchJob);
+        } else if let Some((state, _msg)) =
+            sql::job::history::fetch_most_recent_state_by_job_id(job_id, &self.pool)
+                .await
+                .map_err(ServiceError::Database)?
+        {
+            JobStatus {
+                state: ExtendedJobState {
+                    state,
+                    dispatched_to_supervisor: job.dispatched_on_supervisor_id(),
+                    ssh_endpoints: sql_ssh_endpoints_to_api(job.ssh_endpoints()),
+                    ssh_user: Some("tml".to_string()), // TODO: determine this from image
+                    ssh_host_keys: None,               // TODO: allow supervisor to report host keys
+                    result: None,
+                },
+                as_of,
             }
+        } else {
+            return Err(ServiceError::NoSuchJob);
         })
     }
 

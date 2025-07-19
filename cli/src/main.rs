@@ -169,7 +169,7 @@ async fn main() -> Result<()> {
         Commands::Login(login_args) => {
             // Merge user & password from flags, positionals, env vars, or prompt
             let (username, password) = resolve_login_args(&login_args)?;
-            log::info!("Attempting login for user: {}", username);
+            log::info!("Attempting login for user: {username}");
 
             login(&client, &config, &username, &password).await?;
         }
@@ -218,7 +218,7 @@ async fn main() -> Result<()> {
                 cancel_job(&client, &config, job_id_parsed).await?;
             }
             JobCommands::Ssh { job_id } => {
-                info!("Connecting to job {}", job_id);
+                info!("Connecting to job {job_id}");
                 ssh_into_job(&client, &config, &job_id).await?;
             }
         },
@@ -274,7 +274,7 @@ pub fn resolve_login_args(login_args: &LoginArgs) -> Result<(String, String)> {
 }
 /// Prompts for unhidden text input (e.g., username).
 fn prompt_for_input(prompt: &str) -> Result<String> {
-    print!("{}: ", prompt);
+    print!("{prompt}: ");
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
@@ -283,7 +283,7 @@ fn prompt_for_input(prompt: &str) -> Result<String> {
 
 /// Prompts for password input (hidden) using rpassword.
 fn prompt_for_password(prompt: &str) -> Result<String> {
-    print!("{}: ", prompt);
+    print!("{prompt}: ");
     io::stdout().flush()?;
     let password = read_password()?;
     Ok(password.trim().to_string())
@@ -353,8 +353,8 @@ async fn ssh_into_job(client: &Client, config: &config::Config, job_id: &str) ->
         .arg("-i")
         .arg(&key_path)
         .arg("-p")
-        .arg(&format!("{}", endpoint.port))
-        .arg(&format!("{}@{}", ssh_user, endpoint.host))
+        .arg(format!("{}", endpoint.port))
+        .arg(format!("{}@{}", ssh_user, endpoint.host))
         .status()
         .context("Failed to spawn SSH process")?;
 
@@ -374,7 +374,7 @@ async fn login(
     username: &str,
     password: &str,
 ) -> Result<()> {
-    debug!("Creating login request for user: {}", username);
+    debug!("Creating login request for user: {username}");
     let login_request = LoginRequest {
         user_identifier: username.to_string(),
         password: password.to_string(),
@@ -383,7 +383,7 @@ async fn login(
     debug!("Sending login request to url: {}", config.api.url);
 
     let response = client
-        .post(&format!("{}/api/v1/tokens/login", config.api.url))
+        .post(format!("{}/api/v1/tokens/login", config.api.url))
         .json(&login_request)
         .send()
         .await?;
@@ -401,8 +401,8 @@ async fn login(
         auth::save_token(&login_response.token)?;
     } else {
         let error_text = response.text().await?;
-        error!("Login failed: {}", error_text);
-        println!("Login failed: {}", error_text);
+        error!("Login failed: {error_text}");
+        println!("Login failed: {error_text}");
     }
 
     Ok(())
@@ -472,7 +472,7 @@ async fn enqueue_job(
     let enqueue_request = SubmitJobRequest { job_request };
 
     let response = client
-        .post(&format!("{}/api/v1/jobs/new", config.api.url))
+        .post(format!("{}/api/v1/jobs/new", config.api.url))
         .bearer_auth(token)
         .json(&enqueue_request)
         .send()
@@ -480,7 +480,7 @@ async fn enqueue_job(
 
     if response.status().is_success() {
         let response_json: serde_json::Value = response.json().await?;
-        println!("Job enqueued successfully: {}", response_json);
+        println!("Job enqueued successfully: {response_json}");
     } else {
         let error_text = response.text().await?;
         return Err(anyhow!("Failed to enqueue job: {}", error_text));
@@ -493,18 +493,18 @@ async fn get_job_status(client: &Client, config: &config::Config, job_id: Uuid) 
     let token = auth::get_token()?;
 
     let response = client
-        .get(&format!("{}/api/v1/jobs/{}/status", config.api.url, job_id))
+        .get(format!("{}/api/v1/jobs/{}/status", config.api.url, job_id))
         .bearer_auth(token)
         .send()
         .await?;
 
     if response.status().is_success() {
         let job_status: JobStatusResponse = response.json().await?;
-        println!("Job status: {:?}", job_status);
+        println!("Job status: {job_status:?}");
     } else {
         let error_text = response.text().await?;
-        error!("Failed to get job status: {}", error_text);
-        println!("Failed to get job status: {}", error_text);
+        error!("Failed to get job status: {error_text}");
+        println!("Failed to get job status: {error_text}");
     }
 
     Ok(())
@@ -514,18 +514,18 @@ async fn cancel_job(client: &Client, config: &config::Config, job_id: Uuid) -> R
     let token = auth::get_token()?;
 
     let response = client
-        .delete(&format!("{}/api/v1/jobs/{}", config.api.url, job_id))
+        .delete(format!("{}/api/v1/jobs/{}", config.api.url, job_id))
         .bearer_auth(token)
         .send()
         .await?;
 
     if response.status().is_success() {
         let response_text = response.text().await?;
-        println!("Job cancellation response: {}", response_text);
+        println!("Job cancellation response: {response_text}");
     } else {
         let error_text = response.text().await?;
-        error!("Failed to cancel job: {}", error_text);
-        println!("Failed to cancel job: {}", error_text);
+        error!("Failed to cancel job: {error_text}");
+        println!("Failed to cancel job: {error_text}");
     }
 
     Ok(())
@@ -535,7 +535,7 @@ async fn list_jobs(client: &Client, config: &config::Config) -> Result<()> {
     let token = auth::get_token()?;
 
     let response = client
-        .get(&format!("{}/api/v1/jobs", config.api.url))
+        .get(format!("{}/api/v1/jobs", config.api.url))
         .bearer_auth(token)
         .send()
         .await?;
@@ -586,8 +586,8 @@ async fn list_jobs(client: &Client, config: &config::Config) -> Result<()> {
         }
     } else {
         let error_text = response.text().await?;
-        error!("Failed to fetch job queue: {}", error_text);
-        println!("Failed to fetch job queue: {}", error_text);
+        error!("Failed to fetch job queue: {error_text}");
+        println!("Failed to fetch job queue: {error_text}");
     }
 
     Ok(())
@@ -597,7 +597,7 @@ async fn list_supervisors(client: &Client, config: &config::Config) -> Result<()
     let token = auth::get_token()?;
 
     let response = client
-        .get(&format!("{}/api/v1/supervisors", config.api.url))
+        .get(format!("{}/api/v1/supervisors", config.api.url))
         .bearer_auth(token)
         .send()
         .await?;
@@ -629,8 +629,8 @@ async fn list_supervisors(client: &Client, config: &config::Config) -> Result<()
         }
     } else {
         let error_text = response.text().await?;
-        error!("Failed to fetch supervisor list: {}", error_text);
-        println!("Failed to fetch supervisor list: {}", error_text);
+        error!("Failed to fetch supervisor list: {error_text}");
+        println!("Failed to fetch supervisor list: {error_text}");
     }
 
     Ok(())
@@ -644,7 +644,7 @@ async fn get_supervisor_status(
     let token = auth::get_token()?;
 
     let response = client
-        .get(&format!(
+        .get(format!(
             "{}/api/v1/supervisors/{}/status",
             config.api.url, supervisor_id
         ))
@@ -668,8 +668,8 @@ async fn get_supervisor_status(
         }
     } else {
         let error_text = response.text().await?;
-        error!("Failed to fetch supervisor status: {}", error_text);
-        println!("Failed to fetch supervisor status: {}", error_text);
+        error!("Failed to fetch supervisor status: {error_text}");
+        println!("Failed to fetch supervisor status: {error_text}");
     }
 
     Ok(())

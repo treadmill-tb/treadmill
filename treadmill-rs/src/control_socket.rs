@@ -80,7 +80,7 @@ pub trait Supervisor: Send + Sync + 'static {
                 ssh_keys: self
                     .ssh_keys(host_id, job_id)
                     .await
-                    .unwrap_or_else(|| vec![]),
+                    .unwrap_or_else(std::vec::Vec::new),
             },
 
             PuppetReq::Parameters => self

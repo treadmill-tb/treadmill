@@ -195,7 +195,7 @@ impl SupervisorConnection {
                 if let Some((_, notifier)) =
                     self.outstanding_requests.remove(&rm.response_to_request_id)
                 {
-                    if let Err(_) = notifier.send(rm.message) {
+                    if notifier.send(rm.message).is_err() {
                         tracing::error!(
                             "failed to send response message via outstanding channel: receiver dropped"
                         );

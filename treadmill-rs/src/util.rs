@@ -20,7 +20,7 @@ pub mod hex_slice {
 
     impl<'a> fmt::Display for HexSlice<'a> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "{:?}", self)
+            write!(f, "{self:?}")
         }
     }
 }
@@ -37,7 +37,7 @@ pub mod chrono {
         {
             match duration.as_ref() {
                 Some(duration) => serializer.serialize_some(
-                    fundu::Duration::try_from(duration.clone())
+                    fundu::Duration::try_from(*duration)
                         .map_err(serde::ser::Error::custom)?
                         .to_string()
                         .as_str(),
@@ -70,7 +70,7 @@ pub mod chrono {
             S: Serializer,
         {
             serializer.serialize_str(
-                fundu::Duration::try_from(duration.clone())
+                fundu::Duration::try_from(*duration)
                     .map_err(serde::ser::Error::custom)?
                     .to_string()
                     .as_str(),

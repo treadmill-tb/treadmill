@@ -93,7 +93,7 @@ pub fn load_configuration(path: Option<&Path>) -> miette::Result<SwitchboardConf
             ));
         }
 
-        f.merge(providers::Toml::file(&p))
+        f.merge(providers::Toml::file(p))
     } else {
         tracing::info!("No configuration file specified");
         f

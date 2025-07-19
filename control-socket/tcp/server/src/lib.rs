@@ -42,9 +42,9 @@ impl<S: Supervisor> TcpControlSocket<S> {
     ) -> Result<Self> {
         let server_socket: TcpListener = TcpListener::bind(bind_addr)
             .await
-            .with_context(|| format!("Binding to TCP socket at {:?}", bind_addr))?;
+            .with_context(|| format!("Binding to TCP socket at {bind_addr:?}"))?;
 
-        info!("Opened control socket TCP listener on {:?}", bind_addr);
+        info!("Opened control socket TCP listener on {bind_addr:?}");
 
         let (task_cmd_chan_tx, mut task_cmd_chan_rx) = tokio::sync::mpsc::channel(1);
 
@@ -100,7 +100,7 @@ impl<S: Supervisor> TcpControlSocket<S> {
                                 Some(Ok(bytes)) => SocketPollResult::Data(bytes),
                                 // TODO: replace with error
 				                // TODO: what happens on stream close?
-                                Some(Err(e)) => panic!("Error occurred while receiving from control socket: {:?}", e),
+                                Some(Err(e)) => panic!("Error occurred while receiving from control socket: {e:?}"),
 				                None =>  SocketPollResult::Close
                             }
                         }
@@ -144,7 +144,7 @@ impl<S: Supervisor> TcpControlSocket<S> {
                                     None
                                 }
                                 Err(e) => Some(SupervisorMsg::Error {
-                                    message: format!("{:?}", e),
+                                    message: format!("{e:?}"),
                                 }),
                             };
 
@@ -163,8 +163,7 @@ impl<S: Supervisor> TcpControlSocket<S> {
                                         }
                                         _ => {
                                             warn!(
-                                                "Unknown error while sending answer to control socket request, ignoring: {:?}",
-                                                e
+                                                "Unknown error while sending answer to control socket request, ignoring: {e:?}"
                                             );
                                         }
                                     }
@@ -201,7 +200,7 @@ impl<S: Supervisor> TcpControlSocket<S> {
             .send(ControlSocketTaskCommand::Shutdown)
             .await
             .with_context(|| {
-                format!("Requesting shutdown of the control socket request handler")
+                "Requesting shutdown of the control socket request handler".to_string()
             })?;
 
         // Then, try to join it:

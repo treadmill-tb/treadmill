@@ -183,6 +183,12 @@ impl Herd {
     }
 }
 
+impl Default for Herd {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Herd {
     /// Create an empty Herd.
     pub fn new() -> Self {

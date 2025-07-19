@@ -35,7 +35,7 @@ impl TcpControlSocketClient {
     ) -> Result<TcpControlSocketClient> {
         let socket = TcpStream::connect(addr)
             .await
-            .with_context(|| format!("Opening TCP control socket connection at {:?}", addr,))?;
+            .with_context(|| format!("Opening TCP control socket connection at {addr:?}",))?;
 
         let request_responses = Arc::new(Mutex::new((0, HashMap::new())));
 
@@ -81,10 +81,10 @@ impl TcpControlSocketClient {
                 // TODO -- better function available on nightly:
                 // match std::net::SocketAddr::parse_ascii(&tcp_sockaddr_bytes) {
                 match std::str::from_utf8(&tcp_sockaddr_bytes)
-                    .map(|s| <std::net::SocketAddr as std::str::FromStr>::from_str(s))
+                    .map(<std::net::SocketAddr as std::str::FromStr>::from_str)
                 {
                     Ok(Ok(addr)) => {
-                        info!("Discovered TCP socket address from qemu_fw_cfg: {:?}", addr);
+                        info!("Discovered TCP socket address from qemu_fw_cfg: {addr:?}");
                         return Some(Self::new(addr, recv_ev_cap).await);
                     }
 
@@ -172,7 +172,7 @@ impl TcpControlSocketClient {
 			    match transport.send(bytes).await {
 				Ok(()) => (),
 				Err(e) => {
-				    error!("Error sending message to supervisor: {:?}", e);
+				    error!("Error sending message to supervisor: {e:?}");
 				}
 			    }
 			},
@@ -182,7 +182,7 @@ impl TcpControlSocketClient {
 		recv_res = transport.next() => {
                     let bytes = match recv_res {
 			Some(Err(e)) => {
-			    error!("Failed to receive supervisor message: {:?}", e);
+			    error!("Failed to receive supervisor message: {e:?}");
 			    continue;
 			}
 			Some(Ok(b)) => b,
@@ -201,14 +201,12 @@ impl TcpControlSocketClient {
 			    let resp_map = &mut request_responses.lock().await.1;
 			    if let Some(entry) = resp_map.get_mut(&request_id) {
 				if entry.is_some() {
-				    error!("Received spurious response for request ID {}: {:?}",
-					   request_id, response);
+				    error!("Received spurious response for request ID {request_id}: {response:?}");
 				}
 				*entry = Some(response);
 				notify.notify_waiters();
 			    } else {
-				error!("Received response for unexpected request ID {}: {:?}",
-				       request_id, response);
+				error!("Received response for unexpected request ID {request_id}: {response:?}");
 			    }
 			},
 
@@ -219,12 +217,10 @@ impl TcpControlSocketClient {
 			    match task_supervisor_event_tx.try_send((supervisor_event_id, event)) {
 				Ok(()) => (),
 				Err(tokio::sync::mpsc::error::TrySendError::Full((supervisor_event_id, event))) => {
-				    warn!("Discarding received supervisor event with id {}, channel full: {:?}",
-					  supervisor_event_id, event);
+				    warn!("Discarding received supervisor event with id {supervisor_event_id}, channel full: {event:?}");
 				},
 				Err(tokio::sync::mpsc::error::TrySendError::Closed((supervisor_event_id, event))) => {
-				    warn!("Discarding received supervisor event with id {}, channel closed: {:?}",
-					  supervisor_event_id, event);
+				    warn!("Discarding received supervisor event with id {supervisor_event_id}, channel closed: {event:?}");
 				},
 			    }
 			}
@@ -232,11 +228,11 @@ impl TcpControlSocketClient {
 			Ok(SupervisorMsg::Error {
 			    message,
 			}) => {
-			    warn!("Received error message from supervisor: {:?}", message);
+			    warn!("Received error message from supervisor: {message:?}");
 			}
 
 			Err(e) => {
-			    panic!("Couldn't parse supervisor message: {:?}", e);
+			    panic!("Couldn't parse supervisor message: {e:?}");
 			}
                     }
 		}

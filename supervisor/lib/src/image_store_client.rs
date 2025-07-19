@@ -143,24 +143,19 @@ impl LocalImageStoreClient {
         let manifest_path = self.image_path(image_id).await;
 
         let manifest_bytes = tokio::fs::read(&manifest_path).await.with_context(|| {
-            format!(
-                "Reading manifest of image {:?} at {:?}",
-                image_id, manifest_path
-            )
+            format!("Reading manifest of image {image_id:?} at {manifest_path:?}")
         })?;
 
         std::str::from_utf8(&manifest_bytes)
             .with_context(|| {
                 format!(
-                    "Interpreting manifest of image {:?} as UTF-8 string",
-                    image_id
+                    "Interpreting manifest of image {image_id:?} as UTF-8 string"
                 )
             })
             .and_then(|manifest_str| -> Result<ImageManifest> {
                 toml::from_str(manifest_str).with_context(|| {
                     format!(
-                        "Parsing manifest of image {:?} as TOML-encoded ImageManifest object",
-                        image_id
+                        "Parsing manifest of image {image_id:?} as TOML-encoded ImageManifest object"
                     )
                 })
             })
