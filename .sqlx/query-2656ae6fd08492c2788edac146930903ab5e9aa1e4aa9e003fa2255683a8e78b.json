@@ -6,17 +6,35 @@
       {
         "ordinal": 0,
         "name": "token_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.api_tokens",
+            "name": "token_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "user_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.api_tokens",
+            "name": "user_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "inherits_user_permissions",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.api_tokens",
+            "name": "inherits_user_permissions"
+          }
+        }
       },
       {
         "ordinal": 3,
@@ -37,12 +55,24 @@
               ]
             }
           }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.api_tokens",
+            "name": "canceled"
+          }
         }
       },
       {
         "ordinal": 4,
         "name": "expires_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.api_tokens",
+            "name": "expires_at"
+          }
+        }
       }
     ],
     "parameters": {
