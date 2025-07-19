@@ -413,7 +413,7 @@ async fn enqueue_job(
     config: &config::Config,
     image_id: &str,
     disable_internal_ssh_key: bool,
-    ssh_keys: &Vec<String>,
+    ssh_keys: &[String],
     restart_count: Option<&str>,
     parameters: Option<&str>,
     tag_config: Option<&str>,
@@ -432,7 +432,7 @@ async fn enqueue_job(
     };
 
     // Generate or use provided SSH key
-    let mut ssh_keys = ssh_keys.clone();
+    let mut ssh_keys: Vec<_> = ssh_keys.into();
     if !disable_internal_ssh_key {
         let (private_key, public_key) = auth::generate_job_ssh_key()?;
         auth::save_private_key(&private_key)?;

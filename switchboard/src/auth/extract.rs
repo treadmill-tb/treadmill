@@ -25,15 +25,13 @@ impl FromRequestParts<AppState> for Subject {
         // check for a token
         let maybe_bearer = match parts.extract::<TypedHeader<Authorization<Bearer>>>().await {
             Ok(x) => Some(x.0.0),
-            Err(rejection) => match &rejection {
-                rej => match rej.reason() {
-                    TypedHeaderRejectionReason::Missing => None,
-                    TypedHeaderRejectionReason::Error(e) => {
-                        tracing::error!("failed to extract Authorization<Bearer>: {e:?}");
-                        return Err(StatusCode::UNAUTHORIZED.into_response());
-                    }
-                    _ => unreachable!(),
-                },
+            Err(rejection) => match rejection.reason() {
+                TypedHeaderRejectionReason::Missing => None,
+                TypedHeaderRejectionReason::Error(e) => {
+                    tracing::error!("failed to extract Authorization<Bearer>: {e:?}");
+                    return Err(StatusCode::UNAUTHORIZED.into_response());
+                }
+                _ => unreachable!(),
             },
         };
         if let Some(bearer) = maybe_bearer {

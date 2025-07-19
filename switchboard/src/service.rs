@@ -652,9 +652,10 @@ impl Service {
                             .await
                             .map_err(ServiceError::Herd)?;
                         let maybe_active_job = state.kanban.get_active_job(job_id).unwrap();
-                        if let Err(_) = maybe_active_job
+                        if maybe_active_job
                             .job_status_receiver_sender
                             .send(reservation.take_job_status_receiver().unwrap())
+                            .is_err()
                         {
                             // error if and only if JSR disconnected, which more or less means that the
                             // atomicity property got broken somewhere.
@@ -1303,6 +1304,7 @@ impl Service {
 
             let mut state = self.state.lock().await;
             // Todo: use something nicer than a loop with breaks
+	    #[allow(clippy::never_loop)]
             loop {
                 let mut tx = match self.pool.begin().await {
                     Ok(tx) => tx,

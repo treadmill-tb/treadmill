@@ -67,3 +67,6 @@ treadmill-rs = { path = "../treadmill-rs" }
 
 [dev-dependencies]
 sqlx-cli = { version = "0.8.0", features = ["postgres", "rustls", "completions"] }
+
+[lints]
+workspace = true

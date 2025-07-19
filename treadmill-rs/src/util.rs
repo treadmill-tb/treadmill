@@ -36,12 +36,9 @@ pub mod chrono {
             S: Serializer,
         {
             match duration.as_ref() {
-                Some(duration) => serializer.serialize_some(
-                    fundu::Duration::try_from(*duration)
-                        .map_err(serde::ser::Error::custom)?
-                        .to_string()
-                        .as_str(),
-                ),
+                Some(duration) => {
+                    serializer.serialize_some(fundu::Duration::from(*duration).to_string().as_str())
+                }
                 None => serializer.serialize_none(),
             }
         }
@@ -69,12 +66,7 @@ pub mod chrono {
         where
             S: Serializer,
         {
-            serializer.serialize_str(
-                fundu::Duration::try_from(*duration)
-                    .map_err(serde::ser::Error::custom)?
-                    .to_string()
-                    .as_str(),
-            )
+            serializer.serialize_str(fundu::Duration::from(*duration).to_string().as_str())
         }
 
         pub fn deserialize<'de, D>(deserializer: D) -> Result<TimeDelta, D::Error>

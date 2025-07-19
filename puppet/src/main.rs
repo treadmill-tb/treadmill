@@ -633,7 +633,7 @@ async fn run_command(
 
 async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
     let mut client = Arc::new(
-        (|| async {
+        async {
             match args.transport {
                 #[cfg(feature = "transport_tcp")]
                 PuppetControlSocketTransport::Tcp => {
@@ -663,7 +663,7 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
                     Err(anyhow!("Auto-discovery of control socket endpoint failed."))
                 }
             }
-        })()
+        }
         .await?,
     );
 
@@ -818,11 +818,11 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
 
                     // This can be more elegant with the Nightly-only `try_insert`:
                     let mut ec_lg = executor_channels.lock().await;
-                    if ec_lg.contains_key(&event_id) {
-                        None
-                    } else {
-                        assert!(ec_lg.insert(event_id, command_executor_tx).is_none());
+                    if let std::collections::hash_map::Entry::Vacant(e) = ec_lg.entry(event_id) {
+                        e.insert(command_executor_tx);
                         Some(command_executor_rx)
+                    } else {
+                        None
                     }
                 };
 

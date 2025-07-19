@@ -27,3 +27,6 @@ log = "0.4.20"
 nix = { version = "0.29.0", default-features = false, features = ["signal"] }
 sd-notify = "0.4.2"
 zbus = "4.4.0"
+
+[lints]
+workspace = true

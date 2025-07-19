@@ -20,8 +20,8 @@ use uuid::Uuid;
 /// Returns `(join_handle, outbox_send, event_recv)`.
 /// - `join_handle` is a future that completes when the connection with the supervisor closes.
 /// - `outbox_send` is used for sending messages, and takes values of the form
-/// `(mesg, Option<resp_send>)`, where the optional one-shot response channel can be used to
-/// indicate that a response is expected, and pass the response back to the caller.
+///   `(mesg, Option<resp_send>)`, where the optional one-shot response channel can be used to
+///   indicate that a response is expected, and pass the response back to the caller.
 /// - `event_recv` is used for receiving messages sent unilaterally from the supervisor.
 pub fn supervisor_run_loop(
     supervisor_id: Uuid,

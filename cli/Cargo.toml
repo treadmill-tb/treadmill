@@ -40,3 +40,6 @@ rand_core = { version = "0.6.4", features = ["getrandom"] }
 package = "treadmill-rs"
 version = "0.2.0"
 path = "../treadmill-rs"
+
+[lints]
+workspace = true

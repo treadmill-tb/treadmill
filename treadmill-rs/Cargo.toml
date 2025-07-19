@@ -21,3 +21,6 @@ fundu = { version = "2.0.0", features = ["chrono", "serde"] }
 base64 = "0.22.1"
 http = "1.1.0"
 tracing = "0.1.40"
+
+[lints]
+workspace = true
