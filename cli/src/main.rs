@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::Duration;
 use clap::{Args, Parser, Subcommand};
 use env_logger::Builder;

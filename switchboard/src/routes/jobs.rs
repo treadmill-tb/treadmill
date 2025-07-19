@@ -1,14 +1,14 @@
+use crate::auth::AuthorizationSource;
 use crate::auth::db::DbAuth;
 use crate::auth::extract::AuthSource;
-use crate::auth::AuthorizationSource;
 use crate::perms::{ReadJobStatusError, StopJobError, SubmitJobError};
-use crate::routes::proxy::{proxy_err, proxy_val, Proxied};
+use crate::routes::proxy::{Proxied, proxy_err, proxy_val};
 use crate::serve::AppState;
 use crate::{impl_from_auth_err, perms, sql};
-use axum::extract::{Path, State};
 use axum::Json;
-use futures_util::stream::FuturesOrdered;
+use axum::extract::{Path, State};
 use futures_util::StreamExt;
+use futures_util::stream::FuturesOrdered;
 use std::str::FromStr;
 use treadmill_rs::api::switchboard::jobs::{
     list::Response as LJResponse,

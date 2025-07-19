@@ -1,6 +1,6 @@
 // auth.rs
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine; // Add Engine trait
 use ssh_key::{LineEnding, PrivateKey}; // Remove unused PublicKey import
 use std::fs;

@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use async_recursion::async_recursion;
 use async_trait::async_trait;
 use clap::Parser;
 use serde::Deserialize;
 use tokio::sync::Mutex;
-use tracing::{event, info, instrument, warn, Level};
+use tracing::{Level, event, info, instrument, warn};
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard_supervisor::{
@@ -368,7 +368,11 @@ impl QemuSupervisor {
                         // We could not retrieve the manifest, despite the image
                         // being present. Don't attempt to recover from this
                         // error and mark the job as failed:
-                        event!(Level::WARN, ?manifest_err, "Failed to retrieve image manifest, reporting job error: {manifest_err:?}");
+                        event!(
+                            Level::WARN,
+                            ?manifest_err,
+                            "Failed to retrieve image manifest, reporting job error: {manifest_err:?}"
+                        );
                         this.connector
                             .report_job_error(
                                 fetching_image_state.start_job_req.job_id,
@@ -983,18 +987,24 @@ impl QemuSupervisor {
         // parameter template strings:
         event!(Level::DEBUG, "Templating QEMU argument substitutions");
         let mut qemu_arg_substs: HashMap<String, String> = HashMap::new();
-        assert!(qemu_arg_substs
-            .insert("job_id".to_string(), start_job_req.job_id.to_string())
-            .is_none());
-        assert!(qemu_arg_substs
-            .insert("job_workdir".to_string(), job_workdir.display().to_string())
-            .is_none());
-        assert!(qemu_arg_substs
-            .insert(
-                "main_disk_image".to_string(),
-                job_disk_image_path.display().to_string()
-            )
-            .is_none());
+        assert!(
+            qemu_arg_substs
+                .insert("job_id".to_string(), start_job_req.job_id.to_string())
+                .is_none()
+        );
+        assert!(
+            qemu_arg_substs
+                .insert("job_workdir".to_string(), job_workdir.display().to_string())
+                .is_none()
+        );
+        assert!(
+            qemu_arg_substs
+                .insert(
+                    "main_disk_image".to_string(),
+                    job_disk_image_path.display().to_string()
+                )
+                .is_none()
+        );
 
         if let Some(ref start_script) = this.config.qemu.start_script {
             event!(Level::DEBUG, ?start_script, "Executing start script");

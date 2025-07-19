@@ -162,7 +162,10 @@ impl<S: Supervisor> TcpControlSocket<S> {
                                             break;
                                         }
                                         _ => {
-                                            warn!("Unknown error while sending answer to control socket request, ignoring: {:?}", e);
+                                            warn!(
+                                                "Unknown error while sending answer to control socket request, ignoring: {:?}",
+                                                e
+                                            );
                                         }
                                     }
                                 }

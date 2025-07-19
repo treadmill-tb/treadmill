@@ -1,7 +1,7 @@
 //! Facilities for managing API tokens.
 
-use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use headers::authorization::Bearer;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
@@ -37,7 +37,7 @@ impl SecurityToken {
 
     /// Get access to an immutable byte representation of the token.
     pub fn as_bytes(&self) -> &[u8] {
-        &self.0 .0
+        &self.0.0
     }
 }
 impl ConstantTimeEq for SecurityToken {
@@ -72,6 +72,6 @@ impl TryFrom<Bearer> for SecurityToken {
 }
 impl Display for SecurityToken {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&BASE64_STANDARD.encode(&self.0 .0))
+        f.write_str(&BASE64_STANDARD.encode(&self.0.0))
     }
 }

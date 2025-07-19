@@ -9,7 +9,7 @@ use std::sync::{Arc, Weak};
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::sync::watch;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::tungstenite::{
     self,
     http::{Request, StatusCode, Uri},
@@ -19,8 +19,8 @@ use tracing::{instrument, warn};
 use treadmill_rs::api::switchboard::AuthToken;
 use treadmill_rs::api::switchboard_supervisor::websocket::TREADMILL_WEBSOCKET_CONFIG;
 use treadmill_rs::api::switchboard_supervisor::{
-    self, websocket::TREADMILL_WEBSOCKET_PROTOCOL, JobUserExitStatus, ReportedSupervisorStatus,
-    Response, SocketConfig, SupervisorEvent, SupervisorJobEvent,
+    self, JobUserExitStatus, ReportedSupervisorStatus, Response, SocketConfig, SupervisorEvent,
+    SupervisorJobEvent, websocket::TREADMILL_WEBSOCKET_PROTOCOL,
 };
 use treadmill_rs::connector::{self, JobError, RunningJobState};
 use uuid::Uuid;

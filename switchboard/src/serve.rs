@@ -1,8 +1,8 @@
 use crate::config::{DatabaseConfig, DatabaseCredentials, SwitchboardConfig};
 use crate::service::Service;
 use miette::{IntoDiagnostic, WrapErr};
-use sqlx::postgres::PgConnectOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgConnectOptions;
 use std::net::SocketAddr;
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -112,7 +112,9 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
                     .wrap_err("Failed to load RusTls configuration for public server")?;
             let server = axum_server::bind_rustls(bind_address, rustls_config);
 
-            tracing::warn!("-- WARNING -- DEVELOPMENT-ONLY TLS MODE IS ENABLED. PLEASE DO NOT USE THIS IN PRODUCTION.");
+            tracing::warn!(
+                "-- WARNING -- DEVELOPMENT-ONLY TLS MODE IS ENABLED. PLEASE DO NOT USE THIS IN PRODUCTION."
+            );
 
             Server::Tls(server)
         }

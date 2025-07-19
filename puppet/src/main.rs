@@ -6,7 +6,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use log::{debug, error, info, warn};
 use zbus::interface;
@@ -354,24 +354,25 @@ async fn configure_network(
             script
         );
         match cmd.spawn() {
-            Ok(mut child) => {
-                match child.wait().await {
-                    Ok(status) => {
-                        if let Some(code) = status.code() {
-                            if code == 0 {
-                                info!("Successfully configured networking.");
-                            } else {
-                                bail!("Network configuration script reported non-zero exit status: {}", code);
-                            }
+            Ok(mut child) => match child.wait().await {
+                Ok(status) => {
+                    if let Some(code) = status.code() {
+                        if code == 0 {
+                            info!("Successfully configured networking.");
                         } else {
-                            bail!("Network configuration script terminated by a signal.");
+                            bail!(
+                                "Network configuration script reported non-zero exit status: {}",
+                                code
+                            );
                         }
-                    }
-                    Err(e) => {
-                        bail!("Error running network configuration script: {:?}", e);
+                    } else {
+                        bail!("Network configuration script terminated by a signal.");
                     }
                 }
-            }
+                Err(e) => {
+                    bail!("Error running network configuration script: {:?}", e);
+                }
+            },
 
             Err(e) => {
                 bail!("Error spawning network configuration script: {:?}", e);
@@ -852,7 +853,10 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
                         // Command finished. Report error or retcode:
                         match res {
                             Err(e) => {
-                                warn!("Failed to run command #{}: {:?}, reporting back to supervisor.", event_id, e);
+                                warn!(
+                                    "Failed to run command #{}: {:?}, reporting back to supervisor.",
+                                    event_id, e
+                                );
                                 let send_res = match client_weak
 				    .upgrade()
 				    .ok_or(anyhow!("Cannot upgrade weak client ref to report command error back to supervisor"))
@@ -866,11 +870,17 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
 				};
 
                                 if let Err(send_e) = send_res {
-                                    warn!("Failed reporting command #{} error back to supervisor: {:?}", event_id, send_e);
+                                    warn!(
+                                        "Failed reporting command #{} error back to supervisor: {:?}",
+                                        event_id, send_e
+                                    );
                                 }
                             }
                             Ok((exit_code, killed)) => {
-                                info!("Finished command #{} with return code {:?}, reporting back to supervisor.", event_id, exit_code);
+                                info!(
+                                    "Finished command #{} with return code {:?}, reporting back to supervisor.",
+                                    event_id, exit_code
+                                );
 
                                 let send_res = match client_weak
 				    .upgrade()
@@ -885,7 +895,10 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
 				};
 
                                 if let Err(send_e) = send_res {
-                                    warn!("Failed reporting command #{} exit status back to supervisor: {:?}", event_id, send_e);
+                                    warn!(
+                                        "Failed reporting command #{} exit status back to supervisor: {:?}",
+                                        event_id, send_e
+                                    );
                                 }
                             }
                         }
@@ -893,11 +906,13 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
                         // Either way, the command finished. Remove the tx
                         // channel from the executor channels map. We drop the
                         // lock immediately afterwards:
-                        assert!(executor_channels_cloned
-                            .lock()
-                            .await
-                            .remove(&event_id)
-                            .is_some());
+                        assert!(
+                            executor_channels_cloned
+                                .lock()
+                                .await
+                                .remove(&event_id)
+                                .is_some()
+                        );
                     });
                 } else {
                     error!(
@@ -943,7 +958,9 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
         }
     }
 
-    info!("Shutting down, waiting for all other active control socket client references to go out of scope...");
+    info!(
+        "Shutting down, waiting for all other active control socket client references to go out of scope..."
+    );
 
     loop {
         match Arc::try_unwrap(client) {

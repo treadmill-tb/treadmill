@@ -240,7 +240,9 @@ impl SupervisorConnection {
                     let m: switchboard_supervisor::Message = match serde_json::from_str(&s) {
                         Ok(m) => m,
                         Err(e) => {
-                            tracing::error!("Error deserializing message ({s}) from supervisor ({supervisor_id}): {e}");
+                            tracing::error!(
+                                "Error deserializing message ({s}) from supervisor ({supervisor_id}): {e}"
+                            );
                             self.try_close(socket, supervisor_id, None).await;
                             return ControlFlow::Break(());
                         }

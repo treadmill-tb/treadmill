@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use clap::Parser;
 use serde::Deserialize;
 use tokio::sync::Mutex;
-use tracing::{event, info, instrument, warn, Level};
+use tracing::{Level, event, info, instrument, warn};
 use uuid::Uuid;
 
 use treadmill_rs::connector;

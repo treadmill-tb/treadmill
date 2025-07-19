@@ -1,11 +1,11 @@
 use crate::auth::Privilege;
 use crate::impl_simple_perm;
 use crate::serve::AppState;
-use crate::service::herd::HerdError;
 use crate::service::ServiceError;
+use crate::service::herd::HerdError;
 use std::collections::HashMap;
 use treadmill_rs::api::switchboard::supervisors::list::{ConnFilter, WorkFilter};
-use treadmill_rs::api::switchboard::{supervisors, JobRequest, JobStatus, SupervisorStatus};
+use treadmill_rs::api::switchboard::{JobRequest, JobStatus, SupervisorStatus, supervisors};
 use uuid::Uuid;
 
 // -- list_supervisors

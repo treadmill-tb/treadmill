@@ -1,5 +1,5 @@
-use crate::auth::db::DbAuth;
 use crate::auth::AuthorizationSource;
+use crate::auth::db::DbAuth;
 use crate::config::ServiceConfig;
 use crate::perms::RunJobOnSupervisor;
 use crate::service::herd::{Herd, HerdError, ReservationError};
@@ -19,10 +19,10 @@ use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
-use tokio::time::{sleep_until, Instant};
-use tracing::{instrument, Instrument};
+use tokio::time::{Instant, sleep_until};
+use tracing::{Instrument, instrument};
 use treadmill_rs::api::switchboard::{
     ExitStatus, ExtendedJobState, JobEvent, JobRequest, JobResult, JobSshEndpoint, JobState,
     JobStatus, SupervisorStatus,
@@ -361,7 +361,9 @@ impl Service {
         }
         drop(state);
 
-        tracing::info!("Restarted {restarted_count}/{restartable_count} (eligible)/{total_count} (expired) jobs.");
+        tracing::info!(
+            "Restarted {restarted_count}/{restartable_count} (eligible)/{total_count} (expired) jobs."
+        );
 
         Ok(())
     }
@@ -595,7 +597,9 @@ impl Service {
                     job_state: _,
                 } => {
                     if job_id != running_job_id {
-                        tracing::error!("Job mismatch: expected job ({job_id}), found running job ({running_job_id}).");
+                        tracing::error!(
+                            "Job mismatch: expected job ({job_id}), found running job ({running_job_id})."
+                        );
                         // so, the current situation:
                         //  - according to the kanban/database: `job_id` is running on the
                         //    supervisor
@@ -639,7 +643,9 @@ impl Service {
                         //     .supervisor_connected(supervisor_id, connected_supervisor)
                         //     .map_err(ServiceError::Herd)?;
                     } else {
-                        tracing::info!("Detection successful: job ({job_id}) is running on supervisor ({supervisor_id}).");
+                        tracing::info!(
+                            "Detection successful: job ({job_id}) is running on supervisor ({supervisor_id})."
+                        );
                         let mut reservation = state
                             .herd
                             .reserved_supervisor_connected(supervisor_id, connected_supervisor)
@@ -652,7 +658,9 @@ impl Service {
                         {
                             // error if and only if JSR disconnected, which more or less means that the
                             // atomicity property got broken somewhere.
-                            panic!("System in disorder: JSR disconnected on active job with state locked");
+                            panic!(
+                                "System in disorder: JSR disconnected on active job with state locked"
+                            );
                         }
                         // TODO: resolve A-B-A reservation problem when disconnect gets processed after connect
                         maybe_active_job.current_reservation = Some(reservation);
@@ -660,7 +668,9 @@ impl Service {
                 }
                 ReportedSupervisorStatus::Idle => {
                     // Oops
-                    tracing::warn!("Detected job drop: supervisor ({supervisor_id}) is no longer reporting job ({job_id}) as active.");
+                    tracing::warn!(
+                        "Detected job drop: supervisor ({supervisor_id}) is no longer reporting job ({job_id}) as active."
+                    );
                     let active_job = state.kanban.get_active_job(job_id).unwrap();
                     if let Some(tx) = active_job.stop_tx.take() {
                         let _ = tx.send(ExitStatus::SupervisorDroppedJob);
@@ -1602,7 +1612,9 @@ impl Service {
                 match RunningJobState::try_from(job_state) {
                     Ok(job_state) => Ok(SupervisorStatus::BusyDisconnected { job_id, job_state }),
                     Err(e) => {
-                        panic!("Invalid state: supervisor ({supervisor_id}) is disconnected, but associated job state is: {e:?}");
+                        panic!(
+                            "Invalid state: supervisor ({supervisor_id}) is disconnected, but associated job state is: {e:?}"
+                        );
                     }
                 }
             } else {

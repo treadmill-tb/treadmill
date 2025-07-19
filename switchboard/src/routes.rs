@@ -4,9 +4,9 @@ mod supervisors;
 mod tokens;
 
 use crate::serve::AppState;
+use axum::Router;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
-use axum::Router;
 use http::StatusCode;
 use tower_http::trace::TraceLayer;
 

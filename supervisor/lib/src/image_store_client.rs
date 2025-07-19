@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use tracing::{event, instrument, Level};
+use tracing::{Level, event, instrument};
 
 use treadmill_rs::image::manifest::{ImageId, ImageManifest};
 

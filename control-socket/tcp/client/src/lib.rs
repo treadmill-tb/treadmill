@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use bytes::{BufMut, Bytes, BytesMut};
 use log::{debug, error, info, warn};
 use tokio::net::TcpStream;
@@ -90,14 +90,20 @@ impl TcpControlSocketClient {
 
                     Ok(Err(addr_parse_error)) => {
                         warn!(
-			    "Error parsing TCP socket address from qemu_fw_cfg ({}): {:?}, qemu_fw_cfg bytes: {:02x?}",
-			    qemu_fw_cfg_path.display(), addr_parse_error, tcp_sockaddr_bytes);
+                            "Error parsing TCP socket address from qemu_fw_cfg ({}): {:?}, qemu_fw_cfg bytes: {:02x?}",
+                            qemu_fw_cfg_path.display(),
+                            addr_parse_error,
+                            tcp_sockaddr_bytes
+                        );
                     }
 
                     Err(utf8_error) => {
                         warn!(
-			    "Error parsing TCP socket address from qemu_fw_cfg ({}) -- not valid UTF-8: {:?}, qemu_fw_cfg bytes: {:02x?}",
-			    qemu_fw_cfg_path.display(), utf8_error, tcp_sockaddr_bytes);
+                            "Error parsing TCP socket address from qemu_fw_cfg ({}) -- not valid UTF-8: {:?}, qemu_fw_cfg bytes: {:02x?}",
+                            qemu_fw_cfg_path.display(),
+                            utf8_error,
+                            tcp_sockaddr_bytes
+                        );
                     }
                 }
             }

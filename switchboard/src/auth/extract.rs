@@ -1,17 +1,17 @@
-use super::{token::SecurityToken, AuthorizationSource, Subject, SubjectDetail};
+use super::{AuthorizationSource, Subject, SubjectDetail, token::SecurityToken};
 use crate::serve::AppState;
 use crate::sql::{self, api_token::TokenError};
 use async_trait::async_trait;
+use axum::RequestPartsExt;
 use axum::extract::FromRequestParts;
 use axum::response::{IntoResponse, Response};
-use axum::RequestPartsExt;
-use axum_extra::typed_header::TypedHeaderRejectionReason;
 use axum_extra::TypedHeader;
+use axum_extra::typed_header::TypedHeaderRejectionReason;
 use chrono::Utc;
-use headers::authorization::Bearer;
 use headers::Authorization;
-use http::request::Parts;
+use headers::authorization::Bearer;
 use http::StatusCode;
+use http::request::Parts;
 use std::sync::Arc;
 
 #[async_trait]
@@ -24,7 +24,7 @@ impl FromRequestParts<AppState> for Subject {
     ) -> Result<Self, Self::Rejection> {
         // check for a token
         let maybe_bearer = match parts.extract::<TypedHeader<Authorization<Bearer>>>().await {
-            Ok(x) => Some(x.0 .0),
+            Ok(x) => Some(x.0.0),
             Err(rejection) => match &rejection {
                 rej => match rej.reason() {
                     TypedHeaderRejectionReason::Missing => None,

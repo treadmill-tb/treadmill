@@ -1,21 +1,21 @@
+use crate::auth::AuthorizationSource;
 use crate::auth::db::DbAuth;
 use crate::auth::extract::AuthSource;
 use crate::auth::token::SecurityToken;
-use crate::auth::AuthorizationSource;
 use crate::perms::read_supervisor_status;
-use crate::routes::proxy::{proxy_err, proxy_val, Proxied};
+use crate::routes::proxy::{Proxied, proxy_err, proxy_val};
 use crate::serve::AppState;
 use crate::sql;
 use crate::{impl_from_auth_err, perms};
 use axum::extract::Query;
-use axum::extract::{ws, ConnectInfo, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, WebSocketUpgrade, ws};
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use axum_extra::TypedHeader;
-use futures_util::stream::FuturesOrdered;
 use futures_util::StreamExt;
-use headers::authorization::Bearer;
+use futures_util::stream::FuturesOrdered;
 use headers::Authorization;
+use headers::authorization::Bearer;
 use http::{HeaderValue, StatusCode};
 use std::net::SocketAddr;
 use tracing::instrument;
@@ -109,7 +109,9 @@ pub async fn connect(
             }
         }
         Err(e) => {
-            tracing::error!("failed to authenticate supervisor ({supervisor_id}) with token ({auth_token}): {e}");
+            tracing::error!(
+                "failed to authenticate supervisor ({supervisor_id}) with token ({auth_token}): {e}"
+            );
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
@@ -122,43 +124,47 @@ pub async fn connect(
                     tracing::error!("Websocket connection from {socket_addr} specifies Sec-Websocket-Protocol that cannot be converted to a string: {e}, closing.");
                     "<invalid>"
                 });
-                tracing::error!("Websocket connection from {socket_addr} specifies `Sec-Websocket-Protocol: {protocol_str}`, which is not recognized. Closing.");
+                tracing::error!(
+                    "Websocket connection from {socket_addr} specifies `Sec-Websocket-Protocol: {protocol_str}`, which is not recognized. Closing."
+                );
             } else {
                 return true;
             }
         } else {
-            tracing::error!("Websocket connection from {socket_addr} does not specify Sec-Websocket-Protocol, closing.");
+            tracing::error!(
+                "Websocket connection from {socket_addr} does not specify Sec-Websocket-Protocol, closing."
+            );
         }
         false
     }
 
     let socket_config_json = serde_json::to_string(&state.config().service.socket)
         .expect("Failed to serialize socket configuration");
-    let mut response =
-        ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL])
-            .on_upgrade(move |mut web_socket| async move {
-                tokio::spawn(async move {
-                    let maybe_subprotocol = web_socket.protocol();
-                    if !check_protocol_header(maybe_subprotocol, socket_addr) {
-                        if let Err(e) = web_socket.send(ws::Message::Close(None)).await {
-                            tracing::error!(
+    let mut response = ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL]).on_upgrade(
+        move |mut web_socket| async move {
+            tokio::spawn(async move {
+                let maybe_subprotocol = web_socket.protocol();
+                if !check_protocol_header(maybe_subprotocol, socket_addr) {
+                    if let Err(e) = web_socket.send(ws::Message::Close(None)).await {
+                        tracing::error!(
                             "Failed to send close frame (wrong subprotocol) to {socket_addr}: {e}."
                         );
-                            return;
-                        }
+                        return;
                     }
+                }
 
-                    tracing::info!("Supervisor ({supervisor_id}) connecting from {socket_addr}.");
+                tracing::info!("Supervisor ({supervisor_id}) connecting from {socket_addr}.");
 
-                    if let Err(e) = state
-                        .service()
-                        .supervisor_connected(supervisor_id, web_socket)
-                        .await
-                    {
-                        tracing::error!("Failed to connect supervisor ({supervisor_id}): {e}");
-                    }
-                });
+                if let Err(e) = state
+                    .service()
+                    .supervisor_connected(supervisor_id, web_socket)
+                    .await
+                {
+                    tracing::error!("Failed to connect supervisor ({supervisor_id}): {e}");
+                }
             });
+        },
+    );
     response.headers_mut().insert(
         TREADMILL_WEBSOCKET_CONFIG,
         socket_config_json
