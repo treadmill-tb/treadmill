@@ -17,4 +17,4 @@ members = [
 [workspace.package]
 version = "0.1.0"
 authors = ["Treadmill Project Developers <treadmill@tockos.org>"]
-edition = "2021"
+edition = "2024"
