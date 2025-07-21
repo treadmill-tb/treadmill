@@ -1,15 +1,27 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        insert into tml_switchboard.supervisors\n        (supervisor_id, name, auth_token, tags, ssh_endpoints)\n        values\n        ($1, $2, $3, $4, $5);\n        ",
+  "query": "\n        SELECT\n            supervisor_id,\n            name,\n            tags,\n            ssh_endpoints as \"ssh_endpoints: _\",\n            current_job,\n            worker_instance_id\n        FROM\n            tml_switchboard.supervisors\n        ",
   "describe": {
-    "columns": [],
-    "parameters": {
-      "Left": [
-        "Uuid",
-        "Text",
-        "Bytea",
-        "TextArray",
-        {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "supervisor_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "tags",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 3,
+        "name": "ssh_endpoints: _",
+        "type_info": {
           "Custom": {
             "name": "tml_switchboard.ssh_endpoint[]",
             "kind": {
@@ -54,9 +66,29 @@
             }
           }
         }
-      ]
+      },
+      {
+        "ordinal": 4,
+        "name": "current_job",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "worker_instance_id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
     },
-    "nullable": []
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
   },
-  "hash": "aa8cecf478d662b8ab5b200bacfbb1090d9a481d13210445ee88cf11e62616c9"
+  "hash": "d344cac6512ac72b7cf044152d6919538f7d892fade3d945567db3e3852874a5"
 }

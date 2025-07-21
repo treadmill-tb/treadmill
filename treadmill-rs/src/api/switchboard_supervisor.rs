@@ -28,7 +28,7 @@ pub struct KeepaliveConfig {
     pub ping_interval: chrono::TimeDelta,
     /// Minimum time without a PONG response before the switchboard closes the connection.
     #[serde(with = "human_duration")]
-    pub keepalive: chrono::TimeDelta,
+    pub timeout: chrono::TimeDelta,
 }
 
 // -- StartJobRequest ------------------------------------------------------------------------------

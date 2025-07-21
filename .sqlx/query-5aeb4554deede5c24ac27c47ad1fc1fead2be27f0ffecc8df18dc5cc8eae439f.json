@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select auth_token\n           from tml_switchboard.supervisors where supervisor_id = $1 limit 1;",
+  "query": "\n        SELECT\n            auth_token\n        FROM\n            tml_switchboard.supervisors\n        WHERE\n            supervisor_id = $1\n        LIMIT 1;\n        ",
   "describe": {
     "columns": [
       {
@@ -18,5 +18,5 @@
       false
     ]
   },
-  "hash": "4115d5cbd71d2c25d4e306d63217b1cdcf82dec187dc1a1a51e1141af83e25d2"
+  "hash": "5aeb4554deede5c24ac27c47ad1fc1fead2be27f0ffecc8df18dc5cc8eae439f"
 }

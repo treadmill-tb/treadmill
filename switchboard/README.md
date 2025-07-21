@@ -81,3 +81,6 @@ date: Sat, 19 Jul 2025 20:02:10 GMT
     "type": "ok"
 }
 ```
+
+
+INSERT INTO tml_switchboard.jobs (job_id, queued_at, ssh_keys, restart_policy, enqueued_by_token_id, tag_config, job_timeout, functional_state, image_id) VALUES (gen_random_uuid(), now(), array[]::varchar[], '(0)'::tml_switchboard.restart_policy, (SELECT token_id FROM tml_switchboard.api_tokens LIMIT 1), '', '1 hour', 'queued', gen_random_bytes(32));

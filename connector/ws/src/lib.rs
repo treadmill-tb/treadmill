@@ -361,9 +361,9 @@ impl<S: connector::Supervisor> Inner<S> {
 
         tracing::info!("Received switchboard socket configuration: {socket_config:?}");
 
-        let keepalive = socket_config.keepalive.keepalive.to_std().inspect_err(|e| {
-            tracing::error!("Switchboard-specified keepalive couldn't be converted to Duration: {e}; falling back to default 10s keepalive");
-        }).unwrap_or(tokio::time::Duration::from_secs(10));
+        let keepalive = socket_config.keepalive.timeout.to_std().inspect_err(|e| {
+            tracing::error!("Switchboard-specified keepalive timeout couldn't be converted to Duration: {e}; falling back to default 30s keepalive");
+        }).unwrap_or(tokio::time::Duration::from_secs(30));
         let mut interval = tokio::time::interval(keepalive);
         let mut last_received_ping = tokio::time::Instant::now();
 

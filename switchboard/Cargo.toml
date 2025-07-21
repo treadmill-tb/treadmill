@@ -65,6 +65,7 @@ base64 = "0.22.1"
 
 treadmill-rs = { path = "../treadmill-rs" }
 anyhow = "1.0.98"
+tokio-stream = "0.1.17"
 
 [dev-dependencies]
 sqlx-cli = { version = "0.8.0", features = ["postgres", "rustls", "completions"] }

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE\n            tml_switchboard.supervisors\n        SET\n            worker_instance_id = worker_instance_id + 1\n        WHERE\n            supervisor_id = $1\n        RETURNING\n            worker_instance_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "worker_instance_id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6917a16d92d8416bafeebf49f746c5ab08c3def51378b66d36ab30dffd150fd9"
+}

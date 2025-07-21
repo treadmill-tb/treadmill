@@ -6,7 +6,7 @@ user = "postgres"
 auth.password = ""
 
 [server]
-bind_address = "0.0.0.0:8081"
+bind_address = "0.0.0.0:8080"
 
 # Uncomment this to enable a TLS support.
 # DO NOT USE THIS IN PRODUCTION.
@@ -21,8 +21,8 @@ default_queue_timeout = "30m"
 match_interval = "10s"
 
 [service.socket.keepalive]
-ping_interval = "2s"
-keepalive = "10s"
+ping_interval = "10s"
+timeout = "30s"
 
 [log]
 use_tokio_console_subscriber = false

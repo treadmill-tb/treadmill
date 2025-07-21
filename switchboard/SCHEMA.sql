@@ -115,13 +115,25 @@ create table tml_switchboard.supervisors
     -- track of this state. If a job is assigned, then the supervisor is not
     -- idle, and the "sub-state" is determined through the job's state data.
     --
+    -- Any job referenced in this column must be in an "active" functional state
+    -- (as determined by the `tml_switchboard.job_state_active`)
+    -- function. This constraint is enforced through the
+    -- `trg_supervisor_ensure_supervisor_current_job_state_valid` and
+    -- `trg_job_ensure_supervisor_current_job_state_valid` triggers.
+    --
     -- This column is irrespective of whether the supervisor is currently
     -- connected to the switchboard. Even if it is disconnected, this field
     -- tracks the last-known supervisor state. It will be reconciled and updated
     -- when the supervisor next reconnects.
     --
-    -- Foreign key constrained added after `jobs` is defined below.
-    current_job        uuid,
+    -- Foreign key constrained added after `jobs` is defined below. We must not
+    -- delete a job from the database that's assigned to, or running on a
+    -- supervisor, the foreign key constraint is thus marked with ON DELETE
+    -- RESTRICT.
+    --
+    -- We make this field UNIQUE, as we must never be able to dispatch the same
+    -- job on more than one supervisor concurrently.
+    current_job        uuid UNIQUE,
 
     -- Each connected supervisor is serviced by a worker. To prevent multiple
     -- concurrent workers claiming ownership of the same supervisor, we use the
@@ -165,14 +177,23 @@ create type tml_switchboard.restart_policy as
 -- describes how the job is treated by the switchboard; it can be treated as a
 -- simplification of execution status that only concerns itself with the
 -- requirements of the switchboard.
-create type tml_switchboard.functional_state as enum (
+create type tml_switchboard.job_state as enum (
     -- The job is waiting to be dispatched to a supervisor
-    'queued',
+    'enqueued',
+    -- The job has been selected to be dispatched to a given supervisor, but the
+    -- supervisor has not confirmed that it has started the job.
+    'dispatching',
     -- The job has been dispatched to a supervisor
     'dispatched',
-    -- The job is no longer active, and the exit status has been finalized.
+    -- The job is no longer , and the exit status has been finalized.
     'finalized'
     );
+
+CREATE FUNCTION tml_switchboard.job_state_active(job_state tml_switchboard.job_state) RETURNS bool AS $$
+    BEGIN
+	RETURN (job_state == 'dispatching' or job_state == 'dispatched');
+    END;
+$$ LANGUAGE plpgsql;
 
 -- The exit status of the job. See the job lifecycle documentation in the
 -- internals section of the Treadmill book.
@@ -226,12 +247,12 @@ create table tml_switchboard.jobs
     -- partition occurs, or in general when a component of the system fails in
     -- such a way as to invalidate or otherwise clear the ephemeral state in the
     -- supervisor.
-    functional_state            tml_switchboard.functional_state not null,
+    job_state            tml_switchboard.job_state not null,
 
-    -- The time at which the job was queued. If after
-    -- [config:api.jobs.queue_timeout] the job is still queued, it will be
+    -- The time at which the job was enqueued. If after
+    -- [config:api.jobs.queue_timeout] the job is still enqueued, it will be
     -- canceled.
-    queued_at                   timestamp with time zone         not null,
+    enqueued_at                 timestamp with time zone         not null,
 
     -- The time at which the job was started.
     started_at                  timestamp with time zone,
@@ -241,7 +262,7 @@ create table tml_switchboard.jobs
     -- supervisor reconnection, the switchboard must be able to discern the
     -- failure of the job; otherwise, the only recourse of the user is to wait
     -- for the job to time out.
-    dispatched_on_supervisor_id uuid,
+    assigned_supervisor         uuid,
 
     -- SSH endpoints that this job is reachable under.
     --
@@ -260,7 +281,7 @@ create table tml_switchboard.jobs
     -- For bookkeeping purposes; for ease of use, for now this works by just
     -- putting `last_updated_at = DEFAULT` on UPDATE queries, as per
     -- https://www.morling.dev/blog/last-updated-columns-with-postgres/. The
-    -- original intention was to have something like an ON UPDATE trigger, but
+    -- original intention was to have something like an ON UPDATE trigger but
     -- since it seems a bit messy to do with Postgres, it's being left alone for
     -- now.
     last_updated_at             timestamp with time zone         not null default current_timestamp,
@@ -283,15 +304,14 @@ create table tml_switchboard.jobs
       end
     ),
 
-    -- queued => started_at, R.O.S.I = null
+    -- enqueued => started_at
     -- running => started_at, R.O.S.I != null
-    constraint valid_queued_implication check (
-      functional_state != 'queued' or
-        (started_at is null and dispatched_on_supervisor_id is null)
+    constraint valid_enqueued_implication check (
+      job_state != 'enqueued' or started_at is null
     ),
     constraint valid_dispatched_implication check (
-      functional_state != 'dispatched' or
-        (started_at is not null and dispatched_on_supervisor_id is not null)
+      (job_state != 'dispatching' and job_state != 'dispatched') or
+        (started_at is not null and assigned_supervisor is not null)
     ),
 
     -- Restart count >= 0
@@ -314,13 +334,60 @@ create table tml_switchboard.jobs
 
     -- exit status != null <=> functional state == finalized
     constraint exit_status_nullity_iso_finalized check (
-      (exit_status is not null) = (functional_state = 'finalized')
+      (exit_status is not null) = (job_state = 'finalized')
     )
 );
 
 ALTER TABLE tml_switchboard.supervisors
     ADD FOREIGN KEY (current_job)
-    REFERENCES tml_switchboard.jobs (job_id) ON DELETE NO ACTION;
+    REFERENCES tml_switchboard.jobs (job_id) ON DELETE RESTRICT;
+
+CREATE FUNCTION tml_switchboard.trgfn_supervisor_current_job_state_valid() RETURNS TRIGGER AS $$
+    DECLARE
+        new_state tml_switchboard.job_state;
+    BEGIN
+        IF NEW.current_job IS NOT NULL THEN
+            new_state := (SELECT job_state FROM tml_switchboard.jobs WHERE job_id = NEW.current_job);
+	    IF NOT tml_switchboard.job_state_active(new_state) THEN
+                RAISE EXCEPTION 'supervisor_current_job_state_invalid';
+            END IF;
+	END IF;
+        RETURN NEW;
+    END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger inherits the schema of its table:
+CREATE CONSTRAINT TRIGGER trg_supervisor_ensure_supervisor_current_job_state_valid
+    AFTER INSERT OR UPDATE ON tml_switchboard.supervisors
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    EXECUTE PROCEDURE tml_switchboard.trgfn_supervisor_current_job_state_valid();
+
+CREATE FUNCTION tml_switchboard.trgfn_job_supervisor_current_job_state_valid() RETURNS TRIGGER AS $$
+    DECLARE
+        current_job_supervisor uuid;
+    BEGIN
+        IF tml_switchboard.job_state_active(NEW.job_state) THEN
+	    current_job_supervisor = (SELECT supervisor_id FROM tml_switchboard.supervisors WHERE current_job = NEW.job_id);
+	    IF current_job_supervisor IS NULL THEN
+                RAISE EXCEPTION 'job_missing_supervisor_current_job';
+            END IF;
+	ELSE
+            current_job_supervisor = (SELECT supervisor_id FROM tml_switchboard.supervisors WHERE current_job = NEW.job_id);
+	    IF current_job_supervisor IS NOT NULL THEN
+                RAISE EXCEPTION 'job_supervisor_current_job_state_invalid';
+            END IF;
+	END IF;
+        RETURN NEW;
+    END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger inherits the schema of its table:
+CREATE CONSTRAINT TRIGGER trg_job_ensure_supervisor_current_job_state_valid
+    AFTER INSERT OR UPDATE ON tml_switchboard.jobs
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    EXECUTE PROCEDURE tml_switchboard.trgfn_job_supervisor_current_job_state_valid();
 
 create type tml_switchboard.parameter_value as
 (

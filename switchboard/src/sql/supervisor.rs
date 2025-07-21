@@ -4,11 +4,14 @@ use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use super::SqlSshEndpoint;
+// use super::job::JobId;
 use crate::auth::token::SecurityToken;
+
+super::sql_uuid_type!(SupervisorId, NullableSupervisorId);
 
 #[derive(Debug)]
 pub struct SqlSupervisor {
-    pub supervisor_id: Uuid,
+    pub supervisor_id: SupervisorId,
     pub name: String,
     pub tags: Vec<String>,
     pub ssh_endpoints: Vec<SqlSshEndpoint>,
@@ -16,8 +19,52 @@ pub struct SqlSupervisor {
     pub worker_instance_id: i64,
 }
 
+pub async fn get(
+    supervisor_id: SupervisorId,
+    conn: impl PgExecutor<'_>,
+) -> Result<SqlSupervisor, sqlx::Error> {
+    sqlx::query_as!(
+        SqlSupervisor,
+        r#"
+        SELECT
+            supervisor_id as "supervisor_id?: SupervisorId",
+            name,
+            tags,
+            ssh_endpoints as "ssh_endpoints: _",
+            current_job,
+            worker_instance_id
+        FROM
+            tml_switchboard.supervisors
+        WHERE
+            supervisor_id = $1
+        "#,
+        supervisor_id as SupervisorId,
+    )
+    .fetch_one(conn)
+    .await
+}
+
+pub async fn get_all(conn: impl PgExecutor<'_>) -> Result<Vec<SqlSupervisor>, sqlx::Error> {
+    sqlx::query_as!(
+        SqlSupervisor,
+        r#"
+        SELECT
+            supervisor_id as "supervisor_id!: SupervisorId",
+            name,
+            tags,
+            ssh_endpoints as "ssh_endpoints: _",
+            current_job,
+            worker_instance_id
+        FROM
+            tml_switchboard.supervisors
+        "#
+    )
+    .fetch_all(conn)
+    .await
+}
+
 pub async fn insert(
-    supervisor_id: Uuid,
+    supervisor_id: SupervisorId,
     name: String,
     auth_token: SecurityToken,
     tag_set: &BTreeSet<String>,
@@ -57,29 +104,31 @@ pub async fn insert(
     .map(|_| ())
 }
 
-pub async fn fetch_all_supervisors(
+pub async fn set_current_job(
+    supervisor_id: SupervisorId,
+    current_job_id: Uuid,
     conn: impl PgExecutor<'_>,
-) -> Result<Vec<SqlSupervisor>, sqlx::Error> {
-    sqlx::query_as!(
-        SqlSupervisor,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
         r#"
-        SELECT
-            supervisor_id,
-            name,
-            tags,
-            ssh_endpoints as "ssh_endpoints: _",
-            current_job,
-            worker_instance_id
-        FROM
+        UPDATE
             tml_switchboard.supervisors
-        "#
+        SET
+            current_job = $1
+        WHERE
+            supervisor_id = $2;
+        "#,
+	current_job_id,
+        supervisor_id,
     )
-    .fetch_all(conn)
+    .execute(conn)
     .await
+    .map(|_| ())
 }
 
+
 pub async fn try_authenticate_supervisor(
-    supervisor_id: Uuid,
+    supervisor_id: SupervisorId,
     auth_token: SecurityToken,
     conn: impl PgExecutor<'_>,
 ) -> Result<bool, sqlx::Error> {
@@ -112,7 +161,7 @@ pub async fn try_authenticate_supervisor(
 }
 
 pub async fn increment_worker_instance_id(
-    supervisor_id: Uuid,
+    supervisor_id: SupervisorId,
     conn: impl PgExecutor<'_>,
 ) -> Result<i64, sqlx::Error> {
     sqlx::query!(
@@ -125,26 +174,6 @@ pub async fn increment_worker_instance_id(
             supervisor_id = $1
         RETURNING
             worker_instance_id
-        "#,
-        supervisor_id,
-    )
-    .fetch_one(conn)
-    .await
-    .map(|record| record.worker_instance_id)
-}
-
-pub async fn get_current_worker_instance_id(
-    supervisor_id: Uuid,
-    conn: impl PgExecutor<'_>,
-) -> Result<i64, sqlx::Error> {
-    sqlx::query!(
-        r#"
-        SELECT
-            worker_instance_id
-        FROM
-            tml_switchboard.supervisors
-        WHERE
-            supervisor_id = $1
         "#,
         supervisor_id,
     )

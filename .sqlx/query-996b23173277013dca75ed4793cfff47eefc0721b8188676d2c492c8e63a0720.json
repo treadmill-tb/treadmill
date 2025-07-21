@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            worker_instance_id\n        FROM\n            tml_switchboard.supervisors\n        WHERE\n            supervisor_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "worker_instance_id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "996b23173277013dca75ed4793cfff47eefc0721b8188676d2c492c8e63a0720"
+}

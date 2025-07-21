@@ -6,9 +6,6 @@ use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use axum_extra::TypedHeader;
 
-use futures_util::StreamExt;
-use futures_util::stream::FuturesOrdered;
-
 use headers::Authorization;
 use headers::authorization::Bearer;
 
@@ -93,7 +90,7 @@ pub async fn list(
 /// Axum handler for the `/supervisor/:id/connect` path.
 ///
 /// Responds with an `Upgrade: websocket` and launches [`launch_supervisor_actor`] as a `tokio` task.
-#[instrument(skip(state))]
+#[instrument(skip(state, bearer, ws))]
 pub async fn connect(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -148,28 +145,28 @@ pub async fn connect(
     }
 
     let worker_state = state.clone();
-    let mut response = ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL]).on_upgrade(
-        move |mut web_socket| async move {
-            tokio::spawn(async move {
-                let maybe_subprotocol = web_socket.protocol();
-                if !check_protocol_header(maybe_subprotocol, socket_addr) {
-                    if let Err(e) = web_socket.send(ws::Message::Close(None)).await {
+    let mut response =
+        ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL])
+            .on_upgrade(move |mut web_socket| async move {
+                tokio::spawn(async move {
+                    let maybe_subprotocol = web_socket.protocol();
+                    if !check_protocol_header(maybe_subprotocol, socket_addr)
+                        && let Err(e) = web_socket.send(ws::Message::Close(None)).await
+                    {
                         tracing::error!(
                             "Failed to send close frame (wrong subprotocol) to {socket_addr}: {e}."
                         );
                         return;
                     }
-                }
 
-                tracing::info!(
-                    "Starting SupervisorWSWorker for supervisor \
+                    tracing::info!(
+                        "Starting SupervisorWSWorker for supervisor \
 		     ({supervisor_id}), connecting from {socket_addr}."
-                );
+                    );
 
-                SupervisorWSWorker::run(worker_state, supervisor_id, web_socket).await
+                    SupervisorWSWorker::run(worker_state, supervisor_id, web_socket).await
+                });
             });
-        },
-    );
 
     let socket_config_json = serde_json::to_string(&state.config().service.socket)
         .expect("Failed to serialize socket configuration");
