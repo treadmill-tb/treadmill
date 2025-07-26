@@ -326,9 +326,7 @@ async fn ssh_into_job(client: &Client, config: &config::Config, job_id: &str) ->
     let endpoint = &endpoints[0];
 
     // Get the path to our private key
-    let xdg_dirs = xdg::BaseDirectories::with_prefix("treadmill-tb")
-        .context("Failed to initialize XDG base directories")?;
-    let key_path = xdg_dirs.get_data_file("ssh-key");
+    let key_path = auth::ssh_private_key_path()?;
 
     // Ensure the key exists
     if !key_path.exists() {
@@ -434,8 +432,7 @@ async fn enqueue_job(
     // Generate or use provided SSH key
     let mut ssh_keys: Vec<_> = ssh_keys.into();
     if !disable_internal_ssh_key {
-        let (private_key, public_key) = auth::generate_job_ssh_key()?;
-        auth::save_private_key(&private_key)?;
+        let public_key = auth::generate_or_load_job_ssh_key()?;
         ssh_keys.push(public_key);
     };
 
