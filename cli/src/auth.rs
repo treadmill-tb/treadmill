@@ -54,27 +54,18 @@ fn get_token_path() -> Result<PathBuf> {
         .context("Failed to determine token file path")
 }
 
-// Generate a new Ed25519 key pair for jobs
-pub fn generate_job_ssh_key() -> Result<(PrivateKey, String)> {
-    let private_key = PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
-        .map_err(|e| anyhow!("Failed to generate Ed25519 key: {}", e))?;
-
-    let public_key = private_key.public_key();
-    let public_key_str = public_key
-        .to_openssh()
-        .map_err(|e| anyhow!("Failed to convert public key to OpenSSH format: {}", e))?;
-
-    Ok((private_key, public_key_str))
-}
-
-// Save the private key to the Treadmill data directory
-pub fn save_private_key(private_key: &PrivateKey) -> Result<PathBuf> {
+pub fn ssh_private_key_path() -> Result<PathBuf> {
     let xdg_dirs = BaseDirectories::with_prefix("treadmill-tb")
         .context("Failed to initialize XDG base directories")?;
 
-    let key_path = xdg_dirs
+    xdg_dirs
         .place_data_file("ssh-key")
-        .context("Failed to determine SSH key path")?;
+        .context("Failed to determine SSH key path")
+}
+
+// Save the private key to the Treadmill data directory
+fn save_private_key(private_key: &PrivateKey) -> Result<PathBuf> {
+    let key_path = ssh_private_key_path()?;
 
     let openssh_private_key = private_key
         .to_openssh(LineEnding::LF)
@@ -86,6 +77,31 @@ pub fn save_private_key(private_key: &PrivateKey) -> Result<PathBuf> {
     fs::set_permissions(&key_path, perms)?;
 
     Ok(key_path)
+}
+
+// Generate a new Ed25519 key pair for jobs
+pub fn generate_or_load_job_ssh_key() -> Result<String> {
+    let key_path = ssh_private_key_path()?;
+
+    let private_key = if key_path.exists() {
+        let openssh_pem_bytes =
+            std::fs::read(key_path).context("Reading Treadmill CLI SSH private key file")?;
+        PrivateKey::from_openssh(&openssh_pem_bytes)
+            .context("Parsing Treadmill CLI OpenSSH PEM-formatted private key file")?
+    } else {
+        println!("Generating new SSH keypair...");
+        let private_key = PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .map_err(|e| anyhow!("Failed to generate Ed25519 key: {}", e))?;
+        save_private_key(&private_key)?;
+        private_key
+    };
+
+    let public_key = private_key.public_key();
+    let public_key_str = public_key
+        .to_openssh()
+        .map_err(|e| anyhow!("Failed to convert public key to OpenSSH format: {}", e))?;
+
+    Ok(public_key_str)
 }
 
 // Read the job's SSH endpoints from the switchboard API
