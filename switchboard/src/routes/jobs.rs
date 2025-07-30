@@ -120,7 +120,7 @@ pub async fn list(
     .fetch_all(state.pool())
     .await
     .map_err(|_| LJResponse::Internal)
-	.map_err(proxy_err)?;
+    .map_err(proxy_err)?;
 
     let job_ids: Vec<Uuid> = perms
         .into_iter()
