@@ -57,18 +57,16 @@ pub async fn status(
 // -- list
 
 impl_from_auth_err!(LSResponse, Database => Internal, Unauthorized => Unauthorized);
-#[tracing::instrument(skip(state, auth))]
+#[tracing::instrument(skip(_state, _auth))]
 pub async fn list(
-    State(state): State<AppState>,
-    AuthSource(auth): AuthSource<DbAuth>,
-    Query(filter): Query<Filter>,
+    State(_state): State<AppState>,
+    AuthSource(_auth): AuthSource<DbAuth>,
+    Query(_filter): Query<Filter>,
 ) -> Proxied<LSResponse> {
-    let list_supervisors = auth
-        .authorize(perms::ListSupervisors { filter })
-        .await
-        .map_err(proxy_err)?;
-
-    todo!();
+    // let list_supervisors = auth
+    //     .authorize(perms::ListSupervisors { filter })
+    //     .await
+    //     .map_err(proxy_err)?;
 
     // let perm_queries: FuturesOrdered<_> = state
     //     .service()
@@ -77,12 +75,16 @@ pub async fn list(
     //     .into_iter()
     //     .map(|supervisor_id| auth.authorize(perms::ReadSupervisorStatus { supervisor_id }))
     //     .collect();
+
     // let supervisor_perms: Vec<_> = perm_queries
     //     .filter_map(|x| async move { x.ok() })
     //     .collect()
     //     .await;
+
     // let supervisors = perms::list_supervisors(&state, list_supervisors, supervisor_perms).await;
     // proxy_val(LSResponse::Ok { supervisors })
+
+    todo!()
 }
 
 // -- connect
@@ -106,8 +108,12 @@ pub async fn connect(
         }
     };
 
-    let auth_result =
-        sql::supervisor::try_authenticate_supervisor(supervisor_id, auth_token, state.pool()).await;
+    let auth_result = sql::supervisor::try_authenticate_supervisor(
+        sql::supervisor::SupervisorId(supervisor_id),
+        auth_token,
+        state.pool(),
+    )
+    .await;
     match auth_result {
         Ok(true) => (), // Success!
         Ok(false) => {
@@ -128,8 +134,8 @@ pub async fn connect(
             if protocol != HeaderValue::from_static(TREADMILL_WEBSOCKET_PROTOCOL) {
                 tracing::error!(
                     "Websocket connection from {socket_addr} specifies \
-		     `Sec-Websocket-Protocol: {protocol:?}`, which is not \
-		     recognized. Closing."
+                     `Sec-Websocket-Protocol: {protocol:?}`, which is not \
+                     recognized. Closing."
                 );
                 false
             } else {
@@ -138,7 +144,7 @@ pub async fn connect(
         } else {
             tracing::error!(
                 "Websocket connection from {socket_addr} does not specify \
-		 Sec-Websocket-Protocol, closing."
+                 Sec-Websocket-Protocol, closing."
             );
             false
         }
@@ -161,10 +167,15 @@ pub async fn connect(
 
                     tracing::info!(
                         "Starting SupervisorWSWorker for supervisor \
-		     ({supervisor_id}), connecting from {socket_addr}."
+                         ({supervisor_id}), connecting from {socket_addr}."
                     );
 
-                    SupervisorWSWorker::run(worker_state, supervisor_id, web_socket).await
+                    SupervisorWSWorker::run(
+                        worker_state,
+                        sql::supervisor::SupervisorId(supervisor_id),
+                        web_socket,
+                    )
+                    .await
                 });
             });
 

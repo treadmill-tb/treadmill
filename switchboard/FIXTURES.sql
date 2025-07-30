@@ -102,6 +102,11 @@ VALUES
 INSERT INTO
     tml_switchboard.user_privileges (user_id, permission)
 VALUES
+    -- admin has superuser privileges
+    (
+        '2c71904b-a9b7-4e22-9d56-8a5d80567ccd',
+	'admin'
+    ),
     -- general action perms
     (
         '8752ca01-a650-4716-b0a1-d2f1860e4175',

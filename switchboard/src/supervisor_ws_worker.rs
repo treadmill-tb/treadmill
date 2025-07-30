@@ -1,8 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use axum::extract::ws::{self, WebSocket};
-use futures_util::future::OptionFuture;
 use futures_util::{SinkExt, StreamExt};
-use sqlx::{PgExecutor, Postgres, Transaction};
+use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use treadmill_rs::api;
@@ -35,7 +34,11 @@ impl SupervisorWSWorker {
         fields(worker_instance_id),
         skip(app_state, socket)
     )]
-    pub async fn run(app_state: AppState, supervisor_id: sql::supervisor::SupervisorId, socket: WebSocket) {
+    pub async fn run(
+        app_state: AppState,
+        supervisor_id: sql::supervisor::SupervisorId,
+        socket: WebSocket,
+    ) {
         if let Err(e) = Self::run_inner(app_state, supervisor_id, socket).await {
             tracing::warn!("SupervisorWSWorker::run terminated with error: {e:?}");
         } else {
@@ -46,7 +49,7 @@ impl SupervisorWSWorker {
     pub async fn run_inner(
         app_state: AppState,
         supervisor_id: SupervisorId,
-        mut socket: WebSocket,
+        socket: WebSocket,
     ) -> Result<()> {
         // A supervisor has just opened a new WebSocket connection and
         // successfully authenticated. This might be because it's a new
@@ -81,8 +84,8 @@ impl SupervisorWSWorker {
         let keepalive_timeout = socket_config.keepalive.timeout.to_std().expect(
             "Configured WebSocket PONG keepalive period is out of range for core's Duration type",
         );
-        let mut ping_interval = tokio::time::interval(ping_interval_duration);
-        let mut last_received_pong = tokio::time::Instant::now();
+        let ping_interval = tokio::time::interval(ping_interval_duration);
+        let last_received_pong = tokio::time::Instant::now();
 
         // This should never fail, as the supervisor has successfully
         // authenticated:
@@ -135,7 +138,10 @@ impl SupervisorWSWorker {
         }
     }
 
-    async fn obtain_worker_instance_id(app_state: &AppState, supervisor_id: SupervisorId) -> Result<u64> {
+    async fn obtain_worker_instance_id(
+        app_state: &AppState,
+        supervisor_id: SupervisorId,
+    ) -> Result<u64> {
         let db_worker_instance_id: i64 =
             sql::supervisor::increment_worker_instance_id(supervisor_id, app_state.pool())
                 .await
@@ -214,7 +220,7 @@ impl SupervisorWSWorker {
             // running at that transaction isolation level, it'd be crucial that
             // we run this check at the very end of this transaction:
             let current_worker_instance_id: u64 =
-                sql::supervisor::get(self.supervisor_id, &mut *txn)
+                sql::supervisor::get_worker_instance_id(self.supervisor_id, &mut *txn)
                     .await
                     .with_context(|| {
                         format!(
@@ -223,11 +229,10 @@ impl SupervisorWSWorker {
                         )
                     })
                     .shutdown_on_err()?
-                    .worker_instance_id
                     .try_into()
                     .expect(
                         "Database invariant violated: worker_instance_id must be zero \
-                     or positive integer!",
+                         or positive integer!",
                     );
 
             if current_worker_instance_id == self.worker_instance_id {
@@ -280,9 +285,9 @@ impl SupervisorWSWorker {
             .try_lock()
             .expect(
                 "Failed to acquire immediate lock on `socket_sink`, this must \
-		 never happen. All calls to `socket_sink.send` must go through \
-		 `send_ws_message`, and there must be no concurrent calls to \
-		 it (e.g., through multiple `tokio::select!` branches.",
+                 never happen. All calls to `socket_sink.send` must go through \
+                 `send_ws_message`, and there must be no concurrent calls to \
+                 it (e.g., through multiple `tokio::select!` branches.",
             )
             .send(message)
             .await
@@ -312,7 +317,7 @@ impl SupervisorWSWorker {
         filter: impl Fn(ws::Message) -> ControlFlowResult<Option<R>>,
     ) -> ControlFlowResult<Option<R>> {
         let mut socket_source = self.socket_source.try_lock()
-	    .expect("Failed to acquire immediate lock on ping_timeout, reentrant call to `wait_for_ws_message`, perhaps in `filter` closure?");
+            .expect("Failed to acquire immediate lock on ping_timeout, reentrant call to `wait_for_ws_message`, perhaps in `filter` closure?");
 
         loop {
             match socket_source.next().await {
@@ -461,14 +466,14 @@ impl SupervisorWSWorker {
                     .with_context(|| format!("Retrieving supervisor {supervisor_id} DB row"))
                     .shutdown_on_err()?;
 
-                let db_current_job_fut = db_supervisor.current_job.into_option().map(async |job_id| {
+                let db_current_job_fut = db_supervisor.current_job.map(async |job_id| {
                     ControlFlowResult::ok(
-                        sql::job::get(job_id, &mut **txn)
+                        sql::job::get(job_id.into(), &mut **txn)
                             .await
                             .with_context(|| {
                                 format!(
                                     "Retrieving job {job_id} DB row (current_job \
-				     of supervisor {supervisor_id})"
+                                     of supervisor {supervisor_id})"
                                 )
                             })
                             .shutdown_on_err()?,
@@ -488,10 +493,10 @@ impl SupervisorWSWorker {
         // a serializable transaction. The supervisor's `current_job` must point
         // to a valid job record:
         assert_eq!(
-            db_supervisor.current_job.into_option().is_some(),
+            db_supervisor.current_job.is_some(),
             db_current_job.is_some(),
             "Supervisor {} indicates it has a `current_job` (job_id = {:?}), \
-	     but no such record exists (db_current_job = {:?})!",
+             but no such record exists (db_current_job = {:?})!",
             self.supervisor_id,
             db_supervisor.current_job,
             db_current_job,
@@ -502,7 +507,7 @@ impl SupervisorWSWorker {
             (None, api::switchboard_supervisor::ReportedSupervisorStatus::Idle) => {
                 // Supervisor is idle, and has no job assigned in the
                 // database. Nothing to do.
-                tracing::debug!("Both supervisor and database indicate idle state, in sync!");
+                tracing::info!("Both supervisor and database indicate idle state, in sync!");
                 ControlFlowResult::ok(())
             }
 
@@ -516,7 +521,7 @@ impl SupervisorWSWorker {
                 // supervisor status is Idle.
                 tracing::info!(
                     "Supervisor indicates it is idle, but database indicates \
-		     it should be executing job {db_job_id}, reconciling..."
+                     it should be executing job {db_job_id}, reconciling..."
                 );
 
                 // Check if the job was already dispatched: in that case, it
@@ -544,8 +549,8 @@ impl SupervisorWSWorker {
                 // The supervisor is running a job, even though it shouldn't be!
                 tracing::info!(
                     "Supervisor indicates it is running job \
-		     {supervisor_job_id}, but database indicates it should be \
-		     idle, reconciling..."
+                     {supervisor_job_id}, but database indicates it should be \
+                     idle, reconciling..."
                 );
 
                 // This can be the result of a supervisor going offline for an
@@ -570,9 +575,9 @@ impl SupervisorWSWorker {
                 // in an "executing" state (one that's supposed to be starting /
                 // running / stopping) on a supervisor. Thus, we don't have to
                 // do any addl. checks here -- the state is in sync!
-                tracing::debug!(
+                tracing::info!(
                     "Both supervisor and database indicate job {db_job_id} is \
-		     active, in sync!"
+                     active, in sync!"
                 );
                 ControlFlowResult::ok(())
             }
@@ -594,9 +599,9 @@ impl SupervisorWSWorker {
                 // supervisor has switched between?
                 tracing::warn!(
                     "Supervisor indicates it is running job \
-		     {supervisor_job_id}, but database indicates it should be \
-		     running a *different* job {db_job_id}. This likely \
-		     indicates some configuration issue or bug! Reconciling..."
+                     {supervisor_job_id}, but database indicates it should be \
+                     running a *different* job {db_job_id}. This likely \
+                     indicates some configuration issue or bug! Reconciling..."
                 );
 
                 // Either case, we can recover this state, by terminating the
@@ -660,53 +665,120 @@ impl SupervisorWSWorker {
     // Dispatch the next enqueued job that is assigned to this supervisor, if
     // there is one and we're not currently executing a different job.
     async fn dispatch_next_enqueued(&self) -> ControlFlowResult<()> {
-        let dispatch_job_id = self.worker_instance_id_check_txn(async |txn: &mut Transaction<'_, Postgres>| {
-            let db_supervisor = sql::supervisor::get(self.supervisor_id, &mut **txn)
+        let dispatching_job_opt = self
+            .worker_instance_id_check_txn(async |txn: &mut Transaction<'_, Postgres>| {
+                let db_supervisor = sql::supervisor::get(self.supervisor_id, &mut **txn)
+                    .await
+                    .with_context(|| format!("Retrieving supervisor {} DB row", self.supervisor_id))
+                    .shutdown_on_err()?;
+
+                // Check to ensure that there is not currently a job active on this
+                // supervisor:
+                if db_supervisor.current_job.is_some() {
+                    return ControlFlowResult::ok(None);
+                }
+
+                // There is no current job, retrieve the next to-be dispatched job
+                // on this supervisor, if there is one:
+                let opt_job_id = sql::job::find_next_enqueued_for_supervisor(
+                    self.supervisor_id.into(),
+                    &mut **txn,
+                )
                 .await
-                .with_context(|| format!("Retrieving supervisor {} DB row", self.supervisor_id))
+                .with_context(|| {
+                    format!(
+                        "Retreiving next enqueued job for supervisor {}",
+                        self.supervisor_id
+                    )
+                })
                 .shutdown_on_err()?;
 
-            // Check to ensure that there is not currently a job active on this
-            // supervisor:
-            if db_supervisor.current_job.into_option().is_some() {
-                return ControlFlowResult::ok(None);
-            }
+                if let Some(job_id) = opt_job_id {
+                    // There is a job to dispatch, and the supervisor is currently
+                    // idle. We change the job's state to `dispatching` and mark it
+                    // as the supervisor's `current_job`:
+                    sql::job::update_job_state(
+                        job_id,
+                        sql::job::SqlJobState::Dispatching,
+                        &mut **txn,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Setting state of job {} to 'dispatching' (to be \
+                         dispatched on supervisor {})",
+                            job_id, self.supervisor_id
+                        )
+                    })
+                    .continue_on_err()?;
 
-            // There is no current job, retrieve the next to-be dispatched job
-            // on this supervisor, if there is one:
-            let opt_job_id = sql::job::find_next_enqueued_for_supervisor(self.supervisor_id, &mut **txn)
-		.await
-		.with_context(|| format!("Retreiving next enqueued job for supervisor {}", self.supervisor_id))
-		.shutdown_on_err()?;
+                    sql::supervisor::set_current_job(self.supervisor_id, job_id, &mut **txn)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Setting current_job = {} for supervisor {}",
+                                job_id, self.supervisor_id
+                            )
+                        })
+                        .continue_on_err()?;
 
-	    if let Some(job_id) = opt_job_id {
-		// There is a job to dispatch, and the supervisor is currently
-		// idle. We change the job's state to `dispatching` and mark it
-		// as the supervisor's `current_job`:
-		sql::job::update_job_state(
-		    job_id,
-		    sql::job::SqlJobState::Dispatching,
-		    &mut **txn,
-		)
-		    .await
-		    .with_context(|| format!("Setting state of job {} to 'dispatching' (to be dispatched on supervisor {})", job_id, self.supervisor_id))
-		    .continue_on_err()?;
+                    // Retrieve the updated job and its parameters from the database
+                    // just before committing the transaction:
+                    let db_job = sql::job::get(job_id, &mut **txn)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Fetching job {} that is about to be \
+                                 dispatched on supervisor {}",
+                                job_id, self.supervisor_id
+                            )
+                        })
+                        .continue_on_err()?;
 
-		sql::supervisor::set_current_job(
-		    self.supervisor_id,
-		    job_id,
-		    &mut **txn,
-		)
-		    .await
-		    .with_context(|| format!("Setting current_job = {} for supervisor {}", job_id, self.supervisor_id))
-		    .continue_on_err()?;
-	    }
+                    let db_job_params = sql::job::parameters::fetch_by_job_id(job_id, &mut **txn)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Fetching parameters for job {} that is about \
+                                 to be dispatched on supervisor {}",
+                                job_id, self.supervisor_id
+                            )
+                        })
+                        .continue_on_err()?;
 
-	    ControlFlowResult::ok(opt_job_id)
-        })
+                    ControlFlowResult::ok(Some((db_job, db_job_params)))
+                } else {
+                    ControlFlowResult::ok(None)
+                }
+            })
             .await?;
 
-	todo!()
+        // Only proceed if we have marked a new job as "dispatching":
+        let Some((db_job, db_job_params)) = dispatching_job_opt else {
+            return ControlFlowResult::ok(());
+        };
+
+        let start_job_message = api::switchboard_supervisor::StartJobMessage {
+            job_id: db_job.job_id.into(),
+            image_spec: db_job.read_image_spec(),
+            restart_policy: db_job.restart_policy(),
+            ssh_keys: db_job.ssh_keys,
+            parameters: db_job_params,
+        };
+
+        self.send_message(api::switchboard_supervisor::Message::StartJob(
+            start_job_message,
+        ))
+        .await
+        .with_context(|| {
+            format!(
+                "Sending start_job message to start job {} on supervisor {}",
+                db_job.job_id, self.supervisor_id,
+            )
+        })
+        .shutdown_on_err()?;
+
+        ControlFlowResult::ok(())
     }
 
     async fn loop_iter(&mut self) -> ControlFlowResult<()> {
@@ -714,58 +786,58 @@ impl SupervisorWSWorker {
             "Failed to acquire immediate lock on `ping_timeout`, reentrant call to `loop_iter`?",
         );
         let mut check_enqueued_jobs_interval = self.check_enqueued_jobs_interval.try_lock()
-	    .expect("Failed to acquire immediate lock on `check_enqueued_jobs_interval`, reentrant call to `loop_iter`?");
+            .expect("Failed to acquire immediate lock on `check_enqueued_jobs_interval`, reentrant call to `loop_iter`?");
 
         #[rustfmt::skip]
         tokio::select! {
-	    biased;
+            biased;
 
-	    // Does not call `self.send_ws_message` during the Future's
-	    // execution. This has highest priority: if we're processing a flood
-	    // of messages from the supervisor, we want to generally try and
-	    // keep the connection alive by sending Ping messages or, terminate
-	    // if when we haven't received a Pong for the specified timeout
-	    // (which would be symptomatic of a busy-loop send bug on the
-	    // switchboard). Eventually, we'll want to employ some better
-	    // rate-limiting.
+            // Does not call `self.send_ws_message` during the Future's
+            // execution. This has highest priority: if we're processing a flood
+            // of messages from the supervisor, we want to generally try and
+            // keep the connection alive by sending Ping messages or, terminate
+            // if when we haven't received a Pong for the specified timeout
+            // (which would be symptomatic of a busy-loop send bug on the
+            // switchboard). Eventually, we'll want to employ some better
+            // rate-limiting.
             _ = ping_interval.tick() => {
                 let elapsed = {
-		    let last_received_pong = self.last_received_pong.lock().expect("`last_received_pong` lock poisoned");
-		    last_received_pong.elapsed()
-		};
+                    let last_received_pong = self.last_received_pong.lock().expect("`last_received_pong` lock poisoned");
+                    last_received_pong.elapsed()
+                };
                 if elapsed > self.keepalive_timeout {
                     return ControlFlowResult::ShutdownError(anyhow!(
-			"Haven't received a PONG from supervisor {} in {elapsed:?}",
-			self.supervisor_id
-		    ));
+                        "Haven't received a PONG from supervisor {} in {elapsed:?}",
+                        self.supervisor_id
+                    ));
                 }
 
-		tracing::trace!("Supervisor WebSocket PING");
+                tracing::trace!("Supervisor WebSocket PING");
                 if let Err(e) = self.send_ws_message(ws::Message::Ping(vec![])).await {
                     return ControlFlowResult::ShutdownError(anyhow!(
-			"Failed to send PING to supervisor {}: {e}",
-			self.supervisor_id,
-		    ));
+                        "Failed to send PING to supervisor {}: {e}",
+                        self.supervisor_id,
+                    ));
                 }
 
-		ControlFlowResult::ok(())
+                ControlFlowResult::ok(())
             }
 
-	    // This is the only branch that may (transitively) call
-	    // `self.send_ws_message` interally, during execution of its
-	    // future. No other branch is permitted to do this, as otherwise we
-	    // could attempt to lock the `socket_sink` Mutex twice and panic.
+            // This is the only branch that may (transitively) call
+            // `self.send_ws_message` interally, during execution of its
+            // future. No other branch is permitted to do this, as otherwise we
+            // could attempt to lock the `socket_sink` Mutex twice and panic.
             res = self.wait_for_message(true, |_| ControlFlowResult::ok(None::<()>)) => {
                 res?;
                 ControlFlowResult::ok(())
             }
 
-	    // Run a periodic check looking for enqueued jobs that have been
-	    // assigned to this supervisor (and we should thus select as
-	    // `current_job` and dispatch):
-	    _ = check_enqueued_jobs_interval.tick() => {
-		todo!()
-	    }
+            // Run a periodic check looking for enqueued jobs that have been
+            // assigned to this supervisor (and we should thus select as
+            // `current_job` and dispatch):
+            _ = check_enqueued_jobs_interval.tick() => {
+                self.dispatch_next_enqueued().await
+            }
         }
     }
 }
@@ -774,6 +846,7 @@ impl SupervisorWSWorker {
 
 enum ControlFlowResult<T, E = anyhow::Error> {
     Continue(Result<T, E>),
+    #[allow(dead_code)]
     ShutdownSuccess,
     ShutdownError(E),
 }
@@ -799,7 +872,7 @@ impl<T, E> ControlFlowResult<T, E> {
         }
     }
 
-    pub fn is_shutdown(&self) -> bool {
+    pub fn _is_shutdown(&self) -> bool {
         match self {
             ControlFlowResult::Continue(_) => false,
             ControlFlowResult::ShutdownSuccess => true,

@@ -4,8 +4,8 @@ pub(crate) mod perm;
 pub mod supervisor;
 
 macro_rules! sql_uuid_type {
-    ($ty_name:ident, $nullable_ty_name:ident) => {
-	#[derive(
+    ($ty_name:ident) => {
+        #[derive(
             Clone,
             Copy,
             Debug,
@@ -15,76 +15,33 @@ macro_rules! sql_uuid_type {
             PartialOrd,
             serde::Deserialize,
             serde::Serialize,
-	    sqlx::Type,
-	)]
-	#[serde(transparent)]
-	#[sqlx(transparent)]
-	pub struct $ty_name(pub ::uuid::Uuid);
+            sqlx::Type,
+        )]
+        #[serde(transparent)]
+        #[sqlx(transparent)]
+        pub struct $ty_name(pub ::uuid::Uuid);
 
-	// impl ::sqlx::Type<::sqlx::Postgres> for $ty_name {
-	//     fn type_info() -> <::sqlx::Postgres as ::sqlx::Database>::TypeInfo {
-	// 	<::uuid::Uuid as ::sqlx::Type<::sqlx::Postgres>>::type_info()
-	//     }
-	// }
+        impl ::core::convert::From<::uuid::Uuid> for $ty_name {
+            fn from(other: ::uuid::Uuid) -> Self {
+                $ty_name(other)
+            }
+        }
 
-	impl ::core::convert::From<::uuid::Uuid> for $ty_name {
-	    fn from(other: ::uuid::Uuid) -> Self {
-		$ty_name(other)
-	    }
-	}
+        impl ::core::convert::From<$ty_name> for ::uuid::Uuid {
+            fn from(other: $ty_name) -> Self {
+                other.0
+            }
+        }
 
-	impl ::core::convert::From<$ty_name> for ::uuid::Uuid {
-	    fn from(other: $ty_name) -> Self {
-		other.0
-	    }
-	}
-
-	impl ::std::fmt::Display for $ty_name {
-	    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::result::Result<(), ::std::fmt::Error> {
-		self.0.fmt(f)
-	    }
-	}
-
-	// #[derive(Debug, Copy, Clone, PartialEq, Eq, sqlx::Encode, sqlx::Decode)]
-	// #[repr(transparent)]
-	// pub struct $nullable_ty_name(pub std::option::Option<$ty_name>);
-
-	// impl $nullable_ty_name {
-	//     pub fn into_option(self) -> std::option::Option<$ty_name> {
-	// 	self.into()
-	//     }
-	// }
-
-	// impl ::sqlx::Type<::sqlx::Postgres> for $nullable_ty_name {
-	//     fn type_info() -> <::sqlx::Postgres as ::sqlx::Database>::TypeInfo {
-	// 	<::std::option::Option<$ty_name> as ::sqlx::Type<::sqlx::Postgres>>::type_info()
-	//     }
-	// }
-
-	// impl ::core::convert::From<std::option::Option<::uuid::Uuid>> for $nullable_ty_name {
-	//     fn from(other: std::option::Option<::uuid::Uuid>) -> Self {
-	// 	$nullable_ty_name(other.map(|v| v.into()))
-	//     }
-	// }
-
-	// impl ::core::convert::From<$nullable_ty_name> for std::option::Option<::uuid::Uuid> {
-	//     fn from(other: $nullable_ty_name) -> Self {
-	// 	other.0.map(|v| v.into())
-	//     }
-	// }
-
-	// impl ::core::convert::From<std::option::Option<$ty_name>> for $nullable_ty_name {
-	//     fn from(other: std::option::Option<$ty_name>) -> Self {
-	// 	$nullable_ty_name(other)
-	//     }
-	// }
-
-	// impl ::core::convert::From<$nullable_ty_name> for std::option::Option<$ty_name> {
-	//     fn from(other: $nullable_ty_name) -> Self {
-	// 	other.0
-	//     }
-	// }
-    }
+        impl ::std::fmt::Display for $ty_name {
+            fn fmt(
+                &self,
+                f: &mut ::std::fmt::Formatter<'_>,
+            ) -> ::std::result::Result<(), ::std::fmt::Error> {
+                self.0.fmt(f)
+            }
+        }
+    };
 }
 
 // Make macro accessible through module path:

@@ -120,7 +120,8 @@ pub async fn list(
     .fetch_all(state.pool())
     .await
     .map_err(|_| LJResponse::Internal)
-    .map_err(proxy_err)?;
+	.map_err(proxy_err)?;
+
     let job_ids: Vec<Uuid> = perms
         .into_iter()
         .map(|perm| Uuid::from_str(perm.permission.split(':').nth(1).unwrap()).unwrap())
@@ -130,6 +131,7 @@ pub async fn list(
         .into_iter()
         .map(|job_id| auth.authorize(perms::ReadJobStatus { job_id }))
         .collect();
+
     let job_perms: Vec<_> = perm_queries
         .filter_map(|x| async move { x.ok() })
         .collect()

@@ -72,8 +72,8 @@ pub enum ReadSupervisorStatusError {
 }
 /// Read supervisor status.
 pub async fn read_supervisor_status(
-    state: &AppState,
-    supervisor: Privilege<'_, ReadSupervisorStatus>,
+    _state: &AppState,
+    _supervisor: Privilege<'_, ReadSupervisorStatus>,
 ) -> Result<SupervisorStatus, ReadSupervisorStatusError> {
     todo!()
 
@@ -107,9 +107,9 @@ pub enum SubmitJobError {
     SupervisorMatchError,
 }
 pub async fn submit_job(
-    state: &AppState,
-    p: Privilege<'_, SubmitJob>,
-    job_request: JobRequest,
+    _state: &AppState,
+    _p: Privilege<'_, SubmitJob>,
+    _job_request: JobRequest,
 ) -> Result<Uuid, SubmitJobError> {
     todo!()
 
@@ -140,8 +140,8 @@ pub enum ReadJobStatusError {
     NoSuchJob,
 }
 pub async fn read_job_status(
-    state: &AppState,
-    p: Privilege<'_, ReadJobStatus>,
+    _state: &AppState,
+    _p: Privilege<'_, ReadJobStatus>,
 ) -> Result<JobStatus, ReadJobStatusError> {
     todo!()
 
@@ -171,7 +171,7 @@ pub enum StopJobError {
     #[allow(dead_code)]
     NoSuchJob,
 }
-pub async fn stop_job(state: &AppState, p: Privilege<'_, StopJob>) -> Result<(), StopJobError> {
+pub async fn stop_job(_state: &AppState, _p: Privilege<'_, StopJob>) -> Result<(), StopJobError> {
     todo!()
 
     // state
