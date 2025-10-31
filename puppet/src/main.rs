@@ -993,7 +993,7 @@ async fn main() -> Result<()> {
 
     let args = PuppetCli::parse();
 
-    async fn client_dbus_connect(bus_options: &ClientBusOptions) -> Result<DbusPuppetProxy> {
+    async fn client_dbus_connect(bus_options: &ClientBusOptions) -> Result<DbusPuppetProxy<'_>> {
         let conn = match bus_options.dbus_bus {
             PuppetDbusBus::System => zbus::Connection::system().await?,
             PuppetDbusBus::Session => zbus::Connection::session().await?,
