@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_recursion::async_recursion;
@@ -1611,6 +1612,26 @@ impl NbdNetbootSupervisor {
         self.connector
             .update_job_state(job_id, RunningJobState::Terminated, Some(terminate_message))
             .await;
+
+        // -----------------------------------------------------------
+        // RENAME THE JOB DIRECTORY TO MARK IT OLD
+        //
+        // Example: turn /var/lib/treadmill/.../jobs/<uuid>
+        // into    /var/lib/treadmill/.../jobs/<uuid>-old-1678458722 <- now_secs
+        // -----------------------------------------------------------
+        let now_secs = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(dur) => dur.as_secs(),
+            Err(_) => 0,
+        };
+        if let Some(job_dir_name) = job_workdir.file_name() {
+            if let Some(parent_dir) = job_workdir.parent() {
+                let new_dir_name = format!("{}-old-{}", job_dir_name.to_string_lossy(), now_secs);
+                let old_dir_path = parent_dir.join(new_dir_name);
+                if let Err(e) = tokio::fs::rename(&job_workdir, &old_dir_path).await {
+                    tracing::warn!("Failed to rename old job dir: {:?}", e);
+                }
+            }
+        }
 
         // Finally, remove the job from the jobs HashMap. Eventually, all other
         // `Arc` references (including the one we hold) will get dropped.
