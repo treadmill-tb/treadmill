@@ -30,8 +30,7 @@ mod config;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "tml",
-    version = "2.0",
+    version,
     author = "Treadmill Project Developers <treadmill@tockos.org>",
     about = "Treadmill Testbed CLI",
     long_about = "A command-line interface tool for interacting with the Treadmill test bench system."
