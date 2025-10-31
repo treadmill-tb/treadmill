@@ -183,11 +183,86 @@ jobs:
             echo "Job $job_number E2E API test completed successfully"
           }
 
+          create_job_and_wait_for_timeout() {
+            echo "Creating job with no available supervisor..."
+            job_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" POST localhost:8080/api/v1/jobs/new \
+              tag_config="supervisor:non_existent_supervisor" \
+              init_spec[type]=image \
+              init_spec[image_id]="${tml_image_id}" \
+              ssh_keys:='[]' \
+              restart_policy[remaining_restart_count]:=0 \
+              ssh_rendezvous_servers:='[]' \
+              parameters:='{}' \
+              override_timeout="60") || {
+                echo "Error creating job: $job_response"
+                return 1
+              }
+
+            echo "Create job response: $job_response"
+
+            job_id=$(echo "$job_response" | jq -r '.job_id // empty')
+
+            if [ -z "$job_id" ]; then
+              echo "Failed to extract job ID from response"
+              return 1
+            fi
+
+            echo "Created job with ID: $job_id"
+
+            echo "Waiting for job to timeout..."
+            timeout=120
+            start_time=$(date +%s)
+
+            while true; do
+              current_time=$(date +%s)
+              elapsed=$((current_time - start_time))
+
+              if [ $elapsed -ge $timeout ]; then
+                echo "Timeout waiting for job to complete"
+                return 1
+              fi
+
+              status_response=$(http --check-status --ignore-stdin --timeout=10 --print=b -A bearer -a "${tml_token}" GET localhost:8080/api/v1/jobs/${job_id}/status) || {
+                echo "Error getting job status: $status_response"
+                return 1
+              }
+              job_status=$(echo "$status_response" | jq -r '.job_status.state.type // empty')
+
+              echo "Job status: $job_status"
+
+              if [ "$job_status" = "terminated" ]; then
+                echo "Job timed out successfully"
+                break
+              fi
+
+              sleep 5
+            done
+
+            echo "Job timeout test completed successfully"
+          }
+
           create_and_cancel_job 1
 
           create_and_cancel_job 2
 
-          echo "Both E2E API tests completed successfully"
+          # Test job timeout
+          if create_job_and_wait_for_timeout; then
+            echo "Job timeout test passed"
+          else
+            echo "Job timeout test failed"
+            exit 1
+          fi
+
+          # Start a new supervisor
+          echo "Starting a new supervisor..."
+          nohup cargo run --package tml-mock-supervisor -- -c mock_supervisor_config.toml --puppet-binary ./target/debug/tml-puppet > mock_supervisor_2.log 2>&1 &
+          echo $! > mock_supervisor_2.pid
+          sleep 5
+
+          # Create and cancel a job with the new supervisor
+          create_and_cancel_job 3
+
+          echo "All E2E API tests completed successfully"
       - name: Run database interaction tests
         run: |
           echo "TODO"
@@ -201,6 +276,7 @@ jobs:
         run: |
           kill $(cat switchboard.pid) || true
           kill $(cat mock_supervisor.pid) || true
+          kill $(cat mock_supervisor_2.pid) || true
       - name: Check for supervisor panic
         run: |
           cat mock_supervisor.log
@@ -232,4 +308,5 @@ jobs:
           path: |
             switchboard.log
             mock_supervisor.log
+            mock_supervisor_2.log
           retention-days: 7
