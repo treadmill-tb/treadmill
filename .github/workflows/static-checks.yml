@@ -2,43 +2,27 @@ name: tml-static-checks
 env:
   TERM: xterm # Makes tput work in actions output
 
-# Controls when the action will run. Triggers the workflow on push or pull request
-# events but only for the master branch
+# Controls when the action will run. Triggers the workflow on push or pull
+# request events but only for the master branch
 on:
-  push: # Run CI for all branches except GitHub merge queue tmp branches
+  # Run CI for all branches except GitHub merge queue tmp branches
+  push:
     branches-ignore:
     - "gh-readonly-queue/**"
-  pull_request: # Run CI for PRs on any branch
-  merge_group: # Run CI for the GitHub merge queue
+  # Run CI for PRs on any branch
+  pull_request:
+  # Run CI for the GitHub merge queue
+  merge_group:
 
 permissions:
   contents: read
 
 jobs:
-  ci-format:
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-
-    runs-on: ${{ matrix.os }}
-
+  nix-flake-check:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: rustfmt check
-        uses: actions-rust-lang/rustfmt@v1
-
-  ci-build:
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Build all crates
-        run: |
-          # Pass --locked to ensure that the lockfile in the repository stays current
-          cargo build --locked
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: nix flake check
+        run: nix flake check --print-build-logs
