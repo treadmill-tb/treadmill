@@ -8,7 +8,7 @@ edition.workspace = true
 treadmill-rs = { path = "../../../treadmill-rs" }
 
 anyhow = "1.0.76"
-bytes = "1.5.0"
+bytes = "1.11.1"
 futures = { version = "0.3.30", default-features = false }
 log = "0.4.20"
 serde_json = "1.0.108"

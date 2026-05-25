@@ -12,7 +12,7 @@ console-subscriber = "0.4.0"
 uuid = { version = "1.9.1", features = ["serde", "fast-rng", "v4"] }
 chrono = { version = "0.4.38", features = ["serde"] }
 # because cookie-rs has an unavoidable hard dependency on time::Duration
-time = "0.3.36"
+time = "0.3.47"
 
 # Database
 sqlx = { version = "0.8.0", features = [
@@ -58,7 +58,7 @@ rand = { version = "0.9.0-alpha.1", features = ["getrandom", "std", "std_rng"] }
 
 # Logging facilities
 tracing = { version = "0.1.40" }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
 # Command line arguments
 clap = { version = "4.5.8", features = ["derive", "error-context", "env"] }
