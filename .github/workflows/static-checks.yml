@@ -5,14 +5,20 @@ env:
 # Controls when the action will run. Triggers the workflow on push or pull
 # request events but only for the master branch
 on:
-  # Run CI for all branches except GitHub merge queue tmp branches
+  # To avoid double-runs, we only run checks on main (or other long-term
+  # branches potentially added in the future). To initiate checks to be
+  # triggered for a branch, open a (draft) PR.
   push:
-    branches-ignore:
-    - "gh-readonly-queue/**"
+    branches: [main]
   # Run CI for PRs on any branch
   pull_request:
   # Run CI for the GitHub merge queue
   merge_group:
+
+# Cancel superseded runs for the same PR. Never cancel merge_group or main runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
