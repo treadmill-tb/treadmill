@@ -58,26 +58,76 @@ let
     ];
   };
 
-  cargoArtifacts = craneLib.buildDepsOnly cargoCommonArgs;
+  # Multiple dependency-only derivations for diverging feature graphs.
+  #
+  # The dependency layer caching is not very effective for diverging feature
+  # graphs; cargo will re-built a large portion of the dependency graph for
+  # crates that don't share their features with the cumulative feature set of
+  # the workspace.
+  #
+  # To counter this, we make sure that workspace crates with divergent feature
+  # graphs (switchboard's console-subscriber + sqlx, cli's reqwest + ssh2,
+  # puppet's zbus) get their own deps layer; the three supervisors share one.
+  #
+  # Each binary build is invoked with the same `-p` selection as its group's
+  # deps layer plus `--bin <name>`, so cargo's feature unification matches and
+  # the cached dep artifacts are reused verbatim. `doCheck = false +
+  # cargoCheckExtraArgs = ""` keep dev-deps and `--all-targets` out of the graph
+  # for the same reason, the bin build doesn't activate them either.
+  pFlagsFor = crates: lib.concatMapStringsSep " " (c: "-p ${c}") crates;
 
-  individualCrateArgs = cargoCommonArgs // {
-    inherit cargoArtifacts;
-    doCheck = false;
+  mkGroupDeps =
+    name: crates:
+    craneLib.buildDepsOnly (
+      cargoCommonArgs
+      // {
+        pname = "treadmill-${name}";
+        cargoExtraArgs = "--locked ${pFlagsFor crates}";
+        doCheck = false;
+        cargoCheckExtraArgs = "";
+      }
+    );
+
+  mkGroup = name: crates: {
+    inherit crates;
+    deps = mkGroupDeps name crates;
   };
+
+  groups = {
+    cli = mkGroup "cli" [ "treadmill-cli" ];
+    switchboard = mkGroup "switchboard" [ "treadmill-switchboard" ];
+    puppet = mkGroup "puppet" [ "treadmill-puppet" ];
+    supervisors = mkGroup "supervisors" [
+      "treadmill-qemu-supervisor"
+      "treadmill-nbd-netboot-supervisor"
+      "treadmill-mock-supervisor"
+    ];
+  };
+
+  # Workspace-wide deps layer for clippy / `cargo build --workspace` checks
+  # that legitimately span the whole graph. Not used by per-binary builds.
+  workspaceDeps = craneLib.buildDepsOnly (
+    cargoCommonArgs
+    // {
+      pname = "treadmill-workspace";
+    }
+  );
 
   mkBin =
     {
-      crate,
+      group,
       bin,
       extraBuildInputs ? [ ],
       extraEnv ? { },
     }:
     craneLib.buildPackage (
-      individualCrateArgs
+      cargoCommonArgs
       // {
         pname = bin;
-        cargoExtraArgs = "--locked -p ${crate} --bin ${bin}";
-        buildInputs = individualCrateArgs.buildInputs ++ extraBuildInputs;
+        cargoArtifacts = group.deps;
+        cargoExtraArgs = "--locked ${pFlagsFor group.crates} --bin ${bin}";
+        buildInputs = cargoCommonArgs.buildInputs ++ extraBuildInputs;
+        doCheck = false;
       }
       // extraEnv
     );
@@ -88,8 +138,8 @@ in
     craneLib
     src
     cargoCommonArgs
-    cargoArtifacts
-    individualCrateArgs
+    groups
     mkBin
+    workspaceDeps
     ;
 }

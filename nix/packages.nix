@@ -16,33 +16,33 @@
         default = tml;
 
         tml = cmn.mkBin {
-          crate = "treadmill-cli";
+          group = cmn.groups.cli;
           bin = "tml";
         };
 
         swx = cmn.mkBin {
-          crate = "treadmill-switchboard";
+          group = cmn.groups.switchboard;
           bin = "swx";
         };
 
         treadmill-qemu-supervisor = cmn.mkBin {
-          crate = "treadmill-qemu-supervisor";
+          group = cmn.groups.supervisors;
           bin = "treadmill-qemu-supervisor";
         };
 
         treadmill-nbd-netboot-supervisor = cmn.mkBin {
-          crate = "treadmill-nbd-netboot-supervisor";
+          group = cmn.groups.supervisors;
           bin = "treadmill-nbd-netboot-supervisor";
         };
 
         treadmill-mock-supervisor = cmn.mkBin {
-          crate = "treadmill-mock-supervisor";
+          group = cmn.groups.supervisors;
           bin = "treadmill-mock-supervisor";
         };
       }
       // lib.optionalAttrs isLinux {
         tml-puppet = cmn.mkBin {
-          crate = "treadmill-puppet";
+          group = cmn.groups.puppet;
           bin = "tml-puppet";
         };
       };
