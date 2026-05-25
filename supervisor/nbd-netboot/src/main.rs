@@ -656,15 +656,15 @@ impl NbdNetbootSupervisor {
             }
 
             // If the image has a backing format, it must be "qcow2":
-            if let Some(fmt) = metadata.backing_filename_format {
-                if fmt != "qcow2" {
-                    bail!(
-                        "Image file {:?} can only have backing files of \
+            if let Some(fmt) = metadata.backing_filename_format
+                && fmt != "qcow2"
+            {
+                bail!(
+                    "Image file {:?} can only have backing files of \
                          qcow2 format (actual: {})",
-                        image_path,
-                        fmt,
-                    );
-                }
+                    image_path,
+                    fmt,
+                );
             }
 
             // If the manifest has a `lower` attribute then this image must have

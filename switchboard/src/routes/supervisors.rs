@@ -140,31 +140,31 @@ pub async fn connect(
 
     let socket_config_json = serde_json::to_string(&state.config().service.socket)
         .expect("Failed to serialize socket configuration");
-    let mut response = ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL]).on_upgrade(
-        move |mut web_socket| async move {
-            tokio::spawn(async move {
-                let maybe_subprotocol = web_socket.protocol();
-                if !check_protocol_header(maybe_subprotocol, socket_addr) {
-                    if let Err(e) = web_socket.send(ws::Message::Close(None)).await {
+    let mut response =
+        ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL])
+            .on_upgrade(move |mut web_socket| async move {
+                tokio::spawn(async move {
+                    let maybe_subprotocol = web_socket.protocol();
+                    if !check_protocol_header(maybe_subprotocol, socket_addr)
+                        && let Err(e) = web_socket.send(ws::Message::Close(None)).await
+                    {
                         tracing::error!(
                             "Failed to send close frame (wrong subprotocol) to {socket_addr}: {e}."
                         );
                         return;
                     }
-                }
 
-                tracing::info!("Supervisor ({supervisor_id}) connecting from {socket_addr}.");
+                    tracing::info!("Supervisor ({supervisor_id}) connecting from {socket_addr}.");
 
-                if let Err(e) = state
-                    .service()
-                    .supervisor_connected(supervisor_id, web_socket)
-                    .await
-                {
-                    tracing::error!("Failed to connect supervisor ({supervisor_id}): {e}");
-                }
+                    if let Err(e) = state
+                        .service()
+                        .supervisor_connected(supervisor_id, web_socket)
+                        .await
+                    {
+                        tracing::error!("Failed to connect supervisor ({supervisor_id}): {e}");
+                    }
+                });
             });
-        },
-    );
     response.headers_mut().insert(
         TREADMILL_WEBSOCKET_CONFIG,
         socket_config_json

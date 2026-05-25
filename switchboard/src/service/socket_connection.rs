@@ -107,11 +107,10 @@ impl SupervisorConnection {
                     }
                 }
                 out = self.outbox.recv() => {
-                    if let Some(outbox_message) = out {
-                        if self.handle_outgoing_message(&mut socket, outbox_message).await.is_break() {
+                    if let Some(outbox_message) = out
+                        && self.handle_outgoing_message(&mut socket, outbox_message).await.is_break() {
                             return
                         }
-                    }
                 }
                 r = socket.next() => {
                     if let Some(r) = r {
