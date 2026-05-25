@@ -1,7 +1,6 @@
 use super::{AuthorizationSource, Subject, SubjectDetail, token::SecurityToken};
 use crate::serve::AppState;
 use crate::sql::{self, api_token::TokenError};
-use async_trait::async_trait;
 use axum::RequestPartsExt;
 use axum::extract::FromRequestParts;
 use axum::response::{IntoResponse, Response};
@@ -14,7 +13,6 @@ use http::StatusCode;
 use http::request::Parts;
 use std::sync::Arc;
 
-#[async_trait]
 impl FromRequestParts<AppState> for Subject {
     type Rejection = Response;
 
@@ -81,7 +79,6 @@ impl FromRequestParts<AppState> for Subject {
 #[derive(Debug)]
 pub struct AuthSource<AS: AuthorizationSource>(pub AS);
 
-#[async_trait]
 impl<AS: AuthorizationSource> FromRequestParts<AppState> for AuthSource<AS> {
     type Rejection = Response;
 

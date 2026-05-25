@@ -77,7 +77,7 @@ pub async fn list(
 
 // -- connect
 
-/// Axum handler for the `/supervisor/:id/connect` path.
+/// Axum handler for the `/supervisor/{id}/connect` path.
 ///
 /// Responds with an `Upgrade: websocket` and launches [`launch_supervisor_actor`] as a `tokio` task.
 #[instrument(skip(state))]
