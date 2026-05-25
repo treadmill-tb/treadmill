@@ -17,11 +17,7 @@ clap = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 strfmt = "0.2.4"
-tokio = { workspace = true, features = [
-  "rt-multi-thread",
-  "process",
-  "fs",
-] }
+tokio = { workspace = true, features = ["rt-multi-thread", "process", "fs"] }
 toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
