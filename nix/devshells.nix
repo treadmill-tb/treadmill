@@ -8,8 +8,6 @@
     }:
     let
       cmn = import ./lib.nix { inherit inputs system pkgs; };
-      inherit (pkgs) lib;
-      inherit (pkgs.stdenv) isLinux;
 
       defaultShell = cmn.craneLib.devShell {
         packages = with pkgs; [
@@ -72,7 +70,7 @@
     {
       devShells = {
         default = defaultShell;
-      }
-      // lib.optionalAttrs isLinux { database = databaseShell; };
+        database = databaseShell;
+      };
     };
 }

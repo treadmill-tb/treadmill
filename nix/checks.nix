@@ -10,7 +10,6 @@
     let
       cmn = import ./lib.nix { inherit inputs system pkgs; };
       inherit (pkgs) lib;
-      inherit (pkgs.stdenv) isLinux;
 
       switchboardMigrationsSrc = lib.fileset.toSource {
         root = ../switchboard;
@@ -51,12 +50,9 @@
           echo "TODO: end-to-end integration tests"
           mkdir -p $out
         '';
-      }
-      # Verify that applying switchboard/migrations/ in order reproduces
-      # switchboard/SCHEMA.sql exactly (the same check as `./migrate.sh -v`).
-      # Linux-only because it uses the same unix-socket Postgres setup as the
-      # .#database devshell.
-      // lib.optionalAttrs isLinux {
+
+        # Verify that applying switchboard/migrations/ in order reproduces
+        # switchboard/SCHEMA.sql exactly (the same check as `./migrate.sh -v`).
         switchboard-migrations-consistency =
           pkgs.runCommand "switchboard-migrations-consistency"
             {
