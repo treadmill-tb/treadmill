@@ -41,6 +41,8 @@
               inherit pname version;
               sha256 = "sha256-7e6bCn/yZiG9WowQ/0hK4oc3okENmbC7mmhQx/uXeqA=";
             };
+            pyproject = true;
+            build-system = [ pythonPackages.setuptools ];
             propagatedBuildInputs = with self; [
               itsdangerous
               click
@@ -56,6 +58,8 @@
               inherit pname version;
               sha256 = "sha256-udeGLDsgMDVteWyocpB5Yv1UcEBml4166JOD9RIzZu0=";
             };
+            pyproject = true;
+            build-system = [ pythonPackages.setuptools ];
             propagatedBuildInputs = with self; [
               flask
               sqlalchemy
@@ -74,6 +78,8 @@
           inherit pname version;
           sha256 = "sha256-opWtVvehnAnl4e+fFtrb9jkuJhlstfBbWv5hPJnOdGg=";
         };
+        pyproject = true;
+        build-system = [ pythonPackages.setuptools ];
         propagatedBuildInputs = with pythonPackages; [
           sqlbag
           setuptools
@@ -87,6 +93,8 @@
           inherit pname version;
           sha256 = "sha256-DPDBJdVTAI2f9UAmY6UXA8zEdLtltaT0cnkG2/WOIX8=";
         };
+        pyproject = true;
+        build-system = [ pythonPackages.setuptools ];
         propagatedBuildInputs = with pythonPackages; [
           schemainspect
           sqlbag
