@@ -5,11 +5,17 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-treadmill-rs = { path = "../../treadmill-rs" }
+treadmill-rs = { workspace = true }
 
-uuid = { version = "1.9.1", features = ["v4", "rng"] }
-
-tokio = { version = "1.38.0", features = [
+async-trait = { workspace = true }
+base64 = { workspace = true }
+futures-util = { workspace = true, features = ["sink"] }
+rand = { version = "0.9.0-alpha.1", features = ["getrandom"] }
+rustls = { version = "0.23.11", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = [
   "rt",
   "rt-multi-thread",
   "macros",
@@ -20,19 +26,8 @@ tokio = { version = "1.38.0", features = [
 tokio-tungstenite = { version = "0.23.1", features = [
   "rustls-tls-native-roots",
 ] }
-base64 = "0.22.1"
-futures-util = { version = "0.3.30", features = ["sink"] }
-
-rustls = { version = "0.23.11", features = [] }
-
-tracing = "0.1.40"
-
-serde = "1.0.204"
-serde_json = "1.0.120"
-
-thiserror = "1.0.61"
-rand = { version = "0.9.0-alpha.1", features = ["getrandom"] }
-async-trait = "0.1.80"
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4", "rng"] }
 
 [lints]
 workspace = true

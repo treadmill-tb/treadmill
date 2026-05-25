@@ -5,27 +5,27 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-treadmill-rs = { path = "../../treadmill-rs" }
-treadmill-tcp-control-socket-server = { path = "../../control-socket/tcp/server" }
-treadmill-ws-connector = { path = "../../connector/ws" }
-treadmill-supervisor-lib = { path = "../lib" }
+treadmill-rs = { workspace = true }
+treadmill-supervisor-lib = { workspace = true }
+treadmill-tcp-control-socket-server = { workspace = true }
+treadmill-ws-connector = { workspace = true }
 
-tokio = { version = "1.35.1", default-features = false, features = [
+anyhow = { workspace = true }
+async-recursion = "1.1.1"
+async-trait = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+strfmt = "0.2.4"
+tokio = { workspace = true, features = [
   "rt-multi-thread",
   "process",
   "fs",
 ] }
-toml = "0.8.8"
-uuid = "1.6.1"
-serde = { version = "1.0.193", features = ["derive"] }
-clap = { version = "4.4.11", features = ["derive"] }
-async-trait = "0.1.75"
-anyhow = "1.0.76"
-strfmt = "0.2.4"
-async-recursion = "1.1.1"
-serde_json = "1.0.117"
-tracing = "0.1.40"
-tracing-subscriber = "0.3.18"
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
 
 [lints]
 workspace = true

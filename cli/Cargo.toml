@@ -16,30 +16,31 @@ name = "tml"
 path = "src/main.rs"
 
 [dependencies]
-reqwest = { version = "0.11", features = ["json"] }
-tokio = { version = "1.0", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-anyhow = "1.0"
-uuid = { version = "1.6.1", features = ["serde", "v4"] }
-dirs = "3.0"
-toml = "0.5"
-hex = "0.4"
-log = "0.4.22"
-env_logger = "0.11.5"
-chrono = "0.4.38"
-xdg = "2.5.2"
-ssh2 = "0.9.4"
-base64 = "0.22.1"
-clap = { version = "4.5.24", features = ["derive"] }
-rpassword = "7.3.1"
-ssh-key = { version = "0.6.7", features = ["ed25519"] }
-rand_core = { version = "0.6.4", features = ["getrandom"] }
+# Explicit `version` + `path` (rather than `workspace = true`) so that `cargo
+# publish` for the cli on crates.io resolves treadmill-rs by its published
+# version while local builds still use the path-dependency.
+treadmill-rs = { version = "0.3.0", path = "../treadmill-rs" }
 
-[dependencies.treadmill-rs]
-package = "treadmill-rs"
-version = "0.3.0"
-path = "../treadmill-rs"
+anyhow = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+env_logger = "0.11.5"
+hex = "0.4"
+log = { workspace = true }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+reqwest = { version = "0.11", features = ["json"] }
+rpassword = "7.3.1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+ssh-key = { version = "0.6.7", features = ["ed25519"] }
+ssh2 = "0.9.4"
+tokio = { workspace = true, features = ["full"] }
+# NOTE: cli is still on toml 0.5 (rest of workspace is 0.8). Bump in Tier B.
+toml = "0.5"
+uuid = { workspace = true, features = ["serde", "v4"] }
+xdg = "2.5.2"
+dirs = "3.0"
 
 [lints]
 workspace = true
