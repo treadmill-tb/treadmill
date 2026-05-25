@@ -14,10 +14,10 @@ console-subscriber = "0.4.0"
 uuid = { workspace = true, features = ["serde", "fast-rng", "v4"] }
 chrono = { workspace = true, features = ["serde"] }
 # because cookie-rs has an unavoidable hard dependency on time::Duration
-time = "0.3.36"
+time = "0.3.47"
 
 # Database
-sqlx = { version = "0.8.0", features = [
+sqlx = { version = "0.8.1", features = [
   "uuid",
   "runtime-tokio",
   "tls-rustls",
@@ -81,7 +81,7 @@ miette = { version = "7.2.0", features = ["fancy"] }
 base64 = { workspace = true }
 
 [dev-dependencies]
-sqlx-cli = { version = "0.8.0", features = [
+sqlx-cli = { version = "0.8.1", features = [
   "postgres",
   "rustls",
   "completions",
