@@ -10,7 +10,11 @@ treadmill-tcp-control-socket-server = { path = "../../control-socket/tcp/server"
 treadmill-ws-connector = { path = "../../connector/ws" }
 treadmill-supervisor-lib = { path = "../lib" }
 
-tokio = { version = "1.35.1", default-features = false, features = ["rt-multi-thread", "process", "fs"] }
+tokio = { version = "1.35.1", default-features = false, features = [
+  "rt-multi-thread",
+  "process",
+  "fs",
+] }
 toml = "0.8.8"
 uuid = "1.6.1"
 serde = { version = "1.0.193", features = ["derive"] }

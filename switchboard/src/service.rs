@@ -195,7 +195,7 @@ impl Service {
                 .herd
                 .register_supervisor(
                     supervisor.supervisor_id,
-                    BTreeSet::from_iter(supervisor.tags.into_iter()),
+                    BTreeSet::from_iter(supervisor.tags),
                 )
                 .map_err(ServiceError::Herd)?;
         }
@@ -608,10 +608,10 @@ impl Service {
                         // If the following condition holds:
                         //  - according to the kanban: `running_job_id` is also running?
                         // then kill `running_job_id` as well.
-                        if let Some(running_job) = state.kanban.get_active_job(running_job_id) {
-                            if let Some(tx) = running_job.stop_tx.take() {
-                                let _ = tx.send(ExitStatus::JobCanceled);
-                            }
+                        if let Some(running_job) = state.kanban.get_active_job(running_job_id)
+                            && let Some(tx) = running_job.stop_tx.take()
+                        {
+                            let _ = tx.send(ExitStatus::JobCanceled);
                         }
                         let active_job = state.kanban.get_active_job(job_id).unwrap();
                         if let Some(tx) = active_job.stop_tx.take() {

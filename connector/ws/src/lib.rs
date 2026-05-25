@@ -307,12 +307,11 @@ impl<S: connector::Supervisor> Inner<S> {
             switchboard_supervisor::Message::StopJob(stop_job_request) => {
                 let job_id = stop_job_request.job_id;
                 // TODO: timeout
-                if let Some(supervisor) = self.supervisor.upgrade() {
-                    if let Err(error) =
+                if let Some(supervisor) = self.supervisor.upgrade()
+                    && let Err(error) =
                         connector::Supervisor::stop_job(&supervisor, stop_job_request).await
-                    {
-                        self.report_job_error(job_id, error).await;
-                    }
+                {
+                    self.report_job_error(job_id, error).await;
                 }
             }
             switchboard_supervisor::Message::StatusRequest(switchboard_supervisor::Request {

@@ -21,24 +21,35 @@ qemu_img_binary = "qemu-img"
 state_dir = "./state"
 
 qemu_args = [
-    # Misc:
-    "-name", "tml-{job_id}",
-    "-nographic",
-    # Base machine configuration:
-    "-machine", "q35",
-    "-m", "4G",
-    "-drive", "if=pflash,format=raw,readonly=on,file={job_workdir}/OVMF_CODE.fd",
-    "-drive", "if=pflash,format=raw,file={job_workdir}/OVMF_VARS.fd",
-    # Storage:
-    "-device", "virtio-scsi-pci,id=scsi0",
-    "-drive", "file={main_disk_image},id=drive0,format=qcow2,if=none",
-    "-device", "scsi-hd,drive=drive0,bus=scsi0.0",
-    # Network:
-    "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
-    "-device", "virtio-net-pci,id=nic0,netdev=net0",
-    # Treamill-specific attributes:
-    # (10.0.2.2 is the host address in QEMU SLIRP networking)
-    "-fw_cfg", "name=opt/org.tockos.treadmill.tcp-ctrl-socket,string=10.0.2.2:3859",
+  # Misc:
+  "-name",
+  "tml-{job_id}",
+  "-nographic",
+  # Base machine configuration:
+  "-machine",
+  "q35",
+  "-m",
+  "4G",
+  "-drive",
+  "if=pflash,format=raw,readonly=on,file={job_workdir}/OVMF_CODE.fd",
+  "-drive",
+  "if=pflash,format=raw,file={job_workdir}/OVMF_VARS.fd",
+  # Storage:
+  "-device",
+  "virtio-scsi-pci,id=scsi0",
+  "-drive",
+  "file={main_disk_image},id=drive0,format=qcow2,if=none",
+  "-device",
+  "scsi-hd,drive=drive0,bus=scsi0.0",
+  # Network:
+  "-netdev",
+  "user,id=net0,hostfwd=tcp::2222-:22",
+  "-device",
+  "virtio-net-pci,id=nic0,netdev=net0",
+  # Treamill-specific attributes:
+  # (10.0.2.2 is the host address in QEMU SLIRP networking)
+  "-fw_cfg",
+  "name=opt/org.tockos.treadmill.tcp-ctrl-socket,string=10.0.2.2:3859",
 ]
 
 tcp_control_socket_listen_addr = "0.0.0.0:3859"

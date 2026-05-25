@@ -618,15 +618,15 @@ async fn run_command(
         }
 
         // If not, check whether it's time to SIGKILL it:
-        if let Some(t) = sigkill_at {
-            if t < Instant::now() {
-                // Send a SIGKILL to the child:
-                info!("Sending SIGKILL to command #{event_id}");
-                child.kill().await.context("Killing command with SIGKILL")?;
+        if let Some(t) = sigkill_at
+            && t < Instant::now()
+        {
+            // Send a SIGKILL to the child:
+            info!("Sending SIGKILL to command #{event_id}");
+            child.kill().await.context("Killing command with SIGKILL")?;
 
-                // Report that the child has been killed with SIGKILL:
-                break Ok((None, true));
-            }
+            // Report that the child has been killed with SIGKILL:
+            break Ok((None, true));
         }
     }
 }

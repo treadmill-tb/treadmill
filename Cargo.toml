@@ -1,23 +1,26 @@
 [workspace]
 resolver = "2"
 members = [
-    "cli",
-    "connector/ws",
-    "control-socket/tcp/client",
-    "control-socket/tcp/server",
-    "puppet",
-    "supervisor/lib",
-    "supervisor/mock",
-    "supervisor/nbd-netboot",
-    "supervisor/qemu",
-    "switchboard",
-    "treadmill-rs",
+  "cli",
+  "connector/ws",
+  "control-socket/tcp/client",
+  "control-socket/tcp/server",
+  "puppet",
+  "supervisor/lib",
+  "supervisor/mock",
+  "supervisor/nbd-netboot",
+  "supervisor/qemu",
+  "switchboard",
+  "treadmill-rs",
 ]
 
 [workspace.package]
 version = "0.1.0"
 authors = ["Treadmill Project Developers <treadmill@tockos.org>"]
 edition = "2024"
+
+[workspace.metadata.crane]
+name = "treadmill"
 
 [workspace.lints.clippy]
 complexity = { level = "deny", priority = -1 }

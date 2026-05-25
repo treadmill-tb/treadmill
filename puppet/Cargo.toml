@@ -22,7 +22,16 @@ uuid = { version = "1.6.1", features = ["serde"] }
 anyhow = "1.0.76"
 clap = { version = "4.4.11", features = ["derive"] }
 simplelog = "0.12.1"
-tokio = { version = "1.35.1", features = ["rt-multi-thread", "macros", "fs", "sync", "process", "io-util", "time", "signal"] }
+tokio = { version = "1.35.1", features = [
+  "rt-multi-thread",
+  "macros",
+  "fs",
+  "sync",
+  "process",
+  "io-util",
+  "time",
+  "signal",
+] }
 log = "0.4.20"
 nix = { version = "0.29.0", default-features = false, features = ["signal"] }
 sd-notify = "0.4.2"
