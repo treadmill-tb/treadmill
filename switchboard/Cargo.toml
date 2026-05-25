@@ -54,7 +54,7 @@ async-trait = { workspace = true }
 # Used for token comparison
 subtle = { workspace = true }
 # Used for password verification
-argon2 = { version = "0.6.0-pre.0", features = [] }
+argon2 = "0.6.0-rc.8"
 # CSPRNG
 rand = { workspace = true }
 
