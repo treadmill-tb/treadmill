@@ -29,18 +29,16 @@ env_logger = "0.11.5"
 hex = "0.4"
 log = { workspace = true }
 rand_core = { version = "0.6.4", features = ["getrandom"] }
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.12", features = ["json"] }
 rpassword = "7.3.1"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 ssh-key = { version = "0.6.7", features = ["ed25519"] }
 ssh2 = "0.9.4"
 tokio = { workspace = true, features = ["full"] }
-# NOTE: cli is still on toml 0.5 (rest of workspace is 0.8). Bump in Tier B.
-toml = "0.5"
+toml = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v4"] }
 xdg = "2.5.2"
-dirs = "3.0"
 
 [lints]
 workspace = true
