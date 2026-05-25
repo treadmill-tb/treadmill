@@ -41,7 +41,23 @@ jobs:
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
           skipPush: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
 
-      - name: nix flake check
+      # On `pull_request`, only build a curated subset of checks to keep PR
+      # feedback fast. The full `nix flake check` runs in `merge_group` (which
+      # gates merging into main) and on `push` to main, so heavier builds
+      # (musl cross-compile of tml-puppet, swx-image, per-binary package
+      # derivations, etc.) still get exercised before anything lands.
+      - name: nix build (PR fast checks)
+        if: github.event_name == 'pull_request'
+        run: |
+          SYSTEM="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
+          nix build --print-build-logs \
+            ".#checks.${SYSTEM}.clippy" \
+            ".#checks.${SYSTEM}.workspace" \
+            ".#checks.${SYSTEM}.switchboard-migrations-consistency" \
+            ".#checks.${SYSTEM}.treefmt"
+
+      - name: nix flake check (full)
+        if: github.event_name != 'pull_request'
         run: nix flake check --print-build-logs
 
   deploy-switchboard:
