@@ -32,16 +32,28 @@
           }
         );
 
-        # Builds all workspace crates as a single derivation. Catches
-        # workspace-wide regressions that per-binary builds might miss.
-        workspace = cmn.craneLib.cargoBuild (
+        # Run the workspace test suite via cargo-nextest. Scoped to
+        # `--workspace` (NOT `--all-targets`): the per-binary `mkBin`
+        # derivations already build `--bins` against their correctly-scoped
+        # per-group deps layer, and `--all-targets` here would re-build them
+        # against the union-feature `workspaceDeps`, defeating the per-group
+        # split. `--no-tests=pass` keeps this green while the workspace has
+        # no `#[test]` targets yet; remove it once tests exist and you'd
+        # rather a crate accidentally losing all its tests be a CI failure.
+        #
+        # Tests that need external services (e.g. a Postgres for switchboard)
+        # will need wiring here — see `switchboard-migrations-consistency`
+        # below for the ephemeral-pg pattern that works inside the Nix
+        # sandbox.
+        nextest = cmn.craneLib.cargoNextest (
           cmn.cargoCommonArgs
           // {
-            pname = "treadmill-workspace";
+            pname = "treadmill-nextest";
             version = "0.1.0";
             cargoArtifacts = cmn.workspaceDeps;
-            cargoExtraArgs = "--locked --workspace --all-targets";
-            doCheck = false;
+            cargoNextestExtraArgs = "--workspace --no-tests=pass";
+            partitions = 1;
+            partitionType = "count";
           }
         );
 

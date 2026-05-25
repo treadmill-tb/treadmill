@@ -52,7 +52,7 @@ jobs:
           SYSTEM="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
           nix build --print-build-logs \
             ".#checks.${SYSTEM}.clippy" \
-            ".#checks.${SYSTEM}.workspace" \
+            ".#checks.${SYSTEM}.nextest" \
             ".#checks.${SYSTEM}.switchboard-migrations-consistency" \
             ".#checks.${SYSTEM}.treefmt"
 
