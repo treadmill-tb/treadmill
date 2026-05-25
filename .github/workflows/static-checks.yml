@@ -43,3 +43,52 @@ jobs:
 
       - name: nix flake check
         run: nix flake check --print-build-logs
+
+  deploy-switchboard:
+    needs: nix-flake-check
+
+    runs-on: ubuntu-latest
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    # Grants access to `FLY_API_TOKEN` to this job.
+    environment: flyio-deploy-prod
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: treadmill-tb
+          # Read-only: we're just building the docker image, but that doesn't
+          # need to be pushed and consume space in the cache.
+          skipPush: true
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Install yq
+        run: sudo apt-get update && sudo apt-get install -y yq
+
+      - name: Build switchboard image
+        run: |
+          nix build .#swx-image --print-build-logs
+          # swx-image is a streamLayeredImage; ./result is a script that streams
+          # the image tarball on stdout.
+          ./result | docker load
+
+      - name: Push image to Fly registry
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl auth docker
+          APP="$(yq -r '.app' switchboard/flyio/fly.toml)"
+          IMAGE="registry.fly.io/${APP}:${GITHUB_SHA}"
+          docker tag treadmill-switchboard:latest "$IMAGE"
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy to Fly
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --image "$IMAGE" --config switchboard/flyio/fly.toml
