@@ -47,7 +47,7 @@ rand = "0.9"
 serde = "1.0.204"
 serde_json = "1.0.120"
 subtle = "2.6.1"
-thiserror = "1.0.61"
+thiserror = "2"
 # tokio/tokio-util have no meaningful default features; declare false so
 # members that want a minimal feature set (the supervisors, control-socket)
 # don't need to repeat the override, and Cargo forbids per-member overrides
