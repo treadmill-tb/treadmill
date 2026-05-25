@@ -1,10 +1,15 @@
 name: E2E Tests
 on:
   push:
-    branches-ignore:
-      - 'gh-readonly-queue/**'
+    branches: [main]
   pull_request:
   merge_group:
+
+# Cancel superseded runs for the same PR. Never cancel merge_group or main runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   TERM: xterm
   POSTGRES_DB: tml_switchboard
