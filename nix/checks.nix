@@ -9,6 +9,16 @@
     }:
     let
       cmn = import ./lib.nix { inherit inputs system pkgs; };
+      inherit (pkgs) lib;
+
+      switchboardMigrationsSrc = lib.fileset.toSource {
+        root = ../switchboard;
+        fileset = lib.fileset.unions [
+          ../switchboard/SCHEMA.sql
+          ../switchboard/migrate.sh
+          ../switchboard/migrations
+        ];
+      };
     in
     {
       checks = {
@@ -40,6 +50,39 @@
           echo "TODO: end-to-end integration tests"
           mkdir -p $out
         '';
+
+        # Verify that applying switchboard/migrations/ in order reproduces
+        # switchboard/SCHEMA.sql exactly (the same check as `./migrate.sh -v`).
+        switchboard-migrations-consistency =
+          pkgs.runCommand "switchboard-migrations-consistency"
+            {
+              nativeBuildInputs = with pkgs; [
+                postgresql
+                atlas
+                bash
+              ];
+            }
+            ''
+              set -euo pipefail
+
+              cp -r ${switchboardMigrationsSrc} switchboard
+              chmod -R u+w switchboard
+              cd switchboard
+
+              PG_BASE_DIR="$(mktemp -d)"
+              initdb -D "$PG_BASE_DIR" >/dev/null
+              pg_ctl -D "$PG_BASE_DIR" -l "$PG_BASE_DIR/log" \
+                -o "-h ''' --unix_socket_directories='$PG_BASE_DIR'" start
+
+              trap 'pg_ctl -D "$PG_BASE_DIR" stop >/dev/null 2>&1 || true' EXIT
+
+              export PGHOST="$PG_BASE_DIR"
+              export PGUSER="$(id -un)"
+
+              bash ./migrate.sh -v
+
+              touch $out
+            '';
       }
       # Promote each package output to a check so `nix flake check`
       # verifies they all build.
