@@ -47,17 +47,14 @@ pub fn get_token() -> Result<String> {
 }
 
 fn get_token_path() -> Result<PathBuf> {
-    let xdg_dirs = BaseDirectories::with_prefix("treadmill-tb")
-        .context("Failed to initialize XDG base directories")?;
+    let xdg_dirs = BaseDirectories::with_prefix("treadmill-tb");
     xdg_dirs
         .place_data_file("token.json")
         .context("Failed to determine token file path")
 }
 
 pub fn ssh_private_key_path() -> Result<PathBuf> {
-    let xdg_dirs = BaseDirectories::with_prefix("treadmill-tb")
-        .context("Failed to initialize XDG base directories")?;
-
+    let xdg_dirs = BaseDirectories::with_prefix("treadmill-tb");
     xdg_dirs
         .place_data_file("ssh-key")
         .context("Failed to determine SSH key path")
