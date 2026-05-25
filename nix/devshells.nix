@@ -16,7 +16,7 @@
           pkg-config
           openssl
           sqlx-cli
-          nixfmt-rfc-style
+          nixfmt
           statix
           deadnix
           taplo
