@@ -1,6 +1,13 @@
 {
   description = "Treadmill -- A Distributed Hardware Testbed";
 
+  nixConfig = {
+    extra-substituters = [ "https://treadmill-tb.cachix.org" ];
+    extra-trusted-public-keys = [
+      "treadmill-tb.cachix.org-1:ivmCI8wWEGxVE0+599Bwd5wynPFV+Tw+mW6RHzlqxuE="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
