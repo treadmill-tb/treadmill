@@ -82,7 +82,7 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
           flyctl auth docker
-          APP="$(yq -r '.app' switchboard/flyio/fly.toml)"
+          APP="$(tomlq -r '.app' switchboard/flyio/fly.toml)"
           IMAGE="registry.fly.io/${APP}:${GITHUB_SHA}"
           docker tag treadmill-switchboard:latest "$IMAGE"
           docker push "$IMAGE"
