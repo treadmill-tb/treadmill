@@ -18,6 +18,8 @@
           statix
           deadnix
           taplo
+          cargo-audit
+          cargo-outdated
         ];
 
         shellHook = ''

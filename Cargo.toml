@@ -22,6 +22,44 @@ edition = "2024"
 [workspace.metadata.crane]
 name = "treadmill"
 
+[workspace.dependencies]
+# Internal crates (declared here so members can use `workspace = true` and
+# don't have to repeat relative path strings).
+treadmill-rs = { path = "treadmill-rs", version = "0.3.0" }
+treadmill-supervisor-lib = { path = "supervisor/lib" }
+treadmill-tcp-control-socket-client = { path = "control-socket/tcp/client" }
+treadmill-tcp-control-socket-server = { path = "control-socket/tcp/server" }
+treadmill-ws-connector = { path = "connector/ws" }
+
+# Shared third-party dependencies. Versions here are floors; per-member
+# Cargo.toml selects features and may set `default-features = false`.
+anyhow = "1.0.76"
+async-trait = "0.1.81"
+base64 = "0.22.1"
+bytes = "1.11.1"
+chrono = "0.4.38"
+clap = "4.5.24"
+futures = { version = "0.3.30", default-features = false }
+futures-util = "0.3.30"
+http = "1.1.0"
+log = "0.4.22"
+rand = "0.9"
+serde = "1.0.204"
+serde_json = "1.0.120"
+subtle = "2.6.1"
+thiserror = "2"
+# tokio/tokio-util have no meaningful default features; declare false so
+# members that want a minimal feature set (the supervisors, control-socket)
+# don't need to repeat the override, and Cargo forbids per-member overrides
+# anyway when `workspace = true`.
+tokio = { version = "1.38.0", default-features = false }
+tokio-stream = "0.1.14"
+tokio-util = { version = "0.7.10", default-features = false }
+toml = "0.8.14"
+tracing = "0.1.40"
+tracing-subscriber = "0.3.20"
+uuid = "1.9.1"
+
 [workspace.lints.clippy]
 complexity = { level = "deny", priority = -1 }
 type_complexity = "allow"

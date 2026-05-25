@@ -3,7 +3,6 @@
 use crate::serve::AppState;
 use crate::sql;
 use crate::sql::api_token::TokenPerms;
-use argon2::password_hash::{PasswordHashString, SaltString};
 use argon2::{Algorithm, Argon2, Params, PasswordHasher, PasswordVerifier, Version};
 use axum::Json;
 use axum::extract::{ConnectInfo, State};
@@ -51,7 +50,7 @@ pub async fn login(
         Ok(user) => {
             match argon2.verify_password(
                 login_request.password.as_bytes(),
-                &user.password_hash.password_hash(),
+                user.password_hash.as_str(),
             ) {
                 Ok(()) => {
                     if user.locked {
@@ -62,7 +61,7 @@ pub async fn login(
                         user
                     }
                 }
-                Err(argon2::password_hash::Error::Password) => {
+                Err(argon2::password_hash::Error::PasswordInvalid) => {
                     tracing::info!(
                         "failed login attempt to user ({}): wrong password",
                         user.user_id
@@ -76,9 +75,12 @@ pub async fn login(
             }
         }
         Err(SessionError::InvalidUsername(_)) => {
-            let fake_salt = SaltString::from_b64("A123B123C123D123E123F1").unwrap();
+            // Mirrors the work done on a real login to keep response timing
+            // independent of whether the username exists. The salt value is
+            // irrelevant for that goal.
+            let fake_salt: [u8; 16] = *b"A123B123C123D123";
             let _ = std::hint::black_box(
-                argon2.hash_password(login_request.password.as_bytes(), fake_salt.as_salt()),
+                argon2.hash_password_with_salt(login_request.password.as_bytes(), &fake_salt),
             );
 
             tracing::error!(
@@ -142,7 +144,7 @@ pub enum SessionError {
 #[derive(Debug)]
 struct UserCredentialLookup {
     user_id: Uuid,
-    password_hash: PasswordHashString,
+    password_hash: String,
     locked: bool,
 }
 async fn lookup_user_password_hash<'c, E: PgExecutor<'c>>(
@@ -171,8 +173,6 @@ async fn lookup_user_password_hash<'c, E: PgExecutor<'c>>(
         Error::RowNotFound => SessionError::InvalidUsername(username_or_email.to_string()),
         e => SessionError::Database(e),
     })?;
-    let password_hash =
-        PasswordHashString::new(&password_hash).expect("failed to parse password hash in database");
     Ok(UserCredentialLookup {
         user_id,
         password_hash,

@@ -5,17 +5,19 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
+treadmill-rs = { workspace = true }
+
 # For debugging reasons
 console-subscriber = "0.4.0"
 
 # Utility
-uuid = { version = "1.9.1", features = ["serde", "fast-rng", "v4"] }
-chrono = { version = "0.4.38", features = ["serde"] }
+uuid = { workspace = true, features = ["serde", "fast-rng", "v4"] }
+chrono = { workspace = true, features = ["serde"] }
 # because cookie-rs has an unavoidable hard dependency on time::Duration
-time = "0.3.36"
+time = "0.3.47"
 
 # Database
-sqlx = { version = "0.8.0", features = [
+sqlx = { version = "0.8.1", features = [
   "uuid",
   "runtime-tokio",
   "tls-rustls",
@@ -36,52 +38,50 @@ axum = { version = "0.7.5", features = [
 ] }
 axum-extra = { version = "0.9.3", features = ["typed-header"] }
 headers = "0.4.0"
-http = "1.1.0"
+http = { workspace = true }
 axum-server = { version = "0.7.1", features = ["tls-rustls"] }
-tower-http = { version = "0.5.2", features = ["trace", "sensitive-headers"] }
+tower-http = { version = "0.6", features = ["trace", "sensitive-headers"] }
 
 # Tokio
-tokio = { version = "1.38.0", features = ["rt-multi-thread"] }
-futures-util = { version = "0.3.30", features = ["sink"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+futures-util = { workspace = true, features = ["sink"] }
 
 # Lock-free hashmap
 dashmap = "6.0.1"
 
-async-trait = "0.1.81"
+async-trait = { workspace = true }
 
 # Used for token comparison
-subtle = "2.6.1"
+subtle = { workspace = true }
 # Used for password verification
-argon2 = { version = "0.6.0-pre.0", features = [] }
+argon2 = "0.6.0-rc.8"
 # CSPRNG
-rand = { version = "0.9.0-alpha.1", features = ["getrandom", "std", "std_rng"] }
+rand = { workspace = true }
 
 # Logging facilities
-tracing = { version = "0.1.40" }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 # Command line arguments
-clap = { version = "4.5.8", features = ["derive", "error-context", "env"] }
+clap = { workspace = true, features = ["derive", "error-context", "env"] }
 
 # Configuration overlays
 figment = { version = "0.10.19", features = ["toml", "env"] }
 
 # General serialization
-serde = "1.0.204"
-serde_json = "1.0.120"
+serde = { workspace = true }
+serde_json = { workspace = true }
 # Configuration deserialization
-toml = "0.8.14"
+toml = { workspace = true }
 
 # Error derives
-thiserror = "1.0.61"
+thiserror = { workspace = true }
 # TODO: Phase out
-miette = { version = "7.2.0", features = ["fancy"] }
-base64 = "0.22.1"
-
-treadmill-rs = { path = "../treadmill-rs" }
+miette = { version = "7.6", features = ["fancy"] }
+base64 = { workspace = true }
 
 [dev-dependencies]
-sqlx-cli = { version = "0.8.0", features = [
+sqlx-cli = { version = "0.8.1", features = [
   "postgres",
   "rustls",
   "completions",

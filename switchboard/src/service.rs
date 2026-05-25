@@ -148,7 +148,7 @@ impl Service {
 
 			// Randomize the set of idle supervisors to better
 			// balance the load and wear of the installed boards:
-			rand::seq::SliceRandom::shuffle(&mut idle_set[..], &mut rand::thread_rng());
+			rand::seq::SliceRandom::shuffle(&mut idle_set[..], &mut rand::rng());
 
                         let mut queued_jobs = state.kanban.get_queued_jobs();
                         for supervisor_id in idle_set {
