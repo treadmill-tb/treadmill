@@ -56,7 +56,7 @@ subtle = { workspace = true }
 # Used for password verification
 argon2 = { version = "0.6.0-pre.0", features = [] }
 # CSPRNG
-rand = { version = "0.9.0-alpha.1", features = ["getrandom", "std", "std_rng"] }
+rand = { workspace = true }
 
 # Logging facilities
 tracing = { workspace = true }

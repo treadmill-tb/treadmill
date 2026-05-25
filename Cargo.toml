@@ -43,6 +43,7 @@ futures = { version = "0.3.30", default-features = false }
 futures-util = "0.3.30"
 http = "1.1.0"
 log = "0.4.22"
+rand = "0.9"
 serde = "1.0.204"
 serde_json = "1.0.120"
 subtle = "2.6.1"

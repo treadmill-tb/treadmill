@@ -410,7 +410,7 @@ impl<S: connector::Supervisor> Inner<S> {
 
                     tracing::debug!("Sending message: {msg:?}");
 
-                    if let Err(e) = socket.send(tungstenite::Message::Text(stringified)).await {
+                    if let Err(e) = socket.send(tungstenite::Message::Text(stringified.into())).await {
                         tracing::error!("Failed to send message: {e}");
                     }
                 }
