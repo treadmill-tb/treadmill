@@ -19,6 +19,7 @@
           deadnix
           taplo
           cargo-audit
+          cargo-nextest
           cargo-outdated
         ];
 
