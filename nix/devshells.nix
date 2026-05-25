@@ -31,86 +31,12 @@
         '';
       };
 
-      # Ephemeral PostgreSQL devshell for switchboard / sqlx work:
-      pythonPackages = pkgs.python3Packages.override {
-        overrides = self: _super: {
-          flask = self.buildPythonPackage rec {
-            pname = "Flask";
-            version = "2.2.5";
-            src = self.fetchPypi {
-              inherit pname version;
-              sha256 = "sha256-7e6bCn/yZiG9WowQ/0hK4oc3okENmbC7mmhQx/uXeqA=";
-            };
-            pyproject = true;
-            build-system = [ pythonPackages.setuptools ];
-            propagatedBuildInputs = with self; [
-              itsdangerous
-              click
-              jinja2
-              werkzeug
-            ];
-          };
-
-          sqlbag = self.buildPythonPackage rec {
-            pname = "sqlbag";
-            version = "0.1.1617247075";
-            src = self.fetchPypi {
-              inherit pname version;
-              sha256 = "sha256-udeGLDsgMDVteWyocpB5Yv1UcEBml4166JOD9RIzZu0=";
-            };
-            pyproject = true;
-            build-system = [ pythonPackages.setuptools ];
-            propagatedBuildInputs = with self; [
-              flask
-              sqlalchemy
-              psycopg2
-              six
-            ];
-            doCheck = false;
-          };
-        };
-      };
-
-      schemainspect = pythonPackages.buildPythonPackage rec {
-        pname = "schemainspect";
-        version = "3.1.1663587362";
-        src = pythonPackages.fetchPypi {
-          inherit pname version;
-          sha256 = "sha256-opWtVvehnAnl4e+fFtrb9jkuJhlstfBbWv5hPJnOdGg=";
-        };
-        pyproject = true;
-        build-system = [ pythonPackages.setuptools ];
-        propagatedBuildInputs = with pythonPackages; [
-          sqlbag
-          setuptools
-        ];
-      };
-
-      migra = pythonPackages.buildPythonPackage rec {
-        pname = "migra";
-        version = "3.0.1663481299";
-        src = pythonPackages.fetchPypi {
-          inherit pname version;
-          sha256 = "sha256-DPDBJdVTAI2f9UAmY6UXA8zEdLtltaT0cnkG2/WOIX8=";
-        };
-        pyproject = true;
-        build-system = [ pythonPackages.setuptools ];
-        propagatedBuildInputs = with pythonPackages; [
-          schemainspect
-          sqlbag
-          psycopg2
-          click
-        ];
-      };
-
       databaseShell = pkgs.mkShell {
         name = "treadmill-db-migrate-shell";
 
         packages = with pkgs; [
           postgresql
-          migra
-          schemainspect
-          pythonPackages.psycopg2
+          atlas
           sql-formatter
           sqlx-cli
         ];

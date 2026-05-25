@@ -1,130 +1,85 @@
-#! /usr/bin/env nix-shell
-#! nix-shell -i bash database-shell.nix
+#! /usr/bin/env bash
+#
+# Manage switchboard SQL migrations using Atlas.
+#
+# SCHEMA.sql is the hand-written source of truth. The migrations/ directory
+# holds the ordered, derived migration files (also applied at runtime by
+# sqlx::migrate!() in build.rs). Atlas keeps the two in sync:
+#
+#   ./migrate.sh -c <name>   author a new migration from the current diff
+#                            between cumulative migrations/ and SCHEMA.sql
+#   ./migrate.sh -v          verify migrations/ reproduces SCHEMA.sql
+#   ./migrate.sh -r          re-hash migrations/atlas.sum after a manual edit
+#
+# Run inside the .#database devshell, which provides Postgres + Atlas and an
+# ephemeral PGHOST/PGUSER.
 
-# The above expression ensures that we're running in a Nix shell with an
-# emphemeral database instance.
+set -euo pipefail
 
-set -e
+cd "$(dirname "$(readlink -f "$0")")"
 
-function usage() {
-    echo "Usage: $(basename $0) [-c <migration name>] [-v]" >&2
+: "${PGHOST:?Run inside the .#database devshell}"
+: "${PGUSER:?Run inside the .#database devshell}"
+
+DEV_DB="tml_switchboard_atlas_dev"
+DEV_URL="postgres://${PGUSER}@/${DEV_DB}?host=${PGHOST}&sslmode=disable"
+DIR="file://migrations"
+SCHEMA_FILE="file://SCHEMA.sql"
+SCOPE=(--schema tml_switchboard)
+
+# Atlas reads schema state by replaying SQL into a dev database. Postgres
+# auto-creates a `public` schema in any new DB, which atlas would otherwise
+# diff against SCHEMA.sql and want to drop. Start each run from a DB with
+# only the schemas SCHEMA.sql defines.
+reset_dev_db() {
+    dropdb -h "$PGHOST" -U "$PGUSER" --if-exists "$DEV_DB" >/dev/null
+    createdb -h "$PGHOST" -U "$PGUSER" "$DEV_DB"
+    psql -h "$PGHOST" -U "$PGUSER" -d "$DEV_DB" -q \
+        -c 'DROP SCHEMA IF EXISTS public CASCADE' >/dev/null
 }
+trap 'dropdb -h "$PGHOST" -U "$PGUSER" --if-exists "$DEV_DB" >/dev/null 2>&1 || true' EXIT
 
-function create_migration_dbs() {
-    # Create a set of temporary databases for migra to be able to diff:
-    SOURCE_DB="tml_switchboard_migra_source_db"
-    createdb -h $PGHOST -U $PGUSER $SOURCE_DB
-    SOURCE_DATABASE_URL_URIENCODE="postgresql://${PGUSER}@${PGHOST_URIENCODE}/${SOURCE_DB}"
-    SOURCE_DATABASE_URL_HOSTPARAM="postgresql://${PGUSER}@/${SOURCE_DB}?host=${PGHOST}"
-
-    TARGET_DB="tml_switchboard_migra_target_db"
-    createdb -h $PGHOST -U $PGUSER $TARGET_DB
-    TARGET_DATABASE_URL_URIENCODE="postgresql://${PGUSER}@${PGHOST_URIENCODE}/${TARGET_DB}"
-    TARGET_DATABASE_URL_HOSTPARAM="postgresql://${PGUSER}@/${TARGET_DB}?host=${PGHOST}"
-}
-
-function op_create_migration() {
-    create_migration_dbs
-
-    # Apply all existing migrations to the source database:
-    echo "Applying existing migrations to the source database." >&2
-    DATABASE_URL="$SOURCE_DATABASE_URL_URIENCODE" sqlx migrate run
-
-    # Apply the target schema to the destination database:
-    echo "Loading new schema into the target database." >&2
-    psql -v ON_ERROR_STOP=1 -U $PGUSER -h $PGHOST -d $TARGET_DB -f ./SCHEMA.sql
-
-    # Create a new SQLX migration file:
-    echo "Creating new SQLx migration file..."
-    MIGRATION_SQL="$(sqlx migrate add -t -- "$1" | cut -d' ' -f 2-)"
-
-    # Use Migra to generate migration script
-    echo "Generating migration script using Migra..." >&2
-    migra \
-        --unsafe \
-        --schema tml_switchboard \
-        "$SOURCE_DATABASE_URL_HOSTPARAM" \
-        "$TARGET_DATABASE_URL_HOSTPARAM" \
-        > "$MIGRATION_SQL" || true
-    echo "Script generated: $MIGRATION_SQL"
-}
-
-function op_validate() {
-    create_migration_dbs
-
-    # Apply all existing migrations to the source database:
-    echo "Applying existing migrations to the source database." >&2
-    DATABASE_URL="$SOURCE_DATABASE_URL_URIENCODE" sqlx migrate run
-
-    # Apply the target schema to the destination database:
-    echo "Loading new schema into the target database." >&2
-    psql -v ON_ERROR_STOP=1 -U $PGUSER -h $PGHOST -d $TARGET_DB -f ./SCHEMA.sql
-
-    # Ensure that the diff between the two databases is empty:
-    TEMP_SQL_DIFF="$(mktemp -t tmlswbdbdiff-XXXXX.sql)"
-    echo "Generating diff using Migra (at $TEMP_SQL_DIFF)..." >&2
-    migra \
-        --unsafe \
-        --schema tml_switchboard \
-        "$SOURCE_DATABASE_URL_HOSTPARAM" \
-        "$TARGET_DATABASE_URL_HOSTPARAM" \
-        > "$TEMP_SQL_DIFF" || true
-
-    if [ -s "$TEMP_SQL_DIFF" ]; then
-	echo "Database schema diff at $TEMP_SQL_DIFF is non-empty! Validation failed. Diff:" >&2
-	echo "" >&2
-	cat "$TEMP_SQL_DIFF"
-	exit 1
-    else
-	echo "Database schema diff is empty, validation succeeded." >&2
-	rm "$TEMP_SQL_DIFF"
-	exit 0
-    fi
+usage() {
+    sed -n '3,16p' "$0" >&2
 }
 
 OPERATION=""
+NAME=""
 
-while getopts ':c:vh' opt; do
+while getopts ':c:vrh' opt; do
     case "$opt" in
-	c)
-	    test "$OPERATION" == "" \
-		|| (echo "Create migration (-c) conflicts with operation $OPERATION" >&2 || exit 1)
-	    OPERATION="create-migration"
-	    MIGRATION_LABEL="$OPTARG"
-	    ;;
-
-	v)
-	    test "$OPERATION" == "" \
-		|| (echo "Validate (-v) conflicts with operation $OPERATION" >&2 || exit 1)
-	    OPERATION="validate"
-	    ;;
-
-	h)
-	    usage
-	    exit 0
-	    ;;
-
-	:)
-	    echo "option requires an argument." >&2
-	    usage
-	    exit 1
-	    ;;
-
-	?)
-	    echo "Invalid command option." >&2
-	    usage
-	    exit 1
-	    ;;
+        c) OPERATION="create"; NAME="$OPTARG" ;;
+        v) OPERATION="validate" ;;
+        r) OPERATION="rehash" ;;
+        h) usage; exit 0 ;;
+        :) echo "Option -$OPTARG requires an argument." >&2; usage; exit 1 ;;
+        \?) echo "Unknown option: -$OPTARG" >&2; usage; exit 1 ;;
     esac
 done
-shift "$(($OPTIND -1))"
 
-if [ "$OPERATION" == "create-migration" ]; then
-    op_create_migration "$MIGRATION_LABEL"
-elif [ "$OPERATION" == "validate" ]; then
-    op_validate
-else
-    echo "Missing operation, pass either -c or -v." >&2
-    usage
-    exit 1
-fi
+case "$OPERATION" in
+    create)
+        reset_dev_db
+        atlas migrate diff "$NAME" \
+            --dir "$DIR" --to "$SCHEMA_FILE" --dev-url "$DEV_URL" "${SCOPE[@]}"
+        ;;
+    validate)
+        atlas migrate validate --dir "$DIR"
+        reset_dev_db
+        diff_output=$(atlas schema diff \
+            --from "$DIR" --to "$SCHEMA_FILE" --dev-url "$DEV_URL" "${SCOPE[@]}")
+        if [ "$diff_output" != "Schemas are synced, no changes to be made." ]; then
+            echo "Schema drift between migrations/ and SCHEMA.sql:" >&2
+            echo "$diff_output" >&2
+            exit 1
+        fi
+        echo "Migrations are in sync with SCHEMA.sql." >&2
+        ;;
+    rehash)
+        atlas migrate hash --dir "$DIR"
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac
