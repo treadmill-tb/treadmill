@@ -27,7 +27,7 @@
           // {
             pname = "treadmill-workspace";
             version = "0.1.0";
-            inherit (cmn) cargoArtifacts;
+            cargoArtifacts = cmn.workspaceDeps;
             cargoClippyExtraArgs = "--all-targets --all-features -- -D warnings";
           }
         );
@@ -39,7 +39,7 @@
           // {
             pname = "treadmill-workspace";
             version = "0.1.0";
-            inherit (cmn) cargoArtifacts;
+            cargoArtifacts = cmn.workspaceDeps;
             cargoExtraArgs = "--locked --workspace --all-targets";
             doCheck = false;
           }
