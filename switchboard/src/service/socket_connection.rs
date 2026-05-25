@@ -66,7 +66,7 @@ impl SupervisorConnection {
         &self,
         socket: &mut WebSocket,
         supervisor_id: Uuid,
-        maybe_cf: Option<CloseFrame<'static>>,
+        maybe_cf: Option<CloseFrame>,
     ) {
         if let Err(e) = socket.send(ws::Message::Close(maybe_cf)).await {
             tracing::error!("Failed to send close frame to supervisor ({supervisor_id}): {e}.");
@@ -101,7 +101,7 @@ impl SupervisorConnection {
                         tracing::error!("Haven't received a PONG in {elapsed:?}, exiting socket control loop");
                         return
                     }
-                    if let Err(e) = socket.send(ws::Message::Ping(vec![])).await {
+                    if let Err(e) = socket.send(ws::Message::Ping(Default::default())).await {
                         tracing::error!("Failed to send PING to supervisor ({supervisor_id}): {e}.");
                         return;
                     }
@@ -176,7 +176,7 @@ impl SupervisorConnection {
                 return ControlFlow::Break(());
             }
         };
-        if let Err(e) = socket.send(ws::Message::Text(m_as_string)).await {
+        if let Err(e) = socket.send(ws::Message::Text(m_as_string.into())).await {
             tracing::error!("failed to send message over websocket: {e}");
             return ControlFlow::Break(());
         } else {
