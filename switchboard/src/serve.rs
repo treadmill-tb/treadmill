@@ -97,8 +97,8 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
     let router = super::routes::build_router(app_state);
 
     enum Server {
-        PlainHttp(axum_server::Server),
-        Tls(axum_server::Server<axum_server::tls_rustls::RustlsAcceptor>),
+        PlainHttp(axum_server::Server<SocketAddr>),
+        Tls(axum_server::Server<SocketAddr, axum_server::tls_rustls::RustlsAcceptor>),
     }
 
     let server = match tls_config {
