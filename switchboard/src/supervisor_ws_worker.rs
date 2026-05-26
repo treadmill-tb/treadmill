@@ -1,15 +1,40 @@
 use anyhow::{Context, Result};
-use axum::extract::ws::WebSocket;
-use sqlx::{Postgres, Transaction};
+use axum::extract::ws;
+use futures_util::{Sink, Stream};
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::serve::AppState;
 use crate::sql;
 
-pub struct SupervisorWSWorker {
-    app_state: AppState,
+/// Bounds for the WebSocket-like duplex stream the worker speaks to a
+/// supervisor over.
+///
+/// In production this is [`axum::extract::ws::WebSocket`]. Tests can supply
+/// any value that implements the same `Stream` + `Sink` shape over
+/// [`axum::extract::ws::Message`] — see the `tests` module below for an
+/// `mpsc`-backed implementation.
+pub trait SupervisorSocket:
+    Stream<Item = Result<ws::Message, axum::Error>>
+    + Sink<ws::Message, Error = axum::Error>
+    + Send
+    + Unpin
+    + 'static
+{
+}
+
+impl<T> SupervisorSocket for T where
+    T: Stream<Item = Result<ws::Message, axum::Error>>
+        + Sink<ws::Message, Error = axum::Error>
+        + Send
+        + Unpin
+        + 'static
+{
+}
+
+pub struct SupervisorWSWorker<S: SupervisorSocket> {
+    pool: PgPool,
     supervisor_id: Uuid,
-    socket: WebSocket,
+    socket: S,
     worker_instance_id: u64,
 }
 
@@ -39,10 +64,10 @@ pub enum WorkerError {
 
 pub type WorkerResult<T = ()> = Result<T, WorkerError>;
 
-impl SupervisorWSWorker {
-    #[tracing::instrument(skip(app_state))]
-    pub async fn run(app_state: AppState, supervisor_id: Uuid, socket: WebSocket) {
-        match Self::run_inner(app_state, supervisor_id, socket).await {
+impl<S: SupervisorSocket> SupervisorWSWorker<S> {
+    #[tracing::instrument(skip(pool, socket))]
+    pub async fn run(pool: PgPool, supervisor_id: Uuid, socket: S) {
+        match Self::run_inner(pool, supervisor_id, socket).await {
             Ok(()) => {
                 tracing::info!("SupervisorWSWorker::run terminated successfully.");
             }
@@ -62,11 +87,7 @@ impl SupervisorWSWorker {
         }
     }
 
-    pub async fn run_inner(
-        app_state: AppState,
-        supervisor_id: Uuid,
-        socket: WebSocket,
-    ) -> WorkerResult<()> {
+    pub async fn run_inner(pool: PgPool, supervisor_id: Uuid, socket: S) -> WorkerResult<()> {
         // A supervisor has just opened a new WebSocket connection and
         // successfully authenticated. This might be because it's a new
         // supervisor, because it restarted, or because the connection was
@@ -93,11 +114,11 @@ impl SupervisorWSWorker {
 
         // This should never fail, as the supervisor has successfully
         // authenticated:
-        let worker_instance_id = Self::obtain_worker_instance_id(&app_state, supervisor_id).await?;
+        let worker_instance_id = Self::obtain_worker_instance_id(&pool, supervisor_id).await?;
 
         // Now, using this ID, construct the worker instance:
         let worker = SupervisorWSWorker {
-            app_state,
+            pool,
             supervisor_id,
             socket,
             worker_instance_id,
@@ -106,9 +127,9 @@ impl SupervisorWSWorker {
         worker.run_loop().await
     }
 
-    async fn obtain_worker_instance_id(app_state: &AppState, supervisor_id: Uuid) -> Result<u64> {
+    async fn obtain_worker_instance_id(pool: &PgPool, supervisor_id: Uuid) -> Result<u64> {
         let db_worker_instance_id: i64 =
-            sql::supervisor::increment_worker_instance_id(supervisor_id, app_state.pool())
+            sql::supervisor::increment_worker_instance_id(supervisor_id, pool)
                 .await
                 .with_context(|| {
                     format!(
@@ -142,7 +163,7 @@ impl SupervisorWSWorker {
     where
         F: AsyncFnOnce(&mut Transaction<'_, Postgres>) -> Result<R>,
     {
-        let mut txn = self.app_state.pool().begin().await.with_context(|| {
+        let mut txn = self.pool.begin().await.with_context(|| {
             format!(
                 "Beginning SupervisorWSWorker transaction for supervisor {} \
                  (worker_instance_id {})",
