@@ -35,15 +35,18 @@
       databaseShell = pkgs.mkShell {
         name = "treadmill-db-migrate-shell";
 
-        packages = with pkgs; [
-          postgresql
-          atlas
-          sql-formatter
-          sqlx-cli
-        ];
+        # `mkShell { packages = [ ...]; }` gets turned into `nativeBuildInputs`:
+        packages =
+          defaultShell.nativeBuildInputs
+          ++ (with pkgs; [
+            postgresql
+            atlas
+            sql-formatter
+            sqlx-cli
+          ]);
 
-        shellHook = ''
-          export PG_BASE_DIR="$(mktemp -d -t tmlswbmigratedb-XXXXX)"
+        shellHook = defaultShell.shellHook + ''
+          export PG_BASE_DIR="$(mktemp -d /tmp/tmlswbmigratedb-XXXXX)"
 
           echo "Initializing new Postgres database in $PG_BASE_DIR"
           initdb -D "$PG_BASE_DIR"
