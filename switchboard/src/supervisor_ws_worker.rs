@@ -274,6 +274,64 @@ mod tests {
         }
     }
 
+    /// A scripted `SupervisorSocket`: the test pushes inbound items via the
+    /// returned sender (the "to worker" half) and observes the worker's
+    /// outgoing messages on the returned receiver (the "from worker" half).
+    ///
+    /// Closing the to-worker sender makes the worker see an end-of-stream;
+    /// dropping the from-worker receiver makes the worker's writes fail.
+    struct ScriptedSocket {
+        inbound: tokio::sync::mpsc::UnboundedReceiver<Result<ws::Message, axum::Error>>,
+        outbound: tokio::sync::mpsc::UnboundedSender<ws::Message>,
+    }
+
+    impl Stream for ScriptedSocket {
+        type Item = Result<ws::Message, axum::Error>;
+        fn poll_next(
+            mut self: Pin<&mut Self>,
+            cx: &mut TaskContext<'_>,
+        ) -> Poll<Option<Self::Item>> {
+            self.inbound.poll_recv(cx)
+        }
+    }
+
+    impl Sink<ws::Message> for ScriptedSocket {
+        type Error = axum::Error;
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _: &mut TaskContext<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn start_send(self: Pin<&mut Self>, item: ws::Message) -> Result<(), Self::Error> {
+            self.outbound
+                .send(item)
+                .map_err(|_| axum::Error::new(std::io::Error::other("test socket outbound closed")))
+        }
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _: &mut TaskContext<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _: &mut TaskContext<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn scripted_socket() -> (
+        tokio::sync::mpsc::UnboundedSender<Result<ws::Message, axum::Error>>,
+        tokio::sync::mpsc::UnboundedReceiver<ws::Message>,
+        ScriptedSocket,
+    ) {
+        let (to_worker, inbound) = tokio::sync::mpsc::unbounded_channel();
+        let (outbound, from_worker) = tokio::sync::mpsc::unbounded_channel();
+        (to_worker, from_worker, ScriptedSocket { inbound, outbound })
+    }
+
     async fn insert_supervisor(pool: &PgPool) -> anyhow::Result<Uuid> {
         let supervisor_id = Uuid::new_v4();
         sql::supervisor::insert(
@@ -420,6 +478,55 @@ mod tests {
             observed, "should-be-rolled-back",
             "transaction should have rolled back"
         );
+        Ok(())
+    }
+
+    // -- run_loop termination ----------------------------------------------
+    //
+    // These tests pin down the basic shutdown contract: whatever else the
+    // run loop does, it must return when the peer goes away — either via
+    // an explicit Close frame or by the socket stream ending. They use the
+    // `ScriptedSocket` helper above and wrap `run` in a `timeout` so a
+    // bug that wedges the loop surfaces as a deadline miss rather than a
+    // hung test.
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn run_returns_when_peer_sends_close(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let (to_worker, _from_worker, socket) = scripted_socket();
+
+        // Peer sends Close as its first (and only) frame.
+        to_worker
+            .send(Ok(ws::Message::Close(None)))
+            .expect("scripted inbound channel must be open");
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            SupervisorWSWorker::run(pool, supervisor_id, socket),
+        )
+        .await
+        .expect("worker should return promptly after peer Close");
+
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn run_returns_when_socket_stream_ends(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let (to_worker, _from_worker, socket) = scripted_socket();
+
+        // Peer disappears without a Close frame — stream end.
+        drop(to_worker);
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            SupervisorWSWorker::run(pool, supervisor_id, socket),
+        )
+        .await
+        .expect("worker should return promptly on socket stream end");
+
         Ok(())
     }
 }
