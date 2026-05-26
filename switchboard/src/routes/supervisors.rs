@@ -147,7 +147,7 @@ pub async fn connect(
         }
     }
 
-    let worker_state = state.clone();
+    let worker_pool = state.pool().clone();
     let mut response =
         ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL])
             .on_upgrade(move |mut web_socket| async move {
@@ -167,7 +167,7 @@ pub async fn connect(
 		     ({supervisor_id}), connecting from {socket_addr}."
                     );
 
-                    SupervisorWSWorker::run(worker_state, supervisor_id, web_socket).await
+                    SupervisorWSWorker::run(worker_pool, supervisor_id, web_socket).await
                 });
             });
 
