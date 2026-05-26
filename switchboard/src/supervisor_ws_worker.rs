@@ -211,3 +211,215 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         todo!()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! DB-backed unit tests for `SupervisorWSWorker`.
+    //!
+    //! Every test is marked `#[ignore]` because `#[sqlx::test]` needs a
+    //! live Postgres reachable via `DATABASE_URL`. To run them, enter the
+    //! ephemeral-Postgres devshell and pass `--run-ignored only` (nextest)
+    //! or `-- --ignored` (cargo test):
+    //!
+    //!     nix develop '.#database'
+    //!     cargo nextest run --run-ignored only -p treadmill-switchboard
+    //!     # or
+    //!     cargo test -p treadmill-switchboard -- --ignored
+    //!
+    //! CI runs these via the `nextest-db` Nix flake check.
+    //!
+    //! `run_loop` is still `todo!()`, so the only paths exercised here are
+    //! the worker setup (`obtain_worker_instance_id`) and the row-locking
+    //! takeover guard (`with_txn`).
+
+    use super::*;
+    use crate::auth::token::SecurityToken;
+    use std::collections::BTreeSet;
+    use std::pin::Pin;
+    use std::task::{Context as TaskContext, Poll};
+
+    /// Minimal `SupervisorSocket` impl used by tests that don't exercise the
+    /// socket: poll_next is forever-pending, the sink discards everything.
+    struct NoSocket;
+
+    impl Stream for NoSocket {
+        type Item = Result<ws::Message, axum::Error>;
+        fn poll_next(self: Pin<&mut Self>, _: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+            Poll::Pending
+        }
+    }
+
+    impl Sink<ws::Message> for NoSocket {
+        type Error = axum::Error;
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _: &mut TaskContext<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn start_send(self: Pin<&mut Self>, _: ws::Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _: &mut TaskContext<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _: &mut TaskContext<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    async fn insert_supervisor(pool: &PgPool) -> anyhow::Result<Uuid> {
+        let supervisor_id = Uuid::new_v4();
+        sql::supervisor::insert(
+            supervisor_id,
+            format!("test-supervisor-{supervisor_id}"),
+            SecurityToken::generate(),
+            &BTreeSet::new(),
+            Vec::new(),
+            pool,
+        )
+        .await?;
+        Ok(supervisor_id)
+    }
+
+    fn worker(
+        pool: PgPool,
+        supervisor_id: Uuid,
+        worker_instance_id: u64,
+    ) -> SupervisorWSWorker<NoSocket> {
+        SupervisorWSWorker {
+            pool,
+            supervisor_id,
+            socket: NoSocket,
+            worker_instance_id,
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn obtain_worker_instance_id_starts_at_one_and_increments(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        for expected in 1u64..=3 {
+            let got =
+                SupervisorWSWorker::<NoSocket>::obtain_worker_instance_id(&pool, supervisor_id)
+                    .await?;
+            assert_eq!(got, expected);
+        }
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn with_txn_runs_closure_and_commits_when_current(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let worker_instance_id =
+            SupervisorWSWorker::<NoSocket>::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let worker = worker(pool.clone(), supervisor_id, worker_instance_id);
+
+        let renamed = "renamed-inside-txn".to_string();
+        let returned = worker
+            .with_txn(async |txn| {
+                sqlx::query!(
+                    r#"
+                    UPDATE tml_switchboard.supervisors
+                    SET name = $2
+                    WHERE supervisor_id = $1
+                    "#,
+                    supervisor_id,
+                    renamed,
+                )
+                .execute(&mut **txn)
+                .await?;
+                Ok(123u32)
+            })
+            .await
+            .expect("with_txn should succeed for the current worker");
+        assert_eq!(returned, 123);
+
+        let observed: String = sqlx::query_scalar!(
+            "SELECT name FROM tml_switchboard.supervisors WHERE supervisor_id = $1",
+            supervisor_id,
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(observed, renamed, "transaction should have committed");
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn with_txn_returns_stale_when_superseded(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let our_id =
+            SupervisorWSWorker::<NoSocket>::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        // Simulate a takeover: a newer worker bumps the instance ID.
+        let newer_id =
+            SupervisorWSWorker::<NoSocket>::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        assert_eq!(newer_id, our_id + 1);
+
+        let worker = worker(pool.clone(), supervisor_id, our_id);
+        let err = worker
+            .with_txn(async |_txn| -> anyhow::Result<()> {
+                panic!("closure must not run when worker is stale")
+            })
+            .await
+            .expect_err("with_txn should reject a stale worker");
+        match err {
+            WorkerError::Stale {
+                this_worker,
+                current_worker,
+            } => {
+                assert_eq!(this_worker, our_id);
+                assert_eq!(current_worker, newer_id);
+            }
+            WorkerError::Other(e) => panic!("expected Stale, got Other({e:?})"),
+        }
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn with_txn_rolls_back_on_closure_error(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let worker_instance_id =
+            SupervisorWSWorker::<NoSocket>::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let worker = worker(pool.clone(), supervisor_id, worker_instance_id);
+
+        let result: WorkerResult<()> = worker
+            .with_txn(async |txn| {
+                sqlx::query!(
+                    "UPDATE tml_switchboard.supervisors SET name = $2 WHERE supervisor_id = $1",
+                    supervisor_id,
+                    "should-be-rolled-back",
+                )
+                .execute(&mut **txn)
+                .await?;
+                Err(anyhow::anyhow!("intentional failure"))
+            })
+            .await;
+        assert!(
+            matches!(result, Err(WorkerError::Other(_))),
+            "closure error should surface as WorkerError::Other"
+        );
+
+        let observed: String = sqlx::query_scalar!(
+            "SELECT name FROM tml_switchboard.supervisors WHERE supervisor_id = $1",
+            supervisor_id,
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_ne!(
+            observed, "should-be-rolled-back",
+            "transaction should have rolled back"
+        );
+        Ok(())
+    }
+}

@@ -57,6 +57,58 @@
           }
         );
 
+        # Run the DB-backed test suite (currently switchboard's
+        # `#[sqlx::test]` tests) against an ephemeral Postgres spun up
+        # inside the Nix sandbox. These tests are `#[ignore]`d so the
+        # default `nextest` check above passes them over without
+        # touching a DB; this check is the dedicated place where they
+        # actually execute.
+        #
+        # `--run-ignored only` is the nextest CLI's "only run #[ignore]'d
+        # tests" toggle (there is no config-file equivalent in nextest at
+        # the time of writing); `--no-tests=pass` keeps the run green
+        # for workspace members that have no DB-backed tests at all.
+        nextest-db = cmn.craneLib.cargoNextest (
+          cmn.cargoCommonArgs
+          // {
+            pname = "treadmill-nextest-db";
+            version = "0.1.0";
+            cargoArtifacts = cmn.workspaceDeps;
+            cargoNextestExtraArgs = "--workspace --run-ignored only --no-tests=pass";
+            partitions = 1;
+            partitionType = "count";
+
+            nativeBuildInputs = cmn.cargoCommonArgs.nativeBuildInputs ++ [
+              pkgs.postgresql
+            ];
+
+            preCheck = ''
+              PG_BASE_DIR="$(mktemp -d)"
+              initdb -D "$PG_BASE_DIR" >/dev/null
+              pg_ctl -D "$PG_BASE_DIR" -l "$PG_BASE_DIR/log" \
+                -o "-h ''' --unix_socket_directories='$PG_BASE_DIR'" start
+
+              export PGHOST="$PG_BASE_DIR"
+              export PGUSER="$(id -un)"
+              createdb -h "$PGHOST" -U "$PGUSER" treadmill_test
+
+              # sqlx::test creates per-test databases from this base
+              # connection; the build user is a superuser by default after
+              # initdb so CREATE DATABASE works.
+              #
+              # sqlx rejects URLs with an empty host segment, so the Unix
+              # socket directory goes in the host slot URL-encoded
+              # (`/foo/bar` -> `%2Ffoo%2Fbar`) rather than via `?host=`.
+              ENCODED_PGHOST="$(printf %s "$PGHOST" | sed 's,/,%2F,g')"
+              export DATABASE_URL="postgresql://$PGUSER@$ENCODED_PGHOST/treadmill_test"
+            '';
+
+            postCheck = ''
+              pg_ctl -D "$PG_BASE_DIR" stop >/dev/null 2>&1 || true
+            '';
+          }
+        );
+
         # TODO: Placeholder for end-to-end integration tests.
         integration-tests = pkgs.runCommand "integration-tests-todo" { } ''
           echo "TODO: end-to-end integration tests"
