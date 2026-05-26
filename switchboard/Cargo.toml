@@ -87,6 +87,10 @@ sqlx-cli = { version = "0.9.0", features = [
   "rustls",
   "completions",
 ] }
+# Activate the `macros` feature on tokio for tests only — `#[sqlx::test]`
+# expands to `#[tokio::test]`, which requires it. Non-test builds stay
+# slim.
+tokio = { workspace = true, features = ["macros"] }
 
 [lints]
 workspace = true
