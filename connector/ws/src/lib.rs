@@ -41,6 +41,22 @@ pub struct WsConnectorConfig {
     #[serde(flatten)]
     token: WsConnectorConfigToken,
     switchboard_uri: String,
+    /// How often this connector sends a WebSocket PING to the switchboard.
+    /// Local to the supervisor side; deliberately not part of the protocol
+    /// handshake (each side runs its own keepalive). Defaults to 10s.
+    #[serde(with = "humantime_serde", default = "default_ping_interval")]
+    ping_interval: Duration,
+    /// How long this connector waits for a PONG before declaring the switchboard
+    /// dead and dropping the connection. Defaults to 60s.
+    #[serde(with = "humantime_serde", default = "default_pong_timeout")]
+    pong_timeout: Duration,
+}
+
+fn default_ping_interval() -> Duration {
+    Duration::from_secs(10)
+}
+fn default_pong_timeout() -> Duration {
+    Duration::from_secs(60)
 }
 
 #[derive(Debug, Error)]
@@ -381,9 +397,8 @@ impl<S: connector::Supervisor> Inner<S> {
 
         tracing::info!("Received switchboard handshake: {server_hello:?}");
 
-        // TODO: make this configurable
-        let mut ping_interval = tokio::time::interval(Duration::from_secs(10));
-        let pong_timeout = tokio::time::sleep(Duration::from_secs(60));
+        let mut ping_interval = tokio::time::interval(self.config.ping_interval);
+        let pong_timeout = tokio::time::sleep(self.config.pong_timeout);
         tokio::pin!(pong_timeout);
 
         // Clone the shutdown channel for us to be able to mutably borrow it:
@@ -425,7 +440,10 @@ impl<S: connector::Supervisor> Inner<S> {
                 }
 
                 () = &mut pong_timeout => {
-                    tracing::error!("Haven't received a PING in 60s, exiting socket control loop");
+                    tracing::error!(
+                        "Haven't received a PONG from switchboard in {:?}, exiting socket control loop",
+                        self.config.pong_timeout
+                    );
                     return Err(());
                 }
 
@@ -487,7 +505,9 @@ impl<S: connector::Supervisor> Inner<S> {
                             tracing::trace!(target: "tml_ws_connector:ping", "Received PING from switchboard");
                         }
                         tungstenite::Message::Pong(_) => {
-                            pong_timeout.as_mut().reset(Instant::now() + Duration::from_secs(60));
+                            pong_timeout
+                                .as_mut()
+                                .reset(Instant::now() + self.config.pong_timeout);
                             tracing::trace!("Received PONG from switchboard");
                         }
                         tungstenite::Message::Close(cf) => {
