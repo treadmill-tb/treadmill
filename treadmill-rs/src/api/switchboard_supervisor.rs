@@ -3,7 +3,6 @@
 
 use crate::connector::JobError;
 use crate::image::manifest::ImageId;
-use crate::util::chrono::duration as human_duration;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -17,18 +16,7 @@ pub mod websocket {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocketConfig {
-    /// PING-PONG keepalive configuration.
-    pub keepalive: KeepaliveConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KeepaliveConfig {
-    /// How often the switchboard should send PING messages to the supervisor.
-    #[serde(with = "human_duration")]
-    pub ping_interval: chrono::TimeDelta,
-    /// Minimum time without a PONG response before the switchboard closes the connection.
-    #[serde(with = "human_duration")]
-    pub keepalive: chrono::TimeDelta,
+    // Currently, the switchboard does not send over any configuration to the supervisors.
 }
 
 // -- StartJobRequest ------------------------------------------------------------------------------

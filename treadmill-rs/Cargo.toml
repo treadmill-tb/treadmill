@@ -17,7 +17,7 @@ chrono = { workspace = true, features = ["serde"] }
 fundu = { version = "2.0.0", features = ["chrono", "serde"] }
 http = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_with = { version = "3.8.1", features = ["hex", "base64"] }
+serde_with = { workspace = true, features = ["hex", "base64"] }
 subtle = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v4"] }
