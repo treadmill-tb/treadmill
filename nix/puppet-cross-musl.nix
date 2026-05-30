@@ -7,6 +7,7 @@
       ...
     }:
     let
+      cmn = import ./lib.nix { inherit inputs system pkgs; };
       inherit (pkgs) lib;
       inherit (pkgs.stdenv) isLinux;
       inherit (inputs) fenix;
@@ -33,7 +34,10 @@
           pname = "tml-puppet";
           version = "0.1.0";
 
-          src = lib.cleanSource ../.;
+          # Same per-crate fileset as the native crane build: workspace
+          # skeleton + puppet/, treadmill-rs/, control-socket/tcp/client/.
+          # Editing other workspace crates won't invalidate this build.
+          src = cmn.groups.puppet.binSrcs.tml-puppet;
           buildAndTestSubdir = "puppet";
 
           cargoLock.lockFile = ../Cargo.lock;
