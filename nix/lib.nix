@@ -99,6 +99,8 @@ let
     fileset = lib.fileset.unions [
       (craneLib.fileset.commonCargoSources workspaceRoot)
       switchboardData
+      # Committed wire-schema snapshots read by the protocol drift-guard test.
+      (lib.fileset.maybeMissing (workspaceRoot + "/treadmill-rs/protocol-schema"))
     ];
   };
 

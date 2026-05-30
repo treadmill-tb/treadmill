@@ -3,7 +3,7 @@ pub mod supervisors;
 
 use crate::api::supervisor_puppet::ParameterValue;
 use crate::api::switchboard_supervisor::{
-    JobInitializingStage, JobUserExitStatus, RestartPolicy, RunningJobState,
+    JobInitializingStage, RestartPolicy, RunningJobState, TaskExitStatus,
 };
 use crate::image::manifest::ImageId;
 use base64::Engine;
@@ -106,45 +106,54 @@ pub struct JobRequest {
     pub override_timeout: Option<chrono::Duration>,
 }
 
-// In accordance with the Job Lifecycle document.
+/// Why a job terminated.
+///
+/// This records *why* a job stopped and is orthogonal to the
+/// [`TaskExitStatus`] (the success/failure of the user's workload) and to any
+/// `exit_message`. Mirrors the `tml_switchboard.termination_reason` DB enum.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ExitStatus {
-    SupervisorMatchError,
+pub enum TerminationReason {
+    /// The job's own workload ended it.
+    WorkloadExited,
+    /// The job requested its own cancellation.
+    WorkloadSelfCanceled,
+    /// Externally canceled by a user.
+    UserCanceled,
+    /// Timed out while still queued.
     QueueTimeout,
-    InternalSupervisorError,
+    /// Timed out while dispatched/executing.
+    ExecutionTimeout,
+    /// The job's image was bad or could not be fetched (user fault).
+    ImageError,
+    /// No supervisor matched the job's tag configuration.
+    SupervisorMatchError,
+    /// The supervisor/host failed to start the job.
     SupervisorHostStartFailure,
+    /// The supervisor dropped the job (lost on reconnect).
     SupervisorDroppedJob,
-    JobCanceled,
-    JobTimeout,
-    WorkloadFinishedSuccess,
-    WorkloadFinishedError,
-    WorkloadFinishedUnknown,
+    /// The supervisor was unreachable.
+    SupervisorUnreachable,
+    /// Resuming a previously started job failed.
+    ResumeFailed,
+    /// An unexpected internal failure.
+    InternalError,
 }
-impl From<JobUserExitStatus> for ExitStatus {
-    fn from(value: JobUserExitStatus) -> Self {
-        match value {
-            JobUserExitStatus::Success => Self::WorkloadFinishedSuccess,
-            JobUserExitStatus::Error => Self::WorkloadFinishedError,
-            JobUserExitStatus::Unknown => Self::WorkloadFinishedUnknown,
-        }
-    }
-}
-impl Display for ExitStatus {
+impl Display for TerminationReason {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            ExitStatus::SupervisorMatchError => "failed to match",
-            ExitStatus::QueueTimeout => "timed out in queue",
-            ExitStatus::InternalSupervisorError => "internal supervisor error",
-            ExitStatus::SupervisorHostStartFailure => "supervisor/host start failure",
-            ExitStatus::SupervisorDroppedJob => "supervisor dropped job",
-            ExitStatus::WorkloadFinishedError => "user-defined workload terminated with error",
-            ExitStatus::WorkloadFinishedSuccess => "user-defined workload terminated with success",
-            ExitStatus::WorkloadFinishedUnknown => {
-                "user-defined workload terminated with unknown status"
-            }
-            ExitStatus::JobCanceled => "canceled",
-            ExitStatus::JobTimeout => "job timed out while dispatched",
+            TerminationReason::WorkloadExited => "workload exited",
+            TerminationReason::WorkloadSelfCanceled => "workload requested cancellation",
+            TerminationReason::UserCanceled => "canceled by user",
+            TerminationReason::QueueTimeout => "timed out in queue",
+            TerminationReason::ExecutionTimeout => "timed out while executing",
+            TerminationReason::ImageError => "image error",
+            TerminationReason::SupervisorMatchError => "failed to match a supervisor",
+            TerminationReason::SupervisorHostStartFailure => "supervisor/host start failure",
+            TerminationReason::SupervisorDroppedJob => "supervisor dropped job",
+            TerminationReason::SupervisorUnreachable => "supervisor unreachable",
+            TerminationReason::ResumeFailed => "failed to resume job",
+            TerminationReason::InternalError => "internal supervisor error",
         };
         f.write_str(s)
     }
@@ -157,10 +166,13 @@ pub struct JobResult {
     /// If the job was dispatched, the ID of the supervisor it was dispatched on.
     /// Otherwise [`None`].
     pub supervisor_id: Option<Uuid>,
-    /// Exit status of the job.
-    pub exit_status: ExitStatus,
-    /// Optional output.
-    pub host_output: Option<String>,
+    /// Why the job terminated.
+    pub termination_reason: TerminationReason,
+    /// The semantic result of the user's workload, if it ran and reported one.
+    /// Orthogonal to `termination_reason`; may be `None` even on a finalized job.
+    pub task_exit_status: Option<TaskExitStatus>,
+    /// Optional human-readable message (multi-line markdown acceptable).
+    pub exit_message: Option<String>,
     /// Time at which the switchboard processed the termination.
     pub terminated_at: DateTime<Utc>,
 }
@@ -197,11 +209,12 @@ pub enum JobEvent {
         status_message: Option<String>,
     },
     DeclareWorkloadExitStatus {
-        workload_exit_status: JobUserExitStatus,
+        task_exit_status: TaskExitStatus,
         workload_output: Option<String>,
     },
     SetExitStatus {
-        exit_status: ExitStatus,
+        termination_reason: TerminationReason,
+        task_exit_status: Option<TaskExitStatus>,
         status_message: Option<String>,
     },
     FinalizeResult {
