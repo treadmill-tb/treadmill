@@ -292,6 +292,17 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context as TaskContext, Poll};
 
+    /// Build a `SupervisorWSWorkerConfig` with the given ping interval /
+    /// dead-pong deadline, both expressed in milliseconds. Tests use short
+    /// values so the suite stays fast without hard-coding magic durations
+    /// everywhere.
+    fn worker_config(ping_interval_ms: u64, pong_dead_ms: u64) -> SupervisorWSWorkerConfig {
+        SupervisorWSWorkerConfig {
+            supervisor_ping_interval: Duration::from_millis(ping_interval_ms),
+            supervisor_pong_dead: Duration::from_millis(pong_dead_ms),
+        }
+    }
+
     /// Minimal `SupervisorSocket` impl used by tests that don't exercise the
     /// socket: poll_next is forever-pending, the sink discards everything.
     struct NoSocket;
@@ -404,17 +415,14 @@ mod tests {
         pool: PgPool,
         supervisor_id: Uuid,
         worker_instance_id: u64,
+        config: SupervisorWSWorkerConfig,
     ) -> SupervisorWSWorker<NoSocket> {
         SupervisorWSWorker {
             pool,
             supervisor_id,
             socket: NoSocket,
             worker_instance_id,
-            config: SupervisorWSWorkerConfig {
-                // Dummy values, currently unused:
-                supervisor_ping_interval: Duration::from_secs(5),
-                supervisor_pong_dead: Duration::from_secs(15),
-            },
+            config,
         }
     }
 
@@ -439,7 +447,12 @@ mod tests {
         let supervisor_id = insert_supervisor(&pool).await?;
         let worker_instance_id =
             SupervisorWSWorker::<NoSocket>::obtain_worker_instance_id(&pool, supervisor_id).await?;
-        let worker = worker(pool.clone(), supervisor_id, worker_instance_id);
+        let worker = worker(
+            pool.clone(),
+            supervisor_id,
+            worker_instance_id,
+            worker_config(50, 250),
+        );
 
         let renamed = "renamed-inside-txn".to_string();
         let returned = worker
@@ -482,7 +495,7 @@ mod tests {
             SupervisorWSWorker::<NoSocket>::obtain_worker_instance_id(&pool, supervisor_id).await?;
         assert_eq!(newer_id, our_id + 1);
 
-        let worker = worker(pool.clone(), supervisor_id, our_id);
+        let worker = worker(pool.clone(), supervisor_id, our_id, worker_config(50, 250));
         let err = worker
             .with_txn(async |_txn| -> anyhow::Result<()> {
                 panic!("closure must not run when worker is stale")
@@ -508,7 +521,12 @@ mod tests {
         let supervisor_id = insert_supervisor(&pool).await?;
         let worker_instance_id =
             SupervisorWSWorker::<NoSocket>::obtain_worker_instance_id(&pool, supervisor_id).await?;
-        let worker = worker(pool.clone(), supervisor_id, worker_instance_id);
+        let worker = worker(
+            pool.clone(),
+            supervisor_id,
+            worker_instance_id,
+            worker_config(50, 250),
+        );
 
         let result: WorkerResult<()> = worker
             .with_txn(async |txn| {
@@ -562,16 +580,7 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            SupervisorWSWorker::run(
-                pool,
-                supervisor_id,
-                socket,
-                SupervisorWSWorkerConfig {
-                    // Dummy values, currently unused:
-                    supervisor_ping_interval: Duration::from_secs(5),
-                    supervisor_pong_dead: Duration::from_secs(15),
-                },
-            ),
+            SupervisorWSWorker::run(pool, supervisor_id, socket, worker_config(50, 250)),
         )
         .await
         .expect("worker should return promptly after peer Close");
@@ -590,20 +599,233 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            SupervisorWSWorker::run(
-                pool,
-                supervisor_id,
-                socket,
-                SupervisorWSWorkerConfig {
-                    // Dummy values, currently unused:
-                    supervisor_ping_interval: Duration::from_secs(5),
-                    supervisor_pong_dead: Duration::from_secs(15),
-                },
-            ),
+            SupervisorWSWorker::run(pool, supervisor_id, socket, worker_config(50, 250)),
         )
         .await
         .expect("worker should return promptly on socket stream end");
 
+        Ok(())
+    }
+
+    // -- keepalive: switchboard PINGs the supervisor and watches for PONGs --
+    //
+    // Each side of the connection runs its own keepalive independently: the
+    // switchboard worker emits PINGs every `supervisor_ping_interval` and
+    // declares the supervisor dead (terminating the loop) if no PONG comes
+    // back within `supervisor_pong_dead` of its last PING. The supervisor
+    // side runs the symmetric loop in `connector/ws/src/lib.rs` with its own
+    // local config; neither side configures the other.
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn run_emits_periodic_pings_to_supervisor(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let (to_worker, mut from_worker, socket) = scripted_socket();
+
+        // 50ms ping cadence, 5s dead-pong deadline — the deadline is wide
+        // enough that the dead-peer guard never fires during this test.
+        let cfg = worker_config(50, 5_000);
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, supervisor_id, socket, cfg));
+
+        for n in 1..=3 {
+            let msg = tokio::time::timeout(std::time::Duration::from_secs(2), from_worker.recv())
+                .await
+                .unwrap_or_else(|_| panic!("expected PING #{n} within 2s"))
+                .expect("from_worker channel must remain open while worker runs");
+            assert!(
+                matches!(msg, ws::Message::Ping(_)),
+                "expected Ping #{n}, got {msg:?}"
+            );
+        }
+
+        // Tidy up: closing inbound ends the worker.
+        drop(to_worker);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), jh).await;
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn run_exits_when_no_pong_within_dead_threshold(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let (to_worker, _from_worker, socket) = scripted_socket();
+
+        // Tight deadline — worker should declare the peer dead within ~200ms.
+        let cfg = worker_config(50, 200);
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, supervisor_id, socket, cfg));
+
+        // We never respond with Pongs; the worker must give up on its own.
+        // Generous outer bound: pong-dead (200ms) + slack for scheduling/DB
+        // setup. If the worker doesn't return here, the dead-peer detector
+        // either isn't wired up or its deadline is wrong.
+        tokio::time::timeout(std::time::Duration::from_secs(2), jh)
+            .await
+            .expect("worker must terminate within pong-dead deadline when no Pong arrives")
+            .expect("worker task should not panic");
+
+        // Keep `to_worker` alive until the end so the worker's exit is
+        // attributable to the dead-pong deadline, not stream-end.
+        drop(to_worker);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn run_stays_alive_while_pongs_keep_arriving(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let (to_worker, mut from_worker, socket) = scripted_socket();
+
+        // 50ms pings, 200ms dead-pong deadline: a missed Pong would kill the
+        // worker within ~200ms. We'll run for ~600ms (3 dead-pong windows)
+        // replying promptly each time, then close cleanly. The worker must
+        // outlive all three windows.
+        let cfg = worker_config(50, 200);
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, supervisor_id, socket, cfg));
+
+        for n in 1..=6 {
+            let msg = tokio::time::timeout(std::time::Duration::from_secs(2), from_worker.recv())
+                .await
+                .unwrap_or_else(|_| panic!("expected PING #{n} within 2s"))
+                .expect("from_worker channel must remain open while worker runs");
+            let payload = match msg {
+                ws::Message::Ping(p) => p,
+                other => panic!("expected Ping #{n}, got {other:?}"),
+            };
+            to_worker
+                .send(Ok(ws::Message::Pong(payload)))
+                .expect("inbound channel must stay open");
+        }
+
+        // Worker should still be running — close it cleanly.
+        to_worker
+            .send(Ok(ws::Message::Close(None)))
+            .expect("inbound channel must stay open");
+        tokio::time::timeout(std::time::Duration::from_secs(2), jh)
+            .await
+            .expect("worker should return promptly after Close")
+            .expect("worker task should not panic");
+        Ok(())
+    }
+
+    // -- non-Close inbound frames must not panic the run-loop ----------------
+    //
+    // Currently `handle_supervisor_msg` is `_ => unimplemented!()` for every
+    // variant other than Close. These tests pin down what each frame type
+    // should do at the worker layer:
+    //   * Ping → tolerated (production: tungstenite auto-pongs at the framing
+    //            layer; the worker code itself only needs to not panic).
+    //   * Pong → consumed by the dead-peer detector; loop continues.
+    //   * Binary → log + continue (out-of-protocol).
+    //   * Text → log + continue (full dispatch arrives with step 3).
+    // In all four cases the worker must keep running until we send Close.
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn inbound_ping_does_not_terminate_loop(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let (to_worker, _from_worker, socket) = scripted_socket();
+
+        // Wide ping cadence / dead-pong deadline so neither fires during this
+        // test — we only care that an inbound Ping doesn't take down the loop.
+        let cfg = worker_config(60_000, 600_000);
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, supervisor_id, socket, cfg));
+
+        // In production the Pong reply is emitted by the tungstenite framing
+        // layer wrapped by axum's WebSocket; the application-level worker only
+        // observes the Ping and must tolerate it. `ScriptedSocket` bypasses
+        // tungstenite, so no auto-pong fires here — and we don't assert one.
+        to_worker
+            .send(Ok(ws::Message::Ping(b"ping-payload".as_slice().into())))
+            .expect("inbound channel must stay open");
+
+        // Now close cleanly and confirm the worker returns. If the previous
+        // frame had panicked or short-circuited the loop, this Close would
+        // never be observed and the timeout below would fire.
+        to_worker
+            .send(Ok(ws::Message::Close(None)))
+            .expect("inbound channel must stay open");
+        tokio::time::timeout(std::time::Duration::from_secs(2), jh)
+            .await
+            .expect("worker should still be running and return promptly after Close")
+            .expect("worker task should not panic on inbound Ping");
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn inbound_pong_does_not_terminate_loop(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let (to_worker, _from_worker, socket) = scripted_socket();
+
+        let cfg = worker_config(60_000, 600_000);
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, supervisor_id, socket, cfg));
+
+        // Unsolicited Pong — must not panic the run loop.
+        to_worker
+            .send(Ok(ws::Message::Pong(b"unsolicited".as_slice().into())))
+            .expect("inbound channel must stay open");
+
+        // Now close cleanly and confirm the worker returns. If the previous
+        // frame had panicked or short-circuited the loop, this Close would
+        // never be observed and the timeout below would fire.
+        to_worker
+            .send(Ok(ws::Message::Close(None)))
+            .expect("inbound channel must stay open");
+        tokio::time::timeout(std::time::Duration::from_secs(2), jh)
+            .await
+            .expect("worker should still be running and return promptly after Close")
+            .expect("worker task should not panic on inbound Pong");
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn inbound_binary_does_not_terminate_loop(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let (to_worker, _from_worker, socket) = scripted_socket();
+
+        let cfg = worker_config(60_000, 600_000);
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, supervisor_id, socket, cfg));
+
+        // The protocol is JSON-over-Text; Binary frames aren't part of it.
+        // The loop should log and continue rather than panic.
+        to_worker
+            .send(Ok(ws::Message::Binary(b"\x00\x01\x02".as_slice().into())))
+            .expect("inbound channel must stay open");
+
+        to_worker
+            .send(Ok(ws::Message::Close(None)))
+            .expect("inbound channel must stay open");
+        tokio::time::timeout(std::time::Duration::from_secs(2), jh)
+            .await
+            .expect("worker should still be running and return promptly after Close")
+            .expect("worker task should not panic on inbound Binary");
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn inbound_unparseable_text_does_not_terminate_loop(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let (to_worker, _from_worker, socket) = scripted_socket();
+
+        let cfg = worker_config(60_000, 600_000);
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, supervisor_id, socket, cfg));
+
+        // Garbage that won't deserialize as a `switchboard_supervisor::Message`.
+        // Until step 3 wires up real dispatch, the only contract we need is
+        // "don't take down the loop."
+        to_worker
+            .send(Ok(ws::Message::Text("not a valid message".into())))
+            .expect("inbound channel must stay open");
+
+        to_worker
+            .send(Ok(ws::Message::Close(None)))
+            .expect("inbound channel must stay open");
+        tokio::time::timeout(std::time::Duration::from_secs(2), jh)
+            .await
+            .expect("worker should still be running and return promptly after Close")
+            .expect("worker task should not panic on unparseable Text");
         Ok(())
     }
 }
