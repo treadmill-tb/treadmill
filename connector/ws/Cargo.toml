@@ -10,6 +10,7 @@ treadmill-rs = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 futures-util = { workspace = true, features = ["sink"] }
+humantime-serde = { workspace = true }
 rand = { workspace = true }
 rustls = { version = "0.23.11", features = [] }
 serde = { workspace = true }
