@@ -14,3 +14,7 @@ target/
 
 # IntelliJ
 .idea
+
+# Nix result symlinks
+result
+result-*
