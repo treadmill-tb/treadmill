@@ -1,8 +1,10 @@
-use anyhow::{Context, Result};
+use std::{ops::ControlFlow, pin::Pin};
+
+use anyhow::{Context, Result, anyhow};
 use axum::extract::ws;
-use futures_util::{Sink, Stream, StreamExt};
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use sqlx::{PgPool, Postgres, Transaction};
-use tokio::time::{Duration, Interval, interval};
+use tokio::time::{Duration, Instant, Interval, Sleep, Timeout, interval, sleep};
 use treadmill_rs::api::switchboard_supervisor::SocketConfig;
 use uuid::Uuid;
 
@@ -259,19 +261,69 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         worker.run_loop().await
     }
 
-    async fn handle_supervisor_msg(&mut self, msg: ws::Message) -> WorkerResult<bool> {
+    async fn handle_supervisor_msg(
+        &mut self,
+        msg: ws::Message,
+        pong_timeout: &mut Pin<Box<Sleep>>,
+    ) -> WorkerResult<ControlFlow<(), ()>> {
         match msg {
             ws::Message::Close(_close_frame) => {
                 tracing::info!("SupervisorWSWorker: supervisor sent close message, terminating.");
-                Ok(true)
+                Ok(ControlFlow::Break(()))
             }
+
+            ws::Message::Ping(payload) => {
+                tracing::trace!(
+                    "SupervisorWSWorker: received PING from supervisor ({} bytes)",
+                    payload.len()
+                );
+                self.socket.send(ws::Message::Pong(payload));
+                Ok(ControlFlow::Continue(()))
+            }
+
+            ws::Message::Binary(payload) => {
+                tracing::warn!(
+                    "SupervisorWSWorker: received unexpected binary WebSocket message ({} bytes), discarding...",
+                    payload.len()
+                );
+                Ok(ControlFlow::Continue(()))
+            }
+
+            ws::Message::Text(payload) => {
+                tracing::trace!(
+                    "SupervisorWSWorker: received text WebSocket message ({} bytes)",
+                    payload.len()
+                );
+
+                // TODO: implement!
+
+                Ok(ControlFlow::Continue(()))
+            }
+
+            ws::Message::Pong(_) => {
+                tracing::trace!("SupervisorWSWorker: received PONG from supervisor");
+                pong_timeout
+                    .as_mut()
+                    .reset(Instant::now() + self.ctx.config.supervisor_pong_dead);
+                Ok(ControlFlow::Continue(()))
+            }
+
             _ => unimplemented!(),
         }
     }
 
     async fn run_loop(mut self) -> WorkerResult<()> {
+        // Keepalive PING message interval, for PING messages sent from the
+        // switchboard to the supervisor:
+        let mut ping_interval = interval(self.ctx.config.supervisor_ping_interval);
+
+        // Timeout for waiting on PONG messages from the supervisor. Reset every
+        // time we're getting a PONG response from the supervisor:
+        let mut pong_timeout = Box::pin(sleep(self.ctx.config.supervisor_pong_dead));
+
         loop {
             tokio::select! {
+                // Receive incoming messages from the supervisor via WebSocket:
                 opt_msg = self.socket.next() => {
                     let Some(res_msg) = opt_msg else {
                         tracing::info!("SupervisorWSWorker socket closed, terminating.");
@@ -280,10 +332,36 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
 
                     let msg = res_msg.context("SupervisorWSWorker reading message from supervisor WebSocket")?;
 
-                    if self.handle_supervisor_msg(msg).await? {
+                    if let ControlFlow::Break(()) = self.handle_supervisor_msg(msg, &mut pong_timeout).await? {
                         // We've been asked to terminate:
                         return Ok(());
                     }
+                }
+
+                // Periodically sending a WebSocket PING message to the
+                // supervisor. This does double duty:
+                // - it keeps the connection from being marked as idle and can
+                //   help us recognize dead supervisor connections;
+                // - we use it to check that there is not a newer worker serving
+                //   this supervisor, in which case we terminate.
+                _ = ping_interval.tick() => {
+                    // Run a dummy transaction against the database, this will
+                    // be sufficient to determine whether we're still the most
+                    // current worker.
+                    self.ctx.with_txn(async |_| Ok(())).await?;
+
+                    // Still current, now send a PING:
+                    self.socket.send(ws::Message::Ping((&[][..]).into())).await.context("SupervisorWSWorker sending ping to supervisor");
+                }
+
+                // Timeout for waiting on a PONG message from the supervisor. If
+                // we haven't received one within the timeout and this fires, it
+                // means we should consider the connection dead.
+                _ = &mut pong_timeout => {
+                    return Err(anyhow!(
+                        "SupervisorWSWorker did not receive PONG from supervisor in {:?}, terminating.",
+                        self.ctx.config.supervisor_pong_dead
+                    ).into());
                 }
             }
         }
