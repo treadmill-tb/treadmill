@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use axum::extract::ws;
-use futures_util::{Sink, Stream};
+use futures_util::{Sink, Stream, StreamExt};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -207,8 +207,34 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         Ok(out)
     }
 
-    async fn run_loop(self) -> WorkerResult<()> {
-        todo!()
+    async fn handle_supervisor_msg(&mut self, msg: ws::Message) -> WorkerResult<bool> {
+        match msg {
+            ws::Message::Close(_close_frame) => {
+                tracing::info!("SupervisorWSWorker: supervisor sent close message, terminating.");
+                Ok(true)
+            }
+            _ => unimplemented!(),
+        }
+    }
+
+    async fn run_loop(mut self) -> WorkerResult<()> {
+        loop {
+            tokio::select! {
+                opt_msg = self.socket.next() => {
+                    let Some(res_msg) = opt_msg else {
+                        tracing::info!("SupervisorWSWorker socket closed, terminating.");
+                        return Ok(());
+                    };
+
+                    let msg = res_msg.context("SupervisorWSWorker reading message from supervisor WebSocket")?;
+
+                    if self.handle_supervisor_msg(msg).await? {
+                        // We've been asked to terminate:
+                        return Ok(());
+                    }
+                }
+            }
+        }
     }
 }
 
