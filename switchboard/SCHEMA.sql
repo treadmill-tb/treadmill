@@ -120,6 +120,16 @@ create table tml_switchboard.supervisors
     -- tracks the last-known supervisor state. It will be reconciled and updated
     -- when the supervisor next reconnects.
     --
+    -- This is the *canonical* "assigned job" pointer. The invariant
+    --
+    --     supervisors.current_job = J  =>
+    --       jobs[J].dispatched_on_supervisor_id = this supervisor
+    --
+    -- is asserted by the worker in its `with_txn` transitions (the worker is the
+    -- sole writer); a DB trigger would be awkward under Atlas. The partial unique
+    -- index below enforces the half of the invariant that *is* expressible as a
+    -- pure constraint: a job is `current_job` for at most one supervisor.
+    --
     -- Foreign key constrained added after `jobs` is defined below.
     current_job        uuid,
 
@@ -368,6 +378,12 @@ create table tml_switchboard.jobs
 ALTER TABLE tml_switchboard.supervisors
     ADD FOREIGN KEY (current_job)
     REFERENCES tml_switchboard.jobs (job_id) ON DELETE NO ACTION;
+
+-- A job may be the `current_job` of at most one supervisor. Partial (only over
+-- non-null `current_job`) so idle supervisors don't collide on NULL.
+CREATE UNIQUE INDEX supervisors_current_job_unique
+    ON tml_switchboard.supervisors (current_job)
+    WHERE current_job IS NOT NULL;
 
 create type tml_switchboard.parameter_value as
 (
