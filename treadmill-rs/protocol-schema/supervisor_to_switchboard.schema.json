@@ -146,7 +146,7 @@
           "const": "provisioning"
         },
         {
-          "description": "The host is booting. The next transition should\neither be into the `Ready` or `Failed` states.",
+          "description": "The host is booting. The next transition is normally into\n[`RunningJobState::Ready`]; a failure instead surfaces as a\n[`SupervisorJobEvent::Error`].",
           "type": "string",
           "const": "booting"
         }
@@ -194,8 +194,10 @@
       ]
     },
     "ReportedSupervisorStatus": {
+      "description": "A supervisor's point-in-time status snapshot, returned in the\n[`Response`] to a [`SwitchboardToSupervisor::StatusRequest`]. This is the\nsupervisor-side ground truth (`J_sup`) the worker reconciles against the\nswitchboard's assigned job (`J_sb = supervisors.current_job`) on (re)connect.\n\nThe five reconciliation cases (documented in full as Rustdoc on the worker's\n`reconcile` function) hinge on this value:\n- `Idle` with no `J_sb` ⇒ aligned;\n- `Idle` with a `J_sb` ⇒ the job was lost (finalize as `SupervisorDroppedJob`);\n- `OngoingJob{job_id: J_sb}` ⇒ adopt `job_state` into the DB (case 4);\n- `OngoingJob` of any other (or unassigned) id ⇒ a zombie to `StopJob`.",
       "oneOf": [
         {
+          "description": "The supervisor is executing `job_id`, currently in `job_state`.",
           "type": "object",
           "properties": {
             "job_id": {
@@ -217,6 +219,7 @@
           ]
         },
         {
+          "description": "The supervisor is executing no job.",
           "type": "object",
           "properties": {
             "type": {
@@ -231,6 +234,7 @@
       ]
     },
     "Response": {
+      "description": "The reply to a [`Request`]. `response_to_request_id` MUST echo the\noriginating request's `request_id` so the requester can correlate it.",
       "type": "object",
       "properties": {
         "message": {
@@ -247,8 +251,10 @@
       ]
     },
     "RunningJobState": {
+      "description": "The physical execution state of a job, as reported by the **supervisor**.\n\nThe supervisor is ground truth for what is *physically executing*. The\nswitchboard mirrors this into the `tml_switchboard.job_state` DB column and\nadopts it verbatim during reconciliation (case 4: the supervisor reports\n`OngoingJob(J_sb)` for the assigned job, so the DB takes the reported state).\n\n# Mapping to the DB `job_state`\n\nThe DB `job_state` enum (`switchboard/SCHEMA.sql`) is a superset of this one:\nit adds the switchboard-owned bookends `queued` and `scheduled` (before a\nsupervisor reports anything) and `finalized` (after termination). The\nassigned, supervisor-owned sub-states map one-to-one:\n\n| `RunningJobState`     | DB `job_state` |\n|-----------------------|----------------|\n| `Initializing{stage}` | `initializing` (+ `initializing_stage`) |\n| `Ready`               | `ready`        |\n| `Terminating`         | `terminating`  |\n| `Terminated`          | `finalized` (see below) |\n\n`Terminated` is **not** a 1:1 mapping: it folds into the terminal DB record\n`finalized`, which additionally requires a [`switchboard::TerminationReason`]\n(and optional [`TaskExitStatus`] / `exit_message`). A supervisor reporting\n`Terminated` therefore drives the switchboard's own `→ finalized` transition;\nthere is deliberately no total `RunningJobState → job_state` conversion,\nbecause `Terminated` alone does not determine the reason.\n\n[`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason",
       "oneOf": [
         {
+          "description": "Starting up; `stage` mirrors the DB `initializing_stage`.",
           "type": "object",
           "properties": {
             "stage": {
@@ -265,6 +271,7 @@
           ]
         },
         {
+          "description": "Up and running (the workload is executing).",
           "type": "object",
           "properties": {
             "state": {
@@ -277,6 +284,7 @@
           ]
         },
         {
+          "description": "Shutting down; the next report is normally `Terminated`.",
           "type": "object",
           "properties": {
             "state": {
@@ -289,6 +297,7 @@
           ]
         },
         {
+          "description": "Execution has ended. Drives the switchboard's `→ finalized` transition.",
           "type": "object",
           "properties": {
             "state": {
@@ -328,8 +337,10 @@
       ]
     },
     "SupervisorJobEvent": {
+      "description": "An asynchronous event a supervisor emits about the job it is executing,\nwrapped in a [`SupervisorEvent::JobEvent`]. The switchboard mirrors these\ninto the DB out-of-band of reconciliation; reconciliation itself is driven by\nthe [`ReportedSupervisorStatus`] snapshot, not the event stream.",
       "oneOf": [
         {
+          "description": "The job advanced to a new [`RunningJobState`]. The switchboard mirrors\n`new_state` into the DB `job_state` column (and a `Terminated` here drives\nthe `→ finalized` transition; see [`RunningJobState`]). `status_message`\nis optional free text for the audit log.",
           "type": "object",
           "properties": {
             "new_state": {
@@ -352,6 +363,7 @@
           ]
         },
         {
+          "description": "The user's workload reported a semantic result. `host_output` is the\ncaptured output: it is carried on the wire but **not persisted** by the\nswitchboard (it will live in object storage later), whereas\n`task_exit_status` is recorded on the finalized job row.",
           "type": "object",
           "properties": {
             "host_output": {
@@ -374,6 +386,7 @@
           ]
         },
         {
+          "description": "A job-level error. Semantically a transition toward termination; the\nswitchboard finalizes the job with an appropriate\n[`switchboard::TerminationReason`].\n\n[`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason",
           "type": "object",
           "properties": {
             "error": {
@@ -390,6 +403,7 @@
           ]
         },
         {
+          "description": "Best-effort console output. Delivery is lossy by design; the switchboard\nnever relies on completeness here.",
           "type": "object",
           "properties": {
             "console_bytes": {
