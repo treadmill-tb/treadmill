@@ -47,12 +47,28 @@ pub struct SupervisorWSWorkerConfig {
     pub supervisor_pong_dead: Duration,
 }
 
-pub struct SupervisorWSWorker<S: SupervisorSocket> {
+/// DB-side identity and configuration for one supervisor worker, deliberately
+/// kept free of the socket.
+///
+/// The split exists for an auto-trait reason: the production socket (axum's
+/// `WebSocket`) is `Send` but not `Sync`, so any `&self` async method on a
+/// struct that *contains* the socket would hold a `&` to a non-`Sync` value
+/// across its `.await`s — and `&T: Send` requires `T: Sync`. Since the worker's
+/// future is `tokio::spawn`'d (and so must be `Send`), that would force every
+/// such method to demand `S: Sync`, which `WebSocket` can't satisfy. Isolating
+/// the DB context here means `with_txn` and friends borrow only `&WorkerCtx`
+/// (which *is* `Sync`), so they stay ergonomic `&self` methods without
+/// constraining the socket type.
+struct WorkerCtx {
     pool: PgPool,
     supervisor_id: Uuid,
-    socket: S,
     worker_instance_id: u64,
     config: SupervisorWSWorkerConfig,
+}
+
+pub struct SupervisorWSWorker<S: SupervisorSocket> {
+    ctx: WorkerCtx,
+    socket: S,
 }
 
 /// Error type for [`SupervisorWSWorker`] operations.
@@ -80,6 +96,92 @@ pub enum WorkerError {
 }
 
 pub type WorkerResult<T = ()> = Result<T, WorkerError>;
+
+impl WorkerCtx {
+    async fn obtain_worker_instance_id(pool: &PgPool, supervisor_id: Uuid) -> Result<u64> {
+        let db_worker_instance_id: i64 =
+            sql::supervisor::increment_worker_instance_id(supervisor_id, pool)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Obtaining new worker instance ID for supervisor {:?}",
+                        supervisor_id
+                    )
+                })?;
+
+        Ok(db_worker_instance_id.try_into().expect(
+            "Database invariant violated: worker_instance_id must be zero or \
+	     positive integer!",
+        ))
+    }
+
+    /// Run `f` inside a transaction that holds an exclusive lock on this
+    /// supervisor's row for the duration of the closure.
+    ///
+    /// The lock serializes all worker writes for this supervisor: a concurrent
+    /// `increment_worker_instance_id` (issued by a takeover attempt from a new
+    /// worker) will block until this transaction commits or rolls back. After
+    /// taking the lock, this checks the supervisor's `worker_instance_id`; if
+    /// it no longer matches, the closure is not executed and
+    /// [`WorkerError::Stale`] is returned so the caller can exit gracefully via
+    /// `?`.
+    ///
+    /// IMPORTANT: do not `.await` any non-DB work inside `f`. The row lock is
+    /// held for the entire duration of the closure, so unrelated awaited I/O
+    /// (network, channels, sleeps) will pin the lock and block any takeover
+    /// attempt from a new worker.
+    ///
+    /// This is a `&self` method on [`WorkerCtx`] (not on `SupervisorWSWorker`)
+    /// precisely because `WorkerCtx` holds no socket: see the type's doc comment
+    /// for why borrowing the socket across these `.await`s would be a problem.
+    async fn with_txn<R, F>(&self, f: F) -> WorkerResult<R>
+    where
+        F: AsyncFnOnce(&mut Transaction<'_, Postgres>) -> Result<R>,
+    {
+        let mut txn = self.pool.begin().await.with_context(|| {
+            format!(
+                "Beginning SupervisorWSWorker transaction for supervisor {} \
+                 (worker_instance_id {})",
+                self.supervisor_id, self.worker_instance_id,
+            )
+        })?;
+
+        let current_worker_instance_id: u64 =
+            sql::supervisor::lock_and_get_current_worker(self.supervisor_id, &mut txn)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Locking and reading worker_instance_id for supervisor {}",
+                        self.supervisor_id,
+                    )
+                })?
+                .try_into()
+                .expect(
+                    "Database invariant violated: worker_instance_id must be zero \
+                     or positive integer!",
+                );
+
+        if current_worker_instance_id != self.worker_instance_id {
+            // `txn` is rolled back on drop. The closure body never ran.
+            return Err(WorkerError::Stale {
+                this_worker: self.worker_instance_id,
+                current_worker: current_worker_instance_id,
+            });
+        }
+
+        let out = f(&mut txn).await?;
+
+        txn.commit().await.with_context(|| {
+            format!(
+                "Committing SupervisorWSWorker transaction for supervisor {} \
+                 (worker_instance_id {})",
+                self.supervisor_id, self.worker_instance_id,
+            )
+        })?;
+
+        Ok(out)
+    }
+}
 
 impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     #[tracing::instrument(skip(pool, socket))]
@@ -141,98 +243,20 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
 
         // This should never fail, as the supervisor has successfully
         // authenticated:
-        let worker_instance_id = Self::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let worker_instance_id = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
 
         // Now, using this ID, construct the worker instance:
         let worker = SupervisorWSWorker {
-            pool,
-            supervisor_id,
+            ctx: WorkerCtx {
+                pool,
+                supervisor_id,
+                worker_instance_id,
+                config,
+            },
             socket,
-            worker_instance_id,
-            config,
         };
 
         worker.run_loop().await
-    }
-
-    async fn obtain_worker_instance_id(pool: &PgPool, supervisor_id: Uuid) -> Result<u64> {
-        let db_worker_instance_id: i64 =
-            sql::supervisor::increment_worker_instance_id(supervisor_id, pool)
-                .await
-                .with_context(|| {
-                    format!(
-                        "Obtaining new worker instance ID for supervisor {:?}",
-                        supervisor_id
-                    )
-                })?;
-
-        Ok(db_worker_instance_id.try_into().expect(
-            "Database invariant violated: worker_instance_id must be zero or \
-	     positive integer!",
-        ))
-    }
-
-    /// Run `f` inside a transaction that holds an exclusive lock on this
-    /// supervisor's row for the duration of the closure.
-    ///
-    /// The lock serializes all worker writes for this supervisor: a concurrent
-    /// `increment_worker_instance_id` (issued by a takeover attempt from a new
-    /// worker) will block until this transaction commits or rolls back. After
-    /// taking the lock, this checks the supervisor's `worker_instance_id`; if
-    /// it no longer matches, the closure is not executed and
-    /// [`WorkerError::Stale`] is returned so the caller can exit gracefully via
-    /// `?`.
-    ///
-    /// IMPORTANT: do not `.await` any non-DB work inside `f`. The row lock is
-    /// held for the entire duration of the closure, so unrelated awaited I/O
-    /// (network, channels, sleeps) will pin the lock and block any takeover
-    /// attempt from a new worker.
-    async fn with_txn<R, F>(&self, f: F) -> WorkerResult<R>
-    where
-        F: AsyncFnOnce(&mut Transaction<'_, Postgres>) -> Result<R>,
-    {
-        let mut txn = self.pool.begin().await.with_context(|| {
-            format!(
-                "Beginning SupervisorWSWorker transaction for supervisor {} \
-                 (worker_instance_id {})",
-                self.supervisor_id, self.worker_instance_id,
-            )
-        })?;
-
-        let current_worker_instance_id: u64 =
-            sql::supervisor::lock_and_get_current_worker(self.supervisor_id, &mut txn)
-                .await
-                .with_context(|| {
-                    format!(
-                        "Locking and reading worker_instance_id for supervisor {}",
-                        self.supervisor_id,
-                    )
-                })?
-                .try_into()
-                .expect(
-                    "Database invariant violated: worker_instance_id must be zero \
-                     or positive integer!",
-                );
-
-        if current_worker_instance_id != self.worker_instance_id {
-            // `txn` is rolled back on drop. The closure body never ran.
-            return Err(WorkerError::Stale {
-                this_worker: self.worker_instance_id,
-                current_worker: current_worker_instance_id,
-            });
-        }
-
-        let out = f(&mut txn).await?;
-
-        txn.commit().await.with_context(|| {
-            format!(
-                "Committing SupervisorWSWorker transaction for supervisor {} \
-                 (worker_instance_id {})",
-                self.supervisor_id, self.worker_instance_id,
-            )
-        })?;
-
-        Ok(out)
     }
 
     async fn handle_supervisor_msg(&mut self, msg: ws::Message) -> WorkerResult<bool> {
@@ -418,11 +442,13 @@ mod tests {
         config: SupervisorWSWorkerConfig,
     ) -> SupervisorWSWorker<NoSocket> {
         SupervisorWSWorker {
-            pool,
-            supervisor_id,
+            ctx: WorkerCtx {
+                pool,
+                supervisor_id,
+                worker_instance_id,
+                config,
+            },
             socket: NoSocket,
-            worker_instance_id,
-            config,
         }
     }
 
@@ -433,9 +459,7 @@ mod tests {
     ) -> anyhow::Result<()> {
         let supervisor_id = insert_supervisor(&pool).await?;
         for expected in 1u64..=3 {
-            let got =
-                SupervisorWSWorker::<NoSocket>::obtain_worker_instance_id(&pool, supervisor_id)
-                    .await?;
+            let got = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
             assert_eq!(got, expected);
         }
         Ok(())
@@ -445,8 +469,7 @@ mod tests {
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn with_txn_runs_closure_and_commits_when_current(pool: PgPool) -> anyhow::Result<()> {
         let supervisor_id = insert_supervisor(&pool).await?;
-        let worker_instance_id =
-            SupervisorWSWorker::<NoSocket>::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let worker_instance_id = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
         let worker = worker(
             pool.clone(),
             supervisor_id,
@@ -456,6 +479,7 @@ mod tests {
 
         let renamed = "renamed-inside-txn".to_string();
         let returned = worker
+            .ctx
             .with_txn(async |txn| {
                 sqlx::query!(
                     r#"
@@ -488,15 +512,14 @@ mod tests {
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn with_txn_returns_stale_when_superseded(pool: PgPool) -> anyhow::Result<()> {
         let supervisor_id = insert_supervisor(&pool).await?;
-        let our_id =
-            SupervisorWSWorker::<NoSocket>::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let our_id = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
         // Simulate a takeover: a newer worker bumps the instance ID.
-        let newer_id =
-            SupervisorWSWorker::<NoSocket>::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let newer_id = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
         assert_eq!(newer_id, our_id + 1);
 
         let worker = worker(pool.clone(), supervisor_id, our_id, worker_config(50, 250));
         let err = worker
+            .ctx
             .with_txn(async |_txn| -> anyhow::Result<()> {
                 panic!("closure must not run when worker is stale")
             })
@@ -519,8 +542,7 @@ mod tests {
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn with_txn_rolls_back_on_closure_error(pool: PgPool) -> anyhow::Result<()> {
         let supervisor_id = insert_supervisor(&pool).await?;
-        let worker_instance_id =
-            SupervisorWSWorker::<NoSocket>::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let worker_instance_id = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
         let worker = worker(
             pool.clone(),
             supervisor_id,
@@ -529,6 +551,7 @@ mod tests {
         );
 
         let result: WorkerResult<()> = worker
+            .ctx
             .with_txn(async |txn| {
                 sqlx::query!(
                     "UPDATE tml_switchboard.supervisors SET name = $2 WHERE supervisor_id = $1",
