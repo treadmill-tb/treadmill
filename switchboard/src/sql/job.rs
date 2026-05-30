@@ -2,57 +2,147 @@ use super::SqlSshEndpoint;
 use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
 use sqlx::{PgExecutor, Postgres, Transaction};
-use treadmill_rs::api::switchboard::{ExitStatus, JobInitSpec, JobRequest};
-use treadmill_rs::api::switchboard_supervisor::{ImageSpecification, RestartPolicy};
+use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, TerminationReason};
+use treadmill_rs::api::switchboard_supervisor::{
+    ImageSpecification, JobInitializingStage, RestartPolicy, TaskExitStatus,
+};
 use treadmill_rs::image::manifest::ImageId;
 use uuid::Uuid;
 
 pub mod history;
 pub mod parameters;
 
-#[derive(Debug, Copy, Clone, sqlx::Type)]
-#[sqlx(type_name = "tml_switchboard.exit_status", rename_all = "snake_case")]
-pub enum SqlExitStatus {
-    SupervisorMatchError,
-    QueueTimeout,
-    InternalSupervisorError,
-    SupervisorHostStartError,
-    SupervisorDroppedJob,
-    JobCanceled,
-    JobTimeout,
-    WorkloadFinishedError,
-    WorkloadFinishedSuccess,
-    WorkloadFinishedUnknown,
+#[derive(Debug, Copy, Clone, PartialEq, Eq, sqlx::Type)]
+#[sqlx(type_name = "tml_switchboard.job_state", rename_all = "snake_case")]
+pub enum SqlJobState {
+    Queued,
+    Scheduled,
+    Initializing,
+    Ready,
+    Terminating,
+    Finalized,
 }
-impl From<SqlExitStatus> for ExitStatus {
-    fn from(value: SqlExitStatus) -> Self {
+
+#[derive(Debug, Copy, Clone, sqlx::Type)]
+#[sqlx(
+    type_name = "tml_switchboard.job_initializing_stage",
+    rename_all = "snake_case"
+)]
+pub enum SqlJobInitializingStage {
+    Starting,
+    FetchingImage,
+    Allocating,
+    Provisioning,
+    Booting,
+}
+impl From<SqlJobInitializingStage> for JobInitializingStage {
+    fn from(value: SqlJobInitializingStage) -> Self {
         match value {
-            SqlExitStatus::SupervisorMatchError => ExitStatus::SupervisorMatchError,
-            SqlExitStatus::QueueTimeout => ExitStatus::QueueTimeout,
-            SqlExitStatus::InternalSupervisorError => ExitStatus::InternalSupervisorError,
-            SqlExitStatus::SupervisorHostStartError => ExitStatus::SupervisorHostStartFailure,
-            SqlExitStatus::SupervisorDroppedJob => ExitStatus::SupervisorDroppedJob,
-            SqlExitStatus::JobCanceled => ExitStatus::JobCanceled,
-            SqlExitStatus::JobTimeout => ExitStatus::JobTimeout,
-            SqlExitStatus::WorkloadFinishedSuccess => ExitStatus::WorkloadFinishedSuccess,
-            SqlExitStatus::WorkloadFinishedError => ExitStatus::WorkloadFinishedError,
-            SqlExitStatus::WorkloadFinishedUnknown => ExitStatus::WorkloadFinishedUnknown,
+            SqlJobInitializingStage::Starting => JobInitializingStage::Starting,
+            SqlJobInitializingStage::FetchingImage => JobInitializingStage::FetchingImage,
+            SqlJobInitializingStage::Allocating => JobInitializingStage::Allocating,
+            SqlJobInitializingStage::Provisioning => JobInitializingStage::Provisioning,
+            SqlJobInitializingStage::Booting => JobInitializingStage::Booting,
         }
     }
 }
-impl From<ExitStatus> for SqlExitStatus {
-    fn from(value: ExitStatus) -> Self {
+impl From<JobInitializingStage> for SqlJobInitializingStage {
+    fn from(value: JobInitializingStage) -> Self {
         match value {
-            ExitStatus::SupervisorMatchError => SqlExitStatus::SupervisorMatchError,
-            ExitStatus::QueueTimeout => SqlExitStatus::QueueTimeout,
-            ExitStatus::InternalSupervisorError => SqlExitStatus::InternalSupervisorError,
-            ExitStatus::SupervisorHostStartFailure => SqlExitStatus::SupervisorHostStartError,
-            ExitStatus::SupervisorDroppedJob => SqlExitStatus::SupervisorDroppedJob,
-            ExitStatus::JobCanceled => SqlExitStatus::JobCanceled,
-            ExitStatus::JobTimeout => SqlExitStatus::JobTimeout,
-            ExitStatus::WorkloadFinishedSuccess => SqlExitStatus::WorkloadFinishedSuccess,
-            ExitStatus::WorkloadFinishedError => SqlExitStatus::WorkloadFinishedError,
-            ExitStatus::WorkloadFinishedUnknown => SqlExitStatus::WorkloadFinishedUnknown,
+            JobInitializingStage::Starting => SqlJobInitializingStage::Starting,
+            JobInitializingStage::FetchingImage => SqlJobInitializingStage::FetchingImage,
+            JobInitializingStage::Allocating => SqlJobInitializingStage::Allocating,
+            JobInitializingStage::Provisioning => SqlJobInitializingStage::Provisioning,
+            JobInitializingStage::Booting => SqlJobInitializingStage::Booting,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, sqlx::Type)]
+#[sqlx(
+    type_name = "tml_switchboard.termination_reason",
+    rename_all = "snake_case"
+)]
+pub enum SqlTerminationReason {
+    WorkloadExited,
+    WorkloadSelfCanceled,
+    UserCanceled,
+    QueueTimeout,
+    ExecutionTimeout,
+    ImageError,
+    SupervisorMatchError,
+    SupervisorHostStartFailure,
+    SupervisorDroppedJob,
+    SupervisorUnreachable,
+    ResumeFailed,
+    InternalError,
+}
+impl From<SqlTerminationReason> for TerminationReason {
+    fn from(value: SqlTerminationReason) -> Self {
+        match value {
+            SqlTerminationReason::WorkloadExited => TerminationReason::WorkloadExited,
+            SqlTerminationReason::WorkloadSelfCanceled => TerminationReason::WorkloadSelfCanceled,
+            SqlTerminationReason::UserCanceled => TerminationReason::UserCanceled,
+            SqlTerminationReason::QueueTimeout => TerminationReason::QueueTimeout,
+            SqlTerminationReason::ExecutionTimeout => TerminationReason::ExecutionTimeout,
+            SqlTerminationReason::ImageError => TerminationReason::ImageError,
+            SqlTerminationReason::SupervisorMatchError => TerminationReason::SupervisorMatchError,
+            SqlTerminationReason::SupervisorHostStartFailure => {
+                TerminationReason::SupervisorHostStartFailure
+            }
+            SqlTerminationReason::SupervisorDroppedJob => TerminationReason::SupervisorDroppedJob,
+            SqlTerminationReason::SupervisorUnreachable => TerminationReason::SupervisorUnreachable,
+            SqlTerminationReason::ResumeFailed => TerminationReason::ResumeFailed,
+            SqlTerminationReason::InternalError => TerminationReason::InternalError,
+        }
+    }
+}
+impl From<TerminationReason> for SqlTerminationReason {
+    fn from(value: TerminationReason) -> Self {
+        match value {
+            TerminationReason::WorkloadExited => SqlTerminationReason::WorkloadExited,
+            TerminationReason::WorkloadSelfCanceled => SqlTerminationReason::WorkloadSelfCanceled,
+            TerminationReason::UserCanceled => SqlTerminationReason::UserCanceled,
+            TerminationReason::QueueTimeout => SqlTerminationReason::QueueTimeout,
+            TerminationReason::ExecutionTimeout => SqlTerminationReason::ExecutionTimeout,
+            TerminationReason::ImageError => SqlTerminationReason::ImageError,
+            TerminationReason::SupervisorMatchError => SqlTerminationReason::SupervisorMatchError,
+            TerminationReason::SupervisorHostStartFailure => {
+                SqlTerminationReason::SupervisorHostStartFailure
+            }
+            TerminationReason::SupervisorDroppedJob => SqlTerminationReason::SupervisorDroppedJob,
+            TerminationReason::SupervisorUnreachable => SqlTerminationReason::SupervisorUnreachable,
+            TerminationReason::ResumeFailed => SqlTerminationReason::ResumeFailed,
+            TerminationReason::InternalError => SqlTerminationReason::InternalError,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, sqlx::Type)]
+#[sqlx(
+    type_name = "tml_switchboard.task_exit_status",
+    rename_all = "snake_case"
+)]
+pub enum SqlTaskExitStatus {
+    Success,
+    Error,
+    Unknown,
+}
+impl From<SqlTaskExitStatus> for TaskExitStatus {
+    fn from(value: SqlTaskExitStatus) -> Self {
+        match value {
+            SqlTaskExitStatus::Success => TaskExitStatus::Success,
+            SqlTaskExitStatus::Error => TaskExitStatus::Error,
+            SqlTaskExitStatus::Unknown => TaskExitStatus::Unknown,
+        }
+    }
+}
+impl From<TaskExitStatus> for SqlTaskExitStatus {
+    fn from(value: TaskExitStatus) -> Self {
+        match value {
+            TaskExitStatus::Success => SqlTaskExitStatus::Success,
+            TaskExitStatus::Error => SqlTaskExitStatus::Error,
+            TaskExitStatus::Unknown => SqlTaskExitStatus::Unknown,
         }
     }
 }
@@ -114,13 +204,15 @@ pub async fn insert(
           enqueued_by_token_id,
           tag_config,
           job_timeout,
-          functional_state,
+          job_state,
+          initializing_stage,
           queued_at,
           started_at,
           dispatched_on_supervisor_id,
           ssh_endpoints,
-          exit_status,
-          host_output,
+          termination_reason,
+          task_exit_status,
+          exit_message,
           terminated_at,
           last_updated_at
         )
@@ -134,13 +226,15 @@ pub async fn insert(
           $7,	    -- enqueued_by_token_id
           $8,	    -- tag_config
           $9,	    -- job_timeout
-          'queued', -- functional_state
+          'queued', -- job_state
+          null,	    -- initializing_stage
           $10,	    -- queued_at
           null,	    -- started_at
           null,	    -- dispatched_on_supervisor_id
           null,	    -- ssh_endpoints
-          null,	    -- exit_status
-          null,	    -- host_output
+          null,	    -- termination_reason
+          null,	    -- task_exit_status
+          null,	    -- exit_message
           null,	    -- terminated_at
           default   -- last_updated_at
         )
@@ -167,17 +261,6 @@ pub async fn insert(
     Ok(())
 }
 
-#[derive(Debug, Copy, Clone, sqlx::Type)]
-#[sqlx(
-    type_name = "tml_switchboard.functional_state",
-    rename_all = "snake_case"
-)]
-pub enum SqlFunctionalState {
-    Queued,
-    Dispatched,
-    Finalized,
-}
-
 pub struct SqlJob {
     job_id: Uuid,
     resume_job_id: Option<Uuid>,
@@ -191,21 +274,27 @@ pub struct SqlJob {
     tag_config: String,
     job_timeout: PgInterval,
 
-    functional_state: SqlFunctionalState,
+    job_state: SqlJobState,
 
-    // Filled out when initialized into `queued` functional state
+    // Filled out while `job_state = 'initializing'`; null otherwise.
+    #[allow(dead_code)]
+    initializing_stage: Option<SqlJobInitializingStage>,
+
+    // Filled out when initialized into `queued` job state
     queued_at: DateTime<Utc>,
 
-    // Filled out if and when transitioned into `dispatched` functional state
+    // Filled out if and when the job is dispatched onto a supervisor
     started_at: Option<DateTime<Utc>>,
     dispatched_on_supervisor_id: Option<Uuid>,
     ssh_endpoints: Option<Vec<SqlSshEndpoint>>,
 
-    // Filled out when transitioned into `finalized` functional state
+    // Filled out when transitioned into `finalized` job state
     #[allow(dead_code)]
-    exit_status: Option<SqlExitStatus>,
+    termination_reason: Option<SqlTerminationReason>,
     #[allow(dead_code)]
-    host_output: Option<String>,
+    task_exit_status: Option<SqlTaskExitStatus>,
+    #[allow(dead_code)]
+    exit_message: Option<String>,
     #[allow(dead_code)]
     terminated_at: Option<DateTime<Utc>>,
 
@@ -267,8 +356,8 @@ impl SqlJob {
     pub fn ssh_endpoints(&self) -> Option<&Vec<SqlSshEndpoint>> {
         self.ssh_endpoints.as_ref()
     }
-    pub fn functional_state(&self) -> SqlFunctionalState {
-        self.functional_state
+    pub fn job_state(&self) -> SqlJobState {
+        self.job_state
     }
 }
 
@@ -281,9 +370,12 @@ pub async fn fetch_by_job_id(
         r#"
         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
-        queued_at, functional_state as "functional_state: _", started_at,
+        queued_at, job_state as "job_state: _",
+        initializing_stage as "initializing_stage: _", started_at,
         dispatched_on_supervisor_id, ssh_endpoints as "ssh_endpoints: _",
-        exit_status as "exit_status: _", host_output, terminated_at, last_updated_at
+        termination_reason as "termination_reason: _",
+        task_exit_status as "task_exit_status: _", exit_message, terminated_at,
+        last_updated_at
         from tml_switchboard.jobs where job_id = $1;
         "#,
         job_id
@@ -298,10 +390,13 @@ pub async fn fetch_all_queued(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJob>, 
         r#"
         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
-        queued_at, functional_state as "functional_state: _", started_at,
+        queued_at, job_state as "job_state: _",
+        initializing_stage as "initializing_stage: _", started_at,
         dispatched_on_supervisor_id, ssh_endpoints as "ssh_endpoints: _",
-        exit_status as "exit_status: _", host_output, terminated_at, last_updated_at
-        from tml_switchboard.jobs where functional_state = 'queued';
+        termination_reason as "termination_reason: _",
+        task_exit_status as "task_exit_status: _", exit_message, terminated_at,
+        last_updated_at
+        from tml_switchboard.jobs where job_state = 'queued';
         "#
     )
     .fetch_all(conn)
@@ -314,26 +409,16 @@ pub async fn fetch_all_dispatched(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJo
         r#"
         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
-        queued_at, functional_state as "functional_state: _", started_at,
+        queued_at, job_state as "job_state: _",
+        initializing_stage as "initializing_stage: _", started_at,
         dispatched_on_supervisor_id, ssh_endpoints as "ssh_endpoints: _",
-        exit_status as "exit_status: _", host_output, terminated_at, last_updated_at
-        from tml_switchboard.jobs where functional_state = 'dispatched';
+        termination_reason as "termination_reason: _",
+        task_exit_status as "task_exit_status: _", exit_message, terminated_at,
+        last_updated_at
+        from tml_switchboard.jobs
+        where job_state in ('scheduled', 'initializing', 'ready', 'terminating');
         "#
     )
     .fetch_all(conn)
     .await
 }
-
-// #[derive(Debug, Copy, Clone, sqlx::Type)]
-// #[sqlx(
-//     type_name = "tml_switchboard.execution_status",
-//     rename_all = "snake_case"
-// )]
-// pub enum SqlExecutionStatus {
-//     Queued,
-//     Scheduled,
-//     Initializing,
-//     Ready,
-//     Terminating,
-//     Terminated,
-// }

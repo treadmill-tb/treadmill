@@ -212,9 +212,16 @@ pub enum RunningJobState {
     Terminating,
     Terminated,
 }
+/// The semantic result of the user's workload, if it ran and reported one.
+///
+/// Orthogonal to *why* a job terminated (see [`switchboard::TerminationReason`]):
+/// a job may carry a `TaskExitStatus` regardless of its termination reason, or
+/// none at all (e.g. it never ran).
+///
+/// [`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Copy, Clone)]
 #[serde(rename_all = "snake_case")]
-pub enum JobUserExitStatus {
+pub enum TaskExitStatus {
     Success,
     Error,
     Unknown,
@@ -228,7 +235,7 @@ pub enum SupervisorJobEvent {
         status_message: Option<String>,
     },
     DeclareExitStatus {
-        user_exit_status: JobUserExitStatus,
+        task_exit_status: TaskExitStatus,
         host_output: Option<String>,
     },
     // Technically a state transition

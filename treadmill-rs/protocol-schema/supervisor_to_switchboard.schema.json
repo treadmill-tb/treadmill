@@ -152,14 +152,6 @@
         }
       ]
     },
-    "JobUserExitStatus": {
-      "type": "string",
-      "enum": [
-        "success",
-        "error",
-        "unknown"
-      ]
-    },
     "ProtocolError": {
       "description": "A fatal protocol-level error, carried in-band in **both** directions purely\nfor diagnostics (better logs on the receiving side).\n\n# Contract\n\nThere is no in-band *recovery* protocol. Critical state transitions are\nidempotent and a reconnect re-synchronises state, so error handling is\nsimply **log → close → reconnect**. On a fatal violation the offended side\nSHOULD:\n\n1. send this [`ProtocolError`] (so the peer can log a precise reason),\n2. send a WebSocket `Close` frame with the matching\n   [`ProtocolErrorCode::close_code`], then\n3. terminate the connection.\n\nThe peer reconnects and reconciliation re-establishes a consistent state.",
       "type": "object",
@@ -368,17 +360,17 @@
                 "null"
               ]
             },
+            "task_exit_status": {
+              "$ref": "#/$defs/TaskExitStatus"
+            },
             "type": {
               "type": "string",
               "const": "declare_exit_status"
-            },
-            "user_exit_status": {
-              "$ref": "#/$defs/JobUserExitStatus"
             }
           },
           "required": [
             "type",
-            "user_exit_status"
+            "task_exit_status"
           ]
         },
         {
@@ -419,6 +411,15 @@
             "console_bytes"
           ]
         }
+      ]
+    },
+    "TaskExitStatus": {
+      "description": "The semantic result of the user's workload, if it ran and reported one.\n\nOrthogonal to *why* a job terminated (see [`switchboard::TerminationReason`]):\na job may carry a `TaskExitStatus` regardless of its termination reason, or\nnone at all (e.g. it never ran).\n\n[`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason",
+      "type": "string",
+      "enum": [
+        "success",
+        "error",
+        "unknown"
       ]
     }
   }

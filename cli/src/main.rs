@@ -562,7 +562,10 @@ async fn list_jobs(client: &Client, config: &config::Config) -> Result<()> {
                         ),
                         JobState::Terminated => {
                             if let Some(res) = &status.state.result {
-                                format!("terminated at {}: {}", res.terminated_at, res.exit_status,)
+                                format!(
+                                    "terminated at {}: {}",
+                                    res.terminated_at, res.termination_reason,
+                                )
                             } else {
                                 "terminated".to_string()
                             }

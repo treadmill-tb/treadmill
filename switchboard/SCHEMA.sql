@@ -161,35 +161,66 @@ create type tml_switchboard.restart_policy as
     remaining_restart_count integer
 );
 
--- Functional state is an internal property of jobs in the switchboard that
--- describes how the job is treated by the switchboard; it can be treated as a
--- simplification of execution status that only concerns itself with the
--- requirements of the switchboard.
-create type tml_switchboard.functional_state as enum (
-    -- The job is waiting to be dispatched to a supervisor
+-- The job's execution lifecycle state. This is the materialized current state
+-- of the job, tracking where in its life it is. It mirrors the wire-level
+-- `RunningJobState` for the assigned sub-states, with switchboard-owned
+-- bookends (`queued`, `scheduled`, `finalized`).
+create type tml_switchboard.job_state as enum (
+    -- Accepted, no supervisor assigned yet; eligible for scheduling.
     'queued',
-    -- The job has been dispatched to a supervisor
-    'dispatched',
-    -- The job is no longer active, and the exit status has been finalized.
+    -- Bound to a supervisor but StartJob not yet sent; no longer eligible for
+    -- (re)scheduling. dispatched_on_supervisor_id set, started_at null.
+    'scheduled',
+    -- Assigned & starting up; carries initializing_stage.
+    'initializing',
+    -- Assigned & running.
+    'ready',
+    -- Assigned & shutting down.
+    'terminating',
+    -- Terminal; carries termination_reason and terminated_at.
     'finalized'
     );
 
--- The exit status of the job. See the job lifecycle documentation in the
--- internals section of the Treadmill book.
-create type tml_switchboard.exit_status as enum (
-    -- INTERNAL
-    'supervisor_match_error',
-    'internal_supervisor_error',
-    'supervisor_host_start_error',
-    'supervisor_dropped_job',
-    -- TIMEOUT
+-- The sub-stage of an `initializing` job, mirroring the wire-level
+-- `JobInitializingStage`.
+create type tml_switchboard.job_initializing_stage as enum (
+    'starting',
+    'fetching_image',
+    'allocating',
+    'provisioning',
+    'booting'
+    );
+
+-- Why a job terminated. Set once, at finalization. This is orthogonal to the
+-- task's exit status (success/failure of the user workload) and to any exit
+-- message.
+create type tml_switchboard.termination_reason as enum (
+    -- workload-driven (the job's own process ended it)
+    'workload_exited',
+    'workload_self_canceled',
+    -- externally canceled
+    'user_canceled',
+    -- timeouts
     'queue_timeout',
-    'job_timeout',
-    -- EXTERNAL
-    'job_canceled',
-    'workload_finished_success',
-    'workload_finished_error',
-    'workload_finished_unknown'
+    'execution_timeout',
+    -- bad / unfetchable image (user fault)
+    'image_error',
+    -- infrastructure failure ("crashed / dead")
+    'supervisor_match_error',
+    'supervisor_host_start_failure',
+    'supervisor_dropped_job',
+    'supervisor_unreachable',
+    'resume_failed',
+    'internal_error'
+    );
+
+-- The semantic result of the user's workload, if it ran and reported one.
+-- Orthogonal to termination_reason: may be present (or absent) regardless of
+-- why the job terminated.
+create type tml_switchboard.task_exit_status as enum (
+    'success',
+    'error',
+    'unknown'
     );
 
 create table tml_switchboard.jobs
@@ -221,12 +252,14 @@ create table tml_switchboard.jobs
     -- The amount of time the job can run before it is killed.
     job_timeout                 interval                         not null,
 
-    -- These specify the latest known state of the job, which is used to
-    -- determine how the switchboard should proceed in the event that a network
-    -- partition occurs, or in general when a component of the system fails in
-    -- such a way as to invalidate or otherwise clear the ephemeral state in the
-    -- supervisor.
-    functional_state            tml_switchboard.functional_state not null,
+    -- The latest known execution-lifecycle state of the job, used to determine
+    -- how the switchboard should proceed in the event that a network partition
+    -- occurs, or in general when a component of the system fails in such a way
+    -- as to invalidate or otherwise clear the ephemeral state in the supervisor.
+    job_state                   tml_switchboard.job_state        not null,
+
+    -- The sub-stage while `job_state = 'initializing'`; null otherwise.
+    initializing_stage          tml_switchboard.job_initializing_stage,
 
     -- The time at which the job was queued. If after
     -- [config:api.jobs.queue_timeout] the job is still queued, it will be
@@ -252,9 +285,17 @@ create table tml_switchboard.jobs
     -- enclosed in square brackets, such as "[::1]:22".
     ssh_endpoints               tml_switchboard.ssh_endpoint[],
 
-    exit_status                 tml_switchboard.exit_status,
-    -- Optional host output
-    host_output                 text,
+    -- Filled out when transitioned into `finalized` job state.
+    --
+    -- `termination_reason` records *why* the job stopped; `task_exit_status`
+    -- records the *result of the user workload* (if it ran and reported one),
+    -- and is independent of the reason; `exit_message` is an optional
+    -- human-readable note (multi-line markdown acceptable) for any reason.
+    -- Captured workload output is intentionally not stored here (it belongs in
+    -- object storage).
+    termination_reason          tml_switchboard.termination_reason,
+    task_exit_status            tml_switchboard.task_exit_status,
+    exit_message                text,
     terminated_at               timestamp with time zone,
 
     -- For bookkeeping purposes; for ease of use, for now this works by just
@@ -283,38 +324,44 @@ create table tml_switchboard.jobs
       end
     ),
 
-    -- queued => started_at, R.O.S.I = null
-    -- running => started_at, R.O.S.I != null
-    constraint valid_queued_implication check (
-      functional_state != 'queued' or
-        (started_at is null and dispatched_on_supervisor_id is null)
-    ),
-    constraint valid_dispatched_implication check (
-      functional_state != 'dispatched' or
-        (started_at is not null and dispatched_on_supervisor_id is not null)
-    ),
-
     -- Restart count >= 0
     constraint valid_restart_policy check (
       (restart_policy).remaining_restart_count >= 0
     ),
 
-    -- Exit status vs. host output
-    constraint exit_status_allows_host_output check (
-      case
-        when exit_status = 'supervisor_match_error' then host_output is null
-        when exit_status = 'queue_timeout' then host_output is null
-        when exit_status = 'job_timeout' then host_output is null
-        when exit_status = 'job_canceled' then host_output is null
-        when exit_status = 'supervisor_dropped_job' then host_output is null
-        when exit_status is null then host_output is null
-        else true
-      end
+    -- A supervisor is bound from `scheduled` onwards (and stays recorded through
+    -- `finalized`); `dispatched_on_supervisor_id` tracks that binding for the
+    -- assigned, not-yet-terminal lifecycle states.
+    constraint dispatched_supervisor_iso_assigned check (
+      (dispatched_on_supervisor_id is not null) =
+        (job_state in ('scheduled', 'initializing', 'ready', 'terminating'))
     ),
 
-    -- exit status != null <=> functional state == finalized
-    constraint exit_status_nullity_iso_finalized check (
-      (exit_status is not null) = (functional_state = 'finalized')
+    -- `started_at` is set exactly while the supervisor is executing the job, i.e.
+    -- once dispatched (`initializing`) and until terminal.
+    constraint started_at_iso_executing check (
+      (started_at is not null) =
+        (job_state in ('initializing', 'ready', 'terminating'))
+    ),
+
+    -- The terminal record (`termination_reason`, `terminated_at`) is set exactly
+    -- when the job is `finalized`.
+    constraint termination_reason_iso_finalized check (
+      (termination_reason is not null) = (job_state = 'finalized')
+    ),
+    constraint terminated_at_iso_finalized check (
+      (terminated_at is not null) = (job_state = 'finalized')
+    ),
+
+    -- `task_exit_status` is orthogonal to the reason and may be null even when
+    -- finalized, but can only ever be present on a finalized job.
+    constraint task_exit_status_only_finalized check (
+      task_exit_status is null or job_state = 'finalized'
+    ),
+
+    -- `initializing_stage` is present exactly while `initializing`.
+    constraint initializing_stage_iso_initializing check (
+      (initializing_stage is not null) = (job_state = 'initializing')
     )
 );
 

@@ -22,9 +22,9 @@ use treadmill_rs::api::switchboard_supervisor::websocket::{
     TREADMILL_PROTOCOL_MINOR_HEADER, TREADMILL_WEBSOCKET_CONFIG,
 };
 use treadmill_rs::api::switchboard_supervisor::{
-    self, JobUserExitStatus, PROTOCOL_MINOR, ProtocolVersion, ReportedSupervisorStatus, Response,
-    ServerHello, SupervisorEvent, SupervisorJobEvent, SupervisorToSwitchboard,
-    SwitchboardToSupervisor, websocket::TREADMILL_WEBSOCKET_PROTOCOL,
+    self, PROTOCOL_MINOR, ProtocolVersion, ReportedSupervisorStatus, Response, ServerHello,
+    SupervisorEvent, SupervisorJobEvent, SupervisorToSwitchboard, SwitchboardToSupervisor,
+    TaskExitStatus, websocket::TREADMILL_WEBSOCKET_PROTOCOL,
 };
 use treadmill_rs::connector::{self, JobError, RunningJobState};
 use uuid::Uuid;
@@ -157,11 +157,11 @@ impl<S: connector::Supervisor> connector::SupervisorConnector for WsConnector<S>
                     status_message: _, /* TODO: handle */
                 } => self.inner.update_job_state(job_id, new_state).await,
                 SupervisorJobEvent::DeclareExitStatus {
-                    user_exit_status,
+                    task_exit_status,
                     host_output,
                 } => {
                     self.inner
-                        .declare_exit_status(job_id, user_exit_status, host_output)
+                        .declare_exit_status(job_id, task_exit_status, host_output)
                         .await
                 }
                 SupervisorJobEvent::Error { error } => {
@@ -585,13 +585,13 @@ impl<S: connector::Supervisor> Inner<S> {
     async fn declare_exit_status(
         &self,
         job_id: Uuid,
-        user_exit_status: JobUserExitStatus,
+        task_exit_status: TaskExitStatus,
         host_output: Option<String>,
     ) {
         tracing::info!(
             "Supervisor provides exit status: job {}, status {:#?}",
             job_id,
-            user_exit_status
+            task_exit_status
         );
         if let Err(e) = self
             .update_tx
@@ -599,7 +599,7 @@ impl<S: connector::Supervisor> Inner<S> {
                 SupervisorEvent::JobEvent {
                     job_id,
                     event: SupervisorJobEvent::DeclareExitStatus {
-                        user_exit_status,
+                        task_exit_status,
                         host_output,
                     },
                 },
