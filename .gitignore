@@ -18,3 +18,6 @@ target/
 # Nix result symlinks
 result
 result-*
+
+# Direnv state
+.direnv
