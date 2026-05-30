@@ -2,7 +2,7 @@ use miette::{IntoDiagnostic, WrapErr};
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use treadmill_rs::api::switchboard_supervisor::SocketConfig;
+use std::time::Duration;
 use treadmill_rs::util::chrono::duration as human_duration;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,8 +70,13 @@ pub struct ServiceConfig {
     /// Default interval between job-supervisor matching passes
     #[serde(with = "human_duration")]
     pub match_interval: chrono::TimeDelta,
-    /// Configuration for the switchboard end of switchboard-supervisor websockets.
-    pub socket: SocketConfig,
+    /// How often the switchboard should send PING messages to supervisor.
+    #[serde(with = "humantime_serde")]
+    pub supervisor_ping_interval: Duration,
+    /// Time without a PONG response from a supervisor before the switchboard
+    /// closes the connection.
+    #[serde(with = "humantime_serde")]
+    pub supervisor_pong_dead: Duration,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -10,6 +10,7 @@ use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 use tokio::sync::{Mutex, mpsc};
+use tokio::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::{
     self,
     http::{Request, StatusCode, Uri},
@@ -360,11 +361,10 @@ impl<S: connector::Supervisor> Inner<S> {
 
         tracing::info!("Received switchboard socket configuration: {socket_config:?}");
 
-        let keepalive = socket_config.keepalive.keepalive.to_std().inspect_err(|e| {
-            tracing::error!("Switchboard-specified keepalive couldn't be converted to Duration: {e}; falling back to default 10s keepalive");
-        }).unwrap_or(tokio::time::Duration::from_secs(10));
-        let mut interval = tokio::time::interval(keepalive);
-        let mut last_received_ping = tokio::time::Instant::now();
+        // TODO: make this configurable
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(10));
+        let pong_timeout = tokio::time::sleep(Duration::from_secs(60));
+        tokio::pin!(pong_timeout);
 
         // Clone the shutdown channel for us to be able to mutably borrow it:
         let mut shutdown_rx = self.shutdown_rx.clone();
@@ -396,14 +396,19 @@ impl<S: connector::Supervisor> Inner<S> {
                     }
                 },
 
-                _ = interval.tick() =>  {
-                    tracing::trace!(target: "tml_ws_connector:ping", "keepalive tick");
-                    let elapsed = last_received_ping.elapsed();
-                    if elapsed > keepalive {
-                        tracing::error!("Haven't received a PING in {elapsed:?}, exiting socket control loop");
+                _ = ping_interval.tick() =>  {
+                    tracing::trace!(target: "tml_ws_connector:ping", "ping send tick");
+                    if let Err(e) = socket.send(tungstenite::Message::Ping((&[][..]).into())).await {
+                        tracing::error!("Failed to send PING message to switchboard, exiting socket control loop: {e:?}");
                         return Err(());
                     }
                 }
+
+                () = &mut pong_timeout => {
+                    tracing::error!("Haven't received a PING in 60s, exiting socket control loop");
+                    return Err(());
+                }
+
                 msg = update_rx.recv() => {
                     let msg = msg.unwrap();
                     let stringified = serde_json::to_string(&msg).unwrap();
@@ -460,10 +465,10 @@ impl<S: connector::Supervisor> Inner<S> {
                         }
                         tungstenite::Message::Ping(_) => {
                             tracing::trace!(target: "tml_ws_connector:ping", "Received PING from switchboard");
-                            last_received_ping = tokio::time::Instant::now();
                         }
                         tungstenite::Message::Pong(_) => {
-                            tracing::error!("Received PONG from switchboard");
+                            pong_timeout.as_mut().reset(Instant::now() + Duration::from_secs(60));
+                            tracing::trace!("Received PONG from switchboard");
                         }
                         tungstenite::Message::Close(cf) => {
                             if let Some(cf) = cf {

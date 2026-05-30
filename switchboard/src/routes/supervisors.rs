@@ -18,6 +18,7 @@ use tracing::instrument;
 
 use treadmill_rs::api::switchboard::supervisors::list::{Filter, Response as LSResponse};
 use treadmill_rs::api::switchboard::supervisors::status::Response as SSResponse;
+use treadmill_rs::api::switchboard_supervisor::SocketConfig;
 use treadmill_rs::api::switchboard_supervisor::websocket::{
     TREADMILL_WEBSOCKET_CONFIG, TREADMILL_WEBSOCKET_PROTOCOL,
 };
@@ -32,7 +33,7 @@ use crate::perms::read_supervisor_status;
 use crate::routes::proxy::{Proxied, proxy_err, proxy_val};
 use crate::serve::AppState;
 use crate::sql;
-use crate::supervisor_ws_worker::SupervisorWSWorker;
+use crate::supervisor_ws_worker::{SupervisorWSWorker, SupervisorWSWorkerConfig};
 use crate::{impl_from_auth_err, perms};
 
 // -- status
@@ -148,6 +149,12 @@ pub async fn connect(
     }
 
     let worker_pool = state.pool().clone();
+
+    let ws_worker_config = SupervisorWSWorkerConfig {
+        supervisor_ping_interval: state.config().service.supervisor_ping_interval,
+        supervisor_pong_dead: state.config().service.supervisor_pong_dead,
+    };
+
     let mut response =
         ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL])
             .on_upgrade(move |mut web_socket| async move {
@@ -167,12 +174,18 @@ pub async fn connect(
 		     ({supervisor_id}), connecting from {socket_addr}."
                     );
 
-                    SupervisorWSWorker::run(worker_pool, supervisor_id, web_socket).await
+                    SupervisorWSWorker::run(
+                        worker_pool,
+                        supervisor_id,
+                        web_socket,
+                        ws_worker_config,
+                    )
+                    .await
                 });
             });
 
-    let socket_config_json = serde_json::to_string(&state.config().service.socket)
-        .expect("Failed to serialize socket configuration");
+    let socket_config_json =
+        serde_json::to_string(&SocketConfig {}).expect("Failed to serialize socket configuration");
     response.headers_mut().insert(
         TREADMILL_WEBSOCKET_CONFIG,
         socket_config_json

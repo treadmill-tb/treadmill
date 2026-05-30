@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use axum::extract::ws;
 use futures_util::{Sink, Stream, StreamExt};
 use sqlx::{PgPool, Postgres, Transaction};
+use tokio::time::{Duration, Interval, interval};
+use treadmill_rs::api::switchboard_supervisor::SocketConfig;
 use uuid::Uuid;
 
 use crate::sql;
@@ -31,11 +33,26 @@ impl<T> SupervisorSocket for T where
 {
 }
 
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct SupervisorWSWorkerConfig {
+    /// How often the switchboard PINGs the supervisor over the WebSocket.
+    /// Parsed at config-load time from a human-readable duration string
+    /// (e.g. `"2s"`, `"500ms"`); negative values are impossible by type.
+    #[serde(with = "humantime_serde")]
+    pub supervisor_ping_interval: Duration,
+    /// Maximum time the switchboard will wait for a PONG from the supervisor
+    /// before declaring the peer dead and terminating the worker. Parsed at
+    /// config-load time from a human-readable duration string (e.g. `"10s"`).
+    #[serde(with = "humantime_serde")]
+    pub supervisor_pong_dead: Duration,
+}
+
 pub struct SupervisorWSWorker<S: SupervisorSocket> {
     pool: PgPool,
     supervisor_id: Uuid,
     socket: S,
     worker_instance_id: u64,
+    config: SupervisorWSWorkerConfig,
 }
 
 /// Error type for [`SupervisorWSWorker`] operations.
@@ -66,8 +83,13 @@ pub type WorkerResult<T = ()> = Result<T, WorkerError>;
 
 impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     #[tracing::instrument(skip(pool, socket))]
-    pub async fn run(pool: PgPool, supervisor_id: Uuid, socket: S) {
-        match Self::run_inner(pool, supervisor_id, socket).await {
+    pub async fn run(
+        pool: PgPool,
+        supervisor_id: Uuid,
+        socket: S,
+        config: SupervisorWSWorkerConfig,
+    ) {
+        match Self::run_inner(pool, supervisor_id, socket, config).await {
             Ok(()) => {
                 tracing::info!("SupervisorWSWorker::run terminated successfully.");
             }
@@ -87,7 +109,12 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         }
     }
 
-    pub async fn run_inner(pool: PgPool, supervisor_id: Uuid, socket: S) -> WorkerResult<()> {
+    pub async fn run_inner(
+        pool: PgPool,
+        supervisor_id: Uuid,
+        socket: S,
+        config: SupervisorWSWorkerConfig,
+    ) -> WorkerResult<()> {
         // A supervisor has just opened a new WebSocket connection and
         // successfully authenticated. This might be because it's a new
         // supervisor, because it restarted, or because the connection was
@@ -122,6 +149,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
             supervisor_id,
             socket,
             worker_instance_id,
+            config,
         };
 
         worker.run_loop().await
@@ -382,6 +410,11 @@ mod tests {
             supervisor_id,
             socket: NoSocket,
             worker_instance_id,
+            config: SupervisorWSWorkerConfig {
+                // Dummy values, currently unused:
+                supervisor_ping_interval: Duration::from_secs(5),
+                supervisor_pong_dead: Duration::from_secs(15),
+            },
         }
     }
 
@@ -529,7 +562,16 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            SupervisorWSWorker::run(pool, supervisor_id, socket),
+            SupervisorWSWorker::run(
+                pool,
+                supervisor_id,
+                socket,
+                SupervisorWSWorkerConfig {
+                    // Dummy values, currently unused:
+                    supervisor_ping_interval: Duration::from_secs(5),
+                    supervisor_pong_dead: Duration::from_secs(15),
+                },
+            ),
         )
         .await
         .expect("worker should return promptly after peer Close");
@@ -548,7 +590,16 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            SupervisorWSWorker::run(pool, supervisor_id, socket),
+            SupervisorWSWorker::run(
+                pool,
+                supervisor_id,
+                socket,
+                SupervisorWSWorkerConfig {
+                    // Dummy values, currently unused:
+                    supervisor_ping_interval: Duration::from_secs(5),
+                    supervisor_pong_dead: Duration::from_secs(15),
+                },
+            ),
         )
         .await
         .expect("worker should return promptly on socket stream end");
