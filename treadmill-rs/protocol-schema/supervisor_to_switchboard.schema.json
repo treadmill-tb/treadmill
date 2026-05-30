@@ -1,0 +1,425 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SupervisorToSwitchboard",
+  "description": "A message sent **from a supervisor to the switchboard**.\n\nThe supervisor is the reporting side: it answers status requests and emits\nasynchronous events about the job it is executing. It never commands the\nswitchboard, so command variants are deliberately absent from this enum.\n\nWire format and evolution rules mirror [`SwitchboardToSupervisor`].",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/Response"
+        },
+        "type": {
+          "type": "string",
+          "const": "status_response"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/SupervisorEvent"
+        },
+        "type": {
+          "type": "string",
+          "const": "supervisor_event"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ]
+    },
+    {
+      "description": "Diagnostic notice of a fatal protocol error; see [`ProtocolError`] for\nthe log → close → reconnect contract.",
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/ProtocolError"
+        },
+        "type": {
+          "type": "string",
+          "const": "protocol_error"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ]
+    }
+  ],
+  "$defs": {
+    "JobError": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "error_kind": {
+          "$ref": "#/$defs/JobErrorKind"
+        }
+      },
+      "required": [
+        "error_kind",
+        "description"
+      ]
+    },
+    "JobErrorKind": {
+      "oneOf": [
+        {
+          "description": "The requested job is already running and thus cannot be started again.",
+          "type": "string",
+          "const": "AlreadyRunning"
+        },
+        {
+          "description": "The requested job is already in the process of being shut down.",
+          "type": "string",
+          "const": "AlreadyStopping"
+        },
+        {
+          "description": "A job with this ID was previously running on this supervisor,\nbut we weren't asked to `resume` it.",
+          "type": "string",
+          "const": "JobAlreadyExists"
+        },
+        {
+          "description": "Cannot resume this job, either because this functionality is\nunsupported or because this particular job cannot be resumed.",
+          "type": "string",
+          "const": "CannotResume"
+        },
+        {
+          "description": "Job with the specified ID cannot be found.",
+          "type": "string",
+          "const": "JobNotFound"
+        },
+        {
+          "description": "The maximum number of concurrent jobs has been reached.",
+          "type": "string",
+          "const": "MaxConcurrentJobs"
+        },
+        {
+          "description": "The requested image cannot be found (either its manifest or a\nresource stated therein cannot be fetched):",
+          "type": "string",
+          "const": "ImageNotFound"
+        },
+        {
+          "description": "There is some problem with the image.",
+          "type": "string",
+          "const": "ImageInvalid"
+        },
+        {
+          "description": "The image is not compatible with, or does not meet the\nexpectations of this supervisor.",
+          "type": "string",
+          "const": "ImageNotCompatible"
+        },
+        {
+          "description": "Internal error within the supervisor:",
+          "type": "string",
+          "const": "InternalError"
+        }
+      ]
+    },
+    "JobInitializingStage": {
+      "oneOf": [
+        {
+          "description": "Generic starting stage, for when no other stage is applicable:",
+          "type": "string",
+          "const": "starting"
+        },
+        {
+          "description": "Fetching the specified image:",
+          "type": "string",
+          "const": "fetching_image"
+        },
+        {
+          "description": "Acquiring resources, such as the root file system, to launch the\nboard environment.",
+          "type": "string",
+          "const": "allocating"
+        },
+        {
+          "description": "Provisioning the environment, such as making any changes to the base\nsystem according to the user-provided customizations.",
+          "type": "string",
+          "const": "provisioning"
+        },
+        {
+          "description": "The host is booting. The next transition should\neither be into the `Ready` or `Failed` states.",
+          "type": "string",
+          "const": "booting"
+        }
+      ]
+    },
+    "JobUserExitStatus": {
+      "type": "string",
+      "enum": [
+        "success",
+        "error",
+        "unknown"
+      ]
+    },
+    "ProtocolError": {
+      "description": "A fatal protocol-level error, carried in-band in **both** directions purely\nfor diagnostics (better logs on the receiving side).\n\n# Contract\n\nThere is no in-band *recovery* protocol. Critical state transitions are\nidempotent and a reconnect re-synchronises state, so error handling is\nsimply **log → close → reconnect**. On a fatal violation the offended side\nSHOULD:\n\n1. send this [`ProtocolError`] (so the peer can log a precise reason),\n2. send a WebSocket `Close` frame with the matching\n   [`ProtocolErrorCode::close_code`], then\n3. terminate the connection.\n\nThe peer reconnects and reconciliation re-establishes a consistent state.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ProtocolErrorCode"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "detail"
+      ]
+    },
+    "ProtocolErrorCode": {
+      "description": "Enumerated protocol error conditions. Each maps to a WebSocket close code in\nthe RFC 6455 private range (4000–4999) via [`ProtocolErrorCode::close_code`].",
+      "oneOf": [
+        {
+          "description": "A malformed or unexpected message was received (close code 4000).",
+          "type": "string",
+          "const": "protocol_violation"
+        },
+        {
+          "description": "No common protocol major/minor could be negotiated (close code 4001).",
+          "type": "string",
+          "const": "unsupported_version"
+        },
+        {
+          "description": "An unexpected failure occurred on the sending side (close code 4002).",
+          "type": "string",
+          "const": "internal_error"
+        },
+        {
+          "description": "The switchboard replaced this connection with a newer one (close code\n4003). Optional; emitted by the switchboard only.",
+          "type": "string",
+          "const": "superseded"
+        }
+      ]
+    },
+    "ReportedSupervisorStatus": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "job_state": {
+              "$ref": "#/$defs/RunningJobState"
+            },
+            "type": {
+              "type": "string",
+              "const": "ongoing_job"
+            }
+          },
+          "required": [
+            "type",
+            "job_id",
+            "job_state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "idle"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "Response": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/ReportedSupervisorStatus"
+        },
+        "response_to_request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "response_to_request_id",
+        "message"
+      ]
+    },
+    "RunningJobState": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "stage": {
+              "$ref": "#/$defs/JobInitializingStage"
+            },
+            "state": {
+              "type": "string",
+              "const": "initializing"
+            }
+          },
+          "required": [
+            "state",
+            "stage"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "ready"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "terminating"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "terminated"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        }
+      ]
+    },
+    "SupervisorEvent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "event": {
+              "$ref": "#/$defs/SupervisorJobEvent"
+            },
+            "job_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "job_event"
+            }
+          },
+          "required": [
+            "type",
+            "job_id",
+            "event"
+          ]
+        }
+      ]
+    },
+    "SupervisorJobEvent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "new_state": {
+              "$ref": "#/$defs/RunningJobState"
+            },
+            "status_message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "state_transition"
+            }
+          },
+          "required": [
+            "type",
+            "new_state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "host_output": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "declare_exit_status"
+            },
+            "user_exit_status": {
+              "$ref": "#/$defs/JobUserExitStatus"
+            }
+          },
+          "required": [
+            "type",
+            "user_exit_status"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/JobError"
+            },
+            "type": {
+              "type": "string",
+              "const": "error"
+            }
+          },
+          "required": [
+            "type",
+            "error"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "console_bytes": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "console_log"
+            }
+          },
+          "required": [
+            "type",
+            "console_bytes"
+          ]
+        }
+      ]
+    }
+  }
+}

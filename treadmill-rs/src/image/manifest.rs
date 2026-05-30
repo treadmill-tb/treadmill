@@ -129,8 +129,12 @@ use serde::{Deserialize, Serialize};
 /// This type can be formatted into a lower-case hex string, as expected in the
 /// `org.tockos.treadmill.manifest-ext.base.sha256_digest` attribute.
 #[serde_as]
-#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ImageId(#[serde_as(as = "serde_with::hex::Hex")] pub [u8; 32]);
+#[derive(schemars::JsonSchema, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImageId(
+    #[serde_as(as = "serde_with::hex::Hex")]
+    #[schemars(with = "String")]
+    pub [u8; 32],
+);
 
 impl ImageId {
     pub fn as_bytes(&self) -> &[u8] {

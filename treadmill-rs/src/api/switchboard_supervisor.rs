@@ -57,7 +57,7 @@ pub const PROTOCOL_MINOR: u16 = 0;
 
 /// A two-level protocol version. `major` is also pinned by the WebSocket
 /// subprotocol token; `minor` is negotiated in the handshake.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolVersion {
     pub major: u16,
     pub minor: u16,
@@ -81,7 +81,7 @@ impl ProtocolVersion {
 ///
 /// Keepalive intervals are deliberately **not** part of the handshake: each side
 /// runs its own keepalive with local config.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct ServerHello {
     pub protocol: ProtocolVersion,
     #[serde(default)]
@@ -90,7 +90,7 @@ pub struct ServerHello {
 
 // -- StartJobRequest ------------------------------------------------------------------------------
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Clone)]
 pub struct ParameterValue {
     pub value: String,
     pub secret: bool,
@@ -120,7 +120,7 @@ impl std::fmt::Debug for ParameterValue {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum ImageSpecification {
@@ -137,12 +137,12 @@ pub enum ImageSpecification {
     /// Note that if a job is being restarted, it will use this variant.
     Image { image_id: ImageId },
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct RestartPolicy {
     pub remaining_restart_count: usize,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct StartJobMessage {
     /// Unique identifier of the job to be started.
@@ -171,7 +171,7 @@ pub struct StartJobMessage {
 
 // -- StopJobRequest -------------------------------------------------------------------------------
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct StopJobMessage {
     /// Unique identifier of the job to be stopped:
@@ -180,7 +180,7 @@ pub struct StopJobMessage {
 
 // -- Job/Supervisor Status ------------------------------------------------------------------------
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum JobInitializingStage {
     /// Generic starting stage, for when no other stage is applicable:
@@ -202,7 +202,7 @@ pub enum JobInitializingStage {
     Booting,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "state")]
 #[serde(rename_all = "snake_case")]
 pub enum RunningJobState {
@@ -212,14 +212,14 @@ pub enum RunningJobState {
     Terminating,
     Terminated,
 }
-#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Copy, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum JobUserExitStatus {
     Success,
     Error,
     Unknown,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum SupervisorJobEvent {
@@ -240,7 +240,7 @@ pub enum SupervisorJobEvent {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum ReportedSupervisorStatus {
@@ -250,7 +250,7 @@ pub enum ReportedSupervisorStatus {
     },
     Idle,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum SupervisorEvent {
@@ -262,13 +262,13 @@ pub enum SupervisorEvent {
 
 // -- General Request/Response ---------------------------------------------------------------------
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct Request<T> {
     pub request_id: Uuid,
     pub message: T,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct Response<T> {
     pub response_to_request_id: Uuid,
@@ -292,7 +292,7 @@ pub struct Response<T> {
 /// 3. terminate the connection.
 ///
 /// The peer reconnects and reconciliation re-establishes a consistent state.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct ProtocolError {
     pub code: ProtocolErrorCode,
@@ -301,7 +301,7 @@ pub struct ProtocolError {
 
 /// Enumerated protocol error conditions. Each maps to a WebSocket close code in
 /// the RFC 6455 private range (4000–4999) via [`ProtocolErrorCode::close_code`].
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProtocolErrorCode {
     /// A malformed or unexpected message was received (close code 4000).
@@ -340,7 +340,7 @@ impl ProtocolErrorCode {
 /// Wire format: internally tagged with `type`, payload under `message`. New
 /// variants are an additive, minor-version change (see the module-level
 /// evolution policy); they must not be emitted below the negotiated minor.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type", content = "message")]
 pub enum SwitchboardToSupervisor {
@@ -359,7 +359,7 @@ pub enum SwitchboardToSupervisor {
 /// switchboard, so command variants are deliberately absent from this enum.
 ///
 /// Wire format and evolution rules mirror [`SwitchboardToSupervisor`].
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type", content = "message")]
 pub enum SupervisorToSwitchboard {
