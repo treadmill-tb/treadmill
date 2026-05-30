@@ -147,11 +147,11 @@ pub struct RestartPolicy {
 pub struct StartJobMessage {
     /// Unique identifier of the job to be started.
     ///
-    /// To restart a previously failed or interrupted job, pass the same ID
-    /// in as the old job and set `resume_job = true`. The supervisor may
-    /// refuse to start a job with a re-used ID if `resume_job` is
-    /// deasserted, and must refuse to start a job when it cannot be resumed
-    /// and `resume_job` is asserted.
+    /// Resuming a previously started job is requested via
+    /// [`ImageSpecification::ResumeJob`] in `image_spec` (not via this id):
+    /// for a resume, `image_spec` carries the original job's id. The
+    /// supervisor must refuse to start a job it cannot resume when a resume
+    /// is requested.
     pub job_id: Uuid,
 
     pub image_spec: ImageSpecification,
@@ -197,19 +197,53 @@ pub enum JobInitializingStage {
     /// system according to the user-provided customizations.
     Provisioning,
 
-    /// The host is booting. The next transition should
-    /// either be into the `Ready` or `Failed` states.
+    /// The host is booting. The next transition is normally into
+    /// [`RunningJobState::Ready`]; a failure instead surfaces as a
+    /// [`SupervisorJobEvent::Error`].
     Booting,
 }
 
+/// The physical execution state of a job, as reported by the **supervisor**.
+///
+/// The supervisor is ground truth for what is *physically executing*. The
+/// switchboard mirrors this into the `tml_switchboard.job_state` DB column and
+/// adopts it verbatim during reconciliation (case 4: the supervisor reports
+/// `OngoingJob(J_sb)` for the assigned job, so the DB takes the reported state).
+///
+/// # Mapping to the DB `job_state`
+///
+/// The DB `job_state` enum (`switchboard/SCHEMA.sql`) is a superset of this one:
+/// it adds the switchboard-owned bookends `queued` and `scheduled` (before a
+/// supervisor reports anything) and `finalized` (after termination). The
+/// assigned, supervisor-owned sub-states map one-to-one:
+///
+/// | `RunningJobState`     | DB `job_state` |
+/// |-----------------------|----------------|
+/// | `Initializing{stage}` | `initializing` (+ `initializing_stage`) |
+/// | `Ready`               | `ready`        |
+/// | `Terminating`         | `terminating`  |
+/// | `Terminated`          | `finalized` (see below) |
+///
+/// `Terminated` is **not** a 1:1 mapping: it folds into the terminal DB record
+/// `finalized`, which additionally requires a [`switchboard::TerminationReason`]
+/// (and optional [`TaskExitStatus`] / `exit_message`). A supervisor reporting
+/// `Terminated` therefore drives the switchboard's own `→ finalized` transition;
+/// there is deliberately no total `RunningJobState → job_state` conversion,
+/// because `Terminated` alone does not determine the reason.
+///
+/// [`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "state")]
 #[serde(rename_all = "snake_case")]
 pub enum RunningJobState {
+    /// Starting up; `stage` mirrors the DB `initializing_stage`.
     Initializing { stage: JobInitializingStage },
+    /// Up and running (the workload is executing).
     Ready,
     // Ready { connection_info: Vec<JobSessionConnectionInfo>, },
+    /// Shutting down; the next report is normally `Terminated`.
     Terminating,
+    /// Execution has ended. Drives the switchboard's `→ finalized` transition.
     Terminated,
 }
 /// The semantic result of the user's workload, if it ran and reported one.
@@ -226,35 +260,63 @@ pub enum TaskExitStatus {
     Error,
     Unknown,
 }
+/// An asynchronous event a supervisor emits about the job it is executing,
+/// wrapped in a [`SupervisorEvent::JobEvent`]. The switchboard mirrors these
+/// into the DB out-of-band of reconciliation; reconciliation itself is driven by
+/// the [`ReportedSupervisorStatus`] snapshot, not the event stream.
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum SupervisorJobEvent {
+    /// The job advanced to a new [`RunningJobState`]. The switchboard mirrors
+    /// `new_state` into the DB `job_state` column (and a `Terminated` here drives
+    /// the `→ finalized` transition; see [`RunningJobState`]). `status_message`
+    /// is optional free text for the audit log.
     StateTransition {
         new_state: RunningJobState,
         status_message: Option<String>,
     },
+    /// The user's workload reported a semantic result. `host_output` is the
+    /// captured output: it is carried on the wire but **not persisted** by the
+    /// switchboard (it will live in object storage later), whereas
+    /// `task_exit_status` is recorded on the finalized job row.
     DeclareExitStatus {
         task_exit_status: TaskExitStatus,
         host_output: Option<String>,
     },
     // Technically a state transition
-    Error {
-        error: JobError,
-    },
-    ConsoleLog {
-        console_bytes: Vec<u8>,
-    },
+    /// A job-level error. Semantically a transition toward termination; the
+    /// switchboard finalizes the job with an appropriate
+    /// [`switchboard::TerminationReason`].
+    ///
+    /// [`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason
+    Error { error: JobError },
+    /// Best-effort console output. Delivery is lossy by design; the switchboard
+    /// never relies on completeness here.
+    ConsoleLog { console_bytes: Vec<u8> },
 }
 
+/// A supervisor's point-in-time status snapshot, returned in the
+/// [`Response`] to a [`SwitchboardToSupervisor::StatusRequest`]. This is the
+/// supervisor-side ground truth (`J_sup`) the worker reconciles against the
+/// switchboard's assigned job (`J_sb = supervisors.current_job`) on (re)connect.
+///
+/// The five reconciliation cases (documented in full as Rustdoc on the worker's
+/// `reconcile` function) hinge on this value:
+/// - `Idle` with no `J_sb` ⇒ aligned;
+/// - `Idle` with a `J_sb` ⇒ the job was lost (finalize as `SupervisorDroppedJob`);
+/// - `OngoingJob{job_id: J_sb}` ⇒ adopt `job_state` into the DB (case 4);
+/// - `OngoingJob` of any other (or unassigned) id ⇒ a zombie to `StopJob`.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum ReportedSupervisorStatus {
+    /// The supervisor is executing `job_id`, currently in `job_state`.
     OngoingJob {
         job_id: Uuid,
         job_state: RunningJobState,
     },
+    /// The supervisor is executing no job.
     Idle,
 }
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
@@ -269,12 +331,22 @@ pub enum SupervisorEvent {
 
 // -- General Request/Response ---------------------------------------------------------------------
 
+/// A request carrying a unique `request_id` for correlation with its reply.
+///
+/// The reply is a [`Response`] whose `response_to_request_id` echoes this
+/// `request_id`. The requester matches replies by this id and may run several
+/// requests concurrently. Reconciliation issues exactly one
+/// [`SwitchboardToSupervisor::StatusRequest`] on (re)connect and awaits the
+/// correlated [`SupervisorToSwitchboard::StatusResponse`]; a missing/timed-out
+/// reply is treated as a dead peer.
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct Request<T> {
     pub request_id: Uuid,
     pub message: T,
 }
+/// The reply to a [`Request`]. `response_to_request_id` MUST echo the
+/// originating request's `request_id` so the requester can correlate it.
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct Response<T> {
@@ -351,8 +423,18 @@ impl ProtocolErrorCode {
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type", content = "message")]
 pub enum SwitchboardToSupervisor {
+    /// Start (or resume) the job identified by the message. Idempotent on
+    /// `job_id`: a supervisor already running that job ignores a repeat; it
+    /// rejects the command if it does not apply to the current job state. This
+    /// makes re-issuing `StartJob` during reconciliation safe.
     StartJob(StartJobMessage),
+    /// Stop the job identified by the message. Idempotent: it applies regardless
+    /// of state as long as the job exists, and is a no-op once the job is gone.
     StopJob(StopJobMessage),
+    /// Ask the supervisor for its current [`ReportedSupervisorStatus`]. The
+    /// correlated reply is a [`SupervisorToSwitchboard::StatusResponse`]; see
+    /// [`Request`] for the correlation contract. Reconciliation issues exactly
+    /// one of these per (re)connect.
     StatusRequest(Request<()>),
     /// Diagnostic notice of a fatal protocol error; see [`ProtocolError`] for
     /// the log → close → reconnect contract.

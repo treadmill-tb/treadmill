@@ -4,6 +4,7 @@
   "description": "A message sent **from the switchboard to a supervisor**.\n\nThe switchboard is the commanding side of the protocol: it instructs the\nsupervisor to start/stop jobs and polls its status. Modelling the direction\nin the type means an illegal direction (e.g. the switchboard \"reporting\" a\n[`SupervisorEvent`]) is unrepresentable rather than an `unimplemented!()`\narm at the dispatch site.\n\nWire format: internally tagged with `type`, payload under `message`. New\nvariants are an additive, minor-version change (see the module-level\nevolution policy); they must not be emitted below the negotiated minor.",
   "oneOf": [
     {
+      "description": "Start (or resume) the job identified by the message. Idempotent on\n`job_id`: a supervisor already running that job ignores a repeat; it\nrejects the command if it does not apply to the current job state. This\nmakes re-issuing `StartJob` during reconciliation safe.",
       "type": "object",
       "properties": {
         "message": {
@@ -20,6 +21,7 @@
       ]
     },
     {
+      "description": "Stop the job identified by the message. Idempotent: it applies regardless\nof state as long as the job exists, and is a no-op once the job is gone.",
       "type": "object",
       "properties": {
         "message": {
@@ -36,6 +38,7 @@
       ]
     },
     {
+      "description": "Ask the supervisor for its current [`ReportedSupervisorStatus`]. The\ncorrelated reply is a [`SupervisorToSwitchboard::StatusResponse`]; see\n[`Request`] for the correlation contract. Reconciliation issues exactly\none of these per (re)connect.",
       "type": "object",
       "properties": {
         "message": {
@@ -170,6 +173,7 @@
       ]
     },
     "Request": {
+      "description": "A request carrying a unique `request_id` for correlation with its reply.\n\nThe reply is a [`Response`] whose `response_to_request_id` echoes this\n`request_id`. The requester matches replies by this id and may run several\nrequests concurrently. Reconciliation issues exactly one\n[`SwitchboardToSupervisor::StatusRequest`] on (re)connect and awaits the\ncorrelated [`SupervisorToSwitchboard::StatusResponse`]; a missing/timed-out\nreply is treated as a dead peer.",
       "type": "object",
       "properties": {
         "message": {
@@ -205,7 +209,7 @@
           "$ref": "#/$defs/ImageSpecification"
         },
         "job_id": {
-          "description": "Unique identifier of the job to be started.\n\nTo restart a previously failed or interrupted job, pass the same ID\nin as the old job and set `resume_job = true`. The supervisor may\nrefuse to start a job with a re-used ID if `resume_job` is\ndeasserted, and must refuse to start a job when it cannot be resumed\nand `resume_job` is asserted.",
+          "description": "Unique identifier of the job to be started.\n\nResuming a previously started job is requested via\n[`ImageSpecification::ResumeJob`] in `image_spec` (not via this id):\nfor a resume, `image_spec` carries the original job's id. The\nsupervisor must refuse to start a job it cannot resume when a resume\nis requested.",
           "type": "string",
           "format": "uuid"
         },
