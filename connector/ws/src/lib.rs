@@ -371,6 +371,16 @@ impl<S: connector::Supervisor> Inner<S> {
                     }))
                     .unwrap();
             }
+            SwitchboardToSupervisor::ProtocolError(err) => {
+                // Diagnostic only: the switchboard SHOULD follow this with a
+                // Close frame. We log and let the close path tear down the
+                // connection; reconnection re-synchronises state.
+                tracing::error!(
+                    code = ?err.code,
+                    detail = %err.detail,
+                    "Switchboard reported a protocol error; expecting connection close."
+                );
+            }
         }
     }
 }
