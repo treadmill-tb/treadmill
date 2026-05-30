@@ -5,7 +5,6 @@ use axum::extract::ws;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use sqlx::{PgPool, Postgres, Transaction};
 use tokio::time::{Duration, Instant, Interval, Sleep, Timeout, interval, sleep};
-use treadmill_rs::api::switchboard_supervisor::SocketConfig;
 use uuid::Uuid;
 
 use crate::sql;

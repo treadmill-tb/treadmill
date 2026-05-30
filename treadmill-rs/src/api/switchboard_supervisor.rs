@@ -1,22 +1,91 @@
-//! Types used in the interface between the coordinator and supervisor
+//! Types used in the interface between the switchboard and supervisor
 //! components.
+//!
+//! # Protocol versioning & evolution policy
+//!
+//! The protocol carries a two-level version. The **major** rides the WebSocket
+//! subprotocol token ([`websocket::TREADMILL_WEBSOCKET_PROTOCOL`], e.g.
+//! `treadmillv1`): standard subprotocol negotiation selects a common token, and
+//! an incompatible peer fails the HTTP upgrade cleanly. The **minor** (plus an
+//! optional set of feature flags) rides the handshake: the supervisor advertises
+//! its minor in the [`websocket::TREADMILL_PROTOCOL_MINOR_HEADER`] request
+//! header, and the switchboard answers with a [`ServerHello`] in the
+//! [`websocket::TREADMILL_WEBSOCKET_CONFIG`] response header. The
+//! **effective minor** for the connection is `min(client, server)`.
+//!
+//! To keep additive change non-breaking, all changes to the wire types MUST
+//! follow these rules:
+//!
+//! 1. Protocol types never use `#[serde(deny_unknown_fields)]`, so an older
+//!    receiver silently ignores fields a newer peer adds.
+//! 2. New fields are additive only: `Option<T>` or `#[serde(default)]`.
+//! 3. Adding a message variant requires a **minor** bump, and the variant must
+//!    not be emitted below the negotiated effective minor — older peers cannot
+//!    deserialize an unknown tag.
+//! 4. Removing or renaming a field, changing a field's type, or changing a tag
+//!    is **breaking** and requires a **major** bump (a new subprotocol token).
+//!
+//! The committed JSON Schema snapshots (see `treadmill-rs/protocol-schema/`)
+//! make each change classifiable as additive (minor) or breaking (major).
 
 use crate::connector::JobError;
 use crate::image::manifest::ImageId;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
 
 pub mod websocket {
+    /// WebSocket subprotocol token carrying the protocol **major** version.
+    /// The trailing integer MUST equal [`super::PROTOCOL_MAJOR`].
     pub static TREADMILL_WEBSOCKET_PROTOCOL: &str = "treadmillv1";
+    /// Response header (switchboard → supervisor) carrying the JSON-encoded
+    /// [`super::ServerHello`].
     pub static TREADMILL_WEBSOCKET_CONFIG: &str = "tml-socket-config";
+    /// Request header (supervisor → switchboard) carrying the supervisor's
+    /// advertised protocol **minor** version as a decimal integer.
+    pub static TREADMILL_PROTOCOL_MINOR_HEADER: &str = "tml-protocol-minor";
 }
 
-// -- (Configuration)  -----------------------------------------------------------------------------
+// -- Protocol version & handshake -----------------------------------------------------------------
 
+/// The protocol major version implemented by this build. Must match the integer
+/// in [`websocket::TREADMILL_WEBSOCKET_PROTOCOL`].
+pub const PROTOCOL_MAJOR: u16 = 1;
+/// The protocol minor version implemented by this build. Bumped (additively)
+/// whenever a new message variant or feature flag is introduced.
+pub const PROTOCOL_MINOR: u16 = 0;
+
+/// A two-level protocol version. `major` is also pinned by the WebSocket
+/// subprotocol token; `minor` is negotiated in the handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtocolVersion {
+    pub major: u16,
+    pub minor: u16,
+}
+
+impl ProtocolVersion {
+    /// The version implemented by this build.
+    pub const CURRENT: ProtocolVersion = ProtocolVersion {
+        major: PROTOCOL_MAJOR,
+        minor: PROTOCOL_MINOR,
+    };
+}
+
+/// The switchboard's handshake reply, serialized into the
+/// [`websocket::TREADMILL_WEBSOCKET_CONFIG`] response header.
+///
+/// Replaces the former empty `SocketConfig`: it now carries the switchboard's
+/// protocol version and the set of optional feature flags it supports. Per the
+/// evolution policy, unknown `features` entries are ignored by older peers, so
+/// this set may grow without a major bump.
+///
+/// Keepalive intervals are deliberately **not** part of the handshake: each side
+/// runs its own keepalive with local config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SocketConfig {
-    // Currently, the switchboard does not send over any configuration to the supervisors.
+pub struct ServerHello {
+    pub protocol: ProtocolVersion,
+    #[serde(default)]
+    pub features: BTreeSet<String>,
 }
 
 // -- StartJobRequest ------------------------------------------------------------------------------
