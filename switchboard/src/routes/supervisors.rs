@@ -155,34 +155,34 @@ pub async fn connect(
         supervisor_pong_dead: state.config().service.supervisor_pong_dead,
     };
 
-    let mut response =
-        ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL])
-            .on_upgrade(move |mut web_socket| async move {
-                tokio::spawn(async move {
-                    let maybe_subprotocol = web_socket.protocol();
-                    if !check_protocol_header(maybe_subprotocol, socket_addr)
-                        && let Err(e) = web_socket.send(ws::Message::Close(None)).await
-                    {
+    let mut response = ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL]).on_upgrade(
+        move |mut web_socket| async move {
+            tokio::spawn(async move {
+                // Resolve the subprotocol check into an owned `bool` before
+                // any `.await`: `protocol()` borrows `web_socket`, and that
+                // borrow must not straddle the send below — a live
+                // `&WebSocket` across an await would force the spawned future
+                // to require `WebSocket: Sync`, which it isn't.
+                let wrong_protocol = !check_protocol_header(web_socket.protocol(), socket_addr);
+                if wrong_protocol {
+                    if let Err(e) = web_socket.send(ws::Message::Close(None)).await {
                         tracing::error!(
                             "Failed to send close frame (wrong subprotocol) to {socket_addr}: {e}."
                         );
-                        return;
                     }
+                    return;
+                }
 
-                    tracing::info!(
-                        "Starting SupervisorWSWorker for supervisor \
+                tracing::info!(
+                    "Starting SupervisorWSWorker for supervisor \
 		     ({supervisor_id}), connecting from {socket_addr}."
-                    );
+                );
 
-                    SupervisorWSWorker::run(
-                        worker_pool,
-                        supervisor_id,
-                        web_socket,
-                        ws_worker_config,
-                    )
+                SupervisorWSWorker::run(worker_pool, supervisor_id, web_socket, ws_worker_config)
                     .await
-                });
             });
+        },
+    );
 
     let socket_config_json =
         serde_json::to_string(&SocketConfig {}).expect("Failed to serialize socket configuration");
