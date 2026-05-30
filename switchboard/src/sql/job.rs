@@ -2,7 +2,9 @@ use super::SqlSshEndpoint;
 use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
 use sqlx::{PgExecutor, Postgres, Transaction};
-use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, TerminationReason};
+use treadmill_rs::api::switchboard::{
+    JobEvent, JobInitSpec, JobRequest, JobResult, TerminationReason,
+};
 use treadmill_rs::api::switchboard_supervisor::{
     ImageSpecification, JobInitializingStage, RestartPolicy, TaskExitStatus,
 };
@@ -421,4 +423,122 @@ pub async fn fetch_all_dispatched(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJo
     )
     .fetch_all(conn)
     .await
+}
+
+/// Finalize a job that its supervisor dropped, releasing the supervisor and --
+/// if the restart policy permits -- enqueuing a successor, all in one
+/// transaction. Backs reconciliation cases 3 and 5 (`Phase 5`): the switchboard
+/// believed `job_id` was assigned to `supervisor_id`, but the supervisor no
+/// longer reports running it.
+///
+/// The job is finalized with [`TerminationReason::SupervisorDroppedJob`], its
+/// assignment columns (`dispatched_on_supervisor_id`, `started_at`,
+/// `initializing_stage`) are cleared to satisfy the finalized-state invariants,
+/// a `FinalizeResult` event is appended to the audit log, and
+/// `supervisors.current_job` is released (guarded on `job_id` so a pointer that
+/// has since been reassigned is left alone).
+///
+/// **Idempotent.** The finalize only fires when the job is not already
+/// finalized; a replayed reconciliation therefore neither double-finalizes nor
+/// spawns a second restart successor. Returns the successor's job id if one was
+/// enqueued.
+///
+/// Must be called inside the worker's `with_txn` so the takeover/staleness
+/// guard covers it.
+pub async fn finalize_dropped_and_maybe_restart(
+    job_id: Uuid,
+    supervisor_id: Uuid,
+    at: DateTime<Utc>,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    // Read the predecessor's restart-relevant fields before finalizing.
+    let predecessor = fetch_by_job_id(job_id, &mut **txn).await?;
+
+    // Finalize only if not already finalized; the returned row tells us whether
+    // this pass is the one that actually performed the transition.
+    let transitioned = sqlx::query!(
+        r#"
+        update tml_switchboard.jobs
+        set job_state = 'finalized',
+            termination_reason = 'supervisor_dropped_job',
+            task_exit_status = null,
+            dispatched_on_supervisor_id = null,
+            started_at = null,
+            initializing_stage = null,
+            terminated_at = $2,
+            last_updated_at = default
+        where job_id = $1 and job_state <> 'finalized'
+        returning job_id
+        "#,
+        job_id,
+        at,
+    )
+    .fetch_optional(&mut **txn)
+    .await?;
+
+    // Some earlier pass already finalized this job: nothing left to do.
+    if transitioned.is_none() {
+        return Ok(None);
+    }
+
+    history::insert(
+        job_id,
+        JobEvent::FinalizeResult {
+            job_result: JobResult {
+                job_id,
+                supervisor_id: Some(supervisor_id),
+                termination_reason: TerminationReason::SupervisorDroppedJob,
+                task_exit_status: None,
+                exit_message: None,
+                terminated_at: at,
+            },
+        },
+        at,
+        &mut **txn,
+    )
+    .await?;
+
+    // Release the supervisor's assignment pointer.
+    sqlx::query!(
+        r#"
+        update tml_switchboard.supervisors
+        set current_job = null
+        where supervisor_id = $1 and current_job = $2
+        "#,
+        supervisor_id,
+        job_id,
+    )
+    .execute(&mut **txn)
+    .await?;
+
+    // Honor the restart policy: enqueue a successor with one fewer restart.
+    let remaining = predecessor.sql_restart_policy.remaining_restart_count;
+    if remaining <= 0 {
+        return Ok(None);
+    }
+
+    let successor_id = Uuid::new_v4();
+    let parameters = parameters::fetch_by_job_id(job_id, &mut **txn).await?;
+    let job_request = JobRequest {
+        init_spec: JobInitSpec::RestartJob { job_id },
+        ssh_keys: predecessor.ssh_keys.clone(),
+        restart_policy: RestartPolicy {
+            remaining_restart_count: usize::try_from(remaining - 1).unwrap_or(0),
+        },
+        parameters: parameters.clone(),
+        tag_config: predecessor.tag_config.clone(),
+        override_timeout: None,
+    };
+    insert(
+        job_request,
+        successor_id,
+        predecessor.enqueued_by_token_id,
+        predecessor.job_timeout,
+        at,
+        txn,
+    )
+    .await?;
+    parameters::insert(successor_id, parameters, &mut **txn).await?;
+
+    Ok(Some(successor_id))
 }

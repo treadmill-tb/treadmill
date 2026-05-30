@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        update tml_switchboard.supervisors\n        set current_job = null\n        where supervisor_id = $1 and current_job = $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1c02706a2ffe41ac9c4a374484329dba90bbf0ba30671051501104eb3c49bf02"
+}
