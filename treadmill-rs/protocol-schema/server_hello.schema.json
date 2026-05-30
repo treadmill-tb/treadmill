@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ServerHello",
+  "description": "The switchboard's handshake reply, serialized into the\n[`websocket::TREADMILL_WEBSOCKET_CONFIG`] response header.\n\nReplaces the former empty `SocketConfig`: it now carries the switchboard's\nprotocol version and the set of optional feature flags it supports. Per the\nevolution policy, unknown `features` entries are ignored by older peers, so\nthis set may grow without a major bump.\n\nKeepalive intervals are deliberately **not** part of the handshake: each side\nruns its own keepalive with local config.",
+  "type": "object",
+  "properties": {
+    "features": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "protocol": {
+      "$ref": "#/$defs/ProtocolVersion"
+    }
+  },
+  "required": [
+    "protocol"
+  ],
+  "$defs": {
+    "ProtocolVersion": {
+      "description": "A two-level protocol version. `major` is also pinned by the WebSocket\nsubprotocol token; `minor` is negotiated in the handshake.",
+      "type": "object",
+      "properties": {
+        "major": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "minor": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "major",
+        "minor"
+      ]
+    }
+  }
+}

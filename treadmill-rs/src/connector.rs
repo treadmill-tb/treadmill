@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum JobErrorKind {
     /// The requested job is already running and thus cannot be started again.
@@ -46,7 +46,7 @@ pub enum JobErrorKind {
     InternalError,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct JobError {
     pub error_kind: JobErrorKind,
     pub description: String,

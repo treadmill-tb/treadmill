@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SwitchboardToSupervisor",
+  "description": "A message sent **from the switchboard to a supervisor**.\n\nThe switchboard is the commanding side of the protocol: it instructs the\nsupervisor to start/stop jobs and polls its status. Modelling the direction\nin the type means an illegal direction (e.g. the switchboard \"reporting\" a\n[`SupervisorEvent`]) is unrepresentable rather than an `unimplemented!()`\narm at the dispatch site.\n\nWire format: internally tagged with `type`, payload under `message`. New\nvariants are an additive, minor-version change (see the module-level\nevolution policy); they must not be emitted below the negotiated minor.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/StartJobMessage"
+        },
+        "type": {
+          "type": "string",
+          "const": "start_job"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/StopJobMessage"
+        },
+        "type": {
+          "type": "string",
+          "const": "stop_job"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/Request"
+        },
+        "type": {
+          "type": "string",
+          "const": "status_request"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ]
+    },
+    {
+      "description": "Diagnostic notice of a fatal protocol error; see [`ProtocolError`] for\nthe log → close → reconnect contract.",
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/ProtocolError"
+        },
+        "type": {
+          "type": "string",
+          "const": "protocol_error"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ]
+    }
+  ],
+  "$defs": {
+    "ImageId": {
+      "description": "Images are content-addressed by the SHA-256 checksum of their manifest.\n\nThis type can be formatted into a lower-case hex string, as expected in the\n`org.tockos.treadmill.manifest-ext.base.sha256_digest` attribute.",
+      "type": "string"
+    },
+    "ImageSpecification": {
+      "oneOf": [
+        {
+          "description": "Whether to resume a previously started job.",
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "resume_job"
+            }
+          },
+          "required": [
+            "type",
+            "job_id"
+          ]
+        },
+        {
+          "description": "Which image to base this job off. If the image is not locally cached\nat the supervisor, it will be fetched using its manifest prior to\nexecuting the job.\n\nImages are content-addressed by the SHA-256 digest of their\nmanifest.\n\nNote that if a job is being restarted, it will use this variant.",
+          "type": "object",
+          "properties": {
+            "image_id": {
+              "$ref": "#/$defs/ImageId"
+            },
+            "type": {
+              "type": "string",
+              "const": "image"
+            }
+          },
+          "required": [
+            "type",
+            "image_id"
+          ]
+        }
+      ]
+    },
+    "ParameterValue": {
+      "type": "object",
+      "properties": {
+        "secret": {
+          "type": "boolean"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "secret"
+      ]
+    },
+    "ProtocolError": {
+      "description": "A fatal protocol-level error, carried in-band in **both** directions purely\nfor diagnostics (better logs on the receiving side).\n\n# Contract\n\nThere is no in-band *recovery* protocol. Critical state transitions are\nidempotent and a reconnect re-synchronises state, so error handling is\nsimply **log → close → reconnect**. On a fatal violation the offended side\nSHOULD:\n\n1. send this [`ProtocolError`] (so the peer can log a precise reason),\n2. send a WebSocket `Close` frame with the matching\n   [`ProtocolErrorCode::close_code`], then\n3. terminate the connection.\n\nThe peer reconnects and reconciliation re-establishes a consistent state.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ProtocolErrorCode"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "detail"
+      ]
+    },
+    "ProtocolErrorCode": {
+      "description": "Enumerated protocol error conditions. Each maps to a WebSocket close code in\nthe RFC 6455 private range (4000–4999) via [`ProtocolErrorCode::close_code`].",
+      "oneOf": [
+        {
+          "description": "A malformed or unexpected message was received (close code 4000).",
+          "type": "string",
+          "const": "protocol_violation"
+        },
+        {
+          "description": "No common protocol major/minor could be negotiated (close code 4001).",
+          "type": "string",
+          "const": "unsupported_version"
+        },
+        {
+          "description": "An unexpected failure occurred on the sending side (close code 4002).",
+          "type": "string",
+          "const": "internal_error"
+        },
+        {
+          "description": "The switchboard replaced this connection with a newer one (close code\n4003). Optional; emitted by the switchboard only.",
+          "type": "string",
+          "const": "superseded"
+        }
+      ]
+    },
+    "Request": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "null"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "request_id",
+        "message"
+      ]
+    },
+    "RestartPolicy": {
+      "type": "object",
+      "properties": {
+        "remaining_restart_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "remaining_restart_count"
+      ]
+    },
+    "StartJobMessage": {
+      "type": "object",
+      "properties": {
+        "image_spec": {
+          "$ref": "#/$defs/ImageSpecification"
+        },
+        "job_id": {
+          "description": "Unique identifier of the job to be started.\n\nTo restart a previously failed or interrupted job, pass the same ID\nin as the old job and set `resume_job = true`. The supervisor may\nrefuse to start a job with a re-used ID if `resume_job` is\ndeasserted, and must refuse to start a job when it cannot be resumed\nand `resume_job` is asserted.",
+          "type": "string",
+          "format": "uuid"
+        },
+        "parameters": {
+          "description": "A hash map of parameters provided to this job execution. These\nparameters are provided to the puppet daemon.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ParameterValue"
+          }
+        },
+        "restart_policy": {
+          "$ref": "#/$defs/RestartPolicy"
+        },
+        "ssh_keys": {
+          "description": "The set of initial SSH keys to deploy onto the image.\n\nThe image's configuration of the Treadmill puppet daemon determines\nhow and whether these keys will be loaded.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "job_id",
+        "image_spec",
+        "ssh_keys",
+        "restart_policy",
+        "parameters"
+      ]
+    },
+    "StopJobMessage": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "description": "Unique identifier of the job to be stopped:",
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "job_id"
+      ]
+    }
+  }
+}
