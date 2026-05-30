@@ -187,32 +187,86 @@ enum that tracks the real lifecycle**, mirroring the wire-level
 ```text
 job_state ∈ {
   queued,         -- accepted, no supervisor assigned yet (switchboard-owned)
+  scheduled,      -- bound to a supervisor, StartJob not yet sent; no longer
+                  --   eligible for (re)scheduling. dispatched_on_supervisor_id
+                  --   set, started_at null.
   initializing,   -- + initializing_stage; assigned & starting up
   ready,          -- assigned & running
   terminating,    -- assigned & shutting down
-  finalized,      -- terminal; + exit_status, terminated_at
+  finalized,      -- terminal; + termination_reason, terminated_at
 }
 ```
 
-- **Ownership:** the switchboard owns `queued` and the `queued → initializing`
-  dispatch transition (set optimistically to `initializing(starting)` when
+- **Ownership:** the switchboard owns `queued`, the `queued → scheduled` binding
+  (which removes the job from scheduling eligibility), and the `scheduled →
+  initializing` dispatch transition (set to `initializing(starting)` when
   `StartJob` is sent); the supervisor owns the `initializing → ready →
   terminating` sub-states, mirrored into the column from `SupervisorEvent`s and
   on reconciliation (case 4 lands the reported `RunningJobState` directly here);
-  the switchboard owns the transition into `finalized` (writing `exit_status`).
-- **CHECK constraints** (replacing the existing `valid_queued_implication` /
-  `valid_dispatched_implication` / `exit_status_nullity_iso_finalized`):
-  - `dispatched_on_supervisor_id` and `started_at` non-null ⇔ `job_state ∈
-    {initializing, ready, terminating}`;
-  - `exit_status` (and `terminated_at`) non-null ⇔ `job_state = finalized`;
+  the switchboard owns the transition into `finalized`.
+
+#### Decomposed termination model
+
+The terminal record is split into three orthogonal axes plus a message, rather
+than the single overloaded `exit_status` enum (which conflated all of them):
+
+- **`termination_reason`** — *why* the job stopped; non-null ⇔ `finalized`. Flat
+  enum:
+  ```text
+  workload_exited, workload_self_canceled,   -- workload-driven
+  user_canceled,                             -- externally canceled
+  queue_timeout, execution_timeout,          -- timeouts
+  image_error,                               -- bad/unfetchable image (user fault)
+  supervisor_match_error, supervisor_host_start_failure,
+  supervisor_dropped_job, supervisor_unreachable,
+  resume_failed, internal_error              -- infrastructure failure
+  ```
+- **`task_exit_status`** — semantic result of the *user's workload*
+  (`success | error | unknown`); nullable **even when finalized** (null whenever
+  the workload never reported, e.g. a queue timeout or a crash before report).
+  This is the orthogonal axis: a timed-out job may still carry
+  `task_exit_status = error`. The supervisor-reported `JobUserExitStatus` is
+  unified into this shared `TaskExitStatus` type.
+- **`exit_message`** — free-text `text`, nullable, no length cap (multi-line
+  markdown acceptable); available for *any* termination reason. The old
+  `exit_status_allows_host_output` CHECK (which forbade output for non-workload
+  terminations) is dropped.
+- Captured workload output (`host_output`) is **removed from the DB** — it will
+  live in object storage later. The wire still carries it on
+  `DeclareExitStatus`; the switchboard simply does not persist it.
+
+- **CHECK constraints** (replacing `valid_queued_implication` /
+  `valid_dispatched_implication` / `exit_status_nullity_iso_finalized` /
+  `exit_status_allows_host_output`):
+  - `dispatched_on_supervisor_id` non-null ⇔ `job_state ∈ {scheduled,
+    initializing, ready, terminating}`;
+  - `started_at` non-null ⇔ `job_state ∈ {initializing, ready, terminating}`;
+  - `termination_reason` and `terminated_at` non-null ⇔ `job_state = finalized`;
+  - `task_exit_status` non-null ⇒ `job_state = finalized`;
   - `initializing_stage` non-null ⇔ `job_state = initializing`.
+- **Wire decomposed in lockstep** (API stability not a concern): the wire/API
+  `ExitStatus` enum is replaced by `TerminationReason` + `Option<TaskExitStatus>`
+  across `JobResult` / `JobEvent` / `SupervisorJobEvent`; `JobUserExitStatus` is
+  folded into `TaskExitStatus`. `job_events` serde tags (`state_transition`,
+  `declare_workload_exit_status`, `set_exit_status`, `finalize_result`) are kept
+  stable so the `job_events` jsonb CHECK and history queries are untouched.
 - **`job_events` stays** as the append-only audit log; `job_state` is the
   materialized current state. This supersedes the abandoned `SqlExecutionStatus`
-  enum at `sql/job.rs:327` (delete it).
-- This is a breaking DB migration (new enum type, column swap, dropped
+  enum at `sql/job.rs` (delete it).
+- This is a breaking DB migration (new enum types, column swap, dropped
   constraints). Acceptable: the component is mid-refactor, and on reconnect the
   authoritative running state is re-derived from the supervisor anyway, so no
   in-flight data needs preserving.
+
+> **Migration mechanics.** `SCHEMA.sql` is the source of truth; author the
+> migration with `./migrate.sh -c <name>` in the `.#database` devshell and
+> verify with `./migrate.sh -v`. SQL changes require regenerating the
+> workspace-root `.sqlx` offline cache (`cargo sqlx prepare --workspace` against
+> a DB with the new migrations applied), since the Nix build runs with
+> `SQLX_OFFLINE=true`. Adding a `job_state`/`termination_reason` value later is a
+> cheap `ALTER TYPE … ADD VALUE`, but keep such additions in their own migration
+> (Postgres can't *use* a newly added enum value in the same transaction
+> `sqlx::migrate!()` wraps each file in).
 
 ### 6.2 Canonicalize the supervisor↔job link
 
@@ -222,23 +276,36 @@ enforcement so it cannot diverge from `jobs.dispatched_on_supervisor_id`:
 - Document the invariant `supervisors.current_job = J ⇒
   jobs[J].dispatched_on_supervisor_id = that supervisor`.
 - Add a partial unique index so a job is `current_job` for at most one
-  supervisor.
-- Add a CHECK/trigger (or assert it in the worker's `with_txn` transitions) for
-  the cross-table invariant.
+  supervisor (pure DB, lands now).
+- Cross-table consistency (`current_job` agrees with
+  `dispatched_on_supervisor_id`) is **asserted in the worker's `with_txn`
+  transitions**, not a DB trigger — the worker is the sole writer and triggers
+  are awkward under Atlas. This assertion lands with the worker (Phase 7); the
+  invariant is documented now.
 
 ### 6.3 Transactional "drop + maybe restart" helper
 
-For reconciliation cases 3/5: finalize the lost job with `exit_status =
-SupervisorDroppedJob`, clear `supervisors.current_job`, and — if
+For reconciliation cases 3/5: finalize the lost job with `termination_reason =
+supervisor_dropped_job`, clear `supervisors.current_job`, and — if
 `remaining_restart_count > 0` — insert a `JobInitSpec::RestartJob` successor
-(path already exists in `sql/job.rs:insert`). One transaction.
+(path already exists in `sql/job.rs:insert`). One transaction. Landing now as a
+standalone SQL helper the worker can call.
 
 ### 6.4 All job-state mutations go through `with_txn`
 
 Route every reconciliation/job-state write through `with_txn` so the
 takeover/staleness guard covers them; keep the "no non-DB awaits inside the
 closure" rule (`supervisor_ws_worker.rs:131`). Make transitions idempotent by
-guarding on the current `job_state`.
+guarding on the current `job_state`. **Deferred to Phase 7** — there are no live
+job-state mutators today; this wiring lands with the TDD worker.
+
+### Scope landing now (Phase 6, before Phase 5)
+
+- 6.1 (schema swap + decomposed termination model + wire decomposition), 6.2
+  partial unique index, and 6.3 standalone helper land now, each as a commit
+  passing `nix flake check`. 6.1's DB + wire + `.sqlx` changes are one atomic
+  commit (they are coupled at `sql/job.rs`).
+- 6.4 and the worker-side cross-table assertion defer to Phase 7.
 
 ---
 
