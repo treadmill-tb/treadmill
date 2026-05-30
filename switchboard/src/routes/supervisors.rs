@@ -12,16 +12,16 @@ use futures_util::stream::FuturesOrdered;
 use headers::Authorization;
 use headers::authorization::Bearer;
 
-use http::{HeaderValue, StatusCode};
+use http::{HeaderMap, HeaderValue, StatusCode};
 
 use tracing::instrument;
 
 use treadmill_rs::api::switchboard::supervisors::list::{Filter, Response as LSResponse};
 use treadmill_rs::api::switchboard::supervisors::status::Response as SSResponse;
-use treadmill_rs::api::switchboard_supervisor::SocketConfig;
 use treadmill_rs::api::switchboard_supervisor::websocket::{
-    TREADMILL_WEBSOCKET_CONFIG, TREADMILL_WEBSOCKET_PROTOCOL,
+    TREADMILL_PROTOCOL_MINOR_HEADER, TREADMILL_WEBSOCKET_CONFIG, TREADMILL_WEBSOCKET_PROTOCOL,
 };
+use treadmill_rs::api::switchboard_supervisor::{ProtocolVersion, ServerHello};
 
 use uuid::Uuid;
 
@@ -101,6 +101,7 @@ pub async fn connect(
     ConnectInfo(socket_addr): ConnectInfo<SocketAddr>,
     TypedHeader(Authorization(bearer)): TypedHeader<Authorization<Bearer>>,
     Path(supervisor_id): Path<Uuid>,
+    headers: HeaderMap,
 ) -> Response {
     let auth_token = match SecurityToken::try_from(bearer) {
         Ok(t) => t,
@@ -148,6 +149,26 @@ pub async fn connect(
         }
     }
 
+    // Minor-version negotiation: the supervisor advertises its protocol minor
+    // in a request header (absent ⇒ treat as 0, i.e. an older peer). The
+    // effective minor for this connection is the lower of the two; neither side
+    // may emit a feature/variant introduced above it.
+    let supervisor_minor: u16 = headers
+        .get(TREADMILL_PROTOCOL_MINOR_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    // `min` is a no-op while PROTOCOL_MINOR is 0, but it is the correct
+    // negotiation once minors diverge; keep it rather than hard-code 0.
+    #[allow(clippy::unnecessary_min_or_max)]
+    let effective_minor = supervisor_minor.min(ProtocolVersion::CURRENT.minor);
+    tracing::info!(
+        supervisor_minor,
+        server_minor = ProtocolVersion::CURRENT.minor,
+        effective_minor,
+        "Negotiated protocol minor with supervisor ({supervisor_id})."
+    );
+
     let worker_pool = state.pool().clone();
 
     let ws_worker_config = SupervisorWSWorkerConfig {
@@ -184,11 +205,14 @@ pub async fn connect(
         },
     );
 
-    let socket_config_json =
-        serde_json::to_string(&SocketConfig {}).expect("Failed to serialize socket configuration");
+    let server_hello_json = serde_json::to_string(&ServerHello {
+        protocol: ProtocolVersion::CURRENT,
+        features: Default::default(),
+    })
+    .expect("Failed to serialize ServerHello");
     response.headers_mut().insert(
         TREADMILL_WEBSOCKET_CONFIG,
-        socket_config_json
+        server_hello_json
             .parse()
             .expect("Failed to parse serialized socket configuration into HTTP header value"),
     );

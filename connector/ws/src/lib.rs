@@ -18,11 +18,13 @@ use tokio_tungstenite::tungstenite::{
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::{instrument, warn};
 use treadmill_rs::api::switchboard::AuthToken;
-use treadmill_rs::api::switchboard_supervisor::websocket::TREADMILL_WEBSOCKET_CONFIG;
+use treadmill_rs::api::switchboard_supervisor::websocket::{
+    TREADMILL_PROTOCOL_MINOR_HEADER, TREADMILL_WEBSOCKET_CONFIG,
+};
 use treadmill_rs::api::switchboard_supervisor::{
-    self, JobUserExitStatus, ReportedSupervisorStatus, Response, SocketConfig, SupervisorEvent,
-    SupervisorJobEvent, SupervisorToSwitchboard, SwitchboardToSupervisor,
-    websocket::TREADMILL_WEBSOCKET_PROTOCOL,
+    self, JobUserExitStatus, PROTOCOL_MINOR, ProtocolVersion, ReportedSupervisorStatus, Response,
+    ServerHello, SupervisorEvent, SupervisorJobEvent, SupervisorToSwitchboard,
+    SwitchboardToSupervisor, websocket::TREADMILL_WEBSOCKET_PROTOCOL,
 };
 use treadmill_rs::connector::{self, JobError, RunningJobState};
 use uuid::Uuid;
@@ -176,7 +178,7 @@ impl<S: connector::Supervisor> Inner<S> {
     #[instrument(skip(self))]
     async fn connect(
         &self,
-    ) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, SocketConfig), WsConnectorError> {
+    ) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, ServerHello), WsConnectorError> {
         assure_crypto_provider()?;
 
         let token = match &self.config.token {
@@ -234,6 +236,9 @@ impl<S: connector::Supervisor> Inner<S> {
             .header("sec-websocket-key", base64_key)
             .header("sec-websocket-protocol", TREADMILL_WEBSOCKET_PROTOCOL)
             .header("sec-websocket-version", "13")
+            // Advertise our protocol minor for handshake negotiation; the major
+            // rides the subprotocol token above.
+            .header(TREADMILL_PROTOCOL_MINOR_HEADER, PROTOCOL_MINOR)
             .header("authorization", format!("Bearer {token_ser_string}"))
             .body(())
             // It should not be possible to cause this to error by runtime misconfiguration. It
@@ -273,23 +278,45 @@ impl<S: connector::Supervisor> Inner<S> {
                 return Err(WsConnectorError::Authentication);
             }
         }
-        let socket_config_val =
-            resp.headers()
-                .get(TREADMILL_WEBSOCKET_CONFIG)
-                .ok_or_else(|| {
-                    tracing::error!("Response did not include tml-socket-config header");
-                    WsConnectorError::SocketConfig
-                })?;
-        let socket_config_str = socket_config_val.to_str().map_err(|e| {
+        let server_hello_val = resp
+            .headers()
+            .get(TREADMILL_WEBSOCKET_CONFIG)
+            .ok_or_else(|| {
+                tracing::error!("Response did not include tml-socket-config header");
+                WsConnectorError::SocketConfig
+            })?;
+        let server_hello_str = server_hello_val.to_str().map_err(|e| {
             tracing::error!("Failed to parse tml-socket-config header value: {e}");
             WsConnectorError::SocketConfig
         })?;
-        let socket_config: SocketConfig = serde_json::from_str(socket_config_str).map_err(|e| {
+        let server_hello: ServerHello = serde_json::from_str(server_hello_str).map_err(|e| {
             tracing::error!("Failed to deserialize tml-socket-config header value: {e}");
             WsConnectorError::SocketConfig
         })?;
 
-        Ok((ws, socket_config))
+        // Major must match (the subprotocol token should already have enforced
+        // this, but verify defensively); the effective minor is the lower of the
+        // two advertised minors.
+        if server_hello.protocol.major != ProtocolVersion::CURRENT.major {
+            tracing::error!(
+                client_major = ProtocolVersion::CURRENT.major,
+                server_major = server_hello.protocol.major,
+                "Switchboard speaks an incompatible protocol major; closing."
+            );
+            return Err(WsConnectorError::SocketConfig);
+        }
+        // `min` is a no-op while PROTOCOL_MINOR is 0, but it is the correct
+        // negotiation once minors diverge; keep it rather than hard-code 0.
+        #[allow(clippy::unnecessary_min_or_max)]
+        let effective_minor = PROTOCOL_MINOR.min(server_hello.protocol.minor);
+        tracing::info!(
+            client_minor = PROTOCOL_MINOR,
+            server_minor = server_hello.protocol.minor,
+            effective_minor,
+            "Negotiated protocol minor with switchboard."
+        );
+
+        Ok((ws, server_hello))
     }
 
     /// Handle a message received from the switchboard.
@@ -338,7 +365,7 @@ impl<S: connector::Supervisor> Inner<S> {
     async fn run(self: &Arc<Self>) -> Result<(), ()> {
         use futures_util::FutureExt;
 
-        let (mut socket, socket_config) = match self.connect().await {
+        let (mut socket, server_hello) = match self.connect().await {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("Failed to connect: {e}");
@@ -352,7 +379,7 @@ impl<S: connector::Supervisor> Inner<S> {
         // supervisor's current job state is correct, which falls under the normal request handling
         // flow.
 
-        tracing::info!("Received switchboard socket configuration: {socket_config:?}");
+        tracing::info!("Received switchboard handshake: {server_hello:?}");
 
         // TODO: make this configurable
         let mut ping_interval = tokio::time::interval(Duration::from_secs(10));
