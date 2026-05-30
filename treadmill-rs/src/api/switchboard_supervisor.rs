@@ -274,6 +274,59 @@ pub struct Response<T> {
     pub response_to_request_id: Uuid,
     pub message: T,
 }
+// -- Protocol errors ------------------------------------------------------------------------------
+
+/// A fatal protocol-level error, carried in-band in **both** directions purely
+/// for diagnostics (better logs on the receiving side).
+///
+/// # Contract
+///
+/// There is no in-band *recovery* protocol. Critical state transitions are
+/// idempotent and a reconnect re-synchronises state, so error handling is
+/// simply **log → close → reconnect**. On a fatal violation the offended side
+/// SHOULD:
+///
+/// 1. send this [`ProtocolError`] (so the peer can log a precise reason),
+/// 2. send a WebSocket `Close` frame with the matching
+///    [`ProtocolErrorCode::close_code`], then
+/// 3. terminate the connection.
+///
+/// The peer reconnects and reconciliation re-establishes a consistent state.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct ProtocolError {
+    pub code: ProtocolErrorCode,
+    pub detail: String,
+}
+
+/// Enumerated protocol error conditions. Each maps to a WebSocket close code in
+/// the RFC 6455 private range (4000–4999) via [`ProtocolErrorCode::close_code`].
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProtocolErrorCode {
+    /// A malformed or unexpected message was received (close code 4000).
+    ProtocolViolation,
+    /// No common protocol major/minor could be negotiated (close code 4001).
+    UnsupportedVersion,
+    /// An unexpected failure occurred on the sending side (close code 4002).
+    InternalError,
+    /// The switchboard replaced this connection with a newer one (close code
+    /// 4003). Optional; emitted by the switchboard only.
+    Superseded,
+}
+
+impl ProtocolErrorCode {
+    /// The RFC 6455 private-range WebSocket close code for this error.
+    pub const fn close_code(self) -> u16 {
+        match self {
+            ProtocolErrorCode::ProtocolViolation => 4000,
+            ProtocolErrorCode::UnsupportedVersion => 4001,
+            ProtocolErrorCode::InternalError => 4002,
+            ProtocolErrorCode::Superseded => 4003,
+        }
+    }
+}
+
 // -- Directional protocol messages ----------------------------------------------------------------
 
 /// A message sent **from the switchboard to a supervisor**.
@@ -294,6 +347,9 @@ pub enum SwitchboardToSupervisor {
     StartJob(StartJobMessage),
     StopJob(StopJobMessage),
     StatusRequest(Request<()>),
+    /// Diagnostic notice of a fatal protocol error; see [`ProtocolError`] for
+    /// the log → close → reconnect contract.
+    ProtocolError(ProtocolError),
 }
 
 /// A message sent **from a supervisor to the switchboard**.
@@ -309,4 +365,7 @@ pub enum SwitchboardToSupervisor {
 pub enum SupervisorToSwitchboard {
     StatusResponse(Response<ReportedSupervisorStatus>),
     SupervisorEvent(SupervisorEvent),
+    /// Diagnostic notice of a fatal protocol error; see [`ProtocolError`] for
+    /// the log → close → reconnect contract.
+    ProtocolError(ProtocolError),
 }
