@@ -205,44 +205,39 @@ pub struct Response<T> {
     pub response_to_request_id: Uuid,
     pub message: T,
 }
+// -- Directional protocol messages ----------------------------------------------------------------
+
+/// A message sent **from the switchboard to a supervisor**.
+///
+/// The switchboard is the commanding side of the protocol: it instructs the
+/// supervisor to start/stop jobs and polls its status. Modelling the direction
+/// in the type means an illegal direction (e.g. the switchboard "reporting" a
+/// [`SupervisorEvent`]) is unrepresentable rather than an `unimplemented!()`
+/// arm at the dispatch site.
+///
+/// Wire format: internally tagged with `type`, payload under `message`. New
+/// variants are an additive, minor-version change (see the module-level
+/// evolution policy); they must not be emitted below the negotiated minor.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type", content = "message")]
-pub enum Message {
+pub enum SwitchboardToSupervisor {
     StartJob(StartJobMessage),
-
     StopJob(StopJobMessage),
-
     StatusRequest(Request<()>),
-    StatusResponse(Response<ReportedSupervisorStatus>),
+}
 
+/// A message sent **from a supervisor to the switchboard**.
+///
+/// The supervisor is the reporting side: it answers status requests and emits
+/// asynchronous events about the job it is executing. It never commands the
+/// switchboard, so command variants are deliberately absent from this enum.
+///
+/// Wire format and evolution rules mirror [`SwitchboardToSupervisor`].
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", content = "message")]
+pub enum SupervisorToSwitchboard {
+    StatusResponse(Response<ReportedSupervisorStatus>),
     SupervisorEvent(SupervisorEvent),
-}
-impl Message {
-    pub fn request_id(&self) -> Option<Uuid> {
-        match self {
-            Message::StatusRequest(r) => Some(r.request_id),
-            Message::StartJob(_)
-            | Message::StopJob(_)
-            | Message::StatusResponse(_)
-            | Message::SupervisorEvent(_) => None,
-        }
-    }
-    pub fn to_response_message(self) -> Result<Response<ResponseMessage>, Message> {
-        match self {
-            Message::StatusResponse(Response {
-                response_to_request_id,
-                message,
-            }) => Ok(Response {
-                response_to_request_id,
-                message: ResponseMessage::StatusResponse(message),
-            }),
-            x => Err(x),
-        }
-    }
-}
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum ResponseMessage {
-    StatusResponse(ReportedSupervisorStatus),
 }
