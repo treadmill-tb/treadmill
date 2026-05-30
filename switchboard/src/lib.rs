@@ -1,3 +1,6 @@
+// Temporarily allow unused warnings during switchboard refactor
+#![allow(unused)]
+
 pub mod auth;
 pub mod config;
 pub mod perms;
