@@ -5,6 +5,7 @@ use crate::perms::{ReadJobStatusError, StopJobError, SubmitJobError};
 use crate::routes::proxy::{Proxied, proxy_err, proxy_val};
 use crate::serve::AppState;
 use crate::{impl_from_auth_err, perms, sql};
+use aide::{OperationInput, OperationOutput};
 use axum::Json;
 use axum::extract::{Path, State};
 use futures_util::StreamExt;

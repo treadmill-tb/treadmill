@@ -27,6 +27,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "aide"
+version = "0.16.0-alpha.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "390515b47251185fa076ac92a7a582d9d383b03e13cef0c801e7670cf928229b"
+dependencies = [
+ "axum",
+ "axum-extra",
+ "bytes",
+ "cfg-if",
+ "http",
+ "indexmap 2.14.0",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_qs",
+ "thiserror 2.0.18",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3408,6 +3430,7 @@ checksum = "a2b42f36aa1cd011945615b92222f6bf73c599a102a300334cd7f8dbeec726cc"
 dependencies = [
  "chrono",
  "dyn-clone",
+ "indexmap 2.14.0",
  "ref-cast",
  "schemars_derive",
  "serde",
@@ -3552,6 +3575,19 @@ dependencies = [
  "itoa",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "serde_qs"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67d525c8ff68aa99e5818302259bdd02d86d0303710616f39c0f44846ff6d332"
+dependencies = [
+ "axum",
+ "itoa",
+ "percent-encoding",
+ "ryu",
+ "serde",
 ]
 
 [[package]]
@@ -4769,6 +4805,7 @@ dependencies = [
 name = "treadmill-switchboard"
 version = "0.1.0"
 dependencies = [
+ "aide",
  "anyhow",
  "argon2",
  "async-trait",
@@ -4787,6 +4824,7 @@ dependencies = [
  "humantime-serde",
  "miette",
  "rand 0.10.1",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "serde_with",
