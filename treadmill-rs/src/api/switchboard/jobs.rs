@@ -4,14 +4,14 @@ pub mod submit {
     use serde::{Deserialize, Serialize};
     use uuid::Uuid;
 
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
     pub struct Request {
         /// Job request.
         #[serde(flatten)]
         pub job_request: JobRequest,
     }
 
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
     pub enum Response {
         Ok {
@@ -43,7 +43,7 @@ pub mod status {
     use http::StatusCode;
     use serde::{Deserialize, Serialize};
 
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
     pub enum Response {
         Ok { job_status: JobStatus },
@@ -66,7 +66,7 @@ pub mod stop {
     use http::StatusCode;
     use serde::{Deserialize, Serialize};
 
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
     pub enum Response {
         Ok,
@@ -104,7 +104,7 @@ pub mod list {
     // Governing Permissions:
     //  list_jobs
     //  read_job_status:<ID>
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
     pub enum Response {
         Ok {
