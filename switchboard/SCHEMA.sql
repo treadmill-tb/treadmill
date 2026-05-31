@@ -312,8 +312,7 @@ create table tml_switchboard.supervisors
 --
 -- The database job table is an archive of inactive jobs, a persistent store for
 -- reconstructing switchboard state after a restart, and a record of final exit
--- status. It records the minimum required for state reconstruction, not the full
--- ephemeral state.
+-- status.
 
 -- Restart policy dictates the number of times a job can be restarted
 -- automatically by the switchboard.
@@ -322,9 +321,7 @@ create type tml_switchboard.restart_policy as
     remaining_restart_count integer
 );
 
--- The job's execution lifecycle state: the materialized current state, mirroring
--- the wire-level `RunningJobState` for assigned sub-states, with
--- switchboard-owned bookends (`queued`, `scheduled`, `finalized`).
+-- The job's execution lifecycle state.
 create type tml_switchboard.job_state as enum (
     -- Accepted, no supervisor assigned yet; eligible for scheduling.
     'queued',
