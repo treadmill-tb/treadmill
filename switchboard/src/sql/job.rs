@@ -2,16 +2,13 @@ use super::SqlSshEndpoint;
 use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
 use sqlx::{PgExecutor, Postgres, Transaction};
-use treadmill_rs::api::switchboard::{
-    JobEvent, JobInitSpec, JobRequest, JobResult, TerminationReason,
-};
+use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, TerminationReason};
 use treadmill_rs::api::switchboard_supervisor::{
     ImageSpecification, JobInitializingStage, RestartPolicy, TaskExitStatus,
 };
 use treadmill_rs::image::manifest::ImageId;
 use uuid::Uuid;
 
-pub mod history;
 pub mod parameters;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, sqlx::Type)]
@@ -126,25 +123,25 @@ impl From<TerminationReason> for SqlTerminationReason {
     rename_all = "snake_case"
 )]
 pub enum SqlTaskExitStatus {
+    Pending,
     Success,
-    Error,
-    Unknown,
+    Failure,
 }
 impl From<SqlTaskExitStatus> for TaskExitStatus {
     fn from(value: SqlTaskExitStatus) -> Self {
         match value {
+            SqlTaskExitStatus::Pending => TaskExitStatus::Pending,
             SqlTaskExitStatus::Success => TaskExitStatus::Success,
-            SqlTaskExitStatus::Error => TaskExitStatus::Error,
-            SqlTaskExitStatus::Unknown => TaskExitStatus::Unknown,
+            SqlTaskExitStatus::Failure => TaskExitStatus::Failure,
         }
     }
 }
 impl From<TaskExitStatus> for SqlTaskExitStatus {
     fn from(value: TaskExitStatus) -> Self {
         match value {
+            TaskExitStatus::Pending => SqlTaskExitStatus::Pending,
             TaskExitStatus::Success => SqlTaskExitStatus::Success,
-            TaskExitStatus::Error => SqlTaskExitStatus::Error,
-            TaskExitStatus::Unknown => SqlTaskExitStatus::Unknown,
+            TaskExitStatus::Failure => SqlTaskExitStatus::Failure,
         }
     }
 }
@@ -491,12 +488,13 @@ pub async fn set_running_state(
 /// Finalize a job the supervisor reports as `Terminated`, within the caller's
 /// transaction. Backs reconciliation case 4 when the adopted `RunningJobState`
 /// is `Terminated`: the supervisor's workload exited, so the job finalizes with
-/// [`TerminationReason::WorkloadExited`] and the reported outcome.
+/// [`TerminationReason::WorkloadExited`].
 ///
-/// The job is finalized with the given `task_exit_status` / `exit_message`, its
-/// assignment columns (`dispatched_on_supervisor_id`, `started_at`,
-/// `initializing_stage`) are cleared to satisfy the finalized-state invariants,
-/// a `FinalizeResult` event is appended to the audit log, and
+/// The task outcome (`task_exit_status` / `exit_message`) is *not* set here — it
+/// is reported out-of-band via [`set_task_outcome`], so whatever the supervisor
+/// last declared is preserved across this transition. The assignment columns
+/// (`dispatched_on_supervisor_id`, `started_at`, `initializing_stage`) are
+/// cleared to satisfy the finalized-state invariants and
 /// `supervisors.current_job` is released (guarded on `job_id`). Unlike
 /// [`finalize_dropped_and_maybe_restart`], the restart policy is **not** applied:
 /// a clean workload exit is a completion, not a failure to retry.
@@ -509,8 +507,6 @@ pub async fn set_running_state(
 pub async fn finalize_terminated(
     job_id: Uuid,
     supervisor_id: Uuid,
-    task_exit_status: Option<SqlTaskExitStatus>,
-    exit_message: Option<String>,
     at: DateTime<Utc>,
     txn: &mut Transaction<'_, Postgres>,
 ) -> Result<(), sqlx::Error> {
@@ -519,8 +515,6 @@ pub async fn finalize_terminated(
         update tml_switchboard.jobs
         set job_state = 'finalized',
             termination_reason = 'workload_exited',
-            task_exit_status = $3,
-            exit_message = $4,
             dispatched_on_supervisor_id = null,
             started_at = null,
             initializing_stage = null,
@@ -531,8 +525,6 @@ pub async fn finalize_terminated(
         "#,
         job_id,
         at,
-        task_exit_status as Option<SqlTaskExitStatus>,
-        exit_message.clone(),
     )
     .fetch_optional(&mut **txn)
     .await?;
@@ -541,23 +533,6 @@ pub async fn finalize_terminated(
     if transitioned.is_none() {
         return Ok(());
     }
-
-    history::insert(
-        job_id,
-        JobEvent::FinalizeResult {
-            job_result: JobResult {
-                job_id,
-                supervisor_id: Some(supervisor_id),
-                termination_reason: TerminationReason::WorkloadExited,
-                task_exit_status: task_exit_status.map(Into::into),
-                exit_message,
-                terminated_at: at,
-            },
-        },
-        at,
-        &mut **txn,
-    )
-    .await?;
 
     // Release the supervisor's assignment pointer.
     sqlx::query!(
@@ -573,6 +548,50 @@ pub async fn finalize_terminated(
     .await?;
 
     Ok(())
+}
+
+/// Record the supervisor's *task outcome* for a job it is currently assigned,
+/// within the caller's transaction.
+///
+/// This is the dedicated setter behind [`SupervisorJobEvent::DeclareExitStatus`].
+/// It is independent of the job's lifecycle state: the supervisor may set the
+/// outcome at any point while the job is dispatched to it, as many times as it
+/// likes, each call overriding the previous `task_exit_status` and replacing
+/// `exit_message` (passing `None` clears the message). The outcome itself
+/// (`pending` / `success` / `failure`) can never be cleared back to unset.
+///
+/// The write is guarded on `dispatched_on_supervisor_id = supervisor_id`, which
+/// is precisely "the job is assigned to this supervisor": it is a no-op (returns
+/// `false`) for a job assigned to someone else, never dispatched, or already
+/// finalized (whose dispatch pointer has been cleared).
+///
+/// Must be called inside the worker's `with_txn` so the takeover/staleness guard
+/// covers it.
+pub async fn set_task_outcome(
+    job_id: Uuid,
+    supervisor_id: Uuid,
+    outcome: SqlTaskExitStatus,
+    message: Option<String>,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<bool, sqlx::Error> {
+    let updated = sqlx::query!(
+        r#"
+        update tml_switchboard.jobs
+        set task_exit_status = $3,
+            exit_message = $4,
+            last_updated_at = default
+        where job_id = $1 and dispatched_on_supervisor_id = $2
+        returning job_id
+        "#,
+        job_id,
+        supervisor_id,
+        outcome as SqlTaskExitStatus,
+        message,
+    )
+    .fetch_optional(&mut **txn)
+    .await?;
+
+    Ok(updated.is_some())
 }
 
 pub async fn finalize_dropped_and_maybe_restart(
@@ -610,23 +629,6 @@ pub async fn finalize_dropped_and_maybe_restart(
     if transitioned.is_none() {
         return Ok(None);
     }
-
-    history::insert(
-        job_id,
-        JobEvent::FinalizeResult {
-            job_result: JobResult {
-                job_id,
-                supervisor_id: Some(supervisor_id),
-                termination_reason: TerminationReason::SupervisorDroppedJob,
-                task_exit_status: None,
-                exit_message: None,
-                terminated_at: at,
-            },
-        },
-        at,
-        &mut **txn,
-    )
-    .await?;
 
     // Release the supervisor's assignment pointer.
     sqlx::query!(

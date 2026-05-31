@@ -156,12 +156,9 @@ impl<S: connector::Supervisor> connector::SupervisorConnector for WsConnector<S>
                     new_state,
                     status_message: _, /* TODO: handle */
                 } => self.inner.update_job_state(job_id, new_state).await,
-                SupervisorJobEvent::DeclareExitStatus {
-                    task_exit_status,
-                    host_output,
-                } => {
+                SupervisorJobEvent::DeclareExitStatus { outcome, message } => {
                     self.inner
-                        .declare_exit_status(job_id, task_exit_status, host_output)
+                        .declare_exit_status(job_id, outcome, message)
                         .await
                 }
                 SupervisorJobEvent::Error { error } => {
@@ -361,7 +358,7 @@ impl<S: connector::Supervisor> Inner<S> {
                         &*lus,
                         ReportedSupervisorStatus::OngoingJob {
                             job_id: retained,
-                            job_state: RunningJobState::Terminated { .. },
+                            job_state: RunningJobState::Terminated,
                         } if *retained == job_id
                     ) {
                         *lus = ReportedSupervisorStatus::Idle;
@@ -601,23 +598,20 @@ impl<S: connector::Supervisor> Inner<S> {
     async fn declare_exit_status(
         &self,
         job_id: Uuid,
-        task_exit_status: TaskExitStatus,
-        host_output: Option<String>,
+        outcome: TaskExitStatus,
+        message: Option<String>,
     ) {
         tracing::info!(
             "Supervisor provides exit status: job {}, status {:#?}",
             job_id,
-            task_exit_status
+            outcome
         );
         if let Err(e) = self
             .update_tx
             .send(SupervisorToSwitchboard::SupervisorEvent(
                 SupervisorEvent::JobEvent {
                     job_id,
-                    event: SupervisorJobEvent::DeclareExitStatus {
-                        task_exit_status,
-                        host_output,
-                    },
+                    event: SupervisorJobEvent::DeclareExitStatus { outcome, message },
                 },
             ))
         {

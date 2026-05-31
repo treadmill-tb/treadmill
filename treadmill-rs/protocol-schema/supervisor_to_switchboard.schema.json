@@ -251,7 +251,7 @@
       ]
     },
     "RunningJobState": {
-      "description": "The physical execution state of a job, as reported by the **supervisor**.\n\nThe supervisor is ground truth for what is *physically executing*. The\nswitchboard mirrors this into the `tml_switchboard.job_state` DB column and\nadopts it verbatim during reconciliation (case 4: the supervisor reports\n`OngoingJob(J_sb)` for the assigned job, so the DB takes the reported state).\n\n# Mapping to the DB `job_state`\n\nThe DB `job_state` enum (`switchboard/SCHEMA.sql`) is a superset of this one:\nit adds the switchboard-owned bookends `queued` and `scheduled` (before a\nsupervisor reports anything) and `finalized` (after termination). The\nassigned, supervisor-owned sub-states map one-to-one:\n\n| `RunningJobState`     | DB `job_state` |\n|-----------------------|----------------|\n| `Initializing{stage}` | `initializing` (+ `initializing_stage`) |\n| `Ready`               | `ready`        |\n| `Terminating`         | `terminating`  |\n| `Terminated`          | `finalized` (see below) |\n\n`Terminated` is **not** a 1:1 mapping: it folds into the terminal DB record\n`finalized`, which additionally requires a [`switchboard::TerminationReason`].\nA supervisor reporting `Terminated` always means a *workload-driven* exit, so\nthe switchboard finalizes it with `termination_reason = workload_exited`; the\nreason is implied by the report, not encoded in the variant, which is why\nthere is deliberately no total `RunningJobState → job_state` conversion. The\nvariant *does* carry the workload's terminal outcome (`exit_status`,\n`status_message`) so it can be persisted as the finalized job's\n[`TaskExitStatus`] / `exit_message`.\n\n# The retained-terminal contract\n\nA supervisor keeps reporting `Terminated` for a finished job — retaining it\nin memory as `ReportedSupervisorStatus::OngoingJob` — until the switchboard\nacknowledges it with [`SwitchboardToSupervisor::StopJob`], at which point the\nsupervisor drops the record and becomes `Idle`. This prevents a job that\ncompletes while the switchboard is disconnected from being misread, on\nreconnect, as a dropped job (which would spuriously trigger its restart\npolicy). The record is in-memory only: if the supervisor loses it (restart),\nit reports `Idle` and the job is legitimately classified as\n`supervisor_dropped_job`. See the worker's `reconcile` Rustdoc (case 4).\n\n[`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason",
+      "description": "The physical execution state of a job, as reported by the **supervisor**.\n\nThe supervisor is ground truth for what is *physically executing*. The\nswitchboard mirrors this into the `tml_switchboard.job_state` DB column and\nadopts it verbatim during reconciliation (case 4: the supervisor reports\n`OngoingJob(J_sb)` for the assigned job, so the DB takes the reported state).\n\n# Mapping to the DB `job_state`\n\nThe DB `job_state` enum (`switchboard/SCHEMA.sql`) is a superset of this one:\nit adds the switchboard-owned bookends `queued` and `scheduled` (before a\nsupervisor reports anything) and `finalized` (after termination). The\nassigned, supervisor-owned sub-states map one-to-one:\n\n| `RunningJobState`     | DB `job_state` |\n|-----------------------|----------------|\n| `Initializing{stage}` | `initializing` (+ `initializing_stage`) |\n| `Ready`               | `ready`        |\n| `Terminating`         | `terminating`  |\n| `Terminated`          | `finalized` (see below) |\n\n`Terminated` is **not** a 1:1 mapping: it folds into the terminal DB record\n`finalized`, which additionally requires a [`switchboard::TerminationReason`].\nA supervisor reporting `Terminated` always means a *workload-driven* exit, so\nthe switchboard finalizes it with `termination_reason = workload_exited`; the\nreason is implied by the report, not encoded in the variant, which is why\nthere is deliberately no total `RunningJobState → job_state` conversion. The\nworkload's [`TaskExitStatus`] is **not** carried here — it is reported\nout-of-band via [`SupervisorJobEvent::DeclareExitStatus`] whenever the\nsupervisor knows it, so by the time a job terminates the switchboard has\nalready recorded the outcome.\n\n# The retained-terminal contract\n\nA supervisor keeps reporting `Terminated` for a finished job — retaining it\nin memory as `ReportedSupervisorStatus::OngoingJob` — until the switchboard\nacknowledges it with [`SwitchboardToSupervisor::StopJob`], at which point the\nsupervisor drops the record and becomes `Idle`. This prevents a job that\ncompletes while the switchboard is disconnected from being misread, on\nreconnect, as a dropped job (which would spuriously trigger its restart\npolicy). The record is in-memory only: if the supervisor loses it (restart),\nit reports `Idle` and the job is legitimately classified as\n`supervisor_dropped_job`. See the worker's `reconcile` Rustdoc (case 4).\n\n[`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason",
       "oneOf": [
         {
           "description": "Starting up; `stage` mirrors the DB `initializing_stage`.",
@@ -297,30 +297,12 @@
           ]
         },
         {
-          "description": "The workload has exited. Carries its terminal outcome and drives the\nswitchboard's `→ finalized` transition (`termination_reason =\nworkload_exited`). The supervisor retains this report until the\nswitchboard acks it with `StopJob` (see the type-level Rustdoc).",
+          "description": "The workload has exited. Drives the switchboard's `→ finalized`\ntransition (`termination_reason = workload_exited`). The workload's\noutcome is *not* carried here — it is reported out-of-band via\n[`SupervisorJobEvent::DeclareExitStatus`]. The supervisor retains this\nreport until the switchboard acks it with `StopJob` (see the type-level\nRustdoc).",
           "type": "object",
           "properties": {
-            "exit_status": {
-              "description": "The workload's semantic result, if it reported one (else `None`,\ne.g. the workload exited without declaring a status).",
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/TaskExitStatus"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
             "state": {
               "type": "string",
               "const": "terminated"
-            },
-            "status_message": {
-              "description": "Optional free-text describing the termination, persisted as the\nfinalized job's `exit_message`.",
-              "type": [
-                "string",
-                "null"
-              ]
             }
           },
           "required": [
@@ -381,16 +363,16 @@
           ]
         },
         {
-          "description": "The user's workload reported a semantic result. `host_output` is the\ncaptured output: it is carried on the wire but **not persisted** by the\nswitchboard (it will live in object storage later), whereas\n`task_exit_status` is recorded on the finalized job row.",
+          "description": "The supervisor sets (or revises) the job's *task outcome*. This is the\ndedicated channel for the outcome and is independent of job state: the\nsupervisor may send it at any point while it is assigned the job, as many\ntimes as it likes, each one overriding the last. `outcome` is required\n(`pending`/`success`/`failure`); the outcome can never be cleared back to\nunset. `message` is an optional human-readable note recorded as the job's\n`exit_message`; each event replaces it, so passing `None` clears it.",
           "type": "object",
           "properties": {
-            "host_output": {
+            "message": {
               "type": [
                 "string",
                 "null"
               ]
             },
-            "task_exit_status": {
+            "outcome": {
               "$ref": "#/$defs/TaskExitStatus"
             },
             "type": {
@@ -400,7 +382,7 @@
           },
           "required": [
             "type",
-            "task_exit_status"
+            "outcome"
           ]
         },
         {
@@ -446,12 +428,23 @@
       ]
     },
     "TaskExitStatus": {
-      "description": "The semantic result of the user's workload, if it ran and reported one.\n\nOrthogonal to *why* a job terminated (see [`switchboard::TerminationReason`]):\na job may carry a `TaskExitStatus` regardless of its termination reason, or\nnone at all (e.g. it never ran).\n\n[`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason",
-      "type": "string",
-      "enum": [
-        "success",
-        "error",
-        "unknown"
+      "description": "The supervisor's report of how the user's workload is/has turned out — its\n*task outcome*.\n\nThe supervisor posts this at any point while it is assigned the job (see\n[`SupervisorJobEvent::DeclareExitStatus`]), independently of termination, and\nmay revise it: `Pending` while the result is not yet known, then `Success` or\n`Failure`. Once set it is never cleared (it can only move between these three\nvalues). It is orthogonal to *why* a job terminated (see\n[`switchboard::TerminationReason`]) — a job may carry any outcome regardless\nof its termination reason, or none at all if the supervisor never reported.\n\n[`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason",
+      "oneOf": [
+        {
+          "description": "The workload is running; its result is not yet determined.",
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "description": "The workload completed successfully.",
+          "type": "string",
+          "const": "success"
+        },
+        {
+          "description": "The workload failed.",
+          "type": "string",
+          "const": "failure"
+        }
       ]
     }
   }

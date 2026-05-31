@@ -1540,14 +1540,7 @@ impl NbdNetbootSupervisor {
 
         // Job has been stopped, let the coordinator know:
         self.connector
-            .update_job_state(
-                job_id,
-                RunningJobState::Terminated {
-                    exit_status: None,
-                    status_message: Some(terminate_message),
-                },
-                None,
-            )
+            .update_job_state(job_id, RunningJobState::Terminated, Some(terminate_message))
             .await;
 
         // Finally, remove the job from the jobs HashMap. Eventually, all other
@@ -1616,14 +1609,7 @@ impl NbdNetbootSupervisor {
 
         // Job has been stopped, let the coordinator know:
         self.connector
-            .update_job_state(
-                job_id,
-                RunningJobState::Terminated {
-                    exit_status: None,
-                    status_message: Some(terminate_message),
-                },
-                None,
-            )
+            .update_job_state(job_id, RunningJobState::Terminated, Some(terminate_message))
             .await;
 
         // Finally, remove the job from the jobs HashMap. Eventually, all other

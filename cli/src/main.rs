@@ -614,7 +614,7 @@ async fn list_supervisors(client: &Client, config: &config::Config) -> Result<()
                         RunningJobState::Initializing { .. } => "starting",
                         RunningJobState::Ready => "ready",
                         RunningJobState::Terminating => "terminating",
-                        RunningJobState::Terminated { .. } => "terminated (?)",
+                        RunningJobState::Terminated => "terminated (?)",
                     };
                     format!("busy (job={job_id}, {jstate})")
                 }

@@ -224,13 +224,15 @@ create type tml_switchboard.termination_reason as enum (
     'internal_error'
     );
 
--- The semantic result of the user's workload, if it ran and reported one.
--- Orthogonal to termination_reason: may be present (or absent) regardless of
--- why the job terminated.
+-- The supervisor-reported outcome of the user's workload (its "task outcome").
+-- Set out-of-band of termination and revisable while the job is assigned:
+-- `pending` until the result is known, then `success` or `failure`. Once set it
+-- is never cleared. Orthogonal to termination_reason: may be present (or absent)
+-- regardless of why the job terminated.
 create type tml_switchboard.task_exit_status as enum (
+    'pending',
     'success',
-    'error',
-    'unknown'
+    'failure'
     );
 
 create table tml_switchboard.jobs
@@ -363,10 +365,11 @@ create table tml_switchboard.jobs
       (terminated_at is not null) = (job_state = 'finalized')
     ),
 
-    -- `task_exit_status` is orthogonal to the reason and may be null even when
-    -- finalized, but can only ever be present on a finalized job.
-    constraint task_exit_status_only_finalized check (
-      task_exit_status is null or job_state = 'finalized'
+    -- `task_exit_status` is the supervisor-reported task outcome, set out-of-band
+    -- of termination once the job is dispatched. It is absent while `queued` (no
+    -- supervisor is assigned yet) and may be present in any later state.
+    constraint task_exit_status_absent_while_queued check (
+      task_exit_status is null or job_state <> 'queued'
     ),
 
     -- `initializing_stage` is present exactly while `initializing`.
@@ -400,23 +403,4 @@ create table tml_switchboard.job_parameters
     value  tml_switchboard.parameter_value not null,
 
     primary key (job_id, key)
-);
-
--- The histories of state transitions & exit statuses for the jobs
-create table tml_switchboard.job_events
-(
-    job_id    uuid                     not null references tml_switchboard.jobs (job_id) on delete cascade,
-    job_event jsonb                    not null,
-
-    logged_at timestamp with time zone not null default current_timestamp,
-
-    check (
-      job_event ? 'event_type'
-        and (
-          job_event ->> 'event_type' = 'state_transition'
-            or job_event ->> 'event_type' = 'declare_workload_exit_status'
-            or job_event ->> 'event_type' = 'set_exit_status'
-            or job_event ->> 'event_type' = 'finalize_result'
-        )
-    )
 );

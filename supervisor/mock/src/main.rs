@@ -223,10 +223,7 @@ impl MockSupervisor {
             .update_event(SupervisorEvent::JobEvent {
                 job_id,
                 event: SupervisorJobEvent::StateTransition {
-                    new_state: connector::RunningJobState::Terminated {
-                        exit_status: None,
-                        status_message: None,
-                    },
+                    new_state: connector::RunningJobState::Terminated,
                     status_message: None,
                 },
             })
