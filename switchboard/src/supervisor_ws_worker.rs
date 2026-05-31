@@ -5,7 +5,9 @@ use axum::extract::ws;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use sqlx::{PgPool, Postgres, Transaction};
 use tokio::time::{Duration, Instant, Interval, Sleep, Timeout, interval, sleep};
-use treadmill_rs::api::switchboard_supervisor::ReportedSupervisorStatus;
+use treadmill_rs::api::switchboard_supervisor::{
+    ReportedSupervisorStatus, StopJobMessage, SwitchboardToSupervisor,
+};
 use uuid::Uuid;
 
 use crate::sql;
@@ -302,12 +304,106 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// `TerminationReason`). See the `RunningJobState` Rustdoc in
     /// `treadmill_rs::api::switchboard_supervisor` for the full mapping.
     ///
-    /// Not yet implemented: the reconciliation logic lands with the Phase 7 TDD
-    /// worker. The `tests` submodule already specifies each case above.
+    /// The `tests` submodule specifies each case above.
     #[allow(dead_code)] // wired into the (re)connect path in Phase 7
     async fn reconcile(&mut self, reported: ReportedSupervisorStatus) -> WorkerResult<()> {
-        let _ = reported;
-        todo!("Phase 7: implement reconciliation per the contract documented above")
+        use treadmill_rs::api::switchboard_supervisor::RunningJobState;
+
+        let supervisor_id = self.ctx.supervisor_id;
+        let at = chrono::Utc::now();
+
+        // All reads and writes run under the takeover/staleness guard. The
+        // closure returns the id of a job the worker must `StopJob` *after* the
+        // transaction commits: we never await the socket while the supervisor
+        // row lock is held (see `with_txn`'s contract).
+        let stop_zombie: Option<Uuid> = self
+            .ctx
+            .with_txn(async move |txn| {
+                let j_sb = sql::supervisor::fetch_current_job(supervisor_id, txn).await?;
+
+                let stop = match (j_sb, reported) {
+                    // Case 1: aligned — nothing assigned, supervisor idle.
+                    (None, ReportedSupervisorStatus::Idle) => None,
+
+                    // Case 2: unassigned zombie — stop it, do not adopt.
+                    (None, ReportedSupervisorStatus::OngoingJob { job_id, .. }) => Some(job_id),
+
+                    // Case 3: assigned job was lost — finalize (honoring the
+                    // restart policy) and release the assignment.
+                    (Some(j_sb), ReportedSupervisorStatus::Idle) => {
+                        sql::job::finalize_dropped_and_maybe_restart(j_sb, supervisor_id, at, txn)
+                            .await?;
+                        None
+                    }
+
+                    // Cases 4 & 5: supervisor reports an ongoing job.
+                    (
+                        Some(j_sb),
+                        ReportedSupervisorStatus::OngoingJob {
+                            job_id: j_sup,
+                            job_state,
+                        },
+                    ) if j_sup == j_sb => {
+                        // Case 4: same job — adopt the reported execution state.
+                        let (state, stage) = match job_state {
+                            RunningJobState::Initializing { stage } => {
+                                (sql::job::SqlJobState::Initializing, Some(stage.into()))
+                            }
+                            RunningJobState::Ready => (sql::job::SqlJobState::Ready, None),
+                            RunningJobState::Terminating => {
+                                (sql::job::SqlJobState::Terminating, None)
+                            }
+                            RunningJobState::Terminated => {
+                                // A `Terminated` report has no termination reason
+                                // and so cannot be finalized correctly from this
+                                // snapshot alone. Whether the supervisor should
+                                // report this at all (and carry the outcome) is an
+                                // open protocol question; until it is resolved we
+                                // refuse rather than guess a reason.
+                                return Err(anyhow!(
+                                    "supervisor reported assigned job {j_sb} as Terminated; \
+                                     reconciliation cannot finalize without a termination reason"
+                                ));
+                            }
+                        };
+                        sql::job::set_running_state(j_sb, state, stage, at, txn).await?;
+                        None
+                    }
+
+                    // Case 5: assigned and reported job ids disagree. The
+                    // assigned job is lost (finalize + restart policy); the
+                    // reported job is an unassigned zombie to stop.
+                    (Some(j_sb), ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. }) => {
+                        sql::job::finalize_dropped_and_maybe_restart(j_sb, supervisor_id, at, txn)
+                            .await?;
+                        Some(j_sup)
+                    }
+                };
+
+                Ok(stop)
+            })
+            .await?;
+
+        if let Some(job_id) = stop_zombie {
+            self.send_command(SwitchboardToSupervisor::StopJob(StopJobMessage { job_id }))
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Serialize a [`SwitchboardToSupervisor`] command as JSON and send it over
+    /// the socket as a Text frame (the protocol is JSON-over-Text; see the
+    /// protocol module).
+    #[allow(dead_code)] // only reached via `reconcile`, wired up in Phase 7
+    async fn send_command(&mut self, command: SwitchboardToSupervisor) -> WorkerResult<()> {
+        let json = serde_json::to_string(&command)
+            .context("serializing SwitchboardToSupervisor command")?;
+        self.socket
+            .send(ws::Message::Text(json.into()))
+            .await
+            .context("sending command to supervisor over WebSocket")?;
+        Ok(())
     }
 
     async fn handle_supervisor_msg(

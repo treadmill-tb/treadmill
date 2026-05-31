@@ -445,6 +445,49 @@ pub async fn fetch_all_dispatched(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJo
 ///
 /// Must be called inside the worker's `with_txn` so the takeover/staleness
 /// guard covers it.
+/// Adopt a supervisor-reported *executing* state into the DB `job_state`, used
+/// by reconciliation case 4 (the supervisor reports `OngoingJob(J_sb)` for the
+/// assigned job, so the switchboard takes the reported state as ground truth).
+///
+/// `job_state` must be one of the executing states (`initializing`, `ready`,
+/// `terminating`); `initializing_stage` is required exactly when `job_state` is
+/// `initializing` and must be `None` otherwise. The terminal `finalized` state
+/// is deliberately *not* expressible here: a supervisor-reported `Terminated`
+/// needs a [`TerminationReason`] and so goes through a finalize path, not this
+/// one (see the `RunningJobState` Rustdoc on the `Terminated` fold).
+///
+/// `started_at` is back-filled to `at` if it was null (e.g. adopting `ready`
+/// over a still-`scheduled` row), satisfying the `started_at_iso_executing`
+/// CHECK. Idempotent: re-adopting the same state is a harmless rewrite.
+///
+/// Must be called inside the worker's `with_txn` so the takeover/staleness
+/// guard covers it.
+pub async fn set_running_state(
+    job_id: Uuid,
+    job_state: SqlJobState,
+    initializing_stage: Option<SqlJobInitializingStage>,
+    at: DateTime<Utc>,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"
+        update tml_switchboard.jobs
+        set job_state = $2,
+            initializing_stage = $3,
+            started_at = coalesce(started_at, $4),
+            last_updated_at = default
+        where job_id = $1
+        "#,
+        job_id,
+        job_state as SqlJobState,
+        initializing_stage as Option<SqlJobInitializingStage>,
+        at,
+    )
+    .execute(&mut **txn)
+    .await?;
+    Ok(())
+}
+
 pub async fn finalize_dropped_and_maybe_restart(
     job_id: Uuid,
     supervisor_id: Uuid,
