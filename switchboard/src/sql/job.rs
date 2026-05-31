@@ -260,6 +260,7 @@ pub async fn insert(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub struct SqlJob {
     job_id: Uuid,
     resume_job_id: Option<Uuid>,
@@ -301,6 +302,7 @@ pub struct SqlJob {
     last_updated_at: DateTime<Utc>,
 }
 
+#[allow(dead_code)]
 impl SqlJob {
     pub fn job_id(&self) -> Uuid {
         self.job_id
@@ -383,44 +385,44 @@ pub async fn fetch_by_job_id(
     .await
 }
 
-pub async fn fetch_all_queued(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJob>, sqlx::Error> {
-    sqlx::query_as!(
-        SqlJob,
-        r#"
-        select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
-        restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
-        queued_at, job_state as "job_state: _",
-        initializing_stage as "initializing_stage: _", started_at,
-        dispatched_on_supervisor_id, ssh_endpoints as "ssh_endpoints: _",
-        termination_reason as "termination_reason: _",
-        task_exit_status as "task_exit_status: _", exit_message, terminated_at,
-        last_updated_at
-        from tml_switchboard.jobs where job_state = 'queued';
-        "#
-    )
-    .fetch_all(conn)
-    .await
-}
+// pub async fn fetch_all_queued(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJob>, sqlx::Error> {
+//     sqlx::query_as!(
+//         SqlJob,
+//         r#"
+//         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
+//         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
+//         queued_at, job_state as "job_state: _",
+//         initializing_stage as "initializing_stage: _", started_at,
+//         dispatched_on_supervisor_id, ssh_endpoints as "ssh_endpoints: _",
+//         termination_reason as "termination_reason: _",
+//         task_exit_status as "task_exit_status: _", exit_message, terminated_at,
+//         last_updated_at
+//         from tml_switchboard.jobs where job_state = 'queued';
+//         "#
+//     )
+//     .fetch_all(conn)
+//     .await
+// }
 
-pub async fn fetch_all_dispatched(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJob>, sqlx::Error> {
-    sqlx::query_as!(
-        SqlJob,
-        r#"
-        select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
-        restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
-        queued_at, job_state as "job_state: _",
-        initializing_stage as "initializing_stage: _", started_at,
-        dispatched_on_supervisor_id, ssh_endpoints as "ssh_endpoints: _",
-        termination_reason as "termination_reason: _",
-        task_exit_status as "task_exit_status: _", exit_message, terminated_at,
-        last_updated_at
-        from tml_switchboard.jobs
-        where job_state in ('scheduled', 'initializing', 'ready', 'terminating');
-        "#
-    )
-    .fetch_all(conn)
-    .await
-}
+// pub async fn fetch_all_dispatched(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJob>, sqlx::Error> {
+//     sqlx::query_as!(
+//         SqlJob,
+//         r#"
+//         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
+//         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
+//         queued_at, job_state as "job_state: _",
+//         initializing_stage as "initializing_stage: _", started_at,
+//         dispatched_on_supervisor_id, ssh_endpoints as "ssh_endpoints: _",
+//         termination_reason as "termination_reason: _",
+//         task_exit_status as "task_exit_status: _", exit_message, terminated_at,
+//         last_updated_at
+//         from tml_switchboard.jobs
+//         where job_state in ('scheduled', 'initializing', 'ready', 'terminating');
+//         "#
+//     )
+//     .fetch_all(conn)
+//     .await
+// }
 
 /// Finalize a job that its supervisor dropped, releasing the supervisor and --
 /// if the restart policy permits -- enqueuing a successor, all in one

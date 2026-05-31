@@ -350,7 +350,10 @@ async fn login(config: &config::Config, login_args: &LoginArgs) -> Result<()> {
         .decode(token_b64.trim())
         .context("Decoding Base64-encoded session token")?;
     let token_array: [u8; 128] = token_bytes.try_into().map_err(|v: Vec<u8>| {
-        anyhow!("session token has invalid length ({} bytes instead of 128)", v.len())
+        anyhow!(
+            "session token has invalid length ({} bytes instead of 128)",
+            v.len()
+        )
     })?;
 
     auth::save_token(&switchboard::AuthToken(token_array))?;

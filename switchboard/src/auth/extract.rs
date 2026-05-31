@@ -1,4 +1,4 @@
-use super::{AuthorizationSource, Subject, SubjectDetail, token::SecurityToken};
+use super::{Subject, SubjectDetail, token::SecurityToken};
 use crate::serve::AppState;
 use crate::sql::{self, api_token::TokenError};
 use axum::RequestPartsExt;
@@ -74,36 +74,39 @@ impl FromRequestParts<AppState> for Subject {
     }
 }
 
-/// `axum` extractor for authorization sources.
-/// Uses [`AuthorizationSource::from_state_with_subject`] internally.
-#[derive(Debug)]
-pub struct AuthSource<AS: AuthorizationSource>(pub AS);
+// TODO: revisit this! The `AuthorizationSource` trait is probably no longer
+// useful given the auth/grant redesign:
+//
+// /// `axum` extractor for authorization sources.
+// /// Uses [`AuthorizationSource::from_state_with_subject`] internally.
+// #[derive(Debug)]
+// pub struct AuthSource<AS: AuthorizationSource>(pub AS);
 
-impl aide::OperationInput for Subject {
-    fn operation_input(
-        _ctx: &mut aide::generate::GenContext,
-        _operation: &mut aide::openapi::Operation,
-    ) {
-    }
-}
+// impl aide::OperationInput for Subject {
+//     fn operation_input(
+//         _ctx: &mut aide::generate::GenContext,
+//         _operation: &mut aide::openapi::Operation,
+//     ) {
+//     }
+// }
 
-impl<AS: AuthorizationSource> aide::OperationInput for AuthSource<AS> {
-    fn operation_input(
-        _ctx: &mut aide::generate::GenContext,
-        _operation: &mut aide::openapi::Operation,
-    ) {
-    }
-}
+// impl<AS: AuthorizationSource> aide::OperationInput for AuthSource<AS> {
+//     fn operation_input(
+//         _ctx: &mut aide::generate::GenContext,
+//         _operation: &mut aide::openapi::Operation,
+//     ) {
+//     }
+// }
 
-impl<AS: AuthorizationSource> FromRequestParts<AppState> for AuthSource<AS> {
-    type Rejection = Response;
+// impl<AS: AuthorizationSource> FromRequestParts<AppState> for AuthSource<AS> {
+//     type Rejection = Response;
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        tracing::trace!("AuthSource::FromRequestParts");
-        let subject: Subject = Subject::from_request_parts(parts, state).await?;
-        Ok(AuthSource(AS::from_state_with_subject(state, subject)))
-    }
-}
+//     async fn from_request_parts(
+//         parts: &mut Parts,
+//         state: &AppState,
+//     ) -> Result<Self, Self::Rejection> {
+//         tracing::trace!("AuthSource::FromRequestParts");
+//         let subject: Subject = Subject::from_request_parts(parts, state).await?;
+//         Ok(AuthSource(AS::from_state_with_subject(state, subject)))
+//     }
+// }
