@@ -5,20 +5,20 @@ pub mod list {
     use std::collections::HashMap;
     use uuid::Uuid;
 
-    #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+    #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Copy, Clone)]
     #[serde(rename_all = "snake_case")]
     pub enum WorkFilter {
         Idle,
         Busy,
     }
-    #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+    #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Copy, Clone)]
     #[serde(rename_all = "snake_case")]
     pub enum ConnFilter {
         Connected,
         Disconnected,
     }
     /// Describes the query portion of the HTTP request.
-    #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+    #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Copy, Clone)]
     pub struct Filter {
         pub work: Option<WorkFilter>,
         pub conn: Option<ConnFilter>,
@@ -27,7 +27,7 @@ pub mod list {
     // Governing Permissions:
     //  list_supervisors
     //  read_supervisor_status:<ID>
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
     pub enum Response {
         Ok {
@@ -54,7 +54,7 @@ pub mod status {
     use http::StatusCode;
     use serde::{Deserialize, Serialize};
 
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
     pub enum Response {
         Ok {
