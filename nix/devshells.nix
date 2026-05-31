@@ -24,6 +24,14 @@
         ];
 
         shellHook = ''
+          # Check sqlx query macros against the committed `.sqlx` cache, matching
+          # CI (nix/lib.nix). Without this the `database` shell exports a
+          # DATABASE_URL for its empty ephemeral Postgres, so the macros try to
+          # compile against an unmigrated DB and fail. `cargo sqlx prepare`
+          # overrides this back to false internally, so the cache can still be
+          # regenerated from here.
+          export SQLX_OFFLINE="true"
+
           export PKG_CONFIG_PATH="${pkgs.openssl.dev}/lib/pkgconfig:''${PKG_CONFIG_PATH:-}"
           export OPENSSL_DIR="${pkgs.openssl.dev}"
           export OPENSSL_LIB_DIR="${pkgs.openssl.out}/lib"
