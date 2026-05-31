@@ -133,6 +133,31 @@ pub async fn increment_worker_instance_id(
     .map(|record| record.worker_instance_id)
 }
 
+/// Read a supervisor's current job assignment (`supervisors.current_job`).
+///
+/// Reconciliation calls this inside the worker's `with_txn`, after the row has
+/// already been locked by [`lock_and_get_current_worker`], so the value is read
+/// under the same transaction that performs any resulting state transition.
+pub async fn fetch_current_job(
+    supervisor_id: Uuid,
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    sqlx::query!(
+        r#"
+        SELECT
+            current_job
+        FROM
+            tml_switchboard.supervisors
+        WHERE
+            supervisor_id = $1
+        "#,
+        supervisor_id,
+    )
+    .fetch_one(&mut **txn)
+    .await
+    .map(|record| record.current_job)
+}
+
 /// Acquire a row-level lock on the supervisor record and return its current
 /// `worker_instance_id`.
 ///
