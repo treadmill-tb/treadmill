@@ -5,6 +5,7 @@ use axum::extract::ws;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use sqlx::{PgPool, Postgres, Transaction};
 use tokio::time::{Duration, Instant, Interval, Sleep, Timeout, interval, sleep};
+use treadmill_rs::api::switchboard_supervisor::ReportedSupervisorStatus;
 use uuid::Uuid;
 
 use crate::sql;
@@ -260,6 +261,55 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         worker.run_loop().await
     }
 
+    /// Reconcile switchboard and supervisor state when a supervisor (re)connects.
+    ///
+    /// # Principle
+    ///
+    /// The **supervisor** is ground truth for what is *physically executing*; the
+    /// **switchboard** is the source of truth for what is *assigned*
+    /// (`supervisors.current_job`). On (re)connect the worker sends a
+    /// `StatusRequest`, awaits the correlated `StatusResponse` (a timeout is
+    /// treated as a dead peer), and passes the reported
+    /// [`ReportedSupervisorStatus`] in as `reported`. This method then applies
+    /// idempotent commands and `job_state`-guarded DB transitions to converge the
+    /// two views.
+    ///
+    /// Let `J_sb = supervisors.current_job` (read from the DB under
+    /// [`WorkerCtx::with_txn`]) and `J_sup` = the supervisor's reported
+    /// `OngoingJob` id, if any. The five cases:
+    ///
+    /// | # | Switchboard (`J_sb`) | Supervisor reports | Resolution |
+    /// |---|----------------------|--------------------|------------|
+    /// | 1 | none   | `Idle`             | aligned; no action |
+    /// | 2 | none   | `OngoingJob(J)`    | unassigned/zombie → `StopJob(J)`; do not adopt |
+    /// | 3 | `J_sb` | `Idle`             | job lost → finalize `J_sb` as `supervisor_dropped_job`; honor `RestartPolicy` (may re-issue `StartJob`) |
+    /// | 4 | `J_sb` | `OngoingJob(J_sb)` | adopt reported `job_state`: DB `job_state := reported` |
+    /// | 5 | `J_sb` | `OngoingJob(J_sup)`, `J_sup ≠ J_sb` | finalize `J_sb` as `supervisor_dropped_job` (+ `RestartPolicy`); `J_sup` is unassigned → `StopJob(J_sup)` |
+    ///
+    /// # Idempotence
+    ///
+    /// Every resolution is either an idempotent command (`StartJob`/`StopJob`
+    /// carry the `job_id` and are no-ops when they don't apply to the current job
+    /// state) or a `job_state`-guarded DB transition, so a reconnect that replays
+    /// reconciliation converges to the same state. All DB writes go through
+    /// [`WorkerCtx::with_txn`] so the takeover/staleness guard covers them; the
+    /// drop-and-maybe-restart transition of cases 3 and 5 is
+    /// `sql::job::finalize_dropped_and_maybe_restart`.
+    ///
+    /// The `Terminated` fold: a `reported` state of `RunningJobState::Terminated`
+    /// in case 4 does not map to a live `job_state`; it instead drives the
+    /// switchboard's own `→ finalized` transition (which additionally requires a
+    /// `TerminationReason`). See the `RunningJobState` Rustdoc in
+    /// `treadmill_rs::api::switchboard_supervisor` for the full mapping.
+    ///
+    /// Not yet implemented: the reconciliation logic lands with the Phase 7 TDD
+    /// worker. The `tests` submodule already specifies each case above.
+    #[allow(dead_code)] // wired into the (re)connect path in Phase 7
+    async fn reconcile(&mut self, reported: ReportedSupervisorStatus) -> WorkerResult<()> {
+        let _ = reported;
+        todo!("Phase 7: implement reconciliation per the contract documented above")
+    }
+
     async fn handle_supervisor_msg(
         &mut self,
         msg: ws::Message,
@@ -392,6 +442,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::pin::Pin;
     use std::task::{Context as TaskContext, Poll};
+    use treadmill_rs::api::switchboard_supervisor::{RunningJobState, SwitchboardToSupervisor};
 
     /// Build a `SupervisorWSWorkerConfig` with the given ping interval /
     /// dead-pong deadline, both expressed in milliseconds. Tests use short
@@ -526,6 +577,156 @@ mod tests {
                 config,
             },
             socket: NoSocket,
+        }
+    }
+
+    /// Like [`worker`], but over a [`ScriptedSocket`] so a test can observe the
+    /// worker's outgoing commands on the returned receiver. Used by the
+    /// reconciliation tests, which assert that `StopJob`/`StartJob` are emitted.
+    fn scripted_worker(
+        pool: PgPool,
+        supervisor_id: Uuid,
+        worker_instance_id: u64,
+        config: SupervisorWSWorkerConfig,
+    ) -> (
+        tokio::sync::mpsc::UnboundedSender<Result<ws::Message, axum::Error>>,
+        tokio::sync::mpsc::UnboundedReceiver<ws::Message>,
+        SupervisorWSWorker<ScriptedSocket>,
+    ) {
+        let (to_worker, from_worker, socket) = scripted_socket();
+        let worker = SupervisorWSWorker {
+            ctx: WorkerCtx {
+                pool,
+                supervisor_id,
+                worker_instance_id,
+                config,
+            },
+            socket,
+        };
+        (to_worker, from_worker, worker)
+    }
+
+    /// Insert a bare user and return its id (jobs are enqueued by a token, which
+    /// is owned by a user). `#[sqlx::test]` gives each test a fresh DB with no
+    /// fixtures, so the reconciliation tests build their own user→token→job chain.
+    async fn insert_user(pool: &PgPool) -> anyhow::Result<Uuid> {
+        let user_id = Uuid::new_v4();
+        sqlx::query(
+            "insert into tml_switchboard.users \
+             (user_id, name, email, password_hash, user_type, locked) \
+             values ($1, $2, $3, 'x', 'normal', false)",
+        )
+        .bind(user_id)
+        .bind(format!("user-{user_id}"))
+        .bind(format!("{user_id}@example.com"))
+        .execute(pool)
+        .await?;
+        Ok(user_id)
+    }
+
+    /// Insert an API token owned by `user_id` and return its id.
+    async fn insert_token(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Uuid> {
+        let token_id = Uuid::new_v4();
+        sqlx::query(
+            "insert into tml_switchboard.api_tokens \
+             (token_id, token, user_id, inherits_user_permissions, canceled, created_at, expires_at) \
+             values ($1, $2, $3, true, null, now(), now() + interval '1 day')",
+        )
+        .bind(token_id)
+        .bind(vec![0u8; 128])
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+        Ok(token_id)
+    }
+
+    /// Insert a job already bound to `supervisor_id` in the given `job_state`
+    /// (e.g. `"scheduled"`, `"ready"`). `started_at` is set iff the state is one
+    /// of the executing states, matching the `started_at_iso_executing` CHECK.
+    /// `remaining_restarts` seeds the restart policy (cases 3/5 honor it).
+    async fn insert_job(
+        pool: &PgPool,
+        token_id: Uuid,
+        supervisor_id: Uuid,
+        job_state: &str,
+        remaining_restarts: i32,
+    ) -> anyhow::Result<Uuid> {
+        let job_id = Uuid::new_v4();
+        sqlx::query(
+            "insert into tml_switchboard.jobs \
+             (job_id, resume_job_id, restart_job_id, image_id, ssh_keys, restart_policy, \
+              enqueued_by_token_id, tag_config, job_timeout, job_state, initializing_stage, \
+              queued_at, started_at, dispatched_on_supervisor_id, ssh_endpoints, \
+              termination_reason, task_exit_status, exit_message, terminated_at, last_updated_at) \
+             values \
+             ($1, null, null, $2, '{}'::text[], row($3)::tml_switchboard.restart_policy, \
+              $4, '', interval '1 hour', $5::tml_switchboard.job_state, null, \
+              now(), \
+              case when $5::tml_switchboard.job_state \
+                        in ('initializing', 'ready', 'terminating') \
+                   then now() else null end, \
+              $6, null, \
+              null, null, null, null, default)",
+        )
+        .bind(job_id)
+        .bind(vec![0u8; 32])
+        .bind(remaining_restarts)
+        .bind(token_id)
+        .bind(job_state)
+        .bind(supervisor_id)
+        .execute(pool)
+        .await?;
+        Ok(job_id)
+    }
+
+    /// Point `supervisor_id.current_job` at `job_id` (or clear it with `None`).
+    async fn set_current_job(
+        pool: &PgPool,
+        supervisor_id: Uuid,
+        job_id: Option<Uuid>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "update tml_switchboard.supervisors set current_job = $2 where supervisor_id = $1",
+        )
+        .bind(supervisor_id)
+        .bind(job_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Read back `supervisors.current_job`.
+    async fn current_job_of(pool: &PgPool, supervisor_id: Uuid) -> anyhow::Result<Option<Uuid>> {
+        Ok(sqlx::query_scalar(
+            "select current_job from tml_switchboard.supervisors where supervisor_id = $1",
+        )
+        .bind(supervisor_id)
+        .fetch_one(pool)
+        .await?)
+    }
+
+    /// Read back a job's `job_state` as its text representation.
+    async fn job_state_of(pool: &PgPool, job_id: Uuid) -> anyhow::Result<String> {
+        Ok(
+            sqlx::query_scalar(
+                "select job_state::text from tml_switchboard.jobs where job_id = $1",
+            )
+            .bind(job_id)
+            .fetch_one(pool)
+            .await?,
+        )
+    }
+
+    /// Decode an outbound frame as a [`SwitchboardToSupervisor`] command. The
+    /// protocol is JSON-over-Text (see the protocol module); anything else is a
+    /// bug in the worker.
+    fn decode_outbound(
+        msg: ws::Message,
+    ) -> treadmill_rs::api::switchboard_supervisor::SwitchboardToSupervisor {
+        match msg {
+            ws::Message::Text(text) => serde_json::from_str(&text)
+                .expect("outbound command must be valid SwitchboardToSupervisor JSON"),
+            other => panic!("expected an outbound Text command frame, got {other:?}"),
         }
     }
 
@@ -926,6 +1127,201 @@ mod tests {
             .await
             .expect("worker should still be running and return promptly after Close")
             .expect("worker task should not panic on unparseable Text");
+        Ok(())
+    }
+
+    // -- reconciliation contract (Phase 5) ----------------------------------
+    //
+    // These pin down the five reconciliation cases documented on
+    // `SupervisorWSWorker::reconcile`. They are RED until the Phase 7 worker
+    // implements the logic (today `reconcile` is `todo!()`), so they fail by
+    // panic rather than by assertion. Each test builds the DB precondition
+    // (`J_sb = supervisors.current_job`), invokes `reconcile` with the reported
+    // supervisor status (`J_sup`), and asserts the converged DB state plus any
+    // command the worker must emit. `reconcile` is driven directly (it is not
+    // yet wired into `run_loop`), mirroring how `with_txn` is unit-tested above.
+
+    /// Case 1: switchboard has no assigned job and the supervisor is idle. The
+    /// two views already agree, so reconcile is a no-op: nothing is assigned and
+    /// no command is sent.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_case1_idle_and_unassigned_is_noop(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+
+        worker
+            .reconcile(ReportedSupervisorStatus::Idle)
+            .await
+            .expect("case 1: reconcile should succeed");
+
+        assert_eq!(
+            current_job_of(&pool, supervisor_id).await?,
+            None,
+            "case 1: no job should be assigned"
+        );
+        assert!(
+            from_worker.try_recv().is_err(),
+            "case 1: no command should be emitted"
+        );
+        Ok(())
+    }
+
+    /// Case 2: switchboard has no assigned job but the supervisor reports an
+    /// ongoing one. That job is an unassigned zombie: the worker must `StopJob`
+    /// it and must not adopt it.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_case2_unassigned_zombie_is_stopped(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+
+        let zombie = Uuid::new_v4();
+        worker
+            .reconcile(ReportedSupervisorStatus::OngoingJob {
+                job_id: zombie,
+                job_state: RunningJobState::Ready,
+            })
+            .await
+            .expect("case 2: reconcile should succeed");
+
+        assert_eq!(
+            current_job_of(&pool, supervisor_id).await?,
+            None,
+            "case 2: zombie must not be adopted"
+        );
+        match decode_outbound(
+            from_worker
+                .try_recv()
+                .expect("case 2: a StopJob command should be emitted"),
+        ) {
+            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, zombie),
+            other => panic!("case 2: expected StopJob, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// Case 3: switchboard has an assigned job but the supervisor reports idle —
+    /// the job was lost. The worker finalizes it as `supervisor_dropped_job` and
+    /// clears the assignment. (Restart policy is 0 here, so no successor.)
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_case3_lost_job_is_finalized(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, supervisor_id, "ready", 0).await?;
+        set_current_job(&pool, supervisor_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let (_to_worker, _from_worker, mut worker) =
+            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+
+        worker
+            .reconcile(ReportedSupervisorStatus::Idle)
+            .await
+            .expect("case 3: reconcile should succeed");
+
+        assert_eq!(
+            job_state_of(&pool, job_id).await?,
+            "finalized",
+            "case 3: lost job must be finalized"
+        );
+        assert_eq!(
+            current_job_of(&pool, supervisor_id).await?,
+            None,
+            "case 3: assignment must be cleared"
+        );
+        Ok(())
+    }
+
+    /// Case 4: switchboard and supervisor agree on the job id. The worker adopts
+    /// the supervisor's reported execution state into the DB `job_state` and
+    /// keeps the assignment.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_case4_same_job_adopts_reported_state(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        // Bound but not yet started; the supervisor reports it is now running.
+        let job_id = insert_job(&pool, token_id, supervisor_id, "scheduled", 0).await?;
+        set_current_job(&pool, supervisor_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let (_to_worker, _from_worker, mut worker) =
+            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+
+        worker
+            .reconcile(ReportedSupervisorStatus::OngoingJob {
+                job_id,
+                job_state: RunningJobState::Ready,
+            })
+            .await
+            .expect("case 4: reconcile should succeed");
+
+        assert_eq!(
+            job_state_of(&pool, job_id).await?,
+            "ready",
+            "case 4: DB must adopt the reported execution state"
+        );
+        assert_eq!(
+            current_job_of(&pool, supervisor_id).await?,
+            Some(job_id),
+            "case 4: assignment must be retained"
+        );
+        Ok(())
+    }
+
+    /// Case 5: switchboard and supervisor disagree on the job id. The assigned
+    /// job is lost (finalize as `supervisor_dropped_job`, clear assignment) while
+    /// the reported job is an unassigned zombie that must be `StopJob`'d.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_case5_mismatched_job_finalizes_and_stops(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let assigned = insert_job(&pool, token_id, supervisor_id, "ready", 0).await?;
+        set_current_job(&pool, supervisor_id, Some(assigned)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+
+        let reported = Uuid::new_v4();
+        worker
+            .reconcile(ReportedSupervisorStatus::OngoingJob {
+                job_id: reported,
+                job_state: RunningJobState::Ready,
+            })
+            .await
+            .expect("case 5: reconcile should succeed");
+
+        assert_eq!(
+            job_state_of(&pool, assigned).await?,
+            "finalized",
+            "case 5: the assigned-but-lost job must be finalized"
+        );
+        assert_eq!(
+            current_job_of(&pool, supervisor_id).await?,
+            None,
+            "case 5: assignment must be cleared"
+        );
+        match decode_outbound(
+            from_worker
+                .try_recv()
+                .expect("case 5: a StopJob command for the reported job should be emitted"),
+        ) {
+            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, reported),
+            other => panic!("case 5: expected StopJob, got {other:?}"),
+        }
         Ok(())
     }
 }
