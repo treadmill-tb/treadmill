@@ -488,6 +488,93 @@ pub async fn set_running_state(
     Ok(())
 }
 
+/// Finalize a job the supervisor reports as `Terminated`, within the caller's
+/// transaction. Backs reconciliation case 4 when the adopted `RunningJobState`
+/// is `Terminated`: the supervisor's workload exited, so the job finalizes with
+/// [`TerminationReason::WorkloadExited`] and the reported outcome.
+///
+/// The job is finalized with the given `task_exit_status` / `exit_message`, its
+/// assignment columns (`dispatched_on_supervisor_id`, `started_at`,
+/// `initializing_stage`) are cleared to satisfy the finalized-state invariants,
+/// a `FinalizeResult` event is appended to the audit log, and
+/// `supervisors.current_job` is released (guarded on `job_id`). Unlike
+/// [`finalize_dropped_and_maybe_restart`], the restart policy is **not** applied:
+/// a clean workload exit is a completion, not a failure to retry.
+///
+/// **Idempotent.** The finalize only fires when the job is not already
+/// finalized, so a replayed reconciliation is a no-op.
+///
+/// Must be called inside the worker's `with_txn` so the takeover/staleness
+/// guard covers it.
+pub async fn finalize_terminated(
+    job_id: Uuid,
+    supervisor_id: Uuid,
+    task_exit_status: Option<SqlTaskExitStatus>,
+    exit_message: Option<String>,
+    at: DateTime<Utc>,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<(), sqlx::Error> {
+    let transitioned = sqlx::query!(
+        r#"
+        update tml_switchboard.jobs
+        set job_state = 'finalized',
+            termination_reason = 'workload_exited',
+            task_exit_status = $3,
+            exit_message = $4,
+            dispatched_on_supervisor_id = null,
+            started_at = null,
+            initializing_stage = null,
+            terminated_at = $2,
+            last_updated_at = default
+        where job_id = $1 and job_state <> 'finalized'
+        returning job_id
+        "#,
+        job_id,
+        at,
+        task_exit_status as Option<SqlTaskExitStatus>,
+        exit_message.clone(),
+    )
+    .fetch_optional(&mut **txn)
+    .await?;
+
+    // Some earlier pass already finalized this job: nothing left to do.
+    if transitioned.is_none() {
+        return Ok(());
+    }
+
+    history::insert(
+        job_id,
+        JobEvent::FinalizeResult {
+            job_result: JobResult {
+                job_id,
+                supervisor_id: Some(supervisor_id),
+                termination_reason: TerminationReason::WorkloadExited,
+                task_exit_status: task_exit_status.map(Into::into),
+                exit_message,
+                terminated_at: at,
+            },
+        },
+        at,
+        &mut **txn,
+    )
+    .await?;
+
+    // Release the supervisor's assignment pointer.
+    sqlx::query!(
+        r#"
+        update tml_switchboard.supervisors
+        set current_job = null
+        where supervisor_id = $1 and current_job = $2
+        "#,
+        supervisor_id,
+        job_id,
+    )
+    .execute(&mut **txn)
+    .await?;
+
+    Ok(())
+}
+
 pub async fn finalize_dropped_and_maybe_restart(
     job_id: Uuid,
     supervisor_id: Uuid,

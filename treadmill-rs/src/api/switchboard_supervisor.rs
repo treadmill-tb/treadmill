@@ -225,11 +225,26 @@ pub enum JobInitializingStage {
 /// | `Terminated`          | `finalized` (see below) |
 ///
 /// `Terminated` is **not** a 1:1 mapping: it folds into the terminal DB record
-/// `finalized`, which additionally requires a [`switchboard::TerminationReason`]
-/// (and optional [`TaskExitStatus`] / `exit_message`). A supervisor reporting
-/// `Terminated` therefore drives the switchboard's own `→ finalized` transition;
-/// there is deliberately no total `RunningJobState → job_state` conversion,
-/// because `Terminated` alone does not determine the reason.
+/// `finalized`, which additionally requires a [`switchboard::TerminationReason`].
+/// A supervisor reporting `Terminated` always means a *workload-driven* exit, so
+/// the switchboard finalizes it with `termination_reason = workload_exited`; the
+/// reason is implied by the report, not encoded in the variant, which is why
+/// there is deliberately no total `RunningJobState → job_state` conversion. The
+/// variant *does* carry the workload's terminal outcome (`exit_status`,
+/// `status_message`) so it can be persisted as the finalized job's
+/// [`TaskExitStatus`] / `exit_message`.
+///
+/// # The retained-terminal contract
+///
+/// A supervisor keeps reporting `Terminated` for a finished job — retaining it
+/// in memory as `ReportedSupervisorStatus::OngoingJob` — until the switchboard
+/// acknowledges it with [`SwitchboardToSupervisor::StopJob`], at which point the
+/// supervisor drops the record and becomes `Idle`. This prevents a job that
+/// completes while the switchboard is disconnected from being misread, on
+/// reconnect, as a dropped job (which would spuriously trigger its restart
+/// policy). The record is in-memory only: if the supervisor loses it (restart),
+/// it reports `Idle` and the job is legitimately classified as
+/// `supervisor_dropped_job`. See the worker's `reconcile` Rustdoc (case 4).
 ///
 /// [`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
@@ -243,8 +258,18 @@ pub enum RunningJobState {
     // Ready { connection_info: Vec<JobSessionConnectionInfo>, },
     /// Shutting down; the next report is normally `Terminated`.
     Terminating,
-    /// Execution has ended. Drives the switchboard's `→ finalized` transition.
-    Terminated,
+    /// The workload has exited. Carries its terminal outcome and drives the
+    /// switchboard's `→ finalized` transition (`termination_reason =
+    /// workload_exited`). The supervisor retains this report until the
+    /// switchboard acks it with `StopJob` (see the type-level Rustdoc).
+    Terminated {
+        /// The workload's semantic result, if it reported one (else `None`,
+        /// e.g. the workload exited without declaring a status).
+        exit_status: Option<TaskExitStatus>,
+        /// Optional free-text describing the termination, persisted as the
+        /// finalized job's `exit_message`.
+        status_message: Option<String>,
+    },
 }
 /// The semantic result of the user's workload, if it ran and reported one.
 ///
@@ -305,7 +330,8 @@ pub enum SupervisorJobEvent {
 /// `reconcile` function) hinge on this value:
 /// - `Idle` with no `J_sb` ⇒ aligned;
 /// - `Idle` with a `J_sb` ⇒ the job was lost (finalize as `SupervisorDroppedJob`);
-/// - `OngoingJob{job_id: J_sb}` ⇒ adopt `job_state` into the DB (case 4);
+/// - `OngoingJob{job_id: J_sb}` ⇒ adopt `job_state` into the DB (case 4); a
+///   `Terminated` state finalizes the job and is acked with `StopJob`;
 /// - `OngoingJob` of any other (or unassigned) id ⇒ a zombie to `StopJob`.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]

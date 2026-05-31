@@ -351,6 +351,23 @@ impl<S: connector::Supervisor> Inner<S> {
             }
             SwitchboardToSupervisor::StopJob(stop_job_request) => {
                 let job_id = stop_job_request.job_id;
+                // A `StopJob` for a job we are retaining as `Terminated` is the
+                // switchboard acknowledging the terminal outcome: drop the
+                // retained record (→ `Idle`) without bothering the supervisor,
+                // whose workload has already exited.
+                {
+                    let mut lus = self.last_updated_status.lock().await;
+                    if matches!(
+                        &*lus,
+                        ReportedSupervisorStatus::OngoingJob {
+                            job_id: retained,
+                            job_state: RunningJobState::Terminated { .. },
+                        } if *retained == job_id
+                    ) {
+                        *lus = ReportedSupervisorStatus::Idle;
+                        return;
+                    }
+                }
                 // TODO: timeout
                 if let Some(supervisor) = self.supervisor.upgrade()
                     && let Err(error) =
@@ -552,18 +569,17 @@ impl<S: connector::Supervisor> Inner<S> {
             job_id,
             job_state
         );
-        // First, update the supervisor status based on the job state.
+        // First, update the supervisor status based on the job state. A
+        // `Terminated` state is retained (not folded to `Idle`) so that, if the
+        // switchboard reconnects before acknowledging it, the supervisor still
+        // reports the terminal outcome instead of looking like a dropped job.
+        // The switchboard acks with `StopJob`, which drops it (see `handle`).
         {
             let mut lus_lg = self.last_updated_status.lock().await;
-            // Finished is an event, not a state.
-            if matches!(job_state, RunningJobState::Terminated) {
-                *lus_lg = ReportedSupervisorStatus::Idle;
-            } else {
-                *lus_lg = ReportedSupervisorStatus::OngoingJob {
-                    job_id,
-                    job_state: job_state.clone(),
-                };
-            }
+            *lus_lg = ReportedSupervisorStatus::OngoingJob {
+                job_id,
+                job_state: job_state.clone(),
+            };
         }
         // Send the update to the run() loop, which will forward it to the switchboard
         if let Err(e) = self
