@@ -285,7 +285,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// | 1 | none   | `Idle`             | aligned; no action |
     /// | 2 | none   | `OngoingJob(J)`    | unassigned/zombie → `StopJob(J)`; do not adopt |
     /// | 3 | `J_sb` | `Idle`             | job lost → finalize `J_sb` as `supervisor_dropped_job`; honor `RestartPolicy` (may re-issue `StartJob`) |
-    /// | 4 | `J_sb` | `OngoingJob(J_sb)` | adopt reported `job_state`: DB `job_state := reported` |
+    /// | 4 | `J_sb` | `OngoingJob(J_sb)` | adopt reported `job_state`: DB `job_state := reported`. A `Terminated` state finalizes `J_sb` (see below) |
     /// | 5 | `J_sb` | `OngoingJob(J_sup)`, `J_sup ≠ J_sb` | finalize `J_sb` as `supervisor_dropped_job` (+ `RestartPolicy`); `J_sup` is unassigned → `StopJob(J_sup)` |
     ///
     /// # Idempotence
@@ -298,11 +298,16 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// drop-and-maybe-restart transition of cases 3 and 5 is
     /// `sql::job::finalize_dropped_and_maybe_restart`.
     ///
-    /// The `Terminated` fold: a `reported` state of `RunningJobState::Terminated`
-    /// in case 4 does not map to a live `job_state`; it instead drives the
-    /// switchboard's own `→ finalized` transition (which additionally requires a
-    /// `TerminationReason`). See the `RunningJobState` Rustdoc in
-    /// `treadmill_rs::api::switchboard_supervisor` for the full mapping.
+    /// The `Terminated` fold: in case 4 a `reported` state of
+    /// `RunningJobState::Terminated` does not map to a live `job_state`; it
+    /// instead finalizes `J_sb` with `termination_reason = workload_exited` and
+    /// the reported `exit_status`/`status_message`
+    /// (`sql::job::finalize_terminated`, **no** restart policy — a clean exit is
+    /// not a failure). The worker then sends `StopJob(J_sb)` to acknowledge the
+    /// terminal report, which the supervisor uses to drop its in-memory retained
+    /// record. See the `RunningJobState` Rustdoc in
+    /// `treadmill_rs::api::switchboard_supervisor` for the retained-terminal
+    /// contract.
     ///
     /// The `tests` submodule specifies each case above.
     #[allow(dead_code)] // wired into the (re)connect path in Phase 7
@@ -345,29 +350,61 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                         },
                     ) if j_sup == j_sb => {
                         // Case 4: same job — adopt the reported execution state.
-                        let (state, stage) = match job_state {
+                        match job_state {
                             RunningJobState::Initializing { stage } => {
-                                (sql::job::SqlJobState::Initializing, Some(stage.into()))
+                                sql::job::set_running_state(
+                                    j_sb,
+                                    sql::job::SqlJobState::Initializing,
+                                    Some(stage.into()),
+                                    at,
+                                    txn,
+                                )
+                                .await?;
+                                None
                             }
-                            RunningJobState::Ready => (sql::job::SqlJobState::Ready, None),
+                            RunningJobState::Ready => {
+                                sql::job::set_running_state(
+                                    j_sb,
+                                    sql::job::SqlJobState::Ready,
+                                    None,
+                                    at,
+                                    txn,
+                                )
+                                .await?;
+                                None
+                            }
                             RunningJobState::Terminating => {
-                                (sql::job::SqlJobState::Terminating, None)
+                                sql::job::set_running_state(
+                                    j_sb,
+                                    sql::job::SqlJobState::Terminating,
+                                    None,
+                                    at,
+                                    txn,
+                                )
+                                .await?;
+                                None
                             }
-                            RunningJobState::Terminated => {
-                                // A `Terminated` report has no termination reason
-                                // and so cannot be finalized correctly from this
-                                // snapshot alone. Whether the supervisor should
-                                // report this at all (and carry the outcome) is an
-                                // open protocol question; until it is resolved we
-                                // refuse rather than guess a reason.
-                                return Err(anyhow!(
-                                    "supervisor reported assigned job {j_sb} as Terminated; \
-                                     reconciliation cannot finalize without a termination reason"
-                                ));
+                            // The supervisor reports the assigned job has
+                            // terminated. Finalize it as `workload_exited` with
+                            // the reported outcome (no restart — a clean exit is
+                            // not a failure), then `StopJob(j_sb)` to ack, which
+                            // releases the supervisor's retained terminal record.
+                            RunningJobState::Terminated {
+                                exit_status,
+                                status_message,
+                            } => {
+                                sql::job::finalize_terminated(
+                                    j_sb,
+                                    supervisor_id,
+                                    exit_status.map(Into::into),
+                                    status_message,
+                                    at,
+                                    txn,
+                                )
+                                .await?;
+                                Some(j_sb)
                             }
-                        };
-                        sql::job::set_running_state(j_sb, state, stage, at, txn).await?;
-                        None
+                        }
                     }
 
                     // Case 5: assigned and reported job ids disagree. The
@@ -538,7 +575,9 @@ mod tests {
     use std::collections::BTreeSet;
     use std::pin::Pin;
     use std::task::{Context as TaskContext, Poll};
-    use treadmill_rs::api::switchboard_supervisor::{RunningJobState, SwitchboardToSupervisor};
+    use treadmill_rs::api::switchboard_supervisor::{
+        RunningJobState, SwitchboardToSupervisor, TaskExitStatus,
+    };
 
     /// Build a `SupervisorWSWorkerConfig` with the given ping interval /
     /// dead-pong deadline, both expressed in milliseconds. Tests use short
@@ -1370,6 +1409,73 @@ mod tests {
             Some(job_id),
             "case 4: assignment must be retained"
         );
+        Ok(())
+    }
+
+    /// Case 4, `Terminated`: the supervisor reports the assigned job has
+    /// terminated. The switchboard finalizes it (with `workload_exited`, not
+    /// `supervisor_dropped_job`), clears the assignment, and `StopJob`s the job
+    /// to acknowledge the terminal report.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_case4_terminated_finalizes_and_acks(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, supervisor_id, "ready", 0).await?;
+        set_current_job(&pool, supervisor_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+
+        worker
+            .reconcile(ReportedSupervisorStatus::OngoingJob {
+                job_id,
+                job_state: RunningJobState::Terminated {
+                    exit_status: Some(TaskExitStatus::Success),
+                    status_message: Some("workload exited cleanly".to_string()),
+                },
+            })
+            .await
+            .expect("case 4 (terminated): reconcile should succeed");
+
+        assert_eq!(
+            job_state_of(&pool, job_id).await?,
+            "finalized",
+            "case 4 (terminated): the job must be finalized"
+        );
+        let reason: Option<String> = sqlx::query_scalar(
+            "select termination_reason::text from tml_switchboard.jobs where job_id = $1",
+        )
+        .bind(job_id)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            reason.as_deref(),
+            Some("workload_exited"),
+            "case 4 (terminated): must finalize as workload_exited, not supervisor_dropped_job"
+        );
+        let job_count: i64 = sqlx::query_scalar("select count(*) from tml_switchboard.jobs")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(
+            job_count, 1,
+            "case 4 (terminated): a clean exit must not enqueue a restart successor"
+        );
+        assert_eq!(
+            current_job_of(&pool, supervisor_id).await?,
+            None,
+            "case 4 (terminated): assignment must be cleared"
+        );
+        match decode_outbound(
+            from_worker
+                .try_recv()
+                .expect("case 4 (terminated): a StopJob ack should be emitted"),
+        ) {
+            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
+            other => panic!("case 4 (terminated): expected StopJob, got {other:?}"),
+        }
         Ok(())
     }
 

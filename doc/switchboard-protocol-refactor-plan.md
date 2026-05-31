@@ -154,7 +154,7 @@ applies idempotent commands/DB transitions to converge. All writes go through
 | 1 | none | Idle | aligned; no action |
 | 2 | none | `OngoingJob(J)` | unassigned/zombie → `StopJob(J)`; do not adopt |
 | 3 | `J_sb` | Idle | job lost → finalize `J_sb` as `SupervisorDroppedJob`; honor `RestartPolicy` (may re-issue `StartJob`) |
-| 4 | `J_sb` | `OngoingJob(J_sb)` (same id) | adopt reported `job_state`: DB := reported state |
+| 4 | `J_sb` | `OngoingJob(J_sb)` (same id) | adopt reported `job_state`: DB := reported state. If the reported state is `Terminated`, finalize `J_sb` as `workload_exited` with the reported outcome (no restart) and `StopJob(J_sb)` to ack (see *Terminal-outcome reporting*) |
 | 5 | `J_sb` | `OngoingJob(J_sup)`, `J_sup ≠ J_sb` | finalize `J_sb` as `SupervisorDroppedJob` (+ RestartPolicy); `J_sup` is unassigned → `StopJob(J_sup)` |
 
 Every resolution is an idempotent command or a `job_state`-guarded transition
@@ -167,6 +167,35 @@ on the worker's `reconcile` function.
   rejects them if they don't apply to the current job state.
 - `StopJob` applies regardless of state as long as the job exists.
 - Console-log delivery is best-effort; loss is acceptable.
+
+### Terminal-outcome reporting (amendment)
+
+The original case 4 had no way to convey a *completed* job across a reconnect:
+the supervisor folded a finished workload straight to `Idle`, so a job that
+completed while the switchboard was disconnected reappeared on reconnect as
+case 3 (`J_sb` assigned, supervisor `Idle`) and was wrongly finalized as
+`supervisor_dropped_job` — spuriously triggering its restart policy. The fix:
+
+- **The supervisor retains a terminated-but-unacknowledged job in memory** and
+  keeps reporting it as `OngoingJob { job_state: Terminated { exit_status,
+  status_message } }` until the switchboard acknowledges it. `Terminated`
+  therefore carries the workload's terminal outcome (`exit_status`, optional
+  free-text `status_message`), not just the bare fact of termination.
+- **The switchboard finalizes from that report**: reconciliation case 4 with a
+  `Terminated` state finalizes `J_sb` with `termination_reason =
+  workload_exited` and the reported `task_exit_status`/`exit_message`, and does
+  **not** apply the restart policy (a clean workload exit is not a failure to
+  retry). The reason is *implied by the supervisor reporting `Terminated`* — a
+  workload-driven exit — which is why `RunningJobState` still has no total
+  `→ job_state` conversion (the reason is not encoded in the variant).
+- **`StopJob(J_sb)` is the acknowledgement.** After finalizing, the switchboard
+  sends `StopJob(J_sb)`; the supervisor drops the retained terminal record and
+  becomes truly `Idle`. This reuses `StopJob`'s existing idempotent "release the
+  job" semantics rather than adding a new message.
+- **In-memory only; loss is a legitimate failure.** The retained record is not
+  persisted on the supervisor. If the supervisor restarts and loses it, it
+  reports `Idle` and the job is correctly classified via case 3 as
+  `supervisor_dropped_job` — the supervisor genuinely lost the job.
 
 ---
 
