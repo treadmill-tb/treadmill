@@ -1,5 +1,7 @@
+use aide::{OperationInput, OperationOutput};
 use axum::extract;
 use axum::response::{IntoResponse, Response};
+use std::borrow::Cow;
 use std::fmt::{Debug, Formatter};
 pub use treadmill_rs::api::switchboard::JsonProxiedStatus;
 
@@ -15,6 +17,34 @@ impl<T: JsonProxiedStatus> IntoProxiedResponse for T {
 
 #[repr(transparent)]
 pub struct ResponseProxy<R: IntoProxiedResponse>(R);
+
+impl<T: IntoProxiedResponse + schemars::JsonSchema> schemars::JsonSchema for ResponseProxy<T> {
+    fn schema_name() -> Cow<'static, str> {
+        T::schema_name()
+    }
+    fn json_schema(r#gen: &mut schemars::generate::SchemaGenerator) -> schemars::Schema {
+        T::json_schema(r#gen)
+    }
+}
+
+impl<T: IntoProxiedResponse + schemars::JsonSchema + 'static> aide::OperationOutput
+    for ResponseProxy<T>
+{
+    type Inner = T;
+    fn operation_response(
+        ctx: &mut aide::generate::GenContext,
+        op: &mut aide::openapi::Operation,
+    ) -> Option<aide::openapi::Response> {
+        axum::Json::<T>::operation_response(ctx, op)
+    }
+    fn inferred_responses(
+        ctx: &mut aide::generate::GenContext,
+        op: &mut aide::openapi::Operation,
+    ) -> Vec<(Option<aide::openapi::StatusCode>, aide::openapi::Response)> {
+        axum::Json::<T>::inferred_responses(ctx, op)
+    }
+}
+
 impl<T: IntoProxiedResponse> IntoResponse for ResponseProxy<T> {
     fn into_response(self) -> Response {
         self.0.into_proxied_response()

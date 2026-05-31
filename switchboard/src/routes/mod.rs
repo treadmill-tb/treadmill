@@ -4,39 +4,44 @@ mod supervisors;
 mod tokens;
 
 use crate::serve::AppState;
+use aide::axum::ApiRouter;
+use aide::axum::routing::{delete_with, get_with, post_with};
 use axum::Router;
 use axum::response::IntoResponse;
-use axum::routing::{delete, get, post};
 use http::StatusCode;
 use tower_http::trace::TraceLayer;
 
 pub fn build_router(state: AppState) -> Router<()> {
-    Router::new()
+    ApiRouter::new()
         // -- INSERT ROUTES HERE --
-        .nest("/api/v1", api_router())
+        .nest_api_service("/api/v1", api_router().with_state(state.clone()))
         // utility
         .fallback(not_found)
         .with_state(state)
         .layer(TraceLayer::new_for_http())
+        .into()
 }
 
-fn api_router() -> Router<AppState> {
-    Router::new()
+pub fn api_router() -> ApiRouter<AppState> {
+    ApiRouter::new()
         // job management group
         //  POST /jobs/new
-        .route("/jobs/new", post(jobs::submit))
+        .api_route("/jobs/new", post_with(jobs::submit, |o| o))
         //  GET /jobs (+ <FILTERS>)
-        .route("/jobs", get(jobs::list))
+        .api_route("/jobs", get_with(jobs::list, |o| o))
         //  GET /jobs/{id}/status
-        .route("/jobs/{id}/status", get(jobs::status))
+        .api_route("/jobs/{id}/status", get_with(jobs::status, |o| o))
         //  GET /jobs/{id}/info
         //  DELETE /jobs/{id}
-        .route("/jobs/{id}", delete(jobs::stop))
+        .api_route("/jobs/{id}", delete_with(jobs::stop, |o| o))
         // supervisor management group
         //  GET /supervisors (+ <FILTERS>)
-        .route("/supervisors", get(supervisors::list))
+        .api_route("/supervisors", get_with(supervisors::list, |o| o))
         //  GET /supervisors/{id}/status
-        .route("/supervisors/{id}/status", get(supervisors::status))
+        .api_route(
+            "/supervisors/{id}/status",
+            get_with(supervisors::status, |o| o),
+        )
         //  GET /supervisors/{id}/current-job
         //  DELETE /supervisors/{id}/current-job
         //  POST /supervisors/new
@@ -45,7 +50,10 @@ fn api_router() -> Router<AppState> {
         // Note that the HTTP verb 'GET' here is not necessarily conformant with REST principles,
         // but is required by RFC6455 §4.1: "The method of the request MUST be GET" (regarding
         // WebSocket HTTP handshakes).
-        .route("/supervisors/{id}/connect", get(supervisors::connect))
+        .api_route(
+            "/supervisors/{id}/connect",
+            get_with(supervisors::connect, |o| o),
+        )
         // user management group
         //  GET /users/{id}/jobs (+ <FILTERS>)
         //  GET /users/{id}/tokens (+ <FILTERS>)
@@ -54,7 +62,7 @@ fn api_router() -> Router<AppState> {
         //  DELETE /tokens/{id}
         //  POST /tokens/login
         // This is the only route which does not require an `Authorization: Bearer <token>` header.
-        .route("/tokens/login", post(tokens::login))
+        .api_route("/tokens/login", post_with(tokens::login, |o| o))
 }
 
 async fn not_found() -> impl IntoResponse {

@@ -36,6 +36,15 @@ axum = { version = "0.8.9", features = [
   "ws",
   "macros",
 ] }
+aide = { version = "0.16.0-alpha.4", features = [
+  "axum",
+  "axum-json",
+  "axum-extra-headers",
+  "axum-ws",
+  "axum-query",
+  "axum-tokio",
+] }
+schemars = { workspace = true }
 axum-extra = { version = "0.12.6", features = ["typed-header"] }
 headers = "0.4.0"
 http = { workspace = true }
