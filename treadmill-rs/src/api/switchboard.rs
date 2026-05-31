@@ -21,17 +21,21 @@ pub trait JsonProxiedStatus: Serialize + for<'de> Deserialize<'de> {
 }
 
 /// Request Body that [`login_handler`] expects.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct LoginRequest {
     pub user_identifier: String,
     pub password: String,
 }
 
 #[serde_as]
-#[derive(Debug, Serialize, Deserialize, Eq, Copy, Clone)]
+#[derive(schemars::JsonSchema, Debug, Serialize, Deserialize, Eq, Copy, Clone)]
 // Use `serde_with::serde_as` since `serde` by itself doesn't support arrays larger than 32 items,
 // and also because `serde_with` has builtin base64-encoding support.
-pub struct AuthToken(#[serde_as(as = "Base64")] pub [u8; 128]);
+pub struct AuthToken(
+    #[serde_as(as = "Base64")]
+    #[schemars(with = "String")]
+    pub [u8; 128],
+);
 impl AuthToken {
     pub fn encode_for_http(self) -> String {
         base64::prelude::BASE64_STANDARD.encode(self.0)
@@ -54,13 +58,13 @@ impl PartialEq for AuthToken {
 ///
 /// Indicates that the user successfully authenticated, and was issued `token`, which inherits the
 /// user's credentials, and will expire at `expires_at`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct LoginResponse {
     pub token: AuthToken,
     pub expires_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum JobInitSpec {
@@ -79,7 +83,7 @@ pub enum JobInitSpec {
     Image { image_id: ImageId },
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct JobRequest {
     /// What kind of job this is.
@@ -103,6 +107,7 @@ pub struct JobRequest {
     pub tag_config: String,
 
     #[serde(with = "crate::util::chrono::optional_duration")]
+    #[schemars(with = "Option<String>")]
     pub override_timeout: Option<chrono::Duration>,
 }
 
@@ -111,7 +116,7 @@ pub struct JobRequest {
 /// This records *why* a job stopped and is orthogonal to the
 /// [`TaskExitStatus`] (the success/failure of the user's workload) and to any
 /// `exit_message`. Mirrors the `tml_switchboard.termination_reason` DB enum.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminationReason {
     /// The job's own workload ended it.
@@ -159,7 +164,7 @@ impl Display for TerminationReason {
     }
 }
 /// Represents the finalized state of a job.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct JobResult {
     /// The job's ID.
     pub job_id: Uuid,
@@ -177,7 +182,7 @@ pub struct JobResult {
     pub terminated_at: DateTime<Utc>,
 }
 /// Represents a point in a job's lifecycle.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JobState {
     Queued,
@@ -201,7 +206,7 @@ impl TryFrom<JobState> for RunningJobState {
         }
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type", rename_all = "snake_case")]
 pub enum JobEvent {
     StateTransition {
@@ -222,14 +227,14 @@ pub enum JobEvent {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct JobSshEndpoint {
     pub host: String,
     pub port: u16,
 }
 
 /// This is exclusively an API type
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct ExtendedJobState {
     #[serde(flatten)]
     pub state: JobState,
@@ -243,7 +248,7 @@ pub struct ExtendedJobState {
     pub result: Option<JobResult>,
 }
 /// Represents the status of a job as of some point in time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct JobStatus {
     pub state: ExtendedJobState,
     pub as_of: DateTime<Utc>,
@@ -253,7 +258,7 @@ pub struct JobStatus {
 /// [`SupervisorStatus`](super::switchboard_supervisor::ReportedSupervisorStatus): that one is concerned
 /// solely primarily with over-the-wire communication, so it does not have 'Disconnected' variants.
 /// However, on the switchboard side, we do need those, hence the differrent set of variants.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status")]
 #[serde(rename_all = "snake_case")]
 pub enum SupervisorStatus {
