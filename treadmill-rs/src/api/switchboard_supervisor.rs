@@ -230,9 +230,10 @@ pub enum JobInitializingStage {
 /// the switchboard finalizes it with `termination_reason = workload_exited`; the
 /// reason is implied by the report, not encoded in the variant, which is why
 /// there is deliberately no total `RunningJobState → job_state` conversion. The
-/// variant *does* carry the workload's terminal outcome (`exit_status`,
-/// `status_message`) so it can be persisted as the finalized job's
-/// [`TaskExitStatus`] / `exit_message`.
+/// workload's [`TaskExitStatus`] is **not** carried here — it is reported
+/// out-of-band via [`SupervisorJobEvent::DeclareExitStatus`] whenever the
+/// supervisor knows it, so by the time a job terminates the switchboard has
+/// already recorded the outcome.
 ///
 /// # The retained-terminal contract
 ///
@@ -258,32 +259,35 @@ pub enum RunningJobState {
     // Ready { connection_info: Vec<JobSessionConnectionInfo>, },
     /// Shutting down; the next report is normally `Terminated`.
     Terminating,
-    /// The workload has exited. Carries its terminal outcome and drives the
-    /// switchboard's `→ finalized` transition (`termination_reason =
-    /// workload_exited`). The supervisor retains this report until the
-    /// switchboard acks it with `StopJob` (see the type-level Rustdoc).
-    Terminated {
-        /// The workload's semantic result, if it reported one (else `None`,
-        /// e.g. the workload exited without declaring a status).
-        exit_status: Option<TaskExitStatus>,
-        /// Optional free-text describing the termination, persisted as the
-        /// finalized job's `exit_message`.
-        status_message: Option<String>,
-    },
+    /// The workload has exited. Drives the switchboard's `→ finalized`
+    /// transition (`termination_reason = workload_exited`). The workload's
+    /// outcome is *not* carried here — it is reported out-of-band via
+    /// [`SupervisorJobEvent::DeclareExitStatus`]. The supervisor retains this
+    /// report until the switchboard acks it with `StopJob` (see the type-level
+    /// Rustdoc).
+    Terminated,
 }
-/// The semantic result of the user's workload, if it ran and reported one.
+/// The supervisor's report of how the user's workload is/has turned out — its
+/// *task outcome*.
 ///
-/// Orthogonal to *why* a job terminated (see [`switchboard::TerminationReason`]):
-/// a job may carry a `TaskExitStatus` regardless of its termination reason, or
-/// none at all (e.g. it never ran).
+/// The supervisor posts this at any point while it is assigned the job (see
+/// [`SupervisorJobEvent::DeclareExitStatus`]), independently of termination, and
+/// may revise it: `Pending` while the result is not yet known, then `Success` or
+/// `Failure`. Once set it is never cleared (it can only move between these three
+/// values). It is orthogonal to *why* a job terminated (see
+/// [`switchboard::TerminationReason`]) — a job may carry any outcome regardless
+/// of its termination reason, or none at all if the supervisor never reported.
 ///
 /// [`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Copy, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskExitStatus {
+    /// The workload is running; its result is not yet determined.
+    Pending,
+    /// The workload completed successfully.
     Success,
-    Error,
-    Unknown,
+    /// The workload failed.
+    Failure,
 }
 /// An asynchronous event a supervisor emits about the job it is executing,
 /// wrapped in a [`SupervisorEvent::JobEvent`]. The switchboard mirrors these
@@ -301,13 +305,16 @@ pub enum SupervisorJobEvent {
         new_state: RunningJobState,
         status_message: Option<String>,
     },
-    /// The user's workload reported a semantic result. `host_output` is the
-    /// captured output: it is carried on the wire but **not persisted** by the
-    /// switchboard (it will live in object storage later), whereas
-    /// `task_exit_status` is recorded on the finalized job row.
+    /// The supervisor sets (or revises) the job's *task outcome*. This is the
+    /// dedicated channel for the outcome and is independent of job state: the
+    /// supervisor may send it at any point while it is assigned the job, as many
+    /// times as it likes, each one overriding the last. `outcome` is required
+    /// (`pending`/`success`/`failure`); the outcome can never be cleared back to
+    /// unset. `message` is an optional human-readable note recorded as the job's
+    /// `exit_message`; each event replaces it, so passing `None` clears it.
     DeclareExitStatus {
-        task_exit_status: TaskExitStatus,
-        host_output: Option<String>,
+        outcome: TaskExitStatus,
+        message: Option<String>,
     },
     // Technically a state transition
     /// A job-level error. Semantically a transition toward termination; the

@@ -6,7 +6,7 @@ use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use sqlx::{PgPool, Postgres, Transaction};
 use tokio::time::{Duration, Instant, Interval, Sleep, Timeout, interval, sleep};
 use treadmill_rs::api::switchboard_supervisor::{
-    ReportedSupervisorStatus, StopJobMessage, SwitchboardToSupervisor,
+    ReportedSupervisorStatus, StopJobMessage, SwitchboardToSupervisor, TaskExitStatus,
 };
 use uuid::Uuid;
 
@@ -300,10 +300,10 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     ///
     /// The `Terminated` fold: in case 4 a `reported` state of
     /// `RunningJobState::Terminated` does not map to a live `job_state`; it
-    /// instead finalizes `J_sb` with `termination_reason = workload_exited` and
-    /// the reported `exit_status`/`status_message`
+    /// instead finalizes `J_sb` with `termination_reason = workload_exited`
     /// (`sql::job::finalize_terminated`, **no** restart policy — a clean exit is
-    /// not a failure). The worker then sends `StopJob(J_sb)` to acknowledge the
+    /// not a failure). The task outcome is preserved as last declared via
+    /// `apply_task_outcome`. The worker then sends `StopJob(J_sb)` to acknowledge the
     /// terminal report, which the supervisor uses to drop its in-memory retained
     /// record. See the `RunningJobState` Rustdoc in
     /// `treadmill_rs::api::switchboard_supervisor` for the retained-terminal
@@ -385,23 +385,13 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                                 None
                             }
                             // The supervisor reports the assigned job has
-                            // terminated. Finalize it as `workload_exited` with
-                            // the reported outcome (no restart — a clean exit is
-                            // not a failure), then `StopJob(j_sb)` to ack, which
-                            // releases the supervisor's retained terminal record.
-                            RunningJobState::Terminated {
-                                exit_status,
-                                status_message,
-                            } => {
-                                sql::job::finalize_terminated(
-                                    j_sb,
-                                    supervisor_id,
-                                    exit_status.map(Into::into),
-                                    status_message,
-                                    at,
-                                    txn,
-                                )
-                                .await?;
+                            // terminated. Finalize it as `workload_exited` (no
+                            // restart — a clean exit is not a failure), then
+                            // `StopJob(j_sb)` to ack, which releases the
+                            // supervisor's retained terminal record. The task
+                            // outcome is preserved as last declared out-of-band.
+                            RunningJobState::Terminated => {
+                                sql::job::finalize_terminated(j_sb, supervisor_id, at, txn).await?;
                                 Some(j_sb)
                             }
                         }
@@ -427,6 +417,35 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         }
 
         Ok(())
+    }
+
+    /// Record a task outcome the supervisor declared via
+    /// [`SupervisorJobEvent::DeclareExitStatus`], out-of-band of reconciliation.
+    ///
+    /// The write only lands while the job is dispatched to this supervisor
+    /// (`sql::job::set_task_outcome` is guarded on the assignment pointer);
+    /// returns `false` if the job is not currently assigned here (e.g. already
+    /// finalized or never dispatched), in which case the event is dropped.
+    ///
+    /// [`SupervisorJobEvent::DeclareExitStatus`]: treadmill_rs::api::switchboard_supervisor::SupervisorJobEvent::DeclareExitStatus
+    #[allow(dead_code)] // wired into the event path in Phase 7
+    async fn apply_task_outcome(
+        &mut self,
+        job_id: Uuid,
+        outcome: TaskExitStatus,
+        message: Option<String>,
+    ) -> WorkerResult<bool> {
+        let supervisor_id = self.ctx.supervisor_id;
+        let applied = self
+            .ctx
+            .with_txn(async move |txn| {
+                Ok(
+                    sql::job::set_task_outcome(job_id, supervisor_id, outcome.into(), message, txn)
+                        .await?,
+                )
+            })
+            .await?;
+        Ok(applied)
     }
 
     /// Serialize a [`SwitchboardToSupervisor`] command as JSON and send it over
@@ -1412,10 +1431,27 @@ mod tests {
         Ok(())
     }
 
+    /// Read a job's `task_exit_status` (as its enum text) and `exit_message`.
+    async fn task_outcome_of(
+        pool: &PgPool,
+        job_id: Uuid,
+    ) -> anyhow::Result<(Option<String>, Option<String>)> {
+        let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "select task_exit_status::text, exit_message \
+             from tml_switchboard.jobs where job_id = $1",
+        )
+        .bind(job_id)
+        .fetch_one(pool)
+        .await?;
+        Ok(row)
+    }
+
     /// Case 4, `Terminated`: the supervisor reports the assigned job has
     /// terminated. The switchboard finalizes it (with `workload_exited`, not
     /// `supervisor_dropped_job`), clears the assignment, and `StopJob`s the job
-    /// to acknowledge the terminal report.
+    /// to acknowledge the terminal report. The task outcome the supervisor
+    /// declared out-of-band before termination must be preserved across the
+    /// finalize.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn reconcile_case4_terminated_finalizes_and_acks(pool: PgPool) -> anyhow::Result<()> {
@@ -1429,13 +1465,24 @@ mod tests {
         let (_to_worker, mut from_worker, mut worker) =
             scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
 
+        // The supervisor declares the outcome out-of-band, before reporting the
+        // terminated state. It must survive finalization untouched.
+        assert!(
+            worker
+                .apply_task_outcome(
+                    job_id,
+                    TaskExitStatus::Success,
+                    Some("workload exited cleanly".to_string()),
+                )
+                .await
+                .expect("declaring the outcome should succeed"),
+            "the outcome must apply while the job is assigned"
+        );
+
         worker
             .reconcile(ReportedSupervisorStatus::OngoingJob {
                 job_id,
-                job_state: RunningJobState::Terminated {
-                    exit_status: Some(TaskExitStatus::Success),
-                    status_message: Some("workload exited cleanly".to_string()),
-                },
+                job_state: RunningJobState::Terminated,
             })
             .await
             .expect("case 4 (terminated): reconcile should succeed");
@@ -1455,6 +1502,14 @@ mod tests {
             reason.as_deref(),
             Some("workload_exited"),
             "case 4 (terminated): must finalize as workload_exited, not supervisor_dropped_job"
+        );
+        assert_eq!(
+            task_outcome_of(&pool, job_id).await?,
+            (
+                Some("success".to_string()),
+                Some("workload exited cleanly".to_string())
+            ),
+            "case 4 (terminated): the declared outcome must be preserved across finalize"
         );
         let job_count: i64 = sqlx::query_scalar("select count(*) from tml_switchboard.jobs")
             .fetch_one(&pool)
@@ -1476,6 +1531,105 @@ mod tests {
             SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
             other => panic!("case 4 (terminated): expected StopJob, got {other:?}"),
         }
+        Ok(())
+    }
+
+    /// A supervisor may declare the task outcome while it is assigned the job,
+    /// independently of the job's lifecycle state.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn apply_task_outcome_while_assigned_persists(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, supervisor_id, "ready", 0).await?;
+        set_current_job(&pool, supervisor_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let (_to_worker, _from_worker, mut worker) =
+            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+
+        assert!(
+            worker
+                .apply_task_outcome(job_id, TaskExitStatus::Pending, Some("booting".to_string()))
+                .await?,
+            "setting the outcome on an assigned job must succeed"
+        );
+        assert_eq!(
+            task_outcome_of(&pool, job_id).await?,
+            (Some("pending".to_string()), Some("booting".to_string())),
+        );
+        Ok(())
+    }
+
+    /// The outcome may be set repeatedly, each call overriding the last value,
+    /// and the message may be revised or cleared (passing `None`).
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn apply_task_outcome_overrides_and_clears_message(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, supervisor_id, "ready", 0).await?;
+        set_current_job(&pool, supervisor_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let (_to_worker, _from_worker, mut worker) =
+            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+
+        worker
+            .apply_task_outcome(job_id, TaskExitStatus::Pending, Some("running".to_string()))
+            .await?;
+        // Override pending -> success.
+        worker
+            .apply_task_outcome(job_id, TaskExitStatus::Success, Some("done".to_string()))
+            .await?;
+        assert_eq!(
+            task_outcome_of(&pool, job_id).await?,
+            (Some("success".to_string()), Some("done".to_string())),
+            "the latest outcome and message must win"
+        );
+        // A later call may clear the message while keeping an outcome set.
+        worker
+            .apply_task_outcome(job_id, TaskExitStatus::Failure, None)
+            .await?;
+        assert_eq!(
+            task_outcome_of(&pool, job_id).await?,
+            (Some("failure".to_string()), None),
+            "passing None must clear the message; the outcome stays set"
+        );
+        Ok(())
+    }
+
+    /// Declaring an outcome for a job that is dispatched to a *different*
+    /// supervisor is a no-op (returns `false`) and writes nothing: the setter is
+    /// guarded on this supervisor's assignment pointer.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn apply_task_outcome_not_assigned_is_noop(pool: PgPool) -> anyhow::Result<()> {
+        let supervisor_id = insert_supervisor(&pool).await?;
+        let other_supervisor = insert_supervisor(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        // The job is dispatched to `other_supervisor`, not to our worker.
+        let job_id = insert_job(&pool, token_id, other_supervisor, "ready", 0).await?;
+        set_current_job(&pool, other_supervisor, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let (_to_worker, _from_worker, mut worker) =
+            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+
+        assert!(
+            !worker
+                .apply_task_outcome(job_id, TaskExitStatus::Success, Some("nope".to_string()))
+                .await?,
+            "setting the outcome on a job assigned elsewhere must be a no-op"
+        );
+        assert_eq!(
+            task_outcome_of(&pool, job_id).await?,
+            (None, None),
+            "no outcome must be written for a job assigned to another supervisor"
+        );
         Ok(())
     }
 

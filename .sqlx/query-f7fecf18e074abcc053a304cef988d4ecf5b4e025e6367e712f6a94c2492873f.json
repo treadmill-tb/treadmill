@@ -290,9 +290,9 @@
             "name": "tml_switchboard.task_exit_status",
             "kind": {
               "Enum": [
+                "pending",
                 "success",
-                "error",
-                "unknown"
+                "failure"
               ]
             }
           }
