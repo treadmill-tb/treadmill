@@ -4,13 +4,12 @@ use crate::auth::extract::AuthSource;
 use crate::perms::{ReadJobStatusError, StopJobError, SubmitJobError};
 use crate::routes::proxy::{Proxied, proxy_err, proxy_val};
 use crate::serve::AppState;
-use crate::{impl_from_auth_err, perms, sql};
+use crate::{impl_from_auth_err, perms};
 use aide::{OperationInput, OperationOutput};
 use axum::Json;
 use axum::extract::{Path, State};
 use futures_util::StreamExt;
 use futures_util::stream::FuturesOrdered;
-use std::str::FromStr;
 use treadmill_rs::api::switchboard::jobs::{
     list::Response as LJResponse,
     status::Response as JSResponse,
@@ -29,7 +28,6 @@ pub async fn submit(
     Json(request): Json<EJRequest>,
 ) -> Proxied<EJResponse> {
     let submit_job_priv = auth.authorize(perms::SubmitJob).await.map_err(proxy_err)?;
-    let user_id = submit_job_priv.subject().user_id();
     let job_id = perms::submit_job(&state, submit_job_priv, request.job_request)
         .await
         .map_err(|e| {
@@ -38,17 +36,6 @@ pub async fn submit(
                 SubmitJobError::SupervisorMatchError => EJResponse::SupervisorMatchError,
             })
         })?;
-    sql::perm::sql_add_user_privileges(
-        user_id,
-        vec![
-            format!("read_job_status:{job_id}"),
-            format!("stop_job:{job_id}"),
-        ],
-        state.pool(),
-    )
-    .await
-    .map_err(|_| EJResponse::Internal)
-    .map_err(proxy_err)?;
 
     proxy_val(EJResponse::Ok { job_id })
 }
@@ -109,23 +96,17 @@ pub async fn list(
     AuthSource(auth): AuthSource<DbAuth>,
 ) -> Proxied<LJResponse> {
     let list_jobs = auth.authorize(perms::ListJobs).await.map_err(proxy_err)?;
-    // TODO: would be better to make this a method on DbAuth
-    // TODO: respect token privileges
-    let perms = sqlx::query!(
-        r#"
-        select permission from tml_switchboard.user_privileges
-        where user_id = $1 and permission like 'read_job_status:%';
-        "#,
+    // Placeholder listing under the permissive authorization shim: a subject sees
+    // the jobs it owns. The grant-aware version (jobs readable via group
+    // membership or explicit grants) lands with the full authorization rewrite.
+    let job_ids: Vec<Uuid> = sqlx::query_scalar!(
+        r#"select job_id from tml_switchboard.jobs where owner_id = $1"#,
         list_jobs.subject().user_id()
     )
     .fetch_all(state.pool())
     .await
     .map_err(|_| LJResponse::Internal)
     .map_err(proxy_err)?;
-    let job_ids: Vec<Uuid> = perms
-        .into_iter()
-        .map(|perm| Uuid::from_str(perm.permission.split(':').nth(1).unwrap()).unwrap())
-        .collect();
 
     let perm_queries: FuturesOrdered<_> = job_ids
         .into_iter()

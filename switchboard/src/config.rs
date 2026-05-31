@@ -15,6 +15,64 @@ pub struct SwitchboardConfig {
     pub service: ServiceConfig,
     /// Configuration of Switchboard logging.
     pub log: LogConfig,
+    /// OAuth login providers. Optional: a deployment without any provider
+    /// configured simply cannot issue interactive logins.
+    #[serde(default)]
+    pub oauth: OAuthConfig,
+}
+
+/// OAuth login provider configuration. Each provider is independently optional.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct OAuthConfig {
+    /// GitHub login, if configured.
+    pub github: Option<GitHubOAuthConfig>,
+}
+
+/// Configuration for GitHub OAuth login.
+///
+/// The endpoint URLs default to GitHub's production endpoints but are
+/// overridable so tests can point the flow at a local mock server, exercising
+/// the full authorization-code exchange without a third-party dependency.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GitHubOAuthConfig {
+    /// OAuth app client id.
+    pub client_id: String,
+    /// OAuth app client secret.
+    pub client_secret: String,
+    /// Absolute URL the provider redirects back to (must match the OAuth app's
+    /// configured callback), e.g. `https://switchboard.example/api/v1/auth/github/callback`.
+    pub redirect_url: String,
+    /// Authorization endpoint (where the user is sent to approve access).
+    #[serde(default = "default_github_auth_url")]
+    pub auth_url: String,
+    /// Token endpoint (where the authorization code is exchanged for a token).
+    #[serde(default = "default_github_token_url")]
+    pub token_url: String,
+    /// Base URL of the provider's REST API (used to fetch the user profile and
+    /// verified emails). A trailing slash, if present, is ignored.
+    #[serde(default = "default_github_api_base_url")]
+    pub api_base_url: String,
+    /// OAuth scopes to request. Defaults cover profile, verified emails, and org
+    /// membership (the latter feeds GitHub-org auto-groups).
+    #[serde(default = "default_github_scopes")]
+    pub scopes: Vec<String>,
+}
+
+fn default_github_auth_url() -> String {
+    "https://github.com/login/oauth/authorize".to_string()
+}
+fn default_github_token_url() -> String {
+    "https://github.com/login/oauth/access_token".to_string()
+}
+fn default_github_api_base_url() -> String {
+    "https://api.github.com".to_string()
+}
+fn default_github_scopes() -> Vec<String> {
+    vec![
+        "read:user".to_string(),
+        "user:email".to_string(),
+        "read:org".to_string(),
+    ]
 }
 
 #[derive(Debug, Clone, Deserialize)]

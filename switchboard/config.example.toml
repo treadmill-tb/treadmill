@@ -24,3 +24,16 @@ supervisor_pong_dead = "10s"
 
 [log]
 use_tokio_console_subscriber = false
+
+# OAuth login providers. Optional; omit the whole section to disable interactive
+# login. Each provider is independently optional.
+#
+# [oauth.github]
+# client_id = "Iv1.0123456789abcdef"
+# client_secret = "0123456789abcdef0123456789abcdef01234567"
+# redirect_url = "https://switchboard.example/api/v1/auth/github/callback"
+# The endpoint URLs below default to GitHub's production endpoints and only need
+# to be set when pointing at a GitHub Enterprise instance or a test mock server.
+# auth_url = "https://github.com/login/oauth/authorize"
+# token_url = "https://github.com/login/oauth/access_token"
+# api_base_url = "https://api.github.com"

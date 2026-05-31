@@ -1,13 +1,14 @@
+mod auth;
 mod jobs;
 mod proxy;
 mod supervisors;
-mod tokens;
 
 use crate::serve::AppState;
 use aide::axum::ApiRouter;
 use aide::axum::routing::{delete_with, get_with, post_with};
 use axum::Router;
 use axum::response::IntoResponse;
+use axum::routing::get;
 use http::StatusCode;
 use tower_http::trace::TraceLayer;
 
@@ -24,6 +25,14 @@ pub fn build_router(state: AppState) -> Router<()> {
 
 pub fn api_router() -> ApiRouter<AppState> {
     ApiRouter::new()
+        // OAuth login group (plain routes: browser redirects and the callback are
+        // not part of the documented JSON API surface)
+        //  GET /auth/github/login
+        .route("/auth/github/login", get(auth::github_login))
+        //  GET /auth/github/callback
+        .route("/auth/github/callback", get(auth::github_callback))
+        //  GET /auth/whoami
+        .route("/auth/whoami", get(auth::whoami))
         // job management group
         //  POST /jobs/new
         .api_route("/jobs/new", post_with(jobs::submit, |o| o))
@@ -60,9 +69,6 @@ pub fn api_router() -> ApiRouter<AppState> {
         // token management group
         //  POST /tokens/new
         //  DELETE /tokens/{id}
-        //  POST /tokens/login
-        // This is the only route which does not require an `Authorization: Bearer <token>` header.
-        .api_route("/tokens/login", post_with(tokens::login, |o| o))
 }
 
 async fn not_found() -> impl IntoResponse {

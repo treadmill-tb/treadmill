@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 pub mod db;
 pub mod extract;
+pub mod oauth;
 pub mod token;
 
 /// Accessible _subject_ information (see module docs).
@@ -43,6 +44,16 @@ impl SubjectDetail {
 //
 // Note that an Axum extractor for `Subject` is implemented in the `extract` module.
 pub struct Subject(SubjectDetail);
+impl Subject {
+    /// The authenticated user's subject id.
+    pub fn user_id(&self) -> Uuid {
+        self.0.user_id()
+    }
+    /// The id of the token the request authenticated with.
+    pub fn token_id(&self) -> Uuid {
+        self.0.token_id()
+    }
+}
 
 // -- SECTION: AUTHORIZATIONS
 

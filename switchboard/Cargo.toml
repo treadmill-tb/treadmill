@@ -62,10 +62,19 @@ async-trait = { workspace = true }
 
 # Used for token comparison
 subtle = { workspace = true }
-# Used for password verification
-argon2 = "0.6.0-rc.8"
 # CSPRNG
 rand = { workspace = true }
+
+# OAuth2 login (GitHub). The `oauth2` crate drives the authorization-code flow;
+# `reqwest` is its async HTTP backend and is also used directly for the
+# provider's user/email API calls.
+oauth2 = "5"
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+  "charset",
+  "http2",
+] }
 
 # Logging facilities
 tracing = { workspace = true }
@@ -102,6 +111,9 @@ sqlx-cli = { version = "0.9.0", features = [
 # expands to `#[tokio::test]`, which requires it. Non-test builds stay
 # slim.
 tokio = { workspace = true, features = ["macros"] }
+# In-process mock HTTP server for exercising the OAuth provider flow without a
+# real third-party service.
+wiremock = "0.6"
 
 [lints]
 workspace = true

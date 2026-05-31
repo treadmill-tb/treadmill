@@ -214,53 +214,6 @@
           }
         }
       }
-    },
-    "/tokens/login": {
-      "post": {
-        "requestBody": {
-          "description": "Request Body that [`login_handler`] expects.",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LoginRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "400": {
-            "description": "Failed to parse the request body as JSON",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "415": {
-            "description": "Expected request with `Content-Type: application/json`",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Failed to deserialize the JSON body into the target type",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        }
-      }
     }
   },
   "components": {
@@ -604,22 +557,6 @@
         "required": [
           "state",
           "as_of"
-        ]
-      },
-      "LoginRequest": {
-        "description": "Request Body that [`login_handler`] expects.",
-        "type": "object",
-        "properties": {
-          "password": {
-            "type": "string"
-          },
-          "user_identifier": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "user_identifier",
-          "password"
         ]
       },
       "ParameterValue": {

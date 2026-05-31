@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select job_id from tml_switchboard.jobs where owner_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "job_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "bee130c17704e15efa4d432ecc7b9bb358351d0779c24b105a90db36c64ce39b"
+}

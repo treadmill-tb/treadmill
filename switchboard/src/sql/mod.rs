@@ -1,7 +1,8 @@
 pub mod api_token;
 pub(crate) mod job;
-pub(crate) mod perm;
+pub mod oauth_flow;
 pub mod supervisor;
+pub mod user;
 
 #[derive(Debug, Clone, Copy, sqlx::Type)]
 #[repr(transparent)]
