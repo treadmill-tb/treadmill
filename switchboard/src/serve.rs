@@ -23,6 +23,11 @@ impl AppStateInner {
 
 #[derive(Clone)]
 pub struct AppState(Arc<AppStateInner>);
+impl AppState {
+    pub fn new(pg_pool: PgPool, config: SwitchboardConfig) -> Self {
+        AppState(Arc::new(AppStateInner { pg_pool, config }))
+    }
+}
 impl Deref for AppState {
     type Target = AppStateInner;
 

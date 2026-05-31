@@ -49,8 +49,6 @@ pub struct SqlApiTokenMetadata {
     pub expires_at: DateTime<Utc>,
     /// ID of the user that owns the token
     pub user_id: Uuid,
-    /// Whether the token inherits all the user's permissions or not
-    pub inherits_user_permissions: bool,
 }
 
 /// Look up a token by its secret in the database.
@@ -60,7 +58,7 @@ pub async fn fetch_metadata_by_token<'c, E: PgExecutor<'c>>(
 ) -> Result<SqlApiTokenMetadata, TokenError> {
     sqlx::query_as!(
         SqlApiTokenMetadata,
-        r#"SELECT token_id, user_id, inherits_user_permissions, canceled as "canceled: _",
+        r#"SELECT token_id, user_id, canceled as "canceled: _",
                   expires_at
             FROM tml_switchboard.api_tokens
             WHERE token = $1
@@ -81,7 +79,7 @@ pub async fn fetch_metadata_by_id<'c, E: PgExecutor<'c>>(
 ) -> Result<SqlApiTokenMetadata, TokenError> {
     sqlx::query_as!(
         SqlApiTokenMetadata,
-        r#"SELECT token_id, user_id, inherits_user_permissions, canceled as "canceled: _",
+        r#"SELECT token_id, user_id, canceled as "canceled: _",
                   expires_at
             FROM tml_switchboard.api_tokens
             WHERE token_id = $1
@@ -96,27 +94,21 @@ pub async fn fetch_metadata_by_id<'c, E: PgExecutor<'c>>(
     })
 }
 
-pub enum TokenPerms {
-    HasOwn,
-    InheritsUserPerms,
-}
-
 pub async fn insert_token(
     conn: impl PgExecutor<'_>,
     user_id: Uuid,
     lifetime: chrono::TimeDelta,
-    inherits_user_perms: TokenPerms,
 ) -> Result<(SecurityToken, DateTime<Utc>), sqlx::Error> {
     let token_id = Uuid::new_v4();
     let api_token = SecurityToken::generate();
     let created = Utc::now();
     let expires = created + lifetime;
     sqlx::query!(
-        "insert into tml_switchboard.api_tokens values ($1, $2, $3, $4, null, $5, $6);",
+        "insert into tml_switchboard.api_tokens (token_id, token, user_id, canceled, created_at, expires_at) \
+         values ($1, $2, $3, null, $4, $5);",
         token_id,
         api_token.as_bytes(),
         user_id,
-        matches!(inherits_user_perms, TokenPerms::InheritsUserPerms),
         created,
         expires
     )

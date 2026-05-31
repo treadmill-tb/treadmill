@@ -20,13 +20,6 @@ pub trait JsonProxiedStatus: Serialize + for<'de> Deserialize<'de> {
     fn status_code(&self) -> StatusCode;
 }
 
-/// Request Body that [`login_handler`] expects.
-#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct LoginRequest {
-    pub user_identifier: String,
-    pub password: String,
-}
-
 #[serde_as]
 #[derive(schemars::JsonSchema, Debug, Serialize, Deserialize, Eq, Copy, Clone)]
 // Use `serde_with::serde_as` since `serde` by itself doesn't support arrays larger than 32 items,
@@ -62,6 +55,14 @@ impl PartialEq for AuthToken {
 pub struct LoginResponse {
     pub token: AuthToken,
     pub expires_at: DateTime<Utc>,
+}
+
+/// Response body for `/auth/whoami`: the identity of the authenticated subject.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct WhoAmIResponse {
+    pub user_id: Uuid,
+    pub username: String,
+    pub full_name: Option<String>,
 }
 
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]

@@ -101,16 +101,20 @@ values ('00000000-0000-0000-0000-000000000001', 'admins');
 -- primary key. Auto-sync (e.g. GitHub org reconciliation) only ever
 -- inserts/deletes rows of its own source, so it can never clobber manual
 -- memberships, and vice versa. `source_ref` carries the external key (e.g. the
--- GitHub org id) for auto sources.
+-- GitHub org id) for auto sources and is part of the primary key too: a subject
+-- may be in one group via several sources of the same kind (e.g. two GitHub
+-- orgs that both feed it), and each must be an independent, separately-reconciled
+-- row. It is NOT NULL (default '') so it participates in the PK uniformly;
+-- manual rows simply carry the empty string.
 create type tml_switchboard.membership_source as enum ('manual', 'github_org');
 create table tml_switchboard.group_members
 (
     group_id   uuid                              not null references tml_switchboard.groups (subject_id)   on delete cascade,
     member_id  uuid                              not null references tml_switchboard.subjects (subject_id) on delete cascade,
     source     tml_switchboard.membership_source not null,
-    source_ref text,
+    source_ref text                              not null default '',
 
-    primary key (group_id, member_id, source),
+    primary key (group_id, member_id, source, source_ref),
 
     -- Trivial self-cycle is a cheap declarative constraint; longer cycles need
     -- the reachability trigger below.
@@ -214,6 +218,27 @@ create table tml_switchboard.api_tokens
     expires_at timestamp with time zone not null,
 
     check (octet_length(token) = 128)
+);
+
+-- ===========================================================================
+-- OAUTH FLOWS
+-- ===========================================================================
+--
+-- Short-lived server-side record of an in-flight OAuth authorization-code flow.
+-- When the switchboard redirects a user to the provider it mints a random CSRF
+-- `state` and persists it here; on callback it looks the state up (consuming the
+-- row) to confirm the response corresponds to a flow this server actually
+-- initiated. `provider` records which provider the flow targets so the callback
+-- knows which token endpoint and identity mapping to use. Rows are deleted on
+-- successful callback and swept after `expires_at`; a never-completed flow
+-- simply expires.
+create table tml_switchboard.oauth_flows
+(
+    state         text                     not null primary key,
+    provider      text                     not null,
+    pkce_verifier text,
+    created_at    timestamp with time zone not null default current_timestamp,
+    expires_at    timestamp with time zone not null
 );
 
 -- ===========================================================================

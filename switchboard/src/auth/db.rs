@@ -19,48 +19,17 @@ pub struct DbPermSearcher {
 }
 #[async_trait]
 impl PermissionQueryExecutor for DbPermSearcher {
-    async fn query(&self, perm_str: String) -> PermissionResult {
+    async fn query(&self, _perm_str: String) -> PermissionResult {
+        // Permissive authorization shim. The grant-based authorization model
+        // (ownership + per-resource ACLs, recursive group membership) is being
+        // built out separately; until it lands, any subject that successfully
+        // authenticated -- i.e. presented a valid, unexpired, uncanceled token,
+        // which the `Subject` extractor already enforced -- is authorized for
+        // every action. No per-permission lookup is performed.
         let token_info = &self.subject.0.token_info;
-
-        let ok = if token_info.inherits_user_permissions {
-            let perms = match sqlx::query!(
-                r#"select user_id, permission from tml_switchboard.user_privileges where user_id = $1;"#,
-                token_info.user_id
-            )
-                .fetch_all(&self.db)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => return PermissionResult::unauthorized(AuthorizationError::Database(e)),
-            };
-            perms
-                .iter()
-                .any(|r| r.permission == "admin" || r.permission == perm_str)
-        } else {
-            let perms = match sqlx::query!(
-                r#"select token_id,permission from tml_switchboard.api_token_privileges where token_id = $1;"#,
-                token_info.token_id
-            )
-                .fetch_all(&self.db)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    return PermissionResult::unauthorized(AuthorizationError::Database(e));
-                }
-            };
-            perms
-                .iter()
-                .any(|r| r.permission == "admin" || r.permission == perm_str)
-        };
-
-        if ok {
-            PermissionResult(PermissionResultInner::Authorized(Subject(SubjectDetail {
-                token_info: Arc::clone(token_info),
-            })))
-        } else {
-            PermissionResult::unauthorized(AuthorizationError::Unauthorized(perm_str))
-        }
+        PermissionResult(PermissionResultInner::Authorized(Subject(SubjectDetail {
+            token_info: Arc::clone(token_info),
+        })))
     }
 }
 

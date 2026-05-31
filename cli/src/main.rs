@@ -3,7 +3,7 @@ use chrono::Duration;
 use clap::{Args, Parser, Subcommand};
 use env_logger::Builder;
 use log::LevelFilter;
-use log::{debug, error, info};
+use log::{error, info};
 use reqwest::Client;
 use std::collections::HashMap;
 use std::env;
@@ -13,16 +13,14 @@ use treadmill_rs::api::switchboard;
 use treadmill_rs::api::switchboard::jobs::list::Response as ListJobsResponse;
 use treadmill_rs::api::switchboard::jobs::status::Response as JobStatusResponse;
 use treadmill_rs::api::switchboard::jobs::submit::Request as SubmitJobRequest;
-use treadmill_rs::api::switchboard::{
-    JobInitSpec, JobRequest, JobState, LoginRequest, LoginResponse, SupervisorStatus,
-};
+use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, SupervisorStatus};
 use treadmill_rs::api::switchboard_supervisor::ParameterValue;
 use treadmill_rs::api::switchboard_supervisor::RestartPolicy;
 use treadmill_rs::connector::RunningJobState;
 use treadmill_rs::image::manifest::ImageId;
 use uuid::Uuid;
 
-use rpassword::read_password;
+use base64::Engine;
 use std::io::{self, Write};
 
 mod auth;
@@ -127,11 +125,10 @@ enum SupervisorCommands {
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
-    /// Optional positional username
-    username: Option<String>,
-
-    /// Optional positional password
-    password: Option<String>,
+    /// The session token printed by the browser after completing OAuth login.
+    /// If omitted, the `TML_API_TOKEN` env var is consulted, then you are
+    /// prompted to paste it.
+    token: Option<String>,
 }
 
 #[tokio::main]
@@ -166,11 +163,7 @@ async fn main() -> Result<()> {
     match cli.command {
         // tml login
         Commands::Login(login_args) => {
-            // Merge user & password from flags, positionals, env vars, or prompt
-            let (username, password) = resolve_login_args(&login_args)?;
-            log::info!("Attempting login for user: {username}");
-
-            login(&client, &config, &username, &password).await?;
+            login(&config, &login_args).await?;
         }
 
         // tml job ...
@@ -242,50 +235,13 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// The order of precedence is:
-/// - For username:
-///   1) `login_args.username` (positional arg #1)
-///   2) `TML_USER` env var
-///   3) prompt
-///
-/// - For password:
-///   1) `login_args.password` (positional arg #2)
-///   2) `TML_PASSWORD` env var
-///   3) prompt
-pub fn resolve_login_args(login_args: &LoginArgs) -> Result<(String, String)> {
-    let username = match &login_args.username {
-        Some(u) => u.clone(),
-        None => match env::var("TML_USER") {
-            Ok(u) => u,
-            Err(_) => prompt_for_input("Username")?,
-        },
-    };
-
-    let password = match &login_args.password {
-        Some(p) => p.clone(),
-        None => match env::var("TML_PASSWORD") {
-            Ok(p) => p,
-            Err(_) => prompt_for_password("Password")?,
-        },
-    };
-
-    Ok((username, password))
-}
-/// Prompts for unhidden text input (e.g., username).
+/// Prompts for unhidden text input (e.g., the session token).
 fn prompt_for_input(prompt: &str) -> Result<String> {
     print!("{prompt}: ");
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     Ok(input.trim().to_string())
-}
-
-/// Prompts for password input (hidden) using rpassword.
-fn prompt_for_password(prompt: &str) -> Result<String> {
-    print!("{prompt}: ");
-    io::stdout().flush()?;
-    let password = read_password()?;
-    Ok(password.trim().to_string())
 }
 
 //fn generate_ed25519_key(key_path: &Path) -> Result<()> {
@@ -365,42 +321,40 @@ async fn ssh_into_job(client: &Client, config: &config::Config, job_id: &str) ->
     Ok(())
 }
 
-async fn login(
-    client: &Client,
-    config: &config::Config,
-    username: &str,
-    password: &str,
-) -> Result<()> {
-    debug!("Creating login request for user: {username}");
-    let login_request = LoginRequest {
-        user_identifier: username.to_string(),
-        password: password.to_string(),
+/// Interactive login.
+///
+/// Logins are browser-driven (GitHub OAuth): the switchboard has no password
+/// endpoint. We point the user at the provider login URL; the callback page
+/// renders a JSON body whose `token` field is the issued session token. The user
+/// pastes that token back here and we persist it for subsequent requests.
+async fn login(config: &config::Config, login_args: &LoginArgs) -> Result<()> {
+    let login_url = format!("{}/api/v1/auth/github/login", config.api.url);
+
+    let token_b64 = match &login_args.token {
+        Some(t) => t.clone(),
+        None => match env::var("TML_API_TOKEN") {
+            Ok(t) => t,
+            Err(_) => {
+                println!("To log in, open this URL in your browser:\n");
+                println!("    {login_url}\n");
+                println!(
+                    "After authorizing, the page shows a JSON object with a \"token\" field.\n\
+                     Copy that token value and paste it here.\n"
+                );
+                prompt_for_input("Token")?
+            }
+        },
     };
 
-    debug!("Sending login request to url: {}", config.api.url);
+    let token_bytes = base64::engine::general_purpose::STANDARD
+        .decode(token_b64.trim())
+        .context("Decoding Base64-encoded session token")?;
+    let token_array: [u8; 128] = token_bytes.try_into().map_err(|v: Vec<u8>| {
+        anyhow!("session token has invalid length ({} bytes instead of 128)", v.len())
+    })?;
 
-    let response = client
-        .post(format!("{}/api/v1/tokens/login", config.api.url))
-        .json(&login_request)
-        .send()
-        .await?;
-
-    if response.status().is_success() {
-        let login_response: LoginResponse = response.json().await?;
-        info!(
-            "Login successful. Token expires at: {}",
-            login_response.expires_at
-        );
-        println!(
-            "Login successful. Token expires at: {}",
-            login_response.expires_at
-        );
-        auth::save_token(&login_response.token)?;
-    } else {
-        let error_text = response.text().await?;
-        error!("Login failed: {error_text}");
-        println!("Login failed: {error_text}");
-    }
+    auth::save_token(&switchboard::AuthToken(token_array))?;
+    println!("Token saved.");
 
     Ok(())
 }

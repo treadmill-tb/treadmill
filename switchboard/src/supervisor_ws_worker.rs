@@ -765,16 +765,15 @@ mod tests {
     /// fixtures, so the reconciliation tests build their own user→token→job chain.
     async fn insert_user(pool: &PgPool) -> anyhow::Result<Uuid> {
         let user_id = Uuid::new_v4();
-        sqlx::query(
-            "insert into tml_switchboard.users \
-             (user_id, name, email, password_hash, user_type, locked) \
-             values ($1, $2, $3, 'x', 'normal', false)",
-        )
-        .bind(user_id)
-        .bind(format!("user-{user_id}"))
-        .bind(format!("{user_id}@example.com"))
-        .execute(pool)
-        .await?;
+        sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'user')")
+            .bind(user_id)
+            .execute(pool)
+            .await?;
+        sqlx::query("insert into tml_switchboard.users (subject_id, username) values ($1, $2)")
+            .bind(user_id)
+            .bind(format!("user-{user_id}"))
+            .execute(pool)
+            .await?;
         Ok(user_id)
     }
 
@@ -783,8 +782,8 @@ mod tests {
         let token_id = Uuid::new_v4();
         sqlx::query(
             "insert into tml_switchboard.api_tokens \
-             (token_id, token, user_id, inherits_user_permissions, canceled, created_at, expires_at) \
-             values ($1, $2, $3, true, null, now(), now() + interval '1 day')",
+             (token_id, token, user_id, canceled, created_at, expires_at) \
+             values ($1, $2, $3, null, now(), now() + interval '1 day')",
         )
         .bind(token_id)
         .bind(vec![0u8; 128])
