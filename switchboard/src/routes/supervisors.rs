@@ -1,13 +1,9 @@
 use std::net::SocketAddr;
 
-use axum::extract::Query;
 use axum::extract::{ConnectInfo, WebSocketUpgrade, ws};
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use axum_extra::TypedHeader;
-
-use futures_util::StreamExt;
-use futures_util::stream::FuturesOrdered;
 
 use headers::Authorization;
 use headers::authorization::Bearer;
@@ -16,8 +12,6 @@ use http::{HeaderMap, HeaderValue, StatusCode};
 
 use tracing::instrument;
 
-use treadmill_rs::api::switchboard::supervisors::list::{Filter, Response as LSResponse};
-use treadmill_rs::api::switchboard::supervisors::status::Response as SSResponse;
 use treadmill_rs::api::switchboard_supervisor::websocket::{
     TREADMILL_PROTOCOL_MINOR_HEADER, TREADMILL_WEBSOCKET_CONFIG, TREADMILL_WEBSOCKET_PROTOCOL,
 };
@@ -25,69 +19,10 @@ use treadmill_rs::api::switchboard_supervisor::{ProtocolVersion, ServerHello};
 
 use uuid::Uuid;
 
-use crate::auth::AuthorizationSource;
-use crate::auth::db::DbAuth;
-use crate::auth::extract::AuthSource;
 use crate::auth::token::SecurityToken;
-use crate::perms::read_supervisor_status;
-use crate::routes::proxy::{Proxied, proxy_err, proxy_val};
 use crate::serve::AppState;
 use crate::sql;
 use crate::supervisor_ws_worker::{SupervisorWSWorker, SupervisorWSWorkerConfig};
-use crate::{impl_from_auth_err, perms};
-
-// -- status
-
-impl_from_auth_err!(SSResponse, Database => Internal, Unauthorized => Invalid);
-#[tracing::instrument(skip(state, auth))]
-pub async fn status(
-    State(state): State<AppState>,
-    AuthSource(auth): AuthSource<DbAuth>,
-    Path(supervisor_id): Path<Uuid>,
-) -> Proxied<SSResponse> {
-    let access = auth
-        .authorize(perms::ReadSupervisorStatus { supervisor_id })
-        .await
-        .map_err(proxy_err)?;
-    let supervisor_status = read_supervisor_status(&state, access)
-        .await
-        .map_err(|_| proxy_err(SSResponse::Invalid))?;
-
-    proxy_val(SSResponse::Ok {
-        status: supervisor_status,
-    })
-}
-
-// -- list
-
-impl_from_auth_err!(LSResponse, Database => Internal, Unauthorized => Unauthorized);
-#[tracing::instrument(skip(state, auth))]
-pub async fn list(
-    State(state): State<AppState>,
-    AuthSource(auth): AuthSource<DbAuth>,
-    Query(filter): Query<Filter>,
-) -> Proxied<LSResponse> {
-    let list_supervisors = auth
-        .authorize(perms::ListSupervisors { filter })
-        .await
-        .map_err(proxy_err)?;
-
-    todo!();
-
-    // let perm_queries: FuturesOrdered<_> = state
-    //     .service()
-    //     .list_supervisors()
-    //     .await
-    //     .into_iter()
-    //     .map(|supervisor_id| auth.authorize(perms::ReadSupervisorStatus { supervisor_id }))
-    //     .collect();
-    // let supervisor_perms: Vec<_> = perm_queries
-    //     .filter_map(|x| async move { x.ok() })
-    //     .collect()
-    //     .await;
-    // let supervisors = perms::list_supervisors(&state, list_supervisors, supervisor_perms).await;
-    // proxy_val(LSResponse::Ok { supervisors })
-}
 
 // -- connect
 

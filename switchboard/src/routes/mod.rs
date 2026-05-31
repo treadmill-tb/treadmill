@@ -1,11 +1,10 @@
 mod auth;
-mod jobs;
-mod proxy;
+// mod jobs;
 mod supervisors;
 
 use crate::serve::AppState;
 use aide::axum::ApiRouter;
-use aide::axum::routing::{delete_with, get_with, post_with};
+use aide::axum::routing::get_with;
 use axum::Router;
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -35,22 +34,22 @@ pub fn api_router() -> ApiRouter<AppState> {
         .route("/auth/whoami", get(auth::whoami))
         // job management group
         //  POST /jobs/new
-        .api_route("/jobs/new", post_with(jobs::submit, |o| o))
+        // .api_route("/jobs/new", post_with(jobs::submit, |o| o))
         //  GET /jobs (+ <FILTERS>)
-        .api_route("/jobs", get_with(jobs::list, |o| o))
+        // .api_route("/jobs", get_with(jobs::list, |o| o))
         //  GET /jobs/{id}/status
-        .api_route("/jobs/{id}/status", get_with(jobs::status, |o| o))
+        // .api_route("/jobs/{id}/status", get_with(jobs::status, |o| o))
         //  GET /jobs/{id}/info
         //  DELETE /jobs/{id}
-        .api_route("/jobs/{id}", delete_with(jobs::stop, |o| o))
+        // .api_route("/jobs/{id}", delete_with(jobs::stop, |o| o))
         // supervisor management group
         //  GET /supervisors (+ <FILTERS>)
-        .api_route("/supervisors", get_with(supervisors::list, |o| o))
+        // .api_route("/supervisors", get_with(supervisors::list, |o| o))
         //  GET /supervisors/{id}/status
-        .api_route(
-            "/supervisors/{id}/status",
-            get_with(supervisors::status, |o| o),
-        )
+        // .api_route(
+        //     "/supervisors/{id}/status",
+        //     get_with(supervisors::status, |o| o),
+        // )
         //  GET /supervisors/{id}/current-job
         //  DELETE /supervisors/{id}/current-job
         //  POST /supervisors/new
@@ -63,12 +62,12 @@ pub fn api_router() -> ApiRouter<AppState> {
             "/supervisors/{id}/connect",
             get_with(supervisors::connect, |o| o),
         )
-        // user management group
-        //  GET /users/{id}/jobs (+ <FILTERS>)
-        //  GET /users/{id}/tokens (+ <FILTERS>)
-        // token management group
-        //  POST /tokens/new
-        //  DELETE /tokens/{id}
+    // user management group
+    //  GET /users/{id}/jobs (+ <FILTERS>)
+    //  GET /users/{id}/tokens (+ <FILTERS>)
+    // token management group
+    //  POST /tokens/new
+    //  DELETE /tokens/{id}
 }
 
 async fn not_found() -> impl IntoResponse {

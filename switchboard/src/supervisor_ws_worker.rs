@@ -4,7 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use axum::extract::ws;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use sqlx::{PgPool, Postgres, Transaction};
-use tokio::time::{Duration, Instant, Interval, Sleep, Timeout, interval, sleep};
+use tokio::time::{Duration, Instant, Sleep, interval, sleep};
 use treadmill_rs::api::switchboard_supervisor::{
     ReportedSupervisorStatus, StopJobMessage, SwitchboardToSupervisor, TaskExitStatus,
 };
@@ -478,7 +478,10 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     "SupervisorWSWorker: received PING from supervisor ({} bytes)",
                     payload.len()
                 );
-                self.socket.send(ws::Message::Pong(payload));
+                self.socket
+                    .send(ws::Message::Pong(payload))
+                    .await
+                    .map_err(anyhow::Error::from)?;
                 Ok(ControlFlow::Continue(()))
             }
 
@@ -508,8 +511,6 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     .reset(Instant::now() + self.ctx.config.supervisor_pong_dead);
                 Ok(ControlFlow::Continue(()))
             }
-
-            _ => unimplemented!(),
         }
     }
 
@@ -552,7 +553,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     self.ctx.with_txn(async |_| Ok(())).await?;
 
                     // Still current, now send a PING:
-                    self.socket.send(ws::Message::Ping((&[][..]).into())).await.context("SupervisorWSWorker sending ping to supervisor");
+                    self.socket.send(ws::Message::Ping((&[][..]).into())).await.context("SupervisorWSWorker sending ping to supervisor")?;
                 }
 
                 // Timeout for waiting on a PONG message from the supervisor. If

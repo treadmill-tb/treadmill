@@ -25,8 +25,7 @@ pub struct GithubProvider {
 impl GithubProvider {
     pub fn from_config(cfg: &GitHubOAuthConfig) -> Result<Self, OAuthError> {
         let mkurl = |s: &str, what: &str| {
-            AuthUrl::new(s.to_string())
-                .map_err(|e| OAuthError::Config(format!("{what}: {e}")))
+            AuthUrl::new(s.to_string()).map_err(|e| OAuthError::Config(format!("{what}: {e}")))
         };
         let client = BasicClient::new(ClientId::new(cfg.client_id.clone()))
             .set_client_secret(ClientSecret::new(cfg.client_secret.clone()))
@@ -138,7 +137,10 @@ impl OAuthProvider for GithubProvider {
         let user: GhUser = self.get_json(token, "/user").await?;
         // Best-effort: an account may not have granted user:email; without it we
         // simply provision without linkable emails rather than failing login.
-        let emails: Vec<GhEmail> = self.get_json(token, "/user/emails").await.unwrap_or_default();
+        let emails: Vec<GhEmail> = self
+            .get_json(token, "/user/emails")
+            .await
+            .unwrap_or_default();
         let verified_emails = emails
             .into_iter()
             .filter(|e| e.verified)

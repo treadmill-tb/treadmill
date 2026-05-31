@@ -85,7 +85,10 @@ pub async fn github_callback(
     match flow_provider {
         Some(p) if p == provider.name() => {}
         Some(p) => {
-            tracing::warn!("callback state belongs to provider {p}, not {}", provider.name());
+            tracing::warn!(
+                "callback state belongs to provider {p}, not {}",
+                provider.name()
+            );
             return Err(StatusCode::BAD_REQUEST);
         }
         None => {
