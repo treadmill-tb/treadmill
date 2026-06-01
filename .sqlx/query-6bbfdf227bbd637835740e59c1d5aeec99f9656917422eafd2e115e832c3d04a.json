@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO\n            tml_switchboard.supervisors\n        (\n            supervisor_id,\n            name,\n            auth_token,\n            tags,\n            ssh_endpoints\n        )\n        VALUES\n        (\n            $1,\n            $2,\n            $3,\n            $4,\n            $5\n        );\n        ",
+  "query": "\n        INSERT INTO\n            tml_switchboard.hosts\n        (\n            host_id,\n            name,\n            auth_token,\n            tags,\n            ssh_endpoints\n        )\n        VALUES\n        (\n            $1,\n            $2,\n            $3,\n            $4,\n            $5\n        );\n        ",
   "describe": {
     "columns": [],
     "parameters": {
@@ -58,5 +58,5 @@
     },
     "nullable": []
   },
-  "hash": "10292e6a44811d47907653407b2df9bd1ce93492e168475e5efa5dbd319110f2"
+  "hash": "6bbfdf227bbd637835740e59c1d5aeec99f9656917422eafd2e115e832c3d04a"
 }

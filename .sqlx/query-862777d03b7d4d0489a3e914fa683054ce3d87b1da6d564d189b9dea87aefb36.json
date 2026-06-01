@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        select job_id, resume_job_id, restart_job_id, image_id as \"sql_image_id: _\", ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id, tag_config, job_timeout,\n        queued_at, job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\", started_at,\n        dispatched_on_supervisor_id, ssh_endpoints as \"ssh_endpoints: _\",\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\", exit_message, terminated_at,\n        last_updated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
+  "query": "\n        select job_id, resume_job_id, restart_job_id, image_id as \"sql_image_id: _\", ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id, tag_config, job_timeout,\n        queued_at, job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\", started_at,\n        dispatched_on_host_id, ssh_endpoints as \"ssh_endpoints: _\",\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\", exit_message, terminated_at,\n        last_updated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
   "describe": {
     "columns": [
       {
@@ -187,12 +187,12 @@
       },
       {
         "ordinal": 13,
-        "name": "dispatched_on_supervisor_id",
+        "name": "dispatched_on_host_id",
         "type_info": "Uuid",
         "origin": {
           "Table": {
             "table": "tml_switchboard.jobs",
-            "name": "dispatched_on_supervisor_id"
+            "name": "dispatched_on_host_id"
           }
         }
       },
@@ -265,10 +265,10 @@
                 "queue_timeout",
                 "execution_timeout",
                 "image_error",
-                "supervisor_match_error",
-                "supervisor_host_start_failure",
-                "supervisor_dropped_job",
-                "supervisor_unreachable",
+                "host_match_error",
+                "host_start_failure",
+                "host_dropped_job",
+                "host_unreachable",
                 "resume_failed",
                 "internal_error"
               ]
@@ -366,5 +366,5 @@
       false
     ]
   },
-  "hash": "f7fecf18e074abcc053a304cef988d4ecf5b4e025e6367e712f6a94c2492873f"
+  "hash": "862777d03b7d4d0489a3e914fa683054ce3d87b1da6d564d189b9dea87aefb36"
 }

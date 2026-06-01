@@ -1,16 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            supervisor_id,\n            name,\n            tags,\n            ssh_endpoints as \"ssh_endpoints: _\",\n            current_job,\n            worker_instance_id\n        FROM\n            tml_switchboard.supervisors\n        ",
+  "query": "\n        SELECT\n            host_id,\n            name,\n            tags,\n            ssh_endpoints as \"ssh_endpoints: _\",\n            current_job,\n            worker_instance_id\n        FROM\n            tml_switchboard.hosts\n        ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "supervisor_id",
+        "name": "host_id",
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.supervisors",
-            "name": "supervisor_id"
+            "table": "tml_switchboard.hosts",
+            "name": "host_id"
           }
         }
       },
@@ -20,7 +20,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.supervisors",
+            "table": "tml_switchboard.hosts",
             "name": "name"
           }
         }
@@ -31,7 +31,7 @@
         "type_info": "TextArray",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.supervisors",
+            "table": "tml_switchboard.hosts",
             "name": "tags"
           }
         }
@@ -86,7 +86,7 @@
         },
         "origin": {
           "Table": {
-            "table": "tml_switchboard.supervisors",
+            "table": "tml_switchboard.hosts",
             "name": "ssh_endpoints"
           }
         }
@@ -97,7 +97,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.supervisors",
+            "table": "tml_switchboard.hosts",
             "name": "current_job"
           }
         }
@@ -108,7 +108,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.supervisors",
+            "table": "tml_switchboard.hosts",
             "name": "worker_instance_id"
           }
         }
@@ -126,5 +126,5 @@
       false
     ]
   },
-  "hash": "d344cac6512ac72b7cf044152d6919538f7d892fade3d945567db3e3852874a5"
+  "hash": "2c22de0a7beb56851820db39dca618ab72d3862c9e674d46f489d6ae2bc34721"
 }
