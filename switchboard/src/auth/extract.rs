@@ -82,13 +82,13 @@ impl FromRequestParts<AppState> for Subject {
 // #[derive(Debug)]
 // pub struct AuthSource<AS: AuthorizationSource>(pub AS);
 
-// impl aide::OperationInput for Subject {
-//     fn operation_input(
-//         _ctx: &mut aide::generate::GenContext,
-//         _operation: &mut aide::openapi::Operation,
-//     ) {
-//     }
-// }
+impl aide::OperationInput for Subject {
+    fn operation_input(
+        _ctx: &mut aide::generate::GenContext,
+        _operation: &mut aide::openapi::Operation,
+    ) {
+    }
+}
 
 // impl<AS: AuthorizationSource> aide::OperationInput for AuthSource<AS> {
 //     fn operation_input(

@@ -1,3 +1,4 @@
+mod audit;
 mod auth;
 mod hosts;
 // mod jobs;
@@ -24,6 +25,12 @@ pub fn build_router(state: AppState) -> Router<()> {
 
 pub fn api_router() -> ApiRouter<AppState> {
     ApiRouter::new()
+        // Audit log feed
+        // GET /audit/{entity_kind}/{entity_id}
+        .api_route(
+            "/audit/:entity_kind/:entity_id",
+            get_with(audit::list_events, |o| o),
+        )
         // OAuth login group (plain routes: browser redirects and the callback are
         // not part of the documented JSON API surface)
         //  GET /auth/github/login

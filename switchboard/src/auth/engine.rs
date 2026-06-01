@@ -95,7 +95,19 @@ impl JobPermission {
     }
 }
 
-/// Whether `subject_id` may exercise `permission` on the host.
+/// Returns true if `subject_id` is a member of the global `admins` group.
+pub async fn is_admin(
+    conn: impl PgExecutor<'_>,
+    subject_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        "select exists(select 1 from tml_switchboard.principals($1::uuid) where id = $2::uuid) as \"is_admin!\"",
+        subject_id,
+        ADMINS_GROUP_ID,
+    )
+    .fetch_one(conn)
+    .await
+}
 pub async fn can_access_host(
     conn: impl PgExecutor<'_>,
     subject_id: Uuid,
