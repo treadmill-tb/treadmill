@@ -13,10 +13,22 @@
 //! registry entry from a single declaration; the trait below is the contract
 //! that macro will satisfy.
 
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use uuid::Uuid;
 
 use crate::auth::engine::{HostPermission, JobPermission};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Job(pub Uuid);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Host(pub Uuid);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Subject(pub Uuid);
 
 /// Static identity + visibility of an audit event type, plus the instance
 /// data needed to persist a single occurrence of it.
