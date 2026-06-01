@@ -1,14 +1,12 @@
-use axum::extract::{Path, State};
-use axum::Json;
 use http::StatusCode;
 use uuid::Uuid;
 use schemars::JsonSchema;
+use serde::Serialize;
 
 use crate::audit::registry::{ViewerCtx, render};
 use crate::auth::Subject;
 use crate::auth::engine;
 use crate::serve::AppState;
-use serde::Serialize;
 
 #[derive(Serialize, JsonSchema)]
 pub struct AuditFeedResponse {
@@ -25,13 +23,14 @@ pub struct RenderedAuditRow {
     pub message: String,
 }
 
-pub async fn list_events(
-    State(state): State<AppState>,
-    subject: Subject,
-    Path((entity_kind, entity_id)): Path<(String, Uuid)>,
-) -> Result<Json<AuditFeedResponse>, StatusCode> {
+pub async fn fetch_events_for_entity(
+    state: &AppState,
+    subject: &Subject,
+    entity_kind: &str,
+    entity_id: Uuid,
+) -> Result<AuditFeedResponse, StatusCode> {
     let valid_kinds = ["job", "host", "subject"];
-    if !valid_kinds.contains(&entity_kind.as_str()) {
+    if !valid_kinds.contains(&entity_kind) {
         return Err(StatusCode::BAD_REQUEST);
     }
 
@@ -46,7 +45,7 @@ pub async fn list_events(
     let mut allowed_policies: Vec<String> = Vec::new();
 
     if !is_admin {
-        match entity_kind.as_str() {
+        match entity_kind {
             "host" => {
                 let perms = engine::host_permissions(state.pool(), viewer_id, entity_id)
                     .await
@@ -71,16 +70,10 @@ pub async fn list_events(
 
         // If not admin and no allowed policies, they can't see anything.
         if allowed_policies.is_empty() {
-            // They don't have access to this entity, or it's a subject and they are not admin.
-            // Return 403 Forbidden to match standard access denied, or just an empty list.
-            // Plan says: "Caller's access to X is already proven by the route's auth extractor."
-            // But we don't have a specific auth extractor per-route here, we just use the global feed endpoint.
-            // If they have no permissions, they just see an empty list. Returning 403 is better if they have *no* access.
             return Err(StatusCode::FORBIDDEN);
         }
     }
 
-    // Fetch the events!
     let rows = sqlx::query!(
         r#"
         select e.event_id, e.event_type, e.payload, e.actor_id, e.correlation_id, e.created_at
@@ -92,7 +85,7 @@ pub async fn list_events(
         order by e.created_at desc
         limit 100
         "#,
-        entity_kind.as_str() as _,
+        entity_kind as _,
         entity_id,
         is_admin,
         &allowed_policies,
@@ -125,10 +118,9 @@ pub async fn list_events(
             }
             Err(e) => {
                 tracing::warn!("failed to render event {}: {e}", row.event_id);
-                // Skip unrenderable events (e.g. unknown type from older versions)
             }
         }
     }
 
-    Ok(Json(AuditFeedResponse { events }))
+    Ok(AuditFeedResponse { events })
 }

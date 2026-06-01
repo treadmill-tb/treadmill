@@ -35,6 +35,7 @@
 //! chokepoint guarded by a `WriteToken` so the audit emission is unforgeable
 //! from outside this module; until then `persist_event` is `pub(crate)`.
 
+pub mod feed;
 pub mod macros;
 pub mod model;
 pub mod persist;

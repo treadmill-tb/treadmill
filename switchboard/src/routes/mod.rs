@@ -1,7 +1,7 @@
-mod audit;
 mod auth;
 mod hosts;
-// mod jobs;
+mod jobs;
+mod users;
 
 use crate::serve::AppState;
 use aide::axum::ApiRouter;
@@ -25,12 +25,6 @@ pub fn build_router(state: AppState) -> Router<()> {
 
 pub fn api_router() -> ApiRouter<AppState> {
     ApiRouter::new()
-        // Audit log feed
-        // GET /audit/{entity_kind}/{entity_id}
-        .api_route(
-            "/audit/:entity_kind/:entity_id",
-            get_with(audit::list_events, |o| o),
-        )
         // OAuth login group (plain routes: browser redirects and the callback are
         // not part of the documented JSON API surface)
         //  GET /auth/github/login
@@ -44,6 +38,8 @@ pub fn api_router() -> ApiRouter<AppState> {
         // .api_route("/jobs/new", post_with(jobs::submit, |o| o))
         //  GET /jobs (+ <FILTERS>)
         // .api_route("/jobs", get_with(jobs::list, |o| o))
+        //  GET /jobs/{id}/events
+        .api_route("/jobs/:id/events", get_with(jobs::list_events, |o| o))
         //  GET /jobs/{id}/status
         // .api_route("/jobs/{id}/status", get_with(jobs::status, |o| o))
         //  GET /jobs/{id}/info
@@ -61,12 +57,16 @@ pub fn api_router() -> ApiRouter<AppState> {
         //  DELETE /supervisors/{id}/current-job
         //  POST /supervisors/new
         //  DELETE /supervisors/{id}
+        //  GET /hosts/{id}/events
+        .api_route("/hosts/:id/events", get_with(hosts::list_events, |o| o))
         //  GET /supervisors/{id}/connect
         // Note that the HTTP verb 'GET' here is not necessarily conformant with REST principles,
         // but is required by RFC6455 §4.1: "The method of the request MUST be GET" (regarding
         // WebSocket HTTP handshakes).
-        .api_route("/hosts/{id}/connect", get_with(hosts::connect, |o| o))
+        .api_route("/hosts/:id/connect", get_with(hosts::connect, |o| o))
     // user management group
+    //  GET /users/{id}/events
+    .api_route("/users/:id/events", get_with(users::list_events, |o| o))
     //  GET /users/{id}/jobs (+ <FILTERS>)
     //  GET /users/{id}/tokens (+ <FILTERS>)
     // token management group

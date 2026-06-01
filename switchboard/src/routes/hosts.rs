@@ -1,4 +1,17 @@
+use crate::audit::feed::{AuditFeedResponse, fetch_events_for_entity};
+use axum::Json;
 use std::net::SocketAddr;
+
+/// Axum handler for the `/hosts/{id}/events` path.
+pub async fn list_events(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(host_id): Path<Uuid>,
+) -> Result<Json<AuditFeedResponse>, StatusCode> {
+    fetch_events_for_entity(&state, &subject, "host", host_id)
+        .await
+        .map(Json)
+}
 
 use axum::extract::{ConnectInfo, WebSocketUpgrade, ws};
 use axum::extract::{Path, State};
