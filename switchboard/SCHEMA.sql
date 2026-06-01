@@ -88,6 +88,16 @@ values ('00000000-0000-0000-0000-000000000001', 'group');
 insert into tml_switchboard.groups (subject_id, name)
 values ('00000000-0000-0000-0000-000000000001', 'admins');
 
+-- The system actor. A `system` subject (non-human service principal) with a
+-- hard-coded well-known UUID, so the switchboard can attribute the audit events
+-- it raises on its own initiative -- worker-driven job lifecycle transitions,
+-- host assignment, internal automation -- to a stable actor referenceable
+-- directly in code. It is a bare `subjects` row with no `users`/`groups`
+-- extension: it never logs in and owns nothing; it exists only to be named as
+-- the actor of system-originated events.
+insert into tml_switchboard.subjects (subject_id, kind)
+values ('00000000-0000-0000-0000-000000000002', 'system');
+
 -- ===========================================================================
 -- GROUP MEMBERSHIP: a many-to-many DAG with provenance
 -- ===========================================================================
