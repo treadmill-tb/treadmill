@@ -26,16 +26,17 @@ use crate::supervisor_ws_worker::{SupervisorWSWorker, SupervisorWSWorkerConfig};
 
 // -- connect
 
-/// Axum handler for the `/supervisor/{id}/connect` path.
+/// Axum handler for the `/hosts/{id}/connect` path.
 ///
-/// Responds with an `Upgrade: websocket` and launches [`launch_supervisor_actor`] as a `tokio` task.
+/// Responds with an `Upgrade: websocket` and launches the supervisor worker as
+/// a `tokio` task.
 #[instrument(skip(state))]
 pub async fn connect(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     ConnectInfo(socket_addr): ConnectInfo<SocketAddr>,
     TypedHeader(Authorization(bearer)): TypedHeader<Authorization<Bearer>>,
-    Path(supervisor_id): Path<Uuid>,
+    Path(host_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
     let auth_token = match SecurityToken::try_from(bearer) {
@@ -47,16 +48,16 @@ pub async fn connect(
     };
 
     let auth_result =
-        sql::supervisor::try_authenticate_supervisor(supervisor_id, auth_token, state.pool()).await;
+        sql::host::try_authenticate_for_host(host_id, auth_token, state.pool()).await;
     match auth_result {
         Ok(true) => (), // Success!
         Ok(false) => {
-            tracing::warn!("invalid supervisor-token ({supervisor_id}, {auth_token}) combination");
+            tracing::warn!("invalid host-token ({host_id}, {auth_token}) combination");
             return StatusCode::FORBIDDEN.into_response();
         }
         Err(e) => {
             tracing::error!(
-                "failed to authenticate supervisor ({supervisor_id}) with token ({auth_token}): {e}"
+                "failed to authenticate supervisor for host ({host_id}) with token ({auth_token}): {e}"
             );
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
@@ -101,7 +102,7 @@ pub async fn connect(
         supervisor_minor,
         server_minor = ProtocolVersion::CURRENT.minor,
         effective_minor,
-        "Negotiated protocol minor with supervisor ({supervisor_id})."
+        "Negotiated protocol minor with supervisor for host ({host_id})."
     );
 
     let worker_pool = state.pool().clone();
@@ -130,12 +131,11 @@ pub async fn connect(
                 }
 
                 tracing::info!(
-                    "Starting SupervisorWSWorker for supervisor \
-		     ({supervisor_id}), connecting from {socket_addr}."
+                    "Starting SupervisorWSWorker for host \
+		     ({host_id}), connecting from {socket_addr}."
                 );
 
-                SupervisorWSWorker::run(worker_pool, supervisor_id, web_socket, ws_worker_config)
-                    .await
+                SupervisorWSWorker::run(worker_pool, host_id, web_socket, ws_worker_config).await
             });
         },
     );

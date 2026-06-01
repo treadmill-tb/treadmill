@@ -1,5 +1,5 @@
 pub mod list {
-    use crate::api::switchboard::SupervisorStatus;
+    use crate::api::switchboard::HostStatus;
     use http::StatusCode;
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
@@ -25,15 +25,15 @@ pub mod list {
     }
 
     // Governing Permissions:
-    //  list_supervisors
-    //  read_supervisor_status:<ID>
+    //  list_hosts
+    //  read_host_status:<ID>
     #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
     pub enum Response {
         Ok {
-            supervisors: HashMap<Uuid, SupervisorStatus>,
+            hosts: HashMap<Uuid, HostStatus>,
         },
-        /// User lacks the `list_supervisors` permission.
+        /// User lacks the `list_hosts` permission.
         Unauthorized,
         Internal,
     }
@@ -50,7 +50,7 @@ pub mod list {
 }
 
 pub mod status {
-    use crate::api::switchboard::SupervisorStatus;
+    use crate::api::switchboard::HostStatus;
     use http::StatusCode;
     use serde::{Deserialize, Serialize};
 
@@ -58,9 +58,9 @@ pub mod status {
     #[serde(tag = "type", rename_all = "snake_case")]
     pub enum Response {
         Ok {
-            status: SupervisorStatus,
+            status: HostStatus,
         },
-        /// User does not have access to a supervisor with that ID.
+        /// User does not have access to a host with that ID.
         Invalid,
         Internal,
     }

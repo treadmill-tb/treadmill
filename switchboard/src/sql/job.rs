@@ -69,10 +69,10 @@ pub enum SqlTerminationReason {
     QueueTimeout,
     ExecutionTimeout,
     ImageError,
-    SupervisorMatchError,
-    SupervisorHostStartFailure,
-    SupervisorDroppedJob,
-    SupervisorUnreachable,
+    HostMatchError,
+    HostStartFailure,
+    HostDroppedJob,
+    HostUnreachable,
     ResumeFailed,
     InternalError,
 }
@@ -85,12 +85,10 @@ impl From<SqlTerminationReason> for TerminationReason {
             SqlTerminationReason::QueueTimeout => TerminationReason::QueueTimeout,
             SqlTerminationReason::ExecutionTimeout => TerminationReason::ExecutionTimeout,
             SqlTerminationReason::ImageError => TerminationReason::ImageError,
-            SqlTerminationReason::SupervisorMatchError => TerminationReason::SupervisorMatchError,
-            SqlTerminationReason::SupervisorHostStartFailure => {
-                TerminationReason::SupervisorHostStartFailure
-            }
-            SqlTerminationReason::SupervisorDroppedJob => TerminationReason::SupervisorDroppedJob,
-            SqlTerminationReason::SupervisorUnreachable => TerminationReason::SupervisorUnreachable,
+            SqlTerminationReason::HostMatchError => TerminationReason::HostMatchError,
+            SqlTerminationReason::HostStartFailure => TerminationReason::HostStartFailure,
+            SqlTerminationReason::HostDroppedJob => TerminationReason::HostDroppedJob,
+            SqlTerminationReason::HostUnreachable => TerminationReason::HostUnreachable,
             SqlTerminationReason::ResumeFailed => TerminationReason::ResumeFailed,
             SqlTerminationReason::InternalError => TerminationReason::InternalError,
         }
@@ -105,12 +103,10 @@ impl From<TerminationReason> for SqlTerminationReason {
             TerminationReason::QueueTimeout => SqlTerminationReason::QueueTimeout,
             TerminationReason::ExecutionTimeout => SqlTerminationReason::ExecutionTimeout,
             TerminationReason::ImageError => SqlTerminationReason::ImageError,
-            TerminationReason::SupervisorMatchError => SqlTerminationReason::SupervisorMatchError,
-            TerminationReason::SupervisorHostStartFailure => {
-                SqlTerminationReason::SupervisorHostStartFailure
-            }
-            TerminationReason::SupervisorDroppedJob => SqlTerminationReason::SupervisorDroppedJob,
-            TerminationReason::SupervisorUnreachable => SqlTerminationReason::SupervisorUnreachable,
+            TerminationReason::HostMatchError => SqlTerminationReason::HostMatchError,
+            TerminationReason::HostStartFailure => SqlTerminationReason::HostStartFailure,
+            TerminationReason::HostDroppedJob => SqlTerminationReason::HostDroppedJob,
+            TerminationReason::HostUnreachable => SqlTerminationReason::HostUnreachable,
             TerminationReason::ResumeFailed => SqlTerminationReason::ResumeFailed,
             TerminationReason::InternalError => SqlTerminationReason::InternalError,
         }
@@ -207,7 +203,7 @@ pub async fn insert(
           initializing_stage,
           queued_at,
           started_at,
-          dispatched_on_supervisor_id,
+          dispatched_on_host_id,
           ssh_endpoints,
           termination_reason,
           task_exit_status,
@@ -229,7 +225,7 @@ pub async fn insert(
           null,	    -- initializing_stage
           $10,	    -- queued_at
           null,	    -- started_at
-          null,	    -- dispatched_on_supervisor_id
+          null,	    -- dispatched_on_host_id
           null,	    -- ssh_endpoints
           null,	    -- termination_reason
           null,	    -- task_exit_status
@@ -283,9 +279,9 @@ pub struct SqlJob {
     // Filled out when initialized into `queued` job state
     queued_at: DateTime<Utc>,
 
-    // Filled out if and when the job is dispatched onto a supervisor
+    // Filled out if and when the job is dispatched onto a host
     started_at: Option<DateTime<Utc>>,
-    dispatched_on_supervisor_id: Option<Uuid>,
+    dispatched_on_host_id: Option<Uuid>,
     ssh_endpoints: Option<Vec<SqlSshEndpoint>>,
 
     // Filled out when transitioned into `finalized` job state
@@ -351,8 +347,8 @@ impl SqlJob {
     pub fn started_at(&self) -> Option<&DateTime<Utc>> {
         self.started_at.as_ref()
     }
-    pub fn dispatched_on_supervisor_id(&self) -> Option<Uuid> {
-        self.dispatched_on_supervisor_id
+    pub fn dispatched_on_host_id(&self) -> Option<Uuid> {
+        self.dispatched_on_host_id
     }
     pub fn ssh_endpoints(&self) -> Option<&Vec<SqlSshEndpoint>> {
         self.ssh_endpoints.as_ref()
@@ -373,7 +369,7 @@ pub async fn fetch_by_job_id(
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
         queued_at, job_state as "job_state: _",
         initializing_stage as "initializing_stage: _", started_at,
-        dispatched_on_supervisor_id, ssh_endpoints as "ssh_endpoints: _",
+        dispatched_on_host_id, ssh_endpoints as "ssh_endpoints: _",
         termination_reason as "termination_reason: _",
         task_exit_status as "task_exit_status: _", exit_message, terminated_at,
         last_updated_at
@@ -393,7 +389,7 @@ pub async fn fetch_by_job_id(
 //         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
 //         queued_at, job_state as "job_state: _",
 //         initializing_stage as "initializing_stage: _", started_at,
-//         dispatched_on_supervisor_id, ssh_endpoints as "ssh_endpoints: _",
+//         dispatched_on_host_id, ssh_endpoints as "ssh_endpoints: _",
 //         termination_reason as "termination_reason: _",
 //         task_exit_status as "task_exit_status: _", exit_message, terminated_at,
 //         last_updated_at
@@ -412,7 +408,7 @@ pub async fn fetch_by_job_id(
 //         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
 //         queued_at, job_state as "job_state: _",
 //         initializing_stage as "initializing_stage: _", started_at,
-//         dispatched_on_supervisor_id, ssh_endpoints as "ssh_endpoints: _",
+//         dispatched_on_host_id, ssh_endpoints as "ssh_endpoints: _",
 //         termination_reason as "termination_reason: _",
 //         task_exit_status as "task_exit_status: _", exit_message, terminated_at,
 //         last_updated_at
@@ -424,18 +420,18 @@ pub async fn fetch_by_job_id(
 //     .await
 // }
 
-/// Finalize a job that its supervisor dropped, releasing the supervisor and --
+/// Finalize a job that its host's supervisor dropped, releasing the host and --
 /// if the restart policy permits -- enqueuing a successor, all in one
 /// transaction. Backs reconciliation cases 3 and 5 (`Phase 5`): the switchboard
-/// believed `job_id` was assigned to `supervisor_id`, but the supervisor no
-/// longer reports running it.
+/// believed `job_id` was assigned to `host_id`, but the supervisor no longer
+/// reports running it.
 ///
-/// The job is finalized with [`TerminationReason::SupervisorDroppedJob`], its
-/// assignment columns (`dispatched_on_supervisor_id`, `started_at`,
+/// The job is finalized with [`TerminationReason::HostDroppedJob`], its
+/// assignment columns (`dispatched_on_host_id`, `started_at`,
 /// `initializing_stage`) are cleared to satisfy the finalized-state invariants,
 /// a `FinalizeResult` event is appended to the audit log, and
-/// `supervisors.current_job` is released (guarded on `job_id` so a pointer that
-/// has since been reassigned is left alone).
+/// `hosts.current_job` is released (guarded on `job_id` so a pointer that has
+/// since been reassigned is left alone).
 ///
 /// **Idempotent.** The finalize only fires when the job is not already
 /// finalized; a replayed reconciliation therefore neither double-finalizes nor
@@ -489,15 +485,15 @@ pub async fn set_running_state(
 
 /// Finalize a job the supervisor reports as `Terminated`, within the caller's
 /// transaction. Backs reconciliation case 4 when the adopted `RunningJobState`
-/// is `Terminated`: the supervisor's workload exited, so the job finalizes with
+/// is `Terminated`: the host's workload exited, so the job finalizes with
 /// [`TerminationReason::WorkloadExited`].
 ///
 /// The task outcome (`task_exit_status` / `exit_message`) is *not* set here — it
 /// is reported out-of-band via [`set_task_outcome`], so whatever the supervisor
 /// last declared is preserved across this transition. The assignment columns
-/// (`dispatched_on_supervisor_id`, `started_at`, `initializing_stage`) are
-/// cleared to satisfy the finalized-state invariants and
-/// `supervisors.current_job` is released (guarded on `job_id`). Unlike
+/// (`dispatched_on_host_id`, `started_at`, `initializing_stage`) are
+/// cleared to satisfy the finalized-state invariants and `hosts.current_job` is
+/// released (guarded on `job_id`). Unlike
 /// [`finalize_dropped_and_maybe_restart`], the restart policy is **not** applied:
 /// a clean workload exit is a completion, not a failure to retry.
 ///
@@ -508,7 +504,7 @@ pub async fn set_running_state(
 /// guard covers it.
 pub async fn finalize_terminated(
     job_id: Uuid,
-    supervisor_id: Uuid,
+    host_id: Uuid,
     at: DateTime<Utc>,
     txn: &mut Transaction<'_, Postgres>,
 ) -> Result<(), sqlx::Error> {
@@ -517,7 +513,7 @@ pub async fn finalize_terminated(
         update tml_switchboard.jobs
         set job_state = 'finalized',
             termination_reason = 'workload_exited',
-            dispatched_on_supervisor_id = null,
+            dispatched_on_host_id = null,
             started_at = null,
             initializing_stage = null,
             terminated_at = $2,
@@ -536,14 +532,14 @@ pub async fn finalize_terminated(
         return Ok(());
     }
 
-    // Release the supervisor's assignment pointer.
+    // Release the host's assignment pointer.
     sqlx::query!(
         r#"
-        update tml_switchboard.supervisors
+        update tml_switchboard.hosts
         set current_job = null
-        where supervisor_id = $1 and current_job = $2
+        where host_id = $1 and current_job = $2
         "#,
-        supervisor_id,
+        host_id,
         job_id,
     )
     .execute(&mut **txn)
@@ -552,26 +548,26 @@ pub async fn finalize_terminated(
     Ok(())
 }
 
-/// Record the supervisor's *task outcome* for a job it is currently assigned,
-/// within the caller's transaction.
+/// Record the supervisor's *task outcome* for a job it is currently assigned to
+/// `host_id`, within the caller's transaction.
 ///
 /// This is the dedicated setter behind [`SupervisorJobEvent::DeclareExitStatus`].
 /// It is independent of the job's lifecycle state: the supervisor may set the
-/// outcome at any point while the job is dispatched to it, as many times as it
-/// likes, each call overriding the previous `task_exit_status` and replacing
-/// `exit_message` (passing `None` clears the message). The outcome itself
-/// (`pending` / `success` / `failure`) can never be cleared back to unset.
+/// outcome at any point while the job is dispatched to its host, as many times
+/// as it likes, each call overriding the previous `task_exit_status` and
+/// replacing `exit_message` (passing `None` clears the message). The outcome
+/// itself (`pending` / `success` / `failure`) can never be cleared back to unset.
 ///
-/// The write is guarded on `dispatched_on_supervisor_id = supervisor_id`, which
-/// is precisely "the job is assigned to this supervisor": it is a no-op (returns
-/// `false`) for a job assigned to someone else, never dispatched, or already
-/// finalized (whose dispatch pointer has been cleared).
+/// The write is guarded on `dispatched_on_host_id = host_id`, which is precisely
+/// "the job is assigned to this host": it is a no-op (returns `false`) for a job
+/// assigned to a different host, never dispatched, or already finalized (whose
+/// dispatch pointer has been cleared).
 ///
 /// Must be called inside the worker's `with_txn` so the takeover/staleness guard
 /// covers it.
 pub async fn set_task_outcome(
     job_id: Uuid,
-    supervisor_id: Uuid,
+    host_id: Uuid,
     outcome: SqlTaskExitStatus,
     message: Option<String>,
     txn: &mut Transaction<'_, Postgres>,
@@ -582,11 +578,11 @@ pub async fn set_task_outcome(
         set task_exit_status = $3,
             exit_message = $4,
             last_updated_at = default
-        where job_id = $1 and dispatched_on_supervisor_id = $2
+        where job_id = $1 and dispatched_on_host_id = $2
         returning job_id
         "#,
         job_id,
-        supervisor_id,
+        host_id,
         outcome as SqlTaskExitStatus,
         message,
     )
@@ -598,7 +594,7 @@ pub async fn set_task_outcome(
 
 pub async fn finalize_dropped_and_maybe_restart(
     job_id: Uuid,
-    supervisor_id: Uuid,
+    host_id: Uuid,
     at: DateTime<Utc>,
     txn: &mut Transaction<'_, Postgres>,
 ) -> Result<Option<Uuid>, sqlx::Error> {
@@ -611,9 +607,9 @@ pub async fn finalize_dropped_and_maybe_restart(
         r#"
         update tml_switchboard.jobs
         set job_state = 'finalized',
-            termination_reason = 'supervisor_dropped_job',
+            termination_reason = 'host_dropped_job',
             task_exit_status = null,
-            dispatched_on_supervisor_id = null,
+            dispatched_on_host_id = null,
             started_at = null,
             initializing_stage = null,
             terminated_at = $2,
@@ -632,14 +628,14 @@ pub async fn finalize_dropped_and_maybe_restart(
         return Ok(None);
     }
 
-    // Release the supervisor's assignment pointer.
+    // Release the host's assignment pointer.
     sqlx::query!(
         r#"
-        update tml_switchboard.supervisors
+        update tml_switchboard.hosts
         set current_job = null
-        where supervisor_id = $1 and current_job = $2
+        where host_id = $1 and current_job = $2
         "#,
-        supervisor_id,
+        host_id,
         job_id,
     )
     .execute(&mut **txn)

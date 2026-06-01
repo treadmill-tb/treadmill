@@ -21,22 +21,22 @@ use uuid::Uuid;
 /// The seeded group whose members wield global authority (see `SCHEMA.sql`).
 pub const ADMINS_GROUP_ID: Uuid = Uuid::from_u128(1);
 
-/// A permission on a supervisor; mirrors `tml_switchboard.supervisor_permission`.
+/// A permission on a host; mirrors `tml_switchboard.host_permission`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SupervisorPermission {
+pub enum HostPermission {
     Read,
     Start,
     Ssh,
     Manage,
 }
-impl SupervisorPermission {
-    /// The textual value as stored in the `supervisor_permission` enum.
+impl HostPermission {
+    /// The textual value as stored in the `host_permission` enum.
     pub fn as_str(self) -> &'static str {
         match self {
-            SupervisorPermission::Read => "read",
-            SupervisorPermission::Start => "start",
-            SupervisorPermission::Ssh => "ssh",
-            SupervisorPermission::Manage => "manage",
+            HostPermission::Read => "read",
+            HostPermission::Start => "start",
+            HostPermission::Ssh => "ssh",
+            HostPermission::Manage => "manage",
         }
     }
 }
@@ -61,12 +61,12 @@ impl JobPermission {
     }
 }
 
-/// Whether `subject_id` may exercise `permission` on the supervisor.
-pub async fn can_access_supervisor(
+/// Whether `subject_id` may exercise `permission` on the host.
+pub async fn can_access_host(
     conn: impl PgExecutor<'_>,
     subject_id: Uuid,
-    supervisor_id: Uuid,
-    permission: SupervisorPermission,
+    host_id: Uuid,
+    permission: HostPermission,
 ) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar!(
         "with principals(id) as ( \
@@ -75,18 +75,18 @@ pub async fn can_access_supervisor(
          select ( \
              exists (select 1 from principals where id = $4::uuid) \
              or exists ( \
-                 select 1 from tml_switchboard.supervisors s \
-                 join principals p on s.owner_id = p.id \
-                 where s.supervisor_id = $2::uuid \
+                 select 1 from tml_switchboard.hosts h \
+                 join principals p on h.owner_id = p.id \
+                 where h.host_id = $2::uuid \
              ) \
              or exists ( \
-                 select 1 from tml_switchboard.supervisor_grants g \
+                 select 1 from tml_switchboard.host_grants g \
                  join principals p on g.subject_id = p.id \
-                 where g.supervisor_id = $2::uuid and g.permission::text = $3 \
+                 where g.host_id = $2::uuid and g.permission::text = $3 \
              ) \
          ) as \"authorized!\"",
         subject_id,
-        supervisor_id,
+        host_id,
         permission.as_str(),
         ADMINS_GROUP_ID,
     )

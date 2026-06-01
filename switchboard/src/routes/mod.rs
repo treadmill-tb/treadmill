@@ -1,6 +1,6 @@
 mod auth;
+mod hosts;
 // mod jobs;
-mod supervisors;
 
 use crate::serve::AppState;
 use aide::axum::ApiRouter;
@@ -58,10 +58,7 @@ pub fn api_router() -> ApiRouter<AppState> {
         // Note that the HTTP verb 'GET' here is not necessarily conformant with REST principles,
         // but is required by RFC6455 §4.1: "The method of the request MUST be GET" (regarding
         // WebSocket HTTP handshakes).
-        .api_route(
-            "/supervisors/{id}/connect",
-            get_with(supervisors::connect, |o| o),
-        )
+        .api_route("/hosts/{id}/connect", get_with(hosts::connect, |o| o))
     // user management group
     //  GET /users/{id}/jobs (+ <FILTERS>)
     //  GET /users/{id}/tokens (+ <FILTERS>)

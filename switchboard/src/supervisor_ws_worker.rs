@@ -65,7 +65,7 @@ pub struct SupervisorWSWorkerConfig {
 /// constraining the socket type.
 struct WorkerCtx {
     pool: PgPool,
-    supervisor_id: Uuid,
+    host_id: Uuid,
     worker_instance_id: u64,
     config: SupervisorWSWorkerConfig,
 }
@@ -78,9 +78,9 @@ pub struct SupervisorWSWorker<S: SupervisorSocket> {
 /// Error type for [`SupervisorWSWorker`] operations.
 ///
 /// `Stale` is a distinct, non-fatal variant: it signals that a newer worker
-/// has taken over for this supervisor and the current worker should exit
-/// gracefully. Any other failure flows through `Other` and is treated as a
-/// real error. `From<anyhow::Error>` lets call sites propagate ordinary
+/// has taken over for this host's supervisor and the current worker should
+/// exit gracefully. Any other failure flows through `Other` and is treated as
+/// a real error. `From<anyhow::Error>` lets call sites propagate ordinary
 /// errors with `?`; staleness flows up the same way and is distinguished
 /// only at the top-level [`SupervisorWSWorker::run`] entry point.
 #[derive(Debug, thiserror::Error)]
@@ -102,16 +102,12 @@ pub enum WorkerError {
 pub type WorkerResult<T = ()> = Result<T, WorkerError>;
 
 impl WorkerCtx {
-    async fn obtain_worker_instance_id(pool: &PgPool, supervisor_id: Uuid) -> Result<u64> {
-        let db_worker_instance_id: i64 =
-            sql::supervisor::increment_worker_instance_id(supervisor_id, pool)
-                .await
-                .with_context(|| {
-                    format!(
-                        "Obtaining new worker instance ID for supervisor {:?}",
-                        supervisor_id
-                    )
-                })?;
+    async fn obtain_worker_instance_id(pool: &PgPool, host_id: Uuid) -> Result<u64> {
+        let db_worker_instance_id: i64 = sql::host::increment_worker_instance_id(host_id, pool)
+            .await
+            .with_context(|| {
+                format!("Obtaining new worker instance ID for host {:?}", host_id)
+            })?;
 
         Ok(db_worker_instance_id.try_into().expect(
             "Database invariant violated: worker_instance_id must be zero or \
@@ -119,16 +115,15 @@ impl WorkerCtx {
         ))
     }
 
-    /// Run `f` inside a transaction that holds an exclusive lock on this
-    /// supervisor's row for the duration of the closure.
+    /// Run `f` inside a transaction that holds an exclusive lock on this host's
+    /// row for the duration of the closure.
     ///
-    /// The lock serializes all worker writes for this supervisor: a concurrent
+    /// The lock serializes all worker writes for this host: a concurrent
     /// `increment_worker_instance_id` (issued by a takeover attempt from a new
     /// worker) will block until this transaction commits or rolls back. After
-    /// taking the lock, this checks the supervisor's `worker_instance_id`; if
-    /// it no longer matches, the closure is not executed and
-    /// [`WorkerError::Stale`] is returned so the caller can exit gracefully via
-    /// `?`.
+    /// taking the lock, this checks the host's `worker_instance_id`; if it no
+    /// longer matches, the closure is not executed and [`WorkerError::Stale`]
+    /// is returned so the caller can exit gracefully via `?`.
     ///
     /// IMPORTANT: do not `.await` any non-DB work inside `f`. The row lock is
     /// held for the entire duration of the closure, so unrelated awaited I/O
@@ -144,19 +139,19 @@ impl WorkerCtx {
     {
         let mut txn = self.pool.begin().await.with_context(|| {
             format!(
-                "Beginning SupervisorWSWorker transaction for supervisor {} \
+                "Beginning SupervisorWSWorker transaction for host {} \
                  (worker_instance_id {})",
-                self.supervisor_id, self.worker_instance_id,
+                self.host_id, self.worker_instance_id,
             )
         })?;
 
         let current_worker_instance_id: u64 =
-            sql::supervisor::lock_and_get_current_worker(self.supervisor_id, &mut txn)
+            sql::host::lock_and_get_current_worker(self.host_id, &mut txn)
                 .await
                 .with_context(|| {
                     format!(
-                        "Locking and reading worker_instance_id for supervisor {}",
-                        self.supervisor_id,
+                        "Locking and reading worker_instance_id for host {}",
+                        self.host_id,
                     )
                 })?
                 .try_into()
@@ -177,9 +172,9 @@ impl WorkerCtx {
 
         txn.commit().await.with_context(|| {
             format!(
-                "Committing SupervisorWSWorker transaction for supervisor {} \
+                "Committing SupervisorWSWorker transaction for host {} \
                  (worker_instance_id {})",
-                self.supervisor_id, self.worker_instance_id,
+                self.host_id, self.worker_instance_id,
             )
         })?;
 
@@ -191,11 +186,11 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     #[tracing::instrument(skip(pool, socket))]
     pub async fn run(
         pool: PgPool,
-        supervisor_id: Uuid,
+        host_id: Uuid,
         socket: S,
         config: SupervisorWSWorkerConfig,
     ) {
-        match Self::run_inner(pool, supervisor_id, socket, config).await {
+        match Self::run_inner(pool, host_id, socket, config).await {
             Ok(()) => {
                 tracing::info!("SupervisorWSWorker::run terminated successfully.");
             }
@@ -217,26 +212,26 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
 
     pub async fn run_inner(
         pool: PgPool,
-        supervisor_id: Uuid,
+        host_id: Uuid,
         socket: S,
         config: SupervisorWSWorkerConfig,
     ) -> WorkerResult<()> {
-        // A supervisor has just opened a new WebSocket connection and
-        // successfully authenticated. This might be because it's a new
+        // A supervisor has just opened a new WebSocket connection for this host
+        // and successfully authenticated. This might be because it's a new
         // supervisor, because it restarted, or because the connection was
         // interrupted.
         //
-        // At any given time, a supervisor must have at most one switchboard
-        // worker (this very method) responsible for managing its
-        // state. However, in the case of network issues etc., it might be that
-        // there is another task that believes to still be responsible for this
-        // supervisor.
+        // At any given time, a host must have at most one switchboard worker
+        // (this very method) responsible for managing the supervisor
+        // connection. However, in the case of network issues etc., it might be
+        // that there is another task that believes to still be responsible for
+        // this host.
         //
         // To solve these issues, we store a monotonically increasing "worker
-        // instance ID" counter per supervisor. Each new worker instance first
+        // instance ID" counter per host. Each new worker instance first
         // atomically increments and obtains a unique worker instance ID, and
         // then runs any database operation inside `with_txn`, which holds an
-        // exclusive row lock on the supervisor record for the duration of the
+        // exclusive row lock on the host record for the duration of the
         // transaction and verifies the worker is still current as its first
         // statement. The row lock serializes worker-vs-worker contention: a
         // newer worker's `increment_worker_instance_id` blocks until any
@@ -247,13 +242,13 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
 
         // This should never fail, as the supervisor has successfully
         // authenticated:
-        let worker_instance_id = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let worker_instance_id = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
 
         // Now, using this ID, construct the worker instance:
         let worker = SupervisorWSWorker {
             ctx: WorkerCtx {
                 pool,
-                supervisor_id,
+                host_id,
                 worker_instance_id,
                 config,
             },
@@ -267,16 +262,16 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     ///
     /// # Principle
     ///
-    /// The **supervisor** is ground truth for what is *physically executing*; the
-    /// **switchboard** is the source of truth for what is *assigned*
-    /// (`supervisors.current_job`). On (re)connect the worker sends a
+    /// The **supervisor** is ground truth for what is *physically executing* on
+    /// its host; the **switchboard** is the source of truth for what is
+    /// *assigned* (`hosts.current_job`). On (re)connect the worker sends a
     /// `StatusRequest`, awaits the correlated `StatusResponse` (a timeout is
     /// treated as a dead peer), and passes the reported
     /// [`ReportedSupervisorStatus`] in as `reported`. This method then applies
-    /// idempotent commands and `job_state`-guarded DB transitions to converge the
-    /// two views.
+    /// idempotent commands and `job_state`-guarded DB transitions to converge
+    /// the two views.
     ///
-    /// Let `J_sb = supervisors.current_job` (read from the DB under
+    /// Let `J_sb = hosts.current_job` (read from the DB under
     /// [`WorkerCtx::with_txn`]) and `J_sup` = the supervisor's reported
     /// `OngoingJob` id, if any. The five cases:
     ///
@@ -284,9 +279,9 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// |---|----------------------|--------------------|------------|
     /// | 1 | none   | `Idle`             | aligned; no action |
     /// | 2 | none   | `OngoingJob(J)`    | unassigned/zombie → `StopJob(J)`; do not adopt |
-    /// | 3 | `J_sb` | `Idle`             | job lost → finalize `J_sb` as `supervisor_dropped_job`; honor `RestartPolicy` (may re-issue `StartJob`) |
+    /// | 3 | `J_sb` | `Idle`             | job lost → finalize `J_sb` as `host_dropped_job`; honor `RestartPolicy` (may re-issue `StartJob`) |
     /// | 4 | `J_sb` | `OngoingJob(J_sb)` | adopt reported `job_state`: DB `job_state := reported`. A `Terminated` state finalizes `J_sb` (see below) |
-    /// | 5 | `J_sb` | `OngoingJob(J_sup)`, `J_sup ≠ J_sb` | finalize `J_sb` as `supervisor_dropped_job` (+ `RestartPolicy`); `J_sup` is unassigned → `StopJob(J_sup)` |
+    /// | 5 | `J_sb` | `OngoingJob(J_sup)`, `J_sup ≠ J_sb` | finalize `J_sb` as `host_dropped_job` (+ `RestartPolicy`); `J_sup` is unassigned → `StopJob(J_sup)` |
     ///
     /// # Idempotence
     ///
@@ -314,17 +309,17 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     async fn reconcile(&mut self, reported: ReportedSupervisorStatus) -> WorkerResult<()> {
         use treadmill_rs::api::switchboard_supervisor::RunningJobState;
 
-        let supervisor_id = self.ctx.supervisor_id;
+        let host_id = self.ctx.host_id;
         let at = chrono::Utc::now();
 
         // All reads and writes run under the takeover/staleness guard. The
         // closure returns the id of a job the worker must `StopJob` *after* the
-        // transaction commits: we never await the socket while the supervisor
-        // row lock is held (see `with_txn`'s contract).
+        // transaction commits: we never await the socket while the host row
+        // lock is held (see `with_txn`'s contract).
         let stop_zombie: Option<Uuid> = self
             .ctx
             .with_txn(async move |txn| {
-                let j_sb = sql::supervisor::fetch_current_job(supervisor_id, txn).await?;
+                let j_sb = sql::host::fetch_current_job(host_id, txn).await?;
 
                 let stop = match (j_sb, reported) {
                     // Case 1: aligned — nothing assigned, supervisor idle.
@@ -336,7 +331,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     // Case 3: assigned job was lost — finalize (honoring the
                     // restart policy) and release the assignment.
                     (Some(j_sb), ReportedSupervisorStatus::Idle) => {
-                        sql::job::finalize_dropped_and_maybe_restart(j_sb, supervisor_id, at, txn)
+                        sql::job::finalize_dropped_and_maybe_restart(j_sb, host_id, at, txn)
                             .await?;
                         None
                     }
@@ -391,7 +386,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                             // supervisor's retained terminal record. The task
                             // outcome is preserved as last declared out-of-band.
                             RunningJobState::Terminated => {
-                                sql::job::finalize_terminated(j_sb, supervisor_id, at, txn).await?;
+                                sql::job::finalize_terminated(j_sb, host_id, at, txn).await?;
                                 Some(j_sb)
                             }
                         }
@@ -401,7 +396,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     // assigned job is lost (finalize + restart policy); the
                     // reported job is an unassigned zombie to stop.
                     (Some(j_sb), ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. }) => {
-                        sql::job::finalize_dropped_and_maybe_restart(j_sb, supervisor_id, at, txn)
+                        sql::job::finalize_dropped_and_maybe_restart(j_sb, host_id, at, txn)
                             .await?;
                         Some(j_sup)
                     }
@@ -422,7 +417,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// Record a task outcome the supervisor declared via
     /// [`SupervisorJobEvent::DeclareExitStatus`], out-of-band of reconciliation.
     ///
-    /// The write only lands while the job is dispatched to this supervisor
+    /// The write only lands while the job is dispatched to this host
     /// (`sql::job::set_task_outcome` is guarded on the assignment pointer);
     /// returns `false` if the job is not currently assigned here (e.g. already
     /// finalized or never dispatched), in which case the event is dropped.
@@ -435,12 +430,12 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         outcome: TaskExitStatus,
         message: Option<String>,
     ) -> WorkerResult<bool> {
-        let supervisor_id = self.ctx.supervisor_id;
+        let host_id = self.ctx.host_id;
         let applied = self
             .ctx
             .with_txn(async move |txn| {
                 Ok(
-                    sql::job::set_task_outcome(job_id, supervisor_id, outcome.into(), message, txn)
+                    sql::job::set_task_outcome(job_id, host_id, outcome.into(), message, txn)
                         .await?,
                 )
             })
@@ -704,30 +699,30 @@ mod tests {
         (to_worker, from_worker, ScriptedSocket { inbound, outbound })
     }
 
-    async fn insert_supervisor(pool: &PgPool) -> anyhow::Result<Uuid> {
-        let supervisor_id = Uuid::new_v4();
-        sql::supervisor::insert(
-            supervisor_id,
-            format!("test-supervisor-{supervisor_id}"),
+    async fn insert_host(pool: &PgPool) -> anyhow::Result<Uuid> {
+        let host_id = Uuid::new_v4();
+        sql::host::insert(
+            host_id,
+            format!("test-host-{host_id}"),
             SecurityToken::generate(),
             &BTreeSet::new(),
             Vec::new(),
             pool,
         )
         .await?;
-        Ok(supervisor_id)
+        Ok(host_id)
     }
 
     fn worker(
         pool: PgPool,
-        supervisor_id: Uuid,
+        host_id: Uuid,
         worker_instance_id: u64,
         config: SupervisorWSWorkerConfig,
     ) -> SupervisorWSWorker<NoSocket> {
         SupervisorWSWorker {
             ctx: WorkerCtx {
                 pool,
-                supervisor_id,
+                host_id,
                 worker_instance_id,
                 config,
             },
@@ -740,7 +735,7 @@ mod tests {
     /// reconciliation tests, which assert that `StopJob`/`StartJob` are emitted.
     fn scripted_worker(
         pool: PgPool,
-        supervisor_id: Uuid,
+        host_id: Uuid,
         worker_instance_id: u64,
         config: SupervisorWSWorkerConfig,
     ) -> (
@@ -752,7 +747,7 @@ mod tests {
         let worker = SupervisorWSWorker {
             ctx: WorkerCtx {
                 pool,
-                supervisor_id,
+                host_id,
                 worker_instance_id,
                 config,
             },
@@ -794,14 +789,14 @@ mod tests {
         Ok(token_id)
     }
 
-    /// Insert a job already bound to `supervisor_id` in the given `job_state`
+    /// Insert a job already bound to `host_id` in the given `job_state`
     /// (e.g. `"scheduled"`, `"ready"`). `started_at` is set iff the state is one
     /// of the executing states, matching the `started_at_iso_executing` CHECK.
     /// `remaining_restarts` seeds the restart policy (cases 3/5 honor it).
     async fn insert_job(
         pool: &PgPool,
         token_id: Uuid,
-        supervisor_id: Uuid,
+        host_id: Uuid,
         job_state: &str,
         remaining_restarts: i32,
     ) -> anyhow::Result<Uuid> {
@@ -810,7 +805,7 @@ mod tests {
             "insert into tml_switchboard.jobs \
              (job_id, resume_job_id, restart_job_id, image_id, ssh_keys, restart_policy, \
               enqueued_by_token_id, tag_config, job_timeout, job_state, initializing_stage, \
-              queued_at, started_at, dispatched_on_supervisor_id, ssh_endpoints, \
+              queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
               termination_reason, task_exit_status, exit_message, terminated_at, last_updated_at) \
              values \
              ($1, null, null, $2, '{}'::text[], row($3)::tml_switchboard.restart_policy, \
@@ -827,34 +822,34 @@ mod tests {
         .bind(remaining_restarts)
         .bind(token_id)
         .bind(job_state)
-        .bind(supervisor_id)
+        .bind(host_id)
         .execute(pool)
         .await?;
         Ok(job_id)
     }
 
-    /// Point `supervisor_id.current_job` at `job_id` (or clear it with `None`).
+    /// Point `host_id.current_job` at `job_id` (or clear it with `None`).
     async fn set_current_job(
         pool: &PgPool,
-        supervisor_id: Uuid,
+        host_id: Uuid,
         job_id: Option<Uuid>,
     ) -> anyhow::Result<()> {
         sqlx::query(
-            "update tml_switchboard.supervisors set current_job = $2 where supervisor_id = $1",
+            "update tml_switchboard.hosts set current_job = $2 where host_id = $1",
         )
-        .bind(supervisor_id)
+        .bind(host_id)
         .bind(job_id)
         .execute(pool)
         .await?;
         Ok(())
     }
 
-    /// Read back `supervisors.current_job`.
-    async fn current_job_of(pool: &PgPool, supervisor_id: Uuid) -> anyhow::Result<Option<Uuid>> {
+    /// Read back `hosts.current_job`.
+    async fn current_job_of(pool: &PgPool, host_id: Uuid) -> anyhow::Result<Option<Uuid>> {
         Ok(sqlx::query_scalar(
-            "select current_job from tml_switchboard.supervisors where supervisor_id = $1",
+            "select current_job from tml_switchboard.hosts where host_id = $1",
         )
-        .bind(supervisor_id)
+        .bind(host_id)
         .fetch_one(pool)
         .await?)
     }
@@ -889,9 +884,9 @@ mod tests {
     async fn obtain_worker_instance_id_starts_at_one_and_increments(
         pool: PgPool,
     ) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         for expected in 1u64..=3 {
-            let got = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+            let got = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
             assert_eq!(got, expected);
         }
         Ok(())
@@ -900,11 +895,11 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn with_txn_runs_closure_and_commits_when_current(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
-        let worker_instance_id = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let host_id = insert_host(&pool).await?;
+        let worker_instance_id = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let worker = worker(
             pool.clone(),
-            supervisor_id,
+            host_id,
             worker_instance_id,
             worker_config(50, 250),
         );
@@ -915,11 +910,11 @@ mod tests {
             .with_txn(async |txn| {
                 sqlx::query!(
                     r#"
-                    UPDATE tml_switchboard.supervisors
+                    UPDATE tml_switchboard.hosts
                     SET name = $2
-                    WHERE supervisor_id = $1
+                    WHERE host_id = $1
                     "#,
-                    supervisor_id,
+                    host_id,
                     renamed,
                 )
                 .execute(&mut **txn)
@@ -931,8 +926,8 @@ mod tests {
         assert_eq!(returned, 123);
 
         let observed: String = sqlx::query_scalar!(
-            "SELECT name FROM tml_switchboard.supervisors WHERE supervisor_id = $1",
-            supervisor_id,
+            "SELECT name FROM tml_switchboard.hosts WHERE host_id = $1",
+            host_id,
         )
         .fetch_one(&pool)
         .await?;
@@ -943,13 +938,13 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn with_txn_returns_stale_when_superseded(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
-        let our_id = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let host_id = insert_host(&pool).await?;
+        let our_id = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         // Simulate a takeover: a newer worker bumps the instance ID.
-        let newer_id = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let newer_id = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         assert_eq!(newer_id, our_id + 1);
 
-        let worker = worker(pool.clone(), supervisor_id, our_id, worker_config(50, 250));
+        let worker = worker(pool.clone(), host_id, our_id, worker_config(50, 250));
         let err = worker
             .ctx
             .with_txn(async |_txn| -> anyhow::Result<()> {
@@ -973,11 +968,11 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn with_txn_rolls_back_on_closure_error(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
-        let worker_instance_id = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let host_id = insert_host(&pool).await?;
+        let worker_instance_id = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let worker = worker(
             pool.clone(),
-            supervisor_id,
+            host_id,
             worker_instance_id,
             worker_config(50, 250),
         );
@@ -986,8 +981,8 @@ mod tests {
             .ctx
             .with_txn(async |txn| {
                 sqlx::query!(
-                    "UPDATE tml_switchboard.supervisors SET name = $2 WHERE supervisor_id = $1",
-                    supervisor_id,
+                    "UPDATE tml_switchboard.hosts SET name = $2 WHERE host_id = $1",
+                    host_id,
                     "should-be-rolled-back",
                 )
                 .execute(&mut **txn)
@@ -1001,8 +996,8 @@ mod tests {
         );
 
         let observed: String = sqlx::query_scalar!(
-            "SELECT name FROM tml_switchboard.supervisors WHERE supervisor_id = $1",
-            supervisor_id,
+            "SELECT name FROM tml_switchboard.hosts WHERE host_id = $1",
+            host_id,
         )
         .fetch_one(&pool)
         .await?;
@@ -1025,7 +1020,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn run_returns_when_peer_sends_close(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         let (to_worker, _from_worker, socket) = scripted_socket();
 
         // Peer sends Close as its first (and only) frame.
@@ -1035,7 +1030,7 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            SupervisorWSWorker::run(pool, supervisor_id, socket, worker_config(50, 250)),
+            SupervisorWSWorker::run(pool, host_id, socket, worker_config(50, 250)),
         )
         .await
         .expect("worker should return promptly after peer Close");
@@ -1046,7 +1041,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn run_returns_when_socket_stream_ends(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         let (to_worker, _from_worker, socket) = scripted_socket();
 
         // Peer disappears without a Close frame — stream end.
@@ -1054,7 +1049,7 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            SupervisorWSWorker::run(pool, supervisor_id, socket, worker_config(50, 250)),
+            SupervisorWSWorker::run(pool, host_id, socket, worker_config(50, 250)),
         )
         .await
         .expect("worker should return promptly on socket stream end");
@@ -1074,13 +1069,13 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn run_emits_periodic_pings_to_supervisor(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         let (to_worker, mut from_worker, socket) = scripted_socket();
 
         // 50ms ping cadence, 5s dead-pong deadline — the deadline is wide
         // enough that the dead-peer guard never fires during this test.
         let cfg = worker_config(50, 5_000);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, supervisor_id, socket, cfg));
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
 
         for n in 1..=3 {
             let msg = tokio::time::timeout(std::time::Duration::from_secs(2), from_worker.recv())
@@ -1102,12 +1097,12 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn run_exits_when_no_pong_within_dead_threshold(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         let (to_worker, _from_worker, socket) = scripted_socket();
 
         // Tight deadline — worker should declare the peer dead within ~200ms.
         let cfg = worker_config(50, 200);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, supervisor_id, socket, cfg));
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
 
         // We never respond with Pongs; the worker must give up on its own.
         // Generous outer bound: pong-dead (200ms) + slack for scheduling/DB
@@ -1127,7 +1122,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn run_stays_alive_while_pongs_keep_arriving(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         let (to_worker, mut from_worker, socket) = scripted_socket();
 
         // 50ms pings, 200ms dead-pong deadline: a missed Pong would kill the
@@ -1135,7 +1130,7 @@ mod tests {
         // replying promptly each time, then close cleanly. The worker must
         // outlive all three windows.
         let cfg = worker_config(50, 200);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, supervisor_id, socket, cfg));
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
 
         for n in 1..=6 {
             let msg = tokio::time::timeout(std::time::Duration::from_secs(2), from_worker.recv())
@@ -1177,13 +1172,13 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn inbound_ping_does_not_terminate_loop(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         let (to_worker, _from_worker, socket) = scripted_socket();
 
         // Wide ping cadence / dead-pong deadline so neither fires during this
         // test — we only care that an inbound Ping doesn't take down the loop.
         let cfg = worker_config(60_000, 600_000);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, supervisor_id, socket, cfg));
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
 
         // In production the Pong reply is emitted by the tungstenite framing
         // layer wrapped by axum's WebSocket; the application-level worker only
@@ -1209,11 +1204,11 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn inbound_pong_does_not_terminate_loop(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         let (to_worker, _from_worker, socket) = scripted_socket();
 
         let cfg = worker_config(60_000, 600_000);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, supervisor_id, socket, cfg));
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
 
         // Unsolicited Pong — must not panic the run loop.
         to_worker
@@ -1236,11 +1231,11 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn inbound_binary_does_not_terminate_loop(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         let (to_worker, _from_worker, socket) = scripted_socket();
 
         let cfg = worker_config(60_000, 600_000);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, supervisor_id, socket, cfg));
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
 
         // The protocol is JSON-over-Text; Binary frames aren't part of it.
         // The loop should log and continue rather than panic.
@@ -1261,11 +1256,11 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn inbound_unparseable_text_does_not_terminate_loop(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         let (to_worker, _from_worker, socket) = scripted_socket();
 
         let cfg = worker_config(60_000, 600_000);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, supervisor_id, socket, cfg));
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
 
         // Garbage that won't deserialize as a `switchboard_supervisor::Message`.
         // Until step 3 wires up real dispatch, the only contract we need is
@@ -1290,7 +1285,7 @@ mod tests {
     // `SupervisorWSWorker::reconcile`. They are RED until the Phase 7 worker
     // implements the logic (today `reconcile` is `todo!()`), so they fail by
     // panic rather than by assertion. Each test builds the DB precondition
-    // (`J_sb = supervisors.current_job`), invokes `reconcile` with the reported
+    // (`J_sb = hosts.current_job`), invokes `reconcile` with the reported
     // supervisor status (`J_sup`), and asserts the converged DB state plus any
     // command the worker must emit. `reconcile` is driven directly (it is not
     // yet wired into `run_loop`), mirroring how `with_txn` is unit-tested above.
@@ -1301,10 +1296,10 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn reconcile_case1_idle_and_unassigned_is_noop(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let host_id = insert_host(&pool).await?;
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let (_to_worker, mut from_worker, mut worker) =
-            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         worker
             .reconcile(ReportedSupervisorStatus::Idle)
@@ -1312,7 +1307,7 @@ mod tests {
             .expect("case 1: reconcile should succeed");
 
         assert_eq!(
-            current_job_of(&pool, supervisor_id).await?,
+            current_job_of(&pool, host_id).await?,
             None,
             "case 1: no job should be assigned"
         );
@@ -1329,10 +1324,10 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn reconcile_case2_unassigned_zombie_is_stopped(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let host_id = insert_host(&pool).await?;
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let (_to_worker, mut from_worker, mut worker) =
-            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         let zombie = Uuid::new_v4();
         worker
@@ -1344,7 +1339,7 @@ mod tests {
             .expect("case 2: reconcile should succeed");
 
         assert_eq!(
-            current_job_of(&pool, supervisor_id).await?,
+            current_job_of(&pool, host_id).await?,
             None,
             "case 2: zombie must not be adopted"
         );
@@ -1360,20 +1355,20 @@ mod tests {
     }
 
     /// Case 3: switchboard has an assigned job but the supervisor reports idle —
-    /// the job was lost. The worker finalizes it as `supervisor_dropped_job` and
+    /// the job was lost. The worker finalizes it as `host_dropped_job` and
     /// clears the assignment. (Restart policy is 0 here, so no successor.)
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn reconcile_case3_lost_job_is_finalized(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         let user_id = insert_user(&pool).await?;
         let token_id = insert_token(&pool, user_id).await?;
-        let job_id = insert_job(&pool, token_id, supervisor_id, "ready", 0).await?;
-        set_current_job(&pool, supervisor_id, Some(job_id)).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
 
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let (_to_worker, _from_worker, mut worker) =
-            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         worker
             .reconcile(ReportedSupervisorStatus::Idle)
@@ -1386,7 +1381,7 @@ mod tests {
             "case 3: lost job must be finalized"
         );
         assert_eq!(
-            current_job_of(&pool, supervisor_id).await?,
+            current_job_of(&pool, host_id).await?,
             None,
             "case 3: assignment must be cleared"
         );
@@ -1399,16 +1394,16 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn reconcile_case4_same_job_adopts_reported_state(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         let user_id = insert_user(&pool).await?;
         let token_id = insert_token(&pool, user_id).await?;
         // Bound but not yet started; the supervisor reports it is now running.
-        let job_id = insert_job(&pool, token_id, supervisor_id, "scheduled", 0).await?;
-        set_current_job(&pool, supervisor_id, Some(job_id)).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
 
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let (_to_worker, _from_worker, mut worker) =
-            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         worker
             .reconcile(ReportedSupervisorStatus::OngoingJob {
@@ -1424,7 +1419,7 @@ mod tests {
             "case 4: DB must adopt the reported execution state"
         );
         assert_eq!(
-            current_job_of(&pool, supervisor_id).await?,
+            current_job_of(&pool, host_id).await?,
             Some(job_id),
             "case 4: assignment must be retained"
         );
@@ -1448,22 +1443,22 @@ mod tests {
 
     /// Case 4, `Terminated`: the supervisor reports the assigned job has
     /// terminated. The switchboard finalizes it (with `workload_exited`, not
-    /// `supervisor_dropped_job`), clears the assignment, and `StopJob`s the job
+    /// `host_dropped_job`), clears the assignment, and `StopJob`s the job
     /// to acknowledge the terminal report. The task outcome the supervisor
     /// declared out-of-band before termination must be preserved across the
     /// finalize.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn reconcile_case4_terminated_finalizes_and_acks(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         let user_id = insert_user(&pool).await?;
         let token_id = insert_token(&pool, user_id).await?;
-        let job_id = insert_job(&pool, token_id, supervisor_id, "ready", 0).await?;
-        set_current_job(&pool, supervisor_id, Some(job_id)).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
 
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let (_to_worker, mut from_worker, mut worker) =
-            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         // The supervisor declares the outcome out-of-band, before reporting the
         // terminated state. It must survive finalization untouched.
@@ -1501,7 +1496,7 @@ mod tests {
         assert_eq!(
             reason.as_deref(),
             Some("workload_exited"),
-            "case 4 (terminated): must finalize as workload_exited, not supervisor_dropped_job"
+            "case 4 (terminated): must finalize as workload_exited, not host_dropped_job"
         );
         assert_eq!(
             task_outcome_of(&pool, job_id).await?,
@@ -1519,7 +1514,7 @@ mod tests {
             "case 4 (terminated): a clean exit must not enqueue a restart successor"
         );
         assert_eq!(
-            current_job_of(&pool, supervisor_id).await?,
+            current_job_of(&pool, host_id).await?,
             None,
             "case 4 (terminated): assignment must be cleared"
         );
@@ -1539,15 +1534,15 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn apply_task_outcome_while_assigned_persists(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         let user_id = insert_user(&pool).await?;
         let token_id = insert_token(&pool, user_id).await?;
-        let job_id = insert_job(&pool, token_id, supervisor_id, "ready", 0).await?;
-        set_current_job(&pool, supervisor_id, Some(job_id)).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
 
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let (_to_worker, _from_worker, mut worker) =
-            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         assert!(
             worker
@@ -1567,15 +1562,15 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn apply_task_outcome_overrides_and_clears_message(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         let user_id = insert_user(&pool).await?;
         let token_id = insert_token(&pool, user_id).await?;
-        let job_id = insert_job(&pool, token_id, supervisor_id, "ready", 0).await?;
-        set_current_job(&pool, supervisor_id, Some(job_id)).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
 
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let (_to_worker, _from_worker, mut worker) =
-            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         worker
             .apply_task_outcome(job_id, TaskExitStatus::Pending, Some("running".to_string()))
@@ -1602,22 +1597,22 @@ mod tests {
     }
 
     /// Declaring an outcome for a job that is dispatched to a *different*
-    /// supervisor is a no-op (returns `false`) and writes nothing: the setter is
-    /// guarded on this supervisor's assignment pointer.
+    /// host is a no-op (returns `false`) and writes nothing: the setter is
+    /// guarded on this host's assignment pointer.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn apply_task_outcome_not_assigned_is_noop(pool: PgPool) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
-        let other_supervisor = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
+        let other_host = insert_host(&pool).await?;
         let user_id = insert_user(&pool).await?;
         let token_id = insert_token(&pool, user_id).await?;
-        // The job is dispatched to `other_supervisor`, not to our worker.
-        let job_id = insert_job(&pool, token_id, other_supervisor, "ready", 0).await?;
-        set_current_job(&pool, other_supervisor, Some(job_id)).await?;
+        // The job is dispatched to `other_host`, not to our worker.
+        let job_id = insert_job(&pool, token_id, other_host, "ready", 0).await?;
+        set_current_job(&pool, other_host, Some(job_id)).await?;
 
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let (_to_worker, _from_worker, mut worker) =
-            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         assert!(
             !worker
@@ -1628,28 +1623,28 @@ mod tests {
         assert_eq!(
             task_outcome_of(&pool, job_id).await?,
             (None, None),
-            "no outcome must be written for a job assigned to another supervisor"
+            "no outcome must be written for a job assigned to another host"
         );
         Ok(())
     }
 
     /// Case 5: switchboard and supervisor disagree on the job id. The assigned
-    /// job is lost (finalize as `supervisor_dropped_job`, clear assignment) while
+    /// job is lost (finalize as `host_dropped_job`, clear assignment) while
     /// the reported job is an unassigned zombie that must be `StopJob`'d.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn reconcile_case5_mismatched_job_finalizes_and_stops(
         pool: PgPool,
     ) -> anyhow::Result<()> {
-        let supervisor_id = insert_supervisor(&pool).await?;
+        let host_id = insert_host(&pool).await?;
         let user_id = insert_user(&pool).await?;
         let token_id = insert_token(&pool, user_id).await?;
-        let assigned = insert_job(&pool, token_id, supervisor_id, "ready", 0).await?;
-        set_current_job(&pool, supervisor_id, Some(assigned)).await?;
+        let assigned = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(assigned)).await?;
 
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, supervisor_id).await?;
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let (_to_worker, mut from_worker, mut worker) =
-            scripted_worker(pool.clone(), supervisor_id, wiid, worker_config(50, 250));
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         let reported = Uuid::new_v4();
         worker
@@ -1666,7 +1661,7 @@ mod tests {
             "case 5: the assigned-but-lost job must be finalized"
         );
         assert_eq!(
-            current_job_of(&pool, supervisor_id).await?,
+            current_job_of(&pool, host_id).await?,
             None,
             "case 5: assignment must be cleared"
         );

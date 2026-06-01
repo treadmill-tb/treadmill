@@ -17,8 +17,8 @@ pub mod submit {
         Ok {
             job_id: Uuid,
         },
-        /// No supervisors currently registered can carry out the request.
-        SupervisorMatchError,
+        /// No hosts currently registered can carry out the request.
+        HostMatchError,
         /// User does not have `submit_job` permission.
         Unauthorized,
         // /// Job request is invalid for some reason.
@@ -30,7 +30,7 @@ pub mod submit {
         fn status_code(&self) -> StatusCode {
             match self {
                 Response::Ok { .. } => StatusCode::OK,
-                Response::SupervisorMatchError => StatusCode::NOT_FOUND,
+                Response::HostMatchError => StatusCode::NOT_FOUND,
                 Response::Unauthorized => StatusCode::FORBIDDEN,
                 Response::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             }

@@ -242,10 +242,10 @@ create table tml_switchboard.oauth_flows
 );
 
 -- ===========================================================================
--- SUPERVISORS
+-- HOSTS
 -- ===========================================================================
 
--- Host + Port tuple for ssh_endpoints of a supervisor.
+-- Host + Port tuple for ssh_endpoints of a host.
 create domain tml_switchboard.port as integer
     check (value >= 0 and value < 65535);
 create domain tml_switchboard.ssh_host as text
@@ -259,13 +259,18 @@ create type tml_switchboard.ssh_endpoint as
 );
 
 -- All hosts must be registered with the switchboard database: any host not
--- registered will be turned away at the gate, so to speak.
+-- registered will be turned away at the gate, so to speak. A host is the
+-- managed device that actually runs the user workload; the supervisor is the
+-- software process that drives it and is the WebSocket peer of the switchboard.
+-- The `hosts` row carries both the host's user-facing properties (name, tags,
+-- ssh_endpoints, owner) and the credentials/state of the supervisor authorized
+-- to drive it (auth_token, worker_instance_id) — one row per host.
 --
--- The auth_token field authenticates the supervisor: a 256-byte random string
--- uniquely identifying it on connect.
-create table tml_switchboard.supervisors
+-- The auth_token field authenticates the host's supervisor: a 256-byte random
+-- string uniquely identifying the supervisor on connect.
+create table tml_switchboard.hosts
 (
-    supervisor_id      uuid   not null primary key,
+    host_id            uuid   not null primary key,
     name               text   not null,
     auth_token         bytea  not null unique,
     tags               text[] not null,
@@ -281,25 +286,26 @@ create table tml_switchboard.supervisors
     -- square brackets, such as "[::1]:22".
     ssh_endpoints      tml_switchboard.ssh_endpoint[] not null,
 
-    -- A supervisor can either be idle or have a job assigned. This column keeps
-    -- track of this state. If a job is assigned, then the supervisor is not
-    -- idle, and the "sub-state" is determined through the job's state data.
+    -- A host can either be idle or have a job assigned. This column keeps
+    -- track of this state. If a job is assigned, then the host is not idle,
+    -- and the "sub-state" is determined through the job's state data.
     --
     -- This is the *canonical* "assigned job" pointer. The invariant
     --
-    --     supervisors.current_job = J  =>
-    --       jobs[J].dispatched_on_supervisor_id = this supervisor
+    --     hosts.current_job = J  =>
+    --       jobs[J].dispatched_on_host_id = this host
     --
     -- is asserted by the worker in its `with_txn` transitions (the worker is the
     -- sole writer). The partial unique index below enforces the half that is
     -- expressible as a pure constraint: a job is `current_job` for at most one
-    -- supervisor. FK constraint added after `jobs` is defined below.
+    -- host. FK constraint added after `jobs` is defined below.
     current_job        uuid,
 
-    -- Each connected supervisor is serviced by a worker. To prevent multiple
-    -- concurrent workers claiming ownership of the same supervisor, each
-    -- supervisor--worker combination is assigned a unique, monotonically
-    -- increasing "worker instance ID", checked by subsequent DB operations.
+    -- Each host is driven by at most one supervisor connection, serviced by a
+    -- worker. To prevent multiple concurrent workers claiming ownership of the
+    -- same host, each host--worker combination is assigned a unique,
+    -- monotonically increasing "worker instance ID", checked by subsequent DB
+    -- operations.
     worker_instance_id bigint NOT NULL DEFAULT 0,
 
     check (octet_length(auth_token) = 128),
@@ -323,10 +329,10 @@ create type tml_switchboard.restart_policy as
 
 -- The job's execution lifecycle state.
 create type tml_switchboard.job_state as enum (
-    -- Accepted, no supervisor assigned yet; eligible for scheduling.
+    -- Accepted, no host assigned yet; eligible for scheduling.
     'queued',
-    -- Bound to a supervisor but StartJob not yet sent; no longer eligible for
-    -- (re)scheduling. dispatched_on_supervisor_id set, started_at null.
+    -- Bound to a host but StartJob not yet sent; no longer eligible for
+    -- (re)scheduling. dispatched_on_host_id set, started_at null.
     'scheduled',
     -- Assigned & starting up; carries initializing_stage.
     'initializing',
@@ -362,18 +368,18 @@ create type tml_switchboard.termination_reason as enum (
     -- bad / unfetchable image (user fault)
     'image_error',
     -- infrastructure failure ("crashed / dead")
-    'supervisor_match_error',
-    'supervisor_host_start_failure',
-    'supervisor_dropped_job',
-    'supervisor_unreachable',
+    'host_match_error',
+    'host_start_failure',
+    'host_dropped_job',
+    'host_unreachable',
     'resume_failed',
     'internal_error'
     );
 
--- The supervisor-reported outcome of the user's workload (its "task outcome").
--- Set out-of-band of termination and revisable while assigned: `pending` until
--- known, then `success`/`failure`. Once set it is never cleared. Orthogonal to
--- termination_reason.
+-- The host-reported outcome of the user's workload (its "task outcome"), as
+-- relayed by the host's supervisor. Set out-of-band of termination and
+-- revisable while assigned: `pending` until known, then `success`/`failure`.
+-- Once set it is never cleared. Orthogonal to termination_reason.
 create type tml_switchboard.task_exit_status as enum (
     'pending',
     'success',
@@ -384,10 +390,10 @@ create table tml_switchboard.jobs
 (
     job_id                      uuid                             not null primary key,
 
-    -- Owning subject (user or group). NULL means orphaned (see supervisors).
-    -- For a job started by a user on a group-owned supervisor, the user is the
-    -- owner; the owning group's control over the job is conferred separately, as
-    -- an irrevocable grant inserted at dispatch time (see job_grants).
+    -- Owning subject (user or group). NULL means orphaned (see hosts). For a
+    -- job started by a user on a group-owned host, the user is the owner; the
+    -- owning group's control over the job is conferred separately, as an
+    -- irrevocable grant inserted at dispatch time (see job_grants).
     owner_id                    uuid references tml_switchboard.subjects (subject_id) on delete set null,
 
     -- These specify the job image and the nature of the job:
@@ -405,11 +411,11 @@ create table tml_switchboard.jobs
     -- Restart policy
     restart_policy              tml_switchboard.restart_policy   not null,
 
-    -- Token the job was enqueued by. Used to determine which supervisors a job
+    -- Token the job was enqueued by. Used to determine which hosts a job
     -- can run on.
     enqueued_by_token_id        uuid                             not null references tml_switchboard.api_tokens (token_id) on delete no action,
 
-    -- Configuration that decides which supervisors it should run on
+    -- Configuration that decides which hosts it should run on
     tag_config                  text                             not null,
 
     -- The amount of time the job can run before it is killed.
@@ -428,9 +434,9 @@ create table tml_switchboard.jobs
     -- The time at which the job was started.
     started_at                  timestamp with time zone,
 
-    -- ID of the supervisor the job was dispatched to, so the switchboard can
+    -- ID of the host the job was dispatched to, so the switchboard can
     -- discern job failure on supervisor reconnection after a dual failure.
-    dispatched_on_supervisor_id uuid,
+    dispatched_on_host_id       uuid,
 
     -- SSH endpoints that this job is reachable under, populated once scheduled on
     -- a host that exposes endpoints.
@@ -473,11 +479,11 @@ create table tml_switchboard.jobs
       (restart_policy).remaining_restart_count >= 0
     ),
 
-    -- A supervisor is bound from `scheduled` onwards (through `finalized`);
-    -- `dispatched_on_supervisor_id` tracks that binding for the assigned,
+    -- A host is bound from `scheduled` onwards (through `finalized`);
+    -- `dispatched_on_host_id` tracks that binding for the assigned,
     -- not-yet-terminal lifecycle states.
-    constraint dispatched_supervisor_iso_assigned check (
-      (dispatched_on_supervisor_id is not null) =
+    constraint dispatched_host_iso_assigned check (
+      (dispatched_on_host_id is not null) =
         (job_state in ('scheduled', 'initializing', 'ready', 'terminating'))
     ),
 
@@ -496,8 +502,8 @@ create table tml_switchboard.jobs
       (terminated_at is not null) = (job_state = 'finalized')
     ),
 
-    -- `task_exit_status` is absent while `queued` (no supervisor assigned yet)
-    -- and may be present in any later state.
+    -- `task_exit_status` is absent while `queued` (no host assigned yet) and
+    -- may be present in any later state.
     constraint task_exit_status_absent_while_queued check (
       task_exit_status is null or job_state <> 'queued'
     ),
@@ -508,14 +514,14 @@ create table tml_switchboard.jobs
     )
 );
 
-ALTER TABLE tml_switchboard.supervisors
+ALTER TABLE tml_switchboard.hosts
     ADD FOREIGN KEY (current_job)
     REFERENCES tml_switchboard.jobs (job_id) ON DELETE NO ACTION;
 
--- A job may be the `current_job` of at most one supervisor. Partial (only over
--- non-null `current_job`) so idle supervisors don't collide on NULL.
-CREATE UNIQUE INDEX supervisors_current_job_unique
-    ON tml_switchboard.supervisors (current_job)
+-- A job may be the `current_job` of at most one host. Partial (only over
+-- non-null `current_job`) so idle hosts don't collide on NULL.
+CREATE UNIQUE INDEX hosts_current_job_unique
+    ON tml_switchboard.hosts (current_job)
     WHERE current_job IS NOT NULL;
 
 -- ===========================================================================
@@ -558,24 +564,24 @@ $$;
 --
 -- `revocable` distinguishes user-manageable grants (default true) from "fixed"
 -- grants the switchboard inserts and then marks irrevocable -- e.g. when a user
--- starts a job on a group-owned supervisor, the owning group is given an
+-- starts a job on a group-owned host, the owning group is given an
 -- irrevocable `stop` grant on the job, because the job consumes that group's
 -- resources. Irrevocable rows cannot be deleted or modified by anyone (enforced
 -- by trigger); they are cleared only when the resource itself is deleted
 -- (FK cascade). The switchboard inserts a row as revocable, then UPDATEs
 -- revocable -> false to lock it.
-create type tml_switchboard.supervisor_permission as enum ('read', 'start', 'ssh', 'manage');
+create type tml_switchboard.host_permission as enum ('read', 'start', 'ssh', 'manage');
 create type tml_switchboard.job_permission as enum ('read', 'stop', 'ssh', 'manage');
 
-create table tml_switchboard.supervisor_grants
+create table tml_switchboard.host_grants
 (
-    supervisor_id uuid                                   not null references tml_switchboard.supervisors (supervisor_id) on delete cascade,
-    subject_id    uuid                                   not null references tml_switchboard.subjects (subject_id)      on delete cascade,
-    permission    tml_switchboard.supervisor_permission  not null,
-    revocable     bool                                   not null default true,
-    granted_at    timestamp with time zone               not null default current_timestamp,
+    host_id    uuid                              not null references tml_switchboard.hosts (host_id)         on delete cascade,
+    subject_id uuid                              not null references tml_switchboard.subjects (subject_id) on delete cascade,
+    permission tml_switchboard.host_permission   not null,
+    revocable  bool                              not null default true,
+    granted_at timestamp with time zone          not null default current_timestamp,
 
-    primary key (supervisor_id, subject_id, permission)
+    primary key (host_id, subject_id, permission)
 );
 
 create table tml_switchboard.job_grants
@@ -612,8 +618,8 @@ begin
 end;
 $$;
 
-create trigger supervisor_grants_irrevocable
-    before delete or update on tml_switchboard.supervisor_grants
+create trigger host_grants_irrevocable
+    before delete or update on tml_switchboard.host_grants
     for each row execute function tml_switchboard.deny_irrevocable_grant_change();
 create trigger job_grants_irrevocable
     before delete or update on tml_switchboard.job_grants

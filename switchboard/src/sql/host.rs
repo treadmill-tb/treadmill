@@ -7,8 +7,8 @@ use super::SqlSshEndpoint;
 use crate::auth::token::SecurityToken;
 
 #[derive(Debug)]
-pub struct SqlSupervisor {
-    pub supervisor_id: Uuid,
+pub struct SqlHost {
+    pub host_id: Uuid,
     pub name: String,
     pub tags: Vec<String>,
     pub ssh_endpoints: Vec<SqlSshEndpoint>,
@@ -17,7 +17,7 @@ pub struct SqlSupervisor {
 }
 
 pub async fn insert(
-    supervisor_id: Uuid,
+    host_id: Uuid,
     name: String,
     auth_token: SecurityToken,
     tag_set: &BTreeSet<String>,
@@ -29,9 +29,9 @@ pub async fn insert(
     sqlx::query!(
         r#"
         INSERT INTO
-            tml_switchboard.supervisors
+            tml_switchboard.hosts
         (
-            supervisor_id,
+            host_id,
             name,
             auth_token,
             tags,
@@ -46,7 +46,7 @@ pub async fn insert(
             $5
         );
         "#,
-        supervisor_id,
+        host_id,
         name,
         auth_token.as_bytes(),
         tag_vec.as_slice(),
@@ -57,29 +57,31 @@ pub async fn insert(
     .map(|_| ())
 }
 
-pub async fn fetch_all_supervisors(
-    conn: impl PgExecutor<'_>,
-) -> Result<Vec<SqlSupervisor>, sqlx::Error> {
+pub async fn fetch_all_hosts(conn: impl PgExecutor<'_>) -> Result<Vec<SqlHost>, sqlx::Error> {
     sqlx::query_as!(
-        SqlSupervisor,
+        SqlHost,
         r#"
         SELECT
-            supervisor_id,
+            host_id,
             name,
             tags,
             ssh_endpoints as "ssh_endpoints: _",
             current_job,
             worker_instance_id
         FROM
-            tml_switchboard.supervisors
+            tml_switchboard.hosts
         "#
     )
     .fetch_all(conn)
     .await
 }
 
-pub async fn try_authenticate_supervisor(
-    supervisor_id: Uuid,
+/// Authenticate the supervisor process connecting to drive `host_id`.
+///
+/// The auth_token lives on the host row (one supervisor per host); this checks
+/// the presented token against that record in constant time.
+pub async fn try_authenticate_for_host(
+    host_id: Uuid,
     auth_token: SecurityToken,
     conn: impl PgExecutor<'_>,
 ) -> Result<bool, sqlx::Error> {
@@ -88,12 +90,12 @@ pub async fn try_authenticate_supervisor(
         SELECT
             auth_token
         FROM
-            tml_switchboard.supervisors
+            tml_switchboard.hosts
         WHERE
-            supervisor_id = $1
+            host_id = $1
         LIMIT 1;
         "#,
-        supervisor_id,
+        host_id,
     )
     .fetch_optional(conn)
     .await?;
@@ -112,34 +114,34 @@ pub async fn try_authenticate_supervisor(
 }
 
 pub async fn increment_worker_instance_id(
-    supervisor_id: Uuid,
+    host_id: Uuid,
     conn: impl PgExecutor<'_>,
 ) -> Result<i64, sqlx::Error> {
     sqlx::query!(
         r#"
         UPDATE
-            tml_switchboard.supervisors
+            tml_switchboard.hosts
         SET
             worker_instance_id = worker_instance_id + 1
         WHERE
-            supervisor_id = $1
+            host_id = $1
         RETURNING
             worker_instance_id
         "#,
-        supervisor_id,
+        host_id,
     )
     .fetch_one(conn)
     .await
     .map(|record| record.worker_instance_id)
 }
 
-/// Read a supervisor's current job assignment (`supervisors.current_job`).
+/// Read a host's current job assignment (`hosts.current_job`).
 ///
 /// Reconciliation calls this inside the worker's `with_txn`, after the row has
 /// already been locked by [`lock_and_get_current_worker`], so the value is read
 /// under the same transaction that performs any resulting state transition.
 pub async fn fetch_current_job(
-    supervisor_id: Uuid,
+    host_id: Uuid,
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Option<Uuid>, sqlx::Error> {
     sqlx::query!(
@@ -147,28 +149,28 @@ pub async fn fetch_current_job(
         SELECT
             current_job
         FROM
-            tml_switchboard.supervisors
+            tml_switchboard.hosts
         WHERE
-            supervisor_id = $1
+            host_id = $1
         "#,
-        supervisor_id,
+        host_id,
     )
     .fetch_one(&mut **txn)
     .await
     .map(|record| record.current_job)
 }
 
-/// Acquire a row-level lock on the supervisor record and return its current
+/// Acquire a row-level lock on the host record and return its current
 /// `worker_instance_id`.
 ///
 /// The `FOR UPDATE` clause blocks any concurrent transaction that wants the
 /// same row lock — notably `increment_worker_instance_id` and other calls to
 /// this function — until this transaction commits or rolls back. Worker
 /// transactions call this as their first statement to serialize all writes
-/// for a given supervisor against worker takeover; the caller compares the
-/// returned value against its own ID to detect being superseded.
+/// for a given host against worker takeover; the caller compares the returned
+/// value against its own ID to detect being superseded.
 pub async fn lock_and_get_current_worker(
-    supervisor_id: Uuid,
+    host_id: Uuid,
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<i64, sqlx::Error> {
     sqlx::query!(
@@ -176,12 +178,12 @@ pub async fn lock_and_get_current_worker(
         SELECT
             worker_instance_id
         FROM
-            tml_switchboard.supervisors
+            tml_switchboard.hosts
         WHERE
-            supervisor_id = $1
+            host_id = $1
         FOR UPDATE
         "#,
-        supervisor_id,
+        host_id,
     )
     .fetch_one(&mut **txn)
     .await

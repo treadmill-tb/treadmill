@@ -1,5 +1,5 @@
+pub mod hosts;
 pub mod jobs;
-pub mod supervisors;
 
 use crate::api::supervisor_puppet::ParameterValue;
 use crate::api::switchboard_supervisor::{
@@ -76,8 +76,8 @@ pub enum JobInitSpec {
     RestartJob { job_id: Uuid },
 
     /// Which image to base this job off. If the image is not locally cached
-    /// at the supervisor, it will be fetched using its manifest prior to
-    /// executing the job.
+    /// at the host, it will be fetched using its manifest prior to executing
+    /// the job.
     ///
     /// Images are content-addressed by the SHA-256 digest of their
     /// manifest.
@@ -132,14 +132,14 @@ pub enum TerminationReason {
     ExecutionTimeout,
     /// The job's image was bad or could not be fetched (user fault).
     ImageError,
-    /// No supervisor matched the job's tag configuration.
-    SupervisorMatchError,
-    /// The supervisor/host failed to start the job.
-    SupervisorHostStartFailure,
-    /// The supervisor dropped the job (lost on reconnect).
-    SupervisorDroppedJob,
-    /// The supervisor was unreachable.
-    SupervisorUnreachable,
+    /// No host matched the job's tag configuration.
+    HostMatchError,
+    /// The host failed to start the job.
+    HostStartFailure,
+    /// The host's supervisor dropped the job (lost on reconnect).
+    HostDroppedJob,
+    /// The host was unreachable (its supervisor disconnected).
+    HostUnreachable,
     /// Resuming a previously started job failed.
     ResumeFailed,
     /// An unexpected internal failure.
@@ -154,12 +154,12 @@ impl Display for TerminationReason {
             TerminationReason::QueueTimeout => "timed out in queue",
             TerminationReason::ExecutionTimeout => "timed out while executing",
             TerminationReason::ImageError => "image error",
-            TerminationReason::SupervisorMatchError => "failed to match a supervisor",
-            TerminationReason::SupervisorHostStartFailure => "supervisor/host start failure",
-            TerminationReason::SupervisorDroppedJob => "supervisor dropped job",
-            TerminationReason::SupervisorUnreachable => "supervisor unreachable",
+            TerminationReason::HostMatchError => "failed to match a host",
+            TerminationReason::HostStartFailure => "host start failure",
+            TerminationReason::HostDroppedJob => "host dropped job",
+            TerminationReason::HostUnreachable => "host unreachable",
             TerminationReason::ResumeFailed => "failed to resume job",
-            TerminationReason::InternalError => "internal supervisor error",
+            TerminationReason::InternalError => "internal switchboard error",
         };
         f.write_str(s)
     }
@@ -169,9 +169,9 @@ impl Display for TerminationReason {
 pub struct JobResult {
     /// The job's ID.
     pub job_id: Uuid,
-    /// If the job was dispatched, the ID of the supervisor it was dispatched on.
+    /// If the job was dispatched, the ID of the host it was dispatched on.
     /// Otherwise [`None`].
-    pub supervisor_id: Option<Uuid>,
+    pub host_id: Option<Uuid>,
     /// Why the job terminated.
     pub termination_reason: TerminationReason,
     /// The semantic result of the user's workload, if it ran and reported one.
@@ -239,7 +239,7 @@ pub struct JobSshEndpoint {
 pub struct ExtendedJobState {
     #[serde(flatten)]
     pub state: JobState,
-    pub dispatched_to_supervisor: Option<Uuid>,
+    pub dispatched_to_host: Option<Uuid>,
     #[serde(default)] // Backwards-compatibility with clients which do not expect this field
     pub ssh_endpoints: Option<Vec<JobSshEndpoint>>,
     #[serde(default)] // Backwards-compatibility with clients which do not expect this field
@@ -255,14 +255,18 @@ pub struct JobStatus {
     pub as_of: DateTime<Utc>,
 }
 
+/// The user-visible status of a host as exposed by the switchboard REST API.
+///
 /// Note the difference with [`switchboard_supervisor`](super::switchboard_supervisor)'s
-/// [`SupervisorStatus`](super::switchboard_supervisor::ReportedSupervisorStatus): that one is concerned
-/// solely primarily with over-the-wire communication, so it does not have 'Disconnected' variants.
-/// However, on the switchboard side, we do need those, hence the differrent set of variants.
+/// [`ReportedSupervisorStatus`](super::switchboard_supervisor::ReportedSupervisorStatus):
+/// that one is concerned primarily with over-the-wire communication, so it does
+/// not have 'Disconnected' variants. On the switchboard side, the host can be
+/// unreachable because its supervisor's WebSocket is down, so we add those
+/// variants here.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status")]
 #[serde(rename_all = "snake_case")]
-pub enum SupervisorStatus {
+pub enum HostStatus {
     Busy {
         job_id: Uuid,
         job_state: RunningJobState,
