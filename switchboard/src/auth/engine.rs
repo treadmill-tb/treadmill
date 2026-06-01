@@ -30,6 +30,13 @@ pub enum HostPermission {
     Manage,
 }
 impl HostPermission {
+    pub const ALL: &'static [HostPermission] = &[
+        HostPermission::Read,
+        HostPermission::Start,
+        HostPermission::Ssh,
+        HostPermission::Manage,
+    ];
+
     /// The textual value as stored in the `host_permission` enum.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -37,6 +44,16 @@ impl HostPermission {
             HostPermission::Start => "start",
             HostPermission::Ssh => "ssh",
             HostPermission::Manage => "manage",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "read" => Some(HostPermission::Read),
+            "start" => Some(HostPermission::Start),
+            "ssh" => Some(HostPermission::Ssh),
+            "manage" => Some(HostPermission::Manage),
+            _ => None,
         }
     }
 }
@@ -50,6 +67,13 @@ pub enum JobPermission {
     Manage,
 }
 impl JobPermission {
+    pub const ALL: &'static [JobPermission] = &[
+        JobPermission::Read,
+        JobPermission::Stop,
+        JobPermission::Ssh,
+        JobPermission::Manage,
+    ];
+
     /// The textual value as stored in the `job_permission` enum.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -57,6 +81,16 @@ impl JobPermission {
             JobPermission::Stop => "stop",
             JobPermission::Ssh => "ssh",
             JobPermission::Manage => "manage",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "read" => Some(JobPermission::Read),
+            "stop" => Some(JobPermission::Stop),
+            "ssh" => Some(JobPermission::Ssh),
+            "manage" => Some(JobPermission::Manage),
+            _ => None,
         }
     }
 }
@@ -125,4 +159,92 @@ pub async fn can_access_job(
     )
     .fetch_one(conn)
     .await
+}
+
+/// Returns the complete set of permissions `subject_id` holds on `host_id`.
+/// If the subject is an owner or global admin, this returns all permissions.
+pub async fn host_permissions(
+    conn: impl PgExecutor<'_>,
+    subject_id: Uuid,
+    host_id: Uuid,
+) -> Result<Vec<HostPermission>, sqlx::Error> {
+    let rows = sqlx::query_scalar!(
+        r#"
+        with principals(id) as (
+             select id from tml_switchboard.principals($1::uuid)
+         ),
+         is_global_or_owner as (
+             select (
+                 exists (select 1 from principals where id = $3::uuid)
+                 or exists (
+                     select 1 from tml_switchboard.hosts h
+                     join principals p on h.owner_id = p.id
+                     where h.host_id = $2::uuid
+                 )
+             ) as is_auth
+         )
+         select '*' as "perm!" from is_global_or_owner where is_auth
+         union
+         select g.permission::text as "perm!"
+         from tml_switchboard.host_grants g
+         join principals p on g.subject_id = p.id
+         where g.host_id = $2::uuid
+           and not (select is_auth from is_global_or_owner)
+        "#,
+        subject_id,
+        host_id,
+        ADMINS_GROUP_ID,
+    )
+    .fetch_all(conn)
+    .await?;
+
+    if rows.iter().any(|s| s == "*") {
+        Ok(HostPermission::ALL.to_vec())
+    } else {
+        Ok(rows.into_iter().filter_map(|s: String| HostPermission::from_str(&s)).collect())
+    }
+}
+
+/// Returns the complete set of permissions `subject_id` holds on `job_id`.
+/// If the subject is an owner or global admin, this returns all permissions.
+pub async fn job_permissions(
+    conn: impl PgExecutor<'_>,
+    subject_id: Uuid,
+    job_id: Uuid,
+) -> Result<Vec<JobPermission>, sqlx::Error> {
+    let rows = sqlx::query_scalar!(
+        r#"
+        with principals(id) as (
+             select id from tml_switchboard.principals($1::uuid)
+         ),
+         is_global_or_owner as (
+             select (
+                 exists (select 1 from principals where id = $3::uuid)
+                 or exists (
+                     select 1 from tml_switchboard.jobs j
+                     join principals p on j.owner_id = p.id
+                     where j.job_id = $2::uuid
+                 )
+             ) as is_auth
+         )
+         select '*' as "perm!" from is_global_or_owner where is_auth
+         union
+         select g.permission::text as "perm!"
+         from tml_switchboard.job_grants g
+         join principals p on g.subject_id = p.id
+         where g.job_id = $2::uuid
+           and not (select is_auth from is_global_or_owner)
+        "#,
+        subject_id,
+        job_id,
+        ADMINS_GROUP_ID,
+    )
+    .fetch_all(conn)
+    .await?;
+
+    if rows.iter().any(|s| s == "*") {
+        Ok(JobPermission::ALL.to_vec())
+    } else {
+        Ok(rows.into_iter().filter_map(|s: String| JobPermission::from_str(&s)).collect())
+    }
 }

@@ -1,0 +1,80 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT token_id, user_id, canceled as \"canceled: _\",\n                  expires_at\n            FROM tml_switchboard.api_tokens\n            WHERE token_id = $1\n            LIMIT 1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "token_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.api_tokens",
+            "name": "token_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.api_tokens",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "canceled: _",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.api_token_cancellation",
+            "kind": {
+              "Composite": [
+                [
+                  "canceled_at",
+                  "Timestamptz"
+                ],
+                [
+                  "cancellation_reason",
+                  "Text"
+                ]
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.api_tokens",
+            "name": "canceled"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.api_tokens",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "0630645f985dd7cd419ad1483b7d6f3ae2213e1fc659c30cb73513d5ef97e3d4"
+}

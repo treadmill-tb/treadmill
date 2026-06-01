@@ -20,15 +20,6 @@ macro_rules! __audit_process_field {
     ($rels:ident, $val:expr, Host @ view($view:ident)) => {
         $rels.push($crate::audit::model::Relation {
             entity: $crate::audit::model::EntityRef::Host($val.0),
-            // Host is typically context when a job is the subject. If there's no job, it's the subject.
-            // The plan says "relations with the declared role/view". But it doesn't give syntax for role.
-            // We'll use `Context` for Host to match the dummy test where Host was Subject but Actor was Subject.
-            // Actually, `Role::Context` is perfect for additional entities. If it's a Host-centric event, it might be `Subject`.
-            // Wait, maybe we should just default to `Context` and let it be. Or provide an optional `role($role:ident)` syntax?
-            // "Fields typed Job/Host/Subject ... become relations with the declared role/view".
-            // Since we don't have explicit roles, let's use `Role::Subject` for the primary one.
-            // If the type is `Job`, it's `Role::Subject`. If it's `Host`, let's make it `Role::Context` by default.
-            // Wait, if it's `HostRegistered` event, the host IS the subject!
             role: $crate::audit::model::Role::Context,
             view: $crate::audit::model::ViewPolicy::Permission($crate::auth::engine::HostPermission::$view.into()),
         })
@@ -46,9 +37,6 @@ macro_rules! __audit_process_field {
         $rels.push($crate::audit::model::Relation {
             entity: $crate::audit::model::EntityRef::Subject($val.0),
             role: $crate::audit::model::Role::Context,
-            // Subjects don't have permissions in `Permission` enum (only Host/Job).
-            // So ViewPolicy::OperatorOnly is the only thing that makes sense if a Subject is related.
-            // Actually, we can just map it to OperatorOnly for now.
             view: $crate::audit::model::ViewPolicy::OperatorOnly,
         })
     };

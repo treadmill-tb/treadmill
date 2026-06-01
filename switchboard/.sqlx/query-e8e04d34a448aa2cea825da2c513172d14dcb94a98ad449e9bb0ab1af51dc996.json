@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'user');",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e8e04d34a448aa2cea825da2c513172d14dcb94a98ad449e9bb0ab1af51dc996"
+}

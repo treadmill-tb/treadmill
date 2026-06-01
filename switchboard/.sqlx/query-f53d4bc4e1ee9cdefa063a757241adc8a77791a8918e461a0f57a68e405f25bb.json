@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.user_identities (provider, provider_user_id, user_id, provider_login) values ($1, $2, $3, $4);",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f53d4bc4e1ee9cdefa063a757241adc8a77791a8918e461a0f57a68e405f25bb"
+}

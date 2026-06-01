@@ -1,0 +1,370 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        select job_id, resume_job_id, restart_job_id, image_id as \"sql_image_id: _\", ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id, tag_config, job_timeout,\n        queued_at, job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\", started_at,\n        dispatched_on_host_id, ssh_endpoints as \"ssh_endpoints: _\",\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\", exit_message, terminated_at,\n        last_updated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "job_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "resume_job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "resume_job_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "restart_job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "restart_job_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "sql_image_id: _",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "image_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "ssh_keys",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "ssh_keys"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "sql_restart_policy: _",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.restart_policy",
+            "kind": {
+              "Composite": [
+                [
+                  "remaining_restart_count",
+                  "Int4"
+                ]
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "restart_policy"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "enqueued_by_token_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "enqueued_by_token_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "tag_config",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "tag_config"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "job_timeout",
+        "type_info": "Interval",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "job_timeout"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "queued_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "queued_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "job_state: _",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.job_state",
+            "kind": {
+              "Enum": [
+                "queued",
+                "scheduled",
+                "initializing",
+                "ready",
+                "terminating",
+                "finalized"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "job_state"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "initializing_stage: _",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.job_initializing_stage",
+            "kind": {
+              "Enum": [
+                "starting",
+                "fetching_image",
+                "allocating",
+                "provisioning",
+                "booting"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "initializing_stage"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "started_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "started_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "dispatched_on_host_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "dispatched_on_host_id"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "ssh_endpoints: _",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.ssh_endpoint[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "tml_switchboard.ssh_endpoint",
+                  "kind": {
+                    "Composite": [
+                      [
+                        "ssh_host",
+                        {
+                          "Custom": {
+                            "name": "tml_switchboard.ssh_host",
+                            "kind": {
+                              "Domain": "Text"
+                            }
+                          }
+                        }
+                      ],
+                      [
+                        "ssh_port",
+                        {
+                          "Custom": {
+                            "name": "tml_switchboard.ssh_port",
+                            "kind": {
+                              "Domain": {
+                                "Custom": {
+                                  "name": "tml_switchboard.port",
+                                  "kind": {
+                                    "Domain": "Int4"
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "ssh_endpoints"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "termination_reason: _",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.termination_reason",
+            "kind": {
+              "Enum": [
+                "workload_exited",
+                "workload_self_canceled",
+                "user_canceled",
+                "queue_timeout",
+                "execution_timeout",
+                "image_error",
+                "host_match_error",
+                "host_start_failure",
+                "host_dropped_job",
+                "host_unreachable",
+                "resume_failed",
+                "internal_error"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "termination_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "task_exit_status: _",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.task_exit_status",
+            "kind": {
+              "Enum": [
+                "pending",
+                "success",
+                "failure"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "task_exit_status"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "exit_message",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "exit_message"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "terminated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "terminated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "last_updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "last_updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "862777d03b7d4d0489a3e914fa683054ce3d87b1da6d564d189b9dea87aefb36"
+}
