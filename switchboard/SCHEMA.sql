@@ -526,7 +526,32 @@ CREATE UNIQUE INDEX supervisors_current_job_unique
 -- `owner_id` (above); the grant tables below record additional (subject,
 -- permission) entries. A subject is authorized for a permission on a resource if
 -- it (or any group it transitively belongs to) owns the resource or holds a
--- matching grant -- evaluated in application SQL, not here.
+-- matching grant -- the *policy* disjunction is evaluated in application SQL, not
+-- here. The one shared building block both sides of that disjunction need -- the
+-- set of a subject's transitive group memberships -- is the `principals`
+-- function below, so the application query stays free of the recursive CTE.
+--
+-- `principals(arg_subject)` returns the subject itself plus every group it
+-- reaches by following `member_id -> group_id` edges. It is a parameterized
+-- function rather than a view so it is seeded with a single subject and walks
+-- only that subject's memberships via `group_members_member_id_idx`, instead of
+-- materializing the closure for every subject. Ownership and grant checks are
+-- tested against this whole set (see `src/auth/engine.rs`).
+create or replace function tml_switchboard.principals(arg_subject uuid)
+    returns table (id uuid)
+    language sql
+    stable as
+$$
+    with recursive reached(id) as (
+        select arg_subject
+        union
+        select gm.group_id
+        from tml_switchboard.group_members gm
+        join reached r on gm.member_id = r.id
+    )
+    select id from reached;
+$$;
+
 --
 -- `manage` is the meta-permission: holding it lets a subject edit the resource's
 -- ACL (add/revoke grants) and transfer ownership. The owner holds it implicitly.
