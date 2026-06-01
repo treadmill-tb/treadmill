@@ -655,3 +655,104 @@ create table tml_switchboard.job_parameters
 
     primary key (job_id, key)
 );
+
+-- ===========================================================================
+-- AUDIT LOG
+-- ===========================================================================
+--
+-- A curated, durable, append-only record of system state changes (and a few
+-- observational events). Written in the SAME transaction as the change it
+-- describes, via the `audit::transition`/`audit::emit` chokepoint in the Rust
+-- code -- so a rolled-back state change never leaves an event behind, and an
+-- event provably describes its mutation. See `AUDIT_LOG_PLAN.md` for the design.
+--
+-- Payloads are stored as raw structured JSON and rendered at view time by a
+-- per-event-type renderer keyed off `event_type`; the read API redacts based on
+-- the viewer's permissions on the related entity. Secret VALUES (e.g. the
+-- contents of `parameter_value.is_secret` parameters) must never be embedded in
+-- a payload -- store the key name and a redacted marker instead.
+
+-- One row per state change or observational event. Append-only: a trigger blocks
+-- UPDATE/DELETE in normal operation (see `deny_audit_event_change` below); the
+-- relation cascade exists only for a future GC that deletes whole events
+-- deliberately by temporarily bypassing the trigger.
+--
+-- `event_id` is a UUIDv7 minted by the application: time-ordered so the primary
+-- key index is also the natural newest-first ordering for feed queries.
+--
+-- `actor_id` and `correlation_id` are PLAIN uuids with no foreign key. The
+-- referenced subject/trace may be deleted or never have existed in this DB
+-- (correlation ids come from `tracing`); the audit row must survive either way.
+-- Worker-driven transitions with no human actor reference the well-known
+-- `system` subject seeded above.
+create table tml_switchboard.audit_events
+(
+    event_id       uuid                     not null primary key,
+    event_type     text                     not null,
+    payload        jsonb                    not null,
+    actor_id       uuid                     not null,
+    correlation_id uuid,
+    created_at     timestamp with time zone not null default current_timestamp
+);
+create index audit_events_created_at_idx
+    on tml_switchboard.audit_events (created_at);
+
+-- The entity kinds an audit event can relate to. `subject` covers both users and
+-- groups (matching the unified subjects model above); resource-scoped relations
+-- use `job` or `host`.
+create type tml_switchboard.audit_entity_kind as enum ('job', 'host', 'subject');
+-- An event's role with respect to a related entity. `actor` is the principal
+-- that caused it; `subject` is the entity acted upon; `context` is any
+-- additional entity whose viewers should also be able to see the event (e.g.
+-- the host on which a job ran).
+create type tml_switchboard.audit_role as enum ('actor', 'subject', 'context');
+
+-- Links an event to an entity it relates to, with the view policy for THIS
+-- relation. `entity_id` is a PLAIN uuid with NO foreign key: that is what keeps
+-- audit history alive after the referenced job/host/subject is deleted
+-- (matching the `owner_id on delete set null` provenance rationale above).
+--
+-- `view_policy` is the EXACT permission a viewer must hold on `entity` to see
+-- the event through this relation -- one of the host/job permission enum
+-- values ('read'|'start'|'ssh'|'stop'|'manage') stored as text so the same
+-- column covers both resource kinds, plus the sentinel 'operator_only' for
+-- system-internal events that never surface in a user-facing feed. Visibility
+-- is disjunctive across relations: a viewer sees the event if they satisfy ANY
+-- one relation's policy. Permission-implication (e.g. `manage` => `read`) is a
+-- deliberate non-goal; matching is exact.
+create table tml_switchboard.audit_event_relations
+(
+    event_id    uuid                              not null
+                  references tml_switchboard.audit_events (event_id) on delete cascade,
+    entity_kind tml_switchboard.audit_entity_kind not null,
+    entity_id   uuid                              not null,
+    role        tml_switchboard.audit_role        not null,
+    view_policy text                              not null,
+
+    primary key (event_id, entity_kind, entity_id, role)
+);
+-- The feed's hot path: "events for entity (kind, id), newest first". UUIDv7
+-- `event_id` is time-ordered, so a DESC scan on this index also yields
+-- chronological order without a separate sort.
+create index audit_event_relations_entity_idx
+    on tml_switchboard.audit_event_relations (entity_kind, entity_id, event_id desc);
+
+-- Enforce append-only on `audit_events`: any direct UPDATE or DELETE raises.
+-- Same trigger pattern as `deny_irrevocable_grant_change` above. FK-cascade
+-- teardown of `audit_event_relations` when an event is deleted is not gated by
+-- this trigger (it fires on `audit_events`, not relations), so a deliberate GC
+-- that drops the trigger to remove whole events still cleans the relation rows
+-- up via the cascade.
+create or replace function tml_switchboard.deny_audit_event_change()
+    returns trigger
+    language plpgsql as
+$$
+begin
+    raise exception 'audit events are append-only (% on %.%)',
+        TG_OP, TG_TABLE_SCHEMA, TG_TABLE_NAME;
+end;
+$$;
+
+create trigger audit_events_append_only
+    before update or delete on tml_switchboard.audit_events
+    for each row execute function tml_switchboard.deny_audit_event_change();
