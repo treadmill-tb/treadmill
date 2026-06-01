@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from tml_switchboard.audit_events where event_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "557c2c365965b0c29c418e08b8a42535932ce7e4fb00a08a4d1153fc1e205b81"
+}
