@@ -35,7 +35,7 @@ tokio = { workspace = true, features = [
   "signal",
 ] }
 uuid = { workspace = true, features = ["serde"] }
-zbus = "5.15.0"
+zbus = "5.16.0"
 
 [lints]
 workspace = true
