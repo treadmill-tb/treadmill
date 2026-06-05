@@ -1,24 +1,16 @@
-pub mod hosts;
-pub mod jobs;
+pub mod users;
 
 use crate::api::supervisor_puppet::ParameterValue;
-use crate::api::switchboard_supervisor::{
-    JobInitializingStage, RestartPolicy, RunningJobState, TaskExitStatus,
-};
+use crate::api::switchboard_supervisor::RestartPolicy;
 use crate::image::manifest::ImageId;
 use base64::Engine;
 use chrono::{DateTime, Utc};
-use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use subtle::{Choice, ConstantTimeEq};
 use uuid::Uuid;
-
-pub trait JsonProxiedStatus: Serialize + for<'de> Deserialize<'de> {
-    fn status_code(&self) -> StatusCode;
-}
 
 #[serde_as]
 #[derive(schemars::JsonSchema, Debug, Serialize, Deserialize, Eq, Copy, Clone)]
@@ -163,118 +155,4 @@ impl Display for TerminationReason {
         };
         f.write_str(s)
     }
-}
-/// Represents the finalized state of a job.
-#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct JobResult {
-    /// The job's ID.
-    pub job_id: Uuid,
-    /// If the job was dispatched, the ID of the host it was dispatched on.
-    /// Otherwise [`None`].
-    pub host_id: Option<Uuid>,
-    /// Why the job terminated.
-    pub termination_reason: TerminationReason,
-    /// The semantic result of the user's workload, if it ran and reported one.
-    /// Orthogonal to `termination_reason`; may be `None` even on a finalized job.
-    pub task_exit_status: Option<TaskExitStatus>,
-    /// Optional human-readable message (multi-line markdown acceptable).
-    pub exit_message: Option<String>,
-    /// Time at which the switchboard processed the termination.
-    pub terminated_at: DateTime<Utc>,
-}
-/// Represents a point in a job's lifecycle.
-#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum JobState {
-    Queued,
-    Scheduled,
-    Initializing { stage: JobInitializingStage },
-    Ready,
-    Terminating,
-    Terminated,
-}
-impl TryFrom<JobState> for RunningJobState {
-    type Error = JobState;
-
-    fn try_from(value: JobState) -> Result<Self, Self::Error> {
-        match value {
-            JobState::Queued => Err(value),
-            JobState::Scheduled => Err(value),
-            JobState::Initializing { stage } => Ok(Self::Initializing { stage }),
-            JobState::Ready => Ok(Self::Ready),
-            JobState::Terminating => Ok(Self::Terminating),
-            JobState::Terminated => Err(value),
-        }
-    }
-}
-#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "event_type", rename_all = "snake_case")]
-pub enum JobEvent {
-    StateTransition {
-        state: JobState,
-        status_message: Option<String>,
-    },
-    DeclareWorkloadExitStatus {
-        task_exit_status: TaskExitStatus,
-        workload_output: Option<String>,
-    },
-    SetExitStatus {
-        termination_reason: TerminationReason,
-        task_exit_status: Option<TaskExitStatus>,
-        status_message: Option<String>,
-    },
-    FinalizeResult {
-        job_result: JobResult,
-    },
-}
-
-#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct JobSshEndpoint {
-    pub host: String,
-    pub port: u16,
-}
-
-/// This is exclusively an API type
-#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct ExtendedJobState {
-    #[serde(flatten)]
-    pub state: JobState,
-    pub dispatched_to_host: Option<Uuid>,
-    #[serde(default)] // Backwards-compatibility with clients which do not expect this field
-    pub ssh_endpoints: Option<Vec<JobSshEndpoint>>,
-    #[serde(default)] // Backwards-compatibility with clients which do not expect this field
-    pub ssh_user: Option<String>,
-    #[serde(default)] // Backwards-compatibility with clients which do not expect this field
-    pub ssh_host_keys: Option<Vec<String>>,
-    pub result: Option<JobResult>,
-}
-/// Represents the status of a job as of some point in time.
-#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct JobStatus {
-    pub state: ExtendedJobState,
-    pub as_of: DateTime<Utc>,
-}
-
-/// The user-visible status of a host as exposed by the switchboard REST API.
-///
-/// Note the difference with [`switchboard_supervisor`](super::switchboard_supervisor)'s
-/// [`ReportedSupervisorStatus`](super::switchboard_supervisor::ReportedSupervisorStatus):
-/// that one is concerned primarily with over-the-wire communication, so it does
-/// not have 'Disconnected' variants. On the switchboard side, the host can be
-/// unreachable because its supervisor's WebSocket is down, so we add those
-/// variants here.
-#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "status")]
-#[serde(rename_all = "snake_case")]
-pub enum HostStatus {
-    Busy {
-        job_id: Uuid,
-        job_state: RunningJobState,
-    },
-    BusyDisconnected {
-        job_id: Uuid,
-        job_state: RunningJobState,
-    },
-    Idle,
-    Disconnected,
 }
