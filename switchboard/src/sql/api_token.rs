@@ -51,6 +51,10 @@ pub struct SqlApiTokenMetadata {
     pub expires_at: DateTime<Utc>,
     /// ID of the user that owns the token
     pub user_id: Uuid,
+    /// Whether the owning user's account is locked. A locked account's tokens
+    /// are rejected at extraction time, so a since-locked user's existing
+    /// sessions stop working immediately.
+    pub locked: bool,
 }
 
 /// Look up a token by its secret in the database.
@@ -60,10 +64,11 @@ pub async fn fetch_metadata_by_token<'c, E: PgExecutor<'c>>(
 ) -> Result<SqlApiTokenMetadata, TokenError> {
     sqlx::query_as!(
         SqlApiTokenMetadata,
-        r#"SELECT token_id, user_id, canceled as "canceled: _",
-                  expires_at
-            FROM tml_switchboard.api_tokens
-            WHERE token = $1
+        r#"SELECT t.token_id, t.user_id, t.canceled as "canceled: _",
+                  t.expires_at, u.locked
+            FROM tml_switchboard.api_tokens t
+            JOIN tml_switchboard.users u ON u.subject_id = t.user_id
+            WHERE t.token = $1
             LIMIT 1;"#,
         token.as_bytes(),
     )
@@ -81,10 +86,11 @@ pub async fn fetch_metadata_by_id<'c, E: PgExecutor<'c>>(
 ) -> Result<SqlApiTokenMetadata, TokenError> {
     sqlx::query_as!(
         SqlApiTokenMetadata,
-        r#"SELECT token_id, user_id, canceled as "canceled: _",
-                  expires_at
-            FROM tml_switchboard.api_tokens
-            WHERE token_id = $1
+        r#"SELECT t.token_id, t.user_id, t.canceled as "canceled: _",
+                  t.expires_at, u.locked
+            FROM tml_switchboard.api_tokens t
+            JOIN tml_switchboard.users u ON u.subject_id = t.user_id
+            WHERE t.token_id = $1
             LIMIT 1;"#,
         token_id
     )

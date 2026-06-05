@@ -64,6 +64,14 @@ impl FromRequestParts<AppState> for Subject {
                 );
                 return Err(StatusCode::UNAUTHORIZED.into_response());
             }
+            if token_info.locked {
+                tracing::warn!(
+                    "failed to derive subject: owning user {} is locked (token {})",
+                    token_info.user_id,
+                    token_info.token_id,
+                );
+                return Err(StatusCode::FORBIDDEN.into_response());
+            }
             Ok(Self(SubjectDetail {
                 token_info: Arc::new(token_info),
             }))

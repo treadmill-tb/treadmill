@@ -98,6 +98,22 @@ define_event! {
 }
 
 define_event! {
+    /// A login was refused because the resolved account is locked. Operator-only:
+    /// the locked user cannot authenticate to view their own feed, and a refused
+    /// attempt is an operational signal rather than user-facing history.
+    LoginDeniedLocked v1 {
+        actor: Subject,
+        user: Subject @ view(Operator),
+        provider: String,
+        provider_user_id: String,
+        login: String,
+        client_ip: Option<String>,
+        client_port: Option<i32>,
+    }
+    render = "login denied for locked account {login} via {provider}";
+}
+
+define_event! {
     /// A session/API token was minted for the user.
     SessionTokenIssued v1 {
         actor: Subject,

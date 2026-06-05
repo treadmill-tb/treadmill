@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT token_id, user_id, canceled as \"canceled: _\",\n                  expires_at\n            FROM tml_switchboard.api_tokens\n            WHERE token = $1\n            LIMIT 1;",
+  "query": "SELECT t.token_id, t.user_id, t.canceled as \"canceled: _\",\n                  t.expires_at, u.locked\n            FROM tml_switchboard.api_tokens t\n            JOIN tml_switchboard.users u ON u.subject_id = t.user_id\n            WHERE t.token = $1\n            LIMIT 1;",
   "describe": {
     "columns": [
       {
@@ -62,6 +62,17 @@
             "name": "expires_at"
           }
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "locked",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.users",
+            "name": "locked"
+          }
+        }
       }
     ],
     "parameters": {
@@ -73,8 +84,9 @@
       false,
       false,
       true,
+      false,
       false
     ]
   },
-  "hash": "4c83d3f0717d8111cb692cb51bcfb5564d97acb4ac217997e0dd17ea3d5fc5dc"
+  "hash": "dc2bf134264baec90a298bb49ef44d19f8a442b8d6103ae95b71a332406cf74a"
 }

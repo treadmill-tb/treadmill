@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select locked from tml_switchboard.users where subject_id = $1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "locked",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.users",
+            "name": "locked"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c9e985565d657a574293fd6b29ea88d769a9eb7c7e315752c714eed7cd18d060"
+}

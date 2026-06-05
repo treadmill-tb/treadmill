@@ -141,6 +141,45 @@ pub async fn github_callback(
                 tracing::error!("failed to provision user: {e}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
+    // A locked account is still provisioned/refreshed (we keep its data and the
+    // provisioning audit trail current), but is refused a token. Commit the
+    // refusal — including its audit row — and stop.
+    let locked = sqlx::query_scalar!(
+        "select locked from tml_switchboard.users where subject_id = $1;",
+        user_id,
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!("failed to read lock status for {user_id}: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    if locked {
+        audit::emit(
+            &mut tx,
+            &events::LoginDeniedLocked {
+                actor: AuditSubject(user_id),
+                user: AuditSubject(user_id),
+                provider: provider.name().to_string(),
+                provider_user_id: identity.provider_user_id.clone(),
+                login: identity.login.clone(),
+                client_ip: client_ip.clone(),
+                client_port,
+            },
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("failed to record locked-login denial: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        tx.commit().await.map_err(|e| {
+            tracing::error!("failed to commit locked-login transaction: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        tracing::warn!("user {user_id} login denied: account is locked");
+        return Err(StatusCode::FORBIDDEN);
+    }
+
     let (session_token, expires_at) = audit::transition(
         &mut tx,
         IssueSessionToken {
