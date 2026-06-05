@@ -62,12 +62,21 @@
           pg_ctl -D "$PG_BASE_DIR" -l "$PG_BASE_DIR/log" \
             -o "-h ''' --unix_socket_directories='$PG_BASE_DIR'" start
 
-          cleanup() {
-            pg_ctl -D "$PG_BASE_DIR" stop
-            echo "Deleting database state $PG_BASE_DIR"
+          # Tear down Postgres and its scratch dir once the shell is gone. A
+          # plain `trap ... EXIT` is not enough: `nix develop -c CMD` execs the
+          # command, replacing the shell that holds the trap, so it never fires
+          # and the detached pg_ctl daemon is orphaned in /tmp. Instead, fork a
+          # watcher keyed on this shell's PID. exec preserves the PID, so the
+          # watcher fires on every exit path -- interactive exit, `-c`, even a
+          # killed terminal -- and only ever touches its own cluster, so
+          # concurrent database shells don't clean up each other.
+          __tml_db_pid=$$
+          (
+            while kill -0 "$__tml_db_pid" 2>/dev/null; do sleep 1; done
+            pg_ctl -D "$PG_BASE_DIR" stop -m immediate >/dev/null 2>&1
             rm -rf "$PG_BASE_DIR"
-          }
-          trap cleanup EXIT
+          ) &
+          disown
 
           export PGHOST="$PG_BASE_DIR"
           export PGHOST_URIENCODE="$(printf '%s' "$PGHOST" | ${pkgs.jq}/bin/jq -sRr @uri)"
