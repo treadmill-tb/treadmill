@@ -12,6 +12,8 @@ console-subscriber = "0.5.0"
 
 # Utility
 uuid = { workspace = true, features = ["serde", "fast-rng", "v4", "v7"] }
+# Avatar-URL validation on profile updates (scheme/host checks).
+url = "2"
 # Link-time event-renderer registry. The `audit` module registers a render fn
 # per event type via `linkme::distributed_slice` so the read API doesn't need a
 # central `match event_type` -- adding a new event in `define_event!` makes it

@@ -5,7 +5,7 @@ mod users;
 
 use crate::serve::AppState;
 use aide::axum::ApiRouter;
-use aide::axum::routing::get_with;
+use aide::axum::routing::{delete_with, get_with};
 use axum::Router;
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -39,7 +39,7 @@ pub fn api_router() -> ApiRouter<AppState> {
         //  GET /jobs (+ <FILTERS>)
         // .api_route("/jobs", get_with(jobs::list, |o| o))
         //  GET /jobs/{id}/events
-        .api_route("/jobs/:id/events", get_with(jobs::list_events, |o| o))
+        .api_route("/jobs/{id}/events", get_with(jobs::list_events, |o| o))
         //  GET /jobs/{id}/status
         // .api_route("/jobs/{id}/status", get_with(jobs::status, |o| o))
         //  GET /jobs/{id}/info
@@ -58,20 +58,30 @@ pub fn api_router() -> ApiRouter<AppState> {
         //  POST /supervisors/new
         //  DELETE /supervisors/{id}
         //  GET /hosts/{id}/events
-        .api_route("/hosts/:id/events", get_with(hosts::list_events, |o| o))
+        .api_route("/hosts/{id}/events", get_with(hosts::list_events, |o| o))
         //  GET /supervisors/{id}/connect
         // Note that the HTTP verb 'GET' here is not necessarily conformant with REST principles,
         // but is required by RFC6455 §4.1: "The method of the request MUST be GET" (regarding
         // WebSocket HTTP handshakes).
-        .api_route("/hosts/:id/connect", get_with(hosts::connect, |o| o))
-    // user management group
-    //  GET /users/{id}/events
-    .api_route("/users/:id/events", get_with(users::list_events, |o| o))
-    //  GET /users/{id}/jobs (+ <FILTERS>)
-    //  GET /users/{id}/tokens (+ <FILTERS>)
-    // token management group
-    //  POST /tokens/new
-    //  DELETE /tokens/{id}
+        .api_route("/hosts/{id}/connect", get_with(hosts::connect, |o| o))
+        // user management group
+        //  GET  /users/me            -- own profile (incl. emails + groups)
+        //  PATCH /users/me           -- update display name / username / avatar
+        .api_route(
+            "/users/me",
+            get_with(users::get_me, |o| o).patch_with(users::patch_me, |o| o),
+        )
+        //  GET /users/me/tokens      -- list own sessions/tokens
+        .api_route("/users/me/tokens", get_with(users::list_tokens, |o| o))
+        //  DELETE /users/me/tokens/{token_id} -- revoke own token
+        .api_route(
+            "/users/me/tokens/{token_id}",
+            delete_with(users::revoke_token, |o| o),
+        )
+        //  GET /users/{id}           -- public profile subset
+        .api_route("/users/{id}", get_with(users::get_user, |o| o))
+        //  GET /users/{id}/events    -- per-user audit feed
+        .api_route("/users/{id}/events", get_with(users::list_events, |o| o))
 }
 
 async fn not_found() -> impl IntoResponse {

@@ -114,6 +114,43 @@ define_event! {
 }
 
 define_event! {
+    /// A user changed their own username via the management API. Carries the
+    /// immutable `user_id` plus the old and new handle.
+    UserRenamed v1 {
+        actor: Subject,
+        user: Subject @ view(SelfAccess),
+        old_username: String,
+        new_username: String,
+    }
+    render = "renamed {old_username} to {new_username}";
+}
+
+define_event! {
+    /// A user edited their own display name and/or avatar via the management
+    /// API. Distinct from [`UserProfileChanged`], which records the implicit
+    /// refresh of provider-sourced fields on login.
+    UserProfileUpdated v1 {
+        actor: Subject,
+        user: Subject @ view(SelfAccess),
+        old_full_name: Option<String>,
+        new_full_name: Option<String>,
+        old_avatar_url: Option<String>,
+        new_avatar_url: Option<String>,
+    }
+    render = "profile updated";
+}
+
+define_event! {
+    /// A user revoked one of their own session/API tokens.
+    SessionTokenRevoked v1 {
+        actor: Subject,
+        user: Subject @ view(SelfAccess),
+        token_id: Uuid,
+    }
+    render = "session token {token_id} revoked";
+}
+
+define_event! {
     /// A session/API token was minted for the user.
     SessionTokenIssued v1 {
         actor: Subject,

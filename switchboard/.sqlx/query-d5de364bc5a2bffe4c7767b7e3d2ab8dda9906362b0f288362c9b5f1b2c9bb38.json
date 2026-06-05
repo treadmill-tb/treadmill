@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    UPDATE tml_switchboard.hosts\n                    SET name = $2\n                    WHERE host_id = $1\n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d5de364bc5a2bffe4c7767b7e3d2ab8dda9906362b0f288362c9b5f1b2c9bb38"
+}

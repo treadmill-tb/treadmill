@@ -4176,6 +4176,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "treadmill-rs",
+ "url",
  "uuid",
  "wiremock",
 ]

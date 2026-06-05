@@ -158,3 +158,41 @@ impl Transition for IssueSessionToken {
         Ok(((api_token, expires), event))
     }
 }
+
+/// Revoke (cancel) a token. The route confirms the token belongs to the caller
+/// before running this. Idempotent on the write (only flips an un-canceled
+/// token) but always emits [`events::SessionTokenRevoked`]. Run via
+/// [`audit::transition`](crate::audit::transition).
+pub struct RevokeToken {
+    pub user_id: Uuid,
+    pub token_id: Uuid,
+    pub reason: String,
+}
+
+impl Transition for RevokeToken {
+    type Output = ();
+    type Event = events::SessionTokenRevoked;
+
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        sqlx::query!(
+            "update tml_switchboard.api_tokens \
+             set canceled = row(now(), $2)::tml_switchboard.api_token_cancellation \
+             where token_id = $1 and canceled is null;",
+            self.token_id,
+            self.reason,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::SessionTokenRevoked {
+            actor: AuditSubject(self.user_id),
+            user: AuditSubject(self.user_id),
+            token_id: self.token_id,
+        };
+        Ok(((), event))
+    }
+}

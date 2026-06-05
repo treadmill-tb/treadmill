@@ -417,6 +417,86 @@ impl Transition for RemoveGroupMembership {
     }
 }
 
+/// Change a user's username via the management API. The new value is assumed
+/// pre-validated (shape + reserved-name checks happen in the route); uniqueness
+/// is enforced by the DB and surfaces here as a unique-violation error the route
+/// turns into a clean 409. Emits [`events::UserRenamed`].
+pub struct RenameUser {
+    pub user_id: Uuid,
+    pub old_username: String,
+    pub new_username: String,
+}
+
+impl Transition for RenameUser {
+    type Output = ();
+    type Event = events::UserRenamed;
+
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        sqlx::query!(
+            "update tml_switchboard.users set username = $2 where subject_id = $1;",
+            self.user_id,
+            self.new_username,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::UserRenamed {
+            actor: AuditSubject(self.user_id),
+            user: AuditSubject(self.user_id),
+            old_username: self.old_username,
+            new_username: self.new_username,
+        };
+        Ok(((), event))
+    }
+}
+
+/// Update a user's display name and/or avatar via the management API. Writes the
+/// final values for both columns (the route fills the unchanged column with its
+/// current value). Emits [`events::UserProfileUpdated`], distinct from the
+/// login-time [`events::UserProfileChanged`].
+pub struct UpdateUserProfile {
+    pub user_id: Uuid,
+    pub old_full_name: Option<String>,
+    pub new_full_name: Option<String>,
+    pub old_avatar_url: Option<String>,
+    pub new_avatar_url: Option<String>,
+}
+
+impl Transition for UpdateUserProfile {
+    type Output = ();
+    type Event = events::UserProfileUpdated;
+
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        sqlx::query!(
+            "update tml_switchboard.users set full_name = $2, avatar_url = $3 \
+             where subject_id = $1;",
+            self.user_id,
+            self.new_full_name,
+            self.new_avatar_url,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::UserProfileUpdated {
+            actor: AuditSubject(self.user_id),
+            user: AuditSubject(self.user_id),
+            old_full_name: self.old_full_name,
+            new_full_name: self.new_full_name,
+            old_avatar_url: self.old_avatar_url,
+            new_avatar_url: self.new_avatar_url,
+        };
+        Ok(((), event))
+    }
+}
+
 /// Find an unused username, trying `base`, then `base-2`, `base-3`, ...
 async fn unique_username(conn: &mut PgConnection, base: &str) -> Result<String, sqlx::Error> {
     let mut candidate = base.to_string();
