@@ -5,6 +5,38 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/jobs/{id}/events": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditFeedResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/hosts/{id}/events": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditFeedResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/hosts/{id}/connect": {
       "get": {
         "parameters": [
@@ -60,7 +92,433 @@
           }
         }
       }
+    },
+    "/users/me": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "The owner's full view of their own profile: the public subset plus the\nprivate additions only the account holder may see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SelfUserProfile"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "requestBody": {
+          "description": "A patch to the caller's own profile. Each field uses a double `Option` so an\nabsent field (leave unchanged) is distinguishable from an explicit `null`\n(clear the value). `username` is non-nullable, so a single `Option` suffices.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The owner's full view of their own profile: the public subset plus the\nprivate additions only the account holder may see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SelfUserProfile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Failed to parse the request body as JSON",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Expected request with `Content-Type: application/json`",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Failed to deserialize the JSON body into the target type",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/me/tokens": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SessionInfo"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/me/tokens/{token_id}": {
+      "delete": {}
+    },
+    "/users/{id}": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "The world-readable subset of a user profile: only data deemed safe to expose\nto any authenticated caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicUserProfile"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{id}/events": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditFeedResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
-  "components": {}
+  "components": {
+    "schemas": {
+      "AuditFeedResponse": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RenderedAuditRow"
+            }
+          }
+        },
+        "required": [
+          "events"
+        ]
+      },
+      "GroupMembership": {
+        "description": "One group the user belongs to, including transitive memberships resolved via\nthe `principals()` function.",
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "description": "How the membership arose (`direct`, `github_org`, ...), as stored in\n`tml_switchboard.membership_source`.",
+            "type": "string"
+          },
+          "source_ref": {
+            "description": "The external reference backing an auto-sourced membership (e.g. the\nGitHub org id); empty for direct memberships.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "group_id",
+          "name",
+          "source",
+          "source_ref"
+        ]
+      },
+      "LinkedGitHub": {
+        "description": "A linked GitHub identity, reduced to the fields safe to expose publicly.",
+        "type": "object",
+        "properties": {
+          "login": {
+            "description": "The user's current GitHub login/handle.",
+            "type": "string"
+          },
+          "profile_url": {
+            "description": "Canonical URL of the GitHub profile (`https://github.com/<login>`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "login",
+          "profile_url"
+        ]
+      },
+      "PublicUserProfile": {
+        "description": "The world-readable subset of a user profile: only data deemed safe to expose\nto any authenticated caller.",
+        "type": "object",
+        "properties": {
+          "avatar_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "full_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "github": {
+            "description": "The linked GitHub account, if any.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LinkedGitHub"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "username": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "username"
+        ]
+      },
+      "RenderedAuditRow": {
+        "type": "object",
+        "properties": {
+          "actor_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "correlation_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "event_type",
+          "created_at",
+          "actor_id",
+          "message"
+        ]
+      },
+      "SelfUserProfile": {
+        "description": "The owner's full view of their own profile: the public subset plus the\nprivate additions only the account holder may see.",
+        "type": "object",
+        "properties": {
+          "avatar_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "emails": {
+            "description": "All verified email addresses on file for the account.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "full_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "github": {
+            "description": "The linked GitHub account, if any.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LinkedGitHub"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "groups": {
+            "description": "Every group the user belongs to, including transitive memberships.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GroupMembership"
+            }
+          },
+          "locked": {
+            "description": "Whether the account is locked (cannot log in or use existing sessions).",
+            "type": "boolean"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "username": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "username",
+          "emails",
+          "groups",
+          "locked"
+        ]
+      },
+      "SessionInfo": {
+        "description": "One of the caller's active or historical sessions/API tokens. Never carries\nthe secret token itself — only its metadata and provenance.",
+        "type": "object",
+        "properties": {
+          "canceled": {
+            "description": "Set if the token has been revoked.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenCancellation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "comment": {
+            "description": "An optional human-supplied label for the token.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_ip": {
+            "description": "The client IP the token was minted from, if recorded.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current": {
+            "description": "True for the token used to authenticate the current request.",
+            "type": "boolean"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "token_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "user_agent": {
+            "description": "The user agent that requested the token, if recorded.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "token_id",
+          "created_at",
+          "expires_at",
+          "current"
+        ]
+      },
+      "TokenCancellation": {
+        "description": "When and why a token was revoked.",
+        "type": "object",
+        "properties": {
+          "canceled_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "canceled_at",
+          "reason"
+        ]
+      },
+      "UpdateProfileRequest": {
+        "description": "A patch to the caller's own profile. Each field uses a double `Option` so an\nabsent field (leave unchanged) is distinguishable from an explicit `null`\n(clear the value). `username` is non-nullable, so a single `Option` suffices.",
+        "type": "object",
+        "properties": {
+          "avatar_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "full_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
 }

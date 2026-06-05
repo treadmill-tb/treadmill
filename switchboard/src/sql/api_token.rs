@@ -23,7 +23,7 @@ pub enum TokenError {
 ///
 /// Represents the time and reason for the revocation of an API token.
 #[derive(Debug, Clone, sqlx::Type)]
-#[sqlx(type_name = "api_token_cancellation")]
+#[sqlx(type_name = "tml_switchboard.api_token_cancellation")]
 pub struct Cancellation {
     pub canceled_at: DateTime<Utc>,
     pub cancellation_reason: String,

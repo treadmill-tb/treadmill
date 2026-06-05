@@ -239,6 +239,50 @@ async fn github_login_provisions_and_reconciles(pool: PgPool) {
     .unwrap();
     assert_eq!(auto_members, 1, "auto-group membership should be present");
 
+    // The login wrote an attributable audit trail: every event carries the
+    // immutable internal user_id as a relation, and the provider details and
+    // resolved client address are recorded on the login marker.
+    let event_types: Vec<String> = sqlx::query_scalar(
+        "select e.event_type from tml_switchboard.audit_events e \
+         join tml_switchboard.audit_event_relations r on r.event_id = e.event_id \
+         where r.entity_kind = 'subject' and r.entity_id = $1 and r.role = 'subject' \
+         order by e.event_type",
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    for expected in [
+        "UserLoggedIn.v1",
+        "UserProvisioned.v1",
+        "SessionTokenIssued.v1",
+    ] {
+        assert!(
+            event_types.iter().any(|t| t == expected),
+            "expected a {expected} audit event about the user, got {event_types:?}",
+        );
+    }
+
+    // The login marker carries the provider, provider-internal id, and a
+    // populated client_ip resolved from the request.
+    let login_payload: serde_json::Value = sqlx::query_scalar(
+        "select e.payload from tml_switchboard.audit_events e \
+         where e.event_type = 'UserLoggedIn.v1' and e.actor_id = $1 \
+         order by e.created_at desc limit 1",
+    )
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(login_payload["provider"], "github");
+    assert_eq!(login_payload["provider_user_id"], "12345");
+    assert_eq!(login_payload["user"], serde_json::json!(user_id));
+    assert!(
+        login_payload["client_ip"].is_string(),
+        "client_ip should be recorded, got {}",
+        login_payload["client_ip"],
+    );
+
     // The issued token authenticates whoami.
     let who: WhoAmIResponse = client
         .get(format!("http://{addr}/api/v1/auth/whoami"))
