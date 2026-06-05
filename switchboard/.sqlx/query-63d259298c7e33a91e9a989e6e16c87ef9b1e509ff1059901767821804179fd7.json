@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tml_switchboard.api_tokens set revoked = row(now(), $2)::tml_switchboard.api_token_revocation where token_id = $1 and revoked is null;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "63d259298c7e33a91e9a989e6e16c87ef9b1e509ff1059901767821804179fd7"
+}

@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::users::{
     GroupMembership, LinkedGitHub, PublicUserProfile, SelfUserProfile, SessionInfo,
-    TokenCancellation, UpdateProfileRequest,
+    TokenRevocation, UpdateProfileRequest,
 };
 
 use crate::audit;
@@ -268,7 +268,7 @@ pub async fn list_tokens(
 
     let rows = sqlx::query!(
         r#"select token_id, created_at, expires_at, user_agent, comment, created_ip,
-                  canceled as "canceled: crate::sql::api_token::Cancellation"
+                  revoked as "revoked: crate::sql::api_token::Revocation"
            from tml_switchboard.api_tokens where user_id = $1 order by created_at desc;"#,
         user_id,
     )
@@ -285,9 +285,9 @@ pub async fn list_tokens(
             user_agent: r.user_agent,
             comment: r.comment,
             created_ip: r.created_ip,
-            canceled: r.canceled.map(|c| TokenCancellation {
-                canceled_at: c.canceled_at,
-                reason: c.cancellation_reason,
+            revoked: r.revoked.map(|c| TokenRevocation {
+                revoked_at: c.revoked_at,
+                reason: c.revocation_reason,
             }),
             current: r.token_id == current_token,
         })

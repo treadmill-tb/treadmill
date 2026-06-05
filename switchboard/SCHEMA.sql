@@ -211,12 +211,12 @@ create table tml_switchboard.group_auto_sources
 -- its owning subject; per-token scoping is intentionally deferred and can be
 -- added later as a `token_grants` table without disturbing this one.
 --
--- Tokens have both natural expiration and an explicit cancellation mechanism,
+-- Tokens have both natural expiration and an explicit revocation mechanism,
 -- which voids a token before it expires.
-create type tml_switchboard.api_token_cancellation as
+create type tml_switchboard.api_token_revocation as
 (
-    canceled_at         timestamp with time zone,
-    cancellation_reason text
+    revoked_at         timestamp with time zone,
+    revocation_reason text
 );
 -- `user_agent` and `created_ip`/`created_port` record the provenance of a token
 -- at mint time (the client that requested it), surfaced in the session-list API
@@ -229,7 +229,7 @@ create table tml_switchboard.api_tokens
     token_id     uuid                     not null primary key,
     token        bytea                    not null unique,
     user_id      uuid                     not null references tml_switchboard.users (subject_id) on delete cascade,
-    canceled     tml_switchboard.api_token_cancellation,
+    revoked      tml_switchboard.api_token_revocation,
     created_at   timestamp with time zone not null,
     expires_at   timestamp with time zone not null,
     user_agent   text,

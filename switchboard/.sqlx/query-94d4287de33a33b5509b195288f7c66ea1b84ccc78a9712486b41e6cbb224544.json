@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "insert into tml_switchboard.api_tokens (token_id, token, user_id, canceled, created_at, expires_at, user_agent, comment, created_ip, created_port) values ($1, $2, $3, null, $4, $5, $6, $7, $8, $9);",
+  "query": "insert into tml_switchboard.api_tokens (token_id, token, user_id, revoked, created_at, expires_at, user_agent, comment, created_ip, created_port) values ($1, $2, $3, null, $4, $5, $6, $7, $8, $9);",
   "describe": {
     "columns": [],
     "parameters": {
@@ -18,5 +18,5 @@
     },
     "nullable": []
   },
-  "hash": "59fab7efe4a47ba2a9c1ef28aa8ccb4369d504b1ce690fe29004ea82b96fa646"
+  "hash": "94d4287de33a33b5509b195288f7c66ea1b84ccc78a9712486b41e6cbb224544"
 }

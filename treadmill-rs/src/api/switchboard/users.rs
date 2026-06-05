@@ -74,8 +74,8 @@ pub struct UpdateProfileRequest {
 
 /// When and why a token was revoked.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct TokenCancellation {
-    pub canceled_at: DateTime<Utc>,
+pub struct TokenRevocation {
+    pub revoked_at: DateTime<Utc>,
     pub reason: String,
 }
 
@@ -93,7 +93,7 @@ pub struct SessionInfo {
     /// The client IP the token was minted from, if recorded.
     pub created_ip: Option<String>,
     /// Set if the token has been revoked.
-    pub canceled: Option<TokenCancellation>,
+    pub revoked: Option<TokenRevocation>,
     /// True for the token used to authenticate the current request.
     pub current: bool,
 }

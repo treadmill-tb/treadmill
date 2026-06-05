@@ -422,17 +422,6 @@
         "description": "One of the caller's active or historical sessions/API tokens. Never carries\nthe secret token itself — only its metadata and provenance.",
         "type": "object",
         "properties": {
-          "canceled": {
-            "description": "Set if the token has been revoked.",
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TokenCancellation"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "comment": {
             "description": "An optional human-supplied label for the token.",
             "type": [
@@ -459,6 +448,17 @@
             "type": "string",
             "format": "date-time"
           },
+          "revoked": {
+            "description": "Set if the token has been revoked.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenRevocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "token_id": {
             "type": "string",
             "format": "uuid"
@@ -478,20 +478,20 @@
           "current"
         ]
       },
-      "TokenCancellation": {
+      "TokenRevocation": {
         "description": "When and why a token was revoked.",
         "type": "object",
         "properties": {
-          "canceled_at": {
-            "type": "string",
-            "format": "date-time"
-          },
           "reason": {
             "type": "string"
+          },
+          "revoked_at": {
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
-          "canceled_at",
+          "revoked_at",
           "reason"
         ]
       },

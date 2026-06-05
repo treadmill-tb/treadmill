@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT t.token_id, t.user_id, t.canceled as \"canceled: _\",\n                  t.expires_at, u.locked\n            FROM tml_switchboard.api_tokens t\n            JOIN tml_switchboard.users u ON u.subject_id = t.user_id\n            WHERE t.token = $1\n            LIMIT 1;",
+  "query": "SELECT t.token_id, t.user_id, t.revoked as \"revoked: _\",\n                  t.expires_at, u.locked\n            FROM tml_switchboard.api_tokens t\n            JOIN tml_switchboard.users u ON u.subject_id = t.user_id\n            WHERE t.token_id = $1\n            LIMIT 1;",
   "describe": {
     "columns": [
       {
@@ -27,18 +27,18 @@
       },
       {
         "ordinal": 2,
-        "name": "canceled: _",
+        "name": "revoked: _",
         "type_info": {
           "Custom": {
-            "name": "tml_switchboard.api_token_cancellation",
+            "name": "tml_switchboard.api_token_revocation",
             "kind": {
               "Composite": [
                 [
-                  "canceled_at",
+                  "revoked_at",
                   "Timestamptz"
                 ],
                 [
-                  "cancellation_reason",
+                  "revocation_reason",
                   "Text"
                 ]
               ]
@@ -48,7 +48,7 @@
         "origin": {
           "Table": {
             "table": "tml_switchboard.api_tokens",
-            "name": "canceled"
+            "name": "revoked"
           }
         }
       },
@@ -77,7 +77,7 @@
     ],
     "parameters": {
       "Left": [
-        "Bytea"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -88,5 +88,5 @@
       false
     ]
   },
-  "hash": "dc2bf134264baec90a298bb49ef44d19f8a442b8d6103ae95b71a332406cf74a"
+  "hash": "a497c1da5c7f7abfab69325d2d03b13600f46c2cd1942790226e39de3fbf4f9e"
 }

@@ -57,9 +57,9 @@ impl FromRequestParts<AppState> for Subject {
                 );
                 return Err(StatusCode::UNAUTHORIZED.into_response());
             }
-            if let Some(cancellation) = token_info.canceled {
+            if let Some(revocation) = token_info.revoked {
                 tracing::warn!(
-                    "failed to derive subject: canceled token ({}): {cancellation}",
+                    "failed to derive subject: revoked token ({}): {revocation}",
                     token_info.token_id,
                 );
                 return Err(StatusCode::UNAUTHORIZED.into_response());

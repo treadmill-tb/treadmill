@@ -778,7 +778,7 @@ mod tests {
         let token_id = Uuid::new_v4();
         sqlx::query(
             "insert into tml_switchboard.api_tokens \
-             (token_id, token, user_id, canceled, created_at, expires_at) \
+             (token_id, token, user_id, revoked, created_at, expires_at) \
              values ($1, $2, $3, null, now(), now() + interval '1 day')",
         )
         .bind(token_id)

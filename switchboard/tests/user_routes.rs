@@ -302,10 +302,10 @@ async fn self_profile_update_tokens_and_feed(pool: PgPool) {
         .iter()
         .find(|t| t.current)
         .expect("the request token is flagged current");
-    assert!(current.canceled.is_none());
+    assert!(current.revoked.is_none());
     let token_id = current.token_id;
 
-    // DELETE revokes it; the now-canceled token stops authenticating.
+    // DELETE revokes it; the now-revoked token stops authenticating.
     let resp = client
         .delete(format!("{base}/users/me/tokens/{token_id}"))
         .bearer_auth(&token)

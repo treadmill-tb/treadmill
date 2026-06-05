@@ -19,21 +19,21 @@ pub enum TokenError {
     Database(sqlx::Error),
 }
 
-/// Corresponds to the `cancellation` type in the database schema.
+/// Corresponds to the `revocation` type in the database schema.
 ///
 /// Represents the time and reason for the revocation of an API token.
 #[derive(Debug, Clone, sqlx::Type)]
-#[sqlx(type_name = "tml_switchboard.api_token_cancellation")]
-pub struct Cancellation {
-    pub canceled_at: DateTime<Utc>,
-    pub cancellation_reason: String,
+#[sqlx(type_name = "tml_switchboard.api_token_revocation")]
+pub struct Revocation {
+    pub revoked_at: DateTime<Utc>,
+    pub revocation_reason: String,
 }
-impl Display for Cancellation {
+impl Display for Revocation {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "canceled at `{}` due to `{}`",
-            self.canceled_at, self.cancellation_reason
+            "revoked at `{}` due to `{}`",
+            self.revoked_at, self.revocation_reason
         )
     }
 }
@@ -45,8 +45,8 @@ pub struct SqlApiTokenMetadata {
     /// token within the system).
     pub token_id: Uuid,
     /// If this is `Some`, then the token was at some prior time revoked; the information inside the
-    /// [`Cancellation`] describes the precise time and circumstance.
-    pub canceled: Option<Cancellation>,
+    /// [`Revocation`] describes the precise time and circumstance.
+    pub revoked: Option<Revocation>,
     /// The time at which the token expires/expired.
     pub expires_at: DateTime<Utc>,
     /// ID of the user that owns the token
@@ -64,7 +64,7 @@ pub async fn fetch_metadata_by_token<'c, E: PgExecutor<'c>>(
 ) -> Result<SqlApiTokenMetadata, TokenError> {
     sqlx::query_as!(
         SqlApiTokenMetadata,
-        r#"SELECT t.token_id, t.user_id, t.canceled as "canceled: _",
+        r#"SELECT t.token_id, t.user_id, t.revoked as "revoked: _",
                   t.expires_at, u.locked
             FROM tml_switchboard.api_tokens t
             JOIN tml_switchboard.users u ON u.subject_id = t.user_id
@@ -86,7 +86,7 @@ pub async fn fetch_metadata_by_id<'c, E: PgExecutor<'c>>(
 ) -> Result<SqlApiTokenMetadata, TokenError> {
     sqlx::query_as!(
         SqlApiTokenMetadata,
-        r#"SELECT t.token_id, t.user_id, t.canceled as "canceled: _",
+        r#"SELECT t.token_id, t.user_id, t.revoked as "revoked: _",
                   t.expires_at, u.locked
             FROM tml_switchboard.api_tokens t
             JOIN tml_switchboard.users u ON u.subject_id = t.user_id
@@ -131,7 +131,7 @@ impl Transition for IssueSessionToken {
         let expires = created + self.lifetime;
         sqlx::query!(
             "insert into tml_switchboard.api_tokens \
-             (token_id, token, user_id, canceled, created_at, expires_at, user_agent, comment, created_ip, created_port) \
+             (token_id, token, user_id, revoked, created_at, expires_at, user_agent, comment, created_ip, created_port) \
              values ($1, $2, $3, null, $4, $5, $6, $7, $8, $9);",
             token_id,
             api_token.as_bytes(),
@@ -160,7 +160,7 @@ impl Transition for IssueSessionToken {
 }
 
 /// Revoke (cancel) a token. The route confirms the token belongs to the caller
-/// before running this. Idempotent on the write (only flips an un-canceled
+/// before running this. Idempotent on the write (only flips an un-revoked
 /// token) but always emits [`events::SessionTokenRevoked`]. Run via
 /// [`audit::transition`](crate::audit::transition).
 pub struct RevokeToken {
@@ -180,8 +180,8 @@ impl Transition for RevokeToken {
     ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
         sqlx::query!(
             "update tml_switchboard.api_tokens \
-             set canceled = row(now(), $2)::tml_switchboard.api_token_cancellation \
-             where token_id = $1 and canceled is null;",
+             set revoked = row(now(), $2)::tml_switchboard.api_token_revocation \
+             where token_id = $1 and revoked is null;",
             self.token_id,
             self.reason,
         )
