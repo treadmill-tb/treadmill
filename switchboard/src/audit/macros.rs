@@ -33,6 +33,26 @@ macro_rules! __audit_process_field {
             })
         }
     };
+    // `Subject @ view(SelfAccess)` marks the event as visible to the subject it
+    // points at (the user it is about), with the `Subject` role. This arm must
+    // precede the generic `Subject @ view($view)` arm below, since `SelfAccess`
+    // is also an ident and macro arms match top-to-bottom.
+    ($rels:ident, $val:expr, Subject @ view(SelfAccess)) => {
+        $rels.push($crate::audit::model::Relation {
+            entity: $crate::audit::model::EntityRef::Subject($val.0),
+            role: $crate::audit::model::Role::Subject,
+            view: $crate::audit::model::ViewPolicy::SelfAccess,
+        })
+    };
+    ($rels:ident, $val:expr, Option < Subject > @ view(SelfAccess)) => {
+        if let Some(s) = &$val {
+            $rels.push($crate::audit::model::Relation {
+                entity: $crate::audit::model::EntityRef::Subject(s.0),
+                role: $crate::audit::model::Role::Subject,
+                view: $crate::audit::model::ViewPolicy::SelfAccess,
+            })
+        }
+    };
     ($rels:ident, $val:expr, Subject @ view($view:ident)) => {
         $rels.push($crate::audit::model::Relation {
             entity: $crate::audit::model::EntityRef::Subject($val.0),

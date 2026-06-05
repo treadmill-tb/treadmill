@@ -64,7 +64,15 @@ pub async fn fetch_events_for_entity(
                     })?;
                 allowed_policies.extend(perms.into_iter().map(|p| p.as_str().to_string()));
             }
-            "subject" => {}
+            "subject" => {
+                // A user is entitled to the audit events about their own
+                // account that are marked self-viewable (logins, profile
+                // changes). Viewing another subject's feed without admin
+                // authority yields no policies and is rejected below.
+                if entity_id == viewer_id {
+                    allowed_policies.push("self".to_string());
+                }
+            }
             _ => unreachable!(),
         }
 

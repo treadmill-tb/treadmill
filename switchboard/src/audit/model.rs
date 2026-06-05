@@ -136,6 +136,12 @@ pub enum ViewPolicy {
     /// Holders of this exact permission on the relation's entity may see the
     /// event.
     Permission(Permission),
+    /// The subject the relation points at -- and only that subject -- may see
+    /// the event (plus admins, who see everything). Used for a user's own
+    /// account events such as logins and profile changes, where there is no
+    /// permission grant to match against but the user is entitled to their own
+    /// history. Only meaningful on a `Subject` relation.
+    SelfAccess,
     /// System-internal: only members of the global-authority `admins` group
     /// ever see it. Never surfaces in a user-facing feed.
     OperatorOnly,
@@ -146,6 +152,7 @@ impl ViewPolicy {
     pub fn as_str(self) -> &'static str {
         match self {
             ViewPolicy::Permission(p) => p.as_str(),
+            ViewPolicy::SelfAccess => "self",
             ViewPolicy::OperatorOnly => "operator_only",
         }
     }
