@@ -1,4 +1,4 @@
-h1:2ysdy5fUxeBR3KsyBiBbtpuM5nq2Mnez/T3Uq8lRwPo=
+h1:7YfVp/bOXG/LOQdA87iG2jpFVudajqzklSvxFZCoLs0=
 00000000000001_base.sql h1:frftxPkUDOJS4m+L8YsWkOiSX2MnDyarR4XiQxbcFk4=
 20250113224121_add_host_job_ssh_endpoints.sql h1:Esa7SvUXholzqUG3gPElKGGXmmEVxZCfpRtN+RCgqUE=
 20250210235044_ssh_endpoint_host_port_struct.sql h1:ASBF7HeYHo27w72gRBmE8BTEUD1ei3PfoZgss9ph3KE=
@@ -11,3 +11,4 @@ h1:2ysdy5fUxeBR3KsyBiBbtpuM5nq2Mnez/T3Uq8lRwPo=
 20260601002700_rename_supervisor_to_host.sql h1:iBXdosdudiBgRYh3Wn8gUr345R0DmBcJLfx1OJzzLfs=
 20260601014415_seed_system_actor_subject.sql h1:8R9AiB3pr7xMaDJzoXQmqTZ64xcbLB0C1N8DfTMKcKw=
 20260601015052_add_audit_log.sql h1:XcdtDYjIyjOB7wD6b+wgUMM4Pr6O4j98I994cbbdgF8=
+20260605041704_add_token_provenance.sql h1:08WVNARCIMsUXipGRFvk8j2YFXF3VazralCGMvIwU1w=

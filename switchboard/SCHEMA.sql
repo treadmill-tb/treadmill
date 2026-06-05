@@ -218,14 +218,24 @@ create type tml_switchboard.api_token_cancellation as
     canceled_at         timestamp with time zone,
     cancellation_reason text
 );
+-- `user_agent` and `created_ip`/`created_port` record the provenance of a token
+-- at mint time (the client that requested it), surfaced in the session-list API
+-- and mirrored into the `session_token_issued` audit event. `created_ip` is the
+-- client address as resolved by the server's trusted-proxy policy (text rather
+-- than `inet` so a proxy-supplied value that fails to parse is still recorded
+-- verbatim for forensics). `comment` is an optional user-supplied label.
 create table tml_switchboard.api_tokens
 (
-    token_id   uuid                     not null primary key,
-    token      bytea                    not null unique,
-    user_id    uuid                     not null references tml_switchboard.users (subject_id) on delete cascade,
-    canceled   tml_switchboard.api_token_cancellation,
-    created_at timestamp with time zone not null,
-    expires_at timestamp with time zone not null,
+    token_id     uuid                     not null primary key,
+    token        bytea                    not null unique,
+    user_id      uuid                     not null references tml_switchboard.users (subject_id) on delete cascade,
+    canceled     tml_switchboard.api_token_cancellation,
+    created_at   timestamp with time zone not null,
+    expires_at   timestamp with time zone not null,
+    user_agent   text,
+    comment      text,
+    created_ip   text,
+    created_port integer,
 
     check (octet_length(token) = 128)
 );
