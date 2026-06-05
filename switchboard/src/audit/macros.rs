@@ -90,6 +90,7 @@ macro_rules! define_event {
                 $field:ident : $ty:ident $( < $generic:ident > )? $( @ view($view:ident) )?
             ),* $(,)?
         }
+        event_type = $type:literal;
         render = $render:literal;
     ) => {
         $(#[$meta])*
@@ -101,7 +102,7 @@ macro_rules! define_event {
 
         impl $crate::audit::model::AuditEvent for $name {
             fn event_type(&self) -> &'static str {
-                concat!(stringify!($name), ".", stringify!($version))
+                concat!($type, ".", stringify!($version))
             }
 
             fn actor(&self) -> uuid::Uuid {
@@ -132,7 +133,7 @@ macro_rules! define_event {
             #[linkme::distributed_slice($crate::audit::registry::RENDERERS)]
             #[linkme(crate = linkme)]
             static RENDERER: $crate::audit::registry::RendererEntry = $crate::audit::registry::RendererEntry {
-                event_type: concat!(stringify!($name), ".", stringify!($version)),
+                event_type: concat!($type, ".", stringify!($version)),
                 render: |payload, _viewer| {
                     let event: $name = match serde_json::from_value(payload.clone()) {
                         Ok(e) => e,

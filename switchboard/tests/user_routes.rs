@@ -284,7 +284,7 @@ async fn self_profile_update_tokens_and_feed(pool: PgPool) {
     assert!(
         events
             .iter()
-            .any(|e| e["event_type"] == "UserLoggedIn.v1"),
+            .any(|e| e["event_type"] == "user_logged_in.v1"),
         "self feed should include the login event, got {events:?}"
     );
 

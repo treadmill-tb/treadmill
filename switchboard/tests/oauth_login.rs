@@ -253,9 +253,9 @@ async fn github_login_provisions_and_reconciles(pool: PgPool) {
     .await
     .unwrap();
     for expected in [
-        "UserLoggedIn.v1",
-        "UserProvisioned.v1",
-        "SessionTokenIssued.v1",
+        "user_logged_in.v1",
+        "user_provisioned.v1",
+        "session_token_issued.v1",
     ] {
         assert!(
             event_types.iter().any(|t| t == expected),
@@ -267,7 +267,7 @@ async fn github_login_provisions_and_reconciles(pool: PgPool) {
     // populated client_ip resolved from the request.
     let login_payload: serde_json::Value = sqlx::query_scalar(
         "select e.payload from tml_switchboard.audit_events e \
-         where e.event_type = 'UserLoggedIn.v1' and e.actor_id = $1 \
+         where e.event_type = 'user_logged_in.v1' and e.actor_id = $1 \
          order by e.created_at desc limit 1",
     )
     .bind(user_id)

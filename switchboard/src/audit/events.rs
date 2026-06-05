@@ -26,6 +26,7 @@ define_event! {
         client_ip: Option<String>,
         client_port: Option<i32>,
     }
+    event_type = "user_logged_in";
     render = "{login} logged in via {provider}";
 }
 
@@ -39,6 +40,7 @@ define_event! {
         login: String,
         username: String,
     }
+    event_type = "user_provisioned";
     render = "provisioned user {username} from {provider} identity {login}";
 }
 
@@ -52,6 +54,7 @@ define_event! {
         provider_user_id: String,
         login: String,
     }
+    event_type = "oauth_identity_linked";
     render = "linked {provider} identity {login} to existing account";
 }
 
@@ -69,6 +72,7 @@ define_event! {
         old_provider_login: Option<String>,
         new_provider_login: Option<String>,
     }
+    event_type = "user_profile_changed";
     render = "profile updated on login";
 }
 
@@ -80,6 +84,7 @@ define_event! {
         provider: String,
         email: String,
     }
+    event_type = "user_email_added";
     render = "verified email {email} added via {provider}";
 }
 
@@ -94,6 +99,7 @@ define_event! {
         source_ref: String,
         added: bool,
     }
+    event_type = "group_membership_changed";
     render = "github_org membership {source_ref} updated";
 }
 
@@ -110,6 +116,7 @@ define_event! {
         client_ip: Option<String>,
         client_port: Option<i32>,
     }
+    event_type = "login_denied_locked";
     render = "login denied for locked account {login} via {provider}";
 }
 
@@ -122,6 +129,7 @@ define_event! {
         old_username: String,
         new_username: String,
     }
+    event_type = "user_renamed";
     render = "renamed {old_username} to {new_username}";
 }
 
@@ -137,6 +145,7 @@ define_event! {
         old_avatar_url: Option<String>,
         new_avatar_url: Option<String>,
     }
+    event_type = "user_profile_updated";
     render = "profile updated";
 }
 
@@ -147,6 +156,7 @@ define_event! {
         user: Subject @ view(SelfAccess),
         token_id: Uuid,
     }
+    event_type = "session_token_revoked";
     render = "session token {token_id} revoked";
 }
 
@@ -161,5 +171,6 @@ define_event! {
         client_port: Option<i32>,
         user_agent: Option<String>,
     }
+    event_type = "session_token_issued";
     render = "session token {token_id} issued";
 }
