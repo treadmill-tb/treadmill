@@ -35,6 +35,7 @@
 //! chokepoint guarded by a `WriteToken` so the audit emission is unforgeable
 //! from outside this module; until then `persist_event` is `pub(crate)`.
 
+pub mod events;
 pub mod feed;
 pub mod macros;
 pub mod model;
@@ -90,7 +91,7 @@ pub async fn transition<T: Transition>(
     t: T,
 ) -> Result<T::Output, sqlx::Error> {
     let w = WriteToken(());
-    let (out, event) = t.apply(&mut **txn, &w).await?;
+    let (out, event) = t.apply(txn, &w).await?;
     // Pass None for correlation_id for now (Phase 8 handles tracing extraction)
     persist::persist_event(txn, &event, None).await?;
     Ok(out)

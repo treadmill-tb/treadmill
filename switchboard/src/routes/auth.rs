@@ -10,16 +10,21 @@
 //!
 //! See `OAUTH_LOGIN_PLAN.md` §5–§7.
 
+use crate::audit::model::Subject as AuditSubject;
+use crate::audit::{self, events};
 use crate::auth::Subject;
 use crate::auth::oauth::OAuthProvider;
 use crate::auth::oauth::github::GithubProvider;
+use crate::client_addr::ClientAddr;
 use crate::serve::AppState;
 use crate::sql;
+use crate::sql::api_token::IssueSessionToken;
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::response::Redirect;
 use chrono::{Duration, Utc};
 use http::StatusCode;
+use http::request::Parts;
 use serde::Deserialize;
 use treadmill_rs::api::switchboard::{AuthToken, LoginResponse, WhoAmIResponse};
 
@@ -70,9 +75,22 @@ pub struct CallbackQuery {
 #[tracing::instrument(skip(state, query))]
 pub async fn github_callback(
     State(state): State<AppState>,
+    parts: Parts,
     Query(query): Query<CallbackQuery>,
 ) -> Result<Json<LoginResponse>, StatusCode> {
     let provider = github_provider(&state)?;
+
+    // Resolve the originating client address and user agent up front, before the
+    // request parts are consumed, so they can be stamped onto the issued token
+    // and the login audit events.
+    let client = ClientAddr::resolve(&parts, &state.config().server);
+    let client_ip = client.as_ref().map(ClientAddr::ip_string);
+    let client_port = client.and_then(|c| c.port).map(|p| p as i32);
+    let user_agent = parts
+        .headers
+        .get(http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
 
     // Confirm the state corresponds to a flow this server started (and matches
     // the provider it was started for) before spending a token exchange on it.
@@ -116,22 +134,51 @@ pub async fn github_callback(
         tracing::error!("failed to open transaction: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    let user_id = sql::user::provision_user(&mut tx, provider.name(), &identity, &org_ids)
-        .await
-        .map_err(|e| {
-            tracing::error!("failed to provision user: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    let (session_token, expires_at) = sql::api_token::insert_token(
-        &mut *tx,
-        user_id,
-        state.config().service.default_token_timeout,
+    let (user_id, new_user) =
+        sql::user::provision_user(&mut tx, provider.name(), &identity, &org_ids)
+            .await
+            .map_err(|e| {
+                tracing::error!("failed to provision user: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    let (session_token, expires_at) = audit::transition(
+        &mut tx,
+        IssueSessionToken {
+            user_id,
+            lifetime: state.config().service.default_token_timeout,
+            user_agent: user_agent.clone(),
+            comment: Some("interactive OAuth login".to_string()),
+            created_ip: client_ip.clone(),
+            created_port: client_port,
+        },
     )
     .await
     .map_err(|e| {
         tracing::error!("failed to issue session token: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    // Login marker: one row per successful callback, recording the resolved
+    // address and whether this login created the account.
+    audit::emit(
+        &mut tx,
+        &events::UserLoggedIn {
+            actor: AuditSubject(user_id),
+            user: AuditSubject(user_id),
+            provider: provider.name().to_string(),
+            provider_user_id: identity.provider_user_id.clone(),
+            login: identity.login.clone(),
+            new_user,
+            client_ip: client_ip.clone(),
+            client_port,
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("failed to record login event: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
     tx.commit().await.map_err(|e| {
         tracing::error!("failed to commit login transaction: {e}");
         StatusCode::INTERNAL_SERVER_ERROR

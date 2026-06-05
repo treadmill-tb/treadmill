@@ -125,22 +125,27 @@ macro_rules! define_event {
             }
         }
 
-        #[linkme::distributed_slice($crate::audit::registry::RENDERERS)]
-        #[linkme(crate = linkme)]
-        static RENDERER: $crate::audit::registry::RendererEntry = $crate::audit::registry::RendererEntry {
-            event_type: concat!(stringify!($name), ".", stringify!($version)),
-            render: |payload, _viewer| {
-                let event: $name = match serde_json::from_value(payload.clone()) {
-                    Ok(e) => e,
-                    Err(e) => return $crate::audit::registry::RenderResult::PayloadMismatch(e),
-                };
-                
-                #[allow(unused_variables)]
-                let $name { actor, $( $field ),* } = event;
-                
-                let message = format!($render);
-                $crate::audit::registry::RenderResult::Ok($crate::audit::registry::RenderedEvent { message })
-            }
+        // Wrapped in an anonymous `const` block so the registry static gets its
+        // own scope: multiple `define_event!` invocations can then live in the
+        // same module without colliding on the static's name.
+        const _: () = {
+            #[linkme::distributed_slice($crate::audit::registry::RENDERERS)]
+            #[linkme(crate = linkme)]
+            static RENDERER: $crate::audit::registry::RendererEntry = $crate::audit::registry::RendererEntry {
+                event_type: concat!(stringify!($name), ".", stringify!($version)),
+                render: |payload, _viewer| {
+                    let event: $name = match serde_json::from_value(payload.clone()) {
+                        Ok(e) => e,
+                        Err(e) => return $crate::audit::registry::RenderResult::PayloadMismatch(e),
+                    };
+
+                    #[allow(unused_variables)]
+                    let $name { actor, $( $field ),* } = event;
+
+                    let message = format!($render);
+                    $crate::audit::registry::RenderResult::Ok($crate::audit::registry::RenderedEvent { message })
+                }
+            };
         };
     }
 }

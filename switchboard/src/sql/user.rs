@@ -1,36 +1,44 @@
 //! User provisioning from an external OAuth identity, plus auto-group
 //! reconciliation. See `OAUTH_LOGIN_PLAN.md` §6 and §9.
+//!
+//! Every state change here rides through the audit chokepoint
+//! ([`audit::transition`]) so the login flow leaves a gapless, attributable
+//! trail. Pure lookups (resolve-by-identity, link-by-email, username
+//! de-duplication, the reconcile diff) stay plain reads.
 
+use crate::audit::model::Subject as AuditSubject;
+use crate::audit::{self, Transition, WriteToken, events};
 use crate::auth::oauth::ExternalIdentity;
-use sqlx::PgConnection;
+use sqlx::{PgConnection, Postgres, Transaction};
 use uuid::Uuid;
 
 /// Resolve (or create) the local user for an external identity, refresh its
 /// mutable profile, record its verified emails, and reconcile its auto-group
-/// memberships. Returns the user's subject id.
+/// memberships. Returns the user's subject id and whether the account was
+/// freshly created by this call.
 ///
 /// Runs entirely on the caller's transaction so the whole login provisioning is
-/// atomic with the session-token issuance.
+/// atomic with the session-token issuance and its audit events.
 pub async fn provision_user(
-    conn: &mut PgConnection,
+    tx: &mut Transaction<'_, Postgres>,
     provider: &str,
     identity: &ExternalIdentity,
     org_ids: &[String],
-) -> Result<Uuid, sqlx::Error> {
-    // 1. Resolve by the stable provider identity.
+) -> Result<(Uuid, bool), sqlx::Error> {
+    // 1. Resolve by the stable provider identity (read only).
     let by_identity = sqlx::query_scalar!(
         "select user_id from tml_switchboard.user_identities \
          where provider = $1 and provider_user_id = $2;",
         provider,
         identity.provider_user_id,
     )
-    .fetch_optional(&mut *conn)
+    .fetch_optional(&mut **tx)
     .await?;
 
-    let user_id = match by_identity {
-        Some(uid) => uid,
+    let (user_id, new_user) = match by_identity {
+        Some(uid) => (uid, false),
         None => {
-            // 2. Otherwise, try to link by a shared verified email.
+            // 2. Otherwise, try to link by a shared verified email (read only).
             let linked: Vec<Uuid> = if identity.verified_emails.is_empty() {
                 Vec::new()
             } else {
@@ -39,24 +47,22 @@ pub async fn provision_user(
                      where email = any($1::text[]);",
                     &identity.verified_emails,
                 )
-                .fetch_all(&mut *conn)
+                .fetch_all(&mut **tx)
                 .await?
             };
 
             if linked.len() == 1 {
                 let uid = linked[0];
-                sqlx::query!(
-                    "insert into tml_switchboard.user_identities \
-                     (provider, provider_user_id, user_id, provider_login) \
-                     values ($1, $2, $3, $4);",
-                    provider,
-                    identity.provider_user_id,
-                    uid,
-                    identity.login,
+                audit::transition(
+                    tx,
+                    LinkIdentity {
+                        user_id: uid,
+                        provider,
+                        identity,
+                    },
                 )
-                .execute(&mut *conn)
                 .await?;
-                uid
+                (uid, false)
             } else {
                 // Zero matches -> brand new user. More than one -> ambiguous; do
                 // NOT auto-merge two accounts that merely share an address.
@@ -68,90 +74,347 @@ pub async fn provision_user(
                         linked.len(),
                     );
                 }
-                create_user(&mut *conn, provider, identity).await?
+                let uid = audit::transition(tx, CreateUser { provider, identity }).await?;
+                (uid, true)
             }
         }
     };
 
-    // 4. Refresh mutable profile fields and the recorded provider login handle.
-    sqlx::query!(
-        "update tml_switchboard.users set full_name = $2, avatar_url = $3 \
-         where subject_id = $1;",
+    // 3. Refresh mutable profile fields, but only when something actually
+    // changed, so a no-op re-login does not spam the audit log.
+    let current = sqlx::query!(
+        "select u.full_name, u.avatar_url, i.provider_login \
+         from tml_switchboard.users u \
+         join tml_switchboard.user_identities i \
+           on i.user_id = u.subject_id and i.provider = $2 and i.provider_user_id = $3 \
+         where u.subject_id = $1;",
         user_id,
-        identity.full_name,
-        identity.avatar_url,
-    )
-    .execute(&mut *conn)
-    .await?;
-    sqlx::query!(
-        "update tml_switchboard.user_identities set provider_login = $3 \
-         where provider = $1 and provider_user_id = $2;",
         provider,
         identity.provider_user_id,
-        identity.login,
     )
-    .execute(&mut *conn)
+    .fetch_one(&mut **tx)
     .await?;
 
-    // 5. Record verified emails, never stealing one already owned by another.
-    for email in &identity.verified_emails {
-        sqlx::query!(
-            "insert into tml_switchboard.user_emails (email, user_id, provider, verified) \
-             values ($1, $2, $3, true) on conflict (email) do nothing;",
-            email,
-            user_id,
-            provider,
+    if current.full_name != identity.full_name
+        || current.avatar_url != identity.avatar_url
+        || current.provider_login.as_deref() != Some(identity.login.as_str())
+    {
+        audit::transition(
+            tx,
+            ChangeProfile {
+                user_id,
+                provider,
+                identity,
+                old_full_name: current.full_name,
+                old_avatar_url: current.avatar_url,
+                old_provider_login: current.provider_login,
+            },
         )
-        .execute(&mut *conn)
         .await?;
     }
 
-    // 6. Reconcile auto-group memberships from current org membership.
-    reconcile_auto_groups(&mut *conn, user_id, provider, org_ids).await?;
+    // 4. Record verified emails, emitting an event only for ones genuinely new
+    // to the system (an address already on file, even another user's, is left
+    // untouched and unlogged).
+    let present: Vec<String> = if identity.verified_emails.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_scalar!(
+            "select email from tml_switchboard.user_emails where email = any($1::text[]);",
+            &identity.verified_emails,
+        )
+        .fetch_all(&mut **tx)
+        .await?
+    };
+    for email in &identity.verified_emails {
+        if !present.contains(email) {
+            audit::transition(
+                tx,
+                AddEmail {
+                    user_id,
+                    provider,
+                    email,
+                },
+            )
+            .await?;
+        }
+    }
 
-    Ok(user_id)
+    // 5. Reconcile auto-group memberships from current org membership.
+    reconcile_auto_groups(tx, user_id, provider, org_ids).await?;
+
+    Ok((user_id, new_user))
 }
 
-/// Create a fresh subject + user + identity. `username` is suggested from the
-/// provider login and de-duplicated on collision.
-async fn create_user(
-    conn: &mut PgConnection,
-    provider: &str,
-    identity: &ExternalIdentity,
-) -> Result<Uuid, sqlx::Error> {
-    let user_id = Uuid::new_v4();
-    sqlx::query!(
-        "insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'user');",
-        user_id,
-    )
-    .execute(&mut *conn)
-    .await?;
+/// Create a fresh subject + user + identity. The username is suggested from the
+/// provider login and de-duplicated on collision. Emits [`events::UserProvisioned`].
+struct CreateUser<'a> {
+    provider: &'a str,
+    identity: &'a ExternalIdentity,
+}
 
-    let username = unique_username(&mut *conn, &identity.login).await?;
-    sqlx::query!(
-        "insert into tml_switchboard.users (subject_id, username, full_name, avatar_url) \
-         values ($1, $2, $3, $4);",
-        user_id,
-        username,
-        identity.full_name,
-        identity.avatar_url,
-    )
-    .execute(&mut *conn)
-    .await?;
+impl Transition for CreateUser<'_> {
+    type Output = Uuid;
+    type Event = events::UserProvisioned;
 
-    sqlx::query!(
-        "insert into tml_switchboard.user_identities \
-         (provider, provider_user_id, user_id, provider_login) \
-         values ($1, $2, $3, $4);",
-        provider,
-        identity.provider_user_id,
-        user_id,
-        identity.login,
-    )
-    .execute(&mut *conn)
-    .await?;
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        let user_id = Uuid::new_v4();
+        sqlx::query!(
+            "insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'user');",
+            user_id,
+        )
+        .execute(&mut *conn)
+        .await?;
 
-    Ok(user_id)
+        let username = unique_username(&mut *conn, &self.identity.login).await?;
+        sqlx::query!(
+            "insert into tml_switchboard.users (subject_id, username, full_name, avatar_url) \
+             values ($1, $2, $3, $4);",
+            user_id,
+            username,
+            self.identity.full_name,
+            self.identity.avatar_url,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        sqlx::query!(
+            "insert into tml_switchboard.user_identities \
+             (provider, provider_user_id, user_id, provider_login) \
+             values ($1, $2, $3, $4);",
+            self.provider,
+            self.identity.provider_user_id,
+            user_id,
+            self.identity.login,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::UserProvisioned {
+            actor: AuditSubject(user_id),
+            user: AuditSubject(user_id),
+            provider: self.provider.to_string(),
+            provider_user_id: self.identity.provider_user_id.clone(),
+            login: self.identity.login.clone(),
+            username,
+        };
+        Ok((user_id, event))
+    }
+}
+
+/// Link a new external identity to an existing user matched by verified email.
+/// Emits [`events::OAuthIdentityLinked`].
+struct LinkIdentity<'a> {
+    user_id: Uuid,
+    provider: &'a str,
+    identity: &'a ExternalIdentity,
+}
+
+impl Transition for LinkIdentity<'_> {
+    type Output = ();
+    type Event = events::OAuthIdentityLinked;
+
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        sqlx::query!(
+            "insert into tml_switchboard.user_identities \
+             (provider, provider_user_id, user_id, provider_login) \
+             values ($1, $2, $3, $4);",
+            self.provider,
+            self.identity.provider_user_id,
+            self.user_id,
+            self.identity.login,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::OAuthIdentityLinked {
+            actor: AuditSubject(self.user_id),
+            user: AuditSubject(self.user_id),
+            provider: self.provider.to_string(),
+            provider_user_id: self.identity.provider_user_id.clone(),
+            login: self.identity.login.clone(),
+        };
+        Ok(((), event))
+    }
+}
+
+/// Refresh the mutable profile fields (display name, avatar) and the recorded
+/// provider login handle. Emits [`events::UserProfileChanged`] carrying the
+/// prior and new values. Only constructed when a field actually differs.
+struct ChangeProfile<'a> {
+    user_id: Uuid,
+    provider: &'a str,
+    identity: &'a ExternalIdentity,
+    old_full_name: Option<String>,
+    old_avatar_url: Option<String>,
+    old_provider_login: Option<String>,
+}
+
+impl Transition for ChangeProfile<'_> {
+    type Output = ();
+    type Event = events::UserProfileChanged;
+
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        sqlx::query!(
+            "update tml_switchboard.users set full_name = $2, avatar_url = $3 \
+             where subject_id = $1;",
+            self.user_id,
+            self.identity.full_name,
+            self.identity.avatar_url,
+        )
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query!(
+            "update tml_switchboard.user_identities set provider_login = $3 \
+             where provider = $1 and provider_user_id = $2;",
+            self.provider,
+            self.identity.provider_user_id,
+            self.identity.login,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::UserProfileChanged {
+            actor: AuditSubject(self.user_id),
+            user: AuditSubject(self.user_id),
+            old_full_name: self.old_full_name,
+            new_full_name: self.identity.full_name.clone(),
+            old_avatar_url: self.old_avatar_url,
+            new_avatar_url: self.identity.avatar_url.clone(),
+            old_provider_login: self.old_provider_login,
+            new_provider_login: Some(self.identity.login.clone()),
+        };
+        Ok(((), event))
+    }
+}
+
+/// Record a verified email for the user, claiming it only if unowned. Emits
+/// [`events::UserEmailAdded`]. Constructed only for addresses not already on
+/// file, but keeps `on conflict do nothing` to stay safe under a concurrent
+/// login racing to insert the same address.
+struct AddEmail<'a> {
+    user_id: Uuid,
+    provider: &'a str,
+    email: &'a str,
+}
+
+impl Transition for AddEmail<'_> {
+    type Output = ();
+    type Event = events::UserEmailAdded;
+
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        sqlx::query!(
+            "insert into tml_switchboard.user_emails (email, user_id, provider, verified) \
+             values ($1, $2, $3, true) on conflict (email) do nothing;",
+            self.email,
+            self.user_id,
+            self.provider,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::UserEmailAdded {
+            actor: AuditSubject(self.user_id),
+            user: AuditSubject(self.user_id),
+            provider: self.provider.to_string(),
+            email: self.email.to_string(),
+        };
+        Ok(((), event))
+    }
+}
+
+/// Add a single `github_org`-sourced group membership. Emits
+/// [`events::GroupMembershipChanged`] with `added = true`.
+struct AddGroupMembership {
+    user_id: Uuid,
+    group_id: Uuid,
+    source_ref: String,
+}
+
+impl Transition for AddGroupMembership {
+    type Output = ();
+    type Event = events::GroupMembershipChanged;
+
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        sqlx::query!(
+            "insert into tml_switchboard.group_members (group_id, member_id, source, source_ref) \
+             values ($1, $2, 'github_org', $3) \
+             on conflict (group_id, member_id, source, source_ref) do nothing;",
+            self.group_id,
+            self.user_id,
+            self.source_ref,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::GroupMembershipChanged {
+            actor: AuditSubject(self.user_id),
+            user: AuditSubject(self.user_id),
+            group: AuditSubject(self.group_id),
+            source_ref: self.source_ref,
+            added: true,
+        };
+        Ok(((), event))
+    }
+}
+
+/// Remove a single `github_org`-sourced group membership. Emits
+/// [`events::GroupMembershipChanged`] with `added = false`.
+struct RemoveGroupMembership {
+    user_id: Uuid,
+    group_id: Uuid,
+    source_ref: String,
+}
+
+impl Transition for RemoveGroupMembership {
+    type Output = ();
+    type Event = events::GroupMembershipChanged;
+
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        sqlx::query!(
+            "delete from tml_switchboard.group_members \
+             where member_id = $1 and source = 'github_org' \
+               and group_id = $2 and source_ref = $3;",
+            self.user_id,
+            self.group_id,
+            self.source_ref,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::GroupMembershipChanged {
+            actor: AuditSubject(self.user_id),
+            user: AuditSubject(self.user_id),
+            group: AuditSubject(self.group_id),
+            source_ref: self.source_ref,
+            added: false,
+        };
+        Ok(((), event))
+    }
 }
 
 /// Find an unused username, trying `base`, then `base-2`, `base-3`, ...
@@ -175,42 +438,68 @@ async fn unique_username(conn: &mut PgConnection, base: &str) -> Result<String, 
 }
 
 /// Reconcile this user's `github_org`-sourced group memberships against the set
-/// of org ids they currently belong to. Only ever touches `source = 'github_org'`
+/// of org ids they currently belong to. Computes the add/remove deltas as plain
+/// reads, then routes each individual change through the audit chokepoint so
+/// every membership mutation is logged. Only ever touches `source = 'github_org'`
 /// rows, so manual memberships are preserved. See `OAUTH_LOGIN_PLAN.md` §9.3.
 async fn reconcile_auto_groups(
-    conn: &mut PgConnection,
+    tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
     provider: &str,
     org_ids: &[String],
 ) -> Result<(), sqlx::Error> {
-    sqlx::query!(
-        r#"
-        with desired as (
-            select gas.group_id, gas.external_id as source_ref
-            from tml_switchboard.group_auto_sources gas
-            where gas.provider = $2
-              and gas.external_id = any($3::text[])
-        ),
-        removed as (
-            delete from tml_switchboard.group_members gm
-            where gm.member_id = $1
-              and gm.source = 'github_org'
-              and not exists (
-                  select 1 from desired d
-                  where d.group_id = gm.group_id and d.source_ref = gm.source_ref
-              )
-            returning 1
-        )
-        insert into tml_switchboard.group_members (group_id, member_id, source, source_ref)
-        select d.group_id, $1, 'github_org', d.source_ref
-        from desired d
-        on conflict (group_id, member_id, source, source_ref) do nothing
-        "#,
-        user_id,
+    let desired = sqlx::query!(
+        "select gas.group_id, gas.external_id as source_ref \
+         from tml_switchboard.group_auto_sources gas \
+         where gas.provider = $1 and gas.external_id = any($2::text[]);",
         provider,
         org_ids,
     )
-    .execute(&mut *conn)
+    .fetch_all(&mut **tx)
     .await?;
+
+    let current = sqlx::query!(
+        "select group_id, source_ref \
+         from tml_switchboard.group_members \
+         where member_id = $1 and source = 'github_org';",
+        user_id,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+
+    for d in &desired {
+        let already = current
+            .iter()
+            .any(|c| c.group_id == d.group_id && c.source_ref == d.source_ref);
+        if !already {
+            audit::transition(
+                tx,
+                AddGroupMembership {
+                    user_id,
+                    group_id: d.group_id,
+                    source_ref: d.source_ref.clone(),
+                },
+            )
+            .await?;
+        }
+    }
+
+    for c in &current {
+        let still_desired = desired
+            .iter()
+            .any(|d| d.group_id == c.group_id && d.source_ref == c.source_ref);
+        if !still_desired {
+            audit::transition(
+                tx,
+                RemoveGroupMembership {
+                    user_id,
+                    group_id: c.group_id,
+                    source_ref: c.source_ref.clone(),
+                },
+            )
+            .await?;
+        }
+    }
+
     Ok(())
 }

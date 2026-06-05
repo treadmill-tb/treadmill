@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select gas.group_id, gas.external_id as source_ref from tml_switchboard.group_auto_sources gas where gas.provider = $1 and gas.external_id = any($2::text[]);",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "group_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.group_auto_sources",
+            "name": "group_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "source_ref",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.group_auto_sources",
+            "name": "external_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "4123c4ea9d43b06d6cf312ca488dc88c9de3b15a25143bb009114a02ee5b4088"
+}

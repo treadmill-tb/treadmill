@@ -1,6 +1,8 @@
+use crate::audit::model::Subject as AuditSubject;
+use crate::audit::{Transition, WriteToken, events};
 use crate::auth::token::SecurityToken;
 use chrono::{DateTime, Utc};
-use sqlx::PgExecutor;
+use sqlx::{PgConnection, PgExecutor};
 use std::fmt::{Display, Formatter};
 use thiserror::Error;
 use uuid::Uuid;
@@ -94,25 +96,59 @@ pub async fn fetch_metadata_by_id<'c, E: PgExecutor<'c>>(
     })
 }
 
-pub async fn insert_token(
-    conn: impl PgExecutor<'_>,
-    user_id: Uuid,
-    lifetime: chrono::TimeDelta,
-) -> Result<(SecurityToken, DateTime<Utc>), sqlx::Error> {
-    let token_id = Uuid::new_v4();
-    let api_token = SecurityToken::generate();
-    let created = Utc::now();
-    let expires = created + lifetime;
-    sqlx::query!(
-        "insert into tml_switchboard.api_tokens (token_id, token, user_id, canceled, created_at, expires_at) \
-         values ($1, $2, $3, null, $4, $5);",
-        token_id,
-        api_token.as_bytes(),
-        user_id,
-        created,
-        expires
-    )
-    .execute(conn)
-    .await
-    .map(|_| (api_token, expires))
+/// Mint a session/API token for a user, recording its provenance (the client
+/// address and user agent that requested it, plus an optional human comment).
+/// Emits [`events::SessionTokenIssued`]. Run via [`audit::transition`].
+///
+/// [`audit::transition`]: crate::audit::transition
+pub struct IssueSessionToken {
+    pub user_id: Uuid,
+    pub lifetime: chrono::TimeDelta,
+    pub user_agent: Option<String>,
+    pub comment: Option<String>,
+    pub created_ip: Option<String>,
+    pub created_port: Option<i32>,
+}
+
+impl Transition for IssueSessionToken {
+    type Output = (SecurityToken, DateTime<Utc>);
+    type Event = events::SessionTokenIssued;
+
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        let token_id = Uuid::new_v4();
+        let api_token = SecurityToken::generate();
+        let created = Utc::now();
+        let expires = created + self.lifetime;
+        sqlx::query!(
+            "insert into tml_switchboard.api_tokens \
+             (token_id, token, user_id, canceled, created_at, expires_at, user_agent, comment, created_ip, created_port) \
+             values ($1, $2, $3, null, $4, $5, $6, $7, $8, $9);",
+            token_id,
+            api_token.as_bytes(),
+            self.user_id,
+            created,
+            expires,
+            self.user_agent,
+            self.comment,
+            self.created_ip,
+            self.created_port,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::SessionTokenIssued {
+            actor: AuditSubject(self.user_id),
+            user: AuditSubject(self.user_id),
+            token_id,
+            expires_at: expires,
+            client_ip: self.created_ip,
+            client_port: self.created_port,
+            user_agent: self.user_agent,
+        };
+        Ok(((api_token, expires), event))
+    }
 }
