@@ -104,6 +104,13 @@ pub struct ServerConfig {
     pub bind_address: SocketAddr,
     /// Optional TLS mode for testing only.
     pub testing_only_tls_config: Option<TestingOnlyTlsConfig>,
+    /// Header names, in priority order, to trust for the real client address
+    /// when the switchboard runs behind a reverse proxy (e.g.
+    /// `["X-Forwarded-For"]`). Empty (the default) means trust ONLY the raw
+    /// socket peer address: never read these headers unless a trusted proxy is
+    /// known to set them, or a client could spoof its recorded address.
+    #[serde(default)]
+    pub trusted_proxy_headers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
