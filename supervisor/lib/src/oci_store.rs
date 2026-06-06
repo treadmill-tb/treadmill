@@ -28,15 +28,64 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
+use async_trait::async_trait;
 use oci_client::{
     Reference,
     client::{Client, ClientConfig, ClientProtocol},
     secrets::RegistryAuth,
 };
 use oci_spec::image::ImageManifest;
+use serde::Deserialize;
 use tracing::{Level, event, instrument};
 
 use treadmill_rs::image::Digest;
+
+/// Configuration for the supervisor's [`OciStore`] client: the local Zot
+/// daemon's authority and the on-disk root of its storage (§6/§7).
+#[derive(Clone, Debug, Deserialize)]
+pub struct OciStoreConfig {
+    /// Authority (`host:port`, no scheme) of the local Zot daemon.
+    pub registry: String,
+    /// Filesystem root of the daemon's storage (read-only from the supervisor).
+    pub store_root: PathBuf,
+}
+
+/// The image-store operations a supervisor's job state machine depends on.
+///
+/// Injectable (the supervisors hold `Arc<dyn ImageStore>`) so the state machine
+/// can be driven by tests with a stub store, and so the production path uses the
+/// OCI-backed [`OciStore`]. The methods mirror [`OciStore`]'s inherent API; see
+/// `doc/oci-image-migration-plan.md` §6.
+#[async_trait]
+pub trait ImageStore: std::fmt::Debug + Send + Sync {
+    /// Ensure the image manifest `digest` and its blob closure are present in
+    /// the local daemon's store, trying each location in order. Returns the
+    /// repository the image is present under.
+    async fn ensure_present(&self, digest: &Digest, locations: &[Location]) -> Result<String>;
+
+    /// Read and parse the (already-present) OCI image manifest `digest` from the
+    /// daemon's store under `repository`.
+    async fn manifest(&self, repository: &str, digest: &Digest) -> Result<ImageManifest>;
+
+    /// Filesystem path at which `digest`'s bytes can be opened read-only within
+    /// `repository`.
+    fn blob_path(&self, repository: &str, digest: &Digest) -> PathBuf;
+}
+
+#[async_trait]
+impl ImageStore for OciStore {
+    async fn ensure_present(&self, digest: &Digest, locations: &[Location]) -> Result<String> {
+        OciStore::ensure_present(self, digest, locations).await
+    }
+
+    async fn manifest(&self, repository: &str, digest: &Digest) -> Result<ImageManifest> {
+        OciStore::manifest(self, repository, digest).await
+    }
+
+    fn blob_path(&self, repository: &str, digest: &Digest) -> PathBuf {
+        OciStore::blob_path(self, repository, digest)
+    }
+}
 
 /// One place the local daemon can be asked to source an image from.
 ///
