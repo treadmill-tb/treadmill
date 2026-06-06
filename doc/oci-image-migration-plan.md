@@ -102,7 +102,7 @@ Each row is a decision we are committing to unless flagged **(revisit)**.
 | D11 | Auth | Switchboard becomes the registry's **bearer-token issuer** (Docker v2 token flow), reusing the existing `auth`/`token` subsystem. Zot is configured **non-anonymous for both pull and push** (we don't pay bandwidth for unauthorized access). Switchboard mints short-lived, single-repository tokens: `repository:<repo>:pull` is included in the **job dispatch message** so the supervisor's `oci-client` can pull; `repository:<repo>:push` is handed to a user out-of-band for publishing. Scope is per-repo + short TTL, so a compromised supervisor only gains pull on images it was actually dispatched. BYO/external registries use the user's own creds; only the canonical registry is switchboard-gated. |
 | D12 | Federation / multi-location | An image's **identity is its manifest digest**; a *location* is a `(registry, repository)` that serves those bytes. An image may have **many locations** (D16): external/BYO (best-effort) and/or canonical (`skopeo copy`, dedup-cheap). Any location is interchangeable because every pull is digest-verified. "Guaranteed-schedulable / system" = "has a canonical-registry location." |
 | D13 | Local GC + in-use protection | The per-server **daemon owns GC**; supervisors express "in use" as a **Zot reference** (per-job tag/referrer pinning the digest) that GC honors, instead of flock + lease files. Single writer ⇒ no multi-writer GC/ingest race. The canonical registry is protected by catalog references, not distributed leases. See §7. |
-| D14 | Existing images | The two existing TOML images are converted once by a small offline tool (`tml image convert-legacy`) into OCI manifests pushed to the canonical registry. The TOML format and `treadmill-rs/src/image/manifest.rs` are deleted at cutover (D-day, no dual-format runtime). |
+| D14 | Existing images | **None.** There is no legacy image corpus to migrate; we treat OCI as greenfield. The TOML format and `treadmill-rs/src/image/manifest.rs` are deleted at cutover (D-day) without any conversion tool. New images are produced directly as OCI by users (standard OCI tooling) and by the `tiny-efi` test fixture. |
 | D15 | Signing | **Dropped.** Digest pinning already guarantees image integrity (no registry can swap content under a pinned digest), and the host already defends against untrusted *workloads*, which strictly dominate a malicious *image* — so provenance buys the host nothing. Signing would only add defense against a switchboard/catalog-DB compromise repointing a job at a malicious digest, which is low-value relative to the effort. The freed effort goes to host isolation (§11), the actual threat surface. |
 | D16 | Image refs / locations | Each image has **one digest identity** and **one-or-more locations** (`image_locations`, §5.3). Enables registry redundancy (supervisor fails over across locations) and **promotion to a system image by adding a canonical location without removing the original ref** — the digest, and thus every existing reference/job, is unchanged. The dispatch carries an *ordered list* of `{ref, pull-token}` for failover. |
 
@@ -396,14 +396,14 @@ Each phase below names its verifying test target.
 ### Phase 0 — Format & types (no behavior change)
 - Add `oci-spec` + `oci-client` to the workspace.
 - New `treadmill-rs/src/image/`: `media_types.rs`, `annotations.rs`,
-  `image_ref.rs`, `Digest`. Keep old `manifest.rs` compiling in parallel.
-- Write `tml image convert-legacy`: TOML manifest → OCI manifest (+ index for a
-  group), and convert the two existing images.
-- Build the **`tiny-efi` aarch64 two-layer fixture** (§12.2) via Nix.
+  `image_ref.rs`, `Digest`, `parse.rs` (OCI manifest/index → validated Treadmill
+  view). Keep old `manifest.rs` compiling in parallel until cutover.
+- No legacy conversion (D14): OCI is greenfield. The only producer we need now is
+  the one that builds the **`tiny-efi` aarch64 two-layer fixture** (§12.2) via Nix.
 - **Verified by (§12):** `cargo test -p treadmill-rs image::` — annotation/
-  `ImageRef`/`Digest` round-trips + `insta` golden snapshots of the two converted
-  images; `nix build .#checks.<sys>.tiny-efi-image` builds + reparses the fixture
-  with `oci-spec`. No daemon/qemu needed.
+  `ImageRef`/`Digest` round-trips + `parse` validation against real-wire-format
+  manifest/index JSON; `nix build .#checks.<sys>.tiny-efi-image` builds + reparses
+  the fixture with `oci-spec`. No daemon/qemu needed.
 
 ### Phase 0.5 — Supervisor job-core test seam (refactor, no behavior change)
 - Extract the in-process-drivable job core from `supervisor/qemu` and
@@ -594,7 +594,7 @@ named target so it can be signed off without advancing.
 
 | Tier | Mechanism | Used for |
 |---|---|---|
-| 1 — pure Rust | `cargo test`, `insta` snapshots | annotations, `ImageRef`/`Digest`, convert-legacy, the backing-chain emitter, GC reachability |
+| 1 — pure Rust | `cargo test`, `insta` snapshots | annotations, `ImageRef`/`Digest`, `parse` validation, the backing-chain emitter, GC reachability |
 | 2 — Rust integration | `cargo test` spawning real **child Zot** / real **qemu** | `ensure_present`, leases/GC against the real Zot, `qemu-img` chain validation, **the aarch64 boot test** |
 | 3 — NixOS VM (`nixosTest`, flake checks) | full machines under the test driver | ro bind-mount enforcement, bwrap sandbox, NBD netboot with an emulated board |
 
