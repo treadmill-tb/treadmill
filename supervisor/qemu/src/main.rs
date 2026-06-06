@@ -1805,15 +1805,21 @@ mod tests {
     use image_store_client::{FetchImageStatus, LocalImageStoreConfig};
     use launcher::{QemuImgChildMetadata, QemuImgChildMetadataInfo};
 
-    /// Connector that records the job state transitions reported to it.
+    /// Connector that records the job state transitions and errors reported to
+    /// it.
     #[derive(Debug, Default)]
     struct RecordingConnector {
         states: std::sync::Mutex<Vec<RunningJobState>>,
+        errors: std::sync::Mutex<Vec<connector::JobError>>,
     }
 
     impl RecordingConnector {
         fn labels(&self) -> Vec<String> {
             self.states.lock().unwrap().iter().map(label).collect()
+        }
+
+        fn errors(&self) -> Vec<connector::JobError> {
+            self.errors.lock().unwrap().clone()
         }
     }
 
@@ -1843,8 +1849,14 @@ mod tests {
 
         async fn update_event(&self, event: SupervisorEvent) {
             let SupervisorEvent::JobEvent { event, .. } = event;
-            if let SupervisorJobEvent::StateTransition { new_state, .. } = event {
-                self.states.lock().unwrap().push(new_state);
+            match event {
+                SupervisorJobEvent::StateTransition { new_state, .. } => {
+                    self.states.lock().unwrap().push(new_state);
+                }
+                SupervisorJobEvent::Error { error } => {
+                    self.errors.lock().unwrap().push(error);
+                }
+                _ => {}
             }
         }
     }
@@ -1969,22 +1981,36 @@ mod tests {
         panic!("condition not met within timeout");
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn job_lifecycle_transitions() {
+    /// A constructed supervisor plus the stubs wired into it, over a temp dir.
+    struct Harness {
+        sup: Arc<QemuSupervisor>,
+        connector: Arc<RecordingConnector>,
+        launcher: Arc<StubLauncher>,
+        tmp: PathBuf,
+    }
+
+    impl Drop for Harness {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.tmp);
+        }
+    }
+
+    /// Build a supervisor whose stub image declares `manifest_virtual_size` but
+    /// whose stub launcher reports `launcher_virtual_size` for the qcow2 — equal
+    /// for a valid image, divergent to provoke image validation failure.
+    fn harness(manifest_virtual_size: u64, launcher_virtual_size: u64) -> Harness {
         let tmp = std::env::temp_dir().join(format!("tml-qemu-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         let blob_file = tmp.join("root.qcow2");
         std::fs::write(&blob_file, b"not-a-real-qcow2").unwrap();
 
-        let virtual_size = 4u64 * 1024 * 1024 * 1024;
-
         let connector = Arc::new(RecordingConnector::default());
         let store: Arc<dyn ImageStore> = Arc::new(StubStore {
-            blob_file: blob_file.clone(),
-            manifest: single_layer_manifest(virtual_size),
+            blob_file,
+            manifest: single_layer_manifest(manifest_virtual_size),
         });
         let launcher = Arc::new(StubLauncher {
-            virtual_size,
+            virtual_size: launcher_virtual_size,
             spawned: Default::default(),
         });
 
@@ -2003,7 +2029,7 @@ mod tests {
                 qemu_img_binary: PathBuf::from("/nonexistent/qemu-img"),
                 state_dir: tmp.join("state"),
                 qemu_args: vec![],
-                working_disk_max_bytes: virtual_size,
+                working_disk_max_bytes: manifest_virtual_size.max(launcher_virtual_size),
                 tcp_control_socket_listen_addr: "127.0.0.1:0".parse().unwrap(),
                 start_script: None,
             },
@@ -2020,9 +2046,16 @@ mod tests {
             config,
         ));
 
-        let job_id = Uuid::new_v4();
-        let host_id = Uuid::new_v4();
-        let start = StartJobMessage {
+        Harness {
+            sup,
+            connector,
+            launcher,
+            tmp,
+        }
+    }
+
+    fn start_msg(job_id: Uuid) -> StartJobMessage {
+        StartJobMessage {
             job_id,
             image_spec: ImageSpecification::Image {
                 image_id: ImageId([0u8; 32]),
@@ -2032,13 +2065,24 @@ mod tests {
                 remaining_restart_count: 0,
             },
             parameters: HashMap::<String, ParameterValue>::new(),
-        };
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_lifecycle_transitions() {
+        let virtual_size = 4u64 * 1024 * 1024 * 1024;
+        let h = harness(virtual_size, virtual_size);
+
+        let job_id = Uuid::new_v4();
+        let host_id = Uuid::new_v4();
 
         // `start_job` drives synchronously through fetch → allocate → launch.
-        QemuSupervisor::start_job(&sup, start).await.unwrap();
+        QemuSupervisor::start_job(&h.sup, start_msg(job_id))
+            .await
+            .unwrap();
 
         assert_eq!(
-            connector.labels(),
+            h.connector.labels(),
             vec![
                 "initializing/starting",
                 "initializing/allocating",
@@ -2048,27 +2092,66 @@ mod tests {
 
         // The workload was launched with the configured QEMU binary.
         {
-            let spawned = launcher.spawned.lock().unwrap();
+            let spawned = h.launcher.spawned.lock().unwrap();
             assert_eq!(spawned.len(), 1);
             assert_eq!(spawned[0].0, PathBuf::from("/nonexistent/qemu"));
         }
 
         // Puppet reports ready → the job goes Ready.
-        sup.puppet_ready(0, host_id, job_id).await;
-        assert_eq!(connector.labels().last().map(String::as_str), Some("ready"));
+        h.sup.puppet_ready(0, host_id, job_id).await;
+        assert_eq!(
+            h.connector.labels().last().map(String::as_str),
+            Some("ready")
+        );
 
         // Stopping kills the (stub) workload; the monitor task then reports
         // Terminating → Terminated asynchronously.
-        QemuSupervisor::stop_job(&sup, StopJobMessage { job_id })
+        QemuSupervisor::stop_job(&h.sup, StopJobMessage { job_id })
             .await
             .unwrap();
 
-        wait_until(|| connector.labels().last().map(String::as_str) == Some("terminated")).await;
+        wait_until(|| h.connector.labels().last().map(String::as_str) == Some("terminated")).await;
 
-        let labels = connector.labels();
+        let labels = h.connector.labels();
         assert!(labels.iter().any(|l| l == "terminating"), "{labels:?}");
         assert_eq!(labels.last().map(String::as_str), Some("terminated"));
+        assert!(h.connector.errors().is_empty());
+    }
 
-        let _ = std::fs::remove_dir_all(&tmp);
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn invalid_image_reports_error_and_tears_down() {
+        // The qcow2's reported virtual size diverges from the manifest, so image
+        // validation fails before any workload is launched.
+        let h = harness(4 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024);
+
+        let job_id = Uuid::new_v4();
+
+        // start_job itself still returns Ok — the failure surfaces as a reported
+        // job error, not a returned one.
+        QemuSupervisor::start_job(&h.sup, start_msg(job_id))
+            .await
+            .unwrap();
+
+        let errors = h.connector.errors();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            matches!(errors[0].error_kind, connector::JobErrorKind::ImageInvalid),
+            "{:?}",
+            errors[0],
+        );
+
+        // Validation failed before launch, and the failed job is gone from the
+        // map rather than lingering.
+        assert!(h.launcher.spawned.lock().unwrap().is_empty());
+        assert!(h.sup.jobs.lock().await.get(&job_id).is_none());
+
+        // It never reached Booting/Ready.
+        let labels = h.connector.labels();
+        assert!(
+            !labels
+                .iter()
+                .any(|l| l == "initializing/booting" || l == "ready"),
+            "{labels:?}",
+        );
     }
 }
