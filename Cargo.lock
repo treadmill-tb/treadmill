@@ -4283,7 +4283,9 @@ name = "treadmill-supervisor-lib"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "serde",
+ "serde_json",
  "tokio",
  "toml 1.1.2+spec-1.1.0",
  "tracing",

@@ -23,47 +23,7 @@ use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 use treadmill_tcp_control_socket_server::TcpControlSocket;
 
 use treadmill_supervisor_lib::image_store_client;
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "kebab-case")]
-struct QemuImgChildMetadataInfo {
-    // We're only interested in the filename here, to make sure that the
-    // image has only one child node, and that node coincides with the
-    // file that we're operating on.
-    filename: PathBuf,
-
-    // Include this field just to make sure that we don't have
-    // any recursive children:
-    children: Vec<QemuImgChildMetadata>,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "kebab-case")]
-struct QemuImgChildMetadata {
-    info: QemuImgChildMetadataInfo,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "kebab-case")]
-struct QemuImgMetadata {
-    filename: PathBuf,
-    virtual_size: u64,
-    children: Vec<QemuImgChildMetadata>,
-    encrypted: Option<bool>,
-    backing_filename_format: Option<String>,
-    // According to [1], these attributes are described as
-    // - backing-filename: name of the backing file
-    // - full-backing-filename: full path of the backing file
-    //
-    // In practice it seems that `full-backing-filename` points to the
-    // resolved path of the backing file (relative to the current
-    // working directory), whereas `backing-filename` is just the raw
-    // attribute stored in the image.
-    //
-    // [1]: https://www.qemu.org/docs/master/interop/qemu-storage-daemon-qmp-ref.html
-    backing_filename: Option<PathBuf>,
-    full_backing_filename: Option<PathBuf>,
-}
+use treadmill_supervisor_lib::launcher::{self, ProcessLauncher, QemuImgMetadata, WorkloadProcess};
 
 async fn fuse<R>(duration: std::time::Duration, fire: impl std::future::Future<Output = R>) -> R {
     // Cancellable await:
@@ -229,6 +189,10 @@ pub struct QemuSupervisor {
     /// can directly reference (immutable) qcow2 images.
     image_store_client: image_store_client::LocalImageStoreClient,
 
+    /// Seam for the `qemu-img`/`qemu` subprocess operations, injectable so the
+    /// job state machine can be driven by tests without spawning real binaries.
+    launcher: Arc<dyn ProcessLauncher>,
+
     /// We support running multiple jobs on one supervisor (in particular when
     /// not sharing hardware resources), so use a map of `Arc`s behind a mutex
     /// to avoid locking the map across long-running calls.
@@ -242,12 +206,14 @@ impl QemuSupervisor {
     pub fn new(
         connector: Arc<dyn connector::SupervisorConnector>,
         image_store_client: image_store_client::LocalImageStoreClient,
+        launcher: Arc<dyn ProcessLauncher>,
         args: QemuSupervisorArgs,
         config: QemuSupervisorConfig,
     ) -> Self {
         QemuSupervisor {
             connector,
             image_store_client,
+            launcher,
             jobs: Mutex::new(HashMap::new()),
             _args: args,
             config,
@@ -538,38 +504,8 @@ impl QemuSupervisor {
                         format!("Failed to canonicalize image blob path {image_path:?}")
                     })?;
 
-            event!(Level::DEBUG, qemu_img_binary = ?self.config.qemu.qemu_img_binary, file = ?image_path_canon, "Retrieving qcow2 file metadata");
-            let metadata_output = tokio::process::Command::new(&self.config.qemu.qemu_img_binary)
-                .arg("info")
-                .arg("--format=qcow2")
-                .arg("--output=json")
-                .arg("--")
-                .arg(&image_path_canon)
-                .output()
-                .await
-                .map_err(anyhow::Error::from)
-                .and_then(|output| {
-                    // Ideally we'd want to use the nightly `exit_ok()` here:
-                    if !output.status.success() {
-                        bail!(
-                            "Running qemu-img failed with exit-code {:?}",
-                            output.status.code()
-                        );
-                    }
-
-                    // Don't care about stderr:
-                    Ok(output.stdout)
-                })
-                .with_context(|| format!("Failed to query image metadata for {image_path:?}"))?;
-
-            let metadata: QemuImgMetadata =
-                serde_json::from_slice(&metadata_output).with_context(|| {
-                    format!(
-                        "Failed to parse qemu-img info output for {:?}: {:?}",
-                        image_path,
-                        String::from_utf8_lossy(&metadata_output),
-                    )
-                })?;
+            event!(Level::DEBUG, file = ?image_path_canon, "Retrieving qcow2 file metadata");
+            let metadata: QemuImgMetadata = self.launcher.qcow2_info(&image_path_canon).await?;
 
             top_image.get_or_insert_with(|| {
                 event!(Level::DEBUG, file = ?image_path_canon, ?metadata, "Setting image file as top-level");
@@ -798,38 +734,13 @@ impl QemuSupervisor {
         // Create the disk, based on the top image layer:
         let disk_image_file = job_dir.join("disk.qcow2");
         event!(Level::DEBUG, backing_image = ?top_image_path, ?disk_image_file, virtual_size_bytes = self.config.qemu.working_disk_max_bytes, "Creating job disk image");
-        tokio::process::Command::new(&self.config.qemu.qemu_img_binary)
-            .arg("create")
-            // Image format:
-            .arg("-f")
-            .arg("qcow2")
-            // Backing file format:
-            .arg("-F")
-            .arg("qcow2")
-            // Backing file:
-            .arg("-b")
-            .arg(top_image_path)
-            // New image file:
-            .arg(&disk_image_file)
-            // New image size (in bytes, without suffix):
-            .arg(self.config.qemu.working_disk_max_bytes.to_string())
-            .output()
+        self.launcher
+            .create_overlay(
+                &disk_image_file,
+                top_image_path,
+                self.config.qemu.working_disk_max_bytes,
+            )
             .await
-            .map_err(anyhow::Error::from)
-            .and_then(|output| {
-                // Ideally we'd want to use the nightly `exit_ok()` here:
-                if !output.status.success() {
-                    bail!(
-                        "Running qemu-img failed with exit-code {:?}, stdout: {:?}, stderr: {:?}",
-                        output.status.code(),
-                        String::from_utf8_lossy(&output.stdout),
-                        String::from_utf8_lossy(&output.stderr),
-                    );
-                }
-
-                // Don't care about stdout or stderr in the success case:
-                Ok(())
-            })
             .map_err(|e| connector::JobError {
                 error_kind: connector::JobErrorKind::InternalError,
                 description: format!(
@@ -1090,12 +1001,10 @@ impl QemuSupervisor {
         .unwrap();
 
         event!(Level::INFO, qemu_binary = ?this.config.qemu.qemu_binary, ?qemu_args, "Launching QEMU process");
-        let qemu_proc = tokio::process::Command::new(&this.config.qemu.qemu_binary)
-            .args(&qemu_args)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()
+        let qemu_proc = this
+            .launcher
+            .spawn(&this.config.qemu.qemu_binary, &qemu_args)
+            .await
             .unwrap();
 
         // Job has been started, let the coordinator know:
@@ -1143,7 +1052,7 @@ impl QemuSupervisor {
         this: &Arc<Self>,
         job_id: Uuid,
         job: Arc<Mutex<QemuSupervisorJobState>>,
-        mut qemu_proc: tokio::process::Child,
+        mut qemu_proc: Box<dyn WorkloadProcess>,
         mut shutdown_rx: tokio::sync::oneshot::Receiver<QemuSupervisorJobRunningState>,
     ) {
         let (terminate_message, job_running_state): (String, QemuSupervisorJobRunningState) = loop {
@@ -1813,6 +1722,10 @@ async fn main() -> Result<()> {
             .await
             .unwrap();
 
+    let launcher: Arc<dyn ProcessLauncher> = Arc::new(launcher::CliLauncher::new(
+        config.qemu.qemu_img_binary.clone(),
+    ));
+
     match config.base.coord_connector {
         SupervisorCoordConnector::WsConnector => {
             let ws_connector_config = config.ws_connector.clone().ok_or(anyhow!(
@@ -1834,7 +1747,7 @@ async fn main() -> Result<()> {
                         weak_supervisor.clone(),
                     ));
                     *connector_opt = Some(connector.clone());
-                    QemuSupervisor::new(connector, image_store, args, config)
+                    QemuSupervisor::new(connector, image_store, launcher, args, config)
                 })
             };
 

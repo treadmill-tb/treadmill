@@ -8,8 +8,10 @@ edition.workspace = true
 treadmill-rs = { workspace = true }
 
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-tokio = { workspace = true, features = ["fs"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["fs", "process"] }
 toml = { workspace = true }
 tracing = { workspace = true }
 
