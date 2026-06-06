@@ -201,6 +201,27 @@
             TINY_EFI_IMAGE = self'.packages.tiny-efi-image-layout;
           }
         );
+
+        # Phase 2 of the OCI image migration (§6.2/§D9/§12.5): validate the
+        # backing-chain emitter against real qemu — assemble the `-blockdev`
+        # node graph with qemu-storage-daemon, export it over NBD, and read it
+        # back with qemu-io. Needs the qemu tools on PATH; the test skips
+        # without them so the plain `nextest` check passes it over.
+        chain-assembly = cmn.craneLib.cargoNextest (
+          cmn.cargoCommonArgs
+          // {
+            pname = "treadmill-chain-assembly";
+            version = "0.1.0";
+            cargoArtifacts = cmn.workspaceDeps;
+            cargoNextestExtraArgs = "-p treadmill-supervisor-lib --no-tests=pass -E 'binary(chain_assembly)'";
+            partitions = 1;
+            partitionType = "count";
+
+            nativeBuildInputs = cmn.cargoCommonArgs.nativeBuildInputs ++ [
+              pkgs.qemu
+            ];
+          }
+        );
       }
       # Promote each package output to a check so `nix flake check`
       # verifies they all build.

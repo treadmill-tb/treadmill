@@ -25,6 +25,7 @@ tracing = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v4"] }
 
 [dev-dependencies]
+insta = { workspace = true }
 serde_json = { workspace = true }
 
 [lints]

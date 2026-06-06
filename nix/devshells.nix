@@ -27,6 +27,10 @@
           # between OCI layouts and registries in tests and the CLI.
           cmn.zot
           skopeo
+
+          # qemu provides qemu-img (backing-chain validation) and
+          # qemu-system-aarch64 + AAVMF firmware (the tiny-efi boot test).
+          qemu
         ];
 
         shellHook = ''
