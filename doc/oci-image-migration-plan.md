@@ -105,6 +105,7 @@ Each row is a decision we are committing to unless flagged **(revisit)**.
 | D14 | Existing images | **None.** There is no legacy image corpus to migrate; we treat OCI as greenfield. The TOML format and `treadmill-rs/src/image/manifest.rs` are deleted at cutover (D-day) without any conversion tool. New images are produced directly as OCI by users (standard OCI tooling) and by the `tiny-efi` test fixture. |
 | D15 | Signing | **Dropped.** Digest pinning already guarantees image integrity (no registry can swap content under a pinned digest), and the host already defends against untrusted *workloads*, which strictly dominate a malicious *image* — so provenance buys the host nothing. Signing would only add defense against a switchboard/catalog-DB compromise repointing a job at a malicious digest, which is low-value relative to the effort. The freed effort goes to host isolation (§11), the actual threat surface. |
 | D16 | Image refs / locations | Each image has **one digest identity** and **one-or-more locations** (`image_locations`, §5.3). Enables registry redundancy (supervisor fails over across locations) and **promotion to a system image by adding a canonical location without removing the original ref** — the digest, and thus every existing reference/job, is unchanged. The dispatch carries an *ordered list* of `{ref, pull-token}` for failover. |
+| D17 | Writeable `/boot` (netboot) | The boot partition is a **FAT image** blob (`boot.fat.v1`, D2). The board mounts it **rw via `qemu-nbd`** — a per-job qcow2 overlay over the shared FAT blob, exactly like root (§6.2). The firmware's read phase is served over **TFTP**, where the TFTP server is a **read-only `NBD_CMD_READ` client of that *same* `qemu-nbd`** (not a second independent opener of the image): reads go through qemu's single block backend (qcow2-aware, cache-coherent with the writer, serialized per request). Firmware-read and OS-write phases don't overlap in the netboot lifecycle, so the served FAT is consistent; the shared-owner path additionally rules out torn block reads in the degenerate overlapping case (and on-disk corruption was never a risk — only one writer, the board). Replaces the legacy tarball-unpacked-to-a-dir + read-only TFTP. No NFS/9P and no extra system service: the TFTP + FAT reader is one unprivileged process. See §6.4. |
 
 Decisions still wanting a human "go": **D10** (Zot vs Harbor — *tentatively Zot,
 confirmed*). D12/D16 (multi-location + promotion) and D11 (token-gated pull)
@@ -235,6 +236,39 @@ canonicalization). New behavior:
   **read-only bind-mount of `blobs/sha256`** (only the blobs they need). Same
   inode (single-copy preserved), but immutability is OS-enforced and the rest of
   the store is hidden from a compromised media process.
+
+### 6.4 Writeable `/boot`: FAT-over-NBD with a TFTP read path (D17)
+
+The netboot target needs a **writeable** `/boot`, but TFTP is read-only and we
+will not run NFS (a system service) or impose a network filesystem (9P) on every
+target kernel. Resolve this by treating `/boot` as a **FAT block device** the
+board mounts rw, and serving the firmware's boot files by *reading that same block
+device through one owner* — never from an independent copy or a second opener.
+
+- **Block device for the OS.** The boot blob is a FAT image (`boot.fat.v1`, D2).
+  As with root (§6.2), the supervisor builds a **per-job qcow2 overlay** with the
+  shared FAT blob as a read-only lower and exposes it via **`qemu-nbd`**; the board
+  mounts `/boot` **rw** over NBD. The board's writes land in *its own* overlay,
+  never the shared blob.
+- **Files for the firmware.** The **TFTP server is a read-only `NBD_CMD_READ`
+  client of that same `qemu-nbd`** (`--shared`), running the `fatfs` reader over a
+  thin `Seek + Read` shim on the NBD export. Because `qemu-nbd` is the single block
+  owner, the two clients are cache-coherent, each request is served from a
+  consistent block snapshot, and **qcow2 is decoded by qemu — not re-parsed** by
+  the TFTP server (reading FAT directly off a qcow2 file would be both incoherent
+  and wrong).
+- **Why it is safe.** Firmware TFTPs at power-on (OS down, no writer); Linux only
+  writes `/boot` once it is up (firmware done). The phases alternate across reboots
+  but do not overlap, so the served FAT is logically consistent. The shared-owner
+  NBD path additionally prevents *torn block reads* in the degenerate overlapping
+  case, and there is no on-disk corruption risk at all because the board is the
+  only writer. This is the hardened form of the naive "qemu-nbd writes the file
+  while a separate process parses its FAT" design, whose danger comes precisely
+  from being two independent, incoherent openers.
+- **Footprint.** One unprivileged process: a minimal read-only NBD client, the
+  `fatfs` crate (read-only use), and a small UDP TFTP server. No NFS/9P, no
+  privileged mounts on the supervisor, and it reuses the `qemu-nbd` already in the
+  stack for root.
 
 ---
 
@@ -506,6 +540,27 @@ Each phase below names its verifying test target.
   - `cargo test -p treadmill-rs control_socket::fuzz` — round-trip/bounds tests
     of the puppet control-socket decoder against adversarial input.
 
+### Phase 6.6 — Writeable `/boot`: FAT-over-NBD + TFTP read path (D17, §6.4)
+- Treat the boot FAT blob like root (§6.2): build it into a per-job qcow2 overlay
+  and expose it via a second `qemu-nbd` for the board's **rw `/boot`** mount.
+- Replace the legacy boot-archive `tar` unpack + read-only-dir TFTP in
+  `supervisor/nbd-netboot` with a **TFTP server that reads files from the FAT over
+  a read-only `NBD_CMD_READ` client** of that `qemu-nbd` (`fatfs` over a
+  `Seek + Read` shim). Retire the related start-script plumbing.
+- New `treadmill-rs` pieces (driven through the Phase 0.5 launcher seam where they
+  spawn processes): a minimal read-only NBD client, the `Seek + Read` shim, and a
+  small UDP TFTP server.
+- **Verified by:**
+  - `cargo test -p treadmill-rs boot::fat` — open a fixture FAT image and read a
+    known file back byte-for-byte (Tier-1, no qemu).
+  - `cargo test -p treadmill-...` Tier-2 — a child `qemu-nbd` serves the fixture
+    FAT image; assert the TFTP server (reading over an NBD client of it) returns
+    the same bytes, and that a write through a second rw client is then visible to
+    the TFTP path — proving read/write **coherence through the single owner**.
+  - extend `.#checks.<sys>.nbd-netboot` (Phase 6.5): the board mounts `/boot` rw
+    over NBD, writes a sentinel file, and on the next firmware fetch the TFTP path
+    reflects the write.
+
 ### Phase 7 — Cutover & cleanup
 - Delete `treadmill-rs/src/image/manifest.rs`, the TOML store, and the legacy
   `image_id` paths. Update `doc/` architecture SVG. Archive this plan.
@@ -597,8 +652,16 @@ decoder for untrusted-input handling (bounds, allocation limits, no trust in
 guest-supplied lengths). Flagged for review; not yet assessed in detail.
 
 ### 11.4 TFTP boot path
-Netboot boot files are served to the board read-only; ensure per-target
-isolation and that the served boot dir is not writable by the workload.
+Boot files are served by reading the per-job boot FAT image **through
+`qemu-nbd`** (D17, §6.4): the TFTP server holds only a read-only NBD client
+connection and never opens the shared blob or the job overlay directly, so it
+cannot write either. The board's rw `/boot` writes land in its **own per-job
+overlay**, never the shared FAT blob. Keep per-target isolation — the TFTP UDP
+listener and the boot `qemu-nbd` bound to the board's link only (Phase 6.5) — and
+ensure one job's workload cannot reach another job's `qemu-nbd`. The TFTP + FAT
+reader is itself a parser of (qemu-decoded) on-disk FAT structures; treat it as
+trusted-code-handling-untrusted-input like the rest of §11 and bound its
+allocations.
 
 ---
 
