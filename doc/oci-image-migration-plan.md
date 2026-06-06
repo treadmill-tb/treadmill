@@ -97,7 +97,7 @@ Each row is a decision we are committing to unless flagged **(revisit)**.
 | D6 | Registry library | `oci-client` crate (pure-Rust OCI Distribution client) on the supervisor; `oci-spec` crate (or vendored minimal types) for manifest/index structs. No shelling to `skopeo`/`oras` in the hot path. CLI may shell to `oras` for ergonomics. |
 | D7 | Local store shape | A **per-server Zot daemon** owns the store (single writer); its storage is a standard OCI image layout (`blobs/sha256/<digest>`, `oci-layout`). Consumers never write it — they `open()` blobs **read-only** via a ro bind-mount. All ingest/dedup/locking/GC are the daemon's serialized internal job; supervisors only *read*. See §7. |
 | D8 | Daemon on management path, not data path | The daemon fetches each blob **once** (pull-through cache of the canonical registry); consumers read those same files directly → still **single-copy + shared page cache**. This is the §6 single-copy requirement *and* a managed concurrency model — the earlier "registry = second copy" objection applied only to HTTP-served data, which we don't do. **(revisit)** thin custom daemon over the same OCI layout if the Zot direct-read coupling is unacceptable (§7.4 fallback). |
-| D9 | Runtime backing chain | `qemu-system-*`: `-blockdev` node graph. `qemu-nbd`: `--image-opts` with nested `backing.*` (verified: `qemu-nbd` has `--image-opts`, no `-blockdev`). Shared lower layers pinned `read-only=on`; only the per-job overlay (created with no baked backing) is writable. |
+| D9 | Runtime backing chain | **Both runtimes use one `-blockdev` node graph.** `qemu-system-*` takes the nodes directly; the netboot path feeds the *same* nodes to **`qemu-storage-daemon`** (`--blockdev` + `--nbd-server` + an NBD `--export` of the writable top). The original `qemu-nbd --image-opts` form is **dropped**: `--image-opts` is a single `QemuOpts` blockdev and `qcow2` rejects an inline `backing.driver`, so an *unbaked* multi-layer chain (D3) cannot be expressed that way (verified on qemu 10.2; `qemu-nbd` has `--image-opts` but no `-blockdev`). Shared lower layers pinned `read-only=on`; only the per-job overlay (created with no baked backing) is writable. |
 | D10 | Registry (both tiers) | **Zot** at two tiers: a **canonical** Zot (central, source of truth, user pushes, switchboard catalog) and a **per-server** Zot (single-writer local store + pull-through cache + read-only file source for consumers, §7). Same software both places. **(revisit)** Harbor for the canonical tier if we later want built-in project RBAC. |
 | D11 | Auth | Switchboard becomes the registry's **bearer-token issuer** (Docker v2 token flow), reusing the existing `auth`/`token` subsystem. Zot is configured **non-anonymous for both pull and push** (we don't pay bandwidth for unauthorized access). Switchboard mints short-lived, single-repository tokens: `repository:<repo>:pull` is included in the **job dispatch message** so the supervisor's `oci-client` can pull; `repository:<repo>:push` is handed to a user out-of-band for publishing. Scope is per-repo + short TTL, so a compromised supervisor only gains pull on images it was actually dispatched. BYO/external registries use the user's own creds; only the canonical registry is switchboard-gated. |
 | D12 | Federation / multi-location | An image's **identity is its manifest digest**; a *location* is a `(registry, repository)` that serves those bytes. An image may have **many locations** (D16): external/BYO (best-effort) and/or canonical (`skopeo copy`, dedup-cheap). Any location is interchangeable because every pull is digest-verified. "Guaranteed-schedulable / system" = "has a canonical-registry location." |
@@ -105,7 +105,7 @@ Each row is a decision we are committing to unless flagged **(revisit)**.
 | D14 | Existing images | **None.** There is no legacy image corpus to migrate; we treat OCI as greenfield. The TOML format and `treadmill-rs/src/image/manifest.rs` are deleted at cutover (D-day) without any conversion tool. New images are produced directly as OCI by users (standard OCI tooling) and by the `tiny-efi` test fixture. |
 | D15 | Signing | **Dropped.** Digest pinning already guarantees image integrity (no registry can swap content under a pinned digest), and the host already defends against untrusted *workloads*, which strictly dominate a malicious *image* — so provenance buys the host nothing. Signing would only add defense against a switchboard/catalog-DB compromise repointing a job at a malicious digest, which is low-value relative to the effort. The freed effort goes to host isolation (§11), the actual threat surface. |
 | D16 | Image refs / locations | Each image has **one digest identity** and **one-or-more locations** (`image_locations`, §5.3). Enables registry redundancy (supervisor fails over across locations) and **promotion to a system image by adding a canonical location without removing the original ref** — the digest, and thus every existing reference/job, is unchanged. The dispatch carries an *ordered list* of `{ref, pull-token}` for failover. |
-| D17 | Writeable `/boot` (netboot) | The boot partition is a **FAT image** blob (`boot.fat.v1`, D2). The board mounts it **rw via `qemu-nbd`** — a per-job qcow2 overlay over the shared FAT blob, exactly like root (§6.2). The firmware's read phase is served over **TFTP**, where the TFTP server is a **read-only `NBD_CMD_READ` client of that *same* `qemu-nbd`** (not a second independent opener of the image): reads go through qemu's single block backend (qcow2-aware, cache-coherent with the writer, serialized per request). Firmware-read and OS-write phases don't overlap in the netboot lifecycle, so the served FAT is consistent; the shared-owner path additionally rules out torn block reads in the degenerate overlapping case (and on-disk corruption was never a risk — only one writer, the board). Replaces the legacy tarball-unpacked-to-a-dir + read-only TFTP. No NFS/9P and no extra system service: the TFTP + FAT reader is one unprivileged process. See §6.4. |
+| D17 | Writeable `/boot` (netboot) | The boot partition is a **FAT image** blob (`boot.fat.v1`, D2). The board mounts it **rw via an NBD export from `qemu-storage-daemon`** — a per-job qcow2 overlay over the shared FAT blob, exactly like root (§6.2). The firmware's read phase is served over **TFTP**, where the TFTP server is a **read-only `NBD_CMD_READ` client of that *same* `qemu-storage-daemon` export** (not a second independent opener of the image): reads go through qemu's single block backend (qcow2-aware, cache-coherent with the writer, serialized per request). Firmware-read and OS-write phases don't overlap in the netboot lifecycle, so the served FAT is consistent; the shared-owner path additionally rules out torn block reads in the degenerate overlapping case (and on-disk corruption was never a risk — only one writer, the board). Replaces the legacy tarball-unpacked-to-a-dir + read-only TFTP. No NFS/9P and no extra system service: the TFTP + FAT reader is one unprivileged process. See §6.4. |
 
 Decisions still wanting a human "go": **D10** (Zot vs Harbor — *tentatively Zot,
 confirmed*). D12/D16 (multi-location + promotion) and D11 (token-gated pull)
@@ -213,10 +213,13 @@ canonicalization). New behavior:
   annotations, `ci.treadmill.qcow2.head`.
 - Build the chain explicitly at launch, pointing each node at its
   `blob_path(digest)`; never mutate or rebase the shared blobs:
-  - QEMU VM: emit `-blockdev` nodes (overlay → … → base), lowers `read-only=on`.
-  - NBD: emit a single `--image-opts` string with nested `backing.*` (overlay
-    writable, lowers `read-only=on`). A helper in `treadmill-rs` emits **both**
-    forms from one chain description so the two supervisors share logic.
+  - QEMU VM: emit `-blockdev` nodes (base → … → overlay), lowers `read-only=on`,
+    the per-job overlay writable on top.
+  - NBD (netboot): feed the **same** `-blockdev` nodes to `qemu-storage-daemon`
+    and add an NBD `--export` of the writable top node. (`qemu-nbd --image-opts`
+    cannot express an unbaked multi-layer chain — see D9.) A helper in
+    `treadmill-rs` (`image::blockdev::BackingChain`) emits the node graph from one
+    chain description so both supervisors share the logic.
 - The per-job writable overlay is created with **no baked backing**
   (`qemu-img create -f qcow2 overlay.qcow2 <virtual-size>`); the backing comes
   entirely from the runtime args.
@@ -247,16 +250,16 @@ device through one owner* — never from an independent copy or a second opener.
 
 - **Block device for the OS.** The boot blob is a FAT image (`boot.fat.v1`, D2).
   As with root (§6.2), the supervisor builds a **per-job qcow2 overlay** with the
-  shared FAT blob as a read-only lower and exposes it via **`qemu-nbd`**; the board
-  mounts `/boot` **rw** over NBD. The board's writes land in *its own* overlay,
-  never the shared blob.
+  shared FAT blob as a read-only lower and exposes it via an NBD export from
+  **`qemu-storage-daemon`**; the board mounts `/boot` **rw** over NBD. The board's
+  writes land in *its own* overlay, never the shared blob.
 - **Files for the firmware.** The **TFTP server is a read-only `NBD_CMD_READ`
-  client of that same `qemu-nbd`** (`--shared`), running the `fatfs` reader over a
-  thin `Seek + Read` shim on the NBD export. Because `qemu-nbd` is the single block
-  owner, the two clients are cache-coherent, each request is served from a
-  consistent block snapshot, and **qcow2 is decoded by qemu — not re-parsed** by
-  the TFTP server (reading FAT directly off a qcow2 file would be both incoherent
-  and wrong).
+  client of that same `qemu-storage-daemon` export**, running the `fatfs` reader
+  over a thin `Seek + Read` shim on the NBD client. Because `qemu-storage-daemon`
+  is the single block owner, the writable board client and the read-only TFTP
+  client are cache-coherent, each request is served from a consistent block
+  snapshot, and **qcow2 is decoded by qemu — not re-parsed** by the TFTP server
+  (reading FAT directly off a qcow2 file would be both incoherent and wrong).
 - **Why it is safe.** Firmware TFTPs at power-on (OS down, no writer); Linux only
   writes `/boot` once it is up (firmware done). The phases alternate across reboots
   but do not overlap, so the served FAT is logically consistent. The shared-owner
@@ -589,9 +592,13 @@ Each phase below names its verifying test target.
 - **Host attribute source.** Selection (§8.3) depends on host arch/target/board
   attributes, which overlap with the still-"FIXME: TO BE SPECIFIED"
   `tag_config`. Phase 4 must pin that schema down; tracked as a dependency.
-- **NBD `--image-opts` nesting depth.** Deep `backing.backing.*` strings are
-  fiddly; Phase 2 includes a builder + a real `qemu-nbd` smoke test rather than
-  hand-written strings.
+- **NBD chain assembly (resolved in Phase 2).** The original `qemu-nbd
+  --image-opts` plan does not work: `--image-opts` is a single `QemuOpts`
+  blockdev and `qcow2` rejects an inline `backing.driver`, so an unbaked
+  multi-layer chain (D3) can't be expressed that way. Both runtimes now use the
+  one `-blockdev` node graph (`image::blockdev::BackingChain`); the netboot path
+  feeds it to `qemu-storage-daemon` with an NBD `--export` (D9). Validated by a
+  real `qemu-storage-daemon` + `qemu-io` assembly test, not hand-written strings.
 - **External-location availability.** A user deleting their registry breaks
   images that have *only* an external location; surfaced at schedule time as an
   `ImageError`, and the rationale for promoting/mirroring to a canonical location
