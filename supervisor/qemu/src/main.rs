@@ -1003,7 +1003,7 @@ impl QemuSupervisor {
         event!(Level::INFO, qemu_binary = ?this.config.qemu.qemu_binary, ?qemu_args, "Launching QEMU process");
         let qemu_proc = this
             .launcher
-            .spawn(&this.config.qemu.qemu_binary, &qemu_args)
+            .spawn(&this.config.qemu.qemu_binary, &qemu_args, None)
             .await
             .unwrap();
 

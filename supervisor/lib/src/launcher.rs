@@ -91,9 +91,14 @@ pub trait ProcessLauncher: std::fmt::Debug + Send + Sync {
         virtual_size_bytes: u64,
     ) -> Result<()>;
 
-    /// Spawn a workload process: `program` with `args`, stdin closed and
-    /// stdout/stderr inherited.
-    async fn spawn(&self, program: &Path, args: &[String]) -> Result<Box<dyn WorkloadProcess>>;
+    /// Spawn a workload process: `program` with `args` (optionally in working
+    /// directory `cwd`), stdin closed and stdout/stderr inherited.
+    async fn spawn(
+        &self,
+        program: &Path,
+        args: &[String],
+        cwd: Option<&Path>,
+    ) -> Result<Box<dyn WorkloadProcess>>;
 }
 
 /// Wraps a real [`tokio::process::Child`] as a [`WorkloadProcess`].
@@ -200,12 +205,23 @@ impl ProcessLauncher for CliLauncher {
             })
     }
 
-    async fn spawn(&self, program: &Path, args: &[String]) -> Result<Box<dyn WorkloadProcess>> {
-        let child = tokio::process::Command::new(program)
+    async fn spawn(
+        &self,
+        program: &Path,
+        args: &[String],
+        cwd: Option<&Path>,
+    ) -> Result<Box<dyn WorkloadProcess>> {
+        let mut command = tokio::process::Command::new(program);
+        command
             .args(args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit());
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
+
+        let child = command
             .spawn()
             .with_context(|| format!("Failed to spawn workload process {program:?}"))?;
 

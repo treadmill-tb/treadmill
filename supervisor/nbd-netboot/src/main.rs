@@ -24,47 +24,7 @@ use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 use treadmill_tcp_control_socket_server::TcpControlSocket;
 
 use treadmill_supervisor_lib::image_store_client;
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "kebab-case")]
-struct QemuImgChildMetadataInfo {
-    // We're only interested in the filename here, to make sure that the
-    // image has only one child node, and that node coincides with the
-    // file that we're operating on.
-    filename: PathBuf,
-
-    // Include this field just to make sure that we don't have
-    // any recursive children:
-    children: Vec<QemuImgChildMetadata>,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "kebab-case")]
-struct QemuImgChildMetadata {
-    info: QemuImgChildMetadataInfo,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "kebab-case")]
-struct QemuImgMetadata {
-    filename: PathBuf,
-    virtual_size: u64,
-    children: Vec<QemuImgChildMetadata>,
-    encrypted: Option<bool>,
-    backing_filename_format: Option<String>,
-    // According to [1], these attributes are described as
-    // - backing-filename: name of the backing file
-    // - full-backing-filename: full path of the backing file
-    //
-    // In practice it seems that `full-backing-filename` points to the
-    // resolved path of the backing file (relative to the current
-    // working directory), whereas `backing-filename` is just the raw
-    // attribute stored in the image.
-    //
-    // [1]: https://www.qemu.org/docs/master/interop/qemu-storage-daemon-qmp-ref.html
-    backing_filename: Option<PathBuf>,
-    full_backing_filename: Option<PathBuf>,
-}
+use treadmill_supervisor_lib::launcher::{self, ProcessLauncher, QemuImgMetadata, WorkloadProcess};
 
 async fn fuse<R>(duration: std::time::Duration, fire: impl std::future::Future<Output = R>) -> R {
     // Cancellable await:
@@ -230,6 +190,11 @@ pub struct NbdNetbootSupervisor {
     /// can directly reference (immutable) qcow2 images.
     image_store_client: image_store_client::LocalImageStoreClient,
 
+    /// Seam for the `qemu-img`/`qemu-nbd` subprocess operations, injectable so
+    /// the job state machine can be driven by tests without spawning real
+    /// binaries.
+    launcher: Arc<dyn ProcessLauncher>,
+
     /// We support running multiple jobs on one supervisor (in particular when
     /// not sharing hardware resources), so use a map of `Arc`s behind a mutex
     /// to avoid locking the map across long-running calls.
@@ -243,12 +208,14 @@ impl NbdNetbootSupervisor {
     pub fn new(
         connector: Arc<dyn connector::SupervisorConnector>,
         image_store_client: image_store_client::LocalImageStoreClient,
+        launcher: Arc<dyn ProcessLauncher>,
         args: NbdNetbootSupervisorArgs,
         config: NbdNetbootSupervisorConfig,
     ) -> Self {
         NbdNetbootSupervisor {
             connector,
             image_store_client,
+            launcher,
             jobs: Mutex::new(HashMap::new()),
             _args: args,
             config,
@@ -560,41 +527,8 @@ impl NbdNetbootSupervisor {
                         format!("Failed to canonicalize image blob path {image_path:?}")
                     })?;
 
-            event!(Level::DEBUG, qemu_img_binary = ?self.config.nbd_netboot.qemu_img_binary, file = ?image_path_canon, "Retrieving qcow2 file metadata");
-            let metadata_output =
-                tokio::process::Command::new(&self.config.nbd_netboot.qemu_img_binary)
-                    .arg("info")
-                    .arg("--format=qcow2")
-                    .arg("--output=json")
-                    .arg("--")
-                    .arg(&image_path_canon)
-                    .output()
-                    .await
-                    .map_err(anyhow::Error::from)
-                    .and_then(|output| {
-                        // Ideally we'd want to use the nightly `exit_ok()` here:
-                        if !output.status.success() {
-                            bail!(
-                                "Running qemu-img failed with exit-code {:?}",
-                                output.status.code()
-                            );
-                        }
-
-                        // Don't care about stderr:
-                        Ok(output.stdout)
-                    })
-                    .with_context(|| {
-                        format!("Failed to query image metadata for {image_path:?}")
-                    })?;
-
-            let metadata: QemuImgMetadata =
-                serde_json::from_slice(&metadata_output).with_context(|| {
-                    format!(
-                        "Failed to parse qemu-img info output for {:?}: {:?}",
-                        image_path,
-                        String::from_utf8_lossy(&metadata_output),
-                    )
-                })?;
+            event!(Level::DEBUG, file = ?image_path_canon, "Retrieving qcow2 file metadata");
+            let metadata: QemuImgMetadata = self.launcher.qcow2_info(&image_path_canon).await?;
 
             top_root_image.get_or_insert_with(|| {
                 event!(Level::DEBUG, file = ?image_path_canon, ?metadata, "Setting image file as top-level");
@@ -943,39 +877,13 @@ impl NbdNetbootSupervisor {
             virtual_size_bytes = self.config.nbd_netboot.working_disk_max_bytes,
             "Creating job disk image"
         );
-        tokio::process::Command::new(&self.config.nbd_netboot.qemu_img_binary)
-            .current_dir(&job_dir)
-            .arg("create")
-            // Image format:
-            .arg("-f")
-            .arg("qcow2")
-            // Backing file format:
-            .arg("-F")
-            .arg("qcow2")
-            // Backing file:
-            .arg("-b")
-            .arg(top_root_image_path)
-            // New image file:
-            .arg(&disk_image_file)
-            // New image size (in bytes, without suffix):
-            .arg(self.config.nbd_netboot.working_disk_max_bytes.to_string())
-            .output()
+        self.launcher
+            .create_overlay(
+                &disk_image_file,
+                top_root_image_path,
+                self.config.nbd_netboot.working_disk_max_bytes,
+            )
             .await
-            .map_err(anyhow::Error::from)
-            .and_then(|output| {
-                // Ideally we'd want to use the nightly `exit_ok()` here:
-                if !output.status.success() {
-                    bail!(
-                        "Running qemu-img failed with exit-code {:?}, stdout: {:?}, stderr: {:?}",
-                        output.status.code(),
-                        String::from_utf8_lossy(&output.stdout),
-                        String::from_utf8_lossy(&output.stderr),
-                    );
-                }
-
-                // Don't care about stdout or stderr in the success case:
-                Ok(())
-            })
             .map_err(|e| connector::JobError {
                 error_kind: connector::JobErrorKind::InternalError,
                 description: format!(
@@ -1154,37 +1062,38 @@ impl NbdNetbootSupervisor {
         .await
         .unwrap();
 
-        event!(Level::INFO, qemu_nbd_binary = ?this.config.nbd_netboot.qemu_nbd_binary, /* ?qemu_args, */ "Launching qemu-nbd server");
-        let qemu_proc = tokio::process::Command::new(&this.config.nbd_netboot.qemu_nbd_binary)
-            .current_dir(&job_workdir)
-            .arg("--aio=io_uring")
-            .arg("--discard=unmap")
-            .arg("--detect-zeroes=unmap")
-            .arg("--format=qcow2")
-            .arg("--export-name=root")
-            .arg("--persistent")
-            .arg("--shared=0")
-            .arg("--bind")
-            .arg(
-                this.config
-                    .nbd_netboot
-                    .nbd_server_listen_addr
-                    .ip()
-                    .to_string(),
+        let qemu_nbd_args = vec![
+            "--aio=io_uring".to_string(),
+            "--discard=unmap".to_string(),
+            "--detect-zeroes=unmap".to_string(),
+            "--format=qcow2".to_string(),
+            "--export-name=root".to_string(),
+            "--persistent".to_string(),
+            "--shared=0".to_string(),
+            "--bind".to_string(),
+            this.config
+                .nbd_netboot
+                .nbd_server_listen_addr
+                .ip()
+                .to_string(),
+            "--port".to_string(),
+            this.config
+                .nbd_netboot
+                .nbd_server_listen_addr
+                .port()
+                .to_string(),
+            job_disk_image_path.display().to_string(),
+        ];
+
+        event!(Level::INFO, qemu_nbd_binary = ?this.config.nbd_netboot.qemu_nbd_binary, ?qemu_nbd_args, "Launching qemu-nbd server");
+        let qemu_proc = this
+            .launcher
+            .spawn(
+                &this.config.nbd_netboot.qemu_nbd_binary,
+                &qemu_nbd_args,
+                Some(&job_workdir),
             )
-            .arg("--port")
-            .arg(
-                this.config
-                    .nbd_netboot
-                    .nbd_server_listen_addr
-                    .port()
-                    .to_string(),
-            )
-            .arg(&job_disk_image_path)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()
+            .await
             .unwrap();
 
         event!(Level::INFO, start_script = ?this.config.nbd_netboot.start_script, "Running job start script");
@@ -1279,7 +1188,7 @@ impl NbdNetbootSupervisor {
         this: &Arc<Self>,
         job_id: Uuid,
         job: Arc<Mutex<NbdNetbootSupervisorJobState>>,
-        mut qemu_proc: tokio::process::Child,
+        mut qemu_proc: Box<dyn WorkloadProcess>,
         mut shutdown_rx: tokio::sync::oneshot::Receiver<NbdNetbootSupervisorJobRunningState>,
     ) {
         let (terminate_message, job_running_state): (String, NbdNetbootSupervisorJobRunningState) = loop {
@@ -1990,6 +1899,10 @@ async fn main() -> Result<()> {
             .await
             .unwrap();
 
+    let launcher: Arc<dyn ProcessLauncher> = Arc::new(launcher::CliLauncher::new(
+        config.nbd_netboot.qemu_img_binary.clone(),
+    ));
+
     match config.base.coord_connector {
         SupervisorCoordConnector::WsConnector => {
             use tokio::signal::unix::{SignalKind, signal};
@@ -2010,7 +1923,7 @@ async fn main() -> Result<()> {
                     ));
                     *connector_opt = Some(connector.clone());
 
-                    NbdNetbootSupervisor::new(connector, image_store, args, config)
+                    NbdNetbootSupervisor::new(connector, image_store, launcher, args, config)
                 })
             };
 
