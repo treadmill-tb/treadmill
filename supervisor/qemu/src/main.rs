@@ -1777,3 +1777,298 @@ async fn main() -> Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! In-process drive of the job state machine (plan §12, Phase 0.5).
+    //!
+    //! With the image store, subprocess launcher, and connector all behind
+    //! traits, we can drive `start_job → Ready → Terminated` against stubs —
+    //! asserting the reported state transitions and that the workload would have
+    //! been launched — without spawning a single real binary.
+
+    use super::*;
+
+    use std::process::ExitStatus;
+    use std::time::Duration;
+
+    use treadmill_rs::api::switchboard_supervisor::{
+        ParameterValue, RestartPolicy, SupervisorEvent, SupervisorJobEvent,
+    };
+    use treadmill_rs::connector::{StartJobMessage, StopJobMessage, SupervisorConnector};
+    // Bring the trait methods into scope (associated fns / `puppet_ready`)
+    // without colliding on the `Supervisor` name:
+    use treadmill_rs::connector::Supervisor as _;
+    use treadmill_rs::control_socket::Supervisor as _;
+
+    use image::manifest::{ImageBlobSpec, ImageId, ImageManifest};
+    use image_store_client::{FetchImageStatus, LocalImageStoreConfig};
+    use launcher::{QemuImgChildMetadata, QemuImgChildMetadataInfo};
+
+    /// Connector that records the job state transitions reported to it.
+    #[derive(Debug, Default)]
+    struct RecordingConnector {
+        states: std::sync::Mutex<Vec<RunningJobState>>,
+    }
+
+    impl RecordingConnector {
+        fn labels(&self) -> Vec<String> {
+            self.states.lock().unwrap().iter().map(label).collect()
+        }
+    }
+
+    fn label(s: &RunningJobState) -> String {
+        match s {
+            RunningJobState::Initializing { stage } => {
+                let stage = match stage {
+                    JobInitializingStage::Starting => "starting",
+                    JobInitializingStage::FetchingImage => "fetching_image",
+                    JobInitializingStage::Allocating => "allocating",
+                    JobInitializingStage::Provisioning => "provisioning",
+                    JobInitializingStage::Booting => "booting",
+                };
+                format!("initializing/{stage}")
+            }
+            RunningJobState::Ready => "ready".to_string(),
+            RunningJobState::Terminating => "terminating".to_string(),
+            RunningJobState::Terminated => "terminated".to_string(),
+        }
+    }
+
+    #[async_trait]
+    impl SupervisorConnector for RecordingConnector {
+        async fn run(&self) -> Result<(), ()> {
+            Ok(())
+        }
+
+        async fn update_event(&self, event: SupervisorEvent) {
+            let SupervisorEvent::JobEvent { event, .. } = event;
+            if let SupervisorJobEvent::StateTransition { new_state, .. } = event {
+                self.states.lock().unwrap().push(new_state);
+            }
+        }
+    }
+
+    /// Image store that reports a single fixed image as already present.
+    #[derive(Debug)]
+    struct StubStore {
+        blob_file: PathBuf,
+        manifest: ImageManifest,
+    }
+
+    #[async_trait]
+    impl ImageStore for StubStore {
+        async fn fetch_image(&self, _: Vec<String>, _: ImageId) -> Result<FetchImageStatus> {
+            Ok(FetchImageStatus::Present)
+        }
+        async fn image_manifest(&self, _: ImageId) -> Result<ImageManifest> {
+            Ok(self.manifest.clone())
+        }
+        async fn blob_path(&self, _: &[u8; 32]) -> PathBuf {
+            self.blob_file.clone()
+        }
+    }
+
+    /// Launcher that fabricates qcow2 metadata matching the stub image and
+    /// records what it was asked to spawn (instead of spawning anything).
+    #[derive(Debug, Default)]
+    struct StubLauncher {
+        virtual_size: u64,
+        spawned: std::sync::Mutex<Vec<(PathBuf, Vec<String>)>>,
+    }
+
+    #[async_trait]
+    impl ProcessLauncher for StubLauncher {
+        async fn qcow2_info(&self, image: &Path) -> Result<QemuImgMetadata> {
+            // A well-formed single-layer chain: exactly one child whose
+            // filename matches, no backing file, matching virtual size.
+            Ok(QemuImgMetadata {
+                filename: image.to_path_buf(),
+                virtual_size: self.virtual_size,
+                children: vec![QemuImgChildMetadata {
+                    info: QemuImgChildMetadataInfo {
+                        filename: image.to_path_buf(),
+                        children: vec![],
+                    },
+                }],
+                encrypted: None,
+                backing_filename_format: None,
+                backing_filename: None,
+                full_backing_filename: None,
+            })
+        }
+
+        async fn create_overlay(&self, _: &Path, _: &Path, _: u64) -> Result<()> {
+            Ok(())
+        }
+
+        async fn spawn(
+            &self,
+            program: &Path,
+            args: &[String],
+            _cwd: Option<&Path>,
+        ) -> Result<Box<dyn WorkloadProcess>> {
+            self.spawned
+                .lock()
+                .unwrap()
+                .push((program.to_path_buf(), args.to_vec()));
+            Ok(Box::new(StubProcess))
+        }
+    }
+
+    /// A workload that never exits on its own — it only ends when killed, which
+    /// is exactly the path `stop_job` drives.
+    struct StubProcess;
+
+    #[async_trait]
+    impl WorkloadProcess for StubProcess {
+        async fn wait(&mut self) -> std::io::Result<ExitStatus> {
+            std::future::pending::<std::io::Result<ExitStatus>>().await
+        }
+        async fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A minimal single-layer image manifest the stubs agree on.
+    fn single_layer_manifest(virtual_size: u64) -> ImageManifest {
+        let mut blobs = HashMap::new();
+        blobs.insert(
+            "root".to_string(),
+            ImageBlobSpec {
+                sha256_digest: [0u8; 32],
+                size: 10,
+                attrs: HashMap::from([(
+                    "org.tockos.treadmill.image.qemu_layered_v0.blob-virtual-size".to_string(),
+                    virtual_size.to_string(),
+                )]),
+                source_ext: (),
+            },
+        );
+        ImageManifest {
+            manifest_version: 0,
+            manifest_extensions: vec!["org.tockos.treadmill.manifest-ext.base".to_string()],
+            label: "test".to_string(),
+            revision: 1,
+            description: String::new(),
+            blobs,
+            attrs: HashMap::from([(
+                "org.tockos.treadmill.image.qemu_layered_v0.head".to_string(),
+                "root".to_string(),
+            )]),
+        }
+    }
+
+    async fn wait_until(mut cond: impl FnMut() -> bool) {
+        for _ in 0..300 {
+            if cond() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("condition not met within timeout");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_lifecycle_transitions() {
+        let tmp = std::env::temp_dir().join(format!("tml-qemu-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let blob_file = tmp.join("root.qcow2");
+        std::fs::write(&blob_file, b"not-a-real-qcow2").unwrap();
+
+        let virtual_size = 4u64 * 1024 * 1024 * 1024;
+
+        let connector = Arc::new(RecordingConnector::default());
+        let store: Arc<dyn ImageStore> = Arc::new(StubStore {
+            blob_file: blob_file.clone(),
+            manifest: single_layer_manifest(virtual_size),
+        });
+        let launcher = Arc::new(StubLauncher {
+            virtual_size,
+            spawned: Default::default(),
+        });
+
+        let config = QemuSupervisorConfig {
+            base: SupervisorBaseConfig {
+                coord_connector: SupervisorCoordConnector::WsConnector,
+                supervisor_id: Uuid::new_v4(),
+            },
+            ws_connector: None,
+            image_store: LocalImageStoreConfig {
+                fs_endpoint: tmp.clone(),
+                http_endpoint: String::new(),
+            },
+            qemu: QemuConfig {
+                qemu_binary: PathBuf::from("/nonexistent/qemu"),
+                qemu_img_binary: PathBuf::from("/nonexistent/qemu-img"),
+                state_dir: tmp.join("state"),
+                qemu_args: vec![],
+                working_disk_max_bytes: virtual_size,
+                tcp_control_socket_listen_addr: "127.0.0.1:0".parse().unwrap(),
+                start_script: None,
+            },
+        };
+        let args = QemuSupervisorArgs {
+            config_file: PathBuf::new(),
+        };
+
+        let sup = Arc::new(QemuSupervisor::new(
+            connector.clone(),
+            store,
+            launcher.clone(),
+            args,
+            config,
+        ));
+
+        let job_id = Uuid::new_v4();
+        let host_id = Uuid::new_v4();
+        let start = StartJobMessage {
+            job_id,
+            image_spec: ImageSpecification::Image {
+                image_id: ImageId([0u8; 32]),
+            },
+            ssh_keys: vec![],
+            restart_policy: RestartPolicy {
+                remaining_restart_count: 0,
+            },
+            parameters: HashMap::<String, ParameterValue>::new(),
+        };
+
+        // `start_job` drives synchronously through fetch → allocate → launch.
+        QemuSupervisor::start_job(&sup, start).await.unwrap();
+
+        assert_eq!(
+            connector.labels(),
+            vec![
+                "initializing/starting",
+                "initializing/allocating",
+                "initializing/booting",
+            ],
+        );
+
+        // The workload was launched with the configured QEMU binary.
+        {
+            let spawned = launcher.spawned.lock().unwrap();
+            assert_eq!(spawned.len(), 1);
+            assert_eq!(spawned[0].0, PathBuf::from("/nonexistent/qemu"));
+        }
+
+        // Puppet reports ready → the job goes Ready.
+        sup.puppet_ready(0, host_id, job_id).await;
+        assert_eq!(connector.labels().last().map(String::as_str), Some("ready"));
+
+        // Stopping kills the (stub) workload; the monitor task then reports
+        // Terminating → Terminated asynchronously.
+        QemuSupervisor::stop_job(&sup, StopJobMessage { job_id })
+            .await
+            .unwrap();
+
+        wait_until(|| connector.labels().last().map(String::as_str) == Some("terminated")).await;
+
+        let labels = connector.labels();
+        assert!(labels.iter().any(|l| l == "terminating"), "{labels:?}");
+        assert_eq!(labels.last().map(String::as_str), Some("terminated"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

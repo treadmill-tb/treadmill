@@ -414,10 +414,13 @@ Each phase below names its verifying test target.
   is **deleted** (not migrated) — the fake-switchboard driver supersedes it.
 - This is pure refactor of the *current* (still-TOML) code, so it can land before
   any OCI behavior change and de-risks every later supervisor test.
-- **Verified by:** `cargo test -p treadmill-supervisor-lib core::` — drive the
-  core with a **stub launcher**; assert the `FetchingImage → ImageFetched →
-  Ready → Terminated` transitions and that the launcher received the expected
-  arguments. No real qemu yet (logic only).
+- **Verified by:** `cargo test -p treadmill-qemu-supervisor` — the in-module
+  `tests::job_lifecycle_transitions` drives the state machine against a **stub
+  launcher**, **stub image store**, and a **recording connector**; asserts the
+  `Starting → Allocating → Booting → Ready → Terminating → Terminated`
+  transitions and that the launcher was asked to spawn the configured QEMU
+  binary. No real qemu (logic only). (The test lives in the binary crate since
+  the core was not hoisted into the lib — see the optional Phase 8.)
 
 ### Phase 1 — Per-server daemon + supervisor store client
 - Deploy the **per-server Zot** (nix module): pull-through cache of a dev
