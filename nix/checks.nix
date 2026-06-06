@@ -169,6 +169,38 @@
             TINY_EFI_IMAGE = self'.packages.tiny-efi-image-layout;
           }
         );
+
+        # Phase 1 of the OCI image migration (§6/§7/§12.3): drive the
+        # `oci_store` client against a real child Zot. The tests spin up Zot
+        # (and a second one as a pull-through cache) on loopback and skopeo the
+        # `tiny-efi` fixture in, so the check needs zot + skopeo on PATH and the
+        # built fixture in TINY_EFI_IMAGE. Like the reparse test, the oci_store
+        # tests skip when those are unset, so the plain `nextest` check passes
+        # them over. Linux-only (Zot binary + loopback sandbox networking).
+        oci-store = cmn.craneLib.cargoNextest (
+          cmn.cargoCommonArgs
+          // {
+            pname = "treadmill-oci-store";
+            version = "0.1.0";
+            cargoArtifacts = cmn.workspaceDeps;
+            cargoNextestExtraArgs = "-p treadmill-supervisor-lib --no-tests=pass -E 'test(oci_store)'";
+            partitions = 1;
+            partitionType = "count";
+
+            nativeBuildInputs = cmn.cargoCommonArgs.nativeBuildInputs ++ [
+              cmn.zot
+              pkgs.skopeo
+            ];
+
+            # oci-client builds a reqwest client (which initializes a TLS
+            # backend) even for the plain-HTTP loopback pulls; without a CA
+            # bundle in the sandbox that init panics. The connections
+            # themselves are HTTP to 127.0.0.1.
+            SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+
+            TINY_EFI_IMAGE = self'.packages.tiny-efi-image-layout;
+          }
+        );
       }
       # Promote each package output to a check so `nix flake check`
       # verifies they all build.

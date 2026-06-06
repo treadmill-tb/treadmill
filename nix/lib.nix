@@ -288,6 +288,9 @@ let
       }
       // extraEnv
     );
+  # Vendored Project Zot registry (see nix/pkgs/zot.nix) — the per-server store
+  # daemon / pull-through cache for the OCI image migration.
+  zot = pkgs.callPackage ./pkgs/zot.nix { };
 in
 {
   inherit
@@ -298,5 +301,6 @@ in
     groups
     mkBin
     workspaceDeps
+    zot
     ;
 }

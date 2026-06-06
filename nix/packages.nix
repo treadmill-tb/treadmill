@@ -15,6 +15,10 @@
       packages = rec {
         default = tml;
 
+        # Vendored OCI registry used by the image-migration store daemon and the
+        # registry-backed tests (see nix/pkgs/zot.nix).
+        inherit (cmn) zot;
+
         tml = cmn.mkBin {
           group = cmn.groups.cli;
           bin = "tml";

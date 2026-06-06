@@ -9,11 +9,25 @@ treadmill-rs = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+oci-client = { workspace = true }
+oci-spec = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["fs", "process"] }
 toml = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+# Re-list tokio so tests get the runtime/macros on top of the lib's features.
+tokio = { workspace = true, features = [
+  "fs",
+  "process",
+  "macros",
+  "rt-multi-thread",
+  "time",
+] }
 
 [lints]
 workspace = true
