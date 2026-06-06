@@ -73,9 +73,27 @@
     }
   ],
   "$defs": {
-    "ImageId": {
-      "description": "Images are content-addressed by the SHA-256 checksum of their manifest.\n\nThis type can be formatted into a lower-case hex string, as expected in the\n`org.tockos.treadmill.manifest-ext.base.sha256_digest` attribute.",
+    "Digest": {
+      "description": "A content-addressable OCI digest over 32 bytes of SHA-256.\n\nFormats as the canonical OCI string `sha256:<64 lower-case hex>`.",
       "type": "string"
+    },
+    "ImageLocation": {
+      "description": "One registry location an image can be pulled from.\n\nAn image's *identity* is its `manifest_digest`; a location is a\n`(registry, repository)` that serves those bytes. The supervisor protocol\ncarries an ordered list of locations so a supervisor can fail over across\nthem — every location serves the same digest, so any that succeeds is\ninterchangeable (see `doc/oci-image-migration-plan.md` §D12/§D16).",
+      "type": "object",
+      "properties": {
+        "registry": {
+          "description": "Registry authority (`host:port`) the bytes can be pulled from.",
+          "type": "string"
+        },
+        "repository": {
+          "description": "Repository path within the registry, e.g. `treadmill/ubuntu-22.04`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "registry",
+        "repository"
+      ]
     },
     "ImageSpecification": {
       "oneOf": [
@@ -98,11 +116,17 @@
           ]
         },
         {
-          "description": "Which image to base this job off. If the image is not locally cached\nat the supervisor, it will be fetched using its manifest prior to\nexecuting the job.\n\nImages are content-addressed by the SHA-256 digest of their\nmanifest.\n\nNote that if a job is being restarted, it will use this variant.",
+          "description": "Which image to base this job off. If the image is not locally cached\nat the supervisor, it will be fetched (from one of `locations`) prior\nto executing the job.\n\nThe supervisor protocol is always **content-addressed**: an image is\nidentified by the OCI `manifest_digest` of its manifest, and\n`locations` is an ordered, failover list of the registry locations that\nserve it. Switchboard resolves human labels/groups to a concrete digest\n+ locations before dispatch (Phase 4).\n\nNote that if a job is being restarted, it will use this variant.",
           "type": "object",
           "properties": {
-            "image_id": {
-              "$ref": "#/$defs/ImageId"
+            "locations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ImageLocation"
+              }
+            },
+            "manifest_digest": {
+              "$ref": "#/$defs/Digest"
             },
             "type": {
               "type": "string",
@@ -111,7 +135,8 @@
           },
           "required": [
             "type",
-            "image_id"
+            "manifest_digest",
+            "locations"
           ]
         }
       ]

@@ -6,7 +6,6 @@ use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, TerminationReason}
 use treadmill_rs::api::switchboard_supervisor::{
     ImageSpecification, JobInitializingStage, RestartPolicy, TaskExitStatus,
 };
-use treadmill_rs::image::manifest::ImageId;
 use uuid::Uuid;
 
 pub mod parameters;
@@ -309,16 +308,16 @@ impl SqlJob {
                 job_id: resume_job_id,
             }
         } else {
-            ImageSpecification::Image {
-                image_id: self
-                    .sql_image_id
-                    .as_ref()
-                    .expect("image_id column cannot be NULL if resume_job_id column is NULL")
-                    .as_slice()
-                    .try_into()
-                    .map(ImageId)
-                    .expect("image_id in database has wrong length"),
-            }
+            // The supervisor protocol's `ImageSpecification::Image` is now
+            // content-addressed (`manifest_digest` + registry `locations`),
+            // which the switchboard catalog (Phase 4) resolves from the
+            // legacy `jobs.image_id` column. That migration is not done yet, so
+            // dispatching a non-resume job is intentionally unimplemented.
+            todo!(
+                "Phase 4: resolve jobs.image_id ({:?}) to a manifest digest + \
+                 registry locations via the switchboard catalog",
+                self.sql_image_id,
+            )
         }
     }
     pub fn ssh_keys(&self) -> &[String] {

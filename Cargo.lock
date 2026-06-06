@@ -4528,10 +4528,11 @@ name = "treadmill-qemu-supervisor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-recursion",
  "async-trait",
  "clap",
+ "oci-spec 0.10.0",
  "serde",
+ "serde_json",
  "strfmt",
  "tokio",
  "toml 1.1.2+spec-1.1.0",

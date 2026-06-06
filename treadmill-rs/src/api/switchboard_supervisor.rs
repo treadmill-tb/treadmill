@@ -29,7 +29,7 @@
 //! make each change classifiable as additive (minor) or breaking (major).
 
 use crate::connector::JobError;
-use crate::image::manifest::ImageId;
+use crate::image::Digest;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
@@ -120,6 +120,22 @@ impl std::fmt::Debug for ParameterValue {
     }
 }
 
+/// One registry location an image can be pulled from.
+///
+/// An image's *identity* is its `manifest_digest`; a location is a
+/// `(registry, repository)` that serves those bytes. The supervisor protocol
+/// carries an ordered list of locations so a supervisor can fail over across
+/// them — every location serves the same digest, so any that succeeds is
+/// interchangeable (see `doc/oci-image-migration-plan.md` §D12/§D16).
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct ImageLocation {
+    /// Registry authority (`host:port`) the bytes can be pulled from.
+    pub registry: String,
+    /// Repository path within the registry, e.g. `treadmill/ubuntu-22.04`.
+    pub repository: String,
+}
+
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
@@ -128,14 +144,20 @@ pub enum ImageSpecification {
     ResumeJob { job_id: Uuid },
 
     /// Which image to base this job off. If the image is not locally cached
-    /// at the supervisor, it will be fetched using its manifest prior to
-    /// executing the job.
+    /// at the supervisor, it will be fetched (from one of `locations`) prior
+    /// to executing the job.
     ///
-    /// Images are content-addressed by the SHA-256 digest of their
-    /// manifest.
+    /// The supervisor protocol is always **content-addressed**: an image is
+    /// identified by the OCI `manifest_digest` of its manifest, and
+    /// `locations` is an ordered, failover list of the registry locations that
+    /// serve it. Switchboard resolves human labels/groups to a concrete digest
+    /// + locations before dispatch (Phase 4).
     ///
     /// Note that if a job is being restarted, it will use this variant.
-    Image { image_id: ImageId },
+    Image {
+        manifest_digest: Digest,
+        locations: Vec<ImageLocation>,
+    },
 }
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]

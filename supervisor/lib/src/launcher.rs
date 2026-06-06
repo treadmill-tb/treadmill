@@ -82,14 +82,13 @@ pub trait ProcessLauncher: std::fmt::Debug + Send + Sync {
     /// Read partial metadata of a qcow2 image (`qemu-img info`).
     async fn qcow2_info(&self, image: &Path) -> Result<QemuImgMetadata>;
 
-    /// Create a thin-provisioned qcow2 overlay of `virtual_size_bytes`, backed
-    /// by `backing` (`qemu-img create`).
-    async fn create_overlay(
-        &self,
-        disk: &Path,
-        backing: &Path,
-        virtual_size_bytes: u64,
-    ) -> Result<()>;
+    /// Create a thin-provisioned qcow2 overlay of `virtual_size_bytes` with
+    /// **no baked backing file** (`qemu-img create -f qcow2 <disk> <size>`).
+    ///
+    /// Treadmill never bakes a backing path into a per-job overlay: the backing
+    /// chain is supplied at launch via `-blockdev` nodes (D3/D9, see
+    /// [`treadmill_rs::image::blockdev::BackingChain`]).
+    async fn create_overlay_no_backing(&self, disk: &Path, virtual_size_bytes: u64) -> Result<()>;
 
     /// Spawn a workload process: `program` with `args` (optionally in working
     /// directory `cwd`), stdin closed and stdout/stderr inherited.
@@ -165,24 +164,14 @@ impl ProcessLauncher for CliLauncher {
         })
     }
 
-    async fn create_overlay(
-        &self,
-        disk: &Path,
-        backing: &Path,
-        virtual_size_bytes: u64,
-    ) -> Result<()> {
+    async fn create_overlay_no_backing(&self, disk: &Path, virtual_size_bytes: u64) -> Result<()> {
         tokio::process::Command::new(&self.qemu_img_binary)
             .arg("create")
             // Image format:
             .arg("-f")
             .arg("qcow2")
-            // Backing file format:
-            .arg("-F")
-            .arg("qcow2")
-            // Backing file:
-            .arg("-b")
-            .arg(backing)
-            // New image file:
+            // New image file (no `-b`/`-F`: the backing chain is supplied at
+            // launch via -blockdev nodes, never baked here):
             .arg(disk)
             // New image size (in bytes, without suffix):
             .arg(virtual_size_bytes.to_string())
