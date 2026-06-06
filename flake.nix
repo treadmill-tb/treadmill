@@ -43,6 +43,7 @@
         ./nix/treefmt.nix
         ./nix/packages.nix
         ./nix/puppet-cross-musl.nix
+        ./nix/tiny-efi.nix
         ./nix/devshells.nix
         ./nix/checks.nix
         ./nix/docker.nix

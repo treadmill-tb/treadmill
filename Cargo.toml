@@ -13,6 +13,12 @@ members = [
   "treadmill-rs",
 ]
 
+# Test fixture built only by `nix/tiny-efi.nix` for a foreign target
+# (aarch64-unknown-uefi). It carries its own Cargo.lock and an empty
+# `[workspace]` table; excluding it here keeps cargo and crane from treating it
+# as a workspace member.
+exclude = ["nix/fixtures/tiny-efi"]
+
 [workspace.package]
 version = "0.1.0"
 authors = ["Treadmill Project Developers <treadmill@tockos.org>"]
@@ -43,7 +49,9 @@ futures-util = "0.3.30"
 http = "1.1.0"
 humantime-serde = "1.1.1"
 log = "0.4.22"
-oci-spec = { version = "0.10.0", default-features = false, features = ["image"] }
+oci-spec = { version = "0.10.0", default-features = false, features = [
+  "image",
+] }
 rand = "0.10"
 schemars = "1"
 serde = "1.0.204"

@@ -148,6 +148,28 @@
               touch $out
             '';
       }
+      # Phase 0 of the OCI image migration (doc/oci-image-migration-plan.md
+      # §12.2): build the `tiny-efi` fixture and reparse its real wire-format
+      # manifest through our `oci-spec`/`parse.rs` view. The `tiny_efi`
+      # integration test skips when `TINY_EFI_IMAGE` is unset (so the plain
+      # `nextest` check above passes it over); here we point it at the built
+      # layout so it does its work. Linux-only: the fixture needs the Linux
+      # packing/cross toolchain (see nix/tiny-efi.nix).
+      // lib.optionalAttrs pkgs.stdenv.isLinux {
+        tiny-efi-image = cmn.craneLib.cargoNextest (
+          cmn.cargoCommonArgs
+          // {
+            pname = "treadmill-tiny-efi-image";
+            version = "0.1.0";
+            cargoArtifacts = cmn.workspaceDeps;
+            cargoNextestExtraArgs = "-p treadmill-rs --no-tests=pass -E 'binary(tiny_efi)'";
+            partitions = 1;
+            partitionType = "count";
+
+            TINY_EFI_IMAGE = self'.packages.tiny-efi-image-layout;
+          }
+        );
+      }
       # Promote each package output to a check so `nix flake check`
       # verifies they all build.
       // self'.packages;
