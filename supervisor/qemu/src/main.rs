@@ -1922,4 +1922,346 @@ mod tests {
             "{labels:?}",
         );
     }
+
+    /// The aarch64 boot test (plan §12.6) — the Phase 2 deliverable.
+    ///
+    /// Push the two-layer `tiny-efi` fixture into a child Zot, point a real
+    /// `OciStore` at it, and drive the actual qemu job core under
+    /// non-accelerated `qemu-system-aarch64 -M virt` + AAVMF. The guest composes
+    /// the runtime backing chain (overlay → base) into the rev=1 ESP, boots
+    /// `\EFI\BOOT\BOOTAA64.EFI`, prints its sentinel to the serial port, and
+    /// shuts down. We assert the serial shows `TREADMILL_OK rev=1` (the overlay)
+    /// and never `BASE-ONLY` (the base-only tripwire for a mis-assembled chain).
+    ///
+    /// Skips cleanly when the tools / AAVMF firmware / fixture are unavailable,
+    /// so the plain `nextest` check passes it over; the dedicated `qemu-boot`
+    /// Nix check supplies all of them and runs it for real.
+    mod boot {
+        use super::*;
+
+        use std::io::Read as _;
+        use std::net::{TcpListener, TcpStream};
+        use std::process::{Child, Command, Stdio};
+        use std::time::Instant;
+
+        const REPO: &str = "treadmill/tiny-efi";
+        /// Virtual size of every fixture layer (see `nix/tiny-efi.nix`).
+        const ESP_BYTES: u64 = 16 * 1024 * 1024;
+
+        struct BootReqs {
+            zot: PathBuf,
+            skopeo: PathBuf,
+            qemu_system: PathBuf,
+            qemu_img: PathBuf,
+            aavmf_code: PathBuf,
+            aavmf_vars: PathBuf,
+            fixture: PathBuf,
+        }
+
+        fn which(bin: &str) -> Option<PathBuf> {
+            let path = std::env::var_os("PATH")?;
+            std::env::split_paths(&path)
+                .map(|dir| dir.join(bin))
+                .find(|candidate| candidate.is_file())
+        }
+
+        /// Locate a firmware blob: an explicit env override, else `share/qemu`
+        /// next to the `qemu-system-aarch64` binary (its Nix prefix ships it).
+        fn locate_firmware(qemu_system: &Path, env_key: &str, filename: &str) -> Option<PathBuf> {
+            if let Some(p) = std::env::var_os(env_key) {
+                let p = PathBuf::from(p);
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+            let prefix = qemu_system.parent()?.parent()?;
+            let candidate = prefix.join("share").join("qemu").join(filename);
+            candidate.is_file().then_some(candidate)
+        }
+
+        fn boot_reqs() -> Option<BootReqs> {
+            let qemu_system = which("qemu-system-aarch64")?;
+            let aavmf_code =
+                locate_firmware(&qemu_system, "TML_AAVMF_CODE", "edk2-aarch64-code.fd")?;
+            let aavmf_vars = locate_firmware(&qemu_system, "TML_AAVMF_VARS", "edk2-arm-vars.fd")?;
+            Some(BootReqs {
+                zot: which("zot")?,
+                skopeo: which("skopeo")?,
+                qemu_img: which("qemu-img")?,
+                aavmf_code,
+                aavmf_vars,
+                fixture: std::env::var_os("TINY_EFI_IMAGE").map(PathBuf::from)?,
+                qemu_system,
+            })
+        }
+
+        macro_rules! skip_unless_available {
+            () => {
+                match boot_reqs() {
+                    Some(r) => r,
+                    None => {
+                        eprintln!(
+                            "zot/skopeo/qemu-system-aarch64/AAVMF/TINY_EFI_IMAGE unavailable; \
+                             skipping qemu boot test"
+                        );
+                        return;
+                    }
+                }
+            };
+        }
+
+        fn free_port() -> u16 {
+            TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port()
+        }
+
+        /// A running child Zot; killed on drop.
+        struct Zot {
+            child: Child,
+            port: u16,
+            store: PathBuf,
+            _dir: tempfile::TempDir,
+        }
+
+        impl Drop for Zot {
+            fn drop(&mut self) {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        }
+
+        impl Zot {
+            fn authority(&self) -> String {
+                format!("127.0.0.1:{}", self.port)
+            }
+
+            fn start(zot_bin: &Path) -> Zot {
+                let dir = tempfile::tempdir().unwrap();
+                let store = dir.path().join("store");
+                let port = free_port();
+                let config = format!(
+                    r#"{{"storage":{{"rootDirectory":"{store}","dedupe":true}},
+                        "http":{{"address":"127.0.0.1","port":"{port}"}},
+                        "log":{{"level":"error"}}}}"#,
+                    store = store.display(),
+                );
+                let config_path = dir.path().join("config.json");
+                std::fs::write(&config_path, config).unwrap();
+
+                let child = Command::new(zot_bin)
+                    .arg("serve")
+                    .arg(&config_path)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .expect("spawn zot");
+
+                let zot = Zot {
+                    child,
+                    port,
+                    store,
+                    _dir: dir,
+                };
+                zot.wait_ready();
+                zot
+            }
+
+            fn wait_ready(&self) {
+                let deadline = Instant::now() + Duration::from_secs(20);
+                while Instant::now() < deadline {
+                    if let Ok(mut stream) =
+                        TcpStream::connect(("127.0.0.1", self.port)).and_then(|mut s| {
+                            use std::io::Write;
+                            s.write_all(b"GET /v2/ HTTP/1.0\r\n\r\n")?;
+                            Ok(s)
+                        })
+                    {
+                        let mut buf = [0u8; 16];
+                        if stream.read(&mut buf).map(|n| n > 0).unwrap_or(false) {
+                            return;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+                panic!("zot on port {} did not become ready", self.port);
+            }
+        }
+
+        fn skopeo_push(skopeo: &Path, fixture: &Path, zot: &Zot) {
+            let status = Command::new(skopeo)
+                .arg("--insecure-policy")
+                .arg("copy")
+                .arg("--dest-tls-verify=false")
+                .arg(format!("oci:{}", fixture.display()))
+                .arg(format!("docker://{}/{REPO}:latest", zot.authority()))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .expect("run skopeo");
+            assert!(status.success(), "skopeo copy into zot failed");
+        }
+
+        fn fixture_manifest_digest(fixture: &Path) -> Digest {
+            let index: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(fixture.join("index.json")).unwrap())
+                    .unwrap();
+            index["manifests"][0]["digest"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap()
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn boot_tiny_efi() {
+            let r = skip_unless_available!();
+
+            let tmp = tempfile::tempdir().unwrap();
+
+            // Push the fixture into a child Zot and resolve its manifest digest.
+            let zot = Zot::start(&r.zot);
+            skopeo_push(&r.skopeo, &r.fixture, &zot);
+            let manifest_digest = fixture_manifest_digest(&r.fixture);
+
+            // AAVMF needs a *writable* variable store; copy the template out
+            // and clear the read-only bit the Nix-store source carries.
+            let vars = tmp.path().join("vars.fd");
+            std::fs::copy(&r.aavmf_vars, &vars).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&vars, std::fs::Permissions::from_mode(0o644)).unwrap();
+            }
+
+            // Serial output is directed to a file the guest's sentinel lands in.
+            let serial_log = tmp.path().join("serial.log");
+
+            // The configured invocation references the disk via {disk_node}
+            // (the writable top of the backing chain the supervisor prepends as
+            // -blockdev nodes). Everything else is baked in: AAVMF pflash (code
+            // read-only + writable vars), a virtio-blk disk, serial to a file,
+            // and a one-shot run (the guest shuts itself down).
+            let qemu_args = vec![
+                "-nodefaults".to_string(),
+                "-machine".to_string(),
+                "virt".to_string(),
+                "-cpu".to_string(),
+                "cortex-a57".to_string(),
+                "-m".to_string(),
+                "512".to_string(),
+                "-drive".to_string(),
+                format!(
+                    "if=pflash,format=raw,readonly=on,file={}",
+                    r.aavmf_code.display()
+                ),
+                "-drive".to_string(),
+                format!("if=pflash,format=raw,file={}", vars.display()),
+                "-device".to_string(),
+                "virtio-blk-device,drive={disk_node}".to_string(),
+                "-serial".to_string(),
+                format!("file:{}", serial_log.display()),
+                "-display".to_string(),
+                "none".to_string(),
+                "-no-reboot".to_string(),
+            ];
+
+            let connector = Arc::new(RecordingConnector::default());
+            let image_store: Arc<dyn ImageStore> =
+                Arc::new(OciStore::new(zot.authority(), &zot.store));
+            let launcher: Arc<dyn ProcessLauncher> =
+                Arc::new(launcher::CliLauncher::new(r.qemu_img.clone()));
+
+            let config = QemuSupervisorConfig {
+                base: SupervisorBaseConfig {
+                    coord_connector: SupervisorCoordConnector::WsConnector,
+                    supervisor_id: Uuid::new_v4(),
+                },
+                ws_connector: None,
+                oci_store: OciStoreConfig {
+                    registry: zot.authority(),
+                    store_root: zot.store.clone(),
+                },
+                qemu: QemuConfig {
+                    qemu_binary: r.qemu_system.clone(),
+                    qemu_img_binary: r.qemu_img.clone(),
+                    state_dir: tmp.path().join("state"),
+                    qemu_args,
+                    // Overlay sized to match the fixture's layer virtual size.
+                    working_disk_max_bytes: ESP_BYTES,
+                    tcp_control_socket_listen_addr: "127.0.0.1:0".parse().unwrap(),
+                    start_script: None,
+                },
+            };
+            let args = QemuSupervisorArgs {
+                config_file: PathBuf::new(),
+            };
+            let sup = Arc::new(QemuSupervisor::new(
+                connector.clone(),
+                image_store,
+                launcher,
+                args,
+                config,
+            ));
+
+            let job_id = Uuid::new_v4();
+            QemuSupervisor::start_job(
+                &sup,
+                StartJobMessage {
+                    job_id,
+                    image_spec: ImageSpecification::Image {
+                        manifest_digest,
+                        locations: vec![ImageLocation {
+                            registry: zot.authority(),
+                            repository: REPO.to_string(),
+                        }],
+                    },
+                    ssh_keys: vec![],
+                    restart_policy: RestartPolicy {
+                        remaining_restart_count: 0,
+                    },
+                    parameters: HashMap::new(),
+                },
+            )
+            .await
+            .expect("start_job");
+
+            // Wait (generously — this is TCG, no acceleration) for the guest to
+            // print a sentinel or for the job to terminate on guest shutdown.
+            let read_serial = || std::fs::read_to_string(&serial_log).unwrap_or_default();
+            let deadline = Instant::now() + Duration::from_secs(180);
+            loop {
+                let serial = read_serial();
+                let terminated =
+                    connector.labels().last().map(String::as_str) == Some("terminated");
+                if serial.contains("TREADMILL_OK") || serial.contains("BASE-ONLY") || terminated {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "guest did not produce a sentinel within the timeout; serial so far:\n{serial}",
+                );
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+
+            // Tear the job down if the guest has not already shut itself down
+            // (ignore "not found" — it self-terminated).
+            let _ = QemuSupervisor::stop_job(&sup, StopJobMessage { job_id }).await;
+
+            let serial = read_serial();
+            assert!(
+                serial.contains("TREADMILL_OK rev=1"),
+                "expected the overlay sentinel on the serial console; got:\n{serial}",
+            );
+            assert!(
+                !serial.contains("BASE-ONLY"),
+                "saw the base-only tripwire — the backing chain was mis-assembled:\n{serial}",
+            );
+
+            // No job error should have been reported along the way.
+            assert!(connector.errors().is_empty(), "{:?}", connector.errors());
+        }
+    }
 }

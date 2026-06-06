@@ -24,6 +24,7 @@ uuid = { workspace = true }
 [dev-dependencies]
 oci-spec = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "time"] }
 uuid = { workspace = true, features = ["v4"] }
 

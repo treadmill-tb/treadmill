@@ -34,6 +34,13 @@
         ];
 
         shellHook = ''
+          # AAVMF (aarch64 UEFI) firmware for the tiny-efi qemu boot test. The
+          # qemu package ships the code + variable-store templates under
+          # share/qemu; the boot test can also locate them next to the binary,
+          # but exporting them keeps it explicit and overridable.
+          export TML_AAVMF_CODE="${pkgs.qemu}/share/qemu/edk2-aarch64-code.fd"
+          export TML_AAVMF_VARS="${pkgs.qemu}/share/qemu/edk2-arm-vars.fd"
+
           # Check sqlx query macros against the committed `.sqlx` cache, matching
           # CI (nix/lib.nix). Without this the `database` shell exports a
           # DATABASE_URL for its empty ephemeral Postgres, so the macros try to
