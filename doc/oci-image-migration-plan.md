@@ -507,6 +507,23 @@ Each phase below names its verifying test target.
 - Delete `treadmill-rs/src/image/manifest.rs`, the TOML store, and the legacy
   `image_id` paths. Update `doc/` architecture SVG. Archive this plan.
 
+### Phase 8 (optional) — Unify the supervisor job state machine
+- The QEMU and NBD-netboot supervisors are near-identical state machines
+  (`FetchingImage → ImageFetched → Running → Stopping`, with parallel
+  `fetch_image`/`start_job_cont`/`process_monitor`/`stop_job_internal`/
+  `finish_running_job_shutdown`). Phase 0.5 already shared the *subprocess* seam
+  (`ProcessLauncher`); this step hoists the **state machine itself** into a
+  generic core in `supervisor/lib`, parameterized over the target-specific bits
+  (image validation/backing-chain prep, workload launch args, extra teardown
+  like boot-archive unpack and start/stop scripts) behind a trait.
+- Strictly a refactor with no behavior change, and **optional** — deferred to the
+  end because it is delicate (the locking/`std::mem::replace` state dance and the
+  `process_monitor`↔`stop_job` race must be preserved exactly) and buys
+  maintainability rather than capability. Best tackled once both supervisors are
+  on the OCI path so the unified core is written against the final shapes.
+- **Verified by:** the existing Phase 0.5 transition test (now driving the shared
+  core for *both* targets via their trait impls) plus the Phase 2 boot test.
+
 ---
 
 ## 10. Risks & items needing a human decision
