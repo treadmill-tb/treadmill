@@ -1,12 +1,35 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use async_trait::async_trait;
 use serde::Deserialize;
 use tracing::{Level, event, instrument};
 
 use treadmill_rs::image::manifest::{ImageId, ImageManifest};
 
 const DIGEST_BYTES_NEST_LEVEL: usize = 3;
+
+/// The image-store operations a supervisor's job state machine depends on.
+///
+/// Injectable (the supervisors hold `Arc<dyn ImageStore>`) so the state machine
+/// can be driven by tests with a stub store, and so Phase 1 can swap the
+/// TOML-backed [`LocalImageStoreClient`] for an OCI-backed implementation
+/// without touching the supervisors. See `doc/oci-image-migration-plan.md` §6.
+#[async_trait]
+pub trait ImageStore: std::fmt::Debug + Send + Sync {
+    /// Ensure the image is present locally, fetching it if necessary.
+    async fn fetch_image(
+        &self,
+        remote_store_endpoints: Vec<String>,
+        image_id: ImageId,
+    ) -> Result<FetchImageStatus>;
+
+    /// Retrieve the (already-present) image's manifest.
+    async fn image_manifest(&self, image_id: ImageId) -> Result<ImageManifest>;
+
+    /// Filesystem path at which a blob's bytes can be opened directly.
+    async fn blob_path(&self, blob_sha256_digest: &[u8; 32]) -> PathBuf;
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LocalImageStoreConfig {
@@ -159,5 +182,26 @@ impl LocalImageStoreClient {
                     )
                 })
             })
+    }
+}
+
+#[async_trait]
+impl ImageStore for LocalImageStoreClient {
+    async fn fetch_image(
+        &self,
+        remote_store_endpoints: Vec<String>,
+        image_id: ImageId,
+    ) -> Result<FetchImageStatus> {
+        // Inherent method (inherent resolution wins over the trait, so this is
+        // not a recursive call):
+        LocalImageStoreClient::fetch_image(self, remote_store_endpoints, image_id).await
+    }
+
+    async fn image_manifest(&self, image_id: ImageId) -> Result<ImageManifest> {
+        LocalImageStoreClient::image_manifest(self, image_id).await
+    }
+
+    async fn blob_path(&self, blob_sha256_digest: &[u8; 32]) -> PathBuf {
+        LocalImageStoreClient::blob_path(self, blob_sha256_digest).await
     }
 }

@@ -22,7 +22,7 @@ use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 
 use treadmill_tcp_control_socket_server::TcpControlSocket;
 
-use treadmill_supervisor_lib::image_store_client;
+use treadmill_supervisor_lib::image_store_client::{self, ImageStore};
 use treadmill_supervisor_lib::launcher::{self, ProcessLauncher, QemuImgMetadata, WorkloadProcess};
 
 async fn fuse<R>(duration: std::time::Duration, fire: impl std::future::Future<Output = R>) -> R {
@@ -186,8 +186,9 @@ pub struct QemuSupervisor {
 
     /// Image store client, connected to the local image cache. We expect to be
     /// provided an image store client with a filesystem endpoint, from which we
-    /// can directly reference (immutable) qcow2 images.
-    image_store_client: image_store_client::LocalImageStoreClient,
+    /// can directly reference (immutable) qcow2 images. Injectable so the job
+    /// state machine can be driven by tests with a stub store.
+    image_store_client: Arc<dyn ImageStore>,
 
     /// Seam for the `qemu-img`/`qemu` subprocess operations, injectable so the
     /// job state machine can be driven by tests without spawning real binaries.
@@ -205,7 +206,7 @@ pub struct QemuSupervisor {
 impl QemuSupervisor {
     pub fn new(
         connector: Arc<dyn connector::SupervisorConnector>,
-        image_store_client: image_store_client::LocalImageStoreClient,
+        image_store_client: Arc<dyn ImageStore>,
         launcher: Arc<dyn ProcessLauncher>,
         args: QemuSupervisorArgs,
         config: QemuSupervisorConfig,
@@ -1714,13 +1715,14 @@ async fn main() -> Result<()> {
     let config_str = std::fs::read_to_string(&args.config_file).unwrap();
     let config: QemuSupervisorConfig = toml::from_str(&config_str).unwrap();
 
-    let image_store =
+    let image_store: Arc<dyn ImageStore> = Arc::new(
         image_store_client::ImageStoreClient::new(config.image_store.http_endpoint.clone())
             .await
             .unwrap()
             .into_local(&config.image_store.fs_endpoint)
             .await
-            .unwrap();
+            .unwrap(),
+    );
 
     let launcher: Arc<dyn ProcessLauncher> = Arc::new(launcher::CliLauncher::new(
         config.qemu.qemu_img_binary.clone(),
