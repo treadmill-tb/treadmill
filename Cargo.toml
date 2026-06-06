@@ -44,6 +44,7 @@ futures-util = "0.3.30"
 http = "1.1.0"
 humantime-serde = "1.1.1"
 log = "0.4.22"
+oci-spec = { version = "0.10.0", default-features = false, features = ["image"] }
 rand = "0.10"
 schemars = "1"
 serde = "1.0.204"
