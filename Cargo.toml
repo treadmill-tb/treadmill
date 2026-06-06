@@ -7,7 +7,6 @@ members = [
   "control-socket/tcp/server",
   "puppet",
   "supervisor/lib",
-  "supervisor/mock",
   "supervisor/nbd-netboot",
   "supervisor/qemu",
   "switchboard",

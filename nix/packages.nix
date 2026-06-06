@@ -34,11 +34,6 @@
           group = cmn.groups.supervisors;
           bin = "treadmill-nbd-netboot-supervisor";
         };
-
-        treadmill-mock-supervisor = cmn.mkBin {
-          group = cmn.groups.supervisors;
-          bin = "treadmill-mock-supervisor";
-        };
       }
       // lib.optionalAttrs isLinux {
         tml-puppet = cmn.mkBin {

@@ -252,13 +252,10 @@ let
         crates = [
           "treadmill-qemu-supervisor"
           "treadmill-nbd-netboot-supervisor"
-          "treadmill-mock-supervisor"
         ];
         bins = {
           treadmill-qemu-supervisor = withLib ++ [ "supervisor/qemu" ];
           treadmill-nbd-netboot-supervisor = withLib ++ [ "supervisor/nbd-netboot" ];
-          # mock doesn't depend on supervisor/lib.
-          treadmill-mock-supervisor = shared ++ [ "supervisor/mock" ];
         };
       };
   };

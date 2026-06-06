@@ -410,8 +410,8 @@ Each phase below names its verifying test target.
   `supervisor/nbd-netboot` (*ensure-present → build chain → launch → Ready →
   teardown*) behind a trait, with the launcher (`qemu`/`qemu-nbd`/`qemu-img`
   invocations) injectable. Add a tiny **direct/fake-switchboard driver** that
-  feeds an `ImageSpecification` and observes reported states. Retire
-  `supervisor/mock` if it adds nothing.
+  feeds an `ImageSpecification` and observes reported states. `supervisor/mock`
+  is **deleted** (not migrated) — the fake-switchboard driver supersedes it.
 - This is pure refactor of the *current* (still-TOML) code, so it can land before
   any OCI behavior change and de-risks every later supervisor test.
 - **Verified by:** `cargo test -p treadmill-supervisor-lib core::` — drive the

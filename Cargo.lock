@@ -4199,24 +4199,6 @@ name = "treadmill-cli"
 version = "0.3.1"
 
 [[package]]
-name = "treadmill-mock-supervisor"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "serde",
- "tokio",
- "toml 1.1.2+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "treadmill-rs",
- "treadmill-tcp-control-socket-server",
- "treadmill-ws-connector",
- "uuid",
-]
-
-[[package]]
 name = "treadmill-nbd-netboot-supervisor"
 version = "0.1.0"
 dependencies = [
