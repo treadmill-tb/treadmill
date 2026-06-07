@@ -160,6 +160,54 @@ pub async fn fetch_current_job(
     .map(|record| record.current_job)
 }
 
+/// Refresh the host's liveness heartbeat (`last_seen_at = now()`).
+///
+/// Call this only from inside the worker's `with_txn` guard, so the staleness
+/// check has already confirmed this worker is still current — a superseded
+/// worker's `with_txn` short-circuits before the closure runs and never reaches
+/// here, so it cannot resurrect a host a newer worker now owns.
+pub async fn touch_heartbeat(
+    host_id: Uuid,
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"
+        UPDATE tml_switchboard.hosts
+        SET last_seen_at = now()
+        WHERE host_id = $1
+        "#,
+        host_id,
+    )
+    .execute(&mut **txn)
+    .await
+    .map(|_| ())
+}
+
+/// Mark the host as not-live (`last_seen_at = NULL`), used when a worker
+/// disconnects cleanly so the scheduler stops dispatching to it immediately
+/// rather than waiting out the heartbeat staleness window.
+///
+/// Like [`touch_heartbeat`], this must run inside the worker's `with_txn`
+/// guard: if the worker has been superseded, the guard rolls back before this
+/// closure runs, so the clean-disconnect of an old worker can never clobber the
+/// heartbeat a newer worker is keeping fresh.
+pub async fn mark_dead(
+    host_id: Uuid,
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"
+        UPDATE tml_switchboard.hosts
+        SET last_seen_at = NULL
+        WHERE host_id = $1
+        "#,
+        host_id,
+    )
+    .execute(&mut **txn)
+    .await
+    .map(|_| ())
+}
+
 /// Acquire a row-level lock on the host record and return its current
 /// `worker_instance_id`.
 ///

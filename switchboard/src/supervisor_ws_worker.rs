@@ -238,7 +238,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         let worker_instance_id = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
 
         // Now, using this ID, construct the worker instance:
-        let worker = SupervisorWSWorker {
+        let mut worker = SupervisorWSWorker {
             ctx: WorkerCtx {
                 pool,
                 host_id,
@@ -248,7 +248,27 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
             socket,
         };
 
-        worker.run_loop().await
+        let result = worker.run_loop().await;
+
+        // Clean disconnect: mark the host not-live right away so the scheduler
+        // stops dispatching to it without waiting out the heartbeat staleness
+        // window. This goes through `with_txn`, so if we exited *because* a newer
+        // worker superseded us, the guard short-circuits and we leave its fresh
+        // heartbeat untouched. Ignore the outcome (incl. `Stale`) and surface
+        // only the run-loop result; a silent worker death that skips this path
+        // is still caught by heartbeat staleness.
+        if let Err(e) = worker
+            .ctx
+            .with_txn(async |txn| {
+                sql::host::mark_dead(host_id, txn).await?;
+                Ok(())
+            })
+            .await
+        {
+            tracing::debug!("SupervisorWSWorker clean-disconnect mark_dead skipped: {e}");
+        }
+
+        result
     }
 
     /// Reconcile switchboard and supervisor state when a supervisor (re)connects.
@@ -502,7 +522,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         }
     }
 
-    async fn run_loop(mut self) -> WorkerResult<()> {
+    async fn run_loop(&mut self) -> WorkerResult<()> {
         // Keepalive PING message interval, for PING messages sent from the
         // switchboard to the supervisor:
         let mut ping_interval = interval(self.ctx.config.supervisor_ping_interval);
@@ -510,6 +530,18 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         // Timeout for waiting on PONG messages from the supervisor. Reset every
         // time we're getting a PONG response from the supervisor:
         let mut pong_timeout = Box::pin(sleep(self.ctx.config.supervisor_pong_dead));
+
+        // Mark the host live immediately on connect, so the scheduler can
+        // dispatch to it without waiting for the first ping tick. (Also doubles
+        // as the takeover check: if a newer worker already superseded us between
+        // claiming our instance ID and here, `with_txn` returns `Stale`.)
+        let host_id = self.ctx.host_id;
+        self.ctx
+            .with_txn(async move |txn| {
+                sql::host::touch_heartbeat(host_id, txn).await?;
+                Ok(())
+            })
+            .await?;
 
         loop {
             tokio::select! {
@@ -535,10 +567,14 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 // - we use it to check that there is not a newer worker serving
                 //   this supervisor, in which case we terminate.
                 _ = ping_interval.tick() => {
-                    // Run a dummy transaction against the database, this will
-                    // be sufficient to determine whether we're still the most
-                    // current worker.
-                    self.ctx.with_txn(async |_| Ok(())).await?;
+                    // Refresh the liveness heartbeat. This transaction also
+                    // determines whether we're still the most current worker
+                    // (its first statement is the staleness check), so it does
+                    // double duty as the takeover guard.
+                    self.ctx.with_txn(async move |txn| {
+                        sql::host::touch_heartbeat(host_id, txn).await?;
+                        Ok(())
+                    }).await?;
 
                     // Still current, now send a PING:
                     self.socket.send(ws::Message::Ping((&[][..]).into())).await.context("SupervisorWSWorker sending ping to supervisor")?;
@@ -845,6 +881,43 @@ mod tests {
         )
     }
 
+    /// Whether the host is currently marked live (`last_seen_at IS NOT NULL`).
+    async fn host_is_live(pool: &PgPool, host_id: Uuid) -> anyhow::Result<bool> {
+        Ok(sqlx::query_scalar(
+            "select last_seen_at is not null from tml_switchboard.hosts where host_id = $1",
+        )
+        .bind(host_id)
+        .fetch_one(pool)
+        .await?)
+    }
+
+    /// Force `last_seen_at` to a fixed non-null instant, standing in for a
+    /// (notional) newer worker's heartbeat in the takeover-guard test.
+    async fn set_heartbeat_now(pool: &PgPool, host_id: Uuid) -> anyhow::Result<()> {
+        sqlx::query("update tml_switchboard.hosts set last_seen_at = now() where host_id = $1")
+            .bind(host_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Poll `cond` until it returns true or `budget` elapses (for asserting on
+    /// state a spawned worker updates asynchronously).
+    async fn wait_until<F, Fut>(budget: std::time::Duration, mut cond: F) -> bool
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        let deadline = Instant::now() + budget;
+        while Instant::now() < deadline {
+            if cond().await {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        false
+    }
+
     /// Read back a job's `job_state` as its text representation.
     async fn job_state_of(pool: &PgPool, job_id: Uuid) -> anyhow::Result<String> {
         Ok(
@@ -1045,6 +1118,87 @@ mod tests {
         .await
         .expect("worker should return promptly on socket stream end");
 
+        Ok(())
+    }
+
+    // -- liveness heartbeat -------------------------------------------------
+    //
+    // The host's `last_seen_at` is the DB-only signal by which the
+    // (out-of-process) scheduler learns a host has a live supervisor. A
+    // connected worker sets it immediately and refreshes it each tick; a clean
+    // disconnect clears it at once; a worker that has been superseded must not
+    // touch it (the newer worker owns the heartbeat).
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn connect_marks_live_and_clean_disconnect_marks_dead(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        assert!(
+            !host_is_live(&pool, host_id).await?,
+            "a host with no worker starts not-live"
+        );
+
+        let (to_worker, _from_worker, socket) = scripted_socket();
+        let jh = tokio::spawn(SupervisorWSWorker::run(
+            pool.clone(),
+            host_id,
+            socket,
+            worker_config(50, 5_000),
+        ));
+
+        // The worker marks the host live on connect (before the first ping).
+        assert!(
+            wait_until(std::time::Duration::from_secs(2), || async {
+                host_is_live(&pool, host_id).await.unwrap_or(false)
+            })
+            .await,
+            "worker should mark the host live shortly after connecting"
+        );
+
+        // Clean disconnect (stream end): the worker clears the heartbeat as it
+        // exits, so the host is immediately not-live.
+        drop(to_worker);
+        tokio::time::timeout(std::time::Duration::from_secs(2), jh)
+            .await
+            .expect("worker should return promptly on stream end")
+            .expect("worker task should not panic");
+        assert!(
+            !host_is_live(&pool, host_id).await?,
+            "a clean disconnect should mark the host dead immediately"
+        );
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn superseded_worker_cannot_mark_host_dead(pool: PgPool) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let our_id = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        // A newer worker takes over (bumps the instance ID) and is keeping the
+        // heartbeat fresh.
+        let _newer_id = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        set_heartbeat_now(&pool, host_id).await?;
+
+        // Our now-stale worker hits its clean-disconnect path. The `with_txn`
+        // guard must reject it as `Stale` and leave the heartbeat untouched.
+        let worker = worker(pool.clone(), host_id, our_id, worker_config(50, 250));
+        let res = worker
+            .ctx
+            .with_txn(async |txn| {
+                sql::host::mark_dead(host_id, txn).await?;
+                Ok(())
+            })
+            .await;
+        assert!(
+            matches!(res, Err(WorkerError::Stale { .. })),
+            "a superseded worker's mark_dead must be rejected as Stale"
+        );
+        assert!(
+            host_is_live(&pool, host_id).await?,
+            "the superseded worker must not clobber the newer worker's heartbeat"
+        );
         Ok(())
     }
 

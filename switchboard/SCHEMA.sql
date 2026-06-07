@@ -328,6 +328,17 @@ create table tml_switchboard.hosts
     -- operations.
     worker_instance_id bigint NOT NULL DEFAULT 0,
 
+    -- Liveness heartbeat: the current worker refreshes this on each periodic
+    -- tick, and clears it to NULL when it disconnects cleanly (without having
+    -- been superseded). A host is "live" -- eligible for the scheduler to
+    -- dispatch onto -- iff `last_seen_at` is non-null and recent (within the
+    -- configured staleness window). NULL ⇒ no connected supervisor; a stale
+    -- timestamp ⇒ the worker died silently (the heartbeat catches what a missed
+    -- clean disconnect does not). This is the DB-only signal by which the
+    -- (out-of-process) scheduler learns which hosts have a live supervisor; no
+    -- in-process channel couples them.
+    last_seen_at       timestamp with time zone,
+
     check (octet_length(auth_token) = 128),
     check (worker_instance_id >= 0)
 );

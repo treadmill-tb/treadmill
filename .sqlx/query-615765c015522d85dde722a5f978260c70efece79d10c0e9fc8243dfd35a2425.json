@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE tml_switchboard.hosts\n        SET last_seen_at = NULL\n        WHERE host_id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "615765c015522d85dde722a5f978260c70efece79d10c0e9fc8243dfd35a2425"
+}
