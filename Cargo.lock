@@ -4574,6 +4574,7 @@ dependencies = [
  "async-trait",
  "oci-client",
  "oci-spec 0.10.0",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",

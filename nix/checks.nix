@@ -183,7 +183,12 @@
             pname = "treadmill-oci-store";
             version = "0.1.0";
             cargoArtifacts = cmn.workspaceDeps;
-            cargoNextestExtraArgs = "-p treadmill-supervisor-lib --no-tests=pass -E 'test(oci_store)'";
+            # The leases-as-references tests also live in `oci_store::tests` but
+            # drive GC and take tens of seconds each; they have their own `lease`
+            # check below, so exclude them here.
+            cargoNextestExtraArgs =
+              "-p treadmill-supervisor-lib --no-tests=pass "
+              + "-E 'test(oci_store) & !test(lease_pins_against_gc) & !test(parallel_ensure_present_while_pinned)'";
             partitions = 1;
             partitionType = "count";
 
@@ -196,6 +201,38 @@
             # backend) even for the plain-HTTP loopback pulls; without a CA
             # bundle in the sandbox that init panics. The connections
             # themselves are HTTP to 127.0.0.1.
+            SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+
+            TINY_EFI_IMAGE = self'.packages.tiny-efi-image-layout;
+          }
+        );
+
+        # Phase 3 of the OCI image migration (§7.3/§7.4/§12.3): prove the
+        # leases-as-references model against the real Zot binary. The tests pin
+        # an `inuse-<job>` reference, drive Zot's GC, and assert the pinned
+        # closure is retained while an unreferenced image is collected (and that
+        # releasing the lease makes the closure collectible). Same external needs
+        # as `oci-store` (zot + skopeo + the fixture); the tests skip when unset
+        # so the plain `nextest` check passes them over. Linux-only.
+        lease = cmn.craneLib.cargoNextest (
+          cmn.cargoCommonArgs
+          // {
+            pname = "treadmill-lease";
+            version = "0.1.0";
+            cargoArtifacts = cmn.workspaceDeps;
+            cargoNextestExtraArgs =
+              "-p treadmill-supervisor-lib --no-tests=pass "
+              + "-E 'test(lease_pins_against_gc) | test(parallel_ensure_present_while_pinned)'";
+            partitions = 1;
+            partitionType = "count";
+
+            nativeBuildInputs = cmn.cargoCommonArgs.nativeBuildInputs ++ [
+              cmn.zot
+              pkgs.skopeo
+            ];
+
+            # See the oci-store check: oci-client's reqwest TLS init needs a CA
+            # bundle present even though the loopback traffic is plain HTTP.
             SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
 
             TINY_EFI_IMAGE = self'.packages.tiny-efi-image-layout;

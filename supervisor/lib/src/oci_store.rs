@@ -34,7 +34,7 @@ use oci_client::{
     client::{Client, ClientConfig, ClientProtocol},
     secrets::RegistryAuth,
 };
-use oci_spec::image::ImageManifest;
+use oci_spec::image::{ImageManifest, MediaType};
 use serde::Deserialize;
 use tracing::{Level, event, instrument};
 
@@ -70,6 +70,26 @@ pub trait ImageStore: std::fmt::Debug + Send + Sync {
     /// Filesystem path at which `digest`'s bytes can be opened read-only within
     /// `repository`.
     fn blob_path(&self, repository: &str, digest: &Digest) -> PathBuf;
+
+    /// Pin the (already-present) manifest `digest` against the daemon's garbage
+    /// collector for the duration of job `job_id` (an in-use *lease*, plan
+    /// §7.3). Pinning the manifest transitively protects its config and every
+    /// layer blob via GC reachability. Idempotent: pinning twice is harmless.
+    ///
+    /// The default is a no-op, for stores with no garbage collector (e.g. test
+    /// stubs); [`OciStore`] overrides it with a real Zot reference.
+    async fn pin(&self, _repository: &str, _digest: &Digest, _job_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// Release the in-use lease pinned by [`ImageStore::pin`] for `job_id`
+    /// (plan §7.3). After this the manifest is GC-eligible iff no other lease or
+    /// tag references it. Idempotent: releasing an absent lease succeeds.
+    ///
+    /// The default is a no-op (see [`ImageStore::pin`]).
+    async fn unpin(&self, _repository: &str, _job_id: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -84,6 +104,14 @@ impl ImageStore for OciStore {
 
     fn blob_path(&self, repository: &str, digest: &Digest) -> PathBuf {
         OciStore::blob_path(self, repository, digest)
+    }
+
+    async fn pin(&self, repository: &str, digest: &Digest, job_id: &str) -> Result<()> {
+        OciStore::pin(self, repository, digest, job_id).await
+    }
+
+    async fn unpin(&self, repository: &str, job_id: &str) -> Result<()> {
+        OciStore::unpin(self, repository, job_id).await
     }
 }
 
@@ -117,6 +145,10 @@ pub struct OciStore {
     /// Filesystem root of the daemon's storage (ro from the supervisor's view).
     store_root: PathBuf,
     client: Client,
+    /// Plain HTTP client for the lease operations (manifest PUT/DELETE), which
+    /// `oci-client` does not expose. Talks the OCI Distribution protocol to the
+    /// same local daemon over loopback.
+    http: reqwest::Client,
 }
 
 // `oci_client::Client` is not `Debug`; project only the fields that identify the
@@ -144,6 +176,7 @@ impl OciStore {
             registry: registry.into(),
             store_root: store_root.into(),
             client,
+            http: reqwest::Client::new(),
         }
     }
 
@@ -285,6 +318,104 @@ impl OciStore {
             .await
             .with_context(|| format!("reading blob {digest} at {}", path.display()))
     }
+
+    /// The local daemon's manifest URL for `reference` (a tag or digest) under
+    /// `repository`. The daemon is reached over loopback HTTP (`new` fixes the
+    /// protocol to HTTP); token-gating is D11/Phase 5.
+    fn manifest_url(&self, repository: &str, reference: &str) -> String {
+        format!(
+            "http://{}/v2/{}/manifests/{}",
+            self.registry, repository, reference
+        )
+    }
+
+    /// Pin the (already-present) manifest `digest` against the daemon's GC for
+    /// the duration of job `job_id` — the in-use *lease* of plan §7.3.
+    ///
+    /// Implemented as a Zot **reference**: we push the manifest's own bytes back
+    /// under a per-job [`inuse_tag`] in the same `repository`. The bytes are
+    /// content-addressed, so the daemon recognises the identical digest and only
+    /// records a new tag pointing at the existing manifest — **no blob is
+    /// copied**. Because the manifest is now tagged, the daemon's GC keeps it in
+    /// `index.json`, which transitively retains its config and every layer blob
+    /// (GC reachability). Idempotent: re-pinning re-PUTs the same tag.
+    #[instrument(skip(self), fields(%digest))]
+    pub async fn pin(&self, repository: &str, digest: &Digest, job_id: &str) -> Result<()> {
+        // The on-disk manifest blob *is* the canonical bytes whose sha256 is
+        // `digest`; re-pushing them keeps the daemon's digest identical, so the
+        // tag attaches to the existing manifest rather than ingesting a copy.
+        let bytes = self
+            .read_blob(repository, digest)
+            .await
+            .with_context(|| format!("reading manifest {digest} to pin it"))?;
+
+        // PUT must echo the manifest's own media type; fall back to the OCI
+        // image-manifest type if the blob somehow lacks the field.
+        let media_type = serde_json::from_slice::<MediaTypeProbe>(&bytes)
+            .ok()
+            .and_then(|p| p.media_type)
+            .unwrap_or_else(|| MediaType::ImageManifest.to_string());
+
+        let tag = inuse_tag(job_id);
+        let url = self.manifest_url(repository, &tag);
+        let resp = self
+            .http
+            .put(&url)
+            .header(reqwest::header::CONTENT_TYPE, media_type)
+            .body(bytes)
+            .send()
+            .await
+            .with_context(|| format!("pinning {digest} as {tag} in {repository}"))?;
+        if !resp.status().is_success() {
+            bail!(
+                "pinning {digest} as {tag} in {repository} failed: HTTP {}",
+                resp.status(),
+            );
+        }
+        event!(Level::DEBUG, %tag, repository, "pinned in-use lease");
+        Ok(())
+    }
+
+    /// Release the in-use lease pinned by [`OciStore::pin`] for `job_id` (plan
+    /// §7.3): delete the per-job [`inuse_tag`] from `repository`.
+    ///
+    /// Deleting the tag leaves the manifest GC-eligible only when no other
+    /// reference names it (another job's lease, or a catalog tag); the daemon's
+    /// GC then reclaims the now-unreferenced closure. Idempotent: a missing tag
+    /// (`404`) is treated as already released.
+    #[instrument(skip(self))]
+    pub async fn unpin(&self, repository: &str, job_id: &str) -> Result<()> {
+        let tag = inuse_tag(job_id);
+        let url = self.manifest_url(repository, &tag);
+        let resp = self
+            .http
+            .delete(&url)
+            .send()
+            .await
+            .with_context(|| format!("releasing lease {tag} in {repository}"))?;
+        let status = resp.status();
+        if status.is_success() || status == reqwest::StatusCode::NOT_FOUND {
+            event!(Level::DEBUG, %tag, repository, "released in-use lease");
+            Ok(())
+        } else {
+            bail!("releasing lease {tag} in {repository} failed: HTTP {status}");
+        }
+    }
+}
+
+/// The per-job in-use tag pinning a manifest against the daemon's GC (plan
+/// §7.3). Job ids are UUIDs (`hex` + `-`), which are valid OCI tag components,
+/// so they embed verbatim under an `inuse-` prefix.
+fn inuse_tag(job_id: &str) -> String {
+    format!("inuse-{job_id}")
+}
+
+/// Minimal probe for a manifest blob's `mediaType`, to set the `Content-Type`
+/// when re-pushing it as a lease tag (see [`OciStore::pin`]).
+#[derive(Deserialize)]
+struct MediaTypeProbe {
+    #[serde(rename = "mediaType")]
+    media_type: Option<String>,
 }
 
 /// Resolve a `host:port` authority from a base URL or bare authority, for
@@ -398,26 +529,52 @@ mod tests {
         /// Start Zot with a temp store. When `sync_from` is set, configure it as
         /// an on-demand pull-through cache of that upstream port.
         fn start(zot_bin: &Path, sync_from: Option<u16>) -> Zot {
+            Self::spawn(zot_bin, |store, port| {
+                let sync = match sync_from {
+                    Some(up) => format!(
+                        r#","extensions":{{"sync":{{"registries":[
+                            {{"urls":["http://127.0.0.1:{up}"],"onDemand":true,
+                              "tlsVerify":false,"content":[{{"prefix":"**"}}]}}]}}}}"#
+                    ),
+                    None => String::new(),
+                };
+                format!(
+                    r#"{{"storage":{{"rootDirectory":"{store}","dedupe":true}},
+                        "http":{{"address":"127.0.0.1","port":"{port}"}},
+                        "log":{{"level":"error"}}{sync}}}"#,
+                    store = store.display(),
+                )
+            })
+        }
+
+        /// Start Zot with garbage collection enabled (plan §7.3): periodic GC on
+        /// a short interval, no grace delay for unreferenced blobs (`gcDelay: 0`
+        /// ⇒ collect immediately), and a retention policy that prunes untagged
+        /// manifests. References (tags) keep a manifest reachable, so the lease
+        /// tags pushed by [`OciStore::pin`] are honored by GC.
+        fn start_gc(zot_bin: &Path) -> Zot {
+            Self::spawn(zot_bin, |store, port| {
+                format!(
+                    r#"{{"storage":{{"rootDirectory":"{store}","dedupe":true,
+                          "gc":true,"gcDelay":"0s","gcInterval":"1s",
+                          "retention":{{"policies":[
+                            {{"repositories":["**"],"deleteUntagged":true}}]}}}},
+                        "http":{{"address":"127.0.0.1","port":"{port}"}},
+                        "log":{{"level":"error"}}}}"#,
+                    store = store.display(),
+                )
+            })
+        }
+
+        /// Spawn a child Zot whose config is built by `config` from the temp
+        /// store path and a free port; wait until its API is up.
+        fn spawn(zot_bin: &Path, config: impl FnOnce(&Path, u16) -> String) -> Zot {
             let dir = tempfile::tempdir().unwrap();
             let store = dir.path().join("store");
             let port = free_port();
 
-            let sync = match sync_from {
-                Some(up) => format!(
-                    r#","extensions":{{"sync":{{"registries":[
-                        {{"urls":["http://127.0.0.1:{up}"],"onDemand":true,
-                          "tlsVerify":false,"content":[{{"prefix":"**"}}]}}]}}}}"#
-                ),
-                None => String::new(),
-            };
-            let config = format!(
-                r#"{{"storage":{{"rootDirectory":"{store}","dedupe":true}},
-                    "http":{{"address":"127.0.0.1","port":"{port}"}},
-                    "log":{{"level":"error"}}{sync}}}"#,
-                store = store.display(),
-            );
             let config_path = dir.path().join("config.json");
-            std::fs::write(&config_path, config).unwrap();
+            std::fs::write(&config_path, config(&store, port)).unwrap();
 
             let child = Command::new(zot_bin)
                 .arg("serve")
@@ -608,5 +765,202 @@ mod tests {
             .await
             .expect_err("ensure_present must fail when nothing serves the digest");
         assert!(err.to_string().contains(&digest.to_string()));
+    }
+
+    // ---- Phase 3: leases-as-references & GC (plan §7.3–7.4) ----
+
+    /// A process-unique string, for victim blobs that must be distinct from the
+    /// fixture's content-addressed blobs.
+    fn unique() -> String {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        format!(
+            "{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )
+    }
+
+    /// Push a throwaway image with unique config + layer blobs into `repo` under
+    /// `tag`, returning its `(config, layer)` blob digests. Used as the
+    /// "unreferenced" image GC should reclaim once untagged.
+    async fn push_victim(zot: &Zot, repo: &str, tag: &str) -> (Digest, Digest) {
+        use oci_client::client::{Config, ImageLayer};
+
+        let u = unique();
+        let layer = ImageLayer::oci_v1(format!("victim-layer-{u}").into_bytes(), None);
+        let config = Config::oci_v1(format!(r#"{{"victim":"{u}"}}"#).into_bytes(), None);
+        let layer_digest: Digest = layer.sha256_digest().parse().unwrap();
+        let config_digest: Digest = config.sha256_digest().parse().unwrap();
+
+        let client = Client::new(ClientConfig {
+            protocol: ClientProtocol::Http,
+            ..Default::default()
+        });
+        let reference = Reference::with_tag(zot.authority(), repo.to_string(), tag.to_string());
+        client
+            .push(&reference, &[layer], config, &RegistryAuth::Anonymous, None)
+            .await
+            .expect("push victim image");
+
+        (config_digest, layer_digest)
+    }
+
+    /// Delete a manifest `reference` (tag or digest) from `repo` on the daemon,
+    /// tolerating a `404` (idempotent). Used to untag images for GC.
+    async fn delete_ref(authority: &str, repo: &str, reference: &str) {
+        let url = format!("http://{authority}/v2/{repo}/manifests/{reference}");
+        let status = reqwest::Client::new()
+            .delete(&url)
+            .send()
+            .await
+            .expect("delete manifest reference")
+            .status();
+        assert!(
+            status.is_success() || status == reqwest::StatusCode::NOT_FOUND,
+            "deleting {reference} from {repo} failed: HTTP {status}",
+        );
+    }
+
+    /// Poll `cond` until it holds or `secs` elapse. Zot's GC runs on a periodic
+    /// scheduler with a randomized per-repo delay, so we wait rather than assume
+    /// an immediate sweep.
+    async fn wait_until(secs: u64, mut cond: impl FnMut() -> bool) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        loop {
+            if cond() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                bail!("condition not met within {secs}s");
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// The core §7.3 assumption, checked against the real Zot binary: a lease
+    /// (an `inuse-<job>` reference) keeps a manifest's whole closure across a GC
+    /// sweep, an *unreferenced* image is reclaimed in that same sweep, and once
+    /// the lease is released the formerly-pinned closure becomes collectible.
+    #[tokio::test]
+    async fn lease_pins_against_gc() {
+        let r = skip_unless_available!();
+        let zot = Zot::start_gc(&r.zot);
+        skopeo_push(&r.skopeo, &r.fixture, &zot);
+
+        let store = OciStore::new(zot.authority(), &zot.store);
+        let digest = fixture_manifest_digest(&r.fixture);
+        let repo = store
+            .ensure_present(&digest, &[Location::new(REPO)])
+            .await
+            .expect("ensure_present");
+
+        // The blob closure the lease must protect: manifest + config + layers.
+        let manifest = store.manifest(&repo, &digest).await.expect("manifest");
+        let image = treadmill_rs::image::parse::parse_image(&manifest).expect("treadmill image");
+        let config_digest: Digest = manifest.config().digest().to_string().parse().unwrap();
+        let mut closure = vec![digest, config_digest];
+        closure.extend(image.layers.iter().map(|l| l.digest));
+
+        // Take an in-use lease on the manifest for a job.
+        let job = "550e8400-e29b-41d4-a716-446655440000";
+        store.pin(&repo, &digest, job).await.expect("pin");
+
+        // Stage an unreferenced victim *in the same repo* (so a single GC pass
+        // over the repo decides both) and untag it so it is collectible.
+        let (victim_config, victim_layer) = push_victim(&zot, REPO, "victim").await;
+        delete_ref(&zot.authority(), REPO, "victim").await;
+
+        // Drop the fixture's catalog tag, so only the lease now references it.
+        delete_ref(&zot.authority(), REPO, "latest").await;
+
+        // GC must reclaim the victim's unique blobs...
+        let victim_layer_path = store.blob_path(REPO, &victim_layer);
+        wait_until(90, || !victim_layer_path.is_file())
+            .await
+            .expect("victim layer should be garbage-collected");
+        assert!(
+            !store.blob_path(REPO, &victim_config).is_file(),
+            "victim config should be collected too",
+        );
+
+        // ...while the leased closure is fully retained across that same sweep.
+        for d in &closure {
+            assert!(
+                store.blob_path(&repo, d).is_file(),
+                "leased blob {d} was collected despite the in-use lease",
+            );
+        }
+
+        // A concurrent ensure_present of the pinned digest stays consistent.
+        store
+            .ensure_present(&digest, &[Location::new(REPO)])
+            .await
+            .expect("re-ensure_present while leased");
+
+        // Release the lease: nothing references the fixture now, so GC reclaims
+        // the formerly-protected closure — proving the lease was load-bearing.
+        store.unpin(&repo, job).await.expect("unpin");
+        let manifest_path = store.blob_path(&repo, &digest);
+        wait_until(90, || !manifest_path.is_file())
+            .await
+            .expect("unpinned manifest should be garbage-collected");
+        for layer in &image.layers {
+            assert!(
+                !store.blob_path(&repo, &layer.digest).is_file(),
+                "layer {} should be collected after release",
+                layer.digest,
+            );
+        }
+    }
+
+    /// Several `ensure_present` calls for a leased digest, issued concurrently,
+    /// all succeed and agree — ingest is serialized in the daemon and idempotent
+    /// (content-addressed), and the lease keeps the closure intact throughout.
+    #[tokio::test]
+    async fn parallel_ensure_present_while_pinned() {
+        use std::sync::Arc;
+
+        let r = skip_unless_available!();
+        let zot = Zot::start_gc(&r.zot);
+        skopeo_push(&r.skopeo, &r.fixture, &zot);
+
+        let store = Arc::new(OciStore::new(zot.authority(), &zot.store));
+        let digest = fixture_manifest_digest(&r.fixture);
+        let repo = store
+            .ensure_present(&digest, &[Location::new(REPO)])
+            .await
+            .expect("ensure_present");
+
+        let job = "11111111-2222-3333-4444-555555555555";
+        store.pin(&repo, &digest, job).await.expect("pin");
+
+        let mut handles = Vec::new();
+        for _ in 0..6 {
+            let store = Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                // `Digest` is `Copy`, so the `move` closure captures its own copy.
+                store.ensure_present(&digest, &[Location::new(REPO)]).await
+            }));
+        }
+        for handle in handles {
+            let repo = handle
+                .await
+                .expect("join")
+                .expect("parallel ensure_present");
+            assert_eq!(repo, REPO);
+        }
+
+        // The leased closure is intact after the concurrent access.
+        let manifest = store.manifest(&repo, &digest).await.expect("manifest");
+        let image = treadmill_rs::image::parse::parse_image(&manifest).unwrap();
+        for layer in &image.layers {
+            assert!(
+                store.blob_path(&repo, &layer.digest).is_file(),
+                "leased layer {} missing after concurrent ensure_present",
+                layer.digest,
+            );
+        }
     }
 }
