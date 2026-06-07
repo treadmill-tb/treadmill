@@ -164,6 +164,7 @@ async fn login_user(pool: &PgPool) -> (SocketAddr, String, Uuid, MockServer) {
 }
 
 #[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn self_profile_update_tokens_and_feed(pool: PgPool) {
     let (addr, token, user_id, _gh) = login_user(&pool).await;
     let client = reqwest::Client::new();
@@ -324,6 +325,7 @@ async fn self_profile_update_tokens_and_feed(pool: PgPool) {
 }
 
 #[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn revoking_another_users_token_is_not_found(pool: PgPool) {
     let (addr, token, _user_id, _gh) = login_user(&pool).await;
     let client = reqwest::Client::new();
@@ -342,6 +344,7 @@ async fn revoking_another_users_token_is_not_found(pool: PgPool) {
 }
 
 #[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn locked_account_is_rejected(pool: PgPool) {
     let (addr, token, user_id, _gh) = login_user(&pool).await;
     let client = reqwest::Client::new();

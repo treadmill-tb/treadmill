@@ -262,7 +262,7 @@ const REGISTRY: &str = "registry.example.com:5000";
 const REPO: &str = "u/octocat/ubuntu";
 
 #[sqlx::test]
-#[ignore = "requires a database; run via the nextest-db check"]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn register_list_and_inspect_image(pool: PgPool) {
     let mut reg = StubRegistry::default();
     let manifest = image_manifest_bytes("Ubuntu test");
@@ -331,7 +331,7 @@ async fn register_list_and_inspect_image(pool: PgPool) {
 }
 
 #[sqlx::test]
-#[ignore = "requires a database; run via the nextest-db check"]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn rejects_unknown_and_malformed_manifests(pool: PgPool) {
     // An empty registry: nothing staged, so the pull fails (502).
     let (addr, token, _gh) = login_with_registry(&pool, Arc::new(StubRegistry::default())).await;
@@ -368,7 +368,7 @@ async fn rejects_unknown_and_malformed_manifests(pool: PgPool) {
 }
 
 #[sqlx::test]
-#[ignore = "requires a database; run via the nextest-db check"]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn register_and_inspect_image_group(pool: PgPool) {
     let mut reg = StubRegistry::default();
     let member = image_manifest_bytes("group member");

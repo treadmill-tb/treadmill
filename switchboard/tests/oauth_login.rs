@@ -166,6 +166,7 @@ async fn run_login(client: &reqwest::Client, addr: SocketAddr, pool: &PgPool) ->
 }
 
 #[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn github_login_provisions_and_reconciles(pool: PgPool) {
     let gh = MockServer::start().await;
     mount_github(&gh, &[42]).await;

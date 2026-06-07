@@ -28,6 +28,8 @@ let
     (lib.fileset.maybeMissing (workspaceRoot + "/switchboard/SCHEMA.sql"))
     (lib.fileset.maybeMissing (workspaceRoot + "/switchboard/FIXTURES.sql"))
     (lib.fileset.maybeMissing (workspaceRoot + "/switchboard/config.example.toml"))
+    # Committed OpenAPI snapshot read by the api-spec drift-guard test.
+    (lib.fileset.maybeMissing (workspaceRoot + "/switchboard/api-spec"))
   ];
 
   # Union of .rs + .toml under each workspace member in `members`. Used to
@@ -101,6 +103,10 @@ let
       switchboardData
       # Committed wire-schema snapshots read by the protocol drift-guard test.
       (lib.fileset.maybeMissing (workspaceRoot + "/treadmill-rs/protocol-schema"))
+      # Committed `insta` snapshots (`.snap`); not picked up by
+      # commonCargoSources, so without this insta tests see no stored snapshot
+      # and fail in the sandbox.
+      (lib.fileset.fileFilter (file: file.hasExt "snap") workspaceRoot)
     ];
   };
 
