@@ -1,9 +1,10 @@
 use super::SqlSshEndpoint;
 use super::image;
-use crate::matcher::{GroupMember, HostImageAttributes, select_member};
+use crate::matcher::{GroupMember, select_member};
 use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
 use sqlx::{PgExecutor, Postgres, Transaction};
+use std::collections::BTreeSet;
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, TerminationReason};
 use treadmill_rs::api::switchboard_supervisor::{
     ImageLocation, ImageSpecification, JobInitializingStage, RestartPolicy, TaskExitStatus,
@@ -206,7 +207,7 @@ pub async fn insert(
           ssh_keys,
           restart_policy,
           enqueued_by_token_id,
-          tag_config,
+          host_tag_requirements,
           job_timeout,
           job_state,
           initializing_stage,
@@ -229,7 +230,7 @@ pub async fn insert(
           $6,	    -- ssh_keys
           $7,	    -- restart_policy
           $8,	    -- enqueued_by_token_id
-          $9,	    -- tag_config
+          $9,	    -- host_tag_requirements
           $10,	    -- job_timeout
           'queued', -- job_state
           null,	    -- initializing_stage
@@ -257,14 +258,47 @@ pub async fn insert(
             .unwrap(),
         } as SqlRestartPolicy,
         as_token_id,
-        job_request.tag_config,
+        job_request.host_tag_requirements.as_slice(),
         job_timeout,
         queued_at,
     )
     .execute(conn.as_mut())
     .await?;
 
+    // Record the requested targets (DUTs), one row per requested target,
+    // numbered by position in the submitted array.
+    for (req_index, tags) in job_request.target_requirements.iter().enumerate() {
+        sqlx::query!(
+            r#"insert into tml_switchboard.job_target_requirements
+                 (job_id, req_index, tags)
+               values ($1, $2, $3)"#,
+            as_job_id,
+            i32::try_from(req_index).expect("more than i32::MAX target requirements"),
+            tags.as_slice(),
+        )
+        .execute(conn.as_mut())
+        .await?;
+    }
+
     Ok(())
+}
+
+/// The ordered target (DUT) requirements of a job: one tag set per requested
+/// target, in submission order (`req_index`).
+pub async fn target_requirements_for_job(
+    job_id: Uuid,
+    conn: impl PgExecutor<'_>,
+) -> Result<Vec<Vec<String>>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"select tags
+           from tml_switchboard.job_target_requirements
+           where job_id = $1
+           order by req_index"#,
+        job_id,
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.tags).collect())
 }
 
 #[allow(dead_code)]
@@ -285,7 +319,7 @@ pub struct SqlJob {
     ssh_keys: Vec<String>,
     sql_restart_policy: SqlRestartPolicy,
     enqueued_by_token_id: Uuid,
-    tag_config: String,
+    host_tag_requirements: Vec<String>,
     job_timeout: PgInterval,
 
     job_state: SqlJobState,
@@ -326,15 +360,15 @@ impl SqlJob {
     ///
     /// For a resume job this is simply [`ImageSpecification::ResumeJob`]. For a
     /// concrete image, the manifest digest is paired with its catalog locations.
-    /// For an image *group*, the chosen host's `host_attrs` select the
-    /// concrete member (the §8.3 matcher) whose digest + locations are then
-    /// dispatched. `host_attrs` is ignored for the non-group variants.
+    /// For an image *group*, the chosen host's `host_tags` select the concrete
+    /// member (the §8.3 matcher) whose digest + locations are then dispatched.
+    /// `host_tags` is ignored for the non-group variants.
     ///
     /// The returned [`ImageSpecification::Image::manifest_digest`] is the
     /// concrete digest to record on the job row via [`set_resolved_image`].
     pub async fn resolve_image_spec(
         &self,
-        host_attrs: &HostImageAttributes,
+        host_tags: &BTreeSet<String>,
         conn: impl PgExecutor<'_> + Copy,
     ) -> Result<ImageSpecification, ImageResolveError> {
         if let Some(resume_job_id) = self.resume_job_id {
@@ -359,15 +393,11 @@ impl SqlJob {
                 .into_iter()
                 .map(|m| GroupMember {
                     handle: (m.image_id, m.manifest_digest),
-                    arch: m.arch,
-                    os: m.os,
-                    variant: m.variant,
-                    target: m.tml_target,
-                    board: m.tml_board,
+                    required_host_tags: m.required_host_tags,
                 })
                 .collect();
-            let chosen = select_member(&candidates, host_attrs)
-                .ok_or(ImageResolveError::NoMatchingMember)?;
+            let chosen =
+                select_member(&candidates, host_tags).ok_or(ImageResolveError::NoMatchingMember)?;
             let (image_id, manifest_digest) = &chosen.handle;
             return concrete_image_spec(*image_id, manifest_digest, conn).await;
         }
@@ -385,8 +415,8 @@ impl SqlJob {
     pub fn enqueued_by_token_id(&self) -> Uuid {
         self.enqueued_by_token_id
     }
-    pub fn raw_tag_config(&self) -> &str {
-        &self.tag_config
+    pub fn host_tag_requirements(&self) -> &[String] {
+        &self.host_tag_requirements
     }
     pub fn timeout(&self) -> TimeDelta {
         assert_eq!(
@@ -422,7 +452,8 @@ pub async fn fetch_by_job_id(
         r#"
         select job_id, resume_job_id, restart_job_id, image_digest, image_group_digest,
         resolved_image_digest, ssh_keys,
-        restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
+        restart_policy as "sql_restart_policy: _", enqueued_by_token_id,
+        host_tag_requirements, job_timeout,
         queued_at, job_state as "job_state: _",
         initializing_stage as "initializing_stage: _", started_at,
         dispatched_on_host_id, ssh_endpoints as "ssh_endpoints: _",
@@ -803,6 +834,7 @@ pub async fn finalize_dropped_and_maybe_restart(
 
     let successor_id = Uuid::new_v4();
     let parameters = parameters::fetch_by_job_id(job_id, &mut **txn).await?;
+    let target_requirements = target_requirements_for_job(job_id, &mut **txn).await?;
     let job_request = JobRequest {
         init_spec: JobInitSpec::RestartJob { job_id },
         ssh_keys: predecessor.ssh_keys.clone(),
@@ -810,7 +842,8 @@ pub async fn finalize_dropped_and_maybe_restart(
             remaining_restart_count: usize::try_from(remaining - 1).unwrap_or(0),
         },
         parameters: parameters.clone(),
-        tag_config: predecessor.tag_config.clone(),
+        host_tag_requirements: predecessor.host_tag_requirements.clone(),
+        target_requirements,
         override_timeout: None,
     };
     insert(

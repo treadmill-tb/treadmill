@@ -64,15 +64,12 @@ pub struct RegisterImageGroupRequest {
     pub label: Option<String>,
 }
 
-/// One selectable member of a registered group.
+/// One selectable member of a registered group. A member is admissible for a
+/// host iff the host's tags are a superset of `required_host_tags`.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct ImageGroupMember {
     pub manifest_digest: Digest,
-    pub arch: String,
-    pub os: String,
-    pub variant: Option<String>,
-    pub target: Option<String>,
-    pub board: Option<String>,
+    pub required_host_tags: Vec<String>,
 }
 
 /// A registered image group, as returned by the catalog list/inspect routes.

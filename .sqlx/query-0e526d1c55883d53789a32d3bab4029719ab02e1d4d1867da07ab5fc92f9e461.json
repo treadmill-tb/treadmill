@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select tags\n           from tml_switchboard.job_target_requirements\n           where job_id = $1\n           order by req_index",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tags",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.job_target_requirements",
+            "name": "tags"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0e526d1c55883d53789a32d3bab4029719ab02e1d4d1867da07ab5fc92f9e461"
+}

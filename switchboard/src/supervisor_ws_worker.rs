@@ -105,9 +105,7 @@ impl WorkerCtx {
     async fn obtain_worker_instance_id(pool: &PgPool, host_id: Uuid) -> Result<u64> {
         let db_worker_instance_id: i64 = sql::host::increment_worker_instance_id(host_id, pool)
             .await
-            .with_context(|| {
-                format!("Obtaining new worker instance ID for host {:?}", host_id)
-            })?;
+            .with_context(|| format!("Obtaining new worker instance ID for host {:?}", host_id))?;
 
         Ok(db_worker_instance_id.try_into().expect(
             "Database invariant violated: worker_instance_id must be zero or \
@@ -184,12 +182,7 @@ impl WorkerCtx {
 
 impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     #[tracing::instrument(skip(pool, socket))]
-    pub async fn run(
-        pool: PgPool,
-        host_id: Uuid,
-        socket: S,
-        config: SupervisorWSWorkerConfig,
-    ) {
+    pub async fn run(pool: PgPool, host_id: Uuid, socket: S, config: SupervisorWSWorkerConfig) {
         match Self::run_inner(pool, host_id, socket, config).await {
             Ok(()) => {
                 tracing::info!("SupervisorWSWorker::run terminated successfully.");
@@ -804,12 +797,12 @@ mod tests {
         sqlx::query(
             "insert into tml_switchboard.jobs \
              (job_id, resume_job_id, restart_job_id, image_digest, image_group_digest, ssh_keys, \
-              restart_policy, enqueued_by_token_id, tag_config, job_timeout, job_state, \
+              restart_policy, enqueued_by_token_id, host_tag_requirements, job_timeout, job_state, \
               initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
               termination_reason, task_exit_status, exit_message, terminated_at, last_updated_at) \
              values \
              ($1, null, null, $2, null, '{}'::text[], row($3)::tml_switchboard.restart_policy, \
-              $4, '', interval '1 hour', $5::tml_switchboard.job_state, null, \
+              $4, '{}'::text[], interval '1 hour', $5::tml_switchboard.job_state, null, \
               now(), \
               case when $5::tml_switchboard.job_state \
                         in ('initializing', 'ready', 'terminating') \
@@ -834,24 +827,22 @@ mod tests {
         host_id: Uuid,
         job_id: Option<Uuid>,
     ) -> anyhow::Result<()> {
-        sqlx::query(
-            "update tml_switchboard.hosts set current_job = $2 where host_id = $1",
-        )
-        .bind(host_id)
-        .bind(job_id)
-        .execute(pool)
-        .await?;
+        sqlx::query("update tml_switchboard.hosts set current_job = $2 where host_id = $1")
+            .bind(host_id)
+            .bind(job_id)
+            .execute(pool)
+            .await?;
         Ok(())
     }
 
     /// Read back `hosts.current_job`.
     async fn current_job_of(pool: &PgPool, host_id: Uuid) -> anyhow::Result<Option<Uuid>> {
-        Ok(sqlx::query_scalar(
-            "select current_job from tml_switchboard.hosts where host_id = $1",
+        Ok(
+            sqlx::query_scalar("select current_job from tml_switchboard.hosts where host_id = $1")
+                .bind(host_id)
+                .fetch_one(pool)
+                .await?,
         )
-        .bind(host_id)
-        .fetch_one(pool)
-        .await?)
     }
 
     /// Read back a job's `job_state` as its text representation.

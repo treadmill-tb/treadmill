@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        select job_id, resume_job_id, restart_job_id, image_digest, image_group_digest,\n        resolved_image_digest, ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id, tag_config, job_timeout,\n        queued_at, job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\", started_at,\n        dispatched_on_host_id, ssh_endpoints as \"ssh_endpoints: _\",\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\", exit_message, terminated_at,\n        last_updated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
+  "query": "\n        select job_id, resume_job_id, restart_job_id, image_digest, image_group_digest,\n        resolved_image_digest, ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id,\n        host_tag_requirements, job_timeout,\n        queued_at, job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\", started_at,\n        dispatched_on_host_id, ssh_endpoints as \"ssh_endpoints: _\",\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\", exit_message, terminated_at,\n        last_updated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
   "describe": {
     "columns": [
       {
@@ -116,12 +116,12 @@
       },
       {
         "ordinal": 9,
-        "name": "tag_config",
-        "type_info": "Text",
+        "name": "host_tag_requirements",
+        "type_info": "TextArray",
         "origin": {
           "Table": {
             "table": "tml_switchboard.jobs",
-            "name": "tag_config"
+            "name": "host_tag_requirements"
           }
         }
       },
@@ -390,5 +390,5 @@
       false
     ]
   },
-  "hash": "e31eb0ea11664d2f730fcf6cfaa6d1db31f8d0858263f169d29cc07d67184fde"
+  "hash": "0b8ed350f06e7e615780cee94f58ab46cf72f11de77f5a68c0fb3ee47ebecf51"
 }

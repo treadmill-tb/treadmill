@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.image_group_members\n             (group_id, image_id, required_host_tags, position)\n           values ($1, $2, $3, $4)\n           on conflict (group_id, image_id) do update set\n             required_host_tags = excluded.required_host_tags,\n             position = excluded.position",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "TextArray",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1d0bc034d9689a22ec0772cd31342c80c7f285a7f6380548010a4ff7ae23ca0d"
+}

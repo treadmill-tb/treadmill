@@ -322,20 +322,18 @@ pub async fn register_image_group(
         }
     };
 
-    // Rebuild the denormalized member set from the index.
+    // Rebuild the denormalized member set from the index, preserving index order
+    // as `position` for deterministic matcher tie-breaks.
     image::clear_members(state.pool(), group_id)
         .await
         .map_err(internal)?;
-    for (image_id, member) in &resolved {
+    for (position, (image_id, member)) in resolved.iter().enumerate() {
         image::insert_member(
             state.pool(),
             group_id,
             *image_id,
-            &member.architecture,
-            &member.os,
-            member.variant.as_deref(),
-            member.target.as_ref().map(|t| t.as_str()),
-            member.board.as_deref(),
+            &member.required_host_tags,
+            position as i32,
         )
         .await
         .map_err(internal)?;
@@ -367,11 +365,7 @@ async fn group_info(
         .map(|m| {
             Ok(ImageGroupMember {
                 manifest_digest: m.manifest_digest.parse().map_err(internal)?,
-                arch: m.arch,
-                os: m.os,
-                variant: m.variant,
-                target: m.tml_target,
-                board: m.tml_board,
+                required_host_tags: m.required_host_tags,
             })
         })
         .collect::<Result<Vec<_>, StatusCode>>()?;

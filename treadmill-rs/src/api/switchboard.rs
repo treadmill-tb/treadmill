@@ -79,9 +79,8 @@ pub enum JobInitSpec {
 
     /// Base this job off a registered image *group* (an OCI image index),
     /// addressed by its index digest. After a host is chosen, the switchboard
-    /// matcher selects the group member matching the host's attributes
-    /// (architecture + Treadmill target/board) and dispatches that concrete
-    /// member's digest.
+    /// matcher selects the group member whose required host tags the chosen
+    /// host satisfies and dispatches that concrete member's digest.
     ImageGroup { image_group: Digest },
 }
 
@@ -103,10 +102,19 @@ pub struct JobRequest {
     /// parameters are provided to the puppet daemon.
     pub parameters: HashMap<String, ParameterValue>,
 
-    /// The tag configuration.
-    ///
-    /// FIXME: TO BE SPECIFIED
-    pub tag_config: String,
+    /// Host eligibility: the set of tags the chosen host must carry (as a
+    /// superset) for this job to be scheduled onto it. Tags are opaque strings
+    /// (`key=value` pairs or bare flags, by convention only), matched by
+    /// containment against the host's tags.
+    #[serde(default)]
+    pub host_tag_requirements: Vec<String>,
+
+    /// Target (DUT) eligibility: an ordered array of requested targets, each a
+    /// set of tags an attached DUT must carry (as a superset). The scheduler
+    /// assigns each entry to a distinct `host_targets` row on the chosen host.
+    /// Empty requests no DUTs. Target tags do not affect image selection.
+    #[serde(default)]
+    pub target_requirements: Vec<Vec<String>>,
 
     #[serde(with = "crate::util::chrono::optional_duration")]
     #[schemars(with = "Option<String>")]

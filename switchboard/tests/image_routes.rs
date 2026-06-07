@@ -107,8 +107,9 @@ fn image_manifest_bytes(title: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-/// An image-group index with one member at `member_digest`.
-fn image_index_bytes(member_digest: &Digest, arch: &str, target: &str, board: &str) -> Vec<u8> {
+/// An image-group index with one member at `member_digest`, eligible on hosts
+/// carrying all of `required_host_tags` (a comma-separated list).
+fn image_index_bytes(member_digest: &Digest, required_host_tags: &str) -> Vec<u8> {
     format!(
         r#"{{
           "schemaVersion": 2,
@@ -116,8 +117,7 @@ fn image_index_bytes(member_digest: &Digest, arch: &str, target: &str, board: &s
           "artifactType": "application/vnd.treadmill.image-group.v1+json",
           "manifests": [
             {{ "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "{member}", "size": 111,
-               "platform": {{ "architecture": "{arch}", "os": "linux", "variant": "v8" }},
-               "annotations": {{ "ci.treadmill.target": "{target}", "ci.treadmill.board": "{board}" }} }}
+               "annotations": {{ "ci.treadmill.required-host-tags": "{required_host_tags}" }} }}
           ]
         }}"#,
         member = member_digest.encoded(),
@@ -373,7 +373,7 @@ async fn register_and_inspect_image_group(pool: PgPool) {
     let mut reg = StubRegistry::default();
     let member = image_manifest_bytes("group member");
     let member_digest = reg.put(REGISTRY, REPO, member);
-    let index = image_index_bytes(&member_digest, "arm64", "nbd-netboot", "raspberrypi-4");
+    let index = image_index_bytes(&member_digest, "arch=arm64, raspberrypi-4");
     let index_digest = reg.put(REGISTRY, REPO, index);
     let (addr, token, _gh) = login_with_registry(&pool, Arc::new(reg)).await;
     let client = reqwest::Client::new();
@@ -395,10 +395,10 @@ async fn register_and_inspect_image_group(pool: PgPool) {
     assert_eq!(info.members.len(), 1);
     let m = &info.members[0];
     assert_eq!(m.manifest_digest, member_digest);
-    assert_eq!(m.arch, "arm64");
-    assert_eq!(m.os, "linux");
-    assert_eq!(m.target.as_deref(), Some("nbd-netboot"));
-    assert_eq!(m.board.as_deref(), Some("raspberrypi-4"));
+    assert_eq!(
+        m.required_host_tags,
+        vec!["arch=arm64".to_string(), "raspberrypi-4".to_string()]
+    );
 
     // The member was also registered as a standalone image (same repo).
     let member_img: ImageInfo = client

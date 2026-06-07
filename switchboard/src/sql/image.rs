@@ -41,16 +41,15 @@ pub struct GroupRecord {
     pub created_at: DateTime<Utc>,
 }
 
-/// A denormalized group member, as consumed by the matcher.
+/// A denormalized group member, as consumed by the matcher. `required_host_tags`
+/// is the member's host-tag eligibility set; `position` is its order in the index
+/// (for deterministic tie-breaks).
 #[derive(Debug, Clone)]
 pub struct GroupMemberRecord {
     pub image_id: Uuid,
     pub manifest_digest: String,
-    pub arch: String,
-    pub os: String,
-    pub variant: Option<String>,
-    pub tml_target: Option<String>,
-    pub tml_board: Option<String>,
+    pub required_host_tags: Vec<String>,
+    pub position: i32,
 }
 
 // -- images ---------------------------------------------------------------------
@@ -212,50 +211,44 @@ pub async fn clear_members(conn: impl PgExecutor<'_>, group_id: Uuid) -> Result<
 }
 
 /// Insert one denormalized group member.
-#[allow(clippy::too_many_arguments)]
 pub async fn insert_member(
     conn: impl PgExecutor<'_>,
     group_id: Uuid,
     image_id: Uuid,
-    arch: &str,
-    os: &str,
-    variant: Option<&str>,
-    tml_target: Option<&str>,
-    tml_board: Option<&str>,
+    required_host_tags: &[String],
+    position: i32,
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
         r#"insert into tml_switchboard.image_group_members
-             (group_id, image_id, arch, os, variant, tml_target, tml_board)
-           values ($1, $2, $3, $4, $5, $6, $7)
+             (group_id, image_id, required_host_tags, position)
+           values ($1, $2, $3, $4)
            on conflict (group_id, image_id) do update set
-             arch = excluded.arch, os = excluded.os, variant = excluded.variant,
-             tml_target = excluded.tml_target, tml_board = excluded.tml_board"#,
+             required_host_tags = excluded.required_host_tags,
+             position = excluded.position"#,
         group_id,
         image_id,
-        arch,
-        os,
-        variant,
-        tml_target,
-        tml_board,
+        required_host_tags,
+        position,
     )
     .execute(conn)
     .await
     .map(|_| ())
 }
 
-/// All denormalized members of a group, joined to their image digest.
+/// All denormalized members of a group, joined to their image digest, in index
+/// order (`position`) so matcher tie-breaks are deterministic.
 pub async fn members_for_group(
     conn: impl PgExecutor<'_>,
     group_id: Uuid,
 ) -> Result<Vec<GroupMemberRecord>, sqlx::Error> {
     sqlx::query_as!(
         GroupMemberRecord,
-        r#"select m.image_id, i.manifest_digest, m.arch, m.os, m.variant,
-                  m.tml_target, m.tml_board
+        r#"select m.image_id, i.manifest_digest,
+                  m.required_host_tags, m.position
            from tml_switchboard.image_group_members m
            join tml_switchboard.images i on i.id = m.image_id
            where m.group_id = $1
-           order by i.created_at"#,
+           order by m.position"#,
         group_id,
     )
     .fetch_all(conn)

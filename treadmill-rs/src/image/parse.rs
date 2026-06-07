@@ -10,7 +10,7 @@ use std::str::FromStr;
 
 use oci_spec::image::{Descriptor, ImageIndex, ImageManifest};
 
-use super::annotations::{self, Role, Target};
+use super::annotations::{self, Role};
 use super::digest::{Digest, DigestParseError};
 use super::media_types;
 
@@ -36,14 +36,15 @@ pub struct TreadmillImage {
 }
 
 /// One member of a Treadmill image group, read off an OCI index descriptor.
+///
+/// A member's eligibility is the set of host tags a host must carry (as a
+/// superset) for the member to be selectable on it (see the matcher). These are
+/// authored on the index descriptor via the [`annotations::REQUIRED_HOST_TAGS`]
+/// annotation; target/DUT tags play no part in image selection.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct GroupMember {
     pub digest: Digest,
-    pub architecture: String,
-    pub os: String,
-    pub variant: Option<String>,
-    pub target: Option<Target>,
-    pub board: Option<String>,
+    pub required_host_tags: Vec<String>,
 }
 
 /// Why an OCI manifest or index failed to parse as a Treadmill image/group.
@@ -57,16 +58,12 @@ pub enum ParseError {
     BadDigest(DigestParseError),
     /// The `ci.treadmill.role` annotation had an unrecognized value.
     UnknownRole(String),
-    /// The `ci.treadmill.target` annotation had an unrecognized value.
-    UnknownTarget(String),
     /// The `ci.treadmill.qcow2.virtual-size` annotation was not an integer.
     BadVirtualSize(String),
     /// No `ci.treadmill.qcow2.head` annotation on the manifest.
     MissingHead,
     /// The head digest does not name any layer in the manifest.
     HeadNotALayer(Digest),
-    /// An image-group member descriptor had no `platform`.
-    MissingPlatform(Digest),
 }
 
 impl std::fmt::Display for ParseError {
@@ -83,9 +80,6 @@ impl std::fmt::Display for ParseError {
             }
             ParseError::BadDigest(e) => write!(f, "invalid descriptor digest: {e}"),
             ParseError::UnknownRole(v) => write!(f, "unrecognized {}: {v:?}", annotations::ROLE),
-            ParseError::UnknownTarget(v) => {
-                write!(f, "unrecognized {}: {v:?}", annotations::TARGET)
-            }
             ParseError::BadVirtualSize(v) => {
                 write!(
                     f,
@@ -99,7 +93,6 @@ impl std::fmt::Display for ParseError {
             ParseError::HeadNotALayer(d) => {
                 write!(f, "head {d} is not one of the manifest's layers")
             }
-            ParseError::MissingPlatform(d) => write!(f, "group member {d} has no platform"),
         }
     }
 }
@@ -183,22 +176,12 @@ pub fn parse_group(index: &ImageIndex) -> Result<Vec<GroupMember>, ParseError> {
         .manifests()
         .iter()
         .map(|desc| {
-            let digest = descriptor_digest(desc)?;
-            let platform = desc
-                .platform()
-                .as_ref()
-                .ok_or(ParseError::MissingPlatform(digest))?;
-            let target = annotation(desc, annotations::TARGET)
-                .map(|v| Target::from_str(v).map_err(|e| ParseError::UnknownTarget(e.0)))
-                .transpose()?;
-
+            let required_host_tags = annotation(desc, annotations::REQUIRED_HOST_TAGS)
+                .map(|v| annotations::parse_tag_list(v))
+                .unwrap_or_default();
             Ok(GroupMember {
-                digest,
-                architecture: platform.architecture().to_string(),
-                os: platform.os().to_string(),
-                variant: platform.variant().clone(),
-                target,
-                board: annotation(desc, annotations::BOARD).cloned(),
+                digest: descriptor_digest(desc)?,
+                required_host_tags,
             })
         })
         .collect()
@@ -296,19 +279,23 @@ mod tests {
               "manifests": [
                 {{ "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "{BASE}", "size": 111,
                    "platform": {{ "architecture": "arm64", "os": "linux", "variant": "v8" }},
-                   "annotations": {{ "ci.treadmill.target": "nbd-netboot", "ci.treadmill.board": "raspberrypi-4" }} }}
+                   "annotations": {{ "ci.treadmill.required-host-tags": "arch=arm64, raspberrypi-4" }} }},
+                {{ "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "{OVERLAY}", "size": 222 }}
               ]
             }}"#
         );
         let idx: ImageIndex = serde_json::from_str(&json).unwrap();
         let members = parse_group(&idx).unwrap();
-        assert_eq!(members.len(), 1);
-        let m = &members[0];
-        assert_eq!(m.digest, BASE.parse().unwrap());
-        assert_eq!(m.architecture, "arm64");
-        assert_eq!(m.os, "linux");
-        assert_eq!(m.variant.as_deref(), Some("v8"));
-        assert_eq!(m.target, Some(Target::NbdNetboot));
-        assert_eq!(m.board.as_deref(), Some("raspberrypi-4"));
+        assert_eq!(members.len(), 2);
+        // Required host tags come off the descriptor annotation; the OCI
+        // `platform` is ignored for selection.
+        assert_eq!(members[0].digest, BASE.parse().unwrap());
+        assert_eq!(
+            members[0].required_host_tags,
+            vec!["arch=arm64".to_string(), "raspberrypi-4".to_string()],
+        );
+        // A member with no annotation has no requirements (admissible anywhere).
+        assert_eq!(members[1].digest, OVERLAY.parse().unwrap());
+        assert!(members[1].required_host_tags.is_empty());
     }
 }

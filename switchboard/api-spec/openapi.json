@@ -469,41 +469,22 @@
         ]
       },
       "ImageGroupMember": {
-        "description": "One selectable member of a registered group.",
+        "description": "One selectable member of a registered group. A member is admissible for a\nhost iff the host's tags are a superset of `required_host_tags`.",
         "type": "object",
         "properties": {
-          "arch": {
-            "type": "string"
-          },
-          "board": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "manifest_digest": {
             "$ref": "#/components/schemas/Digest"
           },
-          "os": {
-            "type": "string"
-          },
-          "target": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "variant": {
-            "type": [
-              "string",
-              "null"
-            ]
+          "required_host_tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
           "manifest_digest",
-          "arch",
-          "os"
+          "required_host_tags"
         ]
       },
       "ImageInfo": {
