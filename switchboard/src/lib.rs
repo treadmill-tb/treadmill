@@ -5,6 +5,7 @@ pub mod config;
 pub mod matcher;
 pub mod registry;
 pub mod routes;
+pub mod scheduler;
 pub mod serve;
 pub mod sql;
 pub mod supervisor_ws_worker;

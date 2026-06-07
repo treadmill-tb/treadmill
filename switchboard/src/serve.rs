@@ -107,6 +107,16 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
     let bind_address = config.server.bind_address;
     let tls_config = config.server.testing_only_tls_config.clone();
 
+    // Spawn the job scheduler. It coordinates with the per-host supervisor
+    // workers entirely through the database (no in-process channel), so it just
+    // needs its own pool handle; see `crate::scheduler`.
+    let scheduler = crate::scheduler::Scheduler::new(
+        pg_pool.clone(),
+        config.service.match_interval,
+        config.service.host_liveness_timeout,
+    );
+    tokio::spawn(scheduler.run());
+
     let app_state = AppState::new(pg_pool, config);
     let router = super::routes::build_router(app_state);
 

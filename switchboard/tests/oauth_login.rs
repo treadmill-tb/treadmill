@@ -88,6 +88,7 @@ fn test_config(gh_uri: &str) -> SwitchboardConfig {
             default_job_timeout: chrono::Duration::hours(1),
             default_queue_timeout: chrono::Duration::hours(1),
             match_interval: chrono::Duration::seconds(1),
+            host_liveness_timeout: chrono::Duration::seconds(30),
             supervisor_ping_interval: std::time::Duration::from_secs(30),
             supervisor_pong_dead: std::time::Duration::from_secs(60),
         },

@@ -19,6 +19,7 @@ default_token_timeout = "7d"
 default_job_timeout = "30m"
 default_queue_timeout = "30m"
 match_interval = "10s"
+host_liveness_timeout = "30s"
 supervisor_ping_interval = "2s"
 supervisor_pong_dead = "10s"
 

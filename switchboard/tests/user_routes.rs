@@ -77,6 +77,7 @@ fn test_config(gh_uri: &str) -> SwitchboardConfig {
             default_job_timeout: chrono::Duration::hours(1),
             default_queue_timeout: chrono::Duration::hours(1),
             match_interval: chrono::Duration::seconds(1),
+            host_liveness_timeout: chrono::Duration::seconds(30),
             supervisor_ping_interval: std::time::Duration::from_secs(30),
             supervisor_pong_dead: std::time::Duration::from_secs(60),
         },
@@ -240,11 +241,13 @@ async fn self_profile_update_tokens_and_feed(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("insert into tml_switchboard.users (subject_id, username) values ($1, 'taken-name')")
-        .bind(other_id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "insert into tml_switchboard.users (subject_id, username) values ($1, 'taken-name')",
+    )
+    .bind(other_id)
+    .execute(&pool)
+    .await
+    .unwrap();
     let resp = client
         .patch(format!("{base}/users/me"))
         .bearer_auth(&token)

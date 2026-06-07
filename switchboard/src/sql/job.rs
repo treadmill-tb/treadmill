@@ -369,7 +369,7 @@ impl SqlJob {
     pub async fn resolve_image_spec(
         &self,
         host_tags: &BTreeSet<String>,
-        conn: impl PgExecutor<'_> + Copy,
+        conn: &mut sqlx::PgConnection,
     ) -> Result<ImageSpecification, ImageResolveError> {
         if let Some(resume_job_id) = self.resume_job_id {
             return Ok(ImageSpecification::ResumeJob {
@@ -378,17 +378,17 @@ impl SqlJob {
         }
 
         if let Some(digest) = &self.image_digest {
-            let rec = image::fetch_by_digest(conn, digest)
+            let rec = image::fetch_by_digest(&mut *conn, digest)
                 .await?
                 .ok_or_else(|| ImageResolveError::NotRegistered(digest.clone()))?;
             return concrete_image_spec(rec.id, digest, conn).await;
         }
 
         if let Some(group_digest) = &self.image_group_digest {
-            let group = image::fetch_group_by_digest(conn, group_digest)
+            let group = image::fetch_group_by_digest(&mut *conn, group_digest)
                 .await?
                 .ok_or_else(|| ImageResolveError::NotRegistered(group_digest.clone()))?;
-            let members = image::members_for_group(conn, group.id).await?;
+            let members = image::members_for_group(&mut *conn, group.id).await?;
             let candidates: Vec<GroupMember<(Uuid, String)>> = members
                 .into_iter()
                 .map(|m| GroupMember {
@@ -519,7 +519,7 @@ impl std::error::Error for ImageResolveError {}
 async fn concrete_image_spec(
     image_id: Uuid,
     manifest_digest: &str,
-    conn: impl PgExecutor<'_>,
+    conn: &mut sqlx::PgConnection,
 ) -> Result<ImageSpecification, ImageResolveError> {
     let locations = image::locations_for_image(conn, image_id).await?;
     if locations.is_empty() {
@@ -541,12 +541,7 @@ async fn concrete_image_spec(
 }
 
 /// Record the concrete manifest digest dispatched for a job (for
-/// reproducibility/audit), set at dispatch once the image is resolved.
-///
-/// Wired into the dispatch path alongside [`SqlJob::resolve_image_spec`] when the
-/// job scheduler lands (the `/jobs/new` route, currently stubbed out in
-/// `routes/mod.rs`); unused until then.
-#[allow(dead_code)]
+/// reproducibility/audit), set by the scheduler once the image is resolved.
 pub async fn set_resolved_image(
     job_id: Uuid,
     manifest_digest: &Digest,
@@ -562,6 +557,37 @@ pub async fn set_resolved_image(
     .execute(conn)
     .await
     .map(|_| ())
+}
+
+/// Finalize a still-`queued` job that can never be dispatched because its image
+/// is unresolvable (unregistered, or has no registry location). The job was
+/// never placed on a host, so there is no assignment to release; we just record
+/// the terminal `image_error`.
+///
+/// Guarded on `job_state = 'queued'`: returns `true` iff this call performed the
+/// transition (so a concurrent scheduler that already finalized or scheduled the
+/// job is a no-op). Honoring the restart policy is intentionally *not* done here
+/// — a broken image will not fix itself on retry.
+pub async fn finalize_unscheduled_as_image_error(
+    job_id: Uuid,
+    at: DateTime<Utc>,
+    conn: impl PgExecutor<'_>,
+) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"update tml_switchboard.jobs
+           set job_state = 'finalized',
+               termination_reason = 'image_error',
+               task_exit_status = null,
+               terminated_at = $2,
+               last_updated_at = default
+           where job_id = $1 and job_state = 'queued'
+           returning job_id"#,
+        job_id,
+        at,
+    )
+    .fetch_optional(conn)
+    .await?;
+    Ok(row.is_some())
 }
 
 // pub async fn fetch_all_queued(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJob>, sqlx::Error> {

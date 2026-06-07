@@ -16,6 +16,31 @@ pub struct SqlHost {
     pub worker_instance_id: i64,
 }
 
+/// One target (DUT) attached to a host, with its opaque tag set.
+#[derive(Debug)]
+pub struct SqlHostTarget {
+    pub target_id: Uuid,
+    pub tags: Vec<String>,
+}
+
+/// All targets (DUTs) wired to a host, for the scheduler's DUT-requirement
+/// match. Ordered by `target_id` for deterministic matching.
+pub async fn targets_for_host(
+    host_id: Uuid,
+    conn: impl PgExecutor<'_>,
+) -> Result<Vec<SqlHostTarget>, sqlx::Error> {
+    sqlx::query_as!(
+        SqlHostTarget,
+        r#"select target_id, tags
+           from tml_switchboard.host_targets
+           where host_id = $1
+           order by target_id"#,
+        host_id,
+    )
+    .fetch_all(conn)
+    .await
+}
+
 pub async fn insert(
     host_id: Uuid,
     name: String,

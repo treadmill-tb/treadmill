@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select job_id\n               from tml_switchboard.jobs\n               where job_state = 'queued'\n               order by queued_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "job_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "599c6c1cefeeee93822e885af5d680e0958a3a4b7589c6cf8552eedbc466fe33"
+}

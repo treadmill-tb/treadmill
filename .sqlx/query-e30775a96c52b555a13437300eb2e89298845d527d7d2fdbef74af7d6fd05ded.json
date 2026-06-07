@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select job_state as \"state: SqlJobState\"\n               from tml_switchboard.jobs\n               where job_id = $1\n               for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "state: SqlJobState",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.job_state",
+            "kind": {
+              "Enum": [
+                "queued",
+                "scheduled",
+                "initializing",
+                "ready",
+                "terminating",
+                "finalized"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "job_state"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e30775a96c52b555a13437300eb2e89298845d527d7d2fdbef74af7d6fd05ded"
+}

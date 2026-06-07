@@ -135,6 +135,12 @@ pub struct ServiceConfig {
     /// Default interval between job-supervisor matching passes
     #[serde(with = "human_duration")]
     pub match_interval: chrono::TimeDelta,
+    /// How recently a host's worker must have heartbeat (`hosts.last_seen_at`)
+    /// for the scheduler to consider the host live and dispatch onto it. Should
+    /// be a small multiple of `supervisor_ping_interval` so a single missed tick
+    /// doesn't take a host out of rotation.
+    #[serde(with = "human_duration")]
+    pub host_liveness_timeout: chrono::TimeDelta,
     /// How often the switchboard should send PING messages to supervisor.
     #[serde(with = "humantime_serde")]
     pub supervisor_ping_interval: Duration,
