@@ -1,4 +1,4 @@
-h1:ZpTI4vYkWVMJa4o3NHqNobn398hpgIV3iJfX7KKmFVQ=
+h1:RoLivjRbTxQbqgpFXzTRIdjPOtJod+Yys6OMtih3AyY=
 00000000000001_base.sql h1:frftxPkUDOJS4m+L8YsWkOiSX2MnDyarR4XiQxbcFk4=
 20250113224121_add_host_job_ssh_endpoints.sql h1:Esa7SvUXholzqUG3gPElKGGXmmEVxZCfpRtN+RCgqUE=
 20250210235044_ssh_endpoint_host_port_struct.sql h1:ASBF7HeYHo27w72gRBmE8BTEUD1ei3PfoZgss9ph3KE=
@@ -16,3 +16,4 @@ h1:ZpTI4vYkWVMJa4o3NHqNobn398hpgIV3iJfX7KKmFVQ=
 20260607033816_oci_image_catalog.sql h1:39dEjq93OzYQGJpa5C6k4b9+hh6A5di7e8x15pCeNTs=
 20260607151311_tag_based_host_target_matching.sql h1:a7Yjr3YWKxak7x8Njrn6c7cLYGEIdz9mNApQuaa6oq0=
 20260607200907_host_liveness_heartbeat.sql h1:SiVHLxWtUt1MP1SNLb6BN5i4BYlpI1CJoYfuLPMpOCk=
+20260607203700_scheduler_eligible_hosts.sql h1:EKXF5ZfT/QVKHAH2GE0cd6Old/eBN2vMkmn9LBYOq04=

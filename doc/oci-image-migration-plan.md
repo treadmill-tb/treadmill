@@ -394,20 +394,57 @@ The canonical registry is **not** protected by supervisor leases. Instead:
     pay their bandwidth.
 - Zot config: `auth.bearer` realm/service pointed at switchboard.
 
-### 8.3 Scheduler: group → concrete image
+### 8.3 Scheduler: queue → host → concrete image
 
-- `JobInitSpec::Image { image_ref }` (concrete) **or**
-  `JobInitSpec::ImageGroup { group_id }` (resolved at dispatch).
-- After a host is chosen, the matcher reads host attributes (architecture +
-  Treadmill target/board, sourced from host registration / the to-be-specified
-  `tag_config`) and selects the `image_group_members` row whose
-  `arch/os/variant/tml_target/tml_board` match, yielding a concrete
-  `manifest_digest`.
-- The dispatched `ImageSpecification` carries the concrete `manifest_digest`
-  plus an **ordered list of `{ImageRef, pull-token}`** (one per `image_locations`
-  row, canonical/system preferred) so the supervisor pulls without re-resolving
-  and can fail over across locations (D16). Record the resolved digest on the job
-  row.
+**Coordination model (settled 2026-06-07): DB-only, no in-process channels.**
+The scheduler and the per-host `SupervisorWSWorker` never talk in-process — that
+would block distributing them across processes later. *All* coordination flows
+through the DB: the scheduler writes an assignment (`hosts.current_job` +
+`jobs.job_state='scheduled'`), and the host's own worker observes it and sends
+`StartJob` to its supervisor. For now both components **poll** the DB
+periodically; Postgres `LISTEN`/`NOTIFY` can replace polling later without
+changing the schema.
+
+**Host liveness** is a DB column `hosts.last_seen_at` (the worker heartbeats it
+each tick and clears it to `NULL` on clean disconnect; a superseded worker can't
+clobber it — guarded by the `with_txn` takeover check). A host is dispatchable
+iff `last_seen_at` is non-null and newer than `now() - service.host_liveness_timeout`.
+
+**Matching is opaque-tag-set containment** (the old `arch/os/variant/target/board`
+axes and the `tag_config` string are gone, §10 resolved):
+
+- **Host eligibility** is pushed into a `STABLE` SQL function
+  `tml_switchboard.eligible_hosts(job_id, liveness_cutoff) → setof host_id`,
+  returning idle (`current_job IS NULL`), live, and host-tag-eligible
+  (`hosts.tags @> jobs.host_tag_requirements`) hosts. The scheduler is a thin
+  shim around this.
+- **Target (DUT) requirements** (`job_target_requirements`, one tag-set per
+  requested DUT) are an *admission gate only* — a bipartite match of each
+  requirement to a *distinct* `host_targets` row whose tags ⊇ the requirement
+  (Kuhn's, in Rust, since this isn't clean SQL). **Nothing is stored**: a job
+  on a host simply has access to every DUT physically wired to that host.
+- **Image-group selection** picks the `image_group_members` row whose
+  `required_host_tags ⊆ host.tags` (most-specific wins; ties → registration
+  `position`), yielding the concrete `manifest_digest`.
+
+**Dispatch transaction** (per candidate host, `try_assign`): lock the host row
+`FOR UPDATE` (host-before-job lock order, matching the worker, so no deadlock),
+re-assert idle+live+host-tag under the lock, re-run the DUT match, then
+**resolve the image inside the same transaction** (`resolve_image_spec` reads the
+catalog on the locked rows). On success, set `current_job`, flip the job to
+`scheduled` + `dispatched_on_host_id`, and record `resolved_image_digest`
+(`NULL` for a resume). Guarded `WHERE current_job IS NULL` / `WHERE
+job_state='queued'` updates make a lost race a clean no-op, so this is safe for
+multiple scheduler processes. A job whose image is unregistered / has no
+locations is finalized as `ImageError`; "no group member matches this host" just
+skips the host. The dispatched `ImageSpecification` (concrete `manifest_digest`
++ ordered locations, eventually + per-location pull tokens, D11/D16) is built by
+the worker from the recorded digest at `StartJob` time.
+
+**Authorization is NOT yet enforced** (deferred): `eligible_hosts` filters on
+idle/live/tags only and does not yet restrict to hosts the job's enqueuing
+principal may use (ownership or a `start` `host_grants` entry — itself clean SQL
+via `principals()`). Every site that needs it carries a `TODO(authz)` comment.
 
 ### 8.4 Protocol/type changes (drift-guarded)
 
@@ -589,9 +626,16 @@ Each phase below names its verifying test target.
 
 ## 10. Risks & items needing a human decision
 
-- **Host attribute source.** Selection (§8.3) depends on host arch/target/board
-  attributes, which overlap with the still-"FIXME: TO BE SPECIFIED"
-  `tag_config`. Phase 4 must pin that schema down; tracked as a dependency.
+- **Host attribute source (RESOLVED 2026-06-07).** Replaced the `arch/target/board`
+  axes and the "FIXME: TO BE SPECIFIED" `tag_config` string with opaque tag-set
+  containment throughout (§8.3): `hosts.tags`, per-DUT `host_targets.tags`, job
+  `host_tag_requirements` + `job_target_requirements`, and image-group member
+  `required_host_tags`. Matching is array containment (`@>`) plus a Rust
+  bipartite DUT match; no tag parsing remains.
+- **Scheduler authorization (open).** `eligible_hosts` does not yet enforce that
+  a job's principal is permitted on a host (ownership / `start` grant). Deferred,
+  with `TODO(authz)` markers at every site; it's expressible as a `principals()`
+  join inside the SQL function.
 - **NBD chain assembly (resolved in Phase 2).** The original `qemu-nbd
   --image-opts` plan does not work: `--image-opts` is a single `QemuOpts`
   blockdev and `qcow2` rejects an inline `backing.driver`, so an unbaked

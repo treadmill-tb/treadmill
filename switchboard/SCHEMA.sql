@@ -741,6 +741,57 @@ create table tml_switchboard.job_target_requirements
 );
 
 -- ===========================================================================
+-- SCHEDULING
+-- ===========================================================================
+--
+-- Coordination between the scheduler and the per-host supervisor workers is
+-- DB-only (no in-process channels), so they can be distributed across processes;
+-- for now both poll, and Postgres LISTEN/NOTIFY can replace polling later. See
+-- doc/oci-image-migration-plan.md §8.3.
+
+-- The scheduler scans queued jobs oldest-first; a partial index keeps that scan
+-- cheap as the (mostly non-queued) jobs table grows.
+create index jobs_queued_idx on tml_switchboard.jobs (queued_at)
+    where job_state = 'queued';
+
+-- Hosts a job may be dispatched onto, by the set-based criteria SQL expresses
+-- well: the host is idle (no current job), live (its worker's heartbeat
+-- `last_seen_at` is newer than the caller-supplied staleness cutoff), and
+-- host-tag eligible (its opaque `tags` are a superset of the job's
+-- `host_tag_requirements`). `tags @> '{}'` holds for every host, so a job with
+-- no host-tag requirements matches all idle/live hosts.
+--
+-- This is only the cheap pre-filter: the scheduler additionally applies the
+-- target/DUT bipartite match and the image resolution (neither of which belongs
+-- in SQL) under a row lock in its dispatch transaction.
+--
+-- TODO(authz): this does NOT yet restrict to hosts the job's enqueuing principal
+-- is permitted to use. Authorization (host ownership, or a `start` entry in
+-- `host_grants`, evaluated via `principals()`) should be folded in here as an
+-- additional join/EXISTS predicate so unauthorized hosts never become
+-- candidates. Until then the scheduler may place a job on any tag-eligible host.
+create function tml_switchboard.eligible_hosts(
+    p_job_id          uuid,
+    p_liveness_cutoff timestamp with time zone
+)
+    returns setof uuid
+    language sql
+    stable as
+$$
+    select h.host_id
+    from tml_switchboard.hosts h
+    where h.current_job is null
+      and h.last_seen_at is not null
+      and h.last_seen_at > p_liveness_cutoff
+      and h.tags @> (
+          select j.host_tag_requirements
+          from tml_switchboard.jobs j
+          where j.job_id = p_job_id
+      )
+    order by h.host_id;
+$$;
+
+-- ===========================================================================
 -- IMAGE CATALOG
 -- ===========================================================================
 --
