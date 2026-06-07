@@ -446,8 +446,11 @@ create table tml_switchboard.jobs
     -- can run on.
     enqueued_by_token_id        uuid                             not null references tml_switchboard.api_tokens (token_id) on delete no action,
 
-    -- Configuration that decides which hosts it should run on
-    tag_config                  text                             not null,
+    -- Host eligibility: the set of tags a host must carry (as a superset) for
+    -- this job to be schedulable onto it. Opaque strings, matched by containment
+    -- against `hosts.tags`. Target (DUT) requirements live in the separate
+    -- `job_target_requirements` table.
+    host_tag_requirements       text[]                           not null default '{}',
 
     -- The amount of time the job can run before it is killed.
     job_timeout                 interval                         not null,
@@ -549,6 +552,40 @@ ALTER TABLE tml_switchboard.hosts
 CREATE UNIQUE INDEX hosts_current_job_unique
     ON tml_switchboard.hosts (current_job)
     WHERE current_job IS NOT NULL;
+
+-- Host tags are opaque strings (`key=value` pairs or bare flags, by convention
+-- only -- the matcher never parses them). A job requests a host whose tags are a
+-- superset of the job's `host_tag_requirements`; the GIN index backs that
+-- containment (`tags @> required`) lookup over the host pool.
+CREATE INDEX hosts_tags_gin ON tml_switchboard.hosts USING gin (tags);
+
+-- ===========================================================================
+-- HOST TARGETS (DUTs)
+-- ===========================================================================
+--
+-- A host drives one or more attached targets (devices under test). Each target
+-- carries its own opaque tag set (e.g. `board=nrf52840dk`, `ble`, `gpio`),
+-- independent of the host's tags. A job requests an array of targets, each by a
+-- required tag subset; the scheduler assigns each requested target to a distinct
+-- DUT whose tags satisfy it (a bipartite match, done in the application). Target
+-- tags do NOT participate in image selection -- that is host-tag-only (see
+-- `image_group_members`).
+create table tml_switchboard.host_targets
+(
+    target_id  uuid   not null primary key,
+    host_id    uuid   not null references tml_switchboard.hosts (host_id) on delete cascade,
+
+    -- Stable per-host label for the DUT (e.g. "dut0").
+    name       text   not null,
+
+    -- Opaque tag set, same convention as host tags.
+    tags       text[] not null default '{}',
+
+    unique (host_id, name)
+);
+
+-- Backs the per-target containment (`tags @> required`) match during scheduling.
+CREATE INDEX host_targets_tags_gin ON tml_switchboard.host_targets USING gin (tags);
 
 -- ===========================================================================
 -- PERMISSIONS / ACLs
@@ -673,6 +710,26 @@ create table tml_switchboard.job_parameters
 );
 
 -- ===========================================================================
+-- JOB TARGET REQUIREMENTS
+-- ===========================================================================
+--
+-- The ordered array of targets (DUTs) a job requests. One row per requested
+-- target; `req_index` is its position in the submitted array (so a job asking
+-- for two identical DUTs is two rows). Each carries a required tag subset that
+-- the assigned `host_targets` row must satisfy by containment. A job with no
+-- rows requests no DUTs (e.g. a pure-VM job). The concrete DUT chosen for each
+-- requirement is recorded at schedule time (a future `job_assigned_targets`
+-- table, added with the scheduler).
+create table tml_switchboard.job_target_requirements
+(
+    job_id    uuid   not null references tml_switchboard.jobs (job_id) on delete cascade,
+    req_index int    not null,
+    tags      text[] not null default '{}',
+
+    primary key (job_id, req_index)
+);
+
+-- ===========================================================================
 -- IMAGE CATALOG
 -- ===========================================================================
 --
@@ -732,18 +789,19 @@ create table tml_switchboard.image_groups
 );
 
 -- One selectable member of a group, denormalized from the index for the matcher
--- (group + host attributes -> concrete image). The selection axes are the OCI
--- platform (`arch`/`os`/`variant`) plus the Treadmill `tml_target`/`tml_board`
--- annotations. Rebuilt wholesale from the index when the group is (re)registered.
+-- (group + host tags -> concrete image). A member's eligibility is a set of
+-- required host tags (authored per index member, see `parse_group`): the member
+-- is admissible for a host iff `hosts.tags` is a superset of `required_host_tags`.
+-- Among admissible members the most specific (largest required set) wins, ties
+-- broken by `position` (the member's order in the index). Image selection uses
+-- HOST tags only; target/DUT tags are irrelevant here. Rebuilt wholesale from the
+-- index when the group is (re)registered.
 create table tml_switchboard.image_group_members
 (
-    group_id          uuid                     not null references tml_switchboard.image_groups (id) on delete cascade,
-    image_id          uuid                     not null references tml_switchboard.images (id) on delete cascade,
-    arch              text                     not null,
-    os                text                     not null,
-    variant           text,
-    tml_target        text,
-    tml_board         text,
+    group_id            uuid                     not null references tml_switchboard.image_groups (id) on delete cascade,
+    image_id            uuid                     not null references tml_switchboard.images (id) on delete cascade,
+    required_host_tags  text[]                   not null default '{}',
+    position            int                      not null,
 
     primary key (group_id, image_id)
 );
