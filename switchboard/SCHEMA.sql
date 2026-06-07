@@ -416,14 +416,25 @@ create table tml_switchboard.jobs
     -- irrevocable grant inserted at dispatch time (see job_grants).
     owner_id                    uuid references tml_switchboard.subjects (subject_id) on delete set null,
 
-    -- These specify the job image and the nature of the job:
-    --  (1) normal job: image_id is set, and both resume_job_id and
-    --      restart_job_id are null
-    --  (2) restarted job: image_id is set, and restart_job_id is set
-    --  (3) resumed job: resume_job_id is set, and image_id is null
+    -- These specify the job image and the nature of the job. A job's image is
+    -- referenced content-addressed against the switchboard image catalog: either
+    -- a concrete image (`image_digest`, the OCI manifest digest of a registered
+    -- `images` row) or an image group (`image_group_digest`, the index digest of
+    -- a registered `image_groups` row) resolved to a concrete member at dispatch.
+    --  (1) normal job:    exactly one of image_digest / image_group_digest is
+    --                     set; both resume_job_id and restart_job_id are null
+    --  (2) restarted job: exactly one of image_digest / image_group_digest is
+    --                     set; restart_job_id is set
+    --  (3) resumed job:   resume_job_id is set; both image digests are null
     resume_job_id               uuid references tml_switchboard.jobs (job_id) on delete no action,
     restart_job_id              uuid references tml_switchboard.jobs (job_id) on delete no action,
-    image_id                    bytea,
+    image_digest                text,
+    image_group_digest          text,
+
+    -- The concrete image manifest digest actually dispatched, recorded at
+    -- dispatch for reproducibility/audit. For a concrete-image job this equals
+    -- `image_digest`; for a group job it is the member the matcher selected.
+    resolved_image_digest       text,
 
     -- SSH keys to be injected, if any
     ssh_keys                    text[]                           not null,
@@ -479,19 +490,14 @@ create table tml_switchboard.jobs
     ---->> INVARIANT CHECKING <<----
 
     -- Two allowed init states:
-    --  (1) resume_job_id = null, image_id != null, restart_job_id = _
-    --  (2) resume_job_id != null, image_id = null, restart_job_id = null
+    --  (1) resume_job_id = null, restart_job_id = _, and exactly one of
+    --      image_digest / image_group_digest is set
+    --  (2) resume_job_id != null, restart_job_id = null, both image digests null
     constraint valid_init_spec check (
-      (resume_job_id is null and (image_id is not null))
-        or (resume_job_id is not null and restart_job_id is null and image_id is null)
-    ),
-
-    -- ImageId is 32 bytes
-    constraint valid_image_id check (
-      case
-        when image_id is not null then octet_length(image_id) = 32
-        else true
-      end
+      (resume_job_id is null
+         and (image_digest is not null)::int + (image_group_digest is not null)::int = 1)
+        or (resume_job_id is not null and restart_job_id is null
+              and image_digest is null and image_group_digest is null)
     ),
 
     -- Restart count >= 0
@@ -664,6 +670,82 @@ create table tml_switchboard.job_parameters
     value  tml_switchboard.parameter_value not null,
 
     primary key (job_id, key)
+);
+
+-- ===========================================================================
+-- IMAGE CATALOG
+-- ===========================================================================
+--
+-- The switchboard is the catalog of OCI images and image groups (see
+-- doc/oci-image-migration-plan.md §5.3/§8). It stores only references --
+-- `{registry, repository}` locations and the content-addressed digest -- never
+-- image bytes. An image's *identity* is its OCI manifest digest; the same digest
+-- may be served from several locations (registry redundancy, promotion to a
+-- canonical/system mirror), so locations are a separate table (D12/D16). A job
+-- referencing an image by digest is resolved, at dispatch, to that digest plus
+-- its ordered locations and handed to the supervisor.
+
+-- A registered Treadmill image, identified by its OCI manifest digest. `attrs`
+-- is free-form metadata projected off the validated manifest at registration
+-- time; `artifact_type` records the manifest's `artifactType` for display.
+create table tml_switchboard.images
+(
+    id                uuid                     not null primary key,
+    manifest_digest   text                     not null unique,
+    artifact_type     text                     not null,
+
+    -- Owning subject (user or group). NULL means orphaned (cf. hosts/jobs): the
+    -- resource survives its owner's deletion but is then admin-only.
+    owner_subject     uuid                     references tml_switchboard.subjects (subject_id) on delete set null,
+
+    label             text,
+    attrs             jsonb                    not null default '{}'::jsonb,
+    created_at        timestamp with time zone not null default current_timestamp
+);
+
+-- The registry locations a given image's bytes can be pulled from. `status`
+-- distinguishes the user's original `external` registry from `canonical`/`system`
+-- mirrors added by promotion (the digest never changes; promotion is an INSERT).
+create table tml_switchboard.image_locations
+(
+    image_id          uuid                     not null references tml_switchboard.images (id) on delete cascade,
+    registry          text                     not null,
+    repository        text                     not null,
+    status            text                     not null,
+    added_at          timestamp with time zone not null default current_timestamp,
+
+    primary key (image_id, registry, repository),
+
+    constraint valid_location_status check (status in ('external', 'canonical', 'system'))
+);
+
+-- A registered Treadmill image group: an OCI image index, pinned by its index
+-- digest. Its members are concrete `images` rows (in the same repository as the
+-- index), denormalized into `image_group_members` for the dispatch-time matcher.
+create table tml_switchboard.image_groups
+(
+    id                uuid                     not null primary key,
+    index_digest      text                     not null unique,
+    owner_subject     uuid                     references tml_switchboard.subjects (subject_id) on delete set null,
+    label             text,
+    created_at        timestamp with time zone not null default current_timestamp
+);
+
+-- One selectable member of a group, denormalized from the index for the matcher
+-- (group + host attributes -> concrete image). The selection axes are the OCI
+-- platform (`arch`/`os`/`variant`) plus the Treadmill `tml_target`/`tml_board`
+-- annotations. Rebuilt wholesale from the index when the group is (re)registered.
+create table tml_switchboard.image_group_members
+(
+    group_id          uuid                     not null references tml_switchboard.image_groups (id) on delete cascade,
+    image_id          uuid                     not null references tml_switchboard.images (id) on delete cascade,
+    arch              text                     not null,
+    os                text                     not null,
+    variant           text,
+    tml_target        text,
+    tml_board         text,
+
+    primary key (group_id, image_id)
 );
 
 -- ===========================================================================
