@@ -130,16 +130,16 @@ resolve those macros against a committed **`.sqlx` query cache** instead of a
 live database. If you add or change a `query!`, you must regenerate the cache or
 the offline build breaks with *"no cached data for this query."*
 
-### There are TWO `.sqlx` directories — keep both in sync
+### There is ONE `.sqlx` directory: the workspace root `/.sqlx`
 
-- **`/.sqlx`** (workspace root) — the cache the **Nix checks read** (the flake
-  source fileset in `nix/lib.nix` ships only this one).
-- **`switchboard/.sqlx`** — what the sqlx macro reads in a **local** crate build
-  (`CARGO_MANIFEST_DIR/.sqlx`).
+`cargo sqlx prepare --workspace` writes a single cache at the workspace root, and
+the sqlx macros resolve it from there (they walk up from `CARGO_MANIFEST_DIR` to
+the workspace root) — so a crate-local `switchboard/.sqlx` is **not** needed even
+for a `cd switchboard && cargo build`. The Nix checks' source fileset
+(`nix/lib.nix`) ships only the root cache.
 
-A change that updates only one will pass locally and fail in CI (or vice-versa).
-Regenerate **both**, from a clean build, with the `--all-targets` scope (required
-to capture `#[cfg(test)]` query macros, e.g. in `supervisor_ws_worker.rs`):
+Regenerate it from a clean build with the `--all-targets` scope (required to
+capture `#[cfg(test)]` query macros, e.g. in `supervisor_ws_worker.rs`):
 
 ```bash
 nix develop .#database --command bash -c '
@@ -148,7 +148,6 @@ nix develop .#database --command bash -c '
   unset SQLX_OFFLINE
   cargo clean -p treadmill-switchboard            # force a full recompile so ALL queries are collected
   cargo sqlx prepare --workspace -- --all-targets # writes the ROOT /.sqlx
-  cd switchboard && cargo sqlx prepare -- --all-targets   # writes switchboard/.sqlx
 '
 ```
 
@@ -160,9 +159,6 @@ entries for unchanged queries, so the regenerated cache is incomplete. Always
 ```bash
 nix develop --command bash -c 'SQLX_OFFLINE=true cargo build --workspace --all-targets'
 ```
-
-(The redundant second cache is a known footgun; if you consolidate the repo onto
-a single root cache, update this section and `nix/lib.nix`.)
 
 ---
 
