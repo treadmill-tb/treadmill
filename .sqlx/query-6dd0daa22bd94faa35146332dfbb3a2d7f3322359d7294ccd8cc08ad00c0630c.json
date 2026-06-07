@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT token_id, user_id, canceled as \"canceled: _\",\n                  expires_at\n            FROM tml_switchboard.api_tokens\n            WHERE token_id = $1\n            LIMIT 1;",
+  "query": "SELECT t.token_id, t.user_id, t.revoked as \"revoked: _\",\n                  t.expires_at, u.locked\n            FROM tml_switchboard.api_tokens t\n            JOIN tml_switchboard.users u ON u.subject_id = t.user_id\n            WHERE t.token = $1\n            LIMIT 1;",
   "describe": {
     "columns": [
       {
@@ -27,18 +27,18 @@
       },
       {
         "ordinal": 2,
-        "name": "canceled: _",
+        "name": "revoked: _",
         "type_info": {
           "Custom": {
-            "name": "tml_switchboard.api_token_cancellation",
+            "name": "tml_switchboard.api_token_revocation",
             "kind": {
               "Composite": [
                 [
-                  "canceled_at",
+                  "revoked_at",
                   "Timestamptz"
                 ],
                 [
-                  "cancellation_reason",
+                  "revocation_reason",
                   "Text"
                 ]
               ]
@@ -48,7 +48,7 @@
         "origin": {
           "Table": {
             "table": "tml_switchboard.api_tokens",
-            "name": "canceled"
+            "name": "revoked"
           }
         }
       },
@@ -62,19 +62,31 @@
             "name": "expires_at"
           }
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "locked",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.users",
+            "name": "locked"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Bytea"
       ]
     },
     "nullable": [
       false,
       false,
       true,
+      false,
       false
     ]
   },
-  "hash": "0630645f985dd7cd419ad1483b7d6f3ae2213e1fc659c30cb73513d5ef97e3d4"
+  "hash": "6dd0daa22bd94faa35146332dfbb3a2d7f3322359d7294ccd8cc08ad00c0630c"
 }

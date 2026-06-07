@@ -1,11 +1,14 @@
 use super::SqlSshEndpoint;
+use super::image;
+use crate::matcher::{GroupMember, HostImageAttributes, select_member};
 use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
 use sqlx::{PgExecutor, Postgres, Transaction};
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, TerminationReason};
 use treadmill_rs::api::switchboard_supervisor::{
-    ImageSpecification, JobInitializingStage, RestartPolicy, TaskExitStatus,
+    ImageLocation, ImageSpecification, JobInitializingStage, RestartPolicy, TaskExitStatus,
 };
+use treadmill_rs::image::Digest;
 use uuid::Uuid;
 
 pub mod parameters;
@@ -162,28 +165,34 @@ pub async fn insert(
     queued_at: DateTime<Utc>,
     conn: &mut Transaction<'_, Postgres>,
 ) -> Result<(), sqlx::Error> {
-    let (resume_job_id, restart_job_id, image_id): (Option<Uuid>, Option<Uuid>, Option<Vec<u8>>) =
-        match job_request.init_spec {
-            JobInitSpec::ResumeJob { job_id } => (Some(job_id), None, None),
-            JobInitSpec::RestartJob { job_id } => {
-                let predecessor = sqlx::query!(
-                    r#"
-                    select resume_job_id, restart_job_id, image_id
+    let (resume_job_id, restart_job_id, image_digest, image_group_digest): (
+        Option<Uuid>,
+        Option<Uuid>,
+        Option<String>,
+        Option<String>,
+    ) = match job_request.init_spec {
+        JobInitSpec::ResumeJob { job_id } => (Some(job_id), None, None, None),
+        JobInitSpec::RestartJob { job_id } => {
+            let predecessor = sqlx::query!(
+                r#"
+                    select resume_job_id, restart_job_id, image_digest, image_group_digest
                     from tml_switchboard.jobs
                     where job_id = $1
                     "#,
-                    job_id
-                )
-                .fetch_one(conn.as_mut())
-                .await?;
-                (
-                    predecessor.resume_job_id,
-                    Some(job_id),
-                    predecessor.image_id,
-                )
-            }
-            JobInitSpec::Image { image_id } => (None, None, Some(image_id.0.to_vec())),
-        };
+                job_id
+            )
+            .fetch_one(conn.as_mut())
+            .await?;
+            (
+                predecessor.resume_job_id,
+                Some(job_id),
+                predecessor.image_digest,
+                predecessor.image_group_digest,
+            )
+        }
+        JobInitSpec::Image { image } => (None, None, Some(image.encoded()), None),
+        JobInitSpec::ImageGroup { image_group } => (None, None, None, Some(image_group.encoded())),
+    };
 
     sqlx::query!(
         r#"
@@ -192,7 +201,8 @@ pub async fn insert(
           job_id,
           resume_job_id,
           restart_job_id,
-          image_id,
+          image_digest,
+          image_group_digest,
           ssh_keys,
           restart_policy,
           enqueued_by_token_id,
@@ -214,15 +224,16 @@ pub async fn insert(
           $1,       -- job_id
           $2,	    -- resume_job_id
           $3,	    -- restart_job_id
-          $4,	    -- image_id
-          $5,	    -- ssh_keys
-          $6,	    -- restart_policy
-          $7,	    -- enqueued_by_token_id
-          $8,	    -- tag_config
-          $9,	    -- job_timeout
+          $4,	    -- image_digest
+          $5,	    -- image_group_digest
+          $6,	    -- ssh_keys
+          $7,	    -- restart_policy
+          $8,	    -- enqueued_by_token_id
+          $9,	    -- tag_config
+          $10,	    -- job_timeout
           'queued', -- job_state
           null,	    -- initializing_stage
-          $10,	    -- queued_at
+          $11,	    -- queued_at
           null,	    -- started_at
           null,	    -- dispatched_on_host_id
           null,	    -- ssh_endpoints
@@ -236,7 +247,8 @@ pub async fn insert(
         as_job_id,
         resume_job_id,
         restart_job_id,
-        image_id,
+        image_digest,
+        image_group_digest,
         job_request.ssh_keys.as_slice(),
         SqlRestartPolicy {
             remaining_restart_count: i32::try_from(
@@ -261,7 +273,14 @@ pub struct SqlJob {
     resume_job_id: Option<Uuid>,
     #[allow(dead_code)]
     restart_job_id: Option<Uuid>,
-    sql_image_id: Option<Vec<u8>>,
+    // The job's image reference: a concrete image manifest digest, or an image
+    // group's index digest (resolved to a concrete member at dispatch). Exactly
+    // one is set for a non-resume job; both are null for a resume.
+    image_digest: Option<String>,
+    image_group_digest: Option<String>,
+    // The concrete manifest digest actually dispatched, recorded at dispatch.
+    #[allow(dead_code)]
+    resolved_image_digest: Option<String>,
 
     ssh_keys: Vec<String>,
     sql_restart_policy: SqlRestartPolicy,
@@ -302,23 +321,60 @@ impl SqlJob {
     pub fn job_id(&self) -> Uuid {
         self.job_id
     }
-    pub fn read_image_spec(&self) -> ImageSpecification {
+    /// Resolve this job's image reference into the content-addressed
+    /// [`ImageSpecification`] handed to the supervisor at dispatch.
+    ///
+    /// For a resume job this is simply [`ImageSpecification::ResumeJob`]. For a
+    /// concrete image, the manifest digest is paired with its catalog locations.
+    /// For an image *group*, the chosen host's `host_attrs` select the
+    /// concrete member (the §8.3 matcher) whose digest + locations are then
+    /// dispatched. `host_attrs` is ignored for the non-group variants.
+    ///
+    /// The returned [`ImageSpecification::Image::manifest_digest`] is the
+    /// concrete digest to record on the job row via [`set_resolved_image`].
+    pub async fn resolve_image_spec(
+        &self,
+        host_attrs: &HostImageAttributes,
+        conn: impl PgExecutor<'_> + Copy,
+    ) -> Result<ImageSpecification, ImageResolveError> {
         if let Some(resume_job_id) = self.resume_job_id {
-            ImageSpecification::ResumeJob {
+            return Ok(ImageSpecification::ResumeJob {
                 job_id: resume_job_id,
-            }
-        } else {
-            // The supervisor protocol's `ImageSpecification::Image` is now
-            // content-addressed (`manifest_digest` + registry `locations`),
-            // which the switchboard catalog (Phase 4) resolves from the
-            // legacy `jobs.image_id` column. That migration is not done yet, so
-            // dispatching a non-resume job is intentionally unimplemented.
-            todo!(
-                "Phase 4: resolve jobs.image_id ({:?}) to a manifest digest + \
-                 registry locations via the switchboard catalog",
-                self.sql_image_id,
-            )
+            });
         }
+
+        if let Some(digest) = &self.image_digest {
+            let rec = image::fetch_by_digest(conn, digest)
+                .await?
+                .ok_or_else(|| ImageResolveError::NotRegistered(digest.clone()))?;
+            return concrete_image_spec(rec.id, digest, conn).await;
+        }
+
+        if let Some(group_digest) = &self.image_group_digest {
+            let group = image::fetch_group_by_digest(conn, group_digest)
+                .await?
+                .ok_or_else(|| ImageResolveError::NotRegistered(group_digest.clone()))?;
+            let members = image::members_for_group(conn, group.id).await?;
+            let candidates: Vec<GroupMember<(Uuid, String)>> = members
+                .into_iter()
+                .map(|m| GroupMember {
+                    handle: (m.image_id, m.manifest_digest),
+                    arch: m.arch,
+                    os: m.os,
+                    variant: m.variant,
+                    target: m.tml_target,
+                    board: m.tml_board,
+                })
+                .collect();
+            let chosen = select_member(&candidates, host_attrs)
+                .ok_or(ImageResolveError::NoMatchingMember)?;
+            let (image_id, manifest_digest) = &chosen.handle;
+            return concrete_image_spec(*image_id, manifest_digest, conn).await;
+        }
+
+        // `valid_init_spec` guarantees one of the branches above fires for a
+        // non-resume job; reaching here means a row violated that invariant.
+        Err(ImageResolveError::MalformedJob(self.job_id))
     }
     pub fn ssh_keys(&self) -> &[String] {
         &self.ssh_keys
@@ -364,7 +420,8 @@ pub async fn fetch_by_job_id(
     sqlx::query_as!(
         SqlJob,
         r#"
-        select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
+        select job_id, resume_job_id, restart_job_id, image_digest, image_group_digest,
+        resolved_image_digest, ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
         queued_at, job_state as "job_state: _",
         initializing_stage as "initializing_stage: _", started_at,
@@ -380,11 +437,108 @@ pub async fn fetch_by_job_id(
     .await
 }
 
+/// Why resolving a job's image reference to a concrete dispatch spec failed.
+#[derive(Debug)]
+pub enum ImageResolveError {
+    /// An underlying database error.
+    Db(sqlx::Error),
+    /// The referenced image/group digest is not in the catalog (e.g. it was
+    /// deregistered after the job was queued).
+    NotRegistered(String),
+    /// The image is registered but has no location to pull it from (D16: a
+    /// user's only external registry became unavailable).
+    NoLocations(String),
+    /// No group member matched the chosen host's attributes (§8.3).
+    NoMatchingMember,
+    /// The job row violated `valid_init_spec` (neither image nor group set on a
+    /// non-resume job). Should be impossible given the DB constraint.
+    MalformedJob(Uuid),
+}
+
+impl From<sqlx::Error> for ImageResolveError {
+    fn from(e: sqlx::Error) -> Self {
+        ImageResolveError::Db(e)
+    }
+}
+
+impl std::fmt::Display for ImageResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ImageResolveError::Db(e) => write!(f, "database error resolving image: {e}"),
+            ImageResolveError::NotRegistered(d) => {
+                write!(f, "image/group {d} is not registered in the catalog")
+            }
+            ImageResolveError::NoLocations(d) => {
+                write!(f, "image {d} has no registry locations")
+            }
+            ImageResolveError::NoMatchingMember => {
+                write!(f, "no group member matched the host's attributes")
+            }
+            ImageResolveError::MalformedJob(j) => {
+                write!(f, "job {j} has neither an image nor a group digest")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ImageResolveError {}
+
+/// Build a concrete [`ImageSpecification::Image`] from an image's id + digest,
+/// reading its catalog locations (canonical/system preferred).
+async fn concrete_image_spec(
+    image_id: Uuid,
+    manifest_digest: &str,
+    conn: impl PgExecutor<'_>,
+) -> Result<ImageSpecification, ImageResolveError> {
+    let locations = image::locations_for_image(conn, image_id).await?;
+    if locations.is_empty() {
+        return Err(ImageResolveError::NoLocations(manifest_digest.to_string()));
+    }
+    let digest = manifest_digest
+        .parse::<Digest>()
+        .map_err(|_| ImageResolveError::NotRegistered(manifest_digest.to_string()))?;
+    Ok(ImageSpecification::Image {
+        manifest_digest: digest,
+        locations: locations
+            .into_iter()
+            .map(|l| ImageLocation {
+                registry: l.registry,
+                repository: l.repository,
+            })
+            .collect(),
+    })
+}
+
+/// Record the concrete manifest digest dispatched for a job (for
+/// reproducibility/audit), set at dispatch once the image is resolved.
+///
+/// Wired into the dispatch path alongside [`SqlJob::resolve_image_spec`] when the
+/// job scheduler lands (the `/jobs/new` route, currently stubbed out in
+/// `routes/mod.rs`); unused until then.
+#[allow(dead_code)]
+pub async fn set_resolved_image(
+    job_id: Uuid,
+    manifest_digest: &Digest,
+    conn: impl PgExecutor<'_>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"update tml_switchboard.jobs
+           set resolved_image_digest = $2, last_updated_at = default
+           where job_id = $1"#,
+        job_id,
+        manifest_digest.encoded(),
+    )
+    .execute(conn)
+    .await
+    .map(|_| ())
+}
+
 // pub async fn fetch_all_queued(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJob>, sqlx::Error> {
 //     sqlx::query_as!(
 //         SqlJob,
 //         r#"
-//         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
+//         select job_id, resume_job_id, restart_job_id, image_digest, image_group_digest,
+//         resolved_image_digest, ssh_keys,
 //         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
 //         queued_at, job_state as "job_state: _",
 //         initializing_stage as "initializing_stage: _", started_at,
@@ -403,7 +557,8 @@ pub async fn fetch_by_job_id(
 //     sqlx::query_as!(
 //         SqlJob,
 //         r#"
-//         select job_id, resume_job_id, restart_job_id, image_id as "sql_image_id: _", ssh_keys,
+//         select job_id, resume_job_id, restart_job_id, image_digest, image_group_digest,
+//         resolved_image_digest, ssh_keys,
 //         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
 //         queued_at, job_state as "job_state: _",
 //         initializing_stage as "initializing_stage: _", started_at,

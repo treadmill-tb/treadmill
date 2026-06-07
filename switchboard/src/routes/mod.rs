@@ -1,11 +1,12 @@
 mod auth;
 mod hosts;
+mod images;
 mod jobs;
 mod users;
 
 use crate::serve::AppState;
 use aide::axum::ApiRouter;
-use aide::axum::routing::{delete_with, get_with};
+use aide::axum::routing::{delete_with, get_with, post_with};
 use axum::Router;
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -82,6 +83,27 @@ pub fn api_router() -> ApiRouter<AppState> {
         .api_route("/users/{id}", get_with(users::get_user, |o| o))
         //  GET /users/{id}/events    -- per-user audit feed
         .api_route("/users/{id}/events", get_with(users::list_events, |o| o))
+        // image catalog group
+        //  POST /images              -- register a concrete image by digest
+        //  GET  /images              -- list owned images
+        .api_route(
+            "/images",
+            post_with(images::register_image, |o| o).get_with(images::list_images, |o| o),
+        )
+        //  GET /images/{digest}      -- inspect one image
+        .api_route("/images/{digest}", get_with(images::get_image, |o| o))
+        //  POST /image-groups        -- register an image group by index digest
+        //  GET  /image-groups        -- list owned image groups
+        .api_route(
+            "/image-groups",
+            post_with(images::register_image_group, |o| o)
+                .get_with(images::list_image_groups, |o| o),
+        )
+        //  GET /image-groups/{digest} -- inspect one image group
+        .api_route(
+            "/image-groups/{digest}",
+            get_with(images::get_image_group, |o| o),
+        )
 }
 
 async fn not_found() -> impl IntoResponse {

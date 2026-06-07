@@ -1,5 +1,6 @@
 pub mod api_token;
 pub mod host;
+pub mod image;
 pub(crate) mod job;
 pub mod oauth_flow;
 pub mod user;

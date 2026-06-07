@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                    select resume_job_id, restart_job_id, image_id\n                    from tml_switchboard.jobs\n                    where job_id = $1\n                    ",
+  "query": "\n                    select resume_job_id, restart_job_id, image_digest, image_group_digest\n                    from tml_switchboard.jobs\n                    where job_id = $1\n                    ",
   "describe": {
     "columns": [
       {
@@ -27,12 +27,23 @@
       },
       {
         "ordinal": 2,
-        "name": "image_id",
-        "type_info": "Bytea",
+        "name": "image_digest",
+        "type_info": "Text",
         "origin": {
           "Table": {
             "table": "tml_switchboard.jobs",
-            "name": "image_id"
+            "name": "image_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "image_group_digest",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "image_group_digest"
           }
         }
       }
@@ -45,8 +56,9 @@
     "nullable": [
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "667a55531c0d8e07927c1bfbd9aee42b5715a35bc901bf3c1c49c87b0c269124"
+  "hash": "056fb8faef61fd2760901ebe970ad86c734fec9b076677d2b0893be2295ae58c"
 }

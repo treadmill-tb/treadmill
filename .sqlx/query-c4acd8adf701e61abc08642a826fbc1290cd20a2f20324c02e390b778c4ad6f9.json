@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from tml_switchboard.image_group_members where group_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c4acd8adf701e61abc08642a826fbc1290cd20a2f20324c02e390b778c4ad6f9"
+}

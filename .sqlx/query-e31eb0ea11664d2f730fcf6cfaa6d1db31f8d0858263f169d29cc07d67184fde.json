@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        select job_id, resume_job_id, restart_job_id, image_id as \"sql_image_id: _\", ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id, tag_config, job_timeout,\n        queued_at, job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\", started_at,\n        dispatched_on_host_id, ssh_endpoints as \"ssh_endpoints: _\",\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\", exit_message, terminated_at,\n        last_updated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
+  "query": "\n        select job_id, resume_job_id, restart_job_id, image_digest, image_group_digest,\n        resolved_image_digest, ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id, tag_config, job_timeout,\n        queued_at, job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\", started_at,\n        dispatched_on_host_id, ssh_endpoints as \"ssh_endpoints: _\",\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\", exit_message, terminated_at,\n        last_updated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
   "describe": {
     "columns": [
       {
@@ -38,17 +38,39 @@
       },
       {
         "ordinal": 3,
-        "name": "sql_image_id: _",
-        "type_info": "Bytea",
+        "name": "image_digest",
+        "type_info": "Text",
         "origin": {
           "Table": {
             "table": "tml_switchboard.jobs",
-            "name": "image_id"
+            "name": "image_digest"
           }
         }
       },
       {
         "ordinal": 4,
+        "name": "image_group_digest",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "image_group_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "resolved_image_digest",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "resolved_image_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "ssh_keys",
         "type_info": "TextArray",
         "origin": {
@@ -59,7 +81,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 7,
         "name": "sql_restart_policy: _",
         "type_info": {
           "Custom": {
@@ -82,7 +104,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 8,
         "name": "enqueued_by_token_id",
         "type_info": "Uuid",
         "origin": {
@@ -93,7 +115,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 9,
         "name": "tag_config",
         "type_info": "Text",
         "origin": {
@@ -104,7 +126,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 10,
         "name": "job_timeout",
         "type_info": "Interval",
         "origin": {
@@ -115,7 +137,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 11,
         "name": "queued_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -126,7 +148,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 12,
         "name": "job_state: _",
         "type_info": {
           "Custom": {
@@ -151,7 +173,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "initializing_stage: _",
         "type_info": {
           "Custom": {
@@ -175,7 +197,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 14,
         "name": "started_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -186,7 +208,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 15,
         "name": "dispatched_on_host_id",
         "type_info": "Uuid",
         "origin": {
@@ -197,7 +219,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 16,
         "name": "ssh_endpoints: _",
         "type_info": {
           "Custom": {
@@ -252,7 +274,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 17,
         "name": "termination_reason: _",
         "type_info": {
           "Custom": {
@@ -283,7 +305,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 18,
         "name": "task_exit_status: _",
         "type_info": {
           "Custom": {
@@ -305,7 +327,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 19,
         "name": "exit_message",
         "type_info": "Text",
         "origin": {
@@ -316,7 +338,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 20,
         "name": "terminated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -327,7 +349,7 @@
         }
       },
       {
-        "ordinal": 19,
+        "ordinal": 21,
         "name": "last_updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -345,6 +367,8 @@
     },
     "nullable": [
       false,
+      true,
+      true,
       true,
       true,
       true,
@@ -366,5 +390,5 @@
       false
     ]
   },
-  "hash": "862777d03b7d4d0489a3e914fa683054ce3d87b1da6d564d189b9dea87aefb36"
+  "hash": "e31eb0ea11664d2f730fcf6cfaa6d1db31f8d0858263f169d29cc07d67184fde"
 }

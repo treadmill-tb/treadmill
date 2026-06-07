@@ -1,8 +1,9 @@
+pub mod images;
 pub mod users;
 
 use crate::api::supervisor_puppet::ParameterValue;
 use crate::api::switchboard_supervisor::RestartPolicy;
-use crate::image::manifest::ImageId;
+use crate::image::Digest;
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -67,13 +68,21 @@ pub enum JobInitSpec {
     /// Restart a job.
     RestartJob { job_id: Uuid },
 
-    /// Which image to base this job off. If the image is not locally cached
-    /// at the host, it will be fetched using its manifest prior to executing
-    /// the job.
+    /// Base this job off a concrete image registered in the switchboard
+    /// catalog, addressed by its OCI manifest digest. At dispatch the
+    /// switchboard resolves the digest to its registry locations and hands the
+    /// supervisor a content-addressed [`ImageSpecification::Image`].
     ///
-    /// Images are content-addressed by the SHA-256 digest of their
-    /// manifest.
-    Image { image_id: ImageId },
+    /// [`ImageSpecification::Image`]:
+    ///     crate::api::switchboard_supervisor::ImageSpecification::Image
+    Image { image: Digest },
+
+    /// Base this job off a registered image *group* (an OCI image index),
+    /// addressed by its index digest. After a host is chosen, the switchboard
+    /// matcher selects the group member matching the host's attributes
+    /// (architecture + Treadmill target/board) and dispatches that concrete
+    /// member's digest.
+    ImageGroup { image_group: Digest },
 }
 
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]

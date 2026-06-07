@@ -109,6 +109,13 @@ miette = { version = "7.6", features = ["fancy"] }
 base64 = { workspace = true }
 anyhow.workspace = true
 
+# OCI image catalog: pull manifests/indexes by digest from a registry to
+# validate them at registration time, and project them onto the Treadmill view.
+oci-client = { workspace = true }
+oci-spec = { workspace = true }
+# Verify a pulled manifest hashes to the digest it was requested under.
+sha2 = { workspace = true }
+
 [dev-dependencies]
 sqlx-cli = { version = "0.9.0", features = [
   "postgres",

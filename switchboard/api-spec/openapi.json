@@ -217,6 +217,166 @@
           }
         }
       }
+    },
+    "/images": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ImageInfo"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "requestBody": {
+          "description": "`POST /images`: register a concrete image by digest. The switchboard pulls\nthe manifest from `registry/repository@manifest_digest`, validates it is a\nTreadmill image, and records an `images` row plus this first location.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterImageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "400": {
+            "description": "Failed to parse the request body as JSON",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Expected request with `Content-Type: application/json`",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Failed to deserialize the JSON body into the target type",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/images/{digest}": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "A registered image, as returned by the catalog list/inspect routes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/image-groups": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ImageGroupInfo"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "requestBody": {
+          "description": "`POST /image-groups`: register an image group by its OCI index digest. The\nswitchboard pulls the index, validates each member, and records the group\nplus its (image, location, denormalized-member) rows for the matcher.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterImageGroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "400": {
+            "description": "Failed to parse the request body as JSON",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Expected request with `Content-Type: application/json`",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Failed to deserialize the JSON body into the target type",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/image-groups/{digest}": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "A registered image group, as returned by the catalog list/inspect routes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageGroupInfo"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -234,6 +394,10 @@
         "required": [
           "events"
         ]
+      },
+      "Digest": {
+        "description": "A content-addressable OCI digest over 32 bytes of SHA-256.\n\nFormats as the canonical OCI string `sha256:<64 lower-case hex>`.",
+        "type": "string"
       },
       "GroupMembership": {
         "description": "One group the user belongs to, including transitive memberships resolved via\nthe `principals()` function.",
@@ -260,6 +424,153 @@
           "name",
           "source",
           "source_ref"
+        ]
+      },
+      "ImageGroupInfo": {
+        "description": "A registered image group, as returned by the catalog list/inspect routes.",
+        "type": "object",
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "index_digest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImageGroupMember"
+            }
+          },
+          "owner_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "id",
+          "index_digest",
+          "created_at",
+          "members"
+        ]
+      },
+      "ImageGroupMember": {
+        "description": "One selectable member of a registered group.",
+        "type": "object",
+        "properties": {
+          "arch": {
+            "type": "string"
+          },
+          "board": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "manifest_digest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "os": {
+            "type": "string"
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "variant": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "manifest_digest",
+          "arch",
+          "os"
+        ]
+      },
+      "ImageInfo": {
+        "description": "A registered image, as returned by the catalog list/inspect routes.",
+        "type": "object",
+        "properties": {
+          "artifact_type": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "locations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImageLocation"
+            }
+          },
+          "manifest_digest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "owner_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "id",
+          "manifest_digest",
+          "artifact_type",
+          "created_at",
+          "locations"
+        ]
+      },
+      "ImageLocation": {
+        "description": "One registry location of a registered image.",
+        "type": "object",
+        "properties": {
+          "registry": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "status": {
+            "description": "`external`, `canonical`, or `system`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "registry",
+          "repository",
+          "status"
         ]
       },
       "LinkedGitHub": {
@@ -318,6 +629,76 @@
         "required": [
           "user_id",
           "username"
+        ]
+      },
+      "RegisterImageGroupRequest": {
+        "description": "`POST /image-groups`: register an image group by its OCI index digest. The\nswitchboard pulls the index, validates each member, and records the group\nplus its (image, location, denormalized-member) rows for the matcher.",
+        "type": "object",
+        "properties": {
+          "index_digest": {
+            "description": "The OCI index digest identifying the group.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Digest"
+              }
+            ]
+          },
+          "label": {
+            "description": "Optional human-readable label.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "registry": {
+            "description": "Registry authority (`host:port`) the index can be pulled from.",
+            "type": "string"
+          },
+          "repository": {
+            "description": "Repository path within the registry (members live in the same repo).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "registry",
+          "repository",
+          "index_digest"
+        ]
+      },
+      "RegisterImageRequest": {
+        "description": "`POST /images`: register a concrete image by digest. The switchboard pulls\nthe manifest from `registry/repository@manifest_digest`, validates it is a\nTreadmill image, and records an `images` row plus this first location.",
+        "type": "object",
+        "properties": {
+          "label": {
+            "description": "Optional human-readable label.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "manifest_digest": {
+            "description": "The OCI manifest digest identifying the image.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Digest"
+              }
+            ]
+          },
+          "registry": {
+            "description": "Registry authority (`host:port`) the manifest can be pulled from.",
+            "type": "string"
+          },
+          "repository": {
+            "description": "Repository path within the registry.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "registry",
+          "repository",
+          "manifest_digest"
         ]
       },
       "RenderedAuditRow": {

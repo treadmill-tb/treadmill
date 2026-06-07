@@ -803,12 +803,12 @@ mod tests {
         let job_id = Uuid::new_v4();
         sqlx::query(
             "insert into tml_switchboard.jobs \
-             (job_id, resume_job_id, restart_job_id, image_id, ssh_keys, restart_policy, \
-              enqueued_by_token_id, tag_config, job_timeout, job_state, initializing_stage, \
-              queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
+             (job_id, resume_job_id, restart_job_id, image_digest, image_group_digest, ssh_keys, \
+              restart_policy, enqueued_by_token_id, tag_config, job_timeout, job_state, \
+              initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
               termination_reason, task_exit_status, exit_message, terminated_at, last_updated_at) \
              values \
-             ($1, null, null, $2, '{}'::text[], row($3)::tml_switchboard.restart_policy, \
+             ($1, null, null, $2, null, '{}'::text[], row($3)::tml_switchboard.restart_policy, \
               $4, '', interval '1 hour', $5::tml_switchboard.job_state, null, \
               now(), \
               case when $5::tml_switchboard.job_state \
@@ -818,7 +818,7 @@ mod tests {
               null, null, null, null, default)",
         )
         .bind(job_id)
-        .bind(vec![0u8; 32])
+        .bind(format!("sha256:{}", "0".repeat(64)))
         .bind(remaining_restarts)
         .bind(token_id)
         .bind(job_state)

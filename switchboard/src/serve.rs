@@ -1,4 +1,5 @@
 use crate::config::{DatabaseConfig, DatabaseCredentials, SwitchboardConfig};
+use crate::registry::{OciRegistryClient, RegistryClient};
 use miette::{IntoDiagnostic, WrapErr};
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
@@ -10,6 +11,9 @@ use std::sync::Arc;
 pub struct AppStateInner {
     pg_pool: PgPool,
     config: SwitchboardConfig,
+    /// Pulls manifests/indexes by digest for image-catalog registration.
+    /// Injectable so route tests can use a canned in-memory registry.
+    registry: Arc<dyn RegistryClient>,
 }
 
 impl AppStateInner {
@@ -19,13 +23,30 @@ impl AppStateInner {
     pub fn config(&self) -> &SwitchboardConfig {
         &self.config
     }
+    pub fn registry(&self) -> &Arc<dyn RegistryClient> {
+        &self.registry
+    }
 }
 
 #[derive(Clone)]
 pub struct AppState(Arc<AppStateInner>);
 impl AppState {
     pub fn new(pg_pool: PgPool, config: SwitchboardConfig) -> Self {
-        AppState(Arc::new(AppStateInner { pg_pool, config }))
+        Self::with_registry(pg_pool, config, Arc::new(OciRegistryClient::new()))
+    }
+
+    /// Construct an [`AppState`] with an explicit registry client. Used by
+    /// catalog route tests to inject a canned in-memory registry.
+    pub fn with_registry(
+        pg_pool: PgPool,
+        config: SwitchboardConfig,
+        registry: Arc<dyn RegistryClient>,
+    ) -> Self {
+        AppState(Arc::new(AppStateInner {
+            pg_pool,
+            config,
+            registry,
+        }))
     }
 }
 impl Deref for AppState {
@@ -86,7 +107,7 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
     let bind_address = config.server.bind_address;
     let tls_config = config.server.testing_only_tls_config.clone();
 
-    let app_state = AppState(Arc::new(AppStateInner { pg_pool, config }));
+    let app_state = AppState::new(pg_pool, config);
     let router = super::routes::build_router(app_state);
 
     enum Server {
