@@ -100,10 +100,7 @@ impl JobPermission {
 }
 
 /// Returns true if `subject_id` is a member of the global `admins` group.
-pub async fn is_admin(
-    conn: impl PgExecutor<'_>,
-    subject_id: Uuid,
-) -> Result<bool, sqlx::Error> {
+pub async fn is_admin(conn: impl PgExecutor<'_>, subject_id: Uuid) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar!(
         "select exists(select 1 from tml_switchboard.principals($1::uuid) where id = $2::uuid) as \"is_admin!\"",
         subject_id,
@@ -217,7 +214,10 @@ pub async fn host_permissions(
     if rows.iter().any(|s| s == "*") {
         Ok(HostPermission::ALL.to_vec())
     } else {
-        Ok(rows.into_iter().filter_map(|s: String| HostPermission::from_db_str(&s)).collect())
+        Ok(rows
+            .into_iter()
+            .filter_map(|s: String| HostPermission::from_db_str(&s))
+            .collect())
     }
 }
 
@@ -261,6 +261,9 @@ pub async fn job_permissions(
     if rows.iter().any(|s| s == "*") {
         Ok(JobPermission::ALL.to_vec())
     } else {
-        Ok(rows.into_iter().filter_map(|s: String| JobPermission::from_db_str(&s)).collect())
+        Ok(rows
+            .into_iter()
+            .filter_map(|s: String| JobPermission::from_db_str(&s))
+            .collect())
     }
 }

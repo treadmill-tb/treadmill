@@ -2649,10 +2649,12 @@ mod tests {
 
     /// Set the DB-side user-cancel signal (`cancel_requested_at`).
     async fn request_cancel(pool: &PgPool, job_id: Uuid) -> anyhow::Result<()> {
-        sqlx::query("update tml_switchboard.jobs set cancel_requested_at = now() where job_id = $1")
-            .bind(job_id)
-            .execute(pool)
-            .await?;
+        sqlx::query(
+            "update tml_switchboard.jobs set cancel_requested_at = now() where job_id = $1",
+        )
+        .bind(job_id)
+        .execute(pool)
+        .await?;
         Ok(())
     }
 

@@ -50,7 +50,7 @@ pub use registry::{RenderedEvent, ViewerCtx, render};
 /// this subject because no human is responsible for the action.
 pub const SYSTEM_ACTOR_ID: uuid::Uuid = uuid::Uuid::from_u128(2);
 
-use sqlx::{PgConnection, Transaction, Postgres};
+use sqlx::{PgConnection, Postgres, Transaction};
 
 /// Proof of being inside an audited transition. Its only field is private to
 /// the `audit` module, so it can be constructed ONLY by `audit::transition`

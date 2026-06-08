@@ -20,8 +20,18 @@ use crate::sql::user::{RenameUser, UpdateUserProfile};
 /// Usernames that may never be claimed: route literals and well-known names that
 /// would be confusing or dangerous as a handle.
 const RESERVED_USERNAMES: &[&str] = &[
-    "me", "admin", "admins", "administrator", "system", "root", "new", "tokens", "events", "users",
-    "auth", "api",
+    "me",
+    "admin",
+    "admins",
+    "administrator",
+    "system",
+    "root",
+    "new",
+    "tokens",
+    "events",
+    "users",
+    "auth",
+    "api",
 ];
 
 /// Map any error to a 500, logging it. Used for unexpected DB failures.

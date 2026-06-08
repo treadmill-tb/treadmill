@@ -5,7 +5,9 @@ macro_rules! __audit_process_field {
         $rels.push($crate::audit::model::Relation {
             entity: $crate::audit::model::EntityRef::Job($val.0),
             role: $crate::audit::model::Role::Subject,
-            view: $crate::audit::model::ViewPolicy::Permission($crate::auth::engine::JobPermission::$view.into()),
+            view: $crate::audit::model::ViewPolicy::Permission(
+                $crate::auth::engine::JobPermission::$view.into(),
+            ),
         })
     };
     ($rels:ident, $val:expr, Option < Job > @ view($view:ident)) => {
@@ -13,7 +15,9 @@ macro_rules! __audit_process_field {
             $rels.push($crate::audit::model::Relation {
                 entity: $crate::audit::model::EntityRef::Job(j.0),
                 role: $crate::audit::model::Role::Subject,
-                view: $crate::audit::model::ViewPolicy::Permission($crate::auth::engine::JobPermission::$view.into()),
+                view: $crate::audit::model::ViewPolicy::Permission(
+                    $crate::auth::engine::JobPermission::$view.into(),
+                ),
             })
         }
     };
@@ -21,7 +25,9 @@ macro_rules! __audit_process_field {
         $rels.push($crate::audit::model::Relation {
             entity: $crate::audit::model::EntityRef::Host($val.0),
             role: $crate::audit::model::Role::Context,
-            view: $crate::audit::model::ViewPolicy::Permission($crate::auth::engine::HostPermission::$view.into()),
+            view: $crate::audit::model::ViewPolicy::Permission(
+                $crate::auth::engine::HostPermission::$view.into(),
+            ),
         })
     };
     ($rels:ident, $val:expr, Option < Host > @ view($view:ident)) => {
@@ -29,7 +35,9 @@ macro_rules! __audit_process_field {
             $rels.push($crate::audit::model::Relation {
                 entity: $crate::audit::model::EntityRef::Host(h.0),
                 role: $crate::audit::model::Role::Context,
-                view: $crate::audit::model::ViewPolicy::Permission($crate::auth::engine::HostPermission::$view.into()),
+                view: $crate::audit::model::ViewPolicy::Permission(
+                    $crate::auth::engine::HostPermission::$view.into(),
+                ),
             })
         }
     };

@@ -1,7 +1,7 @@
 use http::StatusCode;
-use uuid::Uuid;
 use schemars::JsonSchema;
 use serde::Serialize;
+use uuid::Uuid;
 
 use crate::audit::registry::{ViewerCtx, render};
 use crate::auth::Subject;

@@ -13,7 +13,7 @@
 //! registry entry from a single declaration; the trait below is the contract
 //! that macro will satisfy.
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::engine::{HostPermission, JobPermission};
