@@ -6,8 +6,8 @@ use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use sqlx::{PgPool, Postgres, Transaction};
 use tokio::time::{Duration, Instant, Sleep, interval, sleep};
 use treadmill_rs::api::switchboard_supervisor::{
-    ReportedSupervisorStatus, Request, StopJobMessage, SupervisorToSwitchboard,
-    SwitchboardToSupervisor, TaskExitStatus,
+    ReportedSupervisorStatus, Request, RunningJobState, StopJobMessage, SupervisorEvent,
+    SupervisorJobEvent, SupervisorToSwitchboard, SwitchboardToSupervisor, TaskExitStatus,
 };
 use uuid::Uuid;
 
@@ -504,7 +504,6 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// finalized or never dispatched), in which case the event is dropped.
     ///
     /// [`SupervisorJobEvent::DeclareExitStatus`]: treadmill_rs::api::switchboard_supervisor::SupervisorJobEvent::DeclareExitStatus
-    #[allow(dead_code)] // wired into the event path in Phase 7
     async fn apply_task_outcome(
         &mut self,
         job_id: Uuid,
@@ -584,16 +583,10 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     }
 
                     // Asynchronous job events (state transitions, task outcomes,
-                    // errors) are mirrored into the DB by the event path, which
-                    // lands in a follow-up commit. Until then the periodic status
-                    // round trip + reconcile keeps the DB converged, so it is
-                    // safe to log and ignore them here.
+                    // errors) are mirrored into the DB out-of-band of
+                    // reconciliation, and keep the status cache fresh.
                     Ok(SupervisorToSwitchboard::SupervisorEvent(event)) => {
-                        tracing::debug!(
-                            ?event,
-                            "SupervisorWSWorker: received supervisor event (event path not yet wired); ignoring"
-                        );
-                        Ok(PostMsg::Continue)
+                        self.handle_supervisor_event(event).await
                     }
 
                     // The supervisor signalled a fatal protocol error: log and
@@ -641,6 +634,139 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
             message: (),
         }))
         .await
+    }
+
+    /// Mirror an asynchronous [`SupervisorEvent`] into the DB, out-of-band of
+    /// reconciliation. These events make the lifecycle update in real time
+    /// (rather than only at the next reconcile) and carry data not present in the
+    /// status snapshot — most importantly the task outcome
+    /// ([`SupervisorJobEvent::DeclareExitStatus`]). Each event is applied only
+    /// while the job is the one assigned to this host; events for any other job
+    /// are dropped.
+    async fn handle_supervisor_event(&mut self, event: SupervisorEvent) -> WorkerResult<PostMsg> {
+        let SupervisorEvent::JobEvent { job_id, event } = event;
+        match event {
+            // A reported running-state advance: adopt it through the same helper
+            // reconcile uses, and keep the status cache in step.
+            SupervisorJobEvent::StateTransition { new_state, .. } => {
+                self.apply_state_transition(job_id, new_state).await
+            }
+
+            // The dedicated task-outcome channel; independent of lifecycle state.
+            SupervisorJobEvent::DeclareExitStatus { outcome, message } => {
+                if !self.apply_task_outcome(job_id, outcome, message).await? {
+                    tracing::debug!(
+                        %job_id,
+                        "DeclareExitStatus for a job not assigned to this host; dropped"
+                    );
+                }
+                Ok(PostMsg::Continue)
+            }
+
+            // A job-level error: finalize terminally with a mapped reason.
+            SupervisorJobEvent::Error { error } => {
+                self.finalize_job_error(job_id, error).await?;
+                Ok(PostMsg::Continue)
+            }
+
+            // Best-effort console output. Object-storage streaming is a separate
+            // concern; drop it here (delivery is lossy by design).
+            SupervisorJobEvent::ConsoleLog { console_bytes } => {
+                tracing::trace!(
+                    %job_id,
+                    bytes = console_bytes.len(),
+                    "console log received (streaming not yet implemented); dropping"
+                );
+                Ok(PostMsg::Continue)
+            }
+        }
+    }
+
+    /// Adopt a [`SupervisorJobEvent::StateTransition`] into the DB via the shared
+    /// [`sql::job::apply_running_state`], but only while the job is the one
+    /// assigned to this host (a stale/foreign event is dropped). Refreshes the
+    /// status cache to the new state, and `StopJob`-acks a `Terminated`.
+    async fn apply_state_transition(
+        &mut self,
+        job_id: Uuid,
+        new_state: RunningJobState,
+    ) -> WorkerResult<PostMsg> {
+        let host_id = self.ctx.host_id;
+        let at = chrono::Utc::now();
+        let state_for_txn = new_state.clone();
+
+        let outcome: Option<bool> = self
+            .ctx
+            .with_txn(async move |txn| {
+                // Guard: only mirror events for the currently-assigned job.
+                if sql::host::fetch_current_job(host_id, txn).await? != Some(job_id) {
+                    return Ok(None);
+                }
+                Ok(Some(
+                    sql::job::apply_running_state(job_id, host_id, state_for_txn, at, txn).await?,
+                ))
+            })
+            .await?;
+
+        let Some(terminated) = outcome else {
+            tracing::debug!(
+                %job_id,
+                "StateTransition for a job not assigned to this host; dropped"
+            );
+            return Ok(PostMsg::Continue);
+        };
+
+        // Keep the cache in step so a later reconcile sees the same state.
+        self.last_seen_status = Some(if terminated {
+            ReportedSupervisorStatus::Idle
+        } else {
+            ReportedSupervisorStatus::OngoingJob {
+                job_id,
+                job_state: new_state,
+            }
+        });
+
+        if terminated {
+            self.send_command(SwitchboardToSupervisor::StopJob(StopJobMessage { job_id }))
+                .await?;
+        }
+        Ok(PostMsg::Continue)
+    }
+
+    /// Finalize the job a [`SupervisorJobEvent::Error`] names, while it is the one
+    /// assigned to this host (a stale/foreign event is dropped). Records the
+    /// mapped [`sql::job::termination_reason_for_job_error`] and the error
+    /// description, and clears the cache to `Idle`.
+    async fn finalize_job_error(
+        &mut self,
+        job_id: Uuid,
+        error: treadmill_rs::connector::JobError,
+    ) -> WorkerResult<()> {
+        let host_id = self.ctx.host_id;
+        let at = chrono::Utc::now();
+        let reason = sql::job::termination_reason_for_job_error(&error.error_kind);
+        let message = Some(error.description);
+
+        let finalized = self
+            .ctx
+            .with_txn(async move |txn| {
+                // Guard: only finalize the currently-assigned job.
+                if sql::host::fetch_current_job(host_id, txn).await? != Some(job_id) {
+                    return Ok(false);
+                }
+                Ok(sql::job::finalize_errored(job_id, host_id, reason, message, at, txn).await?)
+            })
+            .await?;
+
+        if finalized {
+            self.last_seen_status = Some(ReportedSupervisorStatus::Idle);
+        } else {
+            tracing::debug!(
+                %job_id,
+                "Error event for a job not assigned to this host; dropped"
+            );
+        }
+        Ok(())
     }
 
     async fn run_loop(&mut self) -> WorkerResult<()> {
@@ -768,8 +894,10 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context as TaskContext, Poll};
     use treadmill_rs::api::switchboard_supervisor::{
-        ImageSpecification, RunningJobState, SwitchboardToSupervisor, TaskExitStatus,
+        ImageSpecification, RunningJobState, SupervisorEvent, SupervisorJobEvent,
+        SwitchboardToSupervisor, TaskExitStatus,
     };
+    use treadmill_rs::connector::{JobError, JobErrorKind};
 
     /// Build a `SupervisorWSWorkerConfig` with the given ping interval /
     /// dead-pong deadline, both expressed in milliseconds. Tests use short
@@ -2202,6 +2330,237 @@ mod tests {
             ),
             other => panic!("expected ResumeJob spec, got {other:?}"),
         }
+        Ok(())
+    }
+
+    // -- asynchronous event path (SupervisorEvent) --------------------------
+    //
+    // These pin down `handle_supervisor_event`, the out-of-band mirror of the
+    // supervisor's job events into the DB (and into the status cache). Each test
+    // builds the DB precondition, drives one event through the worker, and
+    // asserts the DB transition, any emitted command, and the refreshed cache.
+
+    /// A `StateTransition` event adopts the reported running state through the
+    /// same `apply_running_state` reconcile uses, and refreshes the status cache.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn event_state_transition_adopts_and_caches(pool: PgPool) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        worker
+            .handle_supervisor_event(SupervisorEvent::JobEvent {
+                job_id,
+                event: SupervisorJobEvent::StateTransition {
+                    new_state: RunningJobState::Ready,
+                    status_message: None,
+                },
+            })
+            .await
+            .expect("state transition event should be handled");
+
+        assert_eq!(
+            job_state_of(&pool, job_id).await?,
+            "ready",
+            "the event must adopt the reported running state"
+        );
+        match worker.last_seen_status {
+            Some(ReportedSupervisorStatus::OngoingJob {
+                job_id: cached,
+                job_state: RunningJobState::Ready,
+            }) => assert_eq!(cached, job_id, "the cache must reflect the new state"),
+            other => panic!("expected cached OngoingJob(Ready), got {other:?}"),
+        }
+        assert!(
+            from_worker.try_recv().is_err(),
+            "a non-terminal transition emits no command"
+        );
+        Ok(())
+    }
+
+    /// A `StateTransition` to `Terminated` finalizes the job (workload_exited),
+    /// clears the assignment, `StopJob`-acks, and caches `Idle`.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn event_state_transition_terminated_finalizes_and_acks(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        worker
+            .handle_supervisor_event(SupervisorEvent::JobEvent {
+                job_id,
+                event: SupervisorJobEvent::StateTransition {
+                    new_state: RunningJobState::Terminated,
+                    status_message: None,
+                },
+            })
+            .await
+            .expect("terminated transition event should be handled");
+
+        assert_eq!(job_state_of(&pool, job_id).await?, "finalized");
+        assert_eq!(current_job_of(&pool, host_id).await?, None);
+        assert!(
+            matches!(
+                worker.last_seen_status,
+                Some(ReportedSupervisorStatus::Idle)
+            ),
+            "a terminated transition must cache Idle"
+        );
+        match decode_outbound(
+            from_worker
+                .try_recv()
+                .expect("a StopJob ack must be emitted"),
+        ) {
+            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
+            other => panic!("expected StopJob ack, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// A `DeclareExitStatus` event records the task outcome via the same path as
+    /// the direct setter.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn event_declare_exit_status_records_outcome(pool: PgPool) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, _from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        worker
+            .handle_supervisor_event(SupervisorEvent::JobEvent {
+                job_id,
+                event: SupervisorJobEvent::DeclareExitStatus {
+                    outcome: TaskExitStatus::Success,
+                    message: Some("all good".to_string()),
+                },
+            })
+            .await
+            .expect("declare-exit-status event should be handled");
+
+        assert_eq!(
+            task_outcome_of(&pool, job_id).await?,
+            (Some("success".to_string()), Some("all good".to_string())),
+            "the event must record the declared outcome"
+        );
+        Ok(())
+    }
+
+    /// An `Error` event finalizes the job with the mapped termination reason and
+    /// records the error description, clearing the assignment and caching `Idle`.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn event_error_finalizes_with_mapped_reason(pool: PgPool) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, _from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        worker
+            .handle_supervisor_event(SupervisorEvent::JobEvent {
+                job_id,
+                event: SupervisorJobEvent::Error {
+                    error: JobError {
+                        error_kind: JobErrorKind::ImageNotFound,
+                        description: "manifest missing".to_string(),
+                    },
+                },
+            })
+            .await
+            .expect("error event should be handled");
+
+        assert_eq!(job_state_of(&pool, job_id).await?, "finalized");
+        let reason: Option<String> = sqlx::query_scalar(
+            "select termination_reason::text from tml_switchboard.jobs where job_id = $1",
+        )
+        .bind(job_id)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            reason.as_deref(),
+            Some("image_error"),
+            "ImageNotFound must map to image_error"
+        );
+        let (_outcome, message) = task_outcome_of(&pool, job_id).await?;
+        assert_eq!(
+            message.as_deref(),
+            Some("manifest missing"),
+            "the error description must be recorded as exit_message"
+        );
+        assert_eq!(current_job_of(&pool, host_id).await?, None);
+        assert!(matches!(
+            worker.last_seen_status,
+            Some(ReportedSupervisorStatus::Idle)
+        ));
+        Ok(())
+    }
+
+    /// An event for a job that is not the one assigned to this host is dropped:
+    /// no DB change, no cache update, no command.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn event_for_unassigned_job_is_dropped(pool: PgPool) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        // The job exists and is bound to the host row, but is NOT the host's
+        // current_job (nothing is assigned), so the event must be dropped.
+        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        worker
+            .handle_supervisor_event(SupervisorEvent::JobEvent {
+                job_id,
+                event: SupervisorJobEvent::StateTransition {
+                    new_state: RunningJobState::Ready,
+                    status_message: None,
+                },
+            })
+            .await
+            .expect("event for an unassigned job should be a no-op, not an error");
+
+        assert_eq!(
+            job_state_of(&pool, job_id).await?,
+            "scheduled",
+            "an event for an unassigned job must not mutate it"
+        );
+        assert!(
+            worker.last_seen_status.is_none(),
+            "a dropped event must not touch the status cache"
+        );
+        assert!(
+            from_worker.try_recv().is_err(),
+            "a dropped event emits no command"
+        );
         Ok(())
     }
 }

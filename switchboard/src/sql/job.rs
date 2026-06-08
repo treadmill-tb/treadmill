@@ -10,6 +10,7 @@ use treadmill_rs::api::switchboard_supervisor::{
     ImageLocation, ImageSpecification, JobInitializingStage, RestartPolicy, RunningJobState,
     StartJobMessage, TaskExitStatus,
 };
+use treadmill_rs::connector::JobErrorKind;
 use treadmill_rs::image::Digest;
 use uuid::Uuid;
 
@@ -885,6 +886,101 @@ pub async fn finalize_terminated(
     .await?;
 
     Ok(())
+}
+
+/// Map a supervisor-reported [`JobErrorKind`] to the terminal
+/// [`TerminationReason`] the switchboard records for it. Image problems become
+/// `ImageError`, a failed resume `ResumeFailed`, an explicit supervisor-internal
+/// fault `InternalError`; the remaining start-time faults (a duplicate/missing
+/// job, capacity) fold into `HostStartFailure` — the job never started.
+///
+/// `#[non_exhaustive]` on `JobErrorKind` forces a catch-all; new kinds default
+/// to `InternalError` until classified.
+pub fn termination_reason_for_job_error(kind: &JobErrorKind) -> SqlTerminationReason {
+    match kind {
+        JobErrorKind::ImageNotFound
+        | JobErrorKind::ImageInvalid
+        | JobErrorKind::ImageNotCompatible => SqlTerminationReason::ImageError,
+        JobErrorKind::CannotResume => SqlTerminationReason::ResumeFailed,
+        JobErrorKind::AlreadyRunning
+        | JobErrorKind::AlreadyStopping
+        | JobErrorKind::JobAlreadyExists
+        | JobErrorKind::JobNotFound
+        | JobErrorKind::MaxConcurrentJobs => SqlTerminationReason::HostStartFailure,
+        JobErrorKind::InternalError => SqlTerminationReason::InternalError,
+        // `JobErrorKind` is `#[non_exhaustive]`: classify unknown future kinds
+        // conservatively as an internal error rather than failing to finalize.
+        _ => SqlTerminationReason::InternalError,
+    }
+}
+
+/// Finalize a job the supervisor reported a [`SupervisorJobEvent::Error`] for,
+/// within the caller's transaction. Backs the event path's error handling:
+/// records the terminal `termination_reason` (see
+/// [`termination_reason_for_job_error`]) and the error's `description` as
+/// `exit_message`, clears the assignment columns, and releases
+/// `hosts.current_job`. The orthogonal `task_exit_status` is left untouched (the
+/// protocol keeps the *why-it-stopped* and the *workload outcome* separate).
+///
+/// Unlike [`finalize_dropped_and_maybe_restart`], the restart policy is **not**
+/// applied: a supervisor-reported job error is recorded terminally.
+///
+/// **Idempotent.** Guarded on `job_state <> 'finalized'`, so a replay is a no-op
+/// (returns `false`).
+///
+/// Must be called inside the worker's `with_txn` so the takeover/staleness guard
+/// covers it.
+///
+/// [`SupervisorJobEvent::Error`]: treadmill_rs::api::switchboard_supervisor::SupervisorJobEvent::Error
+pub async fn finalize_errored(
+    job_id: Uuid,
+    host_id: Uuid,
+    reason: SqlTerminationReason,
+    message: Option<String>,
+    at: DateTime<Utc>,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<bool, sqlx::Error> {
+    let transitioned = sqlx::query!(
+        r#"
+        update tml_switchboard.jobs
+        set job_state = 'finalized',
+            termination_reason = $2,
+            exit_message = $3,
+            dispatched_on_host_id = null,
+            started_at = null,
+            initializing_stage = null,
+            terminated_at = $4,
+            last_updated_at = default
+        where job_id = $1 and job_state <> 'finalized'
+        returning job_id
+        "#,
+        job_id,
+        reason as SqlTerminationReason,
+        message,
+        at,
+    )
+    .fetch_optional(&mut **txn)
+    .await?;
+
+    // Some earlier pass already finalized this job: nothing left to do.
+    if transitioned.is_none() {
+        return Ok(false);
+    }
+
+    // Release the host's assignment pointer.
+    sqlx::query!(
+        r#"
+        update tml_switchboard.hosts
+        set current_job = null
+        where host_id = $1 and current_job = $2
+        "#,
+        host_id,
+        job_id,
+    )
+    .execute(&mut **txn)
+    .await?;
+
+    Ok(true)
 }
 
 /// Record the supervisor's *task outcome* for a job it is currently assigned to
