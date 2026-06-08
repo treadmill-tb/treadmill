@@ -60,8 +60,7 @@ pub async fn connect(
         }
     };
 
-    let auth_result =
-        sql::host::try_authenticate_for_host(host_id, auth_token, state.pool()).await;
+    let auth_result = sql::host::try_authenticate_for_host(host_id, auth_token, state.pool()).await;
     match auth_result {
         Ok(true) => (), // Success!
         Ok(false) => {
@@ -123,6 +122,7 @@ pub async fn connect(
     let ws_worker_config = SupervisorWSWorkerConfig {
         supervisor_ping_interval: state.config().service.supervisor_ping_interval,
         supervisor_pong_dead: state.config().service.supervisor_pong_dead,
+        supervisor_reconcile_interval: state.config().service.supervisor_reconcile_interval,
     };
 
     let mut response = ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL]).on_upgrade(

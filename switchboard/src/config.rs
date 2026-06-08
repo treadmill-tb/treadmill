@@ -148,6 +148,12 @@ pub struct ServiceConfig {
     /// closes the connection.
     #[serde(with = "humantime_serde")]
     pub supervisor_pong_dead: Duration,
+    /// How often the per-host worker runs a reconcile pass, converging the DB's
+    /// desired state against the supervisor's reported state (and dispatching
+    /// newly-scheduled jobs). Kept separate from `supervisor_ping_interval`: it
+    /// sets scheduling latency, not liveness-detection cadence.
+    #[serde(with = "humantime_serde")]
+    pub supervisor_reconcile_interval: Duration,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -1,4 +1,4 @@
-use std::{ops::ControlFlow, pin::Pin};
+use std::pin::Pin;
 
 use anyhow::{Context, Result, anyhow};
 use axum::extract::ws;
@@ -6,7 +6,8 @@ use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use sqlx::{PgPool, Postgres, Transaction};
 use tokio::time::{Duration, Instant, Sleep, interval, sleep};
 use treadmill_rs::api::switchboard_supervisor::{
-    ReportedSupervisorStatus, StopJobMessage, SwitchboardToSupervisor, TaskExitStatus,
+    ReportedSupervisorStatus, Request, StopJobMessage, SupervisorToSwitchboard,
+    SwitchboardToSupervisor, TaskExitStatus,
 };
 use uuid::Uuid;
 
@@ -49,6 +50,21 @@ pub struct SupervisorWSWorkerConfig {
     /// config-load time from a human-readable duration string (e.g. `"10s"`).
     #[serde(with = "humantime_serde")]
     pub supervisor_pong_dead: Duration,
+    /// How often the worker runs a [`reconcile`] pass, converging the DB's
+    /// desired state against the cached supervisor status. Deliberately separate
+    /// from `supervisor_ping_interval`: a reconcile is also the dispatch trigger
+    /// for newly-scheduled jobs, so its cadence sets scheduling latency, whereas
+    /// the ping cadence is tuned for liveness detection. The dedicated timer is
+    /// reset whenever a reconcile runs for another reason (a liveness tick, an
+    /// inbound status response), so it only fires to cover quiet stretches. A
+    /// reconcile never issues a `StatusRequest` itself — it reads the in-memory
+    /// status cache that the ping-driven `StatusRequest` and (later) the event
+    /// stream keep fresh — so a future Postgres pub/sub trigger costs no round
+    /// trip.
+    ///
+    /// [`reconcile`]: SupervisorWSWorker::reconcile
+    #[serde(with = "humantime_serde")]
+    pub supervisor_reconcile_interval: Duration,
 }
 
 /// DB-side identity and configuration for one supervisor worker, deliberately
@@ -73,6 +89,14 @@ struct WorkerCtx {
 pub struct SupervisorWSWorker<S: SupervisorSocket> {
     ctx: WorkerCtx,
     socket: S,
+    /// The supervisor's last reported status (`J_sup`), refreshed out-of-band by
+    /// the periodic `StatusRequest`/`StatusResponse` round trip (and, later, the
+    /// event stream). `reconcile` converges against *this* cached value rather
+    /// than forcing a fresh round trip, so a reconcile triggered by anything
+    /// (the timer, a status response, a future Postgres pub/sub notification) is
+    /// a pure DB operation. `None` until the first status is seen, during which
+    /// reconcile is a no-op (the actual supervisor state is still unknown).
+    last_seen_status: Option<ReportedSupervisorStatus>,
 }
 
 /// Error type for [`SupervisorWSWorker`] operations.
@@ -100,6 +124,21 @@ pub enum WorkerError {
 }
 
 pub type WorkerResult<T = ()> = Result<T, WorkerError>;
+
+/// What `run_loop` should do after [`handle_supervisor_msg`] processes one
+/// inbound message. Keeping the post-message action explicit (rather than
+/// reconciling inside the handler) lets `run_loop` own the reconcile-timer reset
+/// in one place, and keeps the handler free of the timer it doesn't own.
+///
+/// [`handle_supervisor_msg`]: SupervisorWSWorker::handle_supervisor_msg
+enum PostMsg {
+    /// Keep looping; nothing further to do.
+    Continue,
+    /// The cached supervisor status changed — run a reconcile pass.
+    Reconcile,
+    /// Terminate the worker loop (the peer closed or signalled a fatal error).
+    Terminate,
+}
 
 impl WorkerCtx {
     async fn obtain_worker_instance_id(pool: &PgPool, host_id: Uuid) -> Result<u64> {
@@ -246,6 +285,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 config,
             },
             socket,
+            last_seen_status: None,
         };
 
         let result = worker.run_loop().await;
@@ -271,157 +311,185 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         result
     }
 
-    /// Reconcile switchboard and supervisor state when a supervisor (re)connects.
+    /// Converge the supervisor's actual state to the switchboard's desired state.
     ///
     /// # Principle
     ///
-    /// The **supervisor** is ground truth for what is *physically executing* on
-    /// its host; the **switchboard** is the source of truth for what is
-    /// *assigned* (`hosts.current_job`). On (re)connect the worker sends a
-    /// `StatusRequest`, awaits the correlated `StatusResponse` (a timeout is
-    /// treated as a dead peer), and passes the reported
-    /// [`ReportedSupervisorStatus`] in as `reported`. This method then applies
-    /// idempotent commands and `job_state`-guarded DB transitions to converge
-    /// the two views.
+    /// The **switchboard** is the source of truth for what is *assigned*
+    /// (`hosts.current_job`, plus that job's `job_state`); the **supervisor** is
+    /// ground truth for what is *physically executing*. Reconciliation drives the
+    /// latter toward the former — issuing `StartJob` for newly-scheduled jobs,
+    /// adopting reported running states, finalizing drops/exits, and stopping
+    /// zombies.
     ///
-    /// Let `J_sb = hosts.current_job` (read from the DB under
-    /// [`WorkerCtx::with_txn`]) and `J_sup` = the supervisor's reported
-    /// `OngoingJob` id, if any. The five cases:
+    /// The reported supervisor status (`J_sup`) is read from the in-memory
+    /// [`last_seen_status`] cache, **not** by issuing a fresh `StatusRequest`:
+    /// the cache is refreshed out-of-band by the periodic status round trip (and,
+    /// later, the event stream), so a reconcile is a pure DB operation regardless
+    /// of what triggered it (the timer, an inbound status response, a future
+    /// Postgres pub/sub notification). While the cache is `None` (no status seen
+    /// yet) reconcile is a no-op — the actual state is unknown.
     ///
-    /// | # | Switchboard (`J_sb`) | Supervisor reports | Resolution |
-    /// |---|----------------------|--------------------|------------|
-    /// | 1 | none   | `Idle`             | aligned; no action |
-    /// | 2 | none   | `OngoingJob(J)`    | unassigned/zombie → `StopJob(J)`; do not adopt |
-    /// | 3 | `J_sb` | `Idle`             | job lost → finalize `J_sb` as `host_dropped_job`; honor `RestartPolicy` (may re-issue `StartJob`) |
-    /// | 4 | `J_sb` | `OngoingJob(J_sb)` | adopt reported `job_state`: DB `job_state := reported`. A `Terminated` state finalizes `J_sb` (see below) |
-    /// | 5 | `J_sb` | `OngoingJob(J_sup)`, `J_sup ≠ J_sb` | finalize `J_sb` as `host_dropped_job` (+ `RestartPolicy`); `J_sup` is unassigned → `StopJob(J_sup)` |
+    /// Let `J_sb = hosts.current_job`, `S = its job_state`, and `J_sup` = the
+    /// reported `OngoingJob` id, if any. The convergence table, split by `S`
+    /// because a never-started (`scheduled`) and a was-running
+    /// (`initializing`/`ready`/`terminating`) job mean opposite things when the
+    /// supervisor is `Idle`:
+    ///
+    /// | `J_sb` (state)     | Supervisor reports     | Resolution |
+    /// |--------------------|------------------------|------------|
+    /// | none               | `Idle`                 | aligned; no action |
+    /// | none               | `OngoingJob(J)`        | zombie → `StopJob(J)` |
+    /// | `(J, scheduled)`   | `Idle`                 | not started yet → `StartJob(J)` (idempotent re-send; no DB change) |
+    /// | `(J, scheduled)`   | `OngoingJob(J)`        | picked up → adopt reported `job_state` |
+    /// | `(J, scheduled)`   | `OngoingJob(J'≠J)`     | foreign zombie → `StopJob(J')`; leave `J` scheduled for the next pass to start |
+    /// | `(J, running)`     | `Idle`                 | dropped → finalize `host_dropped_job` (+ `RestartPolicy`) |
+    /// | `(J, running)`     | `OngoingJob(J)`        | adopt reported `job_state`; a `Terminated` finalizes + `StopJob(J)` ack |
+    /// | `(J, running)`     | `OngoingJob(J'≠J)`     | finalize `J` dropped (+ `RestartPolicy`); `StopJob(J')` |
     ///
     /// # Idempotence
     ///
     /// Every resolution is either an idempotent command (`StartJob`/`StopJob`
     /// carry the `job_id` and are no-ops when they don't apply to the current job
-    /// state) or a `job_state`-guarded DB transition, so a reconnect that replays
-    /// reconciliation converges to the same state. All DB writes go through
+    /// state) or a `job_state`-guarded DB transition, so a replayed reconcile
+    /// converges to the same state. All DB writes go through
     /// [`WorkerCtx::with_txn`] so the takeover/staleness guard covers them; the
-    /// drop-and-maybe-restart transition of cases 3 and 5 is
+    /// adopt rows share [`sql::job::apply_running_state`] with the event path so
+    /// the running-state mapping lives in one place, and the drop transitions are
     /// `sql::job::finalize_dropped_and_maybe_restart`.
     ///
-    /// The `Terminated` fold: in case 4 a `reported` state of
-    /// `RunningJobState::Terminated` does not map to a live `job_state`; it
-    /// instead finalizes `J_sb` with `termination_reason = workload_exited`
-    /// (`sql::job::finalize_terminated`, **no** restart policy — a clean exit is
-    /// not a failure). The task outcome is preserved as last declared via
-    /// `apply_task_outcome`. The worker then sends `StopJob(J_sb)` to acknowledge the
-    /// terminal report, which the supervisor uses to drop its in-memory retained
-    /// record. See the `RunningJobState` Rustdoc in
-    /// `treadmill_rs::api::switchboard_supervisor` for the retained-terminal
-    /// contract.
+    /// The `Terminated` fold: a reported `RunningJobState::Terminated` does not
+    /// map to a live `job_state`; `apply_running_state` instead finalizes the job
+    /// with `termination_reason = workload_exited` (**no** restart — a clean exit
+    /// is not a failure) and signals that the worker must `StopJob`-ack, which the
+    /// supervisor uses to drop its retained terminal record. The task outcome is
+    /// preserved as last declared out-of-band via `apply_task_outcome`. See the
+    /// `RunningJobState` Rustdoc in `treadmill_rs::api::switchboard_supervisor`
+    /// for the retained-terminal contract.
     ///
-    /// The `tests` submodule specifies each case above.
-    #[allow(dead_code)] // wired into the (re)connect path in Phase 7
-    async fn reconcile(&mut self, reported: ReportedSupervisorStatus) -> WorkerResult<()> {
-        use treadmill_rs::api::switchboard_supervisor::RunningJobState;
+    /// The `tests` submodule specifies each row above.
+    ///
+    /// [`last_seen_status`]: SupervisorWSWorker::last_seen_status
+    async fn reconcile(&mut self) -> WorkerResult<()> {
+        use crate::sql::job::SqlJobState;
+
+        // Read the supervisor's actual state from the cache; until we have one,
+        // there is nothing to converge against.
+        let Some(reported) = self.last_seen_status.clone() else {
+            return Ok(());
+        };
 
         let host_id = self.ctx.host_id;
         let at = chrono::Utc::now();
 
         // All reads and writes run under the takeover/staleness guard. The
-        // closure returns the id of a job the worker must `StopJob` *after* the
-        // transaction commits: we never await the socket while the host row
-        // lock is held (see `with_txn`'s contract).
-        let stop_zombie: Option<Uuid> = self
+        // closure returns the single command (if any) the worker must send
+        // *after* the transaction commits: we never await the socket while the
+        // host row lock is held (see `with_txn`'s contract).
+        let command: Option<SwitchboardToSupervisor> = self
             .ctx
             .with_txn(async move |txn| {
                 let j_sb = sql::host::fetch_current_job(host_id, txn).await?;
 
-                let stop = match (j_sb, reported) {
-                    // Case 1: aligned — nothing assigned, supervisor idle.
-                    (None, ReportedSupervisorStatus::Idle) => None,
+                let command = match j_sb {
+                    // Nothing assigned: aligned if idle, else a zombie to stop.
+                    None => match reported {
+                        ReportedSupervisorStatus::Idle => None,
+                        ReportedSupervisorStatus::OngoingJob { job_id, .. } => {
+                            Some(SwitchboardToSupervisor::StopJob(StopJobMessage { job_id }))
+                        }
+                    },
 
-                    // Case 2: unassigned zombie — stop it, do not adopt.
-                    (None, ReportedSupervisorStatus::OngoingJob { job_id, .. }) => Some(job_id),
+                    // A job is assigned: its `job_state` decides what `Idle`
+                    // (and a same-id report) means.
+                    Some(id) => {
+                        let job = sql::job::fetch_by_job_id(id, &mut **txn).await?;
+                        match (job.job_state(), reported) {
+                            // Scheduled + Idle: the supervisor hasn't picked it
+                            // up yet — (re)dispatch it. No DB change; the next
+                            // pass adopts the reported running state.
+                            (SqlJobState::Scheduled, ReportedSupervisorStatus::Idle) => {
+                                let msg = sql::job::build_start_job_message(&job, txn)
+                                    .await
+                                    .context("building StartJob message in reconcile")?;
+                                Some(SwitchboardToSupervisor::StartJob(msg))
+                            }
 
-                    // Case 3: assigned job was lost — finalize (honoring the
-                    // restart policy) and release the assignment.
-                    (Some(j_sb), ReportedSupervisorStatus::Idle) => {
-                        sql::job::finalize_dropped_and_maybe_restart(j_sb, host_id, at, txn)
-                            .await?;
-                        None
-                    }
+                            // Scheduled + the supervisor reports *this* job: it
+                            // picked it up — adopt the reported running state
+                            // (scheduled → initializing/ready/...).
+                            (
+                                SqlJobState::Scheduled,
+                                ReportedSupervisorStatus::OngoingJob {
+                                    job_id: j_sup,
+                                    job_state,
+                                },
+                            ) if j_sup == id => {
+                                let terminated =
+                                    sql::job::apply_running_state(id, host_id, job_state, at, txn)
+                                        .await?;
+                                terminated.then_some(SwitchboardToSupervisor::StopJob(
+                                    StopJobMessage { job_id: id },
+                                ))
+                            }
 
-                    // Cases 4 & 5: supervisor reports an ongoing job.
-                    (
-                        Some(j_sb),
-                        ReportedSupervisorStatus::OngoingJob {
-                            job_id: j_sup,
-                            job_state,
-                        },
-                    ) if j_sup == j_sb => {
-                        // Case 4: same job — adopt the reported execution state.
-                        match job_state {
-                            RunningJobState::Initializing { stage } => {
-                                sql::job::set_running_state(
-                                    j_sb,
-                                    sql::job::SqlJobState::Initializing,
-                                    Some(stage.into()),
-                                    at,
-                                    txn,
-                                )
-                                .await?;
+                            // Scheduled, but the supervisor is busy with some
+                            // *other* job: that one is a zombie. Stop it and
+                            // leave `id` scheduled for the next pass to start.
+                            (
+                                SqlJobState::Scheduled,
+                                ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. },
+                            ) => Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                                job_id: j_sup,
+                            })),
+
+                            // Running (initializing/ready/terminating) + Idle:
+                            // the job was lost — finalize (honoring the restart
+                            // policy) and release the assignment.
+                            (_, ReportedSupervisorStatus::Idle) => {
+                                sql::job::finalize_dropped_and_maybe_restart(id, host_id, at, txn)
+                                    .await?;
                                 None
                             }
-                            RunningJobState::Ready => {
-                                sql::job::set_running_state(
-                                    j_sb,
-                                    sql::job::SqlJobState::Ready,
-                                    None,
-                                    at,
-                                    txn,
-                                )
-                                .await?;
-                                None
+
+                            // Running + the supervisor reports *this* job: adopt
+                            // the reported state; a `Terminated` finalizes and is
+                            // acked with `StopJob`.
+                            (
+                                _,
+                                ReportedSupervisorStatus::OngoingJob {
+                                    job_id: j_sup,
+                                    job_state,
+                                },
+                            ) if j_sup == id => {
+                                let terminated =
+                                    sql::job::apply_running_state(id, host_id, job_state, at, txn)
+                                        .await?;
+                                terminated.then_some(SwitchboardToSupervisor::StopJob(
+                                    StopJobMessage { job_id: id },
+                                ))
                             }
-                            RunningJobState::Terminating => {
-                                sql::job::set_running_state(
-                                    j_sb,
-                                    sql::job::SqlJobState::Terminating,
-                                    None,
-                                    at,
-                                    txn,
-                                )
-                                .await?;
-                                None
-                            }
-                            // The supervisor reports the assigned job has
-                            // terminated. Finalize it as `workload_exited` (no
-                            // restart — a clean exit is not a failure), then
-                            // `StopJob(j_sb)` to ack, which releases the
-                            // supervisor's retained terminal record. The task
-                            // outcome is preserved as last declared out-of-band.
-                            RunningJobState::Terminated => {
-                                sql::job::finalize_terminated(j_sb, host_id, at, txn).await?;
-                                Some(j_sb)
+
+                            // Running, but the supervisor reports a *different*
+                            // job: the assigned one is lost (finalize + restart
+                            // policy); the reported one is an unassigned zombie.
+                            (_, ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. }) => {
+                                sql::job::finalize_dropped_and_maybe_restart(id, host_id, at, txn)
+                                    .await?;
+                                Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                                    job_id: j_sup,
+                                }))
                             }
                         }
                     }
-
-                    // Case 5: assigned and reported job ids disagree. The
-                    // assigned job is lost (finalize + restart policy); the
-                    // reported job is an unassigned zombie to stop.
-                    (Some(j_sb), ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. }) => {
-                        sql::job::finalize_dropped_and_maybe_restart(j_sb, host_id, at, txn)
-                            .await?;
-                        Some(j_sup)
-                    }
                 };
 
-                Ok(stop)
+                Ok(command)
             })
             .await?;
 
-        if let Some(job_id) = stop_zombie {
-            self.send_command(SwitchboardToSupervisor::StopJob(StopJobMessage { job_id }))
-                .await?;
+        if let Some(command) = command {
+            self.send_command(command).await?;
         }
 
         Ok(())
@@ -459,7 +527,6 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// Serialize a [`SwitchboardToSupervisor`] command as JSON and send it over
     /// the socket as a Text frame (the protocol is JSON-over-Text; see the
     /// protocol module).
-    #[allow(dead_code)] // only reached via `reconcile`, wired up in Phase 7
     async fn send_command(&mut self, command: SwitchboardToSupervisor) -> WorkerResult<()> {
         let json = serde_json::to_string(&command)
             .context("serializing SwitchboardToSupervisor command")?;
@@ -474,11 +541,11 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         &mut self,
         msg: ws::Message,
         pong_timeout: &mut Pin<Box<Sleep>>,
-    ) -> WorkerResult<ControlFlow<(), ()>> {
+    ) -> WorkerResult<PostMsg> {
         match msg {
             ws::Message::Close(_close_frame) => {
                 tracing::info!("SupervisorWSWorker: supervisor sent close message, terminating.");
-                Ok(ControlFlow::Break(()))
+                Ok(PostMsg::Terminate)
             }
 
             ws::Message::Ping(payload) => {
@@ -490,7 +557,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     .send(ws::Message::Pong(payload))
                     .await
                     .map_err(anyhow::Error::from)?;
-                Ok(ControlFlow::Continue(()))
+                Ok(PostMsg::Continue)
             }
 
             ws::Message::Binary(payload) => {
@@ -498,7 +565,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     "SupervisorWSWorker: received unexpected binary WebSocket message ({} bytes), discarding...",
                     payload.len()
                 );
-                Ok(ControlFlow::Continue(()))
+                Ok(PostMsg::Continue)
             }
 
             ws::Message::Text(payload) => {
@@ -507,9 +574,48 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     payload.len()
                 );
 
-                // TODO: implement!
+                match serde_json::from_str::<SupervisorToSwitchboard>(&payload) {
+                    // A fresh status snapshot: refresh the cache and converge
+                    // against it. This is the out-of-band refresh `reconcile`
+                    // relies on (it never requests status itself).
+                    Ok(SupervisorToSwitchboard::StatusResponse(response)) => {
+                        self.last_seen_status = Some(response.message);
+                        Ok(PostMsg::Reconcile)
+                    }
 
-                Ok(ControlFlow::Continue(()))
+                    // Asynchronous job events (state transitions, task outcomes,
+                    // errors) are mirrored into the DB by the event path, which
+                    // lands in a follow-up commit. Until then the periodic status
+                    // round trip + reconcile keeps the DB converged, so it is
+                    // safe to log and ignore them here.
+                    Ok(SupervisorToSwitchboard::SupervisorEvent(event)) => {
+                        tracing::debug!(
+                            ?event,
+                            "SupervisorWSWorker: received supervisor event (event path not yet wired); ignoring"
+                        );
+                        Ok(PostMsg::Continue)
+                    }
+
+                    // The supervisor signalled a fatal protocol error: log and
+                    // terminate (the connector reconnects). See `ProtocolError`.
+                    Ok(SupervisorToSwitchboard::ProtocolError(err)) => {
+                        tracing::error!(
+                            ?err,
+                            "SupervisorWSWorker: supervisor reported a protocol error, terminating."
+                        );
+                        Ok(PostMsg::Terminate)
+                    }
+
+                    // A malformed message is non-fatal on our side: log and keep
+                    // the connection alive (a genuinely dead peer is caught by
+                    // the PONG keepalive).
+                    Err(e) => {
+                        tracing::warn!(
+                            "SupervisorWSWorker: failed to decode text message from supervisor: {e}; discarding."
+                        );
+                        Ok(PostMsg::Continue)
+                    }
+                }
             }
 
             ws::Message::Pong(_) => {
@@ -517,15 +623,36 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 pong_timeout
                     .as_mut()
                     .reset(Instant::now() + self.ctx.config.supervisor_pong_dead);
-                Ok(ControlFlow::Continue(()))
+                Ok(PostMsg::Continue)
             }
         }
+    }
+
+    /// Send a `StatusRequest` to the supervisor. The correlated `StatusResponse`
+    /// refreshes [`last_seen_status`] (see [`handle_supervisor_msg`]); we accept
+    /// any response rather than tracking the id, since at most one request is
+    /// outstanding at a time and a status snapshot is idempotent.
+    ///
+    /// [`last_seen_status`]: SupervisorWSWorker::last_seen_status
+    /// [`handle_supervisor_msg`]: SupervisorWSWorker::handle_supervisor_msg
+    async fn send_status_request(&mut self) -> WorkerResult<()> {
+        self.send_command(SwitchboardToSupervisor::StatusRequest(Request {
+            request_id: Uuid::new_v4(),
+            message: (),
+        }))
+        .await
     }
 
     async fn run_loop(&mut self) -> WorkerResult<()> {
         // Keepalive PING message interval, for PING messages sent from the
         // switchboard to the supervisor:
         let mut ping_interval = interval(self.ctx.config.supervisor_ping_interval);
+
+        // Dedicated reconcile cadence (see `supervisor_reconcile_interval`). It
+        // is reset whenever a reconcile runs for another reason (the liveness
+        // tick below, or an inbound status response), so it only fires to cover
+        // stretches where nothing else triggered convergence.
+        let mut reconcile_interval = interval(self.ctx.config.supervisor_reconcile_interval);
 
         // Timeout for waiting on PONG messages from the supervisor. Reset every
         // time we're getting a PONG response from the supervisor:
@@ -543,6 +670,10 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
             })
             .await?;
 
+        // Prime the status cache: the correlated response drives the initial
+        // reconcile (and resets the reconcile timer) once it arrives.
+        self.send_status_request().await?;
+
         loop {
             tokio::select! {
                 // Receive incoming messages from the supervisor via WebSocket:
@@ -554,9 +685,16 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
 
                     let msg = res_msg.context("SupervisorWSWorker reading message from supervisor WebSocket")?;
 
-                    if let ControlFlow::Break(()) = self.handle_supervisor_msg(msg, &mut pong_timeout).await? {
-                        // We've been asked to terminate:
-                        return Ok(());
+                    match self.handle_supervisor_msg(msg, &mut pong_timeout).await? {
+                        PostMsg::Terminate => return Ok(()),
+                        // A status response refreshed the cache: converge now,
+                        // and reset the dedicated timer (this counts as the
+                        // period's reconcile).
+                        PostMsg::Reconcile => {
+                            self.reconcile().await?;
+                            reconcile_interval.reset();
+                        }
+                        PostMsg::Continue => {}
                     }
                 }
 
@@ -578,6 +716,20 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
 
                     // Still current, now send a PING:
                     self.socket.send(ws::Message::Ping((&[][..]).into())).await.context("SupervisorWSWorker sending ping to supervisor")?;
+
+                    // Piggyback the regular status refresh on the liveness tick
+                    // (its response drives the next reconcile). This is also the
+                    // "reset on liveness check" point: the reconcile timer need
+                    // not fire on top of the refresh we just kicked off.
+                    self.send_status_request().await?;
+                    reconcile_interval.reset();
+                }
+
+                // Dedicated reconcile cadence: converge against the cached
+                // status without forcing a status request (covers stretches
+                // where neither the liveness tick nor a status response fired).
+                _ = reconcile_interval.tick() => {
+                    self.reconcile().await?;
                 }
 
                 // Timeout for waiting on a PONG message from the supervisor. If
@@ -609,10 +761,6 @@ mod tests {
     //!     cargo test -p treadmill-switchboard -- --ignored
     //!
     //! CI runs these via the `nextest-db` Nix flake check.
-    //!
-    //! `run_loop` is still `todo!()`, so the only paths exercised here are
-    //! the worker setup (`obtain_worker_instance_id`) and the row-locking
-    //! takeover guard (`with_txn`).
 
     use super::*;
     use crate::auth::token::SecurityToken;
@@ -620,7 +768,7 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context as TaskContext, Poll};
     use treadmill_rs::api::switchboard_supervisor::{
-        RunningJobState, SwitchboardToSupervisor, TaskExitStatus,
+        ImageSpecification, RunningJobState, SwitchboardToSupervisor, TaskExitStatus,
     };
 
     /// Build a `SupervisorWSWorkerConfig` with the given ping interval /
@@ -631,6 +779,11 @@ mod tests {
         SupervisorWSWorkerConfig {
             supervisor_ping_interval: Duration::from_millis(ping_interval_ms),
             supervisor_pong_dead: Duration::from_millis(pong_dead_ms),
+            // Effectively disabled by default: tests that exercise the dedicated
+            // reconcile cadence set their own short interval. Keeping it huge
+            // here means the ping/pong/inbound tests don't see stray reconcile
+            // ticks (their reconciles, if any, are driven directly).
+            supervisor_reconcile_interval: Duration::from_secs(3600),
         }
     }
 
@@ -756,6 +909,7 @@ mod tests {
                 config,
             },
             socket: NoSocket,
+            last_seen_status: None,
         }
     }
 
@@ -781,6 +935,7 @@ mod tests {
                 config,
             },
             socket,
+            last_seen_status: None,
         };
         (to_worker, from_worker, worker)
     }
@@ -1223,14 +1378,20 @@ mod tests {
         let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
 
         for n in 1..=3 {
-            let msg = tokio::time::timeout(std::time::Duration::from_secs(2), from_worker.recv())
-                .await
-                .unwrap_or_else(|_| panic!("expected PING #{n} within 2s"))
-                .expect("from_worker channel must remain open while worker runs");
-            assert!(
-                matches!(msg, ws::Message::Ping(_)),
-                "expected Ping #{n}, got {msg:?}"
-            );
+            // The worker also emits `StatusRequest` (Text) frames on connect and
+            // on each ping tick; skip them — we only assert on the PINGs here.
+            loop {
+                let msg =
+                    tokio::time::timeout(std::time::Duration::from_secs(2), from_worker.recv())
+                        .await
+                        .unwrap_or_else(|_| panic!("expected PING #{n} within 2s"))
+                        .expect("from_worker channel must remain open while worker runs");
+                match msg {
+                    ws::Message::Ping(_) => break,
+                    ws::Message::Text(_) => continue,
+                    other => panic!("expected Ping or StatusRequest #{n}, got {other:?}"),
+                }
+            }
         }
 
         // Tidy up: closing inbound ends the worker.
@@ -1270,21 +1431,30 @@ mod tests {
         let host_id = insert_host(&pool).await?;
         let (to_worker, mut from_worker, socket) = scripted_socket();
 
-        // 50ms pings, 200ms dead-pong deadline: a missed Pong would kill the
-        // worker within ~200ms. We'll run for ~600ms (3 dead-pong windows)
-        // replying promptly each time, then close cleanly. The worker must
-        // outlive all three windows.
-        let cfg = worker_config(50, 200);
+        // 50ms pings, 400ms dead-pong deadline: a missed Pong would kill the
+        // worker within ~400ms. We reply promptly across ~800ms (two dead-pong
+        // windows), then close cleanly; the worker must outlive both. The
+        // deadline is generous on purpose — under parallel test load a single
+        // heartbeat transaction can briefly stall the loop, and we don't want a
+        // false dead-peer detection to flake this liveness check (the exact
+        // threshold is pinned by `run_exits_when_no_pong_within_dead_threshold`).
+        let cfg = worker_config(50, 400);
         let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
 
-        for n in 1..=6 {
-            let msg = tokio::time::timeout(std::time::Duration::from_secs(2), from_worker.recv())
-                .await
-                .unwrap_or_else(|_| panic!("expected PING #{n} within 2s"))
-                .expect("from_worker channel must remain open while worker runs");
-            let payload = match msg {
-                ws::Message::Ping(p) => p,
-                other => panic!("expected Ping #{n}, got {other:?}"),
+        for n in 1..=16 {
+            // Skip the `StatusRequest` (Text) frames the worker also emits; we
+            // Pong each PING to keep the dead-peer detector satisfied.
+            let payload = loop {
+                let msg =
+                    tokio::time::timeout(std::time::Duration::from_secs(2), from_worker.recv())
+                        .await
+                        .unwrap_or_else(|_| panic!("expected PING #{n} within 2s"))
+                        .expect("from_worker channel must remain open while worker runs");
+                match msg {
+                    ws::Message::Ping(p) => break p,
+                    ws::Message::Text(_) => continue,
+                    other => panic!("expected Ping or StatusRequest #{n}, got {other:?}"),
+                }
             };
             to_worker
                 .send(Ok(ws::Message::Pong(payload)))
@@ -1304,15 +1474,14 @@ mod tests {
 
     // -- non-Close inbound frames must not panic the run-loop ----------------
     //
-    // Currently `handle_supervisor_msg` is `_ => unimplemented!()` for every
-    // variant other than Close. These tests pin down what each frame type
-    // should do at the worker layer:
+    // These pin down what each inbound frame type does at the worker layer:
     //   * Ping → tolerated (production: tungstenite auto-pongs at the framing
     //            layer; the worker code itself only needs to not panic).
     //   * Pong → consumed by the dead-peer detector; loop continues.
     //   * Binary → log + continue (out-of-protocol).
-    //   * Text → log + continue (full dispatch arrives with step 3).
-    // In all four cases the worker must keep running until we send Close.
+    //   * Text → decoded as `SupervisorToSwitchboard`; an unparseable payload is
+    //            logged and the loop continues (a `ProtocolError` would close).
+    // In all these cases the worker must keep running until we send Close.
 
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
@@ -1424,16 +1593,16 @@ mod tests {
         Ok(())
     }
 
-    // -- reconciliation contract (Phase 5) ----------------------------------
+    // -- reconciliation contract --------------------------------------------
     //
-    // These pin down the five reconciliation cases documented on
-    // `SupervisorWSWorker::reconcile`. They are RED until the Phase 7 worker
-    // implements the logic (today `reconcile` is `todo!()`), so they fail by
-    // panic rather than by assertion. Each test builds the DB precondition
-    // (`J_sb = hosts.current_job`), invokes `reconcile` with the reported
-    // supervisor status (`J_sup`), and asserts the converged DB state plus any
-    // command the worker must emit. `reconcile` is driven directly (it is not
-    // yet wired into `run_loop`), mirroring how `with_txn` is unit-tested above.
+    // These pin down the reconciliation rows documented on
+    // `SupervisorWSWorker::reconcile`. Each test builds the DB precondition
+    // (`J_sb = hosts.current_job` and its `job_state`), seeds the worker's
+    // `last_seen_status` cache with the reported supervisor status (`J_sup`),
+    // invokes `reconcile`, and asserts the converged DB state plus any command
+    // the worker must emit. `reconcile` is driven directly (rather than through
+    // `run_loop`), mirroring how `with_txn` is unit-tested above; the cache it
+    // reads is what `run_loop` would otherwise populate from a `StatusResponse`.
 
     /// Case 1: switchboard has no assigned job and the supervisor is idle. The
     /// two views already agree, so reconcile is a no-op: nothing is assigned and
@@ -1446,8 +1615,9 @@ mod tests {
         let (_to_worker, mut from_worker, mut worker) =
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
+        worker.last_seen_status = Some(ReportedSupervisorStatus::Idle);
         worker
-            .reconcile(ReportedSupervisorStatus::Idle)
+            .reconcile()
             .await
             .expect("case 1: reconcile should succeed");
 
@@ -1475,11 +1645,12 @@ mod tests {
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         let zombie = Uuid::new_v4();
+        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+            job_id: zombie,
+            job_state: RunningJobState::Ready,
+        });
         worker
-            .reconcile(ReportedSupervisorStatus::OngoingJob {
-                job_id: zombie,
-                job_state: RunningJobState::Ready,
-            })
+            .reconcile()
             .await
             .expect("case 2: reconcile should succeed");
 
@@ -1515,8 +1686,9 @@ mod tests {
         let (_to_worker, _from_worker, mut worker) =
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
+        worker.last_seen_status = Some(ReportedSupervisorStatus::Idle);
         worker
-            .reconcile(ReportedSupervisorStatus::Idle)
+            .reconcile()
             .await
             .expect("case 3: reconcile should succeed");
 
@@ -1550,11 +1722,12 @@ mod tests {
         let (_to_worker, _from_worker, mut worker) =
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
+        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+            job_id,
+            job_state: RunningJobState::Ready,
+        });
         worker
-            .reconcile(ReportedSupervisorStatus::OngoingJob {
-                job_id,
-                job_state: RunningJobState::Ready,
-            })
+            .reconcile()
             .await
             .expect("case 4: reconcile should succeed");
 
@@ -1619,11 +1792,12 @@ mod tests {
             "the outcome must apply while the job is assigned"
         );
 
+        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+            job_id,
+            job_state: RunningJobState::Terminated,
+        });
         worker
-            .reconcile(ReportedSupervisorStatus::OngoingJob {
-                job_id,
-                job_state: RunningJobState::Terminated,
-            })
+            .reconcile()
             .await
             .expect("case 4 (terminated): reconcile should succeed");
 
@@ -1792,11 +1966,12 @@ mod tests {
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         let reported = Uuid::new_v4();
+        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+            job_id: reported,
+            job_state: RunningJobState::Ready,
+        });
         worker
-            .reconcile(ReportedSupervisorStatus::OngoingJob {
-                job_id: reported,
-                job_state: RunningJobState::Ready,
-            })
+            .reconcile()
             .await
             .expect("case 5: reconcile should succeed");
 
@@ -1817,6 +1992,215 @@ mod tests {
         ) {
             SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, reported),
             other => panic!("case 5: expected StopJob, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// Register an image whose digest matches [`insert_job`]'s (`sha256:00…0`)
+    /// with a single location, and pin it as `job_id`'s `resolved_image_digest`
+    /// — the precondition the scheduler establishes before a job is dispatched.
+    /// Returns the digest and the location's `(registry, repository)` so the
+    /// caller can assert the built `StartJob` carries them.
+    async fn register_resolved_image(
+        pool: &PgPool,
+        owner: Uuid,
+        job_id: Uuid,
+    ) -> anyhow::Result<(treadmill_rs::image::Digest, String, String)> {
+        let digest_str = format!("sha256:{}", "0".repeat(64));
+        let image_id = Uuid::new_v4();
+        sql::image::insert(
+            pool,
+            image_id,
+            &digest_str,
+            "application/vnd.oci.image.manifest.v1+json",
+            owner,
+            None,
+            &serde_json::json!({}),
+        )
+        .await?;
+        let (registry, repository) = ("registry.example".to_string(), "team/image".to_string());
+        sql::image::upsert_location(pool, image_id, &registry, &repository, "canonical").await?;
+        let digest: treadmill_rs::image::Digest = digest_str.parse().expect("valid digest");
+        sql::job::set_resolved_image(job_id, &digest, pool).await?;
+        Ok((digest, registry, repository))
+    }
+
+    /// Scheduled + the supervisor is idle: the job hasn't been picked up yet, so
+    /// the worker dispatches `StartJob`. The DB stays `scheduled` (the send is
+    /// idempotent; a later pass adopts the reported running state), and the
+    /// emitted message carries the scheduler-resolved image + its locations.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_scheduled_idle_dispatches_start_job(pool: PgPool) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+        let (digest, registry, repository) =
+            register_resolved_image(&pool, user_id, job_id).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        worker.last_seen_status = Some(ReportedSupervisorStatus::Idle);
+        worker
+            .reconcile()
+            .await
+            .expect("scheduled + idle reconcile should succeed");
+
+        assert_eq!(
+            job_state_of(&pool, job_id).await?,
+            "scheduled",
+            "scheduled + idle: StartJob must not transition the DB state"
+        );
+        assert_eq!(
+            current_job_of(&pool, host_id).await?,
+            Some(job_id),
+            "scheduled + idle: the assignment must be retained"
+        );
+        match decode_outbound(
+            from_worker
+                .try_recv()
+                .expect("scheduled + idle: a StartJob must be emitted"),
+        ) {
+            SwitchboardToSupervisor::StartJob(m) => {
+                assert_eq!(m.job_id, job_id, "StartJob must target the scheduled job");
+                match m.image_spec {
+                    ImageSpecification::Image {
+                        manifest_digest,
+                        locations,
+                    } => {
+                        assert_eq!(
+                            manifest_digest, digest,
+                            "StartJob must carry the scheduler-resolved digest"
+                        );
+                        assert_eq!(locations.len(), 1, "exactly one location was registered");
+                        assert_eq!(locations[0].registry, registry);
+                        assert_eq!(locations[0].repository, repository);
+                    }
+                    other => panic!("expected a concrete Image spec, got {other:?}"),
+                }
+                assert!(m.ssh_keys.is_empty(), "insert_job seeds no ssh keys");
+                assert!(m.parameters.is_empty(), "insert_job seeds no parameters");
+            }
+            other => panic!("scheduled + idle: expected StartJob, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// Scheduled, but the supervisor is busy with some *other* job: that job is a
+    /// zombie to stop, while the scheduled job is left untouched for the next
+    /// pass to start (no StartJob this pass, no DB transition).
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_scheduled_foreign_zombie_keeps_scheduled(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        let zombie = Uuid::new_v4();
+        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+            job_id: zombie,
+            job_state: RunningJobState::Ready,
+        });
+        worker
+            .reconcile()
+            .await
+            .expect("scheduled + foreign zombie reconcile should succeed");
+
+        assert_eq!(
+            job_state_of(&pool, job_id).await?,
+            "scheduled",
+            "the scheduled job must be left scheduled for the next pass"
+        );
+        assert_eq!(
+            current_job_of(&pool, host_id).await?,
+            Some(job_id),
+            "the assignment must be retained"
+        );
+        match decode_outbound(
+            from_worker
+                .try_recv()
+                .expect("a StopJob for the foreign zombie must be emitted"),
+        ) {
+            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, zombie),
+            other => panic!("expected StopJob for the zombie, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// `build_start_job_message` maps a concrete-image job to its resolved digest
+    /// + locations, and a resume job to `ResumeJob` (carrying the original id).
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn build_start_job_message_concrete_and_resume(pool: PgPool) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let mut conn = pool.acquire().await?;
+
+        // Concrete image: resolved digest + its locations.
+        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        let (digest, _registry, _repository) =
+            register_resolved_image(&pool, user_id, job_id).await?;
+        let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
+        let msg = sql::job::build_start_job_message(&job, &mut conn)
+            .await
+            .expect("concrete-image StartJob should build");
+        assert_eq!(msg.job_id, job_id);
+        match msg.image_spec {
+            ImageSpecification::Image {
+                manifest_digest,
+                locations,
+            } => {
+                assert_eq!(manifest_digest, digest);
+                assert_eq!(locations.len(), 1);
+            }
+            other => panic!("expected concrete Image spec, got {other:?}"),
+        }
+
+        // Resume job: `ResumeJob` carrying the original job's id. A resume row has
+        // no image/group digest (the `valid_init_spec` invariant), so it is
+        // inserted directly rather than via `insert_job`. `resume_job_id` is an FK,
+        // so it must point at a real job — reuse the concrete one above.
+        let resume_target = job_id;
+        let resume_job = Uuid::new_v4();
+        sqlx::query(
+            "insert into tml_switchboard.jobs \
+             (job_id, resume_job_id, restart_job_id, image_digest, image_group_digest, ssh_keys, \
+              restart_policy, enqueued_by_token_id, host_tag_requirements, job_timeout, job_state, \
+              initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
+              termination_reason, task_exit_status, exit_message, terminated_at, last_updated_at) \
+             values \
+             ($1, $2, null, null, null, '{}'::text[], row(0)::tml_switchboard.restart_policy, \
+              $3, '{}'::text[], interval '1 hour', 'queued', null, now(), null, null, null, \
+              null, null, null, null, default)",
+        )
+        .bind(resume_job)
+        .bind(resume_target)
+        .bind(token_id)
+        .execute(&pool)
+        .await?;
+        let rjob = sql::job::fetch_by_job_id(resume_job, &pool).await?;
+        let rmsg = sql::job::build_start_job_message(&rjob, &mut conn)
+            .await
+            .expect("resume StartJob should build");
+        match rmsg.image_spec {
+            ImageSpecification::ResumeJob { job_id } => assert_eq!(
+                job_id, resume_target,
+                "ResumeJob must carry the original job's id"
+            ),
+            other => panic!("expected ResumeJob spec, got {other:?}"),
         }
         Ok(())
     }

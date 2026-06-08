@@ -7,7 +7,8 @@ use sqlx::{PgExecutor, Postgres, Transaction};
 use std::collections::BTreeSet;
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, TerminationReason};
 use treadmill_rs::api::switchboard_supervisor::{
-    ImageLocation, ImageSpecification, JobInitializingStage, RestartPolicy, TaskExitStatus,
+    ImageLocation, ImageSpecification, JobInitializingStage, RestartPolicy, RunningJobState,
+    StartJobMessage, TaskExitStatus,
 };
 use treadmill_rs::image::Digest;
 use uuid::Uuid;
@@ -559,6 +560,82 @@ pub async fn set_resolved_image(
     .map(|_| ())
 }
 
+/// Why building a [`StartJobMessage`] for dispatch failed.
+#[derive(Debug)]
+pub enum BuildStartJobError {
+    /// An underlying database error (job/params lookup).
+    Db(sqlx::Error),
+    /// Resolving the recorded image digest to a concrete dispatch spec failed.
+    Image(ImageResolveError),
+    /// The job has no `resolved_image_digest`, but the scheduler records one for
+    /// every concrete-image job at assignment. Reaching here means the row was
+    /// not scheduled through the normal path (or the column was cleared).
+    NoResolvedImage(Uuid),
+}
+impl From<sqlx::Error> for BuildStartJobError {
+    fn from(e: sqlx::Error) -> Self {
+        BuildStartJobError::Db(e)
+    }
+}
+impl From<ImageResolveError> for BuildStartJobError {
+    fn from(e: ImageResolveError) -> Self {
+        BuildStartJobError::Image(e)
+    }
+}
+impl std::fmt::Display for BuildStartJobError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BuildStartJobError::Db(e) => write!(f, "database error building StartJob message: {e}"),
+            BuildStartJobError::Image(e) => write!(f, "{e}"),
+            BuildStartJobError::NoResolvedImage(j) => {
+                write!(f, "job {j} has no resolved_image_digest to dispatch")
+            }
+        }
+    }
+}
+impl std::error::Error for BuildStartJobError {}
+
+/// Build the [`StartJobMessage`] the worker hands the supervisor to dispatch
+/// `job`.
+///
+/// The image spec honors the scheduler's already-recorded choice rather than
+/// re-resolving: a resume becomes [`ImageSpecification::ResumeJob`]; otherwise
+/// the concrete `resolved_image_digest` the scheduler pinned at assignment is
+/// paired with that image's catalog locations (a group is *not* re-selected — the
+/// scheduler's chosen member stands). The remaining fields are read straight off
+/// the job row and the `job_parameters` table.
+///
+/// Read-only; safe to call inside the worker's `with_txn` (it issues no writes).
+pub async fn build_start_job_message(
+    job: &SqlJob,
+    conn: &mut sqlx::PgConnection,
+) -> Result<StartJobMessage, BuildStartJobError> {
+    let image_spec = if let Some(resume_job_id) = job.resume_job_id {
+        ImageSpecification::ResumeJob {
+            job_id: resume_job_id,
+        }
+    } else {
+        let digest = job
+            .resolved_image_digest
+            .as_deref()
+            .ok_or(BuildStartJobError::NoResolvedImage(job.job_id))?;
+        let rec = image::fetch_by_digest(&mut *conn, digest)
+            .await?
+            .ok_or_else(|| ImageResolveError::NotRegistered(digest.to_string()))?;
+        concrete_image_spec(rec.id, digest, conn).await?
+    };
+
+    let parameters = parameters::fetch_by_job_id(job.job_id, &mut *conn).await?;
+
+    Ok(StartJobMessage {
+        job_id: job.job_id,
+        image_spec,
+        ssh_keys: job.ssh_keys.clone(),
+        restart_policy: job.restart_policy(),
+        parameters,
+    })
+}
+
 /// Finalize a still-`queued` job that can never be dispatched because its image
 /// is unresolvable (unregistered, or has no registry location). The job was
 /// never placed on a host, so there is no assignment to release; we just record
@@ -692,6 +769,57 @@ pub async fn set_running_state(
     .execute(&mut **txn)
     .await?;
     Ok(())
+}
+
+/// Adopt a supervisor-reported [`RunningJobState`] into the DB, within the
+/// caller's transaction. This is the single place that maps a running state to
+/// its DB transition, shared by `reconcile` (adopting the status snapshot) and
+/// the asynchronous [`SupervisorJobEvent::StateTransition`] handler so the two
+/// paths can never diverge.
+///
+/// The executing states (`Initializing`/`Ready`/`Terminating`) go through
+/// [`set_running_state`] (which back-fills `started_at`, so adopting over a
+/// still-`scheduled` row is valid). `Terminated` finalizes the job via
+/// [`finalize_terminated`] (`termination_reason = workload_exited`, no restart):
+/// in that case the function returns `true`, signalling the caller it must
+/// `StopJob`-ack so the supervisor can release its retained terminal record.
+///
+/// Must be called inside the worker's `with_txn` so the takeover/staleness guard
+/// covers it.
+///
+/// [`SupervisorJobEvent::StateTransition`]: treadmill_rs::api::switchboard_supervisor::SupervisorJobEvent::StateTransition
+pub async fn apply_running_state(
+    job_id: Uuid,
+    host_id: Uuid,
+    state: RunningJobState,
+    at: DateTime<Utc>,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<bool, sqlx::Error> {
+    match state {
+        RunningJobState::Initializing { stage } => {
+            set_running_state(
+                job_id,
+                SqlJobState::Initializing,
+                Some(stage.into()),
+                at,
+                txn,
+            )
+            .await?;
+            Ok(false)
+        }
+        RunningJobState::Ready => {
+            set_running_state(job_id, SqlJobState::Ready, None, at, txn).await?;
+            Ok(false)
+        }
+        RunningJobState::Terminating => {
+            set_running_state(job_id, SqlJobState::Terminating, None, at, txn).await?;
+            Ok(false)
+        }
+        RunningJobState::Terminated => {
+            finalize_terminated(job_id, host_id, at, txn).await?;
+            Ok(true)
+        }
+    }
 }
 
 /// Finalize a job the supervisor reports as `Terminated`, within the caller's
