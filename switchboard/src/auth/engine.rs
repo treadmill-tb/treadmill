@@ -47,7 +47,9 @@ impl HostPermission {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    /// Parse the textual value as stored in the `host_permission` enum; the
+    /// inverse of [`as_str`](Self::as_str). `None` for an unrecognized string.
+    pub fn from_db_str(s: &str) -> Option<Self> {
         match s {
             "read" => Some(HostPermission::Read),
             "start" => Some(HostPermission::Start),
@@ -84,7 +86,9 @@ impl JobPermission {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    /// Parse the textual value as stored in the `job_permission` enum; the
+    /// inverse of [`as_str`](Self::as_str). `None` for an unrecognized string.
+    pub fn from_db_str(s: &str) -> Option<Self> {
         match s {
             "read" => Some(JobPermission::Read),
             "stop" => Some(JobPermission::Stop),
@@ -213,7 +217,7 @@ pub async fn host_permissions(
     if rows.iter().any(|s| s == "*") {
         Ok(HostPermission::ALL.to_vec())
     } else {
-        Ok(rows.into_iter().filter_map(|s: String| HostPermission::from_str(&s)).collect())
+        Ok(rows.into_iter().filter_map(|s: String| HostPermission::from_db_str(&s)).collect())
     }
 }
 
@@ -257,6 +261,6 @@ pub async fn job_permissions(
     if rows.iter().any(|s| s == "*") {
         Ok(JobPermission::ALL.to_vec())
     } else {
-        Ok(rows.into_iter().filter_map(|s: String| JobPermission::from_str(&s)).collect())
+        Ok(rows.into_iter().filter_map(|s: String| JobPermission::from_db_str(&s)).collect())
     }
 }

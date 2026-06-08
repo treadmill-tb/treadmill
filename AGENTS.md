@@ -96,10 +96,9 @@ nix develop --command bash -c 'cargo clippy -p treadmill-switchboard --all-targe
 nix develop --command bash -c 'cargo test  -p treadmill-rs'
 ```
 
-**Clippy note:** the workspace-wide `clippy -- -D warnings` is **red at base**
-on a pre-existing lint in `switchboard/src/auth/engine.rs` (`from_str` /
-`should_implement_trait`). Scope clippy to the crates you changed and confirm you
-added no *new* warnings, rather than relying on the workspace lint being clean.
+**Clippy note:** the workspace-wide `clippy --all-targets -- -D warnings` is
+green at base. Keep it that way: confirm your changes add no new warnings before
+committing.
 
 The authoritative gates are the **flake checks** (`nix/checks.nix`), run
 hermetically. Build one with:
