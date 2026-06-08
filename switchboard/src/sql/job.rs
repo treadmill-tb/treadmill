@@ -338,6 +338,10 @@ pub struct SqlJob {
     dispatched_on_host_id: Option<Uuid>,
     ssh_endpoints: Option<Vec<SqlSshEndpoint>>,
 
+    // The DB side of user-cancel: set when cancellation is requested, consumed by
+    // the worker's reconcile (see `switchboard_stop_reason`).
+    cancel_requested_at: Option<DateTime<Utc>>,
+
     // Filled out when transitioned into `finalized` job state
     #[allow(dead_code)]
     termination_reason: Option<SqlTerminationReason>,
@@ -443,6 +447,31 @@ impl SqlJob {
     pub fn job_state(&self) -> SqlJobState {
         self.job_state
     }
+
+    /// The switchboard-side reason this *assigned* job should be stopped, if any
+    /// — the convergence pre-check shared by execution-timeout and user-cancel.
+    ///
+    /// Re-derived from fresh DB state on every reconcile pass (never cached), so
+    /// an extended deadline or a (future) cleared cancel is honored right up to
+    /// the moment the job is actually stopped:
+    ///   - `cancel_requested_at` set                  → `UserCanceled`
+    ///   - started and past `started_at + job_timeout` → `ExecutionTimeout`
+    ///
+    /// User-cancel takes precedence over an also-expired deadline. Returns `None`
+    /// for a job that should keep running — including a not-yet-started
+    /// (`scheduled`) job that is not canceled, since queue-timeout is the
+    /// scheduler's concern, not the worker's.
+    pub fn switchboard_stop_reason(&self, now: DateTime<Utc>) -> Option<SqlTerminationReason> {
+        if self.cancel_requested_at.is_some() {
+            return Some(SqlTerminationReason::UserCanceled);
+        }
+        if let Some(started_at) = self.started_at
+            && started_at + self.timeout() <= now
+        {
+            return Some(SqlTerminationReason::ExecutionTimeout);
+        }
+        None
+    }
 }
 
 pub async fn fetch_by_job_id(
@@ -459,6 +488,7 @@ pub async fn fetch_by_job_id(
         queued_at, job_state as "job_state: _",
         initializing_stage as "initializing_stage: _", started_at,
         dispatched_on_host_id, ssh_endpoints as "ssh_endpoints: _",
+        cancel_requested_at,
         termination_reason as "termination_reason: _",
         task_exit_status as "task_exit_status: _", exit_message, terminated_at,
         last_updated_at
@@ -886,6 +916,71 @@ pub async fn finalize_terminated(
     .await?;
 
     Ok(())
+}
+
+/// Finalize a job with an explicit, switchboard-determined `reason`, within the
+/// caller's transaction. Backs reconcile's stop pre-check (execution-timeout and
+/// user-cancel): when the worker decides an assigned job must stop, the eventual
+/// terminal record carries `reason` (e.g. `execution_timeout` / `user_canceled`)
+/// rather than a workload-driven one.
+///
+/// Records only the reason and `terminated_at`, clears the assignment columns,
+/// and releases `hosts.current_job`. The orthogonal `task_exit_status` /
+/// `exit_message` are left untouched. Unlike
+/// [`finalize_dropped_and_maybe_restart`], the restart policy is **not** applied:
+/// a deliberate stop is not retried.
+///
+/// **Idempotent.** Guarded on `job_state <> 'finalized'`, so a replay is a no-op
+/// (returns `false`).
+///
+/// Must be called inside the worker's `with_txn` so the takeover/staleness guard
+/// covers it.
+pub async fn finalize_with_reason(
+    job_id: Uuid,
+    host_id: Uuid,
+    reason: SqlTerminationReason,
+    at: DateTime<Utc>,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<bool, sqlx::Error> {
+    let transitioned = sqlx::query!(
+        r#"
+        update tml_switchboard.jobs
+        set job_state = 'finalized',
+            termination_reason = $2,
+            dispatched_on_host_id = null,
+            started_at = null,
+            initializing_stage = null,
+            terminated_at = $3,
+            last_updated_at = default
+        where job_id = $1 and job_state <> 'finalized'
+        returning job_id
+        "#,
+        job_id,
+        reason as SqlTerminationReason,
+        at,
+    )
+    .fetch_optional(&mut **txn)
+    .await?;
+
+    // Some earlier pass already finalized this job: nothing left to do.
+    if transitioned.is_none() {
+        return Ok(false);
+    }
+
+    // Release the host's assignment pointer.
+    sqlx::query!(
+        r#"
+        update tml_switchboard.hosts
+        set current_job = null
+        where host_id = $1 and current_job = $2
+        "#,
+        host_id,
+        job_id,
+    )
+    .execute(&mut **txn)
+    .await?;
+
+    Ok(true)
 }
 
 /// Map a supervisor-reported [`JobErrorKind`] to the terminal

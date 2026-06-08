@@ -487,6 +487,15 @@ create table tml_switchboard.jobs
     -- a host that exposes endpoints.
     ssh_endpoints               tml_switchboard.ssh_endpoint[],
 
+    -- User-requested cancellation signal: the DB side of user-cancel. When set,
+    -- the assigned job's worker converges the job to `finalized` with
+    -- `termination_reason = user_canceled`. It is re-read on every reconcile pass
+    -- (alongside the execution-timeout deadline), so the decision is always made
+    -- against fresh state and composes with a later API that sets this column.
+    -- NULL means no cancellation requested. Queued (unassigned) jobs are the
+    -- scheduler/reaper's responsibility, not a worker's.
+    cancel_requested_at         timestamp with time zone,
+
     -- Filled out when transitioned into `finalized`. `termination_reason` records
     -- *why* the job stopped; `task_exit_status` records the *result of the user
     -- workload* (independent of the reason); `exit_message` is an optional

@@ -404,81 +404,145 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     // (and a same-id report) means.
                     Some(id) => {
                         let job = sql::job::fetch_by_job_id(id, &mut **txn).await?;
-                        match (job.job_state(), reported) {
-                            // Scheduled + Idle: the supervisor hasn't picked it
-                            // up yet — (re)dispatch it. No DB change; the next
-                            // pass adopts the reported running state.
-                            (SqlJobState::Scheduled, ReportedSupervisorStatus::Idle) => {
-                                let msg = sql::job::build_start_job_message(&job, txn)
-                                    .await
-                                    .context("building StartJob message in reconcile")?;
-                                Some(SwitchboardToSupervisor::StartJob(msg))
-                            }
 
-                            // Scheduled + the supervisor reports *this* job: it
-                            // picked it up — adopt the reported running state
-                            // (scheduled → initializing/ready/...).
-                            (
-                                SqlJobState::Scheduled,
+                        // Stop pre-check: should this assigned job be stopped for
+                        // a switchboard-side reason (execution timeout or user
+                        // cancel)? Re-derived from the freshly-fetched row on
+                        // every pass, so an extended deadline (or a cancel signal
+                        // set since the last pass) is always honored against
+                        // current DB state — we never terminate on stale data.
+                        if let Some(reason) = job.switchboard_stop_reason(at) {
+                            match reported {
+                                // The supervisor no longer runs it (already gone,
+                                // or it never started): finalize with the reason.
+                                ReportedSupervisorStatus::Idle => {
+                                    sql::job::finalize_with_reason(id, host_id, reason, at, txn)
+                                        .await?;
+                                    None
+                                }
+
+                                // The supervisor still reports *this* job.
                                 ReportedSupervisorStatus::OngoingJob {
                                     job_id: j_sup,
                                     job_state,
-                                },
-                            ) if j_sup == id => {
-                                let terminated =
-                                    sql::job::apply_running_state(id, host_id, job_state, at, txn)
+                                } if j_sup == id => match job_state {
+                                    // Already torn down: finalize + ack.
+                                    RunningJobState::Terminated => {
+                                        sql::job::finalize_with_reason(
+                                            id, host_id, reason, at, txn,
+                                        )
                                         .await?;
-                                terminated.then_some(SwitchboardToSupervisor::StopJob(
-                                    StopJobMessage { job_id: id },
-                                ))
-                            }
-
-                            // Scheduled, but the supervisor is busy with some
-                            // *other* job: that one is a zombie. Stop it and
-                            // leave `id` scheduled for the next pass to start.
-                            (
-                                SqlJobState::Scheduled,
-                                ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. },
-                            ) => Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
-                                job_id: j_sup,
-                            })),
-
-                            // Running (initializing/ready/terminating) + Idle:
-                            // the job was lost — finalize (honoring the restart
-                            // policy) and release the assignment.
-                            (_, ReportedSupervisorStatus::Idle) => {
-                                sql::job::finalize_dropped_and_maybe_restart(id, host_id, at, txn)
-                                    .await?;
-                                None
-                            }
-
-                            // Running + the supervisor reports *this* job: adopt
-                            // the reported state; a `Terminated` finalizes and is
-                            // acked with `StopJob`.
-                            (
-                                _,
-                                ReportedSupervisorStatus::OngoingJob {
-                                    job_id: j_sup,
-                                    job_state,
-                                },
-                            ) if j_sup == id => {
-                                let terminated =
-                                    sql::job::apply_running_state(id, host_id, job_state, at, txn)
+                                        Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                                            job_id: id,
+                                        }))
+                                    }
+                                    // Still running: track the reported state and
+                                    // (re)issue StopJob until it reports gone.
+                                    running => {
+                                        sql::job::apply_running_state(
+                                            id, host_id, running, at, txn,
+                                        )
                                         .await?;
-                                terminated.then_some(SwitchboardToSupervisor::StopJob(
-                                    StopJobMessage { job_id: id },
-                                ))
-                            }
+                                        Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                                            job_id: id,
+                                        }))
+                                    }
+                                },
 
-                            // Running, but the supervisor reports a *different*
-                            // job: the assigned one is lost (finalize + restart
-                            // policy); the reported one is an unassigned zombie.
-                            (_, ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. }) => {
-                                sql::job::finalize_dropped_and_maybe_restart(id, host_id, at, txn)
+                                // The supervisor runs a *different* job: ours is
+                                // gone (finalize with the reason); the reported
+                                // one is an unassigned zombie to stop.
+                                ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. } => {
+                                    sql::job::finalize_with_reason(id, host_id, reason, at, txn)
+                                        .await?;
+                                    Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                                        job_id: j_sup,
+                                    }))
+                                }
+                            }
+                        } else {
+                            match (job.job_state(), reported) {
+                                // Scheduled + Idle: the supervisor hasn't picked it
+                                // up yet — (re)dispatch it. No DB change; the next
+                                // pass adopts the reported running state.
+                                (SqlJobState::Scheduled, ReportedSupervisorStatus::Idle) => {
+                                    let msg = sql::job::build_start_job_message(&job, txn)
+                                        .await
+                                        .context("building StartJob message in reconcile")?;
+                                    Some(SwitchboardToSupervisor::StartJob(msg))
+                                }
+
+                                // Scheduled + the supervisor reports *this* job: it
+                                // picked it up — adopt the reported running state
+                                // (scheduled → initializing/ready/...).
+                                (
+                                    SqlJobState::Scheduled,
+                                    ReportedSupervisorStatus::OngoingJob {
+                                        job_id: j_sup,
+                                        job_state,
+                                    },
+                                ) if j_sup == id => {
+                                    let terminated = sql::job::apply_running_state(
+                                        id, host_id, job_state, at, txn,
+                                    )
                                     .await?;
-                                Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                                    terminated.then_some(SwitchboardToSupervisor::StopJob(
+                                        StopJobMessage { job_id: id },
+                                    ))
+                                }
+
+                                // Scheduled, but the supervisor is busy with some
+                                // *other* job: that one is a zombie. Stop it and
+                                // leave `id` scheduled for the next pass to start.
+                                (
+                                    SqlJobState::Scheduled,
+                                    ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. },
+                                ) => Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
                                     job_id: j_sup,
-                                }))
+                                })),
+
+                                // Running (initializing/ready/terminating) + Idle:
+                                // the job was lost — finalize (honoring the restart
+                                // policy) and release the assignment.
+                                (_, ReportedSupervisorStatus::Idle) => {
+                                    sql::job::finalize_dropped_and_maybe_restart(
+                                        id, host_id, at, txn,
+                                    )
+                                    .await?;
+                                    None
+                                }
+
+                                // Running + the supervisor reports *this* job: adopt
+                                // the reported state; a `Terminated` finalizes and is
+                                // acked with `StopJob`.
+                                (
+                                    _,
+                                    ReportedSupervisorStatus::OngoingJob {
+                                        job_id: j_sup,
+                                        job_state,
+                                    },
+                                ) if j_sup == id => {
+                                    let terminated = sql::job::apply_running_state(
+                                        id, host_id, job_state, at, txn,
+                                    )
+                                    .await?;
+                                    terminated.then_some(SwitchboardToSupervisor::StopJob(
+                                        StopJobMessage { job_id: id },
+                                    ))
+                                }
+
+                                // Running, but the supervisor reports a *different*
+                                // job: the assigned one is lost (finalize + restart
+                                // policy); the reported one is an unassigned zombie.
+                                (_, ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. }) => {
+                                    sql::job::finalize_dropped_and_maybe_restart(
+                                        id, host_id, at, txn,
+                                    )
+                                    .await?;
+                                    Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                                        job_id: j_sup,
+                                    }))
+                                }
                             }
                         }
                     }
@@ -2560,6 +2624,278 @@ mod tests {
         assert!(
             from_worker.try_recv().is_err(),
             "a dropped event emits no command"
+        );
+        Ok(())
+    }
+
+    // -- stop pre-check: execution timeout & user cancel --------------------
+    //
+    // These pin down reconcile's "should this assigned job stop?" pre-check,
+    // shared by execution-timeout and user-cancel. Both are re-derived from
+    // fresh DB state each pass (see `SqlJob::switchboard_stop_reason`).
+
+    /// Push a running job's `started_at` two hours into the past so it is over
+    /// its one-hour `job_timeout` (the value `insert_job` seeds).
+    async fn expire_started_at(pool: &PgPool, job_id: Uuid) -> anyhow::Result<()> {
+        sqlx::query(
+            "update tml_switchboard.jobs \
+             set started_at = now() - interval '2 hours' where job_id = $1",
+        )
+        .bind(job_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Set the DB-side user-cancel signal (`cancel_requested_at`).
+    async fn request_cancel(pool: &PgPool, job_id: Uuid) -> anyhow::Result<()> {
+        sqlx::query("update tml_switchboard.jobs set cancel_requested_at = now() where job_id = $1")
+            .bind(job_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Read a job's `termination_reason` as its enum text.
+    async fn termination_reason_of(pool: &PgPool, job_id: Uuid) -> anyhow::Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "select termination_reason::text from tml_switchboard.jobs where job_id = $1",
+        )
+        .bind(job_id)
+        .fetch_one(pool)
+        .await?)
+    }
+
+    /// Past its deadline while the supervisor still reports it running: the
+    /// worker (re)issues StopJob and keeps tracking the job (no finalize yet).
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_execution_timeout_running_stops(pool: PgPool) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+        expire_started_at(&pool, job_id).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+            job_id,
+            job_state: RunningJobState::Ready,
+        });
+        worker
+            .reconcile()
+            .await
+            .expect("timeout (running) reconcile should succeed");
+
+        assert_eq!(
+            job_state_of(&pool, job_id).await?,
+            "ready",
+            "the job keeps being tracked until the supervisor reports it gone"
+        );
+        assert_eq!(
+            current_job_of(&pool, host_id).await?,
+            Some(job_id),
+            "the assignment is retained while teardown is in flight"
+        );
+        match decode_outbound(
+            from_worker
+                .try_recv()
+                .expect("a StopJob must be issued for the timed-out job"),
+        ) {
+            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
+            other => panic!("expected StopJob, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// Past its deadline and the supervisor reports it `Terminated`: finalize as
+    /// `execution_timeout` and `StopJob`-ack.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_execution_timeout_terminated_finalizes(pool: PgPool) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "terminating", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+        expire_started_at(&pool, job_id).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+            job_id,
+            job_state: RunningJobState::Terminated,
+        });
+        worker
+            .reconcile()
+            .await
+            .expect("timeout (terminated) reconcile should succeed");
+
+        assert_eq!(job_state_of(&pool, job_id).await?, "finalized");
+        assert_eq!(
+            termination_reason_of(&pool, job_id).await?.as_deref(),
+            Some("execution_timeout"),
+            "a timed-out job must finalize as execution_timeout"
+        );
+        assert_eq!(current_job_of(&pool, host_id).await?, None);
+        match decode_outbound(from_worker.try_recv().expect("a StopJob ack is expected")) {
+            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
+            other => panic!("expected StopJob ack, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// Within its deadline: the pre-check does not fire — the job is adopted
+    /// normally and no StopJob is issued. This is the re-check that lets a
+    /// deadline extension (a larger `job_timeout` / later `started_at`) rescue a
+    /// job: the very next pass simply sees it is no longer expired.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_within_deadline_not_stopped(pool: PgPool) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        // insert_job seeds started_at = now() with a one-hour timeout: not
+        // expired.
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+            job_id,
+            job_state: RunningJobState::Ready,
+        });
+        worker
+            .reconcile()
+            .await
+            .expect("within-deadline reconcile should succeed");
+
+        assert_eq!(job_state_of(&pool, job_id).await?, "ready");
+        assert_eq!(current_job_of(&pool, host_id).await?, Some(job_id));
+        assert!(
+            from_worker.try_recv().is_err(),
+            "a within-deadline job must not be stopped"
+        );
+        Ok(())
+    }
+
+    /// User-cancel while the supervisor still reports the job running: (re)issue
+    /// StopJob, keep tracking it.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_user_cancel_running_stops(pool: PgPool) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+        request_cancel(&pool, job_id).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+            job_id,
+            job_state: RunningJobState::Ready,
+        });
+        worker
+            .reconcile()
+            .await
+            .expect("user-cancel (running) reconcile should succeed");
+
+        assert_eq!(current_job_of(&pool, host_id).await?, Some(job_id));
+        match decode_outbound(
+            from_worker
+                .try_recv()
+                .expect("a StopJob must be issued for the canceled job"),
+        ) {
+            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
+            other => panic!("expected StopJob, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// User-cancel and the supervisor reports `Idle` (job already gone): finalize
+    /// as `user_canceled`.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_user_cancel_idle_finalizes_user_canceled(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+        request_cancel(&pool, job_id).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, _from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        worker.last_seen_status = Some(ReportedSupervisorStatus::Idle);
+        worker
+            .reconcile()
+            .await
+            .expect("user-cancel (idle) reconcile should succeed");
+
+        assert_eq!(job_state_of(&pool, job_id).await?, "finalized");
+        assert_eq!(
+            termination_reason_of(&pool, job_id).await?.as_deref(),
+            Some("user_canceled"),
+            "a canceled job must finalize as user_canceled"
+        );
+        assert_eq!(current_job_of(&pool, host_id).await?, None);
+        Ok(())
+    }
+
+    /// User-cancel of a still-`scheduled` job (never started): finalize as
+    /// `user_canceled` instead of dispatching it — no StartJob is emitted.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_user_cancel_scheduled_finalizes_without_start(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+        request_cancel(&pool, job_id).await?;
+        // A resolved image is registered so that, absent the cancel, this job
+        // *would* be dispatched — proving the cancel is what suppresses StartJob.
+        register_resolved_image(&pool, user_id, job_id).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        worker.last_seen_status = Some(ReportedSupervisorStatus::Idle);
+        worker
+            .reconcile()
+            .await
+            .expect("user-cancel (scheduled) reconcile should succeed");
+
+        assert_eq!(job_state_of(&pool, job_id).await?, "finalized");
+        assert_eq!(
+            termination_reason_of(&pool, job_id).await?.as_deref(),
+            Some("user_canceled"),
+            "a canceled scheduled job must finalize as user_canceled"
+        );
+        assert_eq!(current_job_of(&pool, host_id).await?, None);
+        assert!(
+            from_worker.try_recv().is_err(),
+            "a canceled scheduled job must not be dispatched"
         );
         Ok(())
     }
