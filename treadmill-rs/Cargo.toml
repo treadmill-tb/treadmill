@@ -24,6 +24,22 @@ subtle = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v4"] }
 
+# Optional: the `client` feature pulls in an async HTTP client so binaries (the
+# web console, an eventual CLI) can call the switchboard API and get the shared
+# types back. Off by default so the supervisor/puppet/connector crates don't
+# pull reqwest.
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+  "charset",
+  "http2",
+], optional = true }
+thiserror = { workspace = true, optional = true }
+
+[features]
+# A typed HTTP client for the switchboard REST API (see api::switchboard::client).
+client = ["dep:reqwest", "dep:thiserror"]
+
 [dev-dependencies]
 insta = { workspace = true }
 serde_json = { workspace = true }

@@ -1,4 +1,6 @@
 pub mod audit;
+#[cfg(feature = "client")]
+pub mod client;
 pub mod images;
 pub mod users;
 
