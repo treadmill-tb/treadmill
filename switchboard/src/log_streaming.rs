@@ -435,4 +435,108 @@ mod tests {
         let err = mint_token(&config, Uuid::new_v4(), TokenScope::Publish, None).unwrap_err();
         assert!(matches!(err, MintError::Seed(_)));
     }
+
+    // ---- Live NATS stream creation (hermetic Nix check) ------------------
+    //
+    // Backfills the Phase 2 deliverable left unwritten because the sandbox
+    // can't run a broker: assert `ensure_job_stream` actually creates the
+    // per-job JetStream stream. Gated on `TML_TEST_NATS_SERVER` (the
+    // nats-server binary), set only by the `nats-log-streaming` Nix check;
+    // unset (plain `nextest` / the sandbox) → the test skips.
+
+    fn nats_server_bin() -> Option<std::path::PathBuf> {
+        std::env::var_os("TML_TEST_NATS_SERVER")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_file())
+    }
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    /// A child `nats-server` with JetStream enabled (no auth); killed on drop,
+    /// with its JetStream store directory removed.
+    struct NatsServer {
+        child: std::process::Child,
+        port: u16,
+        store: std::path::PathBuf,
+    }
+
+    impl Drop for NatsServer {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = std::fs::remove_dir_all(&self.store);
+        }
+    }
+
+    impl NatsServer {
+        fn url(&self) -> String {
+            format!("nats://127.0.0.1:{}", self.port)
+        }
+
+        async fn start(bin: &std::path::Path) -> Self {
+            let store =
+                std::env::temp_dir().join(format!("tml-switchboard-nats-{}", Uuid::new_v4()));
+            let port = free_port();
+            let child = std::process::Command::new(bin)
+                .arg("-js")
+                .arg("-sd")
+                .arg(&store)
+                .arg("-a")
+                .arg("127.0.0.1")
+                .arg("-p")
+                .arg(port.to_string())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn nats-server");
+            let server = NatsServer { child, port, store };
+            for _ in 0..100 {
+                if async_nats::connect(server.url()).await.is_ok() {
+                    return server;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("nats-server did not become ready");
+        }
+    }
+
+    #[tokio::test]
+    async fn nats_live_provisioner_creates_job_stream() {
+        let Some(bin) = nats_server_bin() else {
+            eprintln!("TML_TEST_NATS_SERVER unset; skipping live NATS provisioner test");
+            return;
+        };
+        let server = NatsServer::start(&bin).await;
+
+        // No-auth connection: this asserts the provisioning behavior, not the
+        // (separately unit-tested) bearer-JWT auth model.
+        let client = async_nats::connect(server.url()).await.unwrap();
+        let jetstream = async_nats::jetstream::new(client);
+        let provisioner = NatsLogStreamProvisioner { jetstream };
+
+        let job_id = Uuid::new_v4();
+        provisioner.ensure_job_stream(job_id).await.expect("create");
+        // Idempotent: a re-dispatch must be a no-op, not an error.
+        provisioner
+            .ensure_job_stream(job_id)
+            .await
+            .expect("idempotent re-create");
+
+        // The stream exists, capturing exactly this job's subjects, never
+        // expiring (max_age == 0).
+        let stream = provisioner
+            .jetstream
+            .get_stream(stream_name(job_id))
+            .await
+            .expect("stream exists");
+        let config = &stream.cached_info().config;
+        assert_eq!(config.subjects, vec![subject_scope(job_id)]);
+        assert_eq!(config.max_age, Duration::ZERO);
+    }
 }

@@ -8,7 +8,9 @@ edition.workspace = true
 treadmill-rs = { workspace = true }
 
 anyhow = { workspace = true }
+async-nats = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 oci-client = { workspace = true }
 oci-spec = { workspace = true }
 reqwest = { workspace = true }
@@ -26,6 +28,7 @@ toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+futures-util = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 # Re-list tokio so tests get the runtime/macros on top of the lib's features.

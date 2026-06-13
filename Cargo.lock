@@ -4876,7 +4876,10 @@ name = "treadmill-supervisor-lib"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-nats",
  "async-trait",
+ "bytes",
+ "futures-util",
  "oci-client",
  "oci-spec 0.10.0",
  "reqwest 0.13.4",

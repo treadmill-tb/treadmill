@@ -11,7 +11,7 @@ use tracing::{Level, event, info, instrument, warn};
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard_supervisor::{
-    ImageSpecification, JobInitializingStage, RunningJobState,
+    ImageSpecification, JobInitializingStage, LogChannel, RunningJobState,
 };
 
 use treadmill_rs::connector;
@@ -26,6 +26,7 @@ use treadmill_tcp_control_socket_server::TcpControlSocket;
 use treadmill_supervisor_lib::capture::{self, SerialSocket};
 use treadmill_supervisor_lib::launcher::{self, ProcessLauncher, StdioMode, WorkloadProcess};
 use treadmill_supervisor_lib::oci_store::{ImageStore, Location, OciStore, OciStoreConfig};
+use treadmill_supervisor_lib::publisher::LogPublisher;
 
 #[derive(Parser, Debug, Clone)]
 pub struct QemuSupervisorArgs {
@@ -821,15 +822,39 @@ impl QemuSupervisor {
             .await
             .unwrap();
 
-        // Consume the captured console channels. In this phase the consumer
-        // drains them to the supervisor's own stdout/stderr (keeping operator
-        // visibility and preventing the qemu stdout/stderr pipes from blocking);
-        // a later phase ships them to NATS instead. Takes the readers before the
-        // process is moved into the monitor task below.
-        if matches!(stdio_mode, StdioMode::Capture) {
+        // Ship the captured console channels to NATS (durable spill + ack +
+        // resume). Takes the stdout/stderr readers before the process is moved
+        // into the monitor task below. Spill files live under the per-job
+        // workdir so they survive a supervisor restart and are retained for
+        // post-mortem after the job ends.
+        if let Some(dispatch) = start_job_req.log_streaming.clone() {
             let stdout = qemu_proc.take_stdout();
             let stderr = qemu_proc.take_stderr();
-            capture::drain_to_stdio(stdout, stderr, serial_socket);
+            let spill_dir = job_workdir.join("logs");
+            match LogPublisher::connect(&dispatch, spill_dir).await {
+                Ok(publisher) => {
+                    if let Some(stdout) = stdout {
+                        publisher.spawn_channel(LogChannel::QemuStdout, stdout);
+                    }
+                    if let Some(stderr) = stderr {
+                        publisher.spawn_channel(LogChannel::QemuStderr, stderr);
+                    }
+                    if let Some(socket) = serial_socket {
+                        publisher.spawn_serial(LogChannel::Serial, socket);
+                    }
+                }
+                Err(e) => {
+                    // Don't fail the job over log-streaming setup; fall back to
+                    // draining capture to our terminal so the qemu pipes don't
+                    // block and the operator still sees output.
+                    event!(
+                        Level::WARN,
+                        error = ?e,
+                        "Failed to start log publisher; draining capture to terminal instead",
+                    );
+                    capture::drain_to_stdio(stdout, stderr, serial_socket);
+                }
+            }
         }
 
         // Job has been started, let the coordinator know:

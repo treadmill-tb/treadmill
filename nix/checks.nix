@@ -297,6 +297,44 @@
             TINY_EFI_IMAGE = self'.packages.tiny-efi-image-layout;
           }
         );
+
+        # Log streaming (doc/log-streaming-plan.md phase 3): the live NATS
+        # round-trips that can't run in the restricted sandbox (nats-server
+        # binds a TCP port; AGENTS.md §2). Spins up a real `nats-server -js`
+        # per test on loopback and runs the two `nats_live_*` tests:
+        #   - supervisor-lib: spill → ship (publish-with-headers + ack) → read,
+        #     asserting subject/headers/payloads round-trip;
+        #   - switchboard: `NatsLogStreamProvisioner::ensure_job_stream` actually
+        #     creates the per-job stream idempotently (backfills the phase-2
+        #     deliverable left unwritten for the same sandbox reason).
+        # Both tests skip when TML_TEST_NATS_SERVER is unset, so the plain
+        # `nextest` check passes them over. Linux-only (loopback sandbox net).
+        nats-log-streaming = cmn.craneLib.cargoNextest (
+          cmn.cargoCommonArgs
+          // {
+            pname = "treadmill-nats-log-streaming";
+            version = "0.1.0";
+            cargoArtifacts = cmn.workspaceDeps;
+            cargoNextestExtraArgs =
+              "-p treadmill-supervisor-lib -p treadmill-switchboard " + "--no-tests=pass -E 'test(nats_live)'";
+            partitions = 1;
+            partitionType = "count";
+
+            nativeBuildInputs = cmn.cargoCommonArgs.nativeBuildInputs ++ [
+              pkgs.nats-server
+            ];
+
+            # async-nats initializes a rustls backend even for the plain-text
+            # loopback (nats://) connection; without a CA bundle that init can
+            # panic (same posture as the oci-store check). Traffic is to
+            # 127.0.0.1.
+            SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+
+            # The nats-server binary the tests spawn; its presence also gates
+            # them (unset elsewhere → skipped).
+            TML_TEST_NATS_SERVER = "${pkgs.nats-server}/bin/nats-server";
+          }
+        );
       }
       # Promote each package output to a check so `nix flake check`
       # verifies they all build.
