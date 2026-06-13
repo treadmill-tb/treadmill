@@ -5,9 +5,13 @@
 //! `common/mod.rs` (rather than `common.rs`) keeps cargo from treating it as a
 //! standalone test binary.
 
+// Each test crate uses only the subset of helpers it needs; the rest look dead
+// from that crate's point of view.
+#![allow(dead_code)]
+
 use treadmill_switchboard::config::{
-    DatabaseConfig, GitHubOAuthConfig, LogConfig, OAuthConfig, ServerConfig, ServiceConfig,
-    SwitchboardConfig,
+    DatabaseConfig, GitHubOAuthConfig, LogConfig, MockOAuthConfig, OAuthConfig, ServerConfig,
+    ServiceConfig, SwitchboardConfig,
 };
 
 /// A throwaway [`SwitchboardConfig`] for tests.
@@ -61,4 +65,13 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
             browser_success_redirect: None,
         },
     }
+}
+
+/// A [`SwitchboardConfig`] with only the development-only mock provider enabled
+/// (no GitHub). Used by the mock-login test, which needs no external server.
+pub fn test_config_mock() -> SwitchboardConfig {
+    let mut cfg = test_config("http://unused.invalid");
+    cfg.oauth.github = None;
+    cfg.oauth.mock = Some(MockOAuthConfig { enabled: true });
+    cfg
 }
