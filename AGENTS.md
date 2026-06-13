@@ -66,8 +66,9 @@ nix develop .#database --command bash -c './switchboard/migrate.sh -v'  # DB she
 
 - **`default`** — the everyday shell. Has the Rust toolchain (`cargo`,
   `clippy`, `rustfmt`), `nixfmt`, plus the heavier externals used by tests:
-  `zot`, `skopeo`, `qemu`, and the AAVMF firmware env vars (`TML_AAVMF_*`) for
-  the boot test. `SQLX_OFFLINE` is effectively on here (no DB), so builds use the
+  `zot`, `skopeo`, `qemu`, the AAVMF firmware env vars (`TML_AAVMF_*`) for
+  the boot test, and the NATS log-streaming tools (`nats-server`, `nsc`, `nats`).
+  `SQLX_OFFLINE` is effectively on here (no DB), so builds use the
   committed `.sqlx` query cache (see §4).
 - **`database`** — adds `postgresql`, `atlas`, `sqlx-cli`, `sql-formatter`. On
   entry it **spins up an ephemeral Postgres** on a unix socket and exports
@@ -79,10 +80,13 @@ nix develop .#database --command bash -c './switchboard/migrate.sh -v'  # DB she
 ### Sandbox caveat (important for agents)
 
 If you are running in a restricted sandbox, **daemons that bind a TCP port are
-killed** (e.g. `zot` exits 144). Postgres in the `database` shell uses a **unix
-socket**, so it survives. Practical consequence: you cannot run `zot`/registry
-experiments locally — verify any code that touches the OCI registry/store
-**only** via its hermetic Nix check (§3), never by running the daemon by hand.
+killed** (e.g. `zot` exits 144; `nats-server` has no unix-socket transport and is
+likewise unusable). Postgres in the `database` shell uses a **unix socket**, so it
+survives. Practical consequence: you cannot run `zot`/registry or NATS broker
+experiments locally — verify any code that touches the OCI registry/store or the
+NATS log stream **only** via its hermetic Nix check (§3), never by running the
+daemon by hand. (`nsc`, which only writes key/JWT files, and `nats-server -t -c`,
+which validates a config without binding, do both run fine in the sandbox.)
 
 ---
 

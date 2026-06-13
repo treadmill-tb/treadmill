@@ -23,6 +23,36 @@ pub struct SwitchboardConfig {
     /// default) means the console is not embedded; run it as its own service.
     #[serde(default)]
     pub console: Option<EmbeddedConsoleConfig>,
+    /// Log streaming via NATS/JetStream. Absent (the default) disables the
+    /// feature: jobs dispatch without a log-streaming destination and the
+    /// read-token API is unavailable.
+    #[serde(default)]
+    pub log_streaming: Option<LogStreamingConfig>,
+}
+
+/// Configuration for host/supervisor log streaming over NATS + JetStream.
+///
+/// Supervisor console output is published to a per-job JetStream stream; the
+/// switchboard mints short-lived, per-job **bearer** user JWTs that the NATS
+/// server validates against the scope it grants. See
+/// `doc/log-streaming-plan.md`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LogStreamingConfig {
+    /// NATS client URL the supervisors and read clients connect to (e.g.
+    /// `nats://nats.example:4222`). Handed to supervisors in `StartJobMessage`
+    /// and returned to read clients alongside their token. Non-secret.
+    pub nats_url: String,
+    /// JetStream domain, if the server is configured with one. Usually unset.
+    #[serde(default)]
+    pub jetstream_domain: Option<String>,
+    /// NATS account **signing seed** (an nkey account seed, `SA…`) used to sign
+    /// the per-job user JWTs. The matching account public key is derived from
+    /// this seed, so it doubles as the JWT issuer.
+    ///
+    /// SECRET — supply via `TML_LOGSTREAMING__ACCOUNT_SEED`, never on-disk
+    /// config (project convention). Unrelated to the opaque API token in
+    /// `auth/token.rs`.
+    pub account_seed: String,
 }
 
 /// Configuration for serving the web console embedded in the switchboard.

@@ -68,6 +68,10 @@ _: {
         name = "treadmill-dev";
         runtimeInputs = [
           pkgs.postgresql
+          # NATS broker + nsc to bootstrap its decentralized-JWT auth hierarchy
+          # for log streaming.
+          pkgs.nats-server
+          pkgs.nsc
           self'.packages.swx
           self'.packages.tml-console
         ];
@@ -80,6 +84,8 @@ _: {
           sb_port="''${TML_SB_PORT:-8000}"
           console_port="''${TML_CONSOLE_PORT:-8080}"
           pg_port="''${TML_PG_PORT:-5432}"
+          nats_port="''${TML_NATS_PORT:-4222}"
+          nats_ws_port="''${TML_NATS_WS_PORT:-4223}"
           user="$(id -un)"
 
           pg_dir="$state_dir/pg"
@@ -124,6 +130,60 @@ _: {
             createdb -h "$sock_dir" -p "$pg_port" -U "$user" tml_switchboard
           fi
 
+          # --- NATS + JetStream: bootstrap auth once, render config every run ----
+          # Log streaming ships supervisor console output to a per-job JetStream
+          # stream; the switchboard mints per-job bearer JWTs signed with an
+          # account seed. On first run we generate a throwaway operator/account
+          # hierarchy (decentralized JWT auth, MEMORY resolver) under the state
+          # dir. The PUBLIC operator/account JWTs go into the server config; the
+          # SECRET account seed is handed to the switchboard via the environment,
+          # never written to its on-disk config (project convention).
+          nats_dir="$state_dir/nats"
+          nats_store="$nats_dir/jetstream"
+          # Scope nsc's stores and keyring to the state dir so it never touches
+          # the developer's real ~/.config nsc keychain.
+          export XDG_CONFIG_HOME="$nats_dir/nsc-config"
+          export XDG_DATA_HOME="$nats_dir/nsc-data"
+          export NKEYS_PATH="$nats_dir/keys"
+          mkdir -p "$nats_store" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$NKEYS_PATH"
+
+          if [ ! -f "$nats_dir/bootstrapped" ]; then
+            echo "Bootstrapping NATS auth (operator tml-dev / account TMLLOGS)"
+            nsc add operator --name tml-dev --sys >/dev/null
+            nsc add account --name TMLLOGS >/dev/null
+            touch "$nats_dir/bootstrapped"
+          fi
+
+          # The account identity seed signs per-job user JWTs. Export it fresh
+          # each run (operator key is O-prefixed, the account key A-prefixed) and
+          # hand it to the switchboard below via the environment.
+          exp_dir="$nats_dir/exported-keys"
+          rm -rf "$exp_dir"; mkdir -p "$exp_dir"
+          nsc export keys --account TMLLOGS --dir "$exp_dir" >/dev/null
+          nats_account_seed="$(cat "$exp_dir"/A*.nk)"
+
+          # Render the server config: the operator JWT + MEMORY resolver preload
+          # (from nsc), plus a client listener, the JetStream file store, and a
+          # dev WebSocket listener (ws://, any origin — dev only; production
+          # origin-allowlists and uses wss://).
+          nats_conf="$cfg_dir/nats.conf"
+          nsc generate config --mem-resolver > "$nats_conf"
+          cat >> "$nats_conf" <<NATSCONF
+
+          host: "127.0.0.1"
+          port: $nats_port
+
+          jetstream {
+            store_dir: "$nats_store"
+          }
+
+          websocket {
+            host: "127.0.0.1"
+            port: $nats_ws_port
+            no_tls: true
+          }
+          NATSCONF
+
           # --- Generate component configs (regenerated every run) ---------------
           sb_cfg="$cfg_dir/switchboard.toml"
           {
@@ -150,6 +210,12 @@ _: {
 
           [log]
           use_tokio_console_subscriber = false
+
+          # Log streaming via NATS/JetStream. nats_url is non-secret and lives on
+          # disk; the account signing seed is injected via the environment
+          # (TML_LOGSTREAMING__ACCOUNT_SEED) at launch below, not written here.
+          [log_streaming]
+          nats_url = "nats://127.0.0.1:$nats_port"
 
           # browser_success_redirect is provider-independent: any OAuth callback
           # 302s the browser here with the freshly minted token, which the
@@ -202,15 +268,24 @@ _: {
           }
           trap cleanup EXIT INT TERM
 
+          # Bring up the NATS broker first so the switchboard can create per-job
+          # streams as jobs dispatch.
+          echo "Starting NATS (client nats://127.0.0.1:$nats_port, ws ws://127.0.0.1:$nats_ws_port)"
+          nats-server -c "$nats_conf" -l "$log_dir/nats.log" &
+          pids+=("$!")
+
           # swx runs sqlx migrations on startup, so the schema is applied here.
-          # The OAuth secret is injected via the environment, never the config
-          # file (figment maps TML_OAUTH__GITHUB__* onto oauth.github.*).
+          # Secrets are injected via the environment, never the config file:
+          # figment maps TML_OAUTH__GITHUB__* onto oauth.github.* and
+          # TML_LOGSTREAMING__ACCOUNT_SEED onto log_streaming.account_seed.
           if [ "$oauth_enabled" = 1 ]; then
             TML_OAUTH__GITHUB__CLIENT_ID="$TML_DEV_GITHUB_CLIENT_ID" \
             TML_OAUTH__GITHUB__CLIENT_SECRET="$TML_DEV_GITHUB_CLIENT_SECRET" \
+            TML_LOGSTREAMING__ACCOUNT_SEED="$nats_account_seed" \
               swx serve -c "$sb_cfg" &
           else
-            swx serve -c "$sb_cfg" &
+            TML_LOGSTREAMING__ACCOUNT_SEED="$nats_account_seed" \
+              swx serve -c "$sb_cfg" &
           fi
           pids+=("$!")
           tml-console serve -c "$console_cfg" &
@@ -222,6 +297,7 @@ _: {
             treadmill dev stack is up
               web console     : http://localhost:$console_port   <- open this
               switchboard API : http://localhost:$sb_port
+              NATS broker     : nats://127.0.0.1:$nats_port (ws on $nats_ws_port)
               state directory : $state_dir
               mock login      : ENABLED (dev only, unauthenticated)
           EOF

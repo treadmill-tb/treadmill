@@ -31,6 +31,17 @@
           # qemu provides qemu-img (backing-chain validation) and
           # qemu-system-aarch64 + AAVMF firmware (the tiny-efi boot test).
           qemu
+
+          # Log streaming: the NATS server + JetStream (`nats run .#dev` runs a
+          # live broker), `nsc` to bootstrap the decentralized-JWT auth
+          # hierarchy, and the `nats` CLI for ad-hoc pub/sub against it. Note:
+          # nats-server binds a TCP/WebSocket port, so it cannot run in the
+          # restricted sandbox (see AGENTS.md §2) — verify NATS-touching code via
+          # its hermetic Nix check, not by running the daemon by hand. `nsc`
+          # itself only writes files and runs fine in the sandbox.
+          nats-server
+          nsc
+          natscli
         ];
 
         shellHook = ''

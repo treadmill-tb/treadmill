@@ -65,6 +65,7 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
             browser_success_redirect: None,
         },
         console: None,
+        log_streaming: None,
     }
 }
 
