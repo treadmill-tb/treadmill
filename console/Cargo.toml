@@ -4,9 +4,11 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
-[[bin]]
-name = "tml-console"
-path = "src/bin/tml-console.rs"
+# The `tml-console` binary is autodiscovered from `src/bin/tml-console.rs`
+# (no explicit `[[bin]]`), matching the other crates. This keeps the Nix crane
+# build's workspace stubs valid: when another crate is built, console is stubbed
+# with only an empty `src/lib.rs`, and an explicit bin `path` would make cargo
+# demand a file the stub doesn't provide.
 
 [dependencies]
 # The typed switchboard client is the whole point: every page renders from the
