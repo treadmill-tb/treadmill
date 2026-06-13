@@ -1833,6 +1833,7 @@ mod tests {
                 remaining_restart_count: 0,
             },
             parameters: HashMap::<String, ParameterValue>::new(),
+            log_streaming: None,
         }
     }
 
@@ -2223,6 +2224,7 @@ mod tests {
                         remaining_restart_count: 0,
                     },
                     parameters: HashMap::new(),
+                    log_streaming: None,
                 },
             )
             .await

@@ -401,29 +401,6 @@
             "type",
             "error"
           ]
-        },
-        {
-          "description": "Best-effort console output. Delivery is lossy by design; the switchboard\nnever relies on completeness here.",
-          "type": "object",
-          "properties": {
-            "console_bytes": {
-              "type": "array",
-              "items": {
-                "type": "integer",
-                "format": "uint8",
-                "maximum": 255,
-                "minimum": 0
-              }
-            },
-            "type": {
-              "type": "string",
-              "const": "console_log"
-            }
-          },
-          "required": [
-            "type",
-            "console_bytes"
-          ]
         }
       ]
     },

@@ -164,9 +164,6 @@ impl<S: connector::Supervisor> connector::SupervisorConnector for WsConnector<S>
                 SupervisorJobEvent::Error { error } => {
                     self.inner.report_job_error(job_id, error).await
                 }
-                SupervisorJobEvent::ConsoleLog { console_bytes } => {
-                    self.inner.send_job_console_log(job_id, console_bytes).await
-                }
             },
         }
     }
@@ -643,28 +640,6 @@ impl<S: connector::Supervisor> Inner<S> {
             ))
         {
             tracing::error!("failed to report job error to runloop: {e}")
-        }
-    }
-
-    async fn send_job_console_log(&self, job_id: Uuid, console_bytes: Vec<u8>) {
-        tracing::debug!(
-            "Supervisor provides console log: job {}, length: {}, message: {:?}",
-            job_id,
-            console_bytes.len(),
-            String::from_utf8_lossy(&console_bytes)
-        );
-        // This is a bit of an anachronism. Truthfully, we shouldn't be doing this at all, but at
-        // least for now, we retain support.
-        if let Err(e) = self
-            .update_tx
-            .send(SupervisorToSwitchboard::SupervisorEvent(
-                SupervisorEvent::JobEvent {
-                    job_id,
-                    event: SupervisorJobEvent::ConsoleLog { console_bytes },
-                },
-            ))
-        {
-            tracing::error!("failed to send job console log to runloop: {e}")
         }
     }
 }

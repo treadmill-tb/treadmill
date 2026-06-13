@@ -664,6 +664,8 @@ pub async fn build_start_job_message(
         ssh_keys: job.ssh_keys.clone(),
         restart_policy: job.restart_policy(),
         parameters,
+        // Populated in Phase 2 (mint write token + create the per-job stream).
+        log_streaming: None,
     })
 }
 

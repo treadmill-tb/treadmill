@@ -53,7 +53,9 @@ pub mod websocket {
 pub const PROTOCOL_MAJOR: u16 = 1;
 /// The protocol minor version implemented by this build. Bumped (additively)
 /// whenever a new message variant or feature flag is introduced.
-pub const PROTOCOL_MINOR: u16 = 0;
+///
+/// minor 1: `StartJobMessage.log_streaming` (NATS/JetStream log streaming).
+pub const PROTOCOL_MINOR: u16 = 1;
 
 /// A two-level protocol version. `major` is also pinned by the WebSocket
 /// subprotocol token; `minor` is negotiated in the handshake.
@@ -189,6 +191,62 @@ pub struct StartJobMessage {
     /// A hash map of parameters provided to this job execution. These
     /// parameters are provided to the puppet daemon.
     pub parameters: HashMap<String, ParameterValue>,
+
+    /// Per-job log-streaming destination, or `None` when the deployment runs
+    /// with log streaming disabled. The supervisor captures console output and
+    /// publishes it to the NATS server described here (see
+    /// [`LogStreamingDispatch`]). Additive and optional: older supervisors that
+    /// do not understand this field simply ignore it and capture nothing.
+    #[serde(default)]
+    pub log_streaming: Option<LogStreamingDispatch>,
+}
+
+/// A supervisor console-output channel, used as the final token of a log
+/// stream's NATS subject (`logs.<job-id>.<channel>`).
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum LogChannel {
+    /// qemu's standard output.
+    QemuStdout,
+    /// qemu's standard error.
+    QemuStderr,
+    /// The workload's serial console (qemu routes it to a `-chardev socket`).
+    Serial,
+}
+
+impl LogChannel {
+    /// The subject token for this channel — the final element of the NATS
+    /// subject `logs.<job-id>.<channel>`. Equal to the serde representation.
+    pub fn as_subject_token(self) -> &'static str {
+        match self {
+            LogChannel::QemuStdout => "qemu-stdout",
+            LogChannel::QemuStderr => "qemu-stderr",
+            LogChannel::Serial => "serial",
+        }
+    }
+}
+
+/// Per-job log-streaming destination handed to a supervisor in
+/// [`StartJobMessage`].
+///
+/// The supervisor publishes captured console output to the NATS server at
+/// `nats_url`, under subjects `<subject_prefix>.<channel>` (where
+/// `subject_prefix` is `logs.<job-id>` and `<channel>` is a [`LogChannel`]
+/// token), authenticating with `write_token`.
+///
+/// `write_token` is a **bearer** user JWT the switchboard mints per dispatch,
+/// scoped to publish only this job's subjects; the supervisor connects with the
+/// token string alone (no nkey seed is ever shipped).
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct LogStreamingDispatch {
+    /// NATS client URL to connect to (e.g. `nats://nats.example:4222`).
+    pub nats_url: String,
+    /// Subject prefix for this job's streams: `logs.<job-id>`. A channel token
+    /// is appended as `<subject_prefix>.<channel>` (see [`LogChannel`]).
+    pub subject_prefix: String,
+    /// Bearer user JWT authorizing publish to this job's subjects.
+    pub write_token: String,
 }
 
 // -- StopJobRequest -------------------------------------------------------------------------------
@@ -345,9 +403,6 @@ pub enum SupervisorJobEvent {
     ///
     /// [`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason
     Error { error: JobError },
-    /// Best-effort console output. Delivery is lossy by design; the switchboard
-    /// never relies on completeness here.
-    ConsoleLog { console_bytes: Vec<u8> },
 }
 
 /// A supervisor's point-in-time status snapshot, returned in the

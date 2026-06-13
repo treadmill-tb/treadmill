@@ -131,14 +131,4 @@ pub trait SupervisorConnector: std::fmt::Debug + Send + Sync + 'static {
         })
         .await
     }
-    // TODO: we'll likely want to remove this method from here, and instead have
-    // supervisors directly interact with log servers to push events. Or have
-    // connectors perform these interactions for them...
-    async fn send_job_console_log(&self, job_id: Uuid, console_bytes: Vec<u8>) {
-        self.update_event(SupervisorEvent::JobEvent {
-            job_id,
-            event: SupervisorJobEvent::ConsoleLog { console_bytes },
-        })
-        .await
-    }
 }

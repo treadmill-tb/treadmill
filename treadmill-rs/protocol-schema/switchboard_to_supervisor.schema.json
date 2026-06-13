@@ -141,6 +141,29 @@
         }
       ]
     },
+    "LogStreamingDispatch": {
+      "description": "Per-job log-streaming destination handed to a supervisor in\n[`StartJobMessage`].\n\nThe supervisor publishes captured console output to the NATS server at\n`nats_url`, under subjects `<subject_prefix>.<channel>` (where\n`subject_prefix` is `logs.<job-id>` and `<channel>` is a [`LogChannel`]\ntoken), authenticating with `write_token`.\n\n`write_token` is a **bearer** user JWT the switchboard mints per dispatch,\nscoped to publish only this job's subjects; the supervisor connects with the\ntoken string alone (no nkey seed is ever shipped).",
+      "type": "object",
+      "properties": {
+        "nats_url": {
+          "description": "NATS client URL to connect to (e.g. `nats://nats.example:4222`).",
+          "type": "string"
+        },
+        "subject_prefix": {
+          "description": "Subject prefix for this job's streams: `logs.<job-id>`. A channel token\nis appended as `<subject_prefix>.<channel>` (see [`LogChannel`]).",
+          "type": "string"
+        },
+        "write_token": {
+          "description": "Bearer user JWT authorizing publish to this job's subjects.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "nats_url",
+        "subject_prefix",
+        "write_token"
+      ]
+    },
     "ParameterValue": {
       "type": "object",
       "properties": {
@@ -237,6 +260,18 @@
           "description": "Unique identifier of the job to be started.\n\nResuming a previously started job is requested via\n[`ImageSpecification::ResumeJob`] in `image_spec` (not via this id):\nfor a resume, `image_spec` carries the original job's id. The\nsupervisor must refuse to start a job it cannot resume when a resume\nis requested.",
           "type": "string",
           "format": "uuid"
+        },
+        "log_streaming": {
+          "description": "Per-job log-streaming destination, or `None` when the deployment runs\nwith log streaming disabled. The supervisor captures console output and\npublishes it to the NATS server described here (see\n[`LogStreamingDispatch`]). Additive and optional: older supervisors that\ndo not understand this field simply ignore it and capture nothing.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LogStreamingDispatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "parameters": {
           "description": "A hash map of parameters provided to this job execution. These\nparameters are provided to the puppet daemon.",

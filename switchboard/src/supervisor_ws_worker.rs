@@ -732,17 +732,6 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 self.finalize_job_error(job_id, error).await?;
                 Ok(PostMsg::Continue)
             }
-
-            // Best-effort console output. Object-storage streaming is a separate
-            // concern; drop it here (delivery is lossy by design).
-            SupervisorJobEvent::ConsoleLog { console_bytes } => {
-                tracing::trace!(
-                    %job_id,
-                    bytes = console_bytes.len(),
-                    "console log received (streaming not yet implemented); dropping"
-                );
-                Ok(PostMsg::Continue)
-            }
         }
     }
 
