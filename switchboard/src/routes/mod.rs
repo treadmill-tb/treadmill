@@ -27,11 +27,12 @@ pub fn build_router(state: AppState) -> Router<()> {
 pub fn api_router() -> ApiRouter<AppState> {
     ApiRouter::new()
         // OAuth login group (plain routes: browser redirects and the callback are
-        // not part of the documented JSON API surface)
-        //  GET /auth/github/login
-        .route("/auth/github/login", get(auth::github_login))
-        //  GET /auth/github/callback
-        .route("/auth/github/callback", get(auth::github_callback))
+        // not part of the documented JSON API surface). The {provider} segment
+        // selects a configured provider (e.g. `github`).
+        //  GET /auth/{provider}/login
+        .route("/auth/{provider}/login", get(auth::login))
+        //  GET /auth/{provider}/callback
+        .route("/auth/{provider}/callback", get(auth::callback))
         //  GET /auth/whoami
         .route("/auth/whoami", get(auth::whoami))
         // job management group

@@ -7,6 +7,7 @@
 pub mod github;
 
 use async_trait::async_trait;
+use std::collections::HashMap;
 use thiserror::Error;
 
 /// An access token obtained from an OAuth provider, used to call its API.
@@ -52,7 +53,14 @@ pub trait OAuthProvider {
 
     /// Build the authorization URL the user is redirected to, plus the CSRF
     /// state token that must be persisted and echoed back on callback.
-    fn authorize(&self) -> Result<(String, oauth2::CsrfToken), OAuthError>;
+    ///
+    /// `query` carries the login request's query parameters. External providers
+    /// (GitHub) ignore them; the dev-only mock provider reads `identity` from
+    /// here to decide which canned identity to issue.
+    fn authorize(
+        &self,
+        query: &HashMap<String, String>,
+    ) -> Result<(String, oauth2::CsrfToken), OAuthError>;
 
     /// Exchange an authorization code for an access token.
     async fn exchange(&self, code: String) -> Result<OAuthAccessToken, OAuthError>;

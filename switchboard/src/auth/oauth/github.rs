@@ -111,7 +111,10 @@ impl OAuthProvider for GithubProvider {
         "github"
     }
 
-    fn authorize(&self) -> Result<(String, CsrfToken), OAuthError> {
+    fn authorize(
+        &self,
+        _query: &std::collections::HashMap<String, String>,
+    ) -> Result<(String, CsrfToken), OAuthError> {
         let mut req = self.client.authorize_url(CsrfToken::new_random);
         for scope in &self.scopes {
             req = req.add_scope(Scope::new(scope.clone()));

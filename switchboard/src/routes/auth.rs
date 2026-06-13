@@ -1,11 +1,13 @@
 //! Interactive OAuth login routes.
 //!
-//! The flow is the standard authorization-code grant:
-//!   1. `GET /auth/github/login` builds the provider authorization URL, persists
-//!      the CSRF `state`, and redirects the browser to the provider.
-//!   2. The provider redirects back to `GET /auth/github/callback` with `code`
-//!      and `state`; we confirm the state, exchange the code, fetch the identity,
-//!      provision the local user, and issue a session token.
+//! The routes are provider-agnostic: the `{provider}` path segment selects one
+//! of the configured [`OAuthProvider`]s via [`provider_for`]. The flow is the
+//! standard authorization-code grant:
+//!   1. `GET /auth/{provider}/login` builds the provider authorization URL,
+//!      persists the CSRF `state`, and redirects the browser to the provider.
+//!   2. The provider redirects back to `GET /auth/{provider}/callback` with
+//!      `code` and `state`; we confirm the state, exchange the code, fetch the
+//!      identity, provision the local user, and issue a session token.
 //!   3. `GET /auth/whoami` reports the identity behind a bearer token.
 //!
 //! See `OAUTH_LOGIN_PLAN.md` §5–§7.
@@ -20,35 +22,54 @@ use crate::serve::AppState;
 use crate::sql;
 use crate::sql::api_token::IssueSessionToken;
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{Duration, Utc};
 use http::StatusCode;
 use http::request::Parts;
 use serde::Deserialize;
+use std::collections::HashMap;
 use treadmill_rs::api::switchboard::{AuthToken, LoginResponse, WhoAmIResponse};
 
 /// How long a started login flow's CSRF state remains valid before the callback
 /// must arrive.
 const FLOW_LIFETIME_MINUTES: i64 = 10;
 
-/// Build the configured GitHub provider, or report why it is unavailable.
-fn github_provider(state: &AppState) -> Result<GithubProvider, StatusCode> {
-    let cfg = state.config().oauth.github.as_ref().ok_or_else(|| {
-        tracing::warn!("GitHub login requested but no [oauth.github] is configured");
-        StatusCode::NOT_FOUND
-    })?;
-    GithubProvider::from_config(cfg).map_err(|e| {
-        tracing::error!("failed to build GitHub provider: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })
+/// Resolve the configured [`OAuthProvider`] named by the `{provider}` path
+/// segment, or report why it is unavailable (`404` if not configured/enabled).
+fn provider_for(
+    state: &AppState,
+    name: &str,
+) -> Result<Box<dyn OAuthProvider + Send + Sync>, StatusCode> {
+    match name {
+        "github" => {
+            let cfg = state.config().oauth.github.as_ref().ok_or_else(|| {
+                tracing::warn!("GitHub login requested but no [oauth.github] is configured");
+                StatusCode::NOT_FOUND
+            })?;
+            let provider = GithubProvider::from_config(cfg).map_err(|e| {
+                tracing::error!("failed to build GitHub provider: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            Ok(Box::new(provider))
+        }
+        other => {
+            tracing::warn!("login requested for unknown provider {other:?}");
+            Err(StatusCode::NOT_FOUND)
+        }
+    }
 }
 
-/// `GET /auth/github/login`: redirect the browser into GitHub's consent screen.
-#[tracing::instrument(skip(state))]
-pub async fn github_login(State(state): State<AppState>) -> Result<Redirect, StatusCode> {
-    let provider = github_provider(&state)?;
-    let (url, csrf) = provider.authorize().map_err(|e| {
+/// `GET /auth/{provider}/login`: start the flow and redirect the browser to the
+/// provider's authorization endpoint.
+#[tracing::instrument(skip(state, query))]
+pub async fn login(
+    State(state): State<AppState>,
+    Path(provider_name): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Result<Redirect, StatusCode> {
+    let provider = provider_for(&state, &provider_name)?;
+    let (url, csrf) = provider.authorize(&query).map_err(|e| {
         tracing::error!("failed to build authorization URL: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -64,21 +85,22 @@ pub async fn github_login(State(state): State<AppState>) -> Result<Redirect, Sta
     Ok(Redirect::to(&url))
 }
 
-/// Query parameters GitHub appends to the callback redirect.
+/// Query parameters the provider appends to the callback redirect.
 #[derive(Debug, Deserialize)]
 pub struct CallbackQuery {
     code: String,
     state: String,
 }
 
-/// `GET /auth/github/callback`: complete the flow and issue a session token.
+/// `GET /auth/{provider}/callback`: complete the flow and issue a session token.
 #[tracing::instrument(skip(state, query))]
-pub async fn github_callback(
+pub async fn callback(
     State(state): State<AppState>,
+    Path(provider_name): Path<String>,
     parts: Parts,
     Query(query): Query<CallbackQuery>,
 ) -> Result<Response, StatusCode> {
-    let provider = github_provider(&state)?;
+    let provider = provider_for(&state, &provider_name)?;
 
     // Resolve the originating client address and user agent up front, before the
     // request parts are consumed, so they can be stamped onto the issued token
@@ -235,17 +257,12 @@ pub async fn github_callback(
     // and strips it from the URL. See the config docs and TODOS.md (the token
     // currently transits a URL query string — to be hardened to a back-channel
     // exchange).
-    let browser_redirect = state
-        .config()
-        .oauth
-        .github
-        .as_ref()
-        .and_then(|g| g.browser_success_redirect.as_deref());
+    let browser_redirect = state.config().oauth.browser_success_redirect.as_deref();
 
     match browser_redirect {
         Some(target) => {
             let mut url = url::Url::parse(target).map_err(|e| {
-                tracing::error!("invalid oauth.github.browser_success_redirect {target:?}: {e}");
+                tracing::error!("invalid oauth.browser_success_redirect {target:?}: {e}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
             url.query_pairs_mut()
