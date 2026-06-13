@@ -150,15 +150,26 @@ _: {
 
           [log]
           use_tokio_console_subscriber = false
+
+          # browser_success_redirect is provider-independent: any OAuth callback
+          # 302s the browser here with the freshly minted token, which the
+          # console moves into its session cookie.
+          [oauth]
+          browser_success_redirect = "http://localhost:$console_port/auth/landing"
+
+          # The mock provider is a development-only, UNAUTHENTICATED login bypass
+          # (built-in identities, no external service). Safe to enable here only
+          # because this stack is strictly for local development.
+          [oauth.mock]
+          enabled = true
           TOML
             if [ "$oauth_enabled" = 1 ]; then
-              # Only the non-secret redirect URLs are written here; client_id /
+              # Only the non-secret redirect URL is written here; client_id /
               # client_secret arrive via the environment at launch (below).
               cat <<TOML
 
           [oauth.github]
           redirect_url = "http://localhost:$sb_port/api/v1/auth/github/callback"
-          browser_success_redirect = "http://localhost:$console_port/auth/landing"
           TOML
             fi
           } > "$sb_cfg"
@@ -212,6 +223,7 @@ _: {
               web console     : http://localhost:$console_port   <- open this
               switchboard API : http://localhost:$sb_port
               state directory : $state_dir
+              mock login      : ENABLED (dev only, unauthenticated)
           EOF
           if [ "$oauth_enabled" != 1 ]; then
             cat <<EOF
