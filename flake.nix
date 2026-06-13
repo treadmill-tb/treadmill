@@ -42,6 +42,7 @@
         inputs.treefmt-nix.flakeModule
         ./nix/treefmt.nix
         ./nix/packages.nix
+        ./nix/apps.nix
         ./nix/puppet-cross-musl.nix
         ./nix/tiny-efi.nix
         ./nix/devshells.nix
