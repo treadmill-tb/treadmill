@@ -57,6 +57,7 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
                     "read:org".to_string(),
                 ],
             }),
+            mock: None,
             browser_success_redirect: None,
         },
     }

@@ -17,6 +17,7 @@ use crate::audit::{self, events};
 use crate::auth::Subject;
 use crate::auth::oauth::OAuthProvider;
 use crate::auth::oauth::github::GithubProvider;
+use crate::auth::oauth::mock::{MOCK_IDENTITIES, MockProvider};
 use crate::client_addr::ClientAddr;
 use crate::serve::AppState;
 use crate::sql;
@@ -29,7 +30,10 @@ use http::StatusCode;
 use http::request::Parts;
 use serde::Deserialize;
 use std::collections::HashMap;
-use treadmill_rs::api::switchboard::{AuthToken, LoginResponse, WhoAmIResponse};
+use treadmill_rs::api::switchboard::{
+    AuthProvidersResponse, AuthToken, LoginResponse, MockIdentityInfo, OAuthProviderInfo,
+    WhoAmIResponse,
+};
 
 /// How long a started login flow's CSRF state remains valid before the callback
 /// must arrive.
@@ -53,11 +57,63 @@ fn provider_for(
             })?;
             Ok(Box::new(provider))
         }
+        "mock" => {
+            let enabled = state
+                .config()
+                .oauth
+                .mock
+                .as_ref()
+                .map(|m| m.enabled)
+                .unwrap_or(false);
+            if !enabled {
+                tracing::warn!("mock login requested but [oauth.mock] is not enabled");
+                return Err(StatusCode::NOT_FOUND);
+            }
+            Ok(Box::new(MockProvider))
+        }
         other => {
             tracing::warn!("login requested for unknown provider {other:?}");
             Err(StatusCode::NOT_FOUND)
         }
     }
+}
+
+/// `GET /auth/providers`: advertise the enabled login methods so a frontend can
+/// render the right buttons. Unauthenticated; returns only non-secret metadata.
+#[tracing::instrument(skip(state))]
+pub async fn providers(State(state): State<AppState>) -> Json<AuthProvidersResponse> {
+    let oauth_cfg = &state.config().oauth;
+
+    let mut oauth = Vec::new();
+    if oauth_cfg.github.is_some() {
+        oauth.push(OAuthProviderInfo {
+            name: "github".to_string(),
+            display_name: "GitHub".to_string(),
+            login_path: "/api/v1/auth/github/login".to_string(),
+        });
+    }
+
+    let mut mock_identities = Vec::new();
+    let mock_enabled = oauth_cfg.mock.as_ref().map(|m| m.enabled).unwrap_or(false);
+    if mock_enabled {
+        for id in MOCK_IDENTITIES {
+            let label = if id.admin {
+                format!("{} (admin)", id.login)
+            } else {
+                id.login.to_string()
+            };
+            mock_identities.push(MockIdentityInfo {
+                key: id.key.to_string(),
+                label,
+                login_path: format!("/api/v1/auth/mock/login?identity={}", id.key),
+            });
+        }
+    }
+
+    Json(AuthProvidersResponse {
+        oauth,
+        mock_identities,
+    })
 }
 
 /// `GET /auth/{provider}/login`: start the flow and redirect the browser to the
@@ -145,6 +201,17 @@ pub async fn callback(
         tracing::error!("failed to fetch identity: {e}");
         StatusCode::BAD_GATEWAY
     })?;
+
+    // The mock provider is an unauthenticated bypass; warn loudly on every login
+    // it issues so it cannot run unnoticed (it must never be enabled in prod).
+    if provider.name() == "mock" {
+        tracing::warn!(
+            "MOCK LOGIN: issuing a session for unauthenticated mock identity {:?} \
+             -- [oauth.mock] must NEVER be enabled in production",
+            identity.login,
+        );
+    }
+
     // Best-effort: org membership only narrows auto-groups; a failure here must
     // not block an otherwise valid login.
     let org_ids = provider.fetch_org_ids(&token).await.unwrap_or_default();
@@ -200,6 +267,17 @@ pub async fn callback(
         })?;
         tracing::warn!("user {user_id} login denied: account is locked");
         return Err(StatusCode::FORBIDDEN);
+    }
+
+    // The mock provider may designate an identity as a global admin (alice). Real
+    // providers never do; `grants_global_admin` returns false for them.
+    if provider.grants_global_admin(&identity) {
+        sql::user::ensure_global_admin(&mut tx, user_id)
+            .await
+            .map_err(|e| {
+                tracing::error!("failed to grant global admin to {user_id}: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
     }
 
     let (session_token, expires_at) = audit::transition(

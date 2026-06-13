@@ -61,6 +61,43 @@ pub struct WhoAmIResponse {
     pub full_name: Option<String>,
 }
 
+/// Response body for the unauthenticated `/auth/providers` endpoint: which login
+/// methods a switchboard offers, so a frontend can render the right buttons
+/// without hardcoding provider knowledge.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct AuthProvidersResponse {
+    /// Real OAuth providers (e.g. GitHub) the user can start a login flow with.
+    pub oauth: Vec<OAuthProviderInfo>,
+    /// Built-in mock sign-in identities. Non-empty ONLY when the
+    /// development-only mock provider is enabled; each is an unauthenticated,
+    /// canned identity. A frontend MUST surface these as development-only.
+    pub mock_identities: Vec<MockIdentityInfo>,
+}
+
+/// A real OAuth provider advertised by `/auth/providers`.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthProviderInfo {
+    /// Stable provider key, e.g. `"github"`.
+    pub name: String,
+    /// Human-readable label for a button, e.g. `"GitHub"`.
+    pub display_name: String,
+    /// Path, relative to the switchboard origin, that starts the login flow,
+    /// e.g. `"/api/v1/auth/github/login"`.
+    pub login_path: String,
+}
+
+/// A built-in mock identity advertised by `/auth/providers` (development only).
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct MockIdentityInfo {
+    /// Identity selector passed back to the mock login endpoint.
+    pub key: String,
+    /// Human-readable label, e.g. `"alice (admin)"`.
+    pub label: String,
+    /// Path, relative to the switchboard origin, that starts this identity's
+    /// login, e.g. `"/api/v1/auth/mock/login?identity=alice"`.
+    pub login_path: String,
+}
+
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]

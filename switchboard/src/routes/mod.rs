@@ -33,6 +33,8 @@ pub fn api_router() -> ApiRouter<AppState> {
         .route("/auth/{provider}/login", get(auth::login))
         //  GET /auth/{provider}/callback
         .route("/auth/{provider}/callback", get(auth::callback))
+        //  GET /auth/providers
+        .route("/auth/providers", get(auth::providers))
         //  GET /auth/whoami
         .route("/auth/whoami", get(auth::whoami))
         // job management group

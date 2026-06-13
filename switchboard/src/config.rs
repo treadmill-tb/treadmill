@@ -26,6 +26,8 @@ pub struct SwitchboardConfig {
 pub struct OAuthConfig {
     /// GitHub login, if configured.
     pub github: Option<GitHubOAuthConfig>,
+    /// Development-only mock login, if configured. See [`MockOAuthConfig`].
+    pub mock: Option<MockOAuthConfig>,
     /// Where to send a browser after a successful interactive login.
     ///
     /// The callback is built for programmatic clients: it returns the session
@@ -68,6 +70,25 @@ pub struct GitHubOAuthConfig {
     /// membership (the latter feeds GitHub-org auto-groups).
     #[serde(default = "default_github_scopes")]
     pub scopes: Vec<String>,
+}
+
+/// Configuration for the **development-only** mock OAuth provider.
+///
+/// The mock provider mints a valid session token for one of a small set of
+/// built-in, pre-defined identities with **no authentication whatsoever** — it
+/// is a deliberate auth bypass for local development and testing, and relies on
+/// no external web service. It is OFF unless `enabled = true`.
+///
+/// DANGER: enabling this on a reachable deployment turns it into an open door.
+/// There is no compile-time guard; the only protection is this flag, a loud
+/// warning at startup, and a warning on every mock login. Never enable it in
+/// production.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MockOAuthConfig {
+    /// Whether the mock provider is active. Defaults to false so merely having
+    /// the section present (e.g. via a stray env var) is not sufficient.
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 fn default_github_auth_url() -> String {

@@ -5,6 +5,7 @@
 //! are provider-agnostic, and so tests can target a fake provider/server.
 
 pub mod github;
+pub mod mock;
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -75,4 +76,12 @@ pub trait OAuthProvider {
     /// auto-group reconciliation. Best-effort: providers without an org concept
     /// (or insufficient scope) return an empty list.
     async fn fetch_org_ids(&self, token: &OAuthAccessToken) -> Result<Vec<String>, OAuthError>;
+
+    /// Whether the just-authenticated identity should be granted membership in
+    /// the global `admins` group. Real providers never do this (they return the
+    /// default `false`); only the development-only mock provider uses it, to make
+    /// one of its built-in identities an admin for local testing.
+    fn grants_global_admin(&self, _identity: &ExternalIdentity) -> bool {
+        false
+    }
 }

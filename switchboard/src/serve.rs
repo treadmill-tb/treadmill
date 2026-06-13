@@ -90,6 +90,23 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
         tracing_subscriber::fmt::init();
     }
 
+    // The mock OAuth provider is an unauthenticated login bypass intended only
+    // for local development; warn loudly at startup if it is enabled so it can
+    // never run in production unnoticed.
+    if config
+        .oauth
+        .mock
+        .as_ref()
+        .map(|m| m.enabled)
+        .unwrap_or(false)
+    {
+        tracing::warn!(
+            "-- WARNING -- DEVELOPMENT-ONLY MOCK OAUTH PROVIDER IS ENABLED. \
+             It mints valid sessions for built-in identities with NO authentication. \
+             PLEASE DO NOT USE THIS IN PRODUCTION."
+        );
+    }
+
     let pg_pool = pg_pool_from_config(&config.database)
         .await
         .into_diagnostic()
