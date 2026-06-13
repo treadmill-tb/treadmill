@@ -19,6 +19,34 @@ pub struct SwitchboardConfig {
     /// configured simply cannot issue interactive logins.
     #[serde(default)]
     pub oauth: OAuthConfig,
+    /// Optionally serve the web console from this same process/port. Absent (the
+    /// default) means the console is not embedded; run it as its own service.
+    #[serde(default)]
+    pub console: Option<EmbeddedConsoleConfig>,
+}
+
+/// Configuration for serving the web console embedded in the switchboard.
+///
+/// When enabled, the console's routes are mounted at `/` on the switchboard's
+/// own listener, alongside the API at `/api/v1` — so a single port serves both.
+/// The console is itself an HTTP client of the switchboard API; embedded, it
+/// calls back over loopback by default.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmbeddedConsoleConfig {
+    /// Whether to mount the console. Off unless `true`, so merely having the
+    /// section present is not sufficient.
+    #[serde(default)]
+    pub enabled: bool,
+    /// External origin the console is reached at (e.g. `https://tml.example`).
+    /// Only its scheme matters here: an `https://` value makes the session
+    /// cookie `Secure`. Defaults to `http://127.0.0.1:<server port>`.
+    #[serde(default)]
+    pub public_base_url: Option<String>,
+    /// Base URL the embedded console uses to call the switchboard API. Defaults
+    /// to a loopback URL for this process (`http://127.0.0.1:<server port>`),
+    /// which is correct unless TLS or a non-loopback bind requires otherwise.
+    #[serde(default)]
+    pub api_base_url: Option<String>,
 }
 
 /// OAuth login provider configuration. Each provider is independently optional.

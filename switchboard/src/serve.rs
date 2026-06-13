@@ -107,6 +107,10 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
         );
     }
 
+    if config.console.as_ref().map(|c| c.enabled).unwrap_or(false) {
+        tracing::info!("embedded web console enabled; serving it at / alongside the API");
+    }
+
     let pg_pool = pg_pool_from_config(&config.database)
         .await
         .into_diagnostic()

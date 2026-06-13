@@ -6,6 +6,10 @@ edition.workspace = true
 
 [dependencies]
 treadmill-rs = { workspace = true }
+# Optional embedded web console: when [console] enabled, switchboard mounts the
+# console's router on its own listener. Pulled in unconditionally (the console
+# crate is light); whether it is served is a runtime config decision.
+treadmill-console = { workspace = true }
 
 # For debugging reasons
 console-subscriber = "0.5.0"

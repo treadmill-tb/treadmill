@@ -4702,6 +4702,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "treadmill-console",
  "treadmill-rs",
  "url",
  "uuid",

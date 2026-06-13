@@ -227,9 +227,12 @@ let
     switchboard = mkGroup {
       name = "switchboard";
       crates = [ "treadmill-switchboard" ];
+      # `swx` can embed the web console, so its compile touches the console
+      # crate too (and treadmill-rs, which both share).
       bins.swx = [
         "switchboard"
         "treadmill-rs"
+        "console"
       ];
       extra = [ switchboardData ];
     };
