@@ -121,6 +121,30 @@ time { color: var(--muted); }
 .muted { color: var(--muted); }
 .empty { color: var(--muted); font-style: italic; }
 
+/* Login page: a vertical stack of provider buttons. */
+.login-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+}
+a.button {
+  display: block;
+  padding: 0.55rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  text-align: center;
+}
+a.button:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+
+/* The development-only mock sign-in block, visually set apart and warned. */
+section.card.dev { border-color: #d4a72c; background: #fff8e6; }
+section.card.dev h2 { margin-top: 0; }
+.warning { color: #8a6d00; }
+
 footer.site {
   max-width: 920px;
   margin: 2rem auto;

@@ -1,10 +1,12 @@
 //! The login flow.
 //!
-//! `/login` bounces the browser to switchboard's GitHub login. Switchboard runs
-//! the OAuth dance and, configured with `browser_success_redirect` pointing at
-//! `<console>/auth/landing`, redirects back here with the freshly minted token
-//! in the query. `/auth/landing` moves that token into the session cookie and
-//! sends the user on to `/me`. `/logout` clears the cookie.
+//! `/login` renders a sign-in page listing the methods switchboard advertises
+//! via `/auth/providers` (GitHub, plus any development-only mock identities).
+//! Each button links to switchboard, which runs the OAuth dance and, configured
+//! with `browser_success_redirect` pointing at `<console>/auth/landing`,
+//! redirects back here with the freshly minted token in the query.
+//! `/auth/landing` moves that token into the session cookie and sends the user
+//! on to `/me`. `/logout` clears the cookie.
 //!
 //! NOTE: carrying the token through a URL query is the prototype handoff; the
 //! hardened design (one-time code + back-channel exchange) is tracked in the
@@ -14,14 +16,57 @@ use axum::extract::{Query, State};
 use axum::response::Redirect;
 use axum_extra::extract::cookie::CookieJar;
 use chrono::DateTime;
+use maud::{Markup, html};
 use serde::Deserialize;
 
 use crate::serve::AppState;
 use crate::session::{clear_cookie, session_cookie};
+use crate::views::{PageError, layout};
 
-/// `GET /login` — begin login by redirecting to switchboard.
-pub async fn login(State(state): State<AppState>) -> Redirect {
-    Redirect::to(&state.switchboard(None).github_login_url())
+/// `GET /login` — the sign-in page. Lists every login method the switchboard
+/// offers; the visitor is sent here whenever a page needs a session and none is
+/// present.
+pub async fn login(State(state): State<AppState>) -> Result<Markup, PageError> {
+    let client = state.switchboard(None);
+    let providers = client.auth_providers().await?;
+    let none_configured = providers.oauth.is_empty() && providers.mock_identities.is_empty();
+
+    Ok(layout(
+        "Sign in",
+        None,
+        html! {
+            h1 { "Sign in" }
+            section.card {
+                p.muted { "You are not signed in. Choose a method to continue." }
+                @if none_configured {
+                    p.empty { "No sign-in methods are configured on this switchboard." }
+                }
+                div.login-options {
+                    @for p in &providers.oauth {
+                        a.button href=(client.login_url(&p.login_path)) {
+                            "Sign in with " (p.display_name)
+                        }
+                    }
+                }
+            }
+            @if !providers.mock_identities.is_empty() {
+                section.card.dev {
+                    h2 { "Development sign-in" }
+                    p.warning {
+                        "Unauthenticated mock identities for local development only. "
+                        "These must never be enabled in production."
+                    }
+                    div.login-options {
+                        @for id in &providers.mock_identities {
+                            a.button href=(client.login_url(&id.login_path)) {
+                                "Sign in as " (id.label)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    ))
 }
 
 /// Query switchboard appends to the landing redirect after a successful login.
