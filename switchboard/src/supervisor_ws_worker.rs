@@ -11,6 +11,7 @@ use treadmill_rs::api::switchboard_supervisor::{
 };
 use uuid::Uuid;
 
+use crate::log_streaming::LogStreaming;
 use crate::sql;
 
 /// Bounds for the WebSocket-like duplex stream the worker speaks to a
@@ -84,6 +85,12 @@ struct WorkerCtx {
     host_id: Uuid,
     worker_instance_id: u64,
     config: SupervisorWSWorkerConfig,
+    /// Log-streaming components, present iff the deployment enables the feature.
+    /// Used to mint the per-job write token (pure, inside the dispatch txn) and
+    /// to provision the per-job JetStream stream (NATS I/O, *outside* the row
+    /// lock — see `reconcile`). `None` disables streaming: jobs dispatch with no
+    /// `log_streaming` destination.
+    log_streaming: Option<LogStreaming>,
 }
 
 pub struct SupervisorWSWorker<S: SupervisorSocket> {
@@ -220,9 +227,15 @@ impl WorkerCtx {
 }
 
 impl<S: SupervisorSocket> SupervisorWSWorker<S> {
-    #[tracing::instrument(skip(pool, socket))]
-    pub async fn run(pool: PgPool, host_id: Uuid, socket: S, config: SupervisorWSWorkerConfig) {
-        match Self::run_inner(pool, host_id, socket, config).await {
+    #[tracing::instrument(skip(pool, socket, log_streaming))]
+    pub async fn run(
+        pool: PgPool,
+        host_id: Uuid,
+        socket: S,
+        config: SupervisorWSWorkerConfig,
+        log_streaming: Option<LogStreaming>,
+    ) {
+        match Self::run_inner(pool, host_id, socket, config, log_streaming).await {
             Ok(()) => {
                 tracing::info!("SupervisorWSWorker::run terminated successfully.");
             }
@@ -247,6 +260,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         host_id: Uuid,
         socket: S,
         config: SupervisorWSWorkerConfig,
+        log_streaming: Option<LogStreaming>,
     ) -> WorkerResult<()> {
         // A supervisor has just opened a new WebSocket connection for this host
         // and successfully authenticated. This might be because it's a new
@@ -283,6 +297,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 host_id,
                 worker_instance_id,
                 config,
+                log_streaming,
             },
             socket,
             last_seen_status: None,
@@ -382,6 +397,10 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         let host_id = self.ctx.host_id;
         let at = chrono::Utc::now();
 
+        // The log-streaming config (token minting only) is read inside the txn;
+        // stream provisioning (NATS I/O) happens *after* commit, below.
+        let log_streaming_config = self.ctx.log_streaming.as_ref().map(|ls| ls.config.clone());
+
         // All reads and writes run under the takeover/staleness guard. The
         // closure returns the single command (if any) the worker must send
         // *after* the transaction commits: we never await the socket while the
@@ -466,9 +485,13 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                                 // up yet — (re)dispatch it. No DB change; the next
                                 // pass adopts the reported running state.
                                 (SqlJobState::Scheduled, ReportedSupervisorStatus::Idle) => {
-                                    let msg = sql::job::build_start_job_message(&job, txn)
-                                        .await
-                                        .context("building StartJob message in reconcile")?;
+                                    let msg = sql::job::build_start_job_message(
+                                        &job,
+                                        txn,
+                                        log_streaming_config.as_ref(),
+                                    )
+                                    .await
+                                    .context("building StartJob message in reconcile")?;
                                     Some(SwitchboardToSupervisor::StartJob(msg))
                                 }
 
@@ -553,6 +576,28 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
             .await?;
 
         if let Some(command) = command {
+            // Provision the per-job JetStream stream before dispatching a
+            // StartJob that carries a log-streaming destination, so the stream
+            // exists by the time the supervisor connects and publishes. Done
+            // here, *after* the txn commits, because it is NATS I/O and must not
+            // run while the host row lock is held (see `with_txn`'s contract).
+            // Idempotent: reconcile re-sends StartJob, and an existing stream is
+            // a success.
+            let stream_to_provision = match &command {
+                SwitchboardToSupervisor::StartJob(msg) if msg.log_streaming.is_some() => {
+                    Some(msg.job_id)
+                }
+                _ => None,
+            };
+            if let (Some(job_id), Some(log_streaming)) =
+                (stream_to_provision, self.ctx.log_streaming.as_ref())
+            {
+                log_streaming
+                    .provisioner
+                    .ensure_job_stream(job_id)
+                    .await
+                    .context("provisioning JetStream stream before dispatch")?;
+            }
             self.send_command(command).await?;
         }
 
@@ -1088,6 +1133,7 @@ mod tests {
                 host_id,
                 worker_instance_id,
                 config,
+                log_streaming: None,
             },
             socket: NoSocket,
             last_seen_status: None,
@@ -1114,6 +1160,7 @@ mod tests {
                 host_id,
                 worker_instance_id,
                 config,
+                log_streaming: None,
             },
             socket,
             last_seen_status: None,
@@ -1430,7 +1477,7 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            SupervisorWSWorker::run(pool, host_id, socket, worker_config(50, 250)),
+            SupervisorWSWorker::run(pool, host_id, socket, worker_config(50, 250), None),
         )
         .await
         .expect("worker should return promptly after peer Close");
@@ -1449,7 +1496,7 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            SupervisorWSWorker::run(pool, host_id, socket, worker_config(50, 250)),
+            SupervisorWSWorker::run(pool, host_id, socket, worker_config(50, 250), None),
         )
         .await
         .expect("worker should return promptly on socket stream end");
@@ -1482,6 +1529,7 @@ mod tests {
             host_id,
             socket,
             worker_config(50, 5_000),
+            None,
         ));
 
         // The worker marks the host live on connect (before the first ping).
@@ -1556,7 +1604,7 @@ mod tests {
         // 50ms ping cadence, 5s dead-pong deadline — the deadline is wide
         // enough that the dead-peer guard never fires during this test.
         let cfg = worker_config(50, 5_000);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg, None));
 
         for n in 1..=3 {
             // The worker also emits `StatusRequest` (Text) frames on connect and
@@ -1589,7 +1637,7 @@ mod tests {
 
         // Tight deadline — worker should declare the peer dead within ~200ms.
         let cfg = worker_config(50, 200);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg, None));
 
         // We never respond with Pongs; the worker must give up on its own.
         // Generous outer bound: pong-dead (200ms) + slack for scheduling/DB
@@ -1620,7 +1668,7 @@ mod tests {
         // false dead-peer detection to flake this liveness check (the exact
         // threshold is pinned by `run_exits_when_no_pong_within_dead_threshold`).
         let cfg = worker_config(50, 400);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg, None));
 
         for n in 1..=16 {
             // Skip the `StatusRequest` (Text) frames the worker also emits; we
@@ -1673,7 +1721,7 @@ mod tests {
         // Wide ping cadence / dead-pong deadline so neither fires during this
         // test — we only care that an inbound Ping doesn't take down the loop.
         let cfg = worker_config(60_000, 600_000);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg, None));
 
         // In production the Pong reply is emitted by the tungstenite framing
         // layer wrapped by axum's WebSocket; the application-level worker only
@@ -1703,7 +1751,7 @@ mod tests {
         let (to_worker, _from_worker, socket) = scripted_socket();
 
         let cfg = worker_config(60_000, 600_000);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg, None));
 
         // Unsolicited Pong — must not panic the run loop.
         to_worker
@@ -1730,7 +1778,7 @@ mod tests {
         let (to_worker, _from_worker, socket) = scripted_socket();
 
         let cfg = worker_config(60_000, 600_000);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg, None));
 
         // The protocol is JSON-over-Text; Binary frames aren't part of it.
         // The loop should log and continue rather than panic.
@@ -1755,7 +1803,7 @@ mod tests {
         let (to_worker, _from_worker, socket) = scripted_socket();
 
         let cfg = worker_config(60_000, 600_000);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg));
+        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg, None));
 
         // Garbage that won't deserialize as a `switchboard_supervisor::Message`.
         // Until step 3 wires up real dispatch, the only contract we need is
@@ -2335,7 +2383,7 @@ mod tests {
         let (digest, _registry, _repository) =
             register_resolved_image(&pool, user_id, job_id).await?;
         let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
-        let msg = sql::job::build_start_job_message(&job, &mut conn)
+        let msg = sql::job::build_start_job_message(&job, &mut conn, None)
             .await
             .expect("concrete-image StartJob should build");
         assert_eq!(msg.job_id, job_id);
@@ -2373,7 +2421,7 @@ mod tests {
         .execute(&pool)
         .await?;
         let rjob = sql::job::fetch_by_job_id(resume_job, &pool).await?;
-        let rmsg = sql::job::build_start_job_message(&rjob, &mut conn)
+        let rmsg = sql::job::build_start_job_message(&rjob, &mut conn, None)
             .await
             .expect("resume StartJob should build");
         match rmsg.image_spec {
@@ -2383,6 +2431,86 @@ mod tests {
             ),
             other => panic!("expected ResumeJob spec, got {other:?}"),
         }
+        Ok(())
+    }
+
+    /// With log streaming enabled, `build_start_job_message` populates
+    /// `log_streaming` with this job's subject prefix and a freshly minted
+    /// **bearer** write token scoped to publish only `logs.<job-id>.>`. Decodes
+    /// the JWT claims directly — no live NATS needed (token minting is pure).
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn build_start_job_message_populates_scoped_write_token(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        use base64::Engine as _;
+
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let mut conn = pool.acquire().await?;
+
+        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        register_resolved_image(&pool, user_id, job_id).await?;
+        let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
+
+        // A throwaway account seed: doubles as the JWT signing key.
+        let account = nats_jwt::KeyPair::new_account();
+        let ls_config = crate::config::LogStreamingConfig {
+            nats_url: "nats://nats.example:4222".to_string(),
+            jetstream_domain: None,
+            account_seed: account.seed().expect("account seed"),
+        };
+
+        let msg = sql::job::build_start_job_message(&job, &mut conn, Some(&ls_config))
+            .await
+            .expect("StartJob should build with log streaming");
+
+        let dispatch = msg
+            .log_streaming
+            .expect("log_streaming must be populated when enabled");
+        assert_eq!(dispatch.nats_url, ls_config.nats_url);
+        assert_eq!(
+            dispatch.subject_prefix,
+            crate::log_streaming::subject_prefix(job_id)
+        );
+
+        // Decode (unverified) the write token's claims as JSON and check the pub
+        // scope. Parsed as JSON rather than `nats_jwt::Claims` because that type
+        // cannot round-trip its own output (its permission lists skip-serialize
+        // when empty but have no serde default).
+        let payload = dispatch
+            .write_token
+            .split('.')
+            .nth(1)
+            .expect("jwt has a payload segment");
+        let claims_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .expect("jwt payload is base64url");
+        let claims: serde_json::Value =
+            serde_json::from_slice(&claims_bytes).expect("payload is JSON");
+
+        assert_eq!(claims["nats"]["type"], "user");
+        assert_eq!(
+            claims["nats"]["bearer_token"], true,
+            "write token must be a bearer token"
+        );
+        assert_eq!(
+            claims["nats"]["pub"]["allow"],
+            serde_json::json!([format!("logs.{job_id}.>")]),
+            "write token must publish-scope exactly this job's subjects"
+        );
+        assert!(
+            claims["nats"].get("sub").is_none(),
+            "write token must not grant subscribe scope"
+        );
+
+        // Disabled (None) leaves the field unset.
+        let plain = sql::job::build_start_job_message(&job, &mut conn, None)
+            .await
+            .expect("StartJob should build without log streaming");
+        assert!(plain.log_streaming.is_none());
+
         Ok(())
     }
 

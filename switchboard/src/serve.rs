@@ -1,4 +1,5 @@
 use crate::config::{DatabaseConfig, DatabaseCredentials, SwitchboardConfig};
+use crate::log_streaming::{LogStreaming, NatsLogStreamProvisioner};
 use crate::registry::{OciRegistryClient, RegistryClient};
 use miette::{IntoDiagnostic, WrapErr};
 use sqlx::PgPool;
@@ -14,6 +15,11 @@ pub struct AppStateInner {
     /// Pulls manifests/indexes by digest for image-catalog registration.
     /// Injectable so route tests can use a canned in-memory registry.
     registry: Arc<dyn RegistryClient>,
+    /// Log-streaming components (token minting + stream provisioning), present
+    /// only when the deployment enables log streaming. `None` disables the
+    /// feature: jobs dispatch without a streaming destination. Built once at
+    /// startup and shared with every supervisor worker.
+    log_streaming: Option<LogStreaming>,
 }
 
 impl AppStateInner {
@@ -26,26 +32,43 @@ impl AppStateInner {
     pub fn registry(&self) -> &Arc<dyn RegistryClient> {
         &self.registry
     }
+    pub fn log_streaming(&self) -> Option<&LogStreaming> {
+        self.log_streaming.as_ref()
+    }
 }
 
 #[derive(Clone)]
 pub struct AppState(Arc<AppStateInner>);
 impl AppState {
     pub fn new(pg_pool: PgPool, config: SwitchboardConfig) -> Self {
-        Self::with_registry(pg_pool, config, Arc::new(OciRegistryClient::new()))
+        Self::with_components(pg_pool, config, Arc::new(OciRegistryClient::new()), None)
     }
 
     /// Construct an [`AppState`] with an explicit registry client. Used by
-    /// catalog route tests to inject a canned in-memory registry.
+    /// catalog route tests to inject a canned in-memory registry. Log streaming
+    /// is disabled (tests have no NATS).
     pub fn with_registry(
         pg_pool: PgPool,
         config: SwitchboardConfig,
         registry: Arc<dyn RegistryClient>,
     ) -> Self {
+        Self::with_components(pg_pool, config, registry, None)
+    }
+
+    /// Construct an [`AppState`] from all of its injectable components. The
+    /// production entry point ([`serve`]) uses this to attach the log-streaming
+    /// provisioner it builds at startup.
+    pub fn with_components(
+        pg_pool: PgPool,
+        config: SwitchboardConfig,
+        registry: Arc<dyn RegistryClient>,
+        log_streaming: Option<LogStreaming>,
+    ) -> Self {
         AppState(Arc::new(AppStateInner {
             pg_pool,
             config,
             registry,
+            log_streaming,
         }))
     }
 }
@@ -138,7 +161,33 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
     );
     tokio::spawn(scheduler.run());
 
-    let app_state = AppState::new(pg_pool, config);
+    // Establish the log-streaming management connection up front (if enabled),
+    // so a misconfigured NATS endpoint fails fast at startup rather than on the
+    // first dispatch. The provisioner is shared by every supervisor worker.
+    let log_streaming = match &config.log_streaming {
+        Some(ls_config) => {
+            tracing::info!(
+                nats_url = %ls_config.nats_url,
+                "log streaming enabled; connecting to NATS for stream provisioning"
+            );
+            let provisioner = NatsLogStreamProvisioner::connect(ls_config)
+                .await
+                .into_diagnostic()
+                .wrap_err("failed to connect to NATS for log streaming")?;
+            Some(LogStreaming {
+                config: ls_config.clone(),
+                provisioner: Arc::new(provisioner),
+            })
+        }
+        None => None,
+    };
+
+    let app_state = AppState::with_components(
+        pg_pool,
+        config,
+        Arc::new(OciRegistryClient::new()),
+        log_streaming,
+    );
     let router = super::routes::build_router(app_state);
 
     enum Server {

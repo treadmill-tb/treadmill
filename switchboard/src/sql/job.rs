@@ -602,6 +602,8 @@ pub enum BuildStartJobError {
     /// every concrete-image job at assignment. Reaching here means the row was
     /// not scheduled through the normal path (or the column was cleared).
     NoResolvedImage(Uuid),
+    /// Minting the per-job log-streaming write token failed (bad account seed).
+    LogStreamingMint(crate::log_streaming::MintError),
 }
 impl From<sqlx::Error> for BuildStartJobError {
     fn from(e: sqlx::Error) -> Self {
@@ -613,6 +615,11 @@ impl From<ImageResolveError> for BuildStartJobError {
         BuildStartJobError::Image(e)
     }
 }
+impl From<crate::log_streaming::MintError> for BuildStartJobError {
+    fn from(e: crate::log_streaming::MintError) -> Self {
+        BuildStartJobError::LogStreamingMint(e)
+    }
+}
 impl std::fmt::Display for BuildStartJobError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -620,6 +627,9 @@ impl std::fmt::Display for BuildStartJobError {
             BuildStartJobError::Image(e) => write!(f, "{e}"),
             BuildStartJobError::NoResolvedImage(j) => {
                 write!(f, "job {j} has no resolved_image_digest to dispatch")
+            }
+            BuildStartJobError::LogStreamingMint(e) => {
+                write!(f, "minting log-streaming write token: {e}")
             }
         }
     }
@@ -636,10 +646,19 @@ impl std::error::Error for BuildStartJobError {}
 /// scheduler's chosen member stands). The remaining fields are read straight off
 /// the job row and the `job_parameters` table.
 ///
+/// When `log_streaming` is `Some`, the message carries a per-job
+/// [`LogStreamingDispatch`](treadmill_rs::api::switchboard_supervisor::LogStreamingDispatch)
+/// with a freshly minted, publish-scoped write token (see
+/// [`crate::log_streaming`]); when `None`, log streaming is off and the field
+/// stays `None`. Minting is pure (no I/O), so it is safe under the worker's
+/// transaction; the *stream* is created separately, outside the row lock, by the
+/// caller (see the worker's `reconcile`).
+///
 /// Read-only; safe to call inside the worker's `with_txn` (it issues no writes).
 pub async fn build_start_job_message(
     job: &SqlJob,
     conn: &mut sqlx::PgConnection,
+    log_streaming: Option<&crate::config::LogStreamingConfig>,
 ) -> Result<StartJobMessage, BuildStartJobError> {
     let image_spec = if let Some(resume_job_id) = job.resume_job_id {
         ImageSpecification::ResumeJob {
@@ -658,14 +677,20 @@ pub async fn build_start_job_message(
 
     let parameters = parameters::fetch_by_job_id(job.job_id, &mut *conn).await?;
 
+    // Mint the per-job write token when log streaming is enabled. The matching
+    // JetStream stream is created by the caller outside the host row lock (NATS
+    // I/O must not run inside `with_txn`).
+    let log_streaming = log_streaming
+        .map(|cfg| crate::log_streaming::build_dispatch(cfg, job.job_id))
+        .transpose()?;
+
     Ok(StartJobMessage {
         job_id: job.job_id,
         image_spec,
         ssh_keys: job.ssh_keys.clone(),
         restart_policy: job.restart_policy(),
         parameters,
-        // Populated in Phase 2 (mint write token + create the per-job stream).
-        log_streaming: None,
+        log_streaming,
     })
 }
 

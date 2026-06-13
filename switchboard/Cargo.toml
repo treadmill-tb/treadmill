@@ -123,6 +123,14 @@ oci-spec = { workspace = true }
 # Verify a pulled manifest hashes to the digest it was requested under.
 sha2 = { workspace = true }
 
+# Log streaming over NATS/JetStream: the JetStream client used to create the
+# per-job stream at dispatch, plus per-job bearer-JWT minting (`nats-jwt` encodes
+# and signs the user claims, `nkeys` derives the account keypair from the signing
+# seed). See `doc/log-streaming-plan.md`.
+async-nats = { workspace = true }
+nats-jwt = { workspace = true }
+nkeys = { workspace = true }
+
 [dev-dependencies]
 sqlx-cli = { version = "0.9.0", features = [
   "postgres",

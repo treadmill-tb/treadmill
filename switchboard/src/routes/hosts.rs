@@ -125,6 +125,10 @@ pub async fn connect(
         supervisor_reconcile_interval: state.config().service.supervisor_reconcile_interval,
     };
 
+    // Shared with the worker so it can mint per-job write tokens and provision
+    // streams at dispatch; `None` when log streaming is disabled.
+    let log_streaming = state.log_streaming().cloned();
+
     let mut response = ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL]).on_upgrade(
         move |mut web_socket| async move {
             tokio::spawn(async move {
@@ -148,7 +152,14 @@ pub async fn connect(
 		     ({host_id}), connecting from {socket_addr}."
                 );
 
-                SupervisorWSWorker::run(worker_pool, host_id, web_socket, ws_worker_config).await
+                SupervisorWSWorker::run(
+                    worker_pool,
+                    host_id,
+                    web_socket,
+                    ws_worker_config,
+                    log_streaming,
+                )
+                .await
             });
         },
     );

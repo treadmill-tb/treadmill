@@ -2,6 +2,7 @@ pub mod audit;
 pub mod auth;
 pub mod client_addr;
 pub mod config;
+pub mod log_streaming;
 pub mod matcher;
 pub mod registry;
 pub mod routes;
