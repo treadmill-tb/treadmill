@@ -4,6 +4,8 @@
 //! Reusable per-resource components (e.g. the audit feed) live in submodules so
 //! every resource page can drop them in identically.
 
+pub mod audit;
+
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, Utc};

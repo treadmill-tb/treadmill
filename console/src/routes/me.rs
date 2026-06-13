@@ -6,11 +6,14 @@
 use axum::extract::{Path, State};
 use axum::response::Redirect;
 use maud::{Markup, html};
+use treadmill_rs::api::switchboard::audit::RenderedAuditRow;
+use treadmill_rs::api::switchboard::client::ClientError;
 use treadmill_rs::api::switchboard::users::{PublicUserProfile, SelfUserProfile, SessionInfo};
 use uuid::Uuid;
 
 use crate::serve::AppState;
 use crate::session::Session;
+use crate::views::audit::audit_feed;
 use crate::views::{PageError, layout, timestamp};
 
 /// `GET /` — send visitors to their profile (or, if logged out, the session
@@ -23,6 +26,11 @@ pub async fn index() -> Redirect {
 pub async fn me(session: Session) -> Result<Markup, PageError> {
     let profile = session.client.get_me().await?;
     let tokens = session.client.list_my_tokens().await?;
+    let events = session
+        .client
+        .user_events(profile.profile.user_id)
+        .await?
+        .events;
 
     let username = profile.profile.username.clone();
     Ok(layout(
@@ -32,17 +40,21 @@ pub async fn me(session: Session) -> Result<Markup, PageError> {
             h1 { "Your profile" }
             (self_profile_card(&profile))
             (sessions_section(&tokens))
+            (audit_feed(&events))
         },
     ))
 }
 
-/// `GET /users/{id}` — the public view of another user.
+/// `GET /users/{id}` — the public view of another user. The audit feed is shown
+/// only when the viewer is permitted to read it (self/admin); otherwise it is
+/// quietly omitted.
 pub async fn user(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<Uuid>,
 ) -> Result<Markup, PageError> {
     let profile = session.client.get_user(id).await?;
+    let events = optional_feed(&session, id).await?;
     let viewer = nav_user(&state, &session).await;
 
     Ok(layout(
@@ -51,8 +63,24 @@ pub async fn user(
         html! {
             h1 { (profile.username) }
             (public_profile_card(&profile))
+            @if let Some(events) = &events {
+                (audit_feed(events))
+            }
         },
     ))
+}
+
+/// Fetch a user's audit feed, mapping a `403` (viewer not permitted) to `None`
+/// rather than an error so the page still renders.
+async fn optional_feed(
+    session: &Session,
+    id: Uuid,
+) -> Result<Option<Vec<RenderedAuditRow>>, PageError> {
+    match session.client.user_events(id).await {
+        Ok(feed) => Ok(Some(feed.events)),
+        Err(ClientError::Status { status: 403, .. }) => Ok(None),
+        Err(other) => Err(other.into()),
+    }
 }
 
 /// The logged-in user's handle for the nav bar, or `None` if the lookup fails.
