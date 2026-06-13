@@ -234,6 +234,18 @@ let
       extra = [ switchboardData ];
     };
 
+    console = mkGroup {
+      name = "console";
+      crates = [ "treadmill-console" ];
+      # The console's stylesheet is embedded in its Rust sources, so the bin's
+      # compile touches only its own crate and treadmill-rs (built with the
+      # `client` feature); no extra data fileset is needed.
+      bins.tml-console = [
+        "console"
+        "treadmill-rs"
+      ];
+    };
+
     puppet = mkGroup {
       name = "puppet";
       crates = [ "treadmill-puppet" ];

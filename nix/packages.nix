@@ -29,6 +29,11 @@
           bin = "swx";
         };
 
+        tml-console = cmn.mkBin {
+          group = cmn.groups.console;
+          bin = "tml-console";
+        };
+
         treadmill-qemu-supervisor = cmn.mkBin {
           group = cmn.groups.supervisors;
           bin = "treadmill-qemu-supervisor";
