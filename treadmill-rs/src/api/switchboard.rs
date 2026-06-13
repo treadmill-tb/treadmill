@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod images;
 pub mod users;
 

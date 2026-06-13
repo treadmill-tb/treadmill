@@ -9,7 +9,7 @@
       "get": {
         "responses": {
           "200": {
-            "description": "",
+            "description": "A page of rendered audit events for one entity, newest first.",
             "content": {
               "application/json": {
                 "schema": {
@@ -25,7 +25,7 @@
       "get": {
         "responses": {
           "200": {
-            "description": "",
+            "description": "A page of rendered audit events for one entity, newest first.",
             "content": {
               "application/json": {
                 "schema": {
@@ -206,7 +206,7 @@
       "get": {
         "responses": {
           "200": {
-            "description": "",
+            "description": "A page of rendered audit events for one entity, newest first.",
             "content": {
               "application/json": {
                 "schema": {
@@ -382,6 +382,7 @@
   "components": {
     "schemas": {
       "AuditFeedResponse": {
+        "description": "A page of rendered audit events for one entity, newest first.",
         "type": "object",
         "properties": {
           "events": {
@@ -683,6 +684,7 @@
         ]
       },
       "RenderedAuditRow": {
+        "description": "One audit event, already rendered to a human-readable `message` for the\nrequesting viewer (the switchboard resolves the per-event template and\napplies the viewer's visibility before sending it).",
         "type": "object",
         "properties": {
           "actor_id": {

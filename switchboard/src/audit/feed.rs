@@ -1,6 +1,4 @@
 use http::StatusCode;
-use schemars::JsonSchema;
-use serde::Serialize;
 use uuid::Uuid;
 
 use crate::audit::registry::{ViewerCtx, render};
@@ -8,20 +6,10 @@ use crate::auth::Subject;
 use crate::auth::engine;
 use crate::serve::AppState;
 
-#[derive(Serialize, JsonSchema)]
-pub struct AuditFeedResponse {
-    pub events: Vec<RenderedAuditRow>,
-}
-
-#[derive(Serialize, JsonSchema)]
-pub struct RenderedAuditRow {
-    pub event_id: Uuid,
-    pub event_type: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub actor_id: Uuid,
-    pub correlation_id: Option<Uuid>,
-    pub message: String,
-}
+// The wire types live in the shared `treadmill-rs` crate so HTTP clients (the
+// web console, an eventual CLI) deserialize the exact structs we serialize here.
+// Re-exported so the route handlers can keep importing them from this module.
+pub use treadmill_rs::api::switchboard::audit::{AuditFeedResponse, RenderedAuditRow};
 
 pub async fn fetch_events_for_entity(
     state: &AppState,
