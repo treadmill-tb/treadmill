@@ -1,6 +1,13 @@
 # Host/Supervisor Log Streaming — Implementation Plan
 
-**Status:** proposed roadmap · **Date:** 2026-06-13
+**Status:** in progress — phases 0–3 and 4a landed on `dev/switchboard-refactor`
+· **Date:** 2026-06-13
+
+> **Progress / revisions (2026-06-13).** Phases 0, 1, 2, 3a, 3b, and 4a are
+> committed (write path end-to-end, plus the switchboard read-token route). The
+> `tml log` CLI originally planned for Phase 4 is **dropped**: the read-path
+> client will be the **web console** (`nats.ws` + xterm.js), which is the
+> remaining work. See §8 Phase 4 for the revised breakdown.
 
 > This document is a **one-time implementation roadmap**, self-contained so a new
 > contributor (human or agent) can pick up the work without the design
@@ -294,19 +301,25 @@ In `treadmill-rs/src/api/switchboard_supervisor.rs`:
 
 ### Phase 4 — Client read path
 
-- **Switchboard read-token API.** A route that mints a **bearer** `sub` JWT for
-  `logs.<job-id>.>`, gated on the existing `job_permission::read` grant (via
-  `switchboard/src/auth/`). Returns `{ nats_url, subject, token, expires_at }`.
-  Regenerate the OpenAPI snapshot
-  (`UPDATE_SCHEMA=1 cargo test -p treadmill-switchboard --test openapi_spec`).
-- **CLI.** `tml log <job>` in `cli/`: an `async-nats` JetStream consumer that
-  replays history then follows live; `--follow` to tail, default to download the
-  whole stream to stdout/file.
-- **Browser (can trail the CLI):** `nats.ws` over `wss://` in the web console,
-  payload piped into xterm.js for ANSI rendering. Set the NATS `websocket`
-  listener's `allowed_origins` to the console's origin (no CORS headers needed —
-  the WebSocket handshake's `Origin` is validated server-side; there is no
-  preflight).
+- **4a — Switchboard read-token API. ✅ DONE** (commit `ce2dc4c`). Route
+  `POST /api/v1/jobs/{id}/log-token` (`switchboard/src/routes/jobs.rs::log_token`)
+  mints a **bearer** `sub` JWT for `logs.<job-id>.>`, gated on the job `read`
+  permission via `auth::engine::can_access_job` (owner / explicit grant / global
+  admin → else `403`); returns `503` when log streaming is unconfigured. Response
+  is the shared DTO `treadmill_rs::api::switchboard::jobs::LogStreamCredentials`
+  `{ nats_url, subject: "logs.<id>.>", token, expires_in_secs }` — a **relative**
+  `expires_in_secs` (5-min TTL) rather than an absolute `expires_at`, to dodge
+  clock skew. OpenAPI snapshot regenerated; tests in
+  `switchboard/tests/job_routes.rs`.
+- **4b — Web console (remaining work; the CLI is dropped).** The read client is
+  the **web console**, not a `tml log` CLI: `nats.ws` over `wss://`, the per-job
+  subject piped into xterm.js for ANSI rendering. The console calls
+  `POST /jobs/{id}/log-token` for credentials, then opens a JetStream consumer
+  (replay history, then follow live). Set the NATS `websocket` listener's
+  `allowed_origins` to the console's origin (no CORS headers needed — the
+  WebSocket handshake's `Origin` is validated server-side; there is no preflight).
+  When the console's typed switchboard client (`treadmill_rs::api::switchboard::client`)
+  grows a `log_token` method, also register it there to keep route/payload parity.
 
 ---
 
