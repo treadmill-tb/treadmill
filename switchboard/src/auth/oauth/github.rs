@@ -140,10 +140,19 @@ impl OAuthProvider for GithubProvider {
         let user: GhUser = self.get_json(token, "/user").await?;
         // Best-effort: an account may not have granted user:email; without it we
         // simply provision without linkable emails rather than failing login.
-        let emails: Vec<GhEmail> = self
-            .get_json(token, "/user/emails")
-            .await
-            .unwrap_or_default();
+        // Log the failure rather than swallowing it silently: a missing
+        // `user:email` scope (a 403 here) is the usual reason a logged-in user
+        // shows no emails, and is otherwise invisible.
+        let emails: Vec<GhEmail> = match self.get_json(token, "/user/emails").await {
+            Ok(emails) => emails,
+            Err(e) => {
+                tracing::warn!(
+                    "failed to fetch GitHub verified emails; provisioning without linkable \
+                     emails (commonly a missing `user:email` scope on the token): {e}"
+                );
+                Vec::new()
+            }
+        };
         let verified_emails = emails
             .into_iter()
             .filter(|e| e.verified)
@@ -160,11 +169,21 @@ impl OAuthProvider for GithubProvider {
 
     async fn fetch_org_ids(&self, token: &OAuthAccessToken) -> Result<Vec<String>, OAuthError> {
         // Best-effort: requires the read:org scope; absent it, auto-groups simply
-        // do not apply for this login.
-        let memberships: Vec<GhMembership> = self
+        // do not apply for this login. Log a failure rather than swallow it, so a
+        // missing scope (a 403 here) is diagnosable instead of silent.
+        let memberships: Vec<GhMembership> = match self
             .get_json(token, "/user/memberships/orgs?state=active")
             .await
-            .unwrap_or_default();
+        {
+            Ok(memberships) => memberships,
+            Err(e) => {
+                tracing::warn!(
+                    "failed to fetch GitHub org memberships; auto-groups will not apply for \
+                     this login (commonly a missing `read:org` scope on the token): {e}"
+                );
+                Vec::new()
+            }
+        };
         Ok(memberships
             .into_iter()
             .filter(|m| m.state == "active")
