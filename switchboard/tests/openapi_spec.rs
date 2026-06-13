@@ -1,12 +1,12 @@
 //! OpenAPI schema drift guard.
 //!
 //! This test generates the OpenAPI specification for the Switchboard API
-//! and compares it against a committed snapshot in `api-spec/openapi.json`.
+//! and compares it against a committed snapshot in `api-spec/openapi.yaml`.
 //!
 //! When a change is intentional, regenerate the snapshot with:
 //!
 //! ```text
-//! UPDATE_SCHEMA=1 cargo test -p treadmill-switchboard
+//! UPDATE_SCHEMA=1 cargo test -p treadmill-switchboard --test openapi_spec
 //! ```
 
 use aide::openapi::{Info, OpenApi};
@@ -30,9 +30,9 @@ fn test_openapi_schema_drift() {
 
     let _ = api_router().finish_api(&mut api);
 
-    let generated = serde_json::to_string_pretty(&api).expect("serialize openapi spec") + "\n";
+    let generated = serde_norway::to_string(&api).expect("serialize openapi spec");
 
-    let path = snapshot_dir().join("openapi.json");
+    let path = snapshot_dir().join("openapi.yaml");
 
     if std::env::var_os("UPDATE_SCHEMA").is_some() {
         std::fs::create_dir_all(snapshot_dir()).expect("create api-spec dir");

@@ -13,5 +13,6 @@ fn main() {
 
     let _ = api_router().finish_api(&mut api);
 
-    println!("{}", serde_json::to_string_pretty(&api).unwrap());
+    // YAML: matches the committed snapshot format (api-spec/openapi.yaml).
+    print!("{}", serde_norway::to_string(&api).unwrap());
 }

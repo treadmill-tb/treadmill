@@ -1,0 +1,621 @@
+openapi: 3.1.0
+info:
+  title: Treadmill Switchboard API
+  version: 0.1.0
+paths:
+  /jobs/{id}/events:
+    get:
+      responses:
+        '200':
+          description: A page of rendered audit events for one entity, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditFeedResponse'
+  /hosts/{id}/events:
+    get:
+      responses:
+        '200':
+          description: A page of rendered audit events for one entity, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditFeedResponse'
+  /hosts/{id}/connect:
+    get:
+      parameters:
+      - in: header
+        name: authorization
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        '101':
+          description: websocket upgrade
+          headers:
+            connection:
+              style: simple
+              schema:
+                const: upgrade
+                enum:
+                - upgrade
+                type: string
+                example: upgrade
+            upgrade:
+              style: simple
+              schema:
+                const: websocket
+                enum:
+                - websocket
+                type: string
+                example: websocket
+            sec-websocket-key:
+              style: simple
+              schema:
+                type: string
+            sec-websocket-protocol:
+              style: simple
+              schema:
+                type: string
+  /users/me:
+    get:
+      responses:
+        '200':
+          description: |-
+            The owner's full view of their own profile: the public subset plus the
+            private additions only the account holder may see.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SelfUserProfile'
+    patch:
+      requestBody:
+        description: |-
+          A patch to the caller's own profile. Each field uses a double `Option` so an
+          absent field (leave unchanged) is distinguishable from an explicit `null`
+          (clear the value). `username` is non-nullable, so a single `Option` suffices.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+        required: true
+      responses:
+        '200':
+          description: |-
+            The owner's full view of their own profile: the public subset plus the
+            private additions only the account holder may see.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SelfUserProfile'
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+  /users/me/tokens:
+    get:
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SessionInfo'
+  /users/me/tokens/{token_id}:
+    delete: {}
+  /users/{id}:
+    get:
+      responses:
+        '200':
+          description: |-
+            The world-readable subset of a user profile: only data deemed safe to expose
+            to any authenticated caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicUserProfile'
+  /users/{id}/events:
+    get:
+      responses:
+        '200':
+          description: A page of rendered audit events for one entity, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditFeedResponse'
+  /images:
+    get:
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImageInfo'
+    post:
+      requestBody:
+        description: |-
+          `POST /images`: register a concrete image by digest. The switchboard pulls
+          the manifest from `registry/repository@manifest_digest`, validates it is a
+          Treadmill image, and records an `images` row plus this first location.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterImageRequest'
+        required: true
+      responses:
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+  /images/{digest}:
+    get:
+      responses:
+        '200':
+          description: A registered image, as returned by the catalog list/inspect routes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageInfo'
+  /image-groups:
+    get:
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImageGroupInfo'
+    post:
+      requestBody:
+        description: |-
+          `POST /image-groups`: register an image group by its OCI index digest. The
+          switchboard pulls the index, validates each member, and records the group
+          plus its (image, location, denormalized-member) rows for the matcher.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterImageGroupRequest'
+        required: true
+      responses:
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+  /image-groups/{digest}:
+    get:
+      responses:
+        '200':
+          description: A registered image group, as returned by the catalog list/inspect routes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGroupInfo'
+components:
+  schemas:
+    AuditFeedResponse:
+      description: A page of rendered audit events for one entity, newest first.
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/RenderedAuditRow'
+      required:
+      - events
+    Digest:
+      description: |-
+        A content-addressable OCI digest over 32 bytes of SHA-256.
+
+        Formats as the canonical OCI string `sha256:<64 lower-case hex>`.
+      type: string
+    GroupMembership:
+      description: |-
+        One group the user belongs to, including transitive memberships resolved via
+        the `principals()` function.
+      type: object
+      properties:
+        group_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        source:
+          description: |-
+            How the membership arose (`direct`, `github_org`, ...), as stored in
+            `tml_switchboard.membership_source`.
+          type: string
+        source_ref:
+          description: |-
+            The external reference backing an auto-sourced membership (e.g. the
+            GitHub org id); empty for direct memberships.
+          type: string
+      required:
+      - group_id
+      - name
+      - source
+      - source_ref
+    ImageGroupInfo:
+      description: A registered image group, as returned by the catalog list/inspect routes.
+      type: object
+      properties:
+        created_at:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        index_digest:
+          $ref: '#/components/schemas/Digest'
+        label:
+          type:
+          - string
+          - 'null'
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageGroupMember'
+        owner_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+      required:
+      - id
+      - index_digest
+      - created_at
+      - members
+    ImageGroupMember:
+      description: |-
+        One selectable member of a registered group. A member is admissible for a
+        host iff the host's tags are a superset of `required_host_tags`.
+      type: object
+      properties:
+        manifest_digest:
+          $ref: '#/components/schemas/Digest'
+        required_host_tags:
+          type: array
+          items:
+            type: string
+      required:
+      - manifest_digest
+      - required_host_tags
+    ImageInfo:
+      description: A registered image, as returned by the catalog list/inspect routes.
+      type: object
+      properties:
+        artifact_type:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        label:
+          type:
+          - string
+          - 'null'
+        locations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageLocation'
+        manifest_digest:
+          $ref: '#/components/schemas/Digest'
+        owner_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+      required:
+      - id
+      - manifest_digest
+      - artifact_type
+      - created_at
+      - locations
+    ImageLocation:
+      description: One registry location of a registered image.
+      type: object
+      properties:
+        registry:
+          type: string
+        repository:
+          type: string
+        status:
+          description: '`external`, `canonical`, or `system`.'
+          type: string
+      required:
+      - registry
+      - repository
+      - status
+    LinkedGitHub:
+      description: A linked GitHub identity, reduced to the fields safe to expose publicly.
+      type: object
+      properties:
+        login:
+          description: The user's current GitHub login/handle.
+          type: string
+        profile_url:
+          description: Canonical URL of the GitHub profile (`https://github.com/<login>`).
+          type: string
+      required:
+      - login
+      - profile_url
+    PublicUserProfile:
+      description: |-
+        The world-readable subset of a user profile: only data deemed safe to expose
+        to any authenticated caller.
+      type: object
+      properties:
+        avatar_url:
+          type:
+          - string
+          - 'null'
+        full_name:
+          type:
+          - string
+          - 'null'
+        github:
+          description: The linked GitHub account, if any.
+          anyOf:
+          - $ref: '#/components/schemas/LinkedGitHub'
+          - type: 'null'
+        user_id:
+          type: string
+          format: uuid
+        username:
+          type: string
+      required:
+      - user_id
+      - username
+    RegisterImageGroupRequest:
+      description: |-
+        `POST /image-groups`: register an image group by its OCI index digest. The
+        switchboard pulls the index, validates each member, and records the group
+        plus its (image, location, denormalized-member) rows for the matcher.
+      type: object
+      properties:
+        index_digest:
+          description: The OCI index digest identifying the group.
+          allOf:
+          - $ref: '#/components/schemas/Digest'
+        label:
+          description: Optional human-readable label.
+          type:
+          - string
+          - 'null'
+          default: null
+        registry:
+          description: Registry authority (`host:port`) the index can be pulled from.
+          type: string
+        repository:
+          description: Repository path within the registry (members live in the same repo).
+          type: string
+      required:
+      - registry
+      - repository
+      - index_digest
+    RegisterImageRequest:
+      description: |-
+        `POST /images`: register a concrete image by digest. The switchboard pulls
+        the manifest from `registry/repository@manifest_digest`, validates it is a
+        Treadmill image, and records an `images` row plus this first location.
+      type: object
+      properties:
+        label:
+          description: Optional human-readable label.
+          type:
+          - string
+          - 'null'
+          default: null
+        manifest_digest:
+          description: The OCI manifest digest identifying the image.
+          allOf:
+          - $ref: '#/components/schemas/Digest'
+        registry:
+          description: Registry authority (`host:port`) the manifest can be pulled from.
+          type: string
+        repository:
+          description: Repository path within the registry.
+          type: string
+      required:
+      - registry
+      - repository
+      - manifest_digest
+    RenderedAuditRow:
+      description: |-
+        One audit event, already rendered to a human-readable `message` for the
+        requesting viewer (the switchboard resolves the per-event template and
+        applies the viewer's visibility before sending it).
+      type: object
+      properties:
+        actor_id:
+          type: string
+          format: uuid
+        correlation_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        event_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+        message:
+          type: string
+      required:
+      - event_id
+      - event_type
+      - created_at
+      - actor_id
+      - message
+    SelfUserProfile:
+      description: |-
+        The owner's full view of their own profile: the public subset plus the
+        private additions only the account holder may see.
+      type: object
+      properties:
+        avatar_url:
+          type:
+          - string
+          - 'null'
+        emails:
+          description: All verified email addresses on file for the account.
+          type: array
+          items:
+            type: string
+        full_name:
+          type:
+          - string
+          - 'null'
+        github:
+          description: The linked GitHub account, if any.
+          anyOf:
+          - $ref: '#/components/schemas/LinkedGitHub'
+          - type: 'null'
+        groups:
+          description: Every group the user belongs to, including transitive memberships.
+          type: array
+          items:
+            $ref: '#/components/schemas/GroupMembership'
+        locked:
+          description: Whether the account is locked (cannot log in or use existing sessions).
+          type: boolean
+        user_id:
+          type: string
+          format: uuid
+        username:
+          type: string
+      required:
+      - user_id
+      - username
+      - emails
+      - groups
+      - locked
+    SessionInfo:
+      description: |-
+        One of the caller's active or historical sessions/API tokens. Never carries
+        the secret token itself — only its metadata and provenance.
+      type: object
+      properties:
+        comment:
+          description: An optional human-supplied label for the token.
+          type:
+          - string
+          - 'null'
+        created_at:
+          type: string
+          format: date-time
+        created_ip:
+          description: The client IP the token was minted from, if recorded.
+          type:
+          - string
+          - 'null'
+        current:
+          description: True for the token used to authenticate the current request.
+          type: boolean
+        expires_at:
+          type: string
+          format: date-time
+        revoked:
+          description: Set if the token has been revoked.
+          anyOf:
+          - $ref: '#/components/schemas/TokenRevocation'
+          - type: 'null'
+        token_id:
+          type: string
+          format: uuid
+        user_agent:
+          description: The user agent that requested the token, if recorded.
+          type:
+          - string
+          - 'null'
+      required:
+      - token_id
+      - created_at
+      - expires_at
+      - current
+    TokenRevocation:
+      description: When and why a token was revoked.
+      type: object
+      properties:
+        reason:
+          type: string
+        revoked_at:
+          type: string
+          format: date-time
+      required:
+      - revoked_at
+      - reason
+    UpdateProfileRequest:
+      description: |-
+        A patch to the caller's own profile. Each field uses a double `Option` so an
+        absent field (leave unchanged) is distinguishable from an explicit `null`
+        (clear the value). `username` is non-nullable, so a single `Option` suffices.
+      type: object
+      properties:
+        avatar_url:
+          type:
+          - string
+          - 'null'
+        full_name:
+          type:
+          - string
+          - 'null'
+        username:
+          type:
+          - string
+          - 'null'

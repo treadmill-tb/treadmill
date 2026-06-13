@@ -99,6 +99,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 humantime-serde = { workspace = true }
+# OpenAPI snapshot is emitted as YAML (api-spec/openapi.yaml); used by the
+# dump-openapi bin and the drift-guard test.
+serde_norway = "0.9"
 # Configuration deserialization
 toml = { workspace = true }
 
