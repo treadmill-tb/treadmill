@@ -56,6 +56,17 @@ pub struct GitHubOAuthConfig {
     /// membership (the latter feeds GitHub-org auto-groups).
     #[serde(default = "default_github_scopes")]
     pub scopes: Vec<String>,
+    /// Where to send a browser after a successful interactive login.
+    ///
+    /// The callback is built for programmatic clients: it returns the session
+    /// token as a JSON body. A browser frontend (the console) cannot consume
+    /// that without JS, so when this is set the callback instead `302`-redirects
+    /// the browser here with `?token=…&expires_at=…`; the frontend stores the
+    /// token and strips it from the URL. When unset, the callback returns JSON
+    /// as before. See `TODOS.md` for the planned hardening (the token currently
+    /// transits a URL query string).
+    #[serde(default)]
+    pub browser_success_redirect: Option<String>,
 }
 
 fn default_github_auth_url() -> String {

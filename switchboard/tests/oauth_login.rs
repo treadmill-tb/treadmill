@@ -111,6 +111,7 @@ fn test_config(gh_uri: &str) -> SwitchboardConfig {
                     "user:email".to_string(),
                     "read:org".to_string(),
                 ],
+                browser_success_redirect: None,
             }),
         },
     }

@@ -21,7 +21,7 @@ use crate::sql;
 use crate::sql::api_token::IssueSessionToken;
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::response::Redirect;
+use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{Duration, Utc};
 use http::StatusCode;
 use http::request::Parts;
@@ -77,7 +77,7 @@ pub async fn github_callback(
     State(state): State<AppState>,
     parts: Parts,
     Query(query): Query<CallbackQuery>,
-) -> Result<Json<LoginResponse>, StatusCode> {
+) -> Result<Response, StatusCode> {
     let provider = github_provider(&state)?;
 
     // Resolve the originating client address and user agent up front, before the
@@ -224,10 +224,37 @@ pub async fn github_callback(
     })?;
 
     tracing::info!("user {user_id} logged in via {}", provider.name());
-    Ok(Json(LoginResponse {
+    let login = LoginResponse {
         token: AuthToken::from(session_token),
         expires_at,
-    }))
+    };
+
+    // Programmatic clients get the token as JSON. A browser frontend cannot
+    // consume that without JS, so when a browser-success redirect is configured
+    // we hand the token back via a 302 to the frontend instead, which stores it
+    // and strips it from the URL. See the config docs and TODOS.md (the token
+    // currently transits a URL query string — to be hardened to a back-channel
+    // exchange).
+    let browser_redirect = state
+        .config()
+        .oauth
+        .github
+        .as_ref()
+        .and_then(|g| g.browser_success_redirect.as_deref());
+
+    match browser_redirect {
+        Some(target) => {
+            let mut url = url::Url::parse(target).map_err(|e| {
+                tracing::error!("invalid oauth.github.browser_success_redirect {target:?}: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            url.query_pairs_mut()
+                .append_pair("token", &login.token.encode_for_http())
+                .append_pair("expires_at", &login.expires_at.to_rfc3339());
+            Ok(Redirect::to(url.as_str()).into_response())
+        }
+        None => Ok(Json(login).into_response()),
+    }
 }
 
 /// `GET /auth/whoami`: report the identity behind the presented bearer token.
