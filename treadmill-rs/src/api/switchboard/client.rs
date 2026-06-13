@@ -11,6 +11,7 @@
 
 use uuid::Uuid;
 
+use crate::api::switchboard::AuthProvidersResponse;
 use crate::api::switchboard::WhoAmIResponse;
 use crate::api::switchboard::audit::AuditFeedResponse;
 use crate::api::switchboard::users::{PublicUserProfile, SelfUserProfile, SessionInfo};
@@ -60,11 +61,18 @@ impl SwitchboardClient {
         }
     }
 
-    /// The browser entry point for interactive GitHub login. Not a JSON API
-    /// call — the console redirects the user's browser here, and switchboard
-    /// carries them through the OAuth flow.
-    pub fn github_login_url(&self) -> String {
-        format!("{}/api/v1/auth/github/login", self.base_url)
+    /// `GET /auth/providers` — the login methods this switchboard offers, so a
+    /// frontend can render the right buttons. Unauthenticated.
+    pub async fn auth_providers(&self) -> Result<AuthProvidersResponse, ClientError> {
+        self.get_json("/api/v1/auth/providers").await
+    }
+
+    /// Turn a `login_path` from [`auth_providers`](Self::auth_providers) (the
+    /// `login_path` field on each advertised provider/identity) into an absolute
+    /// URL a browser can be redirected to. The console links its login buttons
+    /// here; switchboard then carries the user through the flow.
+    pub fn login_url(&self, login_path: &str) -> String {
+        format!("{}{login_path}", self.base_url)
     }
 
     /// `GET /auth/whoami` — the identity behind the current token.
