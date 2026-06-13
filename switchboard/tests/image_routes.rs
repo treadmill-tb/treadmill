@@ -18,15 +18,14 @@ use tokio::net::TcpListener;
 use treadmill_rs::api::switchboard::LoginResponse;
 use treadmill_rs::api::switchboard::images::{ImageGroupInfo, ImageInfo};
 use treadmill_rs::image::Digest;
-use treadmill_switchboard::config::{
-    DatabaseConfig, GitHubOAuthConfig, LogConfig, OAuthConfig, ServerConfig, ServiceConfig,
-    SwitchboardConfig,
-};
 use treadmill_switchboard::registry::{RegistryClient, RegistryError};
 use treadmill_switchboard::routes::build_router;
 use treadmill_switchboard::serve::AppState;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+mod common;
+use common::test_config;
 
 // -- canned registry ------------------------------------------------------------
 
@@ -159,52 +158,6 @@ async fn mount_github(server: &MockServer) {
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
         .mount(server)
         .await;
-}
-
-fn test_config(gh_uri: &str) -> SwitchboardConfig {
-    SwitchboardConfig {
-        database: DatabaseConfig {
-            host: "unused".to_string(),
-            port: None,
-            database: "unused".to_string(),
-            user: "unused".to_string(),
-            auth: None,
-        },
-        server: ServerConfig {
-            bind_address: "127.0.0.1:0".parse().unwrap(),
-            testing_only_tls_config: None,
-            trusted_proxy_headers: Vec::new(),
-        },
-        service: ServiceConfig {
-            default_token_timeout: chrono::Duration::hours(1),
-            default_job_timeout: chrono::Duration::hours(1),
-            default_queue_timeout: chrono::Duration::hours(1),
-            match_interval: chrono::Duration::seconds(1),
-            host_liveness_timeout: chrono::Duration::seconds(30),
-            supervisor_ping_interval: std::time::Duration::from_secs(30),
-            supervisor_pong_dead: std::time::Duration::from_secs(60),
-            supervisor_reconcile_interval: std::time::Duration::from_secs(30),
-        },
-        log: LogConfig {
-            use_tokio_console_subscriber: false,
-        },
-        oauth: OAuthConfig {
-            github: Some(GitHubOAuthConfig {
-                client_id: "test-client".to_string(),
-                client_secret: "test-secret".to_string(),
-                redirect_url: "http://localhost/api/v1/auth/github/callback".to_string(),
-                auth_url: "http://localhost/login/oauth/authorize".to_string(),
-                token_url: format!("{gh_uri}/login/oauth/access_token"),
-                api_base_url: gh_uri.to_string(),
-                scopes: vec![
-                    "read:user".to_string(),
-                    "user:email".to_string(),
-                    "read:org".to_string(),
-                ],
-                browser_success_redirect: None,
-            }),
-        },
-    }
 }
 
 async fn spawn_server(state: AppState) -> SocketAddr {
