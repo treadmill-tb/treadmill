@@ -55,8 +55,8 @@ pub fn subject_prefix(job_id: Uuid) -> String {
 
 /// The subject wildcard covering every channel of a job: `logs.<job-id>.>`. Used
 /// both as the minted token's pub/sub scope and as the stream's captured
-/// subject.
-fn subject_scope(job_id: Uuid) -> String {
+/// subject, and returned to read clients as the subject to subscribe to.
+pub fn subject_scope(job_id: Uuid) -> String {
     format!("logs.{job_id}.>")
 }
 

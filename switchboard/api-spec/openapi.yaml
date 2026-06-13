@@ -12,6 +12,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuditFeedResponse'
+  /jobs/{id}/log-token:
+    post:
+      responses:
+        '200':
+          description: |-
+            Connection credentials for tailing/replaying a job's console logs over NATS,
+            returned by `POST /jobs/{id}/log-token`.
+
+            The token is a short-lived **bearer** user JWT scoped to *subscribe* to this
+            job's log subjects (`subject`); the client connects to `nats_url` with the
+            token string alone (no nkey seed). The token only needs to be valid at
+            connect time — an established NATS connection is not dropped when the JWT
+            expires — so a client re-requests credentials when it next reconnects, after
+            roughly `expires_in_secs`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogStreamCredentials'
   /hosts/{id}/events:
     get:
       responses:
@@ -390,6 +408,42 @@ components:
       required:
       - login
       - profile_url
+    LogStreamCredentials:
+      description: |-
+        Connection credentials for tailing/replaying a job's console logs over NATS,
+        returned by `POST /jobs/{id}/log-token`.
+
+        The token is a short-lived **bearer** user JWT scoped to *subscribe* to this
+        job's log subjects (`subject`); the client connects to `nats_url` with the
+        token string alone (no nkey seed). The token only needs to be valid at
+        connect time — an established NATS connection is not dropped when the JWT
+        expires — so a client re-requests credentials when it next reconnects, after
+        roughly `expires_in_secs`.
+      type: object
+      properties:
+        expires_in_secs:
+          description: |-
+            Seconds until the token's `exp`; re-request credentials after this
+            elapses (only needed to open a *new* connection).
+          type: integer
+          format: uint64
+          minimum: 0
+        nats_url:
+          description: NATS client URL to connect to (e.g. `nats://nats.example:4222`).
+          type: string
+        subject:
+          description: |-
+            Subject wildcard covering all of this job's log channels:
+            `logs.<job-id>.>`.
+          type: string
+        token:
+          description: Bearer user JWT authorizing subscribe on `subject`.
+          type: string
+      required:
+      - nats_url
+      - subject
+      - token
+      - expires_in_secs
     PublicUserProfile:
       description: |-
         The world-readable subset of a user profile: only data deemed safe to expose

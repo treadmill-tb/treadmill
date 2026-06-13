@@ -2,6 +2,7 @@ pub mod audit;
 #[cfg(feature = "client")]
 pub mod client;
 pub mod images;
+pub mod jobs;
 pub mod users;
 
 use crate::api::supervisor_puppet::ParameterValue;

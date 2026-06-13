@@ -96,6 +96,8 @@ pub fn api_router() -> ApiRouter<AppState> {
         // .api_route("/jobs", get_with(jobs::list, |o| o))
         //  GET /jobs/{id}/events
         .api_route("/jobs/{id}/events", get_with(jobs::list_events, |o| o))
+        //  POST /jobs/{id}/log-token -- mint a NATS read token for this job's logs
+        .api_route("/jobs/{id}/log-token", post_with(jobs::log_token, |o| o))
         //  GET /jobs/{id}/status
         // .api_route("/jobs/{id}/status", get_with(jobs::status, |o| o))
         //  GET /jobs/{id}/info
