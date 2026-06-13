@@ -23,7 +23,8 @@ use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 
 use treadmill_tcp_control_socket_server::TcpControlSocket;
 
-use treadmill_supervisor_lib::launcher::{self, ProcessLauncher, WorkloadProcess};
+use treadmill_supervisor_lib::capture::{self, SerialSocket};
+use treadmill_supervisor_lib::launcher::{self, ProcessLauncher, StdioMode, WorkloadProcess};
 use treadmill_supervisor_lib::oci_store::{ImageStore, Location, OciStore, OciStoreConfig};
 
 #[derive(Parser, Debug, Clone)]
@@ -767,6 +768,42 @@ impl QemuSupervisor {
         }
         qemu_args.extend(templated_args);
 
+        // When the dispatch enabled log streaming, capture qemu's console
+        // output: pipe stdout/stderr (read back below) and route the guest
+        // serial console to a unix socket we own. When it's disabled, keep the
+        // historical behavior — stdout/stderr inherit our terminal and the
+        // serial console goes wherever the configured args point it.
+        let (stdio_mode, serial_socket) = if start_job_req.log_streaming.is_some() {
+            let serial_sock_path = job_workdir.join("serial.sock");
+            match SerialSocket::bind(&serial_sock_path).await {
+                Ok(socket) => {
+                    // qemu connects to our already-bound listener as the client
+                    // (`server=off`), so there is no connect race.
+                    qemu_args.push("-chardev".to_string());
+                    qemu_args.push(format!(
+                        "socket,id=tml-serial,path={},server=off",
+                        socket.path().display(),
+                    ));
+                    qemu_args.push("-serial".to_string());
+                    qemu_args.push("chardev:tml-serial".to_string());
+                    (StdioMode::Capture, Some(socket))
+                }
+                Err(e) => {
+                    // Don't fail the job over a capture-setup error; fall back
+                    // to inheriting and skip the serial channel.
+                    event!(
+                        Level::WARN,
+                        ?serial_sock_path,
+                        error = ?e,
+                        "Failed to bind serial capture socket; disabling log capture for this job",
+                    );
+                    (StdioMode::Inherit, None)
+                }
+            }
+        } else {
+            (StdioMode::Inherit, None)
+        };
+
         // Start a TCP control socket on the specified listen addr:
         let control_socket = TcpControlSocket::new(
             this.config.base.supervisor_id,
@@ -778,11 +815,22 @@ impl QemuSupervisor {
         .unwrap();
 
         event!(Level::INFO, qemu_binary = ?this.config.qemu.qemu_binary, ?qemu_args, "Launching QEMU process");
-        let qemu_proc = this
+        let mut qemu_proc = this
             .launcher
-            .spawn(&this.config.qemu.qemu_binary, &qemu_args, None)
+            .spawn(&this.config.qemu.qemu_binary, &qemu_args, None, stdio_mode)
             .await
             .unwrap();
+
+        // Consume the captured console channels. In this phase the consumer
+        // drains them to the supervisor's own stdout/stderr (keeping operator
+        // visibility and preventing the qemu stdout/stderr pipes from blocking);
+        // a later phase ships them to NATS instead. Takes the readers before the
+        // process is moved into the monitor task below.
+        if matches!(stdio_mode, StdioMode::Capture) {
+            let stdout = qemu_proc.take_stdout();
+            let stderr = qemu_proc.take_stderr();
+            capture::drain_to_stdio(stdout, stderr, serial_socket);
+        }
 
         // Job has been started, let the coordinator know:
         this.connector
@@ -1689,6 +1737,7 @@ mod tests {
             program: &Path,
             args: &[String],
             _cwd: Option<&Path>,
+            _stdio: StdioMode,
         ) -> Result<Box<dyn WorkloadProcess>> {
             self.spawned
                 .lock()

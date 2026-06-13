@@ -14,6 +14,31 @@ use std::process::ExitStatus;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde::Deserialize;
+use tokio::io::AsyncRead;
+
+/// A captured byte stream of a workload's stdout or stderr.
+///
+/// Boxed and type-erased so the launcher can hand the consumer a uniform reader
+/// regardless of the concrete process implementation (a real
+/// [`tokio::process::ChildStdout`]/`ChildStderr`, or an in-memory cursor in
+/// tests).
+pub type BoxedAsyncRead = Box<dyn AsyncRead + Send + Unpin>;
+
+/// How a spawned workload's stdout/stderr are wired up.
+///
+/// Log streaming (see `doc/log-streaming-plan.md`) needs qemu's stdout/stderr as
+/// readable byte streams; when streaming is disabled we keep the historical
+/// behavior of inheriting the supervisor's own fds so the operator sees output
+/// on the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StdioMode {
+    /// stdout/stderr inherit the supervisor's fds (no capture). This is the
+    /// behavior used when log streaming is disabled.
+    Inherit,
+    /// stdout/stderr are piped and exposed as [`BoxedAsyncRead`] via
+    /// [`WorkloadProcess::take_stdout`] / [`WorkloadProcess::take_stderr`].
+    Capture,
+}
 
 /// Partial metadata of a qcow2 image, as reported by `qemu-img info`.
 ///
@@ -71,6 +96,23 @@ pub trait WorkloadProcess: Send {
 
     /// Forcibly terminate the process.
     async fn kill(&mut self) -> std::io::Result<()>;
+
+    /// Take ownership of the process's captured stdout, if it was spawned with
+    /// [`StdioMode::Capture`].
+    ///
+    /// Returns `None` if stdout was inherited (not captured) or has already been
+    /// taken. The default implementation returns `None`, so process stubs that
+    /// don't model capture need not override it.
+    fn take_stdout(&mut self) -> Option<BoxedAsyncRead> {
+        None
+    }
+
+    /// Take ownership of the process's captured stderr. See [`take_stdout`].
+    ///
+    /// [`take_stdout`]: WorkloadProcess::take_stdout
+    fn take_stderr(&mut self) -> Option<BoxedAsyncRead> {
+        None
+    }
 }
 
 /// The subprocess operations a supervisor's job state machine performs.
@@ -91,12 +133,16 @@ pub trait ProcessLauncher: std::fmt::Debug + Send + Sync {
     async fn create_overlay_no_backing(&self, disk: &Path, virtual_size_bytes: u64) -> Result<()>;
 
     /// Spawn a workload process: `program` with `args` (optionally in working
-    /// directory `cwd`), stdin closed and stdout/stderr inherited.
+    /// directory `cwd`), stdin closed and stdout/stderr wired up per `stdio`
+    /// ([`StdioMode::Inherit`] to inherit the supervisor's fds, or
+    /// [`StdioMode::Capture`] to pipe them for retrieval via
+    /// [`WorkloadProcess::take_stdout`] / [`WorkloadProcess::take_stderr`]).
     async fn spawn(
         &self,
         program: &Path,
         args: &[String],
         cwd: Option<&Path>,
+        stdio: StdioMode,
     ) -> Result<Box<dyn WorkloadProcess>>;
 }
 
@@ -111,6 +157,20 @@ impl WorkloadProcess for ChildProcess {
 
     async fn kill(&mut self) -> std::io::Result<()> {
         self.0.kill().await
+    }
+
+    fn take_stdout(&mut self) -> Option<BoxedAsyncRead> {
+        self.0
+            .stdout
+            .take()
+            .map(|stdout| Box::new(stdout) as BoxedAsyncRead)
+    }
+
+    fn take_stderr(&mut self) -> Option<BoxedAsyncRead> {
+        self.0
+            .stderr
+            .take()
+            .map(|stderr| Box::new(stderr) as BoxedAsyncRead)
     }
 }
 
@@ -199,13 +259,25 @@ impl ProcessLauncher for CliLauncher {
         program: &Path,
         args: &[String],
         cwd: Option<&Path>,
+        stdio: StdioMode,
     ) -> Result<Box<dyn WorkloadProcess>> {
+        // `Capture` pipes stdout/stderr so the caller can read them as
+        // `AsyncRead` (for log streaming); `Inherit` keeps the historical
+        // terminal-inheriting behavior used when streaming is disabled.
+        let (stdout, stderr) = match stdio {
+            StdioMode::Inherit => (
+                std::process::Stdio::inherit(),
+                std::process::Stdio::inherit(),
+            ),
+            StdioMode::Capture => (std::process::Stdio::piped(), std::process::Stdio::piped()),
+        };
+
         let mut command = tokio::process::Command::new(program);
         command
             .args(args)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit());
+            .stdout(stdout)
+            .stderr(stderr);
         if let Some(cwd) = cwd {
             command.current_dir(cwd);
         }
@@ -215,5 +287,111 @@ impl ProcessLauncher for CliLauncher {
             .with_context(|| format!("Failed to spawn workload process {program:?}"))?;
 
         Ok(Box::new(ChildProcess(child)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use tokio::io::AsyncReadExt;
+
+    /// A process stub that hands out in-memory readers as its captured streams —
+    /// enough to exercise the [`WorkloadProcess`] capture surface (and, in later
+    /// phases, the log publisher) without spawning a real binary.
+    struct StubCaptureProcess {
+        stdout: Option<BoxedAsyncRead>,
+        stderr: Option<BoxedAsyncRead>,
+    }
+
+    impl StubCaptureProcess {
+        fn new(stdout: &[u8], stderr: &[u8]) -> Self {
+            StubCaptureProcess {
+                stdout: Some(Box::new(Cursor::new(stdout.to_vec()))),
+                stderr: Some(Box::new(Cursor::new(stderr.to_vec()))),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl WorkloadProcess for StubCaptureProcess {
+        async fn wait(&mut self) -> std::io::Result<ExitStatus> {
+            std::future::pending().await
+        }
+        async fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn take_stdout(&mut self) -> Option<BoxedAsyncRead> {
+            self.stdout.take()
+        }
+        fn take_stderr(&mut self) -> Option<BoxedAsyncRead> {
+            self.stderr.take()
+        }
+    }
+
+    async fn read_to_vec(mut reader: BoxedAsyncRead) -> Vec<u8> {
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).await.expect("read captured");
+        buf
+    }
+
+    #[tokio::test]
+    async fn stub_process_captured_streams_are_readable() {
+        let mut proc = StubCaptureProcess::new(b"hello stdout", b"hello stderr");
+
+        let stdout = proc.take_stdout().expect("stdout present");
+        let stderr = proc.take_stderr().expect("stderr present");
+        assert_eq!(read_to_vec(stdout).await, b"hello stdout");
+        assert_eq!(read_to_vec(stderr).await, b"hello stderr");
+
+        // A stream may only be taken once.
+        assert!(proc.take_stdout().is_none());
+        assert!(proc.take_stderr().is_none());
+    }
+
+    /// `StdioMode::Capture` must actually pipe a real subprocess's stdout/stderr
+    /// back to the caller as readable `AsyncRead` streams.
+    #[tokio::test]
+    async fn cli_launcher_capture_pipes_real_subprocess_output() {
+        // `qemu-img` is irrelevant here; spawn a tiny shell command instead.
+        let launcher = CliLauncher::new("/nonexistent/qemu-img");
+        let mut proc = launcher
+            .spawn(
+                Path::new("sh"),
+                &[
+                    "-c".to_string(),
+                    "printf 'out-bytes'; printf 'err-bytes' >&2".to_string(),
+                ],
+                None,
+                StdioMode::Capture,
+            )
+            .await
+            .expect("spawn sh");
+
+        let stdout = proc.take_stdout().expect("stdout captured");
+        let stderr = proc.take_stderr().expect("stderr captured");
+        assert_eq!(read_to_vec(stdout).await, b"out-bytes");
+        assert_eq!(read_to_vec(stderr).await, b"err-bytes");
+
+        proc.wait().await.expect("wait sh");
+    }
+
+    /// `StdioMode::Inherit` does not capture: there are no streams to take.
+    #[tokio::test]
+    async fn cli_launcher_inherit_does_not_capture() {
+        let launcher = CliLauncher::new("/nonexistent/qemu-img");
+        let mut proc = launcher
+            .spawn(
+                Path::new("sh"),
+                &["-c".to_string(), "true".to_string()],
+                None,
+                StdioMode::Inherit,
+            )
+            .await
+            .expect("spawn sh");
+
+        assert!(proc.take_stdout().is_none());
+        assert!(proc.take_stderr().is_none());
+        proc.wait().await.expect("wait sh");
     }
 }
