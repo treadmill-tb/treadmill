@@ -1167,7 +1167,9 @@ pub async fn set_running_state(
 /// still-`scheduled` row is valid). `Terminated` finalizes the job via
 /// [`finalize_terminated`] (`termination_reason = workload_exited`, no restart):
 /// in that case the function returns `true`, signalling the caller it must
-/// `StopJob`-ack so the supervisor can release its retained terminal record.
+/// `StopJob`-ack so the supervisor can release its retained terminal record. The
+/// host assignment pointer is *not* released here (see [`finalize_terminated`]);
+/// reconcile releases it once the supervisor reports the job gone.
 ///
 /// Must be called inside the worker's `with_txn` so the takeover/staleness guard
 /// covers it.
@@ -1175,7 +1177,6 @@ pub async fn set_running_state(
 /// [`SupervisorJobEvent::StateTransition`]: treadmill_rs::api::switchboard_supervisor::SupervisorJobEvent::StateTransition
 pub async fn apply_running_state(
     job_id: Uuid,
-    host_id: Uuid,
     state: RunningJobState,
     at: DateTime<Utc>,
     txn: &mut Transaction<'_, Postgres>,
@@ -1201,7 +1202,7 @@ pub async fn apply_running_state(
             Ok(false)
         }
         RunningJobState::Terminated => {
-            finalize_terminated(job_id, host_id, at, txn).await?;
+            finalize_terminated(job_id, at, txn).await?;
             Ok(true)
         }
     }
@@ -1215,11 +1216,19 @@ pub async fn apply_running_state(
 /// The task outcome (`task_exit_status` / `exit_message`) is *not* set here — it
 /// is reported out-of-band via [`set_task_outcome`], so whatever the supervisor
 /// last declared is preserved across this transition. The assignment columns
-/// (`dispatched_on_host_id`, `started_at`, `initializing_stage`) are
-/// cleared to satisfy the finalized-state invariants and `hosts.current_job` is
-/// released (guarded on `job_id`). Unlike
-/// [`finalize_dropped_and_maybe_restart`], the restart policy is **not** applied:
-/// a clean workload exit is a completion, not a failure to retry.
+/// (`dispatched_on_host_id`, `started_at`, `initializing_stage`) are cleared to
+/// satisfy the finalized-state invariants.
+///
+/// `hosts.current_job` is **not** released here. The supervisor retains a
+/// terminal record until it acks the `StopJob` and reports the job gone, so the
+/// pointer is released later — by reconcile's `finalized` rows, once the reported
+/// status confirms the supervisor no longer holds the job (see
+/// [`crate::sql::host::release_job_assignment`]). Keeping the release out of this
+/// path makes `hosts.current_job` a faithful mirror of the supervisor's actual
+/// assignment, and means a worker that dies between this finalize and the host
+/// reporting `Idle` still has the stuck pointer recovered on the next reconcile.
+/// Unlike [`finalize_dropped_and_maybe_restart`], the restart policy is **not**
+/// applied: a clean workload exit is a completion, not a failure to retry.
 ///
 /// **Idempotent.** The finalize only fires when the job is not already
 /// finalized, so a replayed reconciliation is a no-op.
@@ -1228,11 +1237,10 @@ pub async fn apply_running_state(
 /// guard covers it.
 pub async fn finalize_terminated(
     job_id: Uuid,
-    host_id: Uuid,
     at: DateTime<Utc>,
     txn: &mut Transaction<'_, Postgres>,
 ) -> Result<(), sqlx::Error> {
-    let transitioned = sqlx::query!(
+    sqlx::query!(
         r#"
         update tml_switchboard.jobs
         set job_state = 'finalized',
@@ -1243,28 +1251,9 @@ pub async fn finalize_terminated(
             terminated_at = $2,
             last_updated_at = default
         where job_id = $1 and job_state <> 'finalized'
-        returning job_id
         "#,
         job_id,
         at,
-    )
-    .fetch_optional(&mut **txn)
-    .await?;
-
-    // Some earlier pass already finalized this job: nothing left to do.
-    if transitioned.is_none() {
-        return Ok(());
-    }
-
-    // Release the host's assignment pointer.
-    sqlx::query!(
-        r#"
-        update tml_switchboard.hosts
-        set current_job = null
-        where host_id = $1 and current_job = $2
-        "#,
-        host_id,
-        job_id,
     )
     .execute(&mut **txn)
     .await?;
