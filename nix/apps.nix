@@ -509,6 +509,8 @@ _: {
               web console     : http://localhost:$console_port   <- open this
               switchboard API : http://localhost:$sb_port
               NATS broker     : nats://127.0.0.1:$nats_port (ws on $nats_ws_port)
+              postgresql      : UNIX socket at $sock_dir
+                (connect with nix develop -c psql -h $sock_dir -U $user -d tml_switchboard)
               state directory : $state_dir
               mock login      : ENABLED (alice=admin, bob/carol=user)
           EOF
