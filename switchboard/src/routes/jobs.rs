@@ -15,6 +15,8 @@ use treadmill_rs::api::switchboard::jobs::{
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
 
 use crate::audit::feed::{AuditFeedResponse, fetch_events_for_entity};
+use crate::audit::model::{Job as AuditJob, Subject as AuditSubject};
+use crate::audit::{self, events};
 use crate::auth::engine::{self, JobPermission};
 use crate::log_streaming::{self, TokenScope};
 use crate::serve::AppState;
@@ -223,6 +225,22 @@ pub async fn enqueue(
             tracing::error!("inserting parameters for job {job_id}: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+
+    // Record the enqueue in the same transaction, so the audit row commits
+    // atomically with the job (a rolled-back insert announces nothing).
+    audit::emit(
+        &mut txn,
+        &events::JobEnqueued {
+            actor: AuditSubject(caller),
+            job: AuditJob(job_id),
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("emitting JobEnqueued for {job_id}: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
     txn.commit().await.map_err(|e| {
         tracing::error!("committing enqueued job {job_id}: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -307,6 +325,26 @@ pub async fn cancel(
             tracing::error!("requesting cancellation of job {job_id}: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+
+    // Audit only an actual cancellation; re-canceling an already-finalized job
+    // changed nothing, so it records nothing. Emitted in-transaction so the
+    // event commits atomically with the state change (or not at all).
+    if outcome != job::CancelOutcome::AlreadyFinalized {
+        audit::emit(
+            &mut txn,
+            &events::JobCanceled {
+                actor: AuditSubject(subject.user_id()),
+                job: AuditJob(job_id),
+                finalized_immediately: outcome == job::CancelOutcome::FinalizedNow,
+            },
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("emitting JobCanceled for {job_id}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
+
     txn.commit().await.map_err(|e| {
         tracing::error!("committing cancellation of job {job_id}: {e}");
         StatusCode::INTERNAL_SERVER_ERROR

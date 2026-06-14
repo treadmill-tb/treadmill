@@ -10,7 +10,7 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::audit::model::Subject;
+use crate::audit::model::{Job, Subject};
 use crate::define_event;
 
 define_event! {
@@ -173,4 +173,30 @@ define_event! {
     }
     event_type = "session_token_issued";
     render = "session token {token_id} issued";
+}
+
+define_event! {
+    /// A user enqueued a new job (`POST /jobs`). Related to the job with the
+    /// `read` policy, so it surfaces in the job's event feed for anyone who can
+    /// read the job (its owner, a read-grantee, or an admin).
+    JobEnqueued v1 {
+        actor: Subject,
+        job: Job @ view(Read),
+    }
+    event_type = "job_enqueued";
+    render = "enqueued the job";
+}
+
+define_event! {
+    /// A user requested cancellation of a job (`DELETE /jobs/{id}`). Visible to
+    /// anyone who can read the job. `finalized_immediately` distinguishes a job
+    /// canceled while still queued (finalized on the spot, no host involved)
+    /// from a dispatched job whose stop the owning host's worker converges.
+    JobCanceled v1 {
+        actor: Subject,
+        job: Job @ view(Read),
+        finalized_immediately: bool,
+    }
+    event_type = "job_canceled";
+    render = "requested job cancellation";
 }

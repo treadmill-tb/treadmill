@@ -19,6 +19,7 @@ use sqlx::PgPool;
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
+use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobImageRef, JobInfo, JobListResponse, LogStreamCredentials,
 };
@@ -372,6 +373,85 @@ async fn list_rejects_a_malformed_cursor(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn enqueue_and_cancel_emit_audit_events(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let token = mock_login_token(&client, addr, "bob").await;
+
+    // Enqueue a job, then cancel it (still queued, so it finalizes immediately).
+    let req = image_job_request(
+        None,
+        JobInitSpec::Image {
+            image: Digest::from_sha256([40; 32]),
+        },
+        None,
+    );
+    let job_id = client
+        .post(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(&token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap()
+        .json::<EnqueueJobResponse>()
+        .await
+        .unwrap()
+        .job_id;
+
+    // The owner sees the enqueue in the job's audit feed (job-read visibility).
+    let after_enqueue: AuditFeedResponse = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}/events"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let types: Vec<&str> = after_enqueue
+        .events
+        .iter()
+        .map(|e| e.event_type.as_str())
+        .collect();
+    assert!(
+        types.contains(&"job_enqueued.v1"),
+        "expected a job_enqueued event, got {types:?}"
+    );
+    assert!(!types.contains(&"job_canceled.v1"));
+
+    let cancel = client
+        .delete(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cancel.status(), reqwest::StatusCode::ACCEPTED);
+
+    // The cancellation now shows up alongside the enqueue.
+    let after_cancel: AuditFeedResponse = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}/events"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let types: Vec<&str> = after_cancel
+        .events
+        .iter()
+        .map(|e| e.event_type.as_str())
+        .collect();
+    assert!(types.contains(&"job_enqueued.v1"), "got {types:?}");
+    assert!(types.contains(&"job_canceled.v1"), "got {types:?}");
 }
 
 /// A minimal concrete-image [`JobRequest`] for enqueue tests.
