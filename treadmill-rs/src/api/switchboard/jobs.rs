@@ -135,3 +135,36 @@ pub struct JobInfo {
 pub struct EnqueueJobResponse {
     pub job_id: Uuid,
 }
+
+/// A compact per-job row for the `GET /jobs` listing — identity, ownership,
+/// lifecycle state, and the key timestamps/outcome, without the heavier
+/// per-job detail (parameters, target requirements, ssh keys) that
+/// [`JobInfo`] carries. Fetch the full view with `GET /jobs/{id}`.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct JobSummary {
+    pub job_id: Uuid,
+    /// Owning subject (user or group); `None` if orphaned.
+    pub owner_id: Option<Uuid>,
+    pub state: JobState,
+    pub image: JobImageRef,
+    pub queued_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub terminated_at: Option<DateTime<Utc>>,
+    /// The host the job is (or was) dispatched on; `None` if unplaced.
+    pub dispatched_on_host_id: Option<Uuid>,
+    pub termination_reason: Option<TerminationReason>,
+    pub task_exit_status: Option<TaskExitStatus>,
+}
+
+/// Response body of `GET /jobs`: a page of jobs the caller can read, newest
+/// first.
+///
+/// Pagination is **keyset** on `(queued_at, job_id)` descending: when
+/// `next_cursor` is `Some`, pass it back as the `cursor` query parameter to
+/// fetch the next page; `None` means the last page. There is no total count.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct JobListResponse {
+    pub jobs: Vec<JobSummary>,
+    /// Opaque cursor for the next page, or `None` on the last page.
+    pub next_cursor: Option<String>,
+}

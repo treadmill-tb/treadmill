@@ -20,7 +20,7 @@ use tokio::net::TcpListener;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::jobs::{
-    EnqueueJobResponse, JobImageRef, JobInfo, LogStreamCredentials,
+    EnqueueJobResponse, JobImageRef, JobInfo, JobListResponse, LogStreamCredentials,
 };
 use treadmill_rs::api::switchboard::{
     JobInitSpec, JobRequest, JobState, LoginResponse, WhoAmIResponse,
@@ -191,6 +191,187 @@ async fn seed_job(
         .unwrap();
     }
     job_id
+}
+
+/// Insert a `queued` job owned by `owner` with an explicit `queued_at`, for
+/// deterministic listing order. Returns the job id.
+async fn seed_job_at(
+    pool: &PgPool,
+    owner: Uuid,
+    token: Uuid,
+    image_digest: &str,
+    queued_at: chrono::DateTime<chrono::Utc>,
+) -> Uuid {
+    let job_id = Uuid::new_v4();
+    sqlx::query(
+        "insert into tml_switchboard.jobs \
+           (job_id, owner_id, image_digest, ssh_keys, restart_policy, \
+            enqueued_by_token_id, host_tag_requirements, job_timeout, \
+            job_state, queued_at) \
+         values ($1, $2, $3, '{}', row(0)::tml_switchboard.restart_policy, \
+            $4, '{}', interval '1 hour', 'queued', $5)",
+    )
+    .bind(job_id)
+    .bind(owner)
+    .bind(image_digest)
+    .bind(token)
+    .bind(queued_at)
+    .execute(pool)
+    .await
+    .unwrap();
+    job_id
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn list_paginates_readable_jobs_newest_first(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let token = mock_login_token(&client, addr, "bob").await;
+    let bob = whoami(&client, addr, &token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+
+    // Three jobs at distinct, increasing queue times: j2 is newest.
+    let base = chrono::Utc::now() - chrono::Duration::hours(1);
+    let j0 = seed_job_at(
+        &pool,
+        bob,
+        token_id,
+        &Digest::from_sha256([20; 32]).encoded(),
+        base,
+    )
+    .await;
+    let j1 = seed_job_at(
+        &pool,
+        bob,
+        token_id,
+        &Digest::from_sha256([21; 32]).encoded(),
+        base + chrono::Duration::minutes(1),
+    )
+    .await;
+    let j2 = seed_job_at(
+        &pool,
+        bob,
+        token_id,
+        &Digest::from_sha256([22; 32]).encoded(),
+        base + chrono::Duration::minutes(2),
+    )
+    .await;
+
+    // First page of 2: newest first (j2, j1), with a cursor for more.
+    let page1: JobListResponse = client
+        .get(format!("http://{addr}/api/v1/jobs?limit=2"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ids1: Vec<Uuid> = page1.jobs.iter().map(|j| j.job_id).collect();
+    assert_eq!(ids1, vec![j2, j1]);
+    let cursor = page1.next_cursor.expect("a further page exists");
+
+    // Second page: the remaining job (j0), no further cursor.
+    let page2: JobListResponse = client
+        .get(format!("http://{addr}/api/v1/jobs?limit=2&cursor={cursor}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ids2: Vec<Uuid> = page2.jobs.iter().map(|j| j.job_id).collect();
+    assert_eq!(ids2, vec![j0]);
+    assert!(page2.next_cursor.is_none());
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn list_scopes_to_readable_jobs(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // One job each for alice and bob.
+    let alice_token = mock_login_token(&client, addr, "alice").await;
+    let alice = whoami(&client, addr, &alice_token).await;
+    let alice_tok = latest_token_id(&pool, alice).await;
+    let alice_job = seed_job(
+        &pool,
+        alice,
+        alice_tok,
+        &Digest::from_sha256([30; 32]).encoded(),
+        &[],
+    )
+    .await;
+
+    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let bob = whoami(&client, addr, &bob_token).await;
+    let bob_tok = latest_token_id(&pool, bob).await;
+    let bob_job = seed_job(
+        &pool,
+        bob,
+        bob_tok,
+        &Digest::from_sha256([31; 32]).encoded(),
+        &[],
+    )
+    .await;
+
+    // `bob` sees only his own job.
+    let bob_list: JobListResponse = client
+        .get(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(&bob_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let bob_ids: Vec<Uuid> = bob_list.jobs.iter().map(|j| j.job_id).collect();
+    assert_eq!(bob_ids, vec![bob_job]);
+
+    // `alice`, a global admin, sees both.
+    let alice_list: JobListResponse = client
+        .get(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(&alice_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let alice_ids: Vec<Uuid> = alice_list.jobs.iter().map(|j| j.job_id).collect();
+    assert!(alice_ids.contains(&alice_job));
+    assert!(alice_ids.contains(&bob_job));
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn list_rejects_a_malformed_cursor(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let token = mock_login_token(&client, addr, "bob").await;
+    let resp = client
+        .get(format!(
+            "http://{addr}/api/v1/jobs?cursor=not-a-valid-cursor"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
 }
 
 /// A minimal concrete-image [`JobRequest`] for enqueue tests.

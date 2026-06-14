@@ -91,9 +91,11 @@ pub fn api_router() -> ApiRouter<AppState> {
         .route("/auth/whoami", get(auth::whoami))
         // job management group
         //  POST /jobs -- enqueue a new job
-        .api_route("/jobs", post_with(jobs::enqueue, |o| o))
-        //  GET /jobs (+ <FILTERS>)
-        // .api_route("/jobs", get_with(jobs::list, |o| o))
+        //  GET  /jobs -- keyset-paginated listing of readable jobs
+        .api_route(
+            "/jobs",
+            post_with(jobs::enqueue, |o| o).get_with(jobs::list, |o| o),
+        )
         //  GET /jobs/{id}/events
         .api_route("/jobs/{id}/events", get_with(jobs::list_events, |o| o))
         //  POST /jobs/{id}/log-token -- mint a NATS read token for this job's logs

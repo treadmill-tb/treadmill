@@ -5,7 +5,9 @@ use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
 use sqlx::{PgExecutor, Postgres, Transaction};
 use std::collections::BTreeSet;
-use treadmill_rs::api::switchboard::jobs::{JobImageRef, JobInfo, JobParameterView, SshEndpoint};
+use treadmill_rs::api::switchboard::jobs::{
+    JobImageRef, JobInfo, JobParameterView, JobSummary, SshEndpoint,
+};
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, TerminationReason};
 use treadmill_rs::api::switchboard_supervisor::{
     ImageLocation, ImageSpecification, JobInitializingStage, RestartPolicy, RunningJobState,
@@ -495,25 +497,18 @@ impl SqlJob {
         // digest fields out of `self`.
         let timeout_secs = self.timeout().num_seconds();
 
-        let parse_digest = |d: String| d.parse().map_err(|_| JobInfoError::Digest(d));
-        let image = if let Some(job_id) = self.resume_job_id {
-            JobImageRef::Resume { job_id }
-        } else if let Some(job_id) = self.restart_job_id {
-            JobImageRef::Restart { job_id }
-        } else if let Some(digest) = self.image_digest {
-            JobImageRef::Image {
-                digest: parse_digest(digest)?,
-            }
-        } else if let Some(digest) = self.image_group_digest {
-            JobImageRef::ImageGroup {
-                digest: parse_digest(digest)?,
-            }
-        } else {
-            // The `valid_init_spec` CHECK guarantees one branch above fires.
-            return Err(JobInfoError::Malformed(self.job_id));
-        };
+        let image = job_image_ref(
+            self.resume_job_id,
+            self.restart_job_id,
+            self.image_digest,
+            self.image_group_digest,
+            self.job_id,
+        )?;
 
-        let resolved_image_digest = self.resolved_image_digest.map(parse_digest).transpose()?;
+        let resolved_image_digest = self
+            .resolved_image_digest
+            .map(|d| d.parse().map_err(|_| JobInfoError::Digest(d)))
+            .transpose()?;
 
         Ok(JobInfo {
             job_id: self.job_id,
@@ -676,6 +671,118 @@ impl std::fmt::Display for JobInfoError {
     }
 }
 impl std::error::Error for JobInfoError {}
+
+/// Fold a job row's four mutually-exclusive image columns into a single
+/// [`JobImageRef`], following the row invariants in `SCHEMA.sql` (resume →
+/// restart → concrete image → image group). A stored digest that does not parse
+/// is a data-integrity fault ([`JobInfoError::Digest`]); a row that sets none of
+/// the four violates `valid_init_spec` ([`JobInfoError::Malformed`]).
+fn job_image_ref(
+    resume_job_id: Option<Uuid>,
+    restart_job_id: Option<Uuid>,
+    image_digest: Option<String>,
+    image_group_digest: Option<String>,
+    job_id: Uuid,
+) -> Result<JobImageRef, JobInfoError> {
+    let parse_digest = |d: String| d.parse().map_err(|_| JobInfoError::Digest(d));
+    if let Some(job_id) = resume_job_id {
+        Ok(JobImageRef::Resume { job_id })
+    } else if let Some(job_id) = restart_job_id {
+        Ok(JobImageRef::Restart { job_id })
+    } else if let Some(digest) = image_digest {
+        Ok(JobImageRef::Image {
+            digest: parse_digest(digest)?,
+        })
+    } else if let Some(digest) = image_group_digest {
+        Ok(JobImageRef::ImageGroup {
+            digest: parse_digest(digest)?,
+        })
+    } else {
+        Err(JobInfoError::Malformed(job_id))
+    }
+}
+
+/// Fetch a page of jobs the subject `caller` may **read**, newest first.
+///
+/// Visibility mirrors [`crate::auth::engine::can_access_job`] as a set query: a
+/// job is included when `caller` is a global admin (member of the admins group),
+/// owns it via `principals(caller)`, or holds any `job_grant` on it through a
+/// principal. Ordered by `(queued_at, job_id)` descending; when `after` is
+/// `Some((queued_at, job_id))`, only rows strictly before that key are returned
+/// (keyset pagination). At most `limit` rows come back.
+pub async fn list_visible(
+    caller: Uuid,
+    after: Option<(DateTime<Utc>, Uuid)>,
+    limit: i64,
+    conn: impl PgExecutor<'_>,
+) -> Result<Vec<JobSummary>, JobInfoError> {
+    let (after_queued_at, after_job_id) = match after {
+        Some((q, id)) => (Some(q), Some(id)),
+        None => (None, None),
+    };
+    let rows = sqlx::query!(
+        r#"
+        with p(id) as (select id from tml_switchboard.principals($1))
+        select
+          j.job_id,
+          j.owner_id,
+          j.job_state as "job_state: SqlJobState",
+          j.resume_job_id,
+          j.restart_job_id,
+          j.image_digest,
+          j.image_group_digest,
+          j.queued_at,
+          j.started_at,
+          j.terminated_at,
+          j.dispatched_on_host_id,
+          j.termination_reason as "termination_reason: SqlTerminationReason",
+          j.task_exit_status as "task_exit_status: SqlTaskExitStatus"
+        from tml_switchboard.jobs j
+        where (
+            exists (select 1 from p where p.id = $2)
+            or j.owner_id in (select id from p)
+            or exists (
+                select 1 from tml_switchboard.job_grants g
+                join p on g.subject_id = p.id
+                where g.job_id = j.job_id
+            )
+        )
+        and ($3::timestamptz is null or (j.queued_at, j.job_id) < ($3, $4))
+        order by j.queued_at desc, j.job_id desc
+        limit $5
+        "#,
+        caller,
+        crate::auth::engine::ADMINS_GROUP_ID,
+        after_queued_at,
+        after_job_id,
+        limit,
+    )
+    .fetch_all(conn)
+    .await?;
+
+    rows.into_iter()
+        .map(|r| {
+            Ok(JobSummary {
+                job_id: r.job_id,
+                owner_id: r.owner_id,
+                state: r.job_state.into(),
+                image: job_image_ref(
+                    r.resume_job_id,
+                    r.restart_job_id,
+                    r.image_digest,
+                    r.image_group_digest,
+                    r.job_id,
+                )?,
+                queued_at: r.queued_at,
+                started_at: r.started_at,
+                terminated_at: r.terminated_at,
+                dispatched_on_host_id: r.dispatched_on_host_id,
+                termination_reason: r.termination_reason.map(Into::into),
+                task_exit_status: r.task_exit_status.map(Into::into),
+            })
+        })
+        .collect()
+}
 
 /// Build a concrete [`ImageSpecification::Image`] from an image's id + digest,
 /// reading its catalog locations (canonical/system preferred).

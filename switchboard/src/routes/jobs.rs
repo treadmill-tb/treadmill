@@ -1,13 +1,17 @@
 use std::time::Duration;
 
 use axum::Json;
-use axum::extract::{Path, State};
-use chrono::Utc;
+use axum::extract::{Path, Query, State};
+use base64::Engine as _;
+use chrono::{DateTime, Utc};
 use http::StatusCode;
+use serde::{Deserialize, Serialize};
 use sqlx::postgres::types::PgInterval;
 use uuid::Uuid;
 
-use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, JobInfo, LogStreamCredentials};
+use treadmill_rs::api::switchboard::jobs::{
+    EnqueueJobResponse, JobInfo, JobListResponse, LogStreamCredentials,
+};
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
 
 use crate::audit::feed::{AuditFeedResponse, fetch_events_for_entity};
@@ -15,6 +19,84 @@ use crate::auth::engine::{self, JobPermission};
 use crate::log_streaming::{self, TokenScope};
 use crate::serve::AppState;
 use crate::sql::job;
+
+/// Default and maximum page sizes for `GET /jobs`.
+const DEFAULT_LIST_LIMIT: u32 = 50;
+const MAX_LIST_LIMIT: u32 = 200;
+
+/// Query parameters for `GET /jobs`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub(crate) struct ListQuery {
+    /// Page size; clamped to `[1, MAX_LIST_LIMIT]`, defaulting to
+    /// `DEFAULT_LIST_LIMIT`.
+    limit: Option<u32>,
+    /// Opaque keyset cursor from a previous response's `next_cursor`.
+    cursor: Option<String>,
+}
+
+/// The keyset position encoded in an opaque list `cursor`: the `(queued_at,
+/// job_id)` of the last row of the previous page.
+#[derive(Serialize, Deserialize)]
+struct JobCursor {
+    q: DateTime<Utc>,
+    id: Uuid,
+}
+
+fn encode_cursor(queued_at: DateTime<Utc>, job_id: Uuid) -> String {
+    let json = serde_json::to_vec(&JobCursor {
+        q: queued_at,
+        id: job_id,
+    })
+    .expect("JobCursor serializes");
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
+}
+
+/// Decode an opaque list cursor; `None` on any malformation (yielding a 400 at
+/// the call site).
+fn decode_cursor(cursor: &str) -> Option<(DateTime<Utc>, Uuid)> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor)
+        .ok()?;
+    let parsed: JobCursor = serde_json::from_slice(&bytes).ok()?;
+    Some((parsed.q, parsed.id))
+}
+
+/// Axum handler for `GET /jobs` — a keyset-paginated listing of the jobs the
+/// caller may read (owned via principals, granted, or all for a global admin),
+/// newest first.
+pub async fn list(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<JobListResponse>, StatusCode> {
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_LIST_LIMIT)
+        .clamp(1, MAX_LIST_LIMIT);
+
+    let after = match query.cursor.as_deref() {
+        Some(c) => Some(decode_cursor(c).ok_or(StatusCode::BAD_REQUEST)?),
+        None => None,
+    };
+
+    // Fetch one extra row to learn whether a further page exists.
+    let fetch = i64::from(limit) + 1;
+    let mut jobs = job::list_visible(subject.user_id(), after, fetch, state.pool())
+        .await
+        .map_err(|e| {
+            tracing::error!("listing visible jobs: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let next_cursor = if jobs.len() as i64 > i64::from(limit) {
+        jobs.truncate(limit as usize);
+        jobs.last().map(|j| encode_cursor(j.queued_at, j.job_id))
+    } else {
+        None
+    };
+
+    Ok(Json(JobListResponse { jobs, next_cursor }))
+}
 
 /// Read tokens are deliberately short-lived. A NATS bearer JWT is only checked
 /// at connect time — an already-established connection is not dropped when the

@@ -4,6 +4,41 @@ info:
   version: 0.1.0
 paths:
   /jobs:
+    get:
+      parameters:
+      - in: query
+        name: cursor
+        description: Opaque keyset cursor from a previous response's `next_cursor`.
+        schema:
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
+          type: string
+        style: form
+      - in: query
+        name: limit
+        description: |-
+          Page size; clamped to `[1, MAX_LIST_LIMIT]`, defaulting to
+          `DEFAULT_LIST_LIMIT`.
+        schema:
+          description: |-
+            Page size; clamped to `[1, MAX_LIST_LIMIT]`, defaulting to
+            `DEFAULT_LIST_LIMIT`.
+          type: integer
+          format: uint32
+          minimum: 0
+        style: form
+      responses:
+        '200':
+          description: |-
+            Response body of `GET /jobs`: a page of jobs the caller can read, newest
+            first.
+
+            Pagination is **keyset** on `(queued_at, job_id)` descending: when
+            `next_cursor` is `Some`, pass it back as the `cursor` query parameter to
+            fetch the next page; `None` means the last page. There is no total count.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobListResponse'
     post:
       requestBody:
         content:
@@ -711,6 +746,27 @@ components:
           [`SupervisorJobEvent::Error`].
         type: string
         const: booting
+    JobListResponse:
+      description: |-
+        Response body of `GET /jobs`: a page of jobs the caller can read, newest
+        first.
+
+        Pagination is **keyset** on `(queued_at, job_id)` descending: when
+        `next_cursor` is `Some`, pass it back as the `cursor` query parameter to
+        fetch the next page; `None` means the last page. There is no total count.
+      type: object
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobSummary'
+        next_cursor:
+          description: Opaque cursor for the next page, or `None` on the last page.
+          type:
+          - string
+          - 'null'
+      required:
+      - jobs
     JobParameterView:
       description: |-
         One job parameter as exposed by `GET /jobs/{id}`. A parameter flagged
@@ -823,6 +879,59 @@ components:
       - description: 'Terminal: the job has ended (see `termination_reason`).'
         type: string
         const: finalized
+    JobSummary:
+      description: |-
+        A compact per-job row for the `GET /jobs` listing — identity, ownership,
+        lifecycle state, and the key timestamps/outcome, without the heavier
+        per-job detail (parameters, target requirements, ssh keys) that
+        [`JobInfo`] carries. Fetch the full view with `GET /jobs/{id}`.
+      type: object
+      properties:
+        dispatched_on_host_id:
+          description: The host the job is (or was) dispatched on; `None` if unplaced.
+          type:
+          - string
+          - 'null'
+          format: uuid
+        image:
+          $ref: '#/components/schemas/JobImageRef'
+        job_id:
+          type: string
+          format: uuid
+        owner_id:
+          description: Owning subject (user or group); `None` if orphaned.
+          type:
+          - string
+          - 'null'
+          format: uuid
+        queued_at:
+          type: string
+          format: date-time
+        started_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        state:
+          $ref: '#/components/schemas/JobState'
+        task_exit_status:
+          anyOf:
+          - $ref: '#/components/schemas/TaskExitStatus'
+          - type: 'null'
+        terminated_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        termination_reason:
+          anyOf:
+          - $ref: '#/components/schemas/TerminationReason'
+          - type: 'null'
+      required:
+      - job_id
+      - state
+      - image
+      - queued_at
     LinkedGitHub:
       description: A linked GitHub identity, reduced to the fields safe to expose publicly.
       type: object
@@ -836,6 +945,24 @@ components:
       required:
       - login
       - profile_url
+    ListQuery:
+      description: Query parameters for `GET /jobs`.
+      type: object
+      properties:
+        cursor:
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
+          type:
+          - string
+          - 'null'
+        limit:
+          description: |-
+            Page size; clamped to `[1, MAX_LIST_LIMIT]`, defaulting to
+            `DEFAULT_LIST_LIMIT`.
+          type:
+          - integer
+          - 'null'
+          format: uint32
+          minimum: 0
     LogStreamCredentials:
       description: |-
         Connection credentials for tailing/replaying a job's console logs over NATS,
