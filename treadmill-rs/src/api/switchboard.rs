@@ -125,6 +125,29 @@ pub enum JobInitSpec {
     ImageGroup { image_group: Digest },
 }
 
+/// The execution-lifecycle state of a job, mirroring the
+/// `tml_switchboard.job_state` DB enum. This is the switchboard's own view of
+/// where a job is in its lifecycle (queued → scheduled → executing → finalized),
+/// distinct from the supervisor-reported
+/// [`RunningJobState`](crate::api::switchboard_supervisor::RunningJobState).
+#[derive(schemars::JsonSchema, Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobState {
+    /// Enqueued, awaiting placement onto a host by the scheduler.
+    Queued,
+    /// Placed on a host but not yet reported as executing.
+    Scheduled,
+    /// The host is bringing the job up (see
+    /// [`JobInitializingStage`](crate::api::switchboard_supervisor::JobInitializingStage)).
+    Initializing,
+    /// The job is running and ready.
+    Ready,
+    /// The job is shutting down.
+    Terminating,
+    /// Terminal: the job has ended (see `termination_reason`).
+    Finalized,
+}
+
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct JobRequest {

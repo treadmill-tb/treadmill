@@ -30,6 +30,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LogStreamCredentials'
+  /jobs/{id}:
+    get:
+      responses:
+        '200':
+          description: |-
+            The full server-side view of a single job, returned by `GET /jobs/{id}`.
+
+            Covers the job's identity, ownership, lifecycle state, the spec it was
+            enqueued with, and — once it has run — its placement and terminal outcome.
+            Secret parameters are redacted (see [`JobParameterView`]).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobInfo'
   /hosts/{id}/events:
     get:
       responses:
@@ -395,6 +409,266 @@ components:
       - registry
       - repository
       - status
+    JobImageRef:
+      description: |-
+        What a job is based off, as seen by `GET /jobs/{id}`. Collapses the four
+        mutually-exclusive DB columns (`image_digest` / `image_group_digest` /
+        `resume_job_id` / `restart_job_id`) into a single tagged variant; the
+        separately-recorded concrete dispatch digest is reported alongside as
+        [`JobInfo::resolved_image_digest`].
+      oneOf:
+      - description: Based off a concrete catalog image, addressed by its OCI manifest digest.
+        type: object
+        properties:
+          digest:
+            $ref: '#/components/schemas/Digest'
+          type:
+            type: string
+            const: image
+        required:
+        - type
+        - digest
+      - description: |-
+          Based off a registered image *group*, addressed by its index digest; the
+          concrete member is chosen at dispatch.
+        type: object
+        properties:
+          digest:
+            $ref: '#/components/schemas/Digest'
+          type:
+            type: string
+            const: image_group
+        required:
+        - type
+        - digest
+      - description: Resumes a previously started job.
+        type: object
+        properties:
+          job_id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            const: resume
+        required:
+        - type
+        - job_id
+      - description: Restarts a previously started job (inherits its image reference).
+        type: object
+        properties:
+          job_id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            const: restart
+        required:
+        - type
+        - job_id
+    JobInfo:
+      description: |-
+        The full server-side view of a single job, returned by `GET /jobs/{id}`.
+
+        Covers the job's identity, ownership, lifecycle state, the spec it was
+        enqueued with, and — once it has run — its placement and terminal outcome.
+        Secret parameters are redacted (see [`JobParameterView`]).
+      type: object
+      properties:
+        dispatched_on_host_id:
+          description: The host the job is (or was) dispatched on; `None` if unplaced.
+          type:
+          - string
+          - 'null'
+          format: uuid
+        exit_message:
+          description: A human-readable detail accompanying termination, if any.
+          type:
+          - string
+          - 'null'
+        host_tag_requirements:
+          description: |-
+            Host eligibility tags this job requires (superset match against a host's
+            tags).
+          type: array
+          items:
+            type: string
+        image:
+          description: What the job is based off.
+          allOf:
+          - $ref: '#/components/schemas/JobImageRef'
+        initializing_stage:
+          description: |-
+            The sub-stage while `state` is [`JobState::Initializing`]; `None`
+            otherwise.
+          anyOf:
+          - $ref: '#/components/schemas/JobInitializingStage'
+          - type: 'null'
+        job_id:
+          type: string
+          format: uuid
+        last_updated_at:
+          description: When the job row was last updated.
+          type: string
+          format: date-time
+        owner_id:
+          description: |-
+            Owning subject (user or group); `None` if the owner was deleted
+            (orphaned).
+          type:
+          - string
+          - 'null'
+          format: uuid
+        parameters:
+          description: Job parameters, keyed by name; secret values are redacted.
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/JobParameterView'
+        queued_at:
+          description: When the job was enqueued.
+          type: string
+          format: date-time
+        resolved_image_digest:
+          description: |-
+            The concrete manifest digest actually dispatched, recorded at dispatch;
+            `None` until then.
+          anyOf:
+          - $ref: '#/components/schemas/Digest'
+          - type: 'null'
+        restart_policy:
+          $ref: '#/components/schemas/RestartPolicy'
+        ssh_endpoints:
+          description: SSH endpoints the running job is reachable on; `None` until reported.
+          type:
+          - array
+          - 'null'
+          items:
+            $ref: '#/components/schemas/SshEndpoint'
+        ssh_keys:
+          type: array
+          items:
+            type: string
+        started_at:
+          description: When the job was dispatched onto a host; `None` if not yet started.
+          type:
+          - string
+          - 'null'
+          format: date-time
+        state:
+          description: Where the job is in its lifecycle.
+          allOf:
+          - $ref: '#/components/schemas/JobState'
+        target_requirements:
+          description: |-
+            Target (DUT) eligibility: one tag set per requested target, in submission
+            order.
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+        task_exit_status:
+          description: |-
+            The user workload's success/failure outcome, orthogonal to
+            `termination_reason`; `None` if never reported.
+          anyOf:
+          - $ref: '#/components/schemas/TaskExitStatus'
+          - type: 'null'
+        terminated_at:
+          description: When the job was finalized; `None` until then.
+          type:
+          - string
+          - 'null'
+          format: date-time
+        termination_reason:
+          description: Why the job terminated; `None` until finalized.
+          anyOf:
+          - $ref: '#/components/schemas/TerminationReason'
+          - type: 'null'
+        timeout_secs:
+          description: How long the job may run before it is killed, in seconds.
+          type: integer
+          format: int64
+      required:
+      - job_id
+      - state
+      - image
+      - ssh_keys
+      - restart_policy
+      - host_tag_requirements
+      - target_requirements
+      - parameters
+      - timeout_secs
+      - queued_at
+      - last_updated_at
+    JobInitializingStage:
+      oneOf:
+      - description: 'Generic starting stage, for when no other stage is applicable:'
+        type: string
+        const: starting
+      - description: 'Fetching the specified image:'
+        type: string
+        const: fetching_image
+      - description: |-
+          Acquiring resources, such as the root file system, to launch the
+          board environment.
+        type: string
+        const: allocating
+      - description: |-
+          Provisioning the environment, such as making any changes to the base
+          system according to the user-provided customizations.
+        type: string
+        const: provisioning
+      - description: |-
+          The host is booting. The next transition is normally into
+          [`RunningJobState::Ready`]; a failure instead surfaces as a
+          [`SupervisorJobEvent::Error`].
+        type: string
+        const: booting
+    JobParameterView:
+      description: |-
+        One job parameter as exposed by `GET /jobs/{id}`. A parameter flagged
+        `secret` is **redacted**: its `value` is `None` and only the key + flag are
+        visible. Non-secret parameters carry their plaintext `value`.
+      type: object
+      properties:
+        secret:
+          description: Whether this parameter was submitted as secret.
+          type: boolean
+        value:
+          description: The plaintext value, or `None` when `secret` (withheld).
+          type:
+          - string
+          - 'null'
+      required:
+      - secret
+    JobState:
+      description: |-
+        The execution-lifecycle state of a job, mirroring the
+        `tml_switchboard.job_state` DB enum. This is the switchboard's own view of
+        where a job is in its lifecycle (queued → scheduled → executing → finalized),
+        distinct from the supervisor-reported
+        [`RunningJobState`](crate::api::switchboard_supervisor::RunningJobState).
+      oneOf:
+      - description: Enqueued, awaiting placement onto a host by the scheduler.
+        type: string
+        const: queued
+      - description: Placed on a host but not yet reported as executing.
+        type: string
+        const: scheduled
+      - description: |-
+          The host is bringing the job up (see
+          [`JobInitializingStage`](crate::api::switchboard_supervisor::JobInitializingStage)).
+        type: string
+        const: initializing
+      - description: The job is running and ready.
+        type: string
+        const: ready
+      - description: The job is shutting down.
+        type: string
+        const: terminating
+      - description: 'Terminal: the job has ended (see `termination_reason`).'
+        type: string
+        const: finalized
     LinkedGitHub:
       description: A linked GitHub identity, reduced to the fields safe to expose publicly.
       type: object
@@ -556,6 +830,15 @@ components:
       - created_at
       - actor_id
       - message
+    RestartPolicy:
+      type: object
+      properties:
+        remaining_restart_count:
+          type: integer
+          format: uint
+          minimum: 0
+      required:
+      - remaining_restart_count
     SelfUserProfile:
       description: |-
         The owner's full view of their own profile: the public subset plus the
@@ -642,6 +925,88 @@ components:
       - created_at
       - expires_at
       - current
+    SshEndpoint:
+      description: An SSH endpoint a running job can be reached on.
+      type: object
+      properties:
+        ssh_host:
+          type: string
+        ssh_port:
+          type: integer
+          format: uint16
+          maximum: 65535
+          minimum: 0
+      required:
+      - ssh_host
+      - ssh_port
+    TaskExitStatus:
+      description: |-
+        The supervisor's report of how the user's workload is/has turned out — its
+        *task outcome*.
+
+        The supervisor posts this at any point while it is assigned the job (see
+        [`SupervisorJobEvent::DeclareExitStatus`]), independently of termination, and
+        may revise it: `Pending` while the result is not yet known, then `Success` or
+        `Failure`. Once set it is never cleared (it can only move between these three
+        values). It is orthogonal to *why* a job terminated (see
+        [`switchboard::TerminationReason`]) — a job may carry any outcome regardless
+        of its termination reason, or none at all if the supervisor never reported.
+
+        [`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason
+      oneOf:
+      - description: The workload is running; its result is not yet determined.
+        type: string
+        const: pending
+      - description: The workload completed successfully.
+        type: string
+        const: success
+      - description: The workload failed.
+        type: string
+        const: failure
+    TerminationReason:
+      description: |-
+        Why a job terminated.
+
+        This records *why* a job stopped and is orthogonal to the
+        [`TaskExitStatus`] (the success/failure of the user's workload) and to any
+        `exit_message`. Mirrors the `tml_switchboard.termination_reason` DB enum.
+      oneOf:
+      - description: The job's own workload ended it.
+        type: string
+        const: workload_exited
+      - description: The job requested its own cancellation.
+        type: string
+        const: workload_self_canceled
+      - description: Externally canceled by a user.
+        type: string
+        const: user_canceled
+      - description: Timed out while still queued.
+        type: string
+        const: queue_timeout
+      - description: Timed out while dispatched/executing.
+        type: string
+        const: execution_timeout
+      - description: The job's image was bad or could not be fetched (user fault).
+        type: string
+        const: image_error
+      - description: No host matched the job's tag configuration.
+        type: string
+        const: host_match_error
+      - description: The host failed to start the job.
+        type: string
+        const: host_start_failure
+      - description: The host's supervisor dropped the job (lost on reconnect).
+        type: string
+        const: host_dropped_job
+      - description: The host was unreachable (its supervisor disconnected).
+        type: string
+        const: host_unreachable
+      - description: Resuming a previously started job failed.
+        type: string
+        const: resume_failed
+      - description: An unexpected internal failure.
+        type: string
+        const: internal_error
     TokenRevocation:
       description: When and why a token was revoked.
       type: object

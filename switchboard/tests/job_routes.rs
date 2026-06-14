@@ -18,8 +18,9 @@ use sqlx::PgPool;
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
-use treadmill_rs::api::switchboard::LoginResponse;
-use treadmill_rs::api::switchboard::jobs::LogStreamCredentials;
+use treadmill_rs::api::switchboard::jobs::{JobImageRef, JobInfo, LogStreamCredentials};
+use treadmill_rs::api::switchboard::{JobState, LoginResponse, WhoAmIResponse};
+use treadmill_rs::image::Digest;
 use treadmill_switchboard::config::LogStreamingConfig;
 use treadmill_switchboard::log_streaming::{LogStreamProvisioner, LogStreaming, ProvisionError};
 use treadmill_switchboard::registry::OciRegistryClient;
@@ -112,6 +113,207 @@ async fn mock_login_token(client: &reqwest::Client, addr: SocketAddr, identity: 
     );
     let session: LoginResponse = cb.json().await.unwrap();
     session.token.encode_for_http()
+}
+
+/// The authenticated caller's own `user_id`, via `GET /auth/whoami`.
+async fn whoami(client: &reqwest::Client, addr: SocketAddr, token: &str) -> Uuid {
+    let resp = client
+        .get(format!("http://{addr}/api/v1/auth/whoami"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    resp.json::<WhoAmIResponse>().await.unwrap().user_id
+}
+
+/// The most recently issued token id for `user_id` (the session minted by
+/// `mock_login_token`), usable as a job's `enqueued_by_token_id`.
+async fn latest_token_id(pool: &PgPool, user_id: Uuid) -> Uuid {
+    sqlx::query_scalar(
+        "select token_id from tml_switchboard.api_tokens \
+         where user_id = $1 order by created_at desc limit 1",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// Insert a `queued`, concrete-image job owned by `owner`, with the given
+/// parameters (`key`, `value`, `secret`). Returns the job id. Uses the runtime
+/// query API, so no `.sqlx` entry is needed.
+async fn seed_job(
+    pool: &PgPool,
+    owner: Uuid,
+    token: Uuid,
+    image_digest: &str,
+    params: &[(&str, &str, bool)],
+) -> Uuid {
+    let job_id = Uuid::new_v4();
+    sqlx::query(
+        "insert into tml_switchboard.jobs \
+           (job_id, owner_id, image_digest, ssh_keys, restart_policy, \
+            enqueued_by_token_id, host_tag_requirements, job_timeout, \
+            job_state, queued_at) \
+         values ($1, $2, $3, '{}', row(0)::tml_switchboard.restart_policy, \
+            $4, '{}', interval '1 hour', 'queued', now())",
+    )
+    .bind(job_id)
+    .bind(owner)
+    .bind(image_digest)
+    .bind(token)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    for (key, value, secret) in params {
+        sqlx::query(
+            "insert into tml_switchboard.job_parameters (job_id, key, value) \
+             values ($1, $2, row($3, $4)::tml_switchboard.parameter_value)",
+        )
+        .bind(job_id)
+        .bind(key)
+        .bind(value)
+        .bind(secret)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    job_id
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn owner_reads_own_job_with_secret_redacted(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // `bob` owns the job; his login also mints the token it is enqueued under.
+    let token = mock_login_token(&client, addr, "bob").await;
+    let bob = whoami(&client, addr, &token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+    let image = Digest::from_sha256([7; 32]);
+    let job_id = seed_job(
+        &pool,
+        bob,
+        token_id,
+        &image.encoded(),
+        &[("api_key", "s3cr3t", true), ("region", "us-east", false)],
+    )
+    .await;
+
+    let resp = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let info: JobInfo = resp.json().await.unwrap();
+    assert_eq!(info.job_id, job_id);
+    assert_eq!(info.owner_id, Some(bob));
+    assert_eq!(info.state, JobState::Queued);
+    assert!(matches!(info.image, JobImageRef::Image { digest } if digest == image));
+
+    // Secret parameter: flagged secret, value withheld.
+    let secret = &info.parameters["api_key"];
+    assert!(secret.secret);
+    assert_eq!(secret.value, None);
+    // Non-secret parameter: value in the clear.
+    let plain = &info.parameters["region"];
+    assert!(!plain.secret);
+    assert_eq!(plain.value.as_deref(), Some("us-east"));
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn admin_reads_any_job(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // `bob` owns the job; `alice` (a global admin) reads it.
+    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let bob = whoami(&client, addr, &bob_token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+    let job_id = seed_job(
+        &pool,
+        bob,
+        token_id,
+        &Digest::from_sha256([1; 32]).encoded(),
+        &[],
+    )
+    .await;
+
+    let alice_token = mock_login_token(&client, addr, "alice").await;
+    let resp = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&alice_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(resp.json::<JobInfo>().await.unwrap().job_id, job_id);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn stranger_is_forbidden_from_reading_a_job(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // `bob` owns the job; `carol` (a plain user with no grant) is refused.
+    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let bob = whoami(&client, addr, &bob_token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+    let job_id = seed_job(
+        &pool,
+        bob,
+        token_id,
+        &Digest::from_sha256([2; 32]).encoded(),
+        &[],
+    )
+    .await;
+
+    let carol_token = mock_login_token(&client, addr, "carol").await;
+    let resp = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn reading_a_nonexistent_job_is_forbidden(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // A plain user gets 403 (not 404) for a job that does not exist: existence
+    // is not leaked.
+    let token = mock_login_token(&client, addr, "bob").await;
+    let resp = client
+        .get(format!("http://{addr}/api/v1/jobs/{}", Uuid::new_v4()))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 }
 
 #[sqlx::test]

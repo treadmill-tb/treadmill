@@ -5,7 +5,8 @@ use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
 use sqlx::{PgExecutor, Postgres, Transaction};
 use std::collections::BTreeSet;
-use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, TerminationReason};
+use treadmill_rs::api::switchboard::jobs::{JobImageRef, JobInfo, JobParameterView, SshEndpoint};
+use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, TerminationReason};
 use treadmill_rs::api::switchboard_supervisor::{
     ImageLocation, ImageSpecification, JobInitializingStage, RestartPolicy, RunningJobState,
     StartJobMessage, TaskExitStatus,
@@ -25,6 +26,18 @@ pub enum SqlJobState {
     Ready,
     Terminating,
     Finalized,
+}
+impl From<SqlJobState> for JobState {
+    fn from(value: SqlJobState) -> Self {
+        match value {
+            SqlJobState::Queued => JobState::Queued,
+            SqlJobState::Scheduled => JobState::Scheduled,
+            SqlJobState::Initializing => JobState::Initializing,
+            SqlJobState::Ready => JobState::Ready,
+            SqlJobState::Terminating => JobState::Terminating,
+            SqlJobState::Finalized => JobState::Finalized,
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, sqlx::Type)]
@@ -306,6 +319,7 @@ pub async fn target_requirements_for_job(
 #[allow(dead_code)]
 pub struct SqlJob {
     job_id: Uuid,
+    owner_id: Option<Uuid>,
     resume_job_id: Option<Uuid>,
     #[allow(dead_code)]
     restart_job_id: Option<Uuid>,
@@ -448,6 +462,87 @@ impl SqlJob {
         self.job_state
     }
 
+    /// Render this job row into the [`JobInfo`] API view returned by
+    /// `GET /jobs/{id}`.
+    ///
+    /// Reads the job's ordered target requirements and parameters (the latter
+    /// **redacted**: secret values are withheld, see [`JobParameterView`]) and
+    /// folds the four mutually-exclusive image columns into a single
+    /// [`JobImageRef`] (resume → restart → concrete image → image group, matching
+    /// the row invariants in `SCHEMA.sql`). Stored digests are re-parsed; a
+    /// malformed one is a data-integrity fault surfaced as
+    /// [`JobInfoError::Digest`].
+    pub async fn into_info(self, conn: &mut sqlx::PgConnection) -> Result<JobInfo, JobInfoError> {
+        let target_requirements = target_requirements_for_job(self.job_id, &mut *conn).await?;
+        let parameters = parameters::fetch_by_job_id(self.job_id, &mut *conn)
+            .await?
+            .into_iter()
+            .map(|(key, value)| {
+                let view = JobParameterView {
+                    secret: value.secret,
+                    // Withhold the plaintext of a secret parameter.
+                    value: (!value.secret).then_some(value.value),
+                };
+                (key, view)
+            })
+            .collect();
+
+        // Borrows `self.job_timeout`; compute before the image match moves the
+        // digest fields out of `self`.
+        let timeout_secs = self.timeout().num_seconds();
+
+        let parse_digest = |d: String| d.parse().map_err(|_| JobInfoError::Digest(d));
+        let image = if let Some(job_id) = self.resume_job_id {
+            JobImageRef::Resume { job_id }
+        } else if let Some(job_id) = self.restart_job_id {
+            JobImageRef::Restart { job_id }
+        } else if let Some(digest) = self.image_digest {
+            JobImageRef::Image {
+                digest: parse_digest(digest)?,
+            }
+        } else if let Some(digest) = self.image_group_digest {
+            JobImageRef::ImageGroup {
+                digest: parse_digest(digest)?,
+            }
+        } else {
+            // The `valid_init_spec` CHECK guarantees one branch above fires.
+            return Err(JobInfoError::Malformed(self.job_id));
+        };
+
+        let resolved_image_digest = self.resolved_image_digest.map(parse_digest).transpose()?;
+
+        Ok(JobInfo {
+            job_id: self.job_id,
+            owner_id: self.owner_id,
+            state: self.job_state.into(),
+            initializing_stage: self.initializing_stage.map(Into::into),
+            image,
+            resolved_image_digest,
+            ssh_keys: self.ssh_keys,
+            restart_policy: self.sql_restart_policy.into(),
+            host_tag_requirements: self.host_tag_requirements,
+            target_requirements,
+            parameters,
+            timeout_secs,
+            queued_at: self.queued_at,
+            started_at: self.started_at,
+            dispatched_on_host_id: self.dispatched_on_host_id,
+            ssh_endpoints: self.ssh_endpoints.map(|eps| {
+                eps.into_iter()
+                    .map(|ep| SshEndpoint {
+                        ssh_host: ep.ssh_host.into(),
+                        ssh_port: ep.ssh_port.into(),
+                    })
+                    .collect()
+            }),
+            termination_reason: self.termination_reason.map(Into::into),
+            task_exit_status: self.task_exit_status.map(Into::into),
+            exit_message: self.exit_message,
+            terminated_at: self.terminated_at,
+            last_updated_at: self.last_updated_at,
+        })
+    }
+
     /// The switchboard-side reason this *assigned* job should be stopped, if any
     /// — the convergence pre-check shared by execution-timeout and user-cancel.
     ///
@@ -481,7 +576,7 @@ pub async fn fetch_by_job_id(
     sqlx::query_as!(
         SqlJob,
         r#"
-        select job_id, resume_job_id, restart_job_id, image_digest, image_group_digest,
+        select job_id, owner_id, resume_job_id, restart_job_id, image_digest, image_group_digest,
         resolved_image_digest, ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id,
         host_tag_requirements, job_timeout,
@@ -545,6 +640,38 @@ impl std::fmt::Display for ImageResolveError {
 }
 
 impl std::error::Error for ImageResolveError {}
+
+/// Why rendering a job row into its [`JobInfo`] API view failed.
+#[derive(Debug)]
+pub enum JobInfoError {
+    /// An underlying database error (target/parameter lookup).
+    Db(sqlx::Error),
+    /// A digest stored on the row did not parse (data-integrity fault).
+    Digest(String),
+    /// The row set neither an image, a group, nor a resume/restart reference,
+    /// violating the `valid_init_spec` CHECK. Should be impossible.
+    Malformed(Uuid),
+}
+impl From<sqlx::Error> for JobInfoError {
+    fn from(e: sqlx::Error) -> Self {
+        JobInfoError::Db(e)
+    }
+}
+impl std::fmt::Display for JobInfoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JobInfoError::Db(e) => write!(f, "database error building JobInfo: {e}"),
+            JobInfoError::Digest(d) => write!(f, "job row holds an unparseable digest {d}"),
+            JobInfoError::Malformed(j) => {
+                write!(
+                    f,
+                    "job {j} has no image, group, or resume/restart reference"
+                )
+            }
+        }
+    }
+}
+impl std::error::Error for JobInfoError {}
 
 /// Build a concrete [`ImageSpecification::Image`] from an image's id + digest,
 /// reading its catalog locations (canonical/system preferred).
