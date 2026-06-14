@@ -67,7 +67,7 @@ _: {
       # environment (register a GitHub OAuth app whose callback is
       # `http://localhost:<sb-port>/api/v1/auth/github/callback`). Without them
       # the stack still runs; interactive login is just disabled.
-      dev = pkgs.writeShellApplication {
+      devstack = pkgs.writeShellApplication {
         name = "treadmill-devstack";
         runtimeInputs = [
           pkgs.postgresql
@@ -167,9 +167,9 @@ _: {
         meta.description = "Render and browse the switchboard OpenAPI spec (Redoc)";
       };
 
-      apps.dev = {
+      apps.devstack = {
         type = "app";
-        program = "${dev}/bin/treadmill-dev";
+        program = "${devstack}/bin/treadmill-devstack";
         meta.description = "Run the local dev stack (switchboard + web console)";
       };
     };
