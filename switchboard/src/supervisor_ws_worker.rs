@@ -227,7 +227,7 @@ impl WorkerCtx {
 }
 
 impl<S: SupervisorSocket> SupervisorWSWorker<S> {
-    #[tracing::instrument(skip(pool, socket, log_streaming))]
+    #[tracing::instrument(skip(pool, socket, config, log_streaming))]
     pub async fn run(
         pool: PgPool,
         host_id: Uuid,
@@ -687,6 +687,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     // against it. This is the out-of-band refresh `reconcile`
                     // relies on (it never requests status itself).
                     Ok(SupervisorToSwitchboard::StatusResponse(response)) => {
+                        tracing::trace!(?response, "received StatusResponse from supervisor");
                         self.last_seen_status = Some(response.message);
                         Ok(PostMsg::Reconcile)
                     }
@@ -695,13 +696,14 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     // errors) are mirrored into the DB out-of-band of
                     // reconciliation, and keep the status cache fresh.
                     Ok(SupervisorToSwitchboard::SupervisorEvent(event)) => {
+                        tracing::trace!(?event, "received SupervisorEvent from supervisor");
                         self.handle_supervisor_event(event).await
                     }
 
                     // The supervisor signalled a fatal protocol error: log and
                     // terminate (the connector reconnects). See `ProtocolError`.
                     Ok(SupervisorToSwitchboard::ProtocolError(err)) => {
-                        tracing::error!(
+                        tracing::warn!(
                             ?err,
                             "SupervisorWSWorker: supervisor reported a protocol error, terminating."
                         );
@@ -757,12 +759,25 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         match event {
             // A reported running-state advance: adopt it through the same helper
             // reconcile uses, and keep the status cache in step.
-            SupervisorJobEvent::StateTransition { new_state, .. } => {
+            SupervisorJobEvent::StateTransition {
+                new_state,
+                status_message,
+            } => {
+                tracing::trace!(
+                    ?new_state,
+                    ?status_message,
+                    "received StateTransition event from supervisor"
+                );
                 self.apply_state_transition(job_id, new_state).await
             }
 
             // The dedicated task-outcome channel; independent of lifecycle state.
             SupervisorJobEvent::DeclareExitStatus { outcome, message } => {
+                tracing::trace!(
+                    ?outcome,
+                    ?message,
+                    "received DeclareExitStatus event from supervisor"
+                );
                 if !self.apply_task_outcome(job_id, outcome, message).await? {
                     tracing::debug!(
                         %job_id,
@@ -774,6 +789,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
 
             // A job-level error: finalize terminally with a mapped reason.
             SupervisorJobEvent::Error { error } => {
+                tracing::warn!(?error, "received Error event from supervisor");
                 self.finalize_job_error(job_id, error).await?;
                 Ok(PostMsg::Continue)
             }
@@ -843,7 +859,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         let host_id = self.ctx.host_id;
         let at = chrono::Utc::now();
         let reason = sql::job::termination_reason_for_job_error(&error.error_kind);
-        let message = Some(error.description);
+        let message = Some(error.description.clone());
 
         let finalized = self
             .ctx
@@ -867,6 +883,11 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
 
         if finalized {
             self.last_seen_status = Some(ReportedSupervisorStatus::Idle);
+            tracing::info!(
+                ?reason,
+                message = error.description,
+                "finalized job with error state"
+            );
         } else {
             tracing::debug!(
                 %job_id,
@@ -938,6 +959,8 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 // - we use it to check that there is not a newer worker serving
                 //   this supervisor, in which case we terminate.
                 _ = ping_interval.tick() => {
+                    tracing::trace!("sending ping heartbeat");
+
                     // Refresh the liveness heartbeat. This transaction also
                     // determines whether we're still the most current worker
                     // (its first statement is the staleness check), so it does
@@ -962,6 +985,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 // status without forcing a status request (covers stretches
                 // where neither the liveness tick nor a status response fired).
                 _ = reconcile_interval.tick() => {
+                    tracing::trace!("performing reconcile");
                     self.reconcile().await?;
                 }
 
@@ -969,6 +993,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 // we haven't received one within the timeout and this fires, it
                 // means we should consider the connection dead.
                 _ = &mut pong_timeout => {
+                    tracing::trace!("reached pong timeout");
                     return Err(anyhow!(
                         "SupervisorWSWorker did not receive PONG from supervisor in {:?}, terminating.",
                         self.ctx.config.supervisor_pong_dead
