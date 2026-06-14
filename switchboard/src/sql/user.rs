@@ -163,7 +163,8 @@ impl Transition for CreateUser<'_> {
         conn: &mut PgConnection,
         _w: &WriteToken,
     ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
-        let user_id = Uuid::new_v4();
+        // Time-ordered (v7) for primary-key insert locality.
+        let user_id = Uuid::now_v7();
         sqlx::query!(
             "insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'user');",
             user_id,

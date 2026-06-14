@@ -763,6 +763,13 @@ create table tml_switchboard.job_target_requirements
 create index jobs_queued_idx on tml_switchboard.jobs (queued_at)
     where job_state = 'queued';
 
+-- `GET /jobs` lists readable jobs newest-first with keyset pagination on
+-- `(queued_at, job_id)`. This index (matching that order) turns the listing into
+-- an index range scan and makes the keyset seek depth-independent, across all
+-- job states (unlike the partial index above).
+create index jobs_queued_at_job_id_idx
+    on tml_switchboard.jobs (queued_at desc, job_id desc);
+
 -- Hosts a job may be dispatched onto, by the set-based criteria SQL expresses
 -- well: the host is idle (no current job), live (its worker's heartbeat
 -- `last_seen_at` is newer than the caller-supplied staleness cutoff), and

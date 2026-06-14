@@ -159,7 +159,7 @@ pub async fn register_image(
         "layers": parsed.layers.len(),
     });
 
-    let id = Uuid::new_v4();
+    let id = Uuid::now_v7();
     let mut tx = state.pool().begin().await.map_err(internal)?;
     image::insert(
         &mut *tx,
@@ -249,7 +249,7 @@ async fn ensure_member_image(
         "layers": parsed.layers.len(),
     });
 
-    let id = Uuid::new_v4();
+    let id = Uuid::now_v7();
     let mut tx = state.pool().begin().await.map_err(internal)?;
     image::insert(
         &mut *tx,
@@ -314,7 +314,7 @@ pub async fn register_image_group(
     let group_id = match &existing {
         Some(g) => g.id,
         None => {
-            let id = Uuid::new_v4();
+            let id = Uuid::now_v7();
             image::insert_group(state.pool(), id, &index_str, owner, req.label.as_deref())
                 .await
                 .map_err(internal)?;

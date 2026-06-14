@@ -125,7 +125,11 @@ impl Transition for IssueSessionToken {
         conn: &mut PgConnection,
         _w: &WriteToken,
     ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
-        let token_id = Uuid::new_v4();
+        // Time-ordered (v7) for primary-key insert locality. This is only the
+        // token's identifier; the token *secret* is the separate 128-byte
+        // `SecurityToken` generated below, so v7's embedded timestamp leaks
+        // nothing sensitive.
+        let token_id = Uuid::now_v7();
         let api_token = SecurityToken::generate();
         let created = Utc::now();
         let expires = created + self.lifetime;

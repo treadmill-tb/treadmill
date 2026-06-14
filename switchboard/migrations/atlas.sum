@@ -1,4 +1,4 @@
-h1:JHjSriCdU3Mg3kzITeTiSTBpeCOQCagrkc7xU8AIUhs=
+h1:Y/Z4LGzEZrXZxjF/qjRAYyvlTaZtEyY6BlY6syf2uqw=
 00000000000001_base.sql h1:frftxPkUDOJS4m+L8YsWkOiSX2MnDyarR4XiQxbcFk4=
 20250113224121_add_host_job_ssh_endpoints.sql h1:Esa7SvUXholzqUG3gPElKGGXmmEVxZCfpRtN+RCgqUE=
 20250210235044_ssh_endpoint_host_port_struct.sql h1:ASBF7HeYHo27w72gRBmE8BTEUD1ei3PfoZgss9ph3KE=
@@ -18,3 +18,4 @@ h1:JHjSriCdU3Mg3kzITeTiSTBpeCOQCagrkc7xU8AIUhs=
 20260607200907_host_liveness_heartbeat.sql h1:SiVHLxWtUt1MP1SNLb6BN5i4BYlpI1CJoYfuLPMpOCk=
 20260607203700_scheduler_eligible_hosts.sql h1:EKXF5ZfT/QVKHAH2GE0cd6Old/eBN2vMkmn9LBYOq04=
 20260608031705_add_job_cancel_requested.sql h1:2XbIlsyGS5iw29CMozi83ZsUDDGdLEtfx3vCWyiMdAA=
+20260614025116_add_jobs_listing_index.sql h1:Q1XNcbZ0D6hMXkUcT/6Kr+WrrkgXlpg+evrfujRy7R8=
