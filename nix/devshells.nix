@@ -21,6 +21,7 @@
           cargo-audit
           cargo-nextest
           cargo-outdated
+          postgresql
 
           # OCI image-migration tooling: the vendored Zot registry (per-server
           # store daemon / pull-through cache) plus skopeo for moving images
@@ -75,7 +76,6 @@
         packages =
           defaultShell.nativeBuildInputs
           ++ (with pkgs; [
-            postgresql
             atlas
             sql-formatter
             sqlx-cli
