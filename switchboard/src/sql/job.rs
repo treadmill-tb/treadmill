@@ -1531,7 +1531,9 @@ pub async fn finalize_dropped_and_maybe_restart(
         return Ok(None);
     }
 
-    let successor_id = Uuid::new_v4();
+    // Time-ordered (v7), matching the enqueue path: a restart successor is just
+    // another job, so its id should index with the same insert locality.
+    let successor_id = Uuid::now_v7();
     let parameters = parameters::fetch_by_job_id(job_id, &mut **txn).await?;
     let target_requirements = target_requirements_for_job(job_id, &mut **txn).await?;
     let job_request = JobRequest {

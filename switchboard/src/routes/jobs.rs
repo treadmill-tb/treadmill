@@ -195,7 +195,9 @@ pub async fn enqueue(
     // restricts by enqueuing principal, a job can be placed on any tag-eligible
     // host regardless of who submitted it.
 
-    let job_id = Uuid::new_v4();
+    // Time-ordered (v7) so the primary-key index inserts with good locality and
+    // job ids sort by creation time (see also the `queued_at` listing order).
+    let job_id = Uuid::now_v7();
     let parameters = req.parameters.clone();
     let mut txn = state.pool().begin().await.map_err(|e| {
         tracing::error!("opening a transaction to enqueue a job: {e}");
