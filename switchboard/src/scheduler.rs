@@ -438,6 +438,7 @@ mod tests {
         let job_id = Uuid::new_v4();
         let req = JobRequest {
             init_spec,
+            owner: None,
             ssh_keys: vec![],
             restart_policy: RestartPolicy {
                 remaining_restart_count: 0,
@@ -452,6 +453,7 @@ mod tests {
             req,
             job_id,
             token,
+            None,
             PgInterval::try_from(Duration::hours(1)).unwrap(),
             queued_at,
             &mut tx,

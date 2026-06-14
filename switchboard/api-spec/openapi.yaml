@@ -3,6 +3,33 @@ info:
   title: Treadmill Switchboard API
   version: 0.1.0
 paths:
+  /jobs:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobRequest'
+        required: true
+      responses:
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
   /jobs/{id}/events:
     get:
       responses:
@@ -600,6 +627,65 @@ components:
       - timeout_secs
       - queued_at
       - last_updated_at
+    JobInitSpec:
+      oneOf:
+      - description: Resume a previously started job.
+        type: object
+        properties:
+          job_id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            const: resume_job
+        required:
+        - type
+        - job_id
+      - description: Restart a job.
+        type: object
+        properties:
+          job_id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            const: restart_job
+        required:
+        - type
+        - job_id
+      - description: |-
+          Base this job off a concrete image registered in the switchboard
+          catalog, addressed by its OCI manifest digest. At dispatch the
+          switchboard resolves the digest to its registry locations and hands the
+          supervisor a content-addressed [`ImageSpecification::Image`].
+
+          [`ImageSpecification::Image`]:
+              crate::api::switchboard_supervisor::ImageSpecification::Image
+        type: object
+        properties:
+          image:
+            $ref: '#/components/schemas/Digest'
+          type:
+            type: string
+            const: image
+        required:
+        - type
+        - image
+      - description: |-
+          Base this job off a registered image *group* (an OCI image index),
+          addressed by its index digest. After a host is chosen, the switchboard
+          matcher selects the group member whose required host tags the chosen
+          host satisfies and dispatches that concrete member's digest.
+        type: object
+        properties:
+          image_group:
+            $ref: '#/components/schemas/Digest'
+          type:
+            type: string
+            const: image_group
+        required:
+        - type
+        - image_group
     JobInitializingStage:
       oneOf:
       - description: 'Generic starting stage, for when no other stage is applicable:'
@@ -641,6 +727,73 @@ components:
           - 'null'
       required:
       - secret
+    JobRequest:
+      type: object
+      properties:
+        host_tag_requirements:
+          description: |-
+            Host eligibility: the set of tags the chosen host must carry (as a
+            superset) for this job to be scheduled onto it. Tags are opaque strings
+            (`key=value` pairs or bare flags, by convention only), matched by
+            containment against the host's tags.
+          type: array
+          default: []
+          items:
+            type: string
+        init_spec:
+          description: What kind of job this is.
+          allOf:
+          - $ref: '#/components/schemas/JobInitSpec'
+        override_timeout:
+          type:
+          - string
+          - 'null'
+        owner:
+          description: |-
+            The subject (user or group) to own the enqueued job. Must be the caller
+            itself or a group the caller is a member of; absent, ownership defaults
+            to the caller. Ownership decides who can later read, stop, and manage the
+            job (see `job_grants`).
+          type:
+          - string
+          - 'null'
+          format: uuid
+          default: null
+        parameters:
+          description: |-
+            A hash map of parameters provided to this job execution. These
+            parameters are provided to the puppet daemon.
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ParameterValue'
+        restart_policy:
+          $ref: '#/components/schemas/RestartPolicy'
+        ssh_keys:
+          description: |-
+            The set of initial SSH keys to deploy onto the image.
+
+            The image's configuration of the Treadmill puppet daemon determines
+            how and whether these keys will be loaded.
+          type: array
+          items:
+            type: string
+        target_requirements:
+          description: |-
+            Target (DUT) eligibility: an ordered array of requested targets, each a
+            set of tags an attached DUT must carry (as a superset). The scheduler
+            assigns each entry to a distinct `host_targets` row on the chosen host.
+            Empty requests no DUTs. Target tags do not affect image selection.
+          type: array
+          default: []
+          items:
+            type: array
+            items:
+              type: string
+      required:
+      - init_spec
+      - ssh_keys
+      - restart_policy
+      - parameters
     JobState:
       description: |-
         The execution-lifecycle state of a job, mirroring the
@@ -718,6 +871,16 @@ components:
       - subject
       - token
       - expires_in_secs
+    ParameterValue:
+      type: object
+      properties:
+        secret:
+          type: boolean
+        value:
+          type: string
+      required:
+      - value
+      - secret
     PublicUserProfile:
       description: |-
         The world-readable subset of a user profile: only data deemed safe to expose

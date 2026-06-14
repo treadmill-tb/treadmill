@@ -177,6 +177,7 @@ pub async fn insert(
     job_request: JobRequest,
     as_job_id: Uuid,
     as_token_id: Uuid,
+    owner: Option<Uuid>,
     job_timeout: PgInterval,
     queued_at: DateTime<Utc>,
     conn: &mut Transaction<'_, Postgres>,
@@ -215,6 +216,7 @@ pub async fn insert(
         insert into tml_switchboard.jobs
         (
           job_id,
+          owner_id,
           resume_job_id,
           restart_job_id,
           image_digest,
@@ -238,6 +240,7 @@ pub async fn insert(
         )
         values (
           $1,       -- job_id
+          $12,	    -- owner_id
           $2,	    -- resume_job_id
           $3,	    -- restart_job_id
           $4,	    -- image_digest
@@ -276,6 +279,7 @@ pub async fn insert(
         job_request.host_tag_requirements.as_slice(),
         job_timeout,
         queued_at,
+        owner,
     )
     .execute(conn.as_mut())
     .await?;
@@ -1336,6 +1340,9 @@ pub async fn finalize_dropped_and_maybe_restart(
     let target_requirements = target_requirements_for_job(job_id, &mut **txn).await?;
     let job_request = JobRequest {
         init_spec: JobInitSpec::RestartJob { job_id },
+        // Ownership is passed to `insert` explicitly (below); this field is the
+        // user-facing requested owner and is unused on the internal path.
+        owner: None,
         ssh_keys: predecessor.ssh_keys.clone(),
         restart_policy: RestartPolicy {
             remaining_restart_count: usize::try_from(remaining - 1).unwrap_or(0),
@@ -1349,6 +1356,8 @@ pub async fn finalize_dropped_and_maybe_restart(
         job_request,
         successor_id,
         predecessor.enqueued_by_token_id,
+        // The successor inherits the predecessor's ownership.
+        predecessor.owner_id,
         predecessor.job_timeout,
         at,
         txn,

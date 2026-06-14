@@ -1,7 +1,7 @@
 # Job Enqueue/Get API Routes — Implementation Plan
 
-**Status:** not started · **Date:** 2026-06-14 · **Branch:**
-`dev/switchboard-refactor`
+**Status:** done — both commits landed on `dev/switchboard-refactor`
+· **Date:** 2026-06-14
 
 > One-time implementation roadmap for the user-facing `POST /jobs` (enqueue) and
 > `GET /jobs/{id}` (fetch) switchboard routes. Self-contained so a contributor

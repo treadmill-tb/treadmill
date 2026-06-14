@@ -2,10 +2,13 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Path, State};
+use chrono::Utc;
 use http::StatusCode;
+use sqlx::postgres::types::PgInterval;
 use uuid::Uuid;
 
-use treadmill_rs::api::switchboard::jobs::{JobInfo, LogStreamCredentials};
+use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, JobInfo, LogStreamCredentials};
+use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
 
 use crate::audit::feed::{AuditFeedResponse, fetch_events_for_entity};
 use crate::auth::engine::{self, JobPermission};
@@ -28,6 +31,120 @@ pub async fn list_events(
     fetch_events_for_entity(&state, &subject, "job", job_id)
         .await
         .map(Json)
+}
+
+/// Axum handler for `POST /jobs`.
+///
+/// Enqueues a new job and returns its id. The job is inserted in the `queued`
+/// state; the polling scheduler places it onto an eligible host later — there is
+/// no synchronous host-match result here.
+///
+/// Authorization:
+///   - **Owner.** `req.owner`, if set, must be the caller itself or a group the
+///     caller belongs to (`requested ∈ principals(caller)`), else `403`; absent,
+///     the job is owned by the caller.
+///   - **Resume/restart.** A `ResumeJob`/`RestartJob` references an existing job;
+///     the caller must hold `Manage` on it, else `403`.
+///
+/// Image validity and host eligibility are **not** checked here: an unresolvable
+/// image finalizes the job as `image_error` at dispatch, and host eligibility is
+/// the scheduler's authoritative concern (see the `TODO(authz)` below).
+pub async fn enqueue(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Json(req): Json<JobRequest>,
+) -> Result<(StatusCode, Json<EnqueueJobResponse>), StatusCode> {
+    let caller = subject.user_id();
+
+    // Resolve and validate the owner: the caller, or a group it belongs to.
+    let owner = match req.owner {
+        Some(requested) => {
+            let reachable = sqlx::query_scalar!(
+                "select exists(select 1 from tml_switchboard.principals($1) p where p.id = $2) as \"ok!\"",
+                caller,
+                requested,
+            )
+            .fetch_one(state.pool())
+            .await
+            .map_err(|e| {
+                tracing::error!("checking requested job owner reachability: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            if !reachable {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            requested
+        }
+        None => caller,
+    };
+
+    // Resuming or restarting exposes the referenced job; require `Manage` on it.
+    // (Independent of the owner check above — the requested owner may differ from
+    // the referenced job's owner; both gates must pass.)
+    if let JobInitSpec::ResumeJob { job_id } | JobInitSpec::RestartJob { job_id } = req.init_spec {
+        let authorized =
+            engine::can_access_job(state.pool(), caller, job_id, JobPermission::Manage)
+                .await
+                .map_err(|e| {
+                    tracing::error!("checking manage access on referenced job {job_id}: {e}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+        if !authorized {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+
+    // Resolve the timeout (explicit override, else the deployment default) and
+    // reject a non-positive one.
+    let timeout = req
+        .override_timeout
+        .unwrap_or(state.config().service.default_job_timeout);
+    if timeout <= chrono::Duration::zero() {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let job_timeout = PgInterval::try_from(timeout).map_err(|e| {
+        tracing::warn!("rejecting job with unrepresentable timeout: {e}");
+        StatusCode::UNPROCESSABLE_ENTITY
+    })?;
+
+    // TODO(authz): enqueue does not verify the caller may run on *any* host the
+    // job could match (ownership / `start` grant on eligible hosts). The
+    // scheduler is the authoritative gate; until its `eligible_hosts` predicate
+    // restricts by enqueuing principal, a job can be placed on any tag-eligible
+    // host regardless of who submitted it.
+
+    let job_id = Uuid::new_v4();
+    let parameters = req.parameters.clone();
+    let mut txn = state.pool().begin().await.map_err(|e| {
+        tracing::error!("opening a transaction to enqueue a job: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    job::insert(
+        req,
+        job_id,
+        subject.token_id(),
+        Some(owner),
+        job_timeout,
+        Utc::now(),
+        &mut txn,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("inserting enqueued job {job_id}: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    job::parameters::insert(job_id, parameters, txn.as_mut())
+        .await
+        .map_err(|e| {
+            tracing::error!("inserting parameters for job {job_id}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    txn.commit().await.map_err(|e| {
+        tracing::error!("committing enqueued job {job_id}: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok((StatusCode::CREATED, Json(EnqueueJobResponse { job_id })))
 }
 
 /// Axum handler for `GET /jobs/{id}`.

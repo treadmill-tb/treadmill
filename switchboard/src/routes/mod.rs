@@ -90,8 +90,8 @@ pub fn api_router() -> ApiRouter<AppState> {
         //  GET /auth/whoami
         .route("/auth/whoami", get(auth::whoami))
         // job management group
-        //  POST /jobs/new
-        // .api_route("/jobs/new", post_with(jobs::submit, |o| o))
+        //  POST /jobs -- enqueue a new job
+        .api_route("/jobs", post_with(jobs::enqueue, |o| o))
         //  GET /jobs (+ <FILTERS>)
         // .api_route("/jobs", get_with(jobs::list, |o| o))
         //  GET /jobs/{id}/events

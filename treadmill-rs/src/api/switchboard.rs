@@ -154,6 +154,13 @@ pub struct JobRequest {
     /// What kind of job this is.
     pub init_spec: JobInitSpec,
 
+    /// The subject (user or group) to own the enqueued job. Must be the caller
+    /// itself or a group the caller is a member of; absent, ownership defaults
+    /// to the caller. Ownership decides who can later read, stop, and manage the
+    /// job (see `job_grants`).
+    #[serde(default)]
+    pub owner: Option<Uuid>,
+
     /// The set of initial SSH keys to deploy onto the image.
     ///
     /// The image's configuration of the Treadmill puppet daemon determines

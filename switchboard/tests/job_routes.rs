@@ -10,6 +10,7 @@
 //! Queries here use sqlx's runtime API (not the `query!` macros), so the test
 //! needs no entry in the offline `.sqlx` cache.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -18,9 +19,18 @@ use sqlx::PgPool;
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
-use treadmill_rs::api::switchboard::jobs::{JobImageRef, JobInfo, LogStreamCredentials};
-use treadmill_rs::api::switchboard::{JobState, LoginResponse, WhoAmIResponse};
+use treadmill_rs::api::switchboard::jobs::{
+    EnqueueJobResponse, JobImageRef, JobInfo, LogStreamCredentials,
+};
+use treadmill_rs::api::switchboard::{
+    JobInitSpec, JobRequest, JobState, LoginResponse, WhoAmIResponse,
+};
+use treadmill_rs::api::switchboard_supervisor::RestartPolicy;
 use treadmill_rs::image::Digest;
+
+/// The built-in admins group subject (`engine::ADMINS_GROUP_ID`). `alice` is a
+/// member, so she may file a job under it.
+const ADMINS_GROUP_ID: Uuid = Uuid::from_u128(1);
 use treadmill_switchboard::config::LogStreamingConfig;
 use treadmill_switchboard::log_streaming::{LogStreamProvisioner, LogStreaming, ProvisionError};
 use treadmill_switchboard::registry::OciRegistryClient;
@@ -181,6 +191,217 @@ async fn seed_job(
         .unwrap();
     }
     job_id
+}
+
+/// A minimal concrete-image [`JobRequest`] for enqueue tests.
+fn image_job_request(
+    owner: Option<Uuid>,
+    init_spec: JobInitSpec,
+    override_timeout: Option<chrono::Duration>,
+) -> JobRequest {
+    JobRequest {
+        init_spec,
+        owner,
+        ssh_keys: vec![],
+        restart_policy: RestartPolicy {
+            remaining_restart_count: 0,
+        },
+        parameters: HashMap::new(),
+        host_tag_requirements: vec![],
+        target_requirements: vec![],
+        override_timeout,
+    }
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn enqueue_creates_a_queued_job_owned_by_caller(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let token = mock_login_token(&client, addr, "bob").await;
+    let bob = whoami(&client, addr, &token).await;
+    let req = image_job_request(
+        None,
+        JobInitSpec::Image {
+            image: Digest::from_sha256([9; 32]),
+        },
+        None,
+    );
+
+    let resp = client
+        .post(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(&token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    let job_id = resp.json::<EnqueueJobResponse>().await.unwrap().job_id;
+
+    // The enqueuer owns the job and can read it back: queued, owned by the
+    // caller, with the deployment default timeout (1h in the mock config).
+    let info: JobInfo = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(info.owner_id, Some(bob));
+    assert_eq!(info.state, JobState::Queued);
+    assert_eq!(info.timeout_secs, 3600);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn enqueue_under_a_group_the_caller_belongs_to(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // `alice` is a member of the admins group, so she may own the job under it.
+    let token = mock_login_token(&client, addr, "alice").await;
+    let req = image_job_request(
+        Some(ADMINS_GROUP_ID),
+        JobInitSpec::Image {
+            image: Digest::from_sha256([3; 32]),
+        },
+        None,
+    );
+
+    let resp = client
+        .post(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(&token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    let job_id = resp.json::<EnqueueJobResponse>().await.unwrap().job_id;
+
+    let info: JobInfo = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(info.owner_id, Some(ADMINS_GROUP_ID));
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn enqueue_with_unrelated_owner_is_forbidden(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // `bob` is not a member of any group, and certainly not of a random subject,
+    // so he cannot file a job under it.
+    let token = mock_login_token(&client, addr, "bob").await;
+    let req = image_job_request(
+        Some(Uuid::new_v4()),
+        JobInitSpec::Image {
+            image: Digest::from_sha256([4; 32]),
+        },
+        None,
+    );
+
+    let resp = client
+        .post(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(&token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn restarting_a_job_without_manage_is_forbidden(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // A job owned by `alice`; `bob` holds no permission on it.
+    let alice_token = mock_login_token(&client, addr, "alice").await;
+    let alice = whoami(&client, addr, &alice_token).await;
+    let alice_tok = latest_token_id(&pool, alice).await;
+    let existing = seed_job(
+        &pool,
+        alice,
+        alice_tok,
+        &Digest::from_sha256([5; 32]).encoded(),
+        &[],
+    )
+    .await;
+
+    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let req = image_job_request(None, JobInitSpec::RestartJob { job_id: existing }, None);
+
+    let resp = client
+        .post(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(&bob_token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn enqueue_honors_an_override_timeout(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let token = mock_login_token(&client, addr, "bob").await;
+    let req = image_job_request(
+        None,
+        JobInitSpec::Image {
+            image: Digest::from_sha256([6; 32]),
+        },
+        Some(chrono::Duration::hours(2)),
+    );
+
+    let resp = client
+        .post(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(&token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    let job_id = resp.json::<EnqueueJobResponse>().await.unwrap().job_id;
+
+    let info: JobInfo = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(info.timeout_secs, 2 * 3600);
 }
 
 #[sqlx::test]
