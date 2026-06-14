@@ -5,11 +5,12 @@
 //! the per-resource pages, and the embedded stylesheet.
 
 mod auth;
+mod jobs;
 mod me;
 mod statics;
 
 use axum::Router;
-use axum::routing::get;
+use axum::routing::{get, post};
 use tower_http::trace::TraceLayer;
 
 use crate::serve::AppState;
@@ -24,6 +25,10 @@ pub fn build_router(state: AppState) -> Router {
         // resource pages
         .route("/me", get(me::me))
         .route("/users/{id}", get(me::user))
+        // job pages
+        .route("/jobs", get(jobs::list))
+        .route("/jobs/{id}", get(jobs::show))
+        .route("/jobs/{id}/terminate", post(jobs::terminate))
         // assets
         .route("/static/style.css", get(statics::style))
         .layer(TraceLayer::new_for_http())

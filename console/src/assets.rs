@@ -121,6 +121,48 @@ time { color: var(--muted); }
 .muted { color: var(--muted); }
 .empty { color: var(--muted); font-style: italic; }
 
+/* A heading row with a trailing action button (e.g. job pages). */
+.page-head {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.page-head h1 { margin: 0; flex: 1; }
+
+/* Inline action <button> in a form (e.g. Terminate); anchors use a.button. */
+button.button {
+  display: inline-block;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+button.button:hover { border-color: var(--accent); color: var(--accent); }
+.button.danger { color: #b3261e; border-color: #e5b3b0; }
+.button.danger:hover { color: #fff; background: #b3261e; border-color: #b3261e; }
+
+/* Job-state badges: tint the shared .tag pill per lifecycle phase. */
+.tag.state-pending { color: var(--muted); }
+.tag.state-busy { color: #8a6d00; border-color: #d4a72c; }
+.tag.state-ready { color: #1a7f37; border-color: #4ac26b; }
+.tag.state-done { color: var(--text); }
+
+/* Placeholder panel for the not-yet-wired live console. */
+section.card.console-placeholder {
+  background: #0d1117;
+  border-color: #0d1117;
+  min-height: 8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+section.card.console-placeholder .muted { color: #8b949e; }
+
 /* Login page: a vertical stack of provider buttons. */
 .login-options {
   display: flex;

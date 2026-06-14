@@ -5,6 +5,7 @@
 //! every resource page can drop them in identically.
 
 pub mod audit;
+pub mod jobs;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -31,6 +32,7 @@ pub fn layout(title: &str, current: Option<&str>, content: Markup) -> Markup {
                         a.brand href="/" { "treadmill console" }
                         span.spacer {}
                         @if let Some(user) = current {
+                            a href="/jobs" { "jobs" }
                             a href="/me" { (user) }
                             a href="/logout" { "log out" }
                         } @else {
