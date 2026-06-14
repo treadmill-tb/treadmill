@@ -6,6 +6,9 @@ _: {
       ...
     }:
     let
+      inherit (pkgs) lib;
+      inherit (pkgs.stdenv) isLinux;
+
       # The committed switchboard OpenAPI snapshot. Pinned into the store so the
       # app works from a clean checkout; override by passing a path argument
       # (`nix run .#view-openapi -- path/to/spec.yaml`).
@@ -72,8 +75,20 @@ _: {
           # for log streaming.
           pkgs.nats-server
           pkgs.nsc
+          # Used by the readiness polls, the dev seed/registration, and the smoke
+          # stage on every platform.
+          pkgs.curl
+          pkgs.jq
           self'.packages.swx
           self'.packages.tml-console
+        ]
+        # The single dev zot + qemu-supervisor stack is Linux-only: it boots the
+        # aarch64 tiny-efi fixture, which is only built on Linux (nix/tiny-efi.nix).
+        ++ lib.optionals isLinux [
+          self'.packages.zot
+          self'.packages.treadmill-qemu-supervisor
+          pkgs.skopeo
+          pkgs.qemu
         ];
         text = ''
           set -euo pipefail
@@ -86,13 +101,46 @@ _: {
           pg_port="''${TML_PG_PORT:-5432}"
           nats_port="''${TML_NATS_PORT:-4222}"
           nats_ws_port="''${TML_NATS_WS_PORT:-4223}"
+          zot_port="''${TML_ZOT_PORT:-5000}"
           user="$(id -un)"
+
+          # Linux-only registry/supervisor bootstrap inputs, injected from Nix.
+          # Empty on non-Linux (the tiny-efi fixture isn't built there): the zot +
+          # qemu-supervisor stack is then skipped and `.#dev` is just the
+          # switchboard/console/NATS stack, as before.
+          fixture_layout="${lib.optionalString isLinux "${self'.packages.tiny-efi-image-layout}"}"
+          aavmf_code="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-aarch64-code.fd"}"
+          aavmf_vars="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-arm-vars.fd"}"
+          if [ -n "$fixture_layout" ]; then enable_supervisor=1; else enable_supervisor=0; fi
+          smoke="''${TML_DEVSTACK_SMOKE:-1}"
+
+          # Stable dev identities (token/host material mirrors
+          # switchboard/FIXTURES.sql). The host auth_token bearer matches the
+          # supervisor ws_connector token; the API token bearer drives the smoke
+          # stage. 'alice' is the built-in mock admin identity.
+          host_id="7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
+          dev_user_id="a11ce5a1-0000-4000-8000-000000000001"
+          admins_group_id="00000000-0000-0000-0000-000000000001"
+          host_token_bearer="OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc"
+          api_token_bearer="B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15fyuzvHsbBQOvnN+/RpB7OvVJjRYhldlSY4iFsNZq5XpO8fXiqRN6O/gn+nP5cA1J6ox2d2jV32TGzahTZAQZUFwIsI11Mye+Jus97L1e+l3O/0yBt/sywoJFFwkUVOFX8="
 
           pg_dir="$state_dir/pg"
           sock_dir="$state_dir/pg-sockets"
           cfg_dir="$state_dir/config"
           log_dir="$state_dir/logs"
+          zot_dir="$state_dir/zot"
+          sup_state_dir="$state_dir/supervisor"
           mkdir -p "$state_dir" "$sock_dir" "$cfg_dir" "$log_dir"
+
+          # Poll an HTTP endpoint until it answers (daemon readiness).
+          wait_http() {
+            local url="$1" tries="''${2:-60}"
+            for _ in $(seq 1 "$tries"); do
+              if curl -fsS -o /dev/null "$url" 2>/dev/null; then return 0; fi
+              sleep 0.5
+            done
+            return 1
+          }
 
           # GitHub login is enabled only when both credentials are present in the
           # environment. The secret is never written to the config file: it is
@@ -250,6 +298,107 @@ _: {
           base_url = "http://localhost:$sb_port"
           TOML
 
+          # --- Dev DB seed (applied once at run time, after migrations) ---------
+          # One admin user 'alice', linked to the built-in mock 'alice' identity
+          # (and its verified email) so a mock login resolves to it with full
+          # permissions immediately; it owns the host the supervisor connects as
+          # plus an API token used by the smoke stage. The host auth_token matches
+          # the supervisor ws token below. `on conflict do nothing` keeps re-apply
+          # safe.
+          seed_sql="$cfg_dir/dev-seed.sql"
+          cat > "$seed_sql" <<SQL
+          insert into tml_switchboard.subjects (subject_id, kind)
+            values ('$dev_user_id', 'user') on conflict do nothing;
+          insert into tml_switchboard.users (subject_id, username, full_name, locked)
+            values ('$dev_user_id', 'alice', 'Alice Example', false) on conflict do nothing;
+          insert into tml_switchboard.user_identities (provider, provider_user_id, user_id, provider_login)
+            values ('mock', 'alice', '$dev_user_id', 'alice') on conflict do nothing;
+          insert into tml_switchboard.user_emails (email, user_id, provider, verified)
+            values ('alice@example.test', '$dev_user_id', 'mock', true) on conflict do nothing;
+          insert into tml_switchboard.group_members (group_id, member_id, source, source_ref)
+            values ('$admins_group_id', '$dev_user_id', 'manual', ''') on conflict do nothing;
+          insert into tml_switchboard.hosts
+            (host_id, name, auth_token, tags, owner_id, ssh_endpoints, current_job)
+            values (
+              '$host_id', 'dev-qemu-supervisor',
+              '\x38292b85b0cc8941bbad8d4b9527f2c01be092a6f50b23add1d8c8828b3d403cfa5f221a3fe81807ad9727a1caefc7df3edbc35728bd6d18f8163d71555c857a2c593d6d1a9d4d342f3c77a9c9223f6e57b797196d94d7c4529f6fa89f1e9162f372b0906658aec695717b1fd4b73ad3b0ae7079d2bd9f7eb995129e1acde2b7',
+              '{"host:$host_id"}', '$dev_user_id',
+              '{"(127.0.0.1,22)","([::1],22)"}', null
+            ) on conflict do nothing;
+          insert into tml_switchboard.api_tokens
+            (token_id, token, user_id, canceled, created_at, expires_at)
+            values (
+              '3be73eea-192f-46c0-af01-92f574290c81',
+              '\x075a32da4a35c1574629bbca73ff5d2a2ee081960b4cbcdd9b602ce02595d797f2bb3bc7b1b0503af9cdfbf46907b3af5498d162195d952638885b0d66ae57a4ef1f5e2a9137a3bf827fa73f9700d49ea8c767768d5df64c6cda853640419505c08b08d753327be26eb3decbd5efa5dceff4c81b7fb32c2824517091454e157f',
+              '$dev_user_id', null,
+              '2024-07-12 13:56:50.616829-07', '2124-07-12 13:56:50.616829-07'
+            ) on conflict do nothing;
+          SQL
+
+          # --- zot registry + qemu supervisor configs (Linux only) -------------
+          if [ "$enable_supervisor" = 1 ]; then
+            cat > "$cfg_dir/zot.json" <<JSON
+          {"storage":{"rootDirectory":"$zot_dir","dedupe":true},
+           "http":{"address":"127.0.0.1","port":"$zot_port"},
+           "log":{"level":"error"}}
+          JSON
+
+            # Per-job writable AAVMF variable store (the code blob stays shared
+            # read-only). Modeled on supervisor/qemu/nix_ovmf-vars_start_script.sh.
+            aavmf_start="$cfg_dir/aavmf-vars-start.sh"
+            cat > "$aavmf_start" <<SH
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cp "$aavmf_vars" "\$TML_JOB_WORKDIR/AAVMF_VARS.fd"
+          chmod u+w "\$TML_JOB_WORKDIR/AAVMF_VARS.fd"
+          SH
+            chmod +x "$aavmf_start"
+
+            cat > "$cfg_dir/supervisor.toml" <<TOML
+          [base]
+          supervisor_id = "$host_id"
+          coord_connector = "ws_connector"
+
+          [ws_connector]
+          token = "$host_token_bearer"
+          switchboard_uri = "ws://127.0.0.1:$sb_port"
+
+          # Single dev zot: pull from it, and read its blob files off disk
+          # directly (store_root == the daemon's rootDirectory).
+          [oci_store]
+          registry = "127.0.0.1:$zot_port"
+          store_root = "$zot_dir"
+
+          [qemu]
+          qemu_binary = "qemu-system-aarch64"
+          qemu_img_binary = "qemu-img"
+          state_dir = "$sup_state_dir"
+          # The tiny-efi fixture's layers are 16 MiB; the overlay matches.
+          working_disk_max_bytes = 16777216
+          tcp_control_socket_listen_addr = "127.0.0.1:3859"
+          start_script = "$aavmf_start"
+          # aarch64 under TCG (no KVM), AAVMF pflash, virtio-blk on the backing
+          # chain's writable top node. The serial console is wired automatically
+          # by the supervisor when the dispatch enables log streaming (it ships
+          # the console to NATS), so it is intentionally not listed here.
+          qemu_args = [
+            "-name", "tml-{job_id}",
+            "-nodefaults",
+            "-machine", "virt",
+            "-cpu", "cortex-a57",
+            "-m", "512",
+            "-drive", "if=pflash,format=raw,readonly=on,file=$aavmf_code",
+            "-drive", "if=pflash,format=raw,file={job_workdir}/AAVMF_VARS.fd",
+            "-device", "virtio-blk-device,drive={disk_node}",
+            "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
+            "-device", "virtio-net-device,netdev=net0",
+            "-fw_cfg", "name=opt/org.tockos.treadmill.tcp-ctrl-socket,string=10.0.2.2:3859",
+            "-display", "none",
+            "-no-reboot",
+          ]
+          TOML
+          fi
+
           # --- Run switchboard + console; tear everything down on exit ----------
           pids=()
           cleanup() {
@@ -274,6 +423,26 @@ _: {
           nats-server -c "$nats_conf" -l "$log_dir/nats.log" &
           pids+=("$!")
 
+          # The single dev zot registry: the supervisor pulls images from it and
+          # reads its blob files off disk directly. Seeded once with the tiny-efi
+          # fixture (Linux only).
+          if [ "$enable_supervisor" = 1 ]; then
+            echo "Starting zot registry (http://127.0.0.1:$zot_port)"
+            zot serve "$cfg_dir/zot.json" >"$log_dir/zot.log" 2>&1 &
+            pids+=("$!")
+            if ! wait_http "http://127.0.0.1:$zot_port/v2/" 60; then
+              echo "zot did not become ready; see $log_dir/zot.log" >&2
+              exit 1
+            fi
+            if [ ! -e "$zot_dir/.tml-pushed" ]; then
+              echo "Pushing tiny-efi fixture into zot (treadmill/tiny-efi:latest)"
+              skopeo --insecure-policy copy --dest-tls-verify=false \
+                "oci:$fixture_layout" \
+                "docker://127.0.0.1:$zot_port/treadmill/tiny-efi:latest"
+              touch "$zot_dir/.tml-pushed"
+            fi
+          fi
+
           # swx runs sqlx migrations on startup, so the schema is applied here.
           # Secrets are injected via the environment, never the config file:
           # figment maps TML_OAUTH__GITHUB__* onto oauth.github.* and
@@ -288,6 +457,40 @@ _: {
               swx serve -c "$sb_cfg" &
           fi
           pids+=("$!")
+
+          # Wait for the switchboard API (also means migrations have run), then
+          # seed the dev identities once and register the fixture image.
+          if ! wait_http "http://127.0.0.1:$sb_port/api/v1/auth/providers" 120; then
+            echo "switchboard did not become ready; see $log_dir" >&2
+            exit 1
+          fi
+
+          if [ ! -e "$state_dir/db-seeded" ]; then
+            echo "Seeding dev identities (admin 'alice', host, API token)"
+            psql -h "$sock_dir" -p "$pg_port" -U "$user" -d tml_switchboard \
+              -v ON_ERROR_STOP=1 -q -f "$seed_sql"
+            touch "$state_dir/db-seeded"
+          fi
+
+          if [ "$enable_supervisor" = 1 ]; then
+            manifest_digest="$(jq -r '.manifests[0].digest' "$fixture_layout/index.json")"
+            echo "Registering tiny-efi image ($manifest_digest)"
+            if curl -fsS -X POST "http://127.0.0.1:$sb_port/api/v1/images" \
+                 -H "Authorization: Bearer $api_token_bearer" \
+                 -H 'content-type: application/json' \
+                 -d "{\"registry\":\"127.0.0.1:$zot_port\",\"repository\":\"treadmill/tiny-efi\",\"manifest_digest\":\"$manifest_digest\",\"label\":\"tiny-efi (dev)\"}" \
+                 >/dev/null; then
+              echo "  registered."
+            else
+              echo "  ! image registration failed (continuing)" >&2
+            fi
+
+            echo "Starting QEMU supervisor (aarch64 TCG; host $host_id)"
+            treadmill-qemu-supervisor -c "$cfg_dir/supervisor.toml" \
+              >"$log_dir/supervisor.log" 2>&1 &
+            pids+=("$!")
+          fi
+
           tml-console serve -c "$console_cfg" &
           pids+=("$!")
 
@@ -299,8 +502,16 @@ _: {
               switchboard API : http://localhost:$sb_port
               NATS broker     : nats://127.0.0.1:$nats_port (ws on $nats_ws_port)
               state directory : $state_dir
-              mock login      : ENABLED (dev only, unauthenticated)
+              mock login      : ENABLED (alice=admin, bob/carol=user)
           EOF
+          if [ "$enable_supervisor" = 1 ]; then
+            cat <<EOF
+              zot registry    : http://127.0.0.1:$zot_port (repo treadmill/tiny-efi)
+              qemu supervisor : host $host_id (aarch64 TCG)
+          EOF
+          else
+            echo "    qemu supervisor : DISABLED (non-Linux: tiny-efi fixture unavailable)"
+          fi
           if [ "$oauth_enabled" != 1 ]; then
             cat <<EOF
               GitHub login    : DISABLED
@@ -316,7 +527,65 @@ _: {
           ============================================================
           EOF
 
-          # Wait for the components; if either exits, tear the stack down.
+          # --- Smoke stage: submit a tiny-efi job and watch it dispatch --------
+          # Exercises the real control plane end to end (enqueue -> schedule ->
+          # dispatch over the host WS -> image pull -> qemu boot). Polls only
+          # until the job reaches Booting (or otherwise advances past queued); the
+          # guest then prints its serial sentinel and shuts itself down. Echoes
+          # each request. Disable with TML_DEVSTACK_SMOKE=0. Runs with errexit off
+          # in a subshell so a smoke hiccup never tears the live stack down.
+          if [ "$enable_supervisor" = 1 ] && [ "$smoke" != 0 ]; then
+            (
+              set +e
+              echo
+              echo "=== smoke test: submitting a tiny-efi job ==="
+              job_body="{\"init_spec\":{\"type\":\"image\",\"image\":\"$manifest_digest\"},\"ssh_keys\":[],\"restart_policy\":{\"remaining_restart_count\":0},\"parameters\":{},\"host_tag_requirements\":[\"host:$host_id\"],\"override_timeout\":null}"
+              echo "+ curl -X POST http://127.0.0.1:$sb_port/api/v1/jobs  (image=$manifest_digest, host:$host_id)"
+              job_id="$(curl -fsS -X POST "http://127.0.0.1:$sb_port/api/v1/jobs" \
+                -H "Authorization: Bearer $api_token_bearer" \
+                -H 'content-type: application/json' \
+                -d "$job_body" | jq -r '.job_id // empty')"
+              if [ -z "$job_id" ]; then
+                echo "  ! job submission failed; inspect $log_dir and the console." >&2
+                exit 0
+              fi
+              echo "  submitted job_id=$job_id"
+              reached=0
+              for _ in $(seq 1 40); do
+                echo "+ curl http://127.0.0.1:$sb_port/api/v1/jobs/$job_id"
+                info="$(curl -fsS "http://127.0.0.1:$sb_port/api/v1/jobs/$job_id" \
+                  -H "Authorization: Bearer $api_token_bearer")"
+                if [ -n "$info" ]; then
+                  state="$(echo "$info" | jq -r '.state')"
+                  stage="$(echo "$info" | jq -r '.initializing_stage // "-"')"
+                  host="$(echo "$info" | jq -r '.dispatched_on_host_id // "-"')"
+                  echo "  state=$state stage=$stage host=$host"
+                  case "$state" in
+                    initializing)
+                      if [ "$stage" = booting ]; then
+                        echo "  reached Booting on the qemu supervisor"
+                        reached=1
+                        break
+                      fi
+                      ;;
+                    ready | terminating | finalized)
+                      echo "  job advanced to $state"
+                      reached=1
+                      break
+                      ;;
+                  esac
+                fi
+                sleep 2
+              done
+              if [ "$reached" != 1 ]; then
+                echo "  ! job did not advance past queued within the smoke window;" >&2
+                echo "    inspect $log_dir/supervisor.log and the console." >&2
+              fi
+              echo "=== smoke test done; stack stays up below ==="
+            ) || true
+          fi
+
+          # Wait for the components; if any exits, tear the stack down.
           wait
         '';
       };
