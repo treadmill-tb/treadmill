@@ -450,10 +450,10 @@ _: {
           if [ "$oauth_enabled" = 1 ]; then
             TML_OAUTH__GITHUB__CLIENT_ID="$TML_DEV_GITHUB_CLIENT_ID" \
             TML_OAUTH__GITHUB__CLIENT_SECRET="$TML_DEV_GITHUB_CLIENT_SECRET" \
-            TML_LOGSTREAMING__ACCOUNT_SEED="$nats_account_seed" \
+            TML_LOG_STREAMING__ACCOUNT_SEED="$nats_account_seed" \
               swx serve -c "$sb_cfg" &
           else
-            TML_LOGSTREAMING__ACCOUNT_SEED="$nats_account_seed" \
+            TML_LOG_STREAMING__ACCOUNT_SEED="$nats_account_seed" \
               swx serve -c "$sb_cfg" &
           fi
           pids+=("$!")
