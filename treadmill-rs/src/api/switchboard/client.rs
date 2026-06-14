@@ -12,8 +12,12 @@
 use uuid::Uuid;
 
 use crate::api::switchboard::AuthProvidersResponse;
+use crate::api::switchboard::JobRequest;
 use crate::api::switchboard::WhoAmIResponse;
 use crate::api::switchboard::audit::AuditFeedResponse;
+use crate::api::switchboard::hosts::HostInfo;
+use crate::api::switchboard::images::ImageGroupInfo;
+use crate::api::switchboard::jobs::{EnqueueJobResponse, JobInfo, JobListResponse};
 use crate::api::switchboard::users::{PublicUserProfile, SelfUserProfile, SessionInfo};
 
 /// All the ways a switchboard API call can fail, from the caller's point of
@@ -101,6 +105,66 @@ impl SwitchboardClient {
             .await
     }
 
+    /// `GET /jobs` — a keyset-paginated page of the jobs the caller may read,
+    /// newest first. Pass `cursor` from a previous response's `next_cursor` to
+    /// fetch the next page, and an optional `limit` (the switchboard clamps it).
+    pub async fn list_jobs(
+        &self,
+        limit: Option<u32>,
+        cursor: Option<&str>,
+    ) -> Result<JobListResponse, ClientError> {
+        // Both parameters are URL-safe as-is (limit is digits; cursor is
+        // URL_SAFE_NO_PAD base64), so no percent-encoding is needed here.
+        let mut params: Vec<String> = Vec::new();
+        if let Some(limit) = limit {
+            params.push(format!("limit={limit}"));
+        }
+        if let Some(cursor) = cursor {
+            params.push(format!("cursor={cursor}"));
+        }
+        let path = if params.is_empty() {
+            "/api/v1/jobs".to_string()
+        } else {
+            format!("/api/v1/jobs?{}", params.join("&"))
+        };
+        self.get_json(&path).await
+    }
+
+    /// `GET /jobs/{id}` — the full view of one job (caller must be able to read
+    /// it).
+    pub async fn get_job(&self, job_id: Uuid) -> Result<JobInfo, ClientError> {
+        self.get_json(&format!("/api/v1/jobs/{job_id}")).await
+    }
+
+    /// `GET /jobs/{id}/events` — one job's audit feed.
+    pub async fn job_events(&self, job_id: Uuid) -> Result<AuditFeedResponse, ClientError> {
+        self.get_json(&format!("/api/v1/jobs/{job_id}/events"))
+            .await
+    }
+
+    /// `POST /jobs` — enqueue a new job, returning its assigned id.
+    pub async fn enqueue_job(&self, req: &JobRequest) -> Result<EnqueueJobResponse, ClientError> {
+        self.post_json("/api/v1/jobs", req).await
+    }
+
+    /// `DELETE /jobs/{id}` — request termination of a job. Idempotent: a job
+    /// that is already finalized is a no-op (the switchboard returns `204`).
+    pub async fn terminate_job(&self, job_id: Uuid) -> Result<(), ClientError> {
+        self.delete(&format!("/api/v1/jobs/{job_id}")).await
+    }
+
+    /// `GET /hosts` — the read-only host listing (tags, targets, liveness),
+    /// e.g. to populate a host picker.
+    pub async fn list_hosts(&self) -> Result<Vec<HostInfo>, ClientError> {
+        self.get_json("/api/v1/hosts").await
+    }
+
+    /// `GET /image-groups` — the image groups the caller owns, e.g. to populate
+    /// a job's image selector.
+    pub async fn list_image_groups(&self) -> Result<Vec<ImageGroupInfo>, ClientError> {
+        self.get_json("/api/v1/image-groups").await
+    }
+
     /// Issue an authenticated `GET` for `path` and deserialize the JSON body,
     /// mapping `401` to [`ClientError::Unauthorized`] and any other non-success
     /// status to [`ClientError::Status`].
@@ -114,6 +178,61 @@ impl SwitchboardClient {
         let status = resp.status();
         if status.is_success() {
             return Ok(resp.json::<T>().await?);
+        }
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(ClientError::Unauthorized);
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(ClientError::Status {
+            status: status.as_u16(),
+            body,
+        })
+    }
+
+    /// Issue an authenticated `POST` of `body` (as JSON) to `path` and
+    /// deserialize the JSON response, with the same error mapping as
+    /// [`get_json`](Self::get_json). Any 2xx is treated as success.
+    async fn post_json<B: serde::Serialize, T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, ClientError> {
+        let mut req = self
+            .http
+            .post(format!("{}{path}", self.base_url))
+            .json(body);
+        if let Some(token) = &self.token {
+            req = req.bearer_auth(token);
+        }
+        let resp = req.send().await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp.json::<T>().await?);
+        }
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(ClientError::Unauthorized);
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(ClientError::Status {
+            status: status.as_u16(),
+            body,
+        })
+    }
+
+    /// Issue an authenticated `DELETE` for `path`, discarding the (typically
+    /// empty) response body. Any 2xx — including `202 Accepted` and `204 No
+    /// Content` — is success; error mapping matches [`get_json`](Self::get_json).
+    async fn delete(&self, path: &str) -> Result<(), ClientError> {
+        let mut req = self.http.delete(format!("{}{path}", self.base_url));
+        if let Some(token) = &self.token {
+            req = req.bearer_auth(token);
+        }
+        let resp = req.send().await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
         }
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(ClientError::Unauthorized);
