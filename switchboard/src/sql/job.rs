@@ -1267,11 +1267,16 @@ pub async fn finalize_terminated(
 /// terminal record carries `reason` (e.g. `execution_timeout` / `user_canceled`)
 /// rather than a workload-driven one.
 ///
-/// Records only the reason and `terminated_at`, clears the assignment columns,
-/// and releases `hosts.current_job`. The orthogonal `task_exit_status` /
-/// `exit_message` are left untouched. Unlike
+/// Records only the reason and `terminated_at` and clears the assignment columns.
+/// The orthogonal `task_exit_status` / `exit_message` are left untouched. Unlike
 /// [`finalize_dropped_and_maybe_restart`], the restart policy is **not** applied:
 /// a deliberate stop is not retried.
+///
+/// `hosts.current_job` is **not** released here (see [`finalize_terminated`] for
+/// the rationale): this is a pure job-row transition, and reconcile owns the
+/// host-pointer release — releasing it directly when it observes the supervisor
+/// no longer holds the job, or via the `finalized` rows once it does. Returns
+/// `true` iff this call performed the transition.
 ///
 /// **Idempotent.** Guarded on `job_state <> 'finalized'`, so a replay is a no-op
 /// (returns `false`).
@@ -1280,7 +1285,6 @@ pub async fn finalize_terminated(
 /// covers it.
 pub async fn finalize_with_reason(
     job_id: Uuid,
-    host_id: Uuid,
     reason: SqlTerminationReason,
     at: DateTime<Utc>,
     txn: &mut Transaction<'_, Postgres>,
@@ -1305,25 +1309,7 @@ pub async fn finalize_with_reason(
     .fetch_optional(&mut **txn)
     .await?;
 
-    // Some earlier pass already finalized this job: nothing left to do.
-    if transitioned.is_none() {
-        return Ok(false);
-    }
-
-    // Release the host's assignment pointer.
-    sqlx::query!(
-        r#"
-        update tml_switchboard.hosts
-        set current_job = null
-        where host_id = $1 and current_job = $2
-        "#,
-        host_id,
-        job_id,
-    )
-    .execute(&mut **txn)
-    .await?;
-
-    Ok(true)
+    Ok(transitioned.is_some())
 }
 
 /// Map a supervisor-reported [`JobErrorKind`] to the terminal
@@ -1356,12 +1342,17 @@ pub fn termination_reason_for_job_error(kind: &JobErrorKind) -> SqlTerminationRe
 /// within the caller's transaction. Backs the event path's error handling:
 /// records the terminal `termination_reason` (see
 /// [`termination_reason_for_job_error`]) and the error's `description` as
-/// `exit_message`, clears the assignment columns, and releases
-/// `hosts.current_job`. The orthogonal `task_exit_status` is left untouched (the
-/// protocol keeps the *why-it-stopped* and the *workload outcome* separate).
+/// `exit_message`, and clears the assignment columns. The orthogonal
+/// `task_exit_status` is left untouched (the protocol keeps the *why-it-stopped*
+/// and the *workload outcome* separate).
 ///
-/// Unlike [`finalize_dropped_and_maybe_restart`], the restart policy is **not**
-/// applied: a supervisor-reported job error is recorded terminally.
+/// `hosts.current_job` is **not** released here (see [`finalize_terminated`] for
+/// the rationale): an `Error` is reported out-of-band, before the supervisor's
+/// terminal `Terminated` transition, so the assignment is kept and released later
+/// by reconcile's `finalized` rows once the supervisor reports the job gone — the
+/// sticky-host recovery path. Unlike [`finalize_dropped_and_maybe_restart`], the
+/// restart policy is **not** applied: a supervisor-reported job error is recorded
+/// terminally.
 ///
 /// **Idempotent.** Guarded on `job_state <> 'finalized'`, so a replay is a no-op
 /// (returns `false`).
@@ -1372,12 +1363,10 @@ pub fn termination_reason_for_job_error(kind: &JobErrorKind) -> SqlTerminationRe
 /// [`SupervisorJobEvent::Error`]: treadmill_rs::api::switchboard_supervisor::SupervisorJobEvent::Error
 pub async fn finalize_errored(
     job_id: Uuid,
-    host_id: Uuid,
     reason: SqlTerminationReason,
     message: Option<String>,
     at: DateTime<Utc>,
     txn: &mut Transaction<'_, Postgres>,
-    unassign_from_host: bool,
 ) -> Result<bool, sqlx::Error> {
     let transitioned = sqlx::query!(
         r#"
@@ -1401,27 +1390,7 @@ pub async fn finalize_errored(
     .fetch_optional(&mut **txn)
     .await?;
 
-    // Some earlier pass already finalized this job: nothing left to do.
-    if transitioned.is_none() {
-        return Ok(false);
-    }
-
-    // Release the host's assignment pointer.
-    if unassign_from_host {
-        sqlx::query!(
-            r#"
-            update tml_switchboard.hosts
-            set current_job = null
-            where host_id = $1 and current_job = $2
-            "#,
-            host_id,
-            job_id,
-        )
-        .execute(&mut **txn)
-        .await?;
-    }
-
-    Ok(true)
+    Ok(transitioned.is_some())
 }
 
 /// Record the supervisor's *task outcome* for a job it is currently assigned to
@@ -1468,9 +1437,23 @@ pub async fn set_task_outcome(
     Ok(updated.is_some())
 }
 
+/// Finalize a job the supervisor dropped (`termination_reason = host_dropped_job`)
+/// and, if its restart policy allows, enqueue a successor with one fewer restart;
+/// returns the successor's id when one was created.
+///
+/// `hosts.current_job` is **not** released here (see [`finalize_terminated`] for
+/// the rationale): this is a pure job-row transition, and reconcile owns the
+/// host-pointer release. Reconcile only drops a job when it has already observed
+/// the supervisor no longer holds it (an `Idle` report, or a different job), so
+/// it releases the pointer directly at those sites.
+///
+/// **Idempotent.** Guarded on `job_state <> 'finalized'`, so a replay neither
+/// re-finalizes nor double-enqueues a successor (returns `None`).
+///
+/// Must be called inside the worker's `with_txn` so the takeover/staleness guard
+/// covers it.
 pub async fn finalize_dropped_and_maybe_restart(
     job_id: Uuid,
-    host_id: Uuid,
     at: DateTime<Utc>,
     txn: &mut Transaction<'_, Postgres>,
 ) -> Result<Option<Uuid>, sqlx::Error> {
@@ -1503,19 +1486,6 @@ pub async fn finalize_dropped_and_maybe_restart(
     if transitioned.is_none() {
         return Ok(None);
     }
-
-    // Release the host's assignment pointer.
-    sqlx::query!(
-        r#"
-        update tml_switchboard.hosts
-        set current_job = null
-        where host_id = $1 and current_job = $2
-        "#,
-        host_id,
-        job_id,
-    )
-    .execute(&mut **txn)
-    .await?;
 
     // Honor the restart policy: enqueue a successor with one fewer restart.
     let remaining = predecessor.sql_restart_policy.remaining_restart_count;
