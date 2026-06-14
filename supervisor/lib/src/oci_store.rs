@@ -629,7 +629,7 @@ mod tests {
             .stderr(Stdio::null())
             .status()
             .expect("run skopeo");
-        assert!(status.success(), "skopeo copy into zot failed");
+        assert!(status.success(), "skopeo copy into zot failed: {status:?}",);
     }
 
     /// Manifest digest of the fixture, read from its layout index.
