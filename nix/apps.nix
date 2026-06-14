@@ -326,7 +326,7 @@ _: {
               '{"(127.0.0.1,22)","([::1],22)"}', null
             ) on conflict do nothing;
           insert into tml_switchboard.api_tokens
-            (token_id, token, user_id, canceled, created_at, expires_at)
+            (token_id, token, user_id, revoked, created_at, expires_at)
             values (
               '3be73eea-192f-46c0-af01-92f574290c81',
               '\x075a32da4a35c1574629bbca73ff5d2a2ee081960b4cbcdd9b602ce02595d797f2bb3bc7b1b0503af9cdfbf46907b3af5498d162195d952638885b0d66ae57a4ef1f5e2a9137a3bf827fa73f9700d49ea8c767768d5df64c6cda853640419505c08b08d753327be26eb3decbd5efa5dceff4c81b7fb32c2824517091454e157f',
