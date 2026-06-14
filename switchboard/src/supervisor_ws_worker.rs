@@ -347,9 +347,10 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     ///
     /// Let `J_sb = hosts.current_job`, `S = its job_state`, and `J_sup` = the
     /// reported `OngoingJob` id, if any. The convergence table, split by `S`
-    /// because a never-started (`scheduled`) and a was-running
-    /// (`initializing`/`ready`/`terminating`) job mean opposite things when the
-    /// supervisor is `Idle`:
+    /// because a never-started (`scheduled`), a was-running
+    /// (`initializing`/`ready`/`terminating`), and an already-terminal
+    /// (`finalized`) job each mean something different when the supervisor is
+    /// `Idle`:
     ///
     /// | `J_sb` (state)     | Supervisor reports     | Resolution |
     /// |--------------------|------------------------|------------|
@@ -361,6 +362,24 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// | `(J, running)`     | `Idle`                 | dropped → finalize `host_dropped_job` (+ `RestartPolicy`) |
     /// | `(J, running)`     | `OngoingJob(J)`        | adopt reported `job_state`; a `Terminated` finalizes + `StopJob(J)` ack |
     /// | `(J, running)`     | `OngoingJob(J'≠J)`     | finalize `J` dropped (+ `RestartPolicy`); `StopJob(J')` |
+    /// | `(J, finalized)`   | `Idle`                 | terminal, host released it → clear assignment |
+    /// | `(J, finalized)`   | `OngoingJob(J)`        | terminal, host still retains the record → `StopJob(J)` ack; **keep** the assignment until the host reports it gone |
+    /// | `(J, finalized)`   | `OngoingJob(J'≠J)`     | terminal, host has moved on → clear assignment; `StopJob(J')` |
+    ///
+    /// # The `finalized` rows: sticky-host recovery
+    ///
+    /// A job can be `finalized` while `hosts.current_job` still points at it: a
+    /// job that errors or is canceled finalizes terminally, but the host pointer
+    /// is only released once the host reports the job gone (a `Terminated`
+    /// transition, or — via these rows — a reconcile that observes it gone). If
+    /// the host never follows up (e.g. it errors out without reporting
+    /// `Terminated`), the assignment would otherwise stay stuck forever. These
+    /// rows recover from that: the job row is already terminal, so reconcile
+    /// **never** re-finalizes it, adopts a running state over it (which would
+    /// un-finalize the row), or applies the restart policy — it only drives the
+    /// supervisor to drop the job (`StopJob`) and releases the pointer once the
+    /// reported status confirms the supervisor no longer holds it. The column
+    /// thus stays a faithful mirror of the supervisor's actual assignment.
     ///
     /// # Idempotence
     ///
@@ -423,6 +442,50 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     // (and a same-id report) means.
                     Some(id) => {
                         let job = sql::job::fetch_by_job_id(id, &mut **txn).await?;
+
+                        // Finalized-but-still-assigned: the job reached a terminal
+                        // state out-of-band (e.g. finalized via a
+                        // `SupervisorJobEvent::Error`, or a `Terminated` whose ack
+                        // is still in flight) but the host pointer was never
+                        // released. The job row is already terminal, so we never
+                        // re-finalize, adopt a running state (which would
+                        // un-finalize it), or apply the restart policy: we only
+                        // drive the supervisor to drop the job and release the
+                        // pointer once the report confirms it is gone, keeping the
+                        // column a faithful mirror of the supervisor (see the
+                        // `finalized` rows in the convergence table above).
+                        if job.job_state() == SqlJobState::Finalized {
+                            return Ok(match reported {
+                                // The supervisor confirms it no longer holds the
+                                // job: now (and only now) release the pointer.
+                                ReportedSupervisorStatus::Idle => {
+                                    sql::host::release_job_assignment(host_id, id, txn).await?;
+                                    None
+                                }
+
+                                // The supervisor still reports *our* job — in any
+                                // state, including a retained `Terminated` record.
+                                // `StopJob`-ack to make it drop the record, but
+                                // keep the assignment until it reports gone.
+                                ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. }
+                                    if j_sup == id =>
+                                {
+                                    Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                                        job_id: id,
+                                    }))
+                                }
+
+                                // The supervisor reports a *different* job: ours is
+                                // demonstrably gone from the host, so release our
+                                // pointer; the reported one is an unassigned zombie.
+                                ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. } => {
+                                    sql::host::release_job_assignment(host_id, id, txn).await?;
+                                    Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                                        job_id: j_sup,
+                                    }))
+                                }
+                            });
+                        }
 
                         // Stop pre-check: should this assigned job be stopped for
                         // a switchboard-side reason (execution timeout or user
@@ -1286,6 +1349,41 @@ mod tests {
             .execute(pool)
             .await?;
         Ok(())
+    }
+
+    /// Insert a job already in the terminal `finalized` state and point
+    /// `host_id.current_job` at it, reproducing the "finalized but still
+    /// assigned" stuck state: the job is terminal (so `dispatched_on_host_id` is
+    /// null per the `dispatched_host_iso_assigned` invariant, and
+    /// `termination_reason`/`terminated_at` are set per the finalized CHECKs) yet
+    /// the host pointer was never released. This is the state a job lands in when
+    /// it finalizes (e.g. via a `SupervisorJobEvent::Error`) but the host never
+    /// reports the `Terminated` transition that normally clears the assignment.
+    async fn insert_finalized_assigned_job(
+        pool: &PgPool,
+        token_id: Uuid,
+        host_id: Uuid,
+    ) -> anyhow::Result<Uuid> {
+        let job_id = Uuid::new_v4();
+        sqlx::query(
+            "insert into tml_switchboard.jobs \
+             (job_id, resume_job_id, restart_job_id, image_digest, image_group_digest, ssh_keys, \
+              restart_policy, enqueued_by_token_id, host_tag_requirements, job_timeout, job_state, \
+              initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
+              termination_reason, task_exit_status, exit_message, terminated_at, last_updated_at) \
+             values \
+             ($1, null, null, $2, null, '{}'::text[], row(0)::tml_switchboard.restart_policy, \
+              $3, '{}'::text[], interval '1 hour', 'finalized', null, \
+              now(), null, null, null, \
+              'workload_exited', null, null, now(), default)",
+        )
+        .bind(job_id)
+        .bind(format!("sha256:{}", "0".repeat(64)))
+        .bind(token_id)
+        .execute(pool)
+        .await?;
+        set_current_job(pool, host_id, Some(job_id)).await?;
+        Ok(job_id)
     }
 
     /// Read back `hosts.current_job`.
@@ -2256,6 +2354,275 @@ mod tests {
             SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, reported),
             other => panic!("case 5: expected StopJob, got {other:?}"),
         }
+        Ok(())
+    }
+
+    // -- finalized-but-still-assigned (sticky-host recovery) ----------------
+    //
+    // A job can be `finalized` while `hosts.current_job` still points at it (the
+    // job finalized out-of-band but the host never reported the `Terminated`
+    // that releases the assignment). These pin down the `finalized` rows of the
+    // convergence table: reconcile must release the pointer only once the report
+    // confirms the supervisor no longer holds the job, must never re-finalize or
+    // un-finalize the terminal row, and must never enqueue a restart successor.
+
+    /// Finalized + the supervisor reports `Idle`: the host has released the job,
+    /// so reconcile clears the assignment. The terminal row is untouched (no
+    /// re-finalize, no restart successor) and no command is emitted.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_finalized_idle_releases_assignment(pool: PgPool) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_finalized_assigned_job(&pool, token_id, host_id).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        worker.last_seen_status = Some(ReportedSupervisorStatus::Idle);
+        worker
+            .reconcile()
+            .await
+            .expect("finalized + idle reconcile should succeed");
+
+        assert_eq!(
+            current_job_of(&pool, host_id).await?,
+            None,
+            "finalized + idle: the stuck assignment must be released"
+        );
+        assert_eq!(
+            job_state_of(&pool, job_id).await?,
+            "finalized",
+            "finalized + idle: the terminal row must stay finalized"
+        );
+        assert_eq!(
+            termination_reason_of(&pool, job_id).await?.as_deref(),
+            Some("workload_exited"),
+            "finalized + idle: the original termination reason must be preserved"
+        );
+        let job_count: i64 = sqlx::query_scalar("select count(*) from tml_switchboard.jobs")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(
+            job_count, 1,
+            "finalized + idle: releasing a terminal job must not enqueue a restart"
+        );
+        assert!(
+            from_worker.try_recv().is_err(),
+            "finalized + idle: no command should be emitted"
+        );
+        Ok(())
+    }
+
+    /// Finalized + the supervisor still reports *this* job in a *running* state:
+    /// this is the un-finalize hole. Reconcile must NOT adopt the running state
+    /// (which would rewrite `job_state` back to a live value); it must keep the
+    /// row finalized, retain the assignment, and `StopJob`-ack to drive teardown.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_finalized_same_running_does_not_unfinalize(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_finalized_assigned_job(&pool, token_id, host_id).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        // The supervisor reports our finalized job as still *running*.
+        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+            job_id,
+            job_state: RunningJobState::Ready,
+        });
+        worker
+            .reconcile()
+            .await
+            .expect("finalized + same-running reconcile should succeed");
+
+        assert_eq!(
+            job_state_of(&pool, job_id).await?,
+            "finalized",
+            "finalized + same-running: the terminal row must NOT be un-finalized"
+        );
+        assert_eq!(
+            current_job_of(&pool, host_id).await?,
+            Some(job_id),
+            "finalized + same-running: keep the assignment until the host reports gone"
+        );
+        match decode_outbound(
+            from_worker
+                .try_recv()
+                .expect("finalized + same-running: a StopJob ack should be emitted"),
+        ) {
+            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
+            other => panic!("finalized + same-running: expected StopJob, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// Finalized + the supervisor reports *this* job as a retained `Terminated`
+    /// record: `StopJob`-ack so the supervisor drops it, but keep the assignment
+    /// until it reports gone. The terminal row is untouched.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_finalized_same_terminated_acks_keeps_assignment(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_finalized_assigned_job(&pool, token_id, host_id).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+            job_id,
+            job_state: RunningJobState::Terminated,
+        });
+        worker
+            .reconcile()
+            .await
+            .expect("finalized + same-terminated reconcile should succeed");
+
+        assert_eq!(job_state_of(&pool, job_id).await?, "finalized");
+        assert_eq!(
+            current_job_of(&pool, host_id).await?,
+            Some(job_id),
+            "finalized + same-terminated: keep the assignment until the host reports gone"
+        );
+        match decode_outbound(
+            from_worker
+                .try_recv()
+                .expect("finalized + same-terminated: a StopJob ack should be emitted"),
+        ) {
+            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
+            other => panic!("finalized + same-terminated: expected StopJob, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// Finalized + the supervisor reports a *different* job: ours is gone from the
+    /// host, so release our pointer; the reported job is an unassigned zombie to
+    /// `StopJob`. The terminal row is untouched.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_finalized_foreign_releases_and_stops(pool: PgPool) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_finalized_assigned_job(&pool, token_id, host_id).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        let foreign = Uuid::new_v4();
+        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+            job_id: foreign,
+            job_state: RunningJobState::Ready,
+        });
+        worker
+            .reconcile()
+            .await
+            .expect("finalized + foreign reconcile should succeed");
+
+        assert_eq!(
+            current_job_of(&pool, host_id).await?,
+            None,
+            "finalized + foreign: our gone job's assignment must be released"
+        );
+        assert_eq!(
+            job_state_of(&pool, job_id).await?,
+            "finalized",
+            "finalized + foreign: the terminal row must stay finalized"
+        );
+        match decode_outbound(
+            from_worker
+                .try_recv()
+                .expect("finalized + foreign: a StopJob for the foreign zombie should be emitted"),
+        ) {
+            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, foreign),
+            other => panic!("finalized + foreign: expected StopJob, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// End-to-end sticky-host recovery: an `Error` event finalizes the job but
+    /// (by protocol) leaves the assignment in place awaiting a `Terminated` that
+    /// never comes. A later reconcile that observes the supervisor `Idle` must
+    /// release the now-stuck assignment — the exact bug this fix closes.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reconcile_recovers_sticky_host_after_error_without_terminated(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        // The supervisor reports a fatal job error: the job finalizes but the
+        // assignment is deliberately kept (awaiting a `Terminated` follow-up).
+        worker
+            .handle_supervisor_event(SupervisorEvent::JobEvent {
+                job_id,
+                event: SupervisorJobEvent::Error {
+                    error: JobError {
+                        error_kind: JobErrorKind::ImageNotFound,
+                        description: "manifest missing".to_string(),
+                    },
+                },
+            })
+            .await
+            .expect("error event should be handled");
+        assert_eq!(job_state_of(&pool, job_id).await?, "finalized");
+        assert_eq!(
+            current_job_of(&pool, host_id).await?,
+            Some(job_id),
+            "an Error finalize keeps the assignment (awaiting Terminated)"
+        );
+
+        // The host never sends `Terminated`; it simply reports `Idle` on the next
+        // status round trip. Reconcile must release the stuck assignment.
+        worker.last_seen_status = Some(ReportedSupervisorStatus::Idle);
+        worker
+            .reconcile()
+            .await
+            .expect("recovery reconcile should succeed");
+
+        assert_eq!(
+            current_job_of(&pool, host_id).await?,
+            None,
+            "reconcile must release the assignment a missing Terminated left stuck"
+        );
+        assert_eq!(
+            job_state_of(&pool, job_id).await?,
+            "finalized",
+            "recovery must not disturb the already-terminal row"
+        );
+        let job_count: i64 = sqlx::query_scalar("select count(*) from tml_switchboard.jobs")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(
+            job_count, 1,
+            "recovery must not enqueue a restart successor"
+        );
+        assert!(
+            from_worker.try_recv().is_err(),
+            "recovery on an Idle report emits no command"
+        );
         Ok(())
     }
 

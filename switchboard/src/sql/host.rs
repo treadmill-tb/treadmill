@@ -234,6 +234,40 @@ pub async fn fetch_current_job(
     .map(|record| record.current_job)
 }
 
+/// Release a host's job assignment pointer (`hosts.current_job = NULL`), guarded
+/// on it still pointing at `job_id`.
+///
+/// Unlike the `sql::job::finalize_*` helpers, this does **not** touch the job
+/// row: it is for the case where the job is *already* finalized but the host
+/// pointer was never released — the job reached a terminal state out-of-band
+/// (e.g. finalized via a `SupervisorJobEvent::Error`, or a normal `Terminated`
+/// whose ack is still in flight) and the supervisor has since confirmed it no
+/// longer holds the job. Reconcile calls this only once the reported status
+/// shows the job is gone, so `hosts.current_job` stays a faithful mirror of what
+/// the supervisor actually holds.
+///
+/// Idempotent: the `current_job = job_id` guard makes a replay a no-op and
+/// prevents clobbering a newer assignment. Must run inside the worker's
+/// `with_txn` guard (like the other host mutators here).
+pub async fn release_job_assignment(
+    host_id: Uuid,
+    job_id: Uuid,
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"
+        UPDATE tml_switchboard.hosts
+        SET current_job = NULL
+        WHERE host_id = $1 AND current_job = $2
+        "#,
+        host_id,
+        job_id,
+    )
+    .execute(&mut **txn)
+    .await
+    .map(|_| ())
+}
+
 /// Refresh the host's liveness heartbeat (`last_seen_at = now()`).
 ///
 /// Call this only from inside the worker's `with_txn` guard, so the staleness
