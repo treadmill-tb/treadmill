@@ -19,36 +19,18 @@
         # registry-backed tests (see nix/pkgs/zot.nix).
         inherit (cmn) zot;
 
-        tml = cmn.mkBin {
-          group = cmn.groups.cli;
-          bin = "tml";
-        };
+        tml = cmn.mkBin { bin = "tml"; };
 
-        swx = cmn.mkBin {
-          group = cmn.groups.switchboard;
-          bin = "swx";
-        };
+        swx = cmn.mkBin { bin = "swx"; };
 
-        tml-console = cmn.mkBin {
-          group = cmn.groups.console;
-          bin = "tml-console";
-        };
+        tml-console = cmn.mkBin { bin = "tml-console"; };
 
-        treadmill-qemu-supervisor = cmn.mkBin {
-          group = cmn.groups.supervisors;
-          bin = "treadmill-qemu-supervisor";
-        };
+        treadmill-qemu-supervisor = cmn.mkBin { bin = "treadmill-qemu-supervisor"; };
 
-        treadmill-nbd-netboot-supervisor = cmn.mkBin {
-          group = cmn.groups.supervisors;
-          bin = "treadmill-nbd-netboot-supervisor";
-        };
+        treadmill-nbd-netboot-supervisor = cmn.mkBin { bin = "treadmill-nbd-netboot-supervisor"; };
       }
       // lib.optionalAttrs isLinux {
-        tml-puppet = cmn.mkBin {
-          group = cmn.groups.puppet;
-          bin = "tml-puppet";
-        };
+        tml-puppet = cmn.mkBin { bin = "tml-puppet"; };
       };
     };
 }

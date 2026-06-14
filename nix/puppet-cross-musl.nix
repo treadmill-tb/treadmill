@@ -37,7 +37,7 @@
           # Same per-crate fileset as the native crane build: workspace
           # skeleton + puppet/, treadmill-rs/, control-socket/tcp/client/.
           # Editing other workspace crates won't invalidate this build.
-          src = cmn.groups.puppet.binSrcs.tml-puppet;
+          src = cmn.binSrcs.tml-puppet;
           buildAndTestSubdir = "puppet";
 
           cargoLock.lockFile = ../Cargo.lock;

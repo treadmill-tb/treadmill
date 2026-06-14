@@ -52,13 +52,13 @@
         );
 
         # Run the workspace test suite via cargo-nextest. Scoped to
-        # `--workspace` (NOT `--all-targets`): the per-binary `mkBin`
-        # derivations already build `--bins` against their correctly-scoped
-        # per-group deps layer, and `--all-targets` here would re-build them
-        # against the union-feature `workspaceDeps`, defeating the per-group
-        # split. `--no-tests=pass` keeps this green while the workspace has
-        # no `#[test]` targets yet; remove it once tests exist and you'd
-        # rather a crate accidentally losing all its tests be a CI failure.
+        # `--workspace` (NOT `--all-targets`): the binaries are built
+        # separately by `mkBin` against the shared `binDeps` layer, so there's
+        # no need to rebuild them here against the dev-dep-carrying
+        # `workspaceDeps`. `--no-tests=pass` keeps this green while the
+        # workspace has no `#[test]` targets yet; remove it once tests exist
+        # and you'd rather a crate accidentally losing all its tests be a CI
+        # failure.
         #
         # Tests that need external services (e.g. a Postgres for switchboard)
         # will need wiring here — see `switchboard-migrations-consistency`

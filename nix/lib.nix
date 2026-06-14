@@ -45,11 +45,13 @@ let
   allMembers =
     (builtins.fromTOML (builtins.readFile (workspaceRoot + "/Cargo.toml"))).workspace.members;
 
-  # Empty `src/lib.rs` stubs for every workspace member NOT in `included`.
-  # Cargo requires each member to declare at least one target; for crates
-  # outside this bin's path-dep closure we just need *something*. Stubs are
-  # bytewise identical and cover only excluded members, so they don't
-  # collide with real source files and never invalidate the bin cache.
+  # Stub sources for every workspace member NOT in `included`. Cargo requires
+  # each member to declare at least one target; since bins are built with
+  # `--workspace` (so all members are *selected*), a stub must also satisfy any
+  # member declaring an explicit `[[bin]] path = "src/main.rs"` (cli, puppet) —
+  # hence both stubs. Neither is ever compiled (the build is `--bin <name>`);
+  # they only need to exist. Stubs cover only excluded members, so they never
+  # collide with real sources or invalidate the bin cache.
   mkWorkspaceStubs =
     included:
     let
@@ -59,7 +61,7 @@ let
       mkdir -p $out
       ${lib.concatMapStringsSep "\n" (m: ''
         mkdir -p $out/${m}/src
-        touch $out/${m}/src/lib.rs
+        touch $out/${m}/src/lib.rs $out/${m}/src/main.rs
       '') excluded}
     '';
 
@@ -152,137 +154,72 @@ let
     ];
   };
 
-  pFlagsFor = crates: lib.concatMapStringsSep " " (c: "-p ${c}") crates;
-
-  # Multiple dependency-only derivations for diverging feature graphs.
-  #
-  # The dependency layer caching is not very effective for diverging feature
-  # graphs; cargo will re-built a large portion of the dependency graph for
-  # crates that don't share their features with the cumulative feature set of
-  # the workspace.
-  #
-  # To counter this, we make sure that workspace crates with divergent feature
-  # graphs (switchboard's console-subscriber + sqlx, cli's reqwest + ssh2,
-  # puppet's zbus) get their own deps layer; the three supervisors share one.
-  #
-  # Each binary build is invoked with the same `-p` selection as its group's
-  # deps layer plus `--bin <name>`, so cargo's feature unification matches and
-  # the cached dep artifacts are reused verbatim. `doCheck = false +
-  # cargoCheckExtraArgs = ""` keep dev-deps and `--all-targets` out of the graph
-  # for the same reason, the bin build doesn't activate them either.
-  mkGroupDeps =
-    name: crates:
-    craneLib.buildDepsOnly (
-      cargoCommonArgs
-      // {
-        src = depsSrc;
-        pname = "treadmill-${name}";
-        cargoExtraArgs = "--locked ${pFlagsFor crates}";
-        doCheck = false;
-        cargoCheckExtraArgs = "";
-      }
-    );
-
-  # `bins` maps each binary name to the workspace members (relative paths
-  # under workspaceRoot) whose sources that bin's compile touches: its own
-  # crate dir + every transitive path-dep. `extra` is for non-Rust inputs
-  # (e.g. sqlx data) shared across the group. Each entry yields a
-  # `binSrcs.<bin>` source containing workspace skeleton + included member
-  # sources + empty `src/lib.rs` stubs for every other member (so cargo's
-  # "every workspace member needs a target" check is satisfied without
-  # pulling in their real source). Editing a sibling bin in the same group
-  # therefore doesn't invalidate this one. The deps layer is still shared
-  # per group: it's invoked with `-p` for every group crate, so its feature
-  # unification (and the cached dep artifacts) match every bin build in the
-  # group.
-  mkGroup =
+  # Each bin maps to the workspace members (relative paths under workspaceRoot)
+  # whose sources its compile touches: its own crate + every transitive
+  # path-dep. `extra` carries non-Rust inputs (e.g. sqlx data) baked into the
+  # build. Everything else is stubbed (see mkWorkspaceStubs), so editing a
+  # sibling bin never invalidates this one.
+  binSources =
+    let
+      supervisorShared = [
+        "treadmill-rs"
+        "control-socket/tcp/server"
+        "connector/ws"
+        "supervisor/lib"
+      ];
+    in
     {
-      name,
-      crates,
-      bins,
-      extra ? [ ],
-    }:
-    {
-      inherit crates;
-      deps = mkGroupDeps name crates;
-      binSrcs = lib.mapAttrs (
-        binName: members:
-        mkBinSrc {
-          name = binName;
-          inherit members extra;
-        }
-      ) bins;
-    };
-
-  groups = {
-    cli = mkGroup {
-      name = "cli";
-      crates = [ "treadmill-cli" ];
-      bins.tml = [
+      tml.members = [
         "cli"
         "treadmill-rs"
       ];
-    };
-
-    switchboard = mkGroup {
-      name = "switchboard";
-      crates = [ "treadmill-switchboard" ];
       # `swx` can embed the web console, so its compile touches the console
       # crate too (and treadmill-rs, which both share).
-      bins.swx = [
-        "switchboard"
-        "treadmill-rs"
-        "console"
-      ];
-      extra = [ switchboardData ];
-    };
-
-    console = mkGroup {
-      name = "console";
-      crates = [ "treadmill-console" ];
-      # The console's stylesheet is embedded in its Rust sources, so the bin's
-      # compile touches only its own crate and treadmill-rs (built with the
-      # `client` feature); no extra data fileset is needed.
-      bins.tml-console = [
+      swx = {
+        members = [
+          "switchboard"
+          "treadmill-rs"
+          "console"
+        ];
+        extra = [ switchboardData ];
+      };
+      tml-console.members = [
         "console"
         "treadmill-rs"
       ];
-    };
-
-    puppet = mkGroup {
-      name = "puppet";
-      crates = [ "treadmill-puppet" ];
-      bins.tml-puppet = [
+      tml-puppet.members = [
         "puppet"
         "treadmill-rs"
         "control-socket/tcp/client"
       ];
+      treadmill-qemu-supervisor.members = supervisorShared ++ [ "supervisor/qemu" ];
+      treadmill-nbd-netboot-supervisor.members = supervisorShared ++ [ "supervisor/nbd-netboot" ];
     };
 
-    supervisors =
-      let
-        shared = [
-          "treadmill-rs"
-          "control-socket/tcp/server"
-          "connector/ws"
-        ];
-        withLib = shared ++ [ "supervisor/lib" ];
-      in
-      mkGroup {
-        name = "supervisors";
-        crates = [
-          "treadmill-qemu-supervisor"
-          "treadmill-nbd-netboot-supervisor"
-        ];
-        bins = {
-          treadmill-qemu-supervisor = withLib ++ [ "supervisor/qemu" ];
-          treadmill-nbd-netboot-supervisor = withLib ++ [ "supervisor/nbd-netboot" ];
-        };
-      };
-  };
+  # Per-bin source derivation (skeleton + the bin's member sources + stubs for
+  # every other member). Consumed by mkBin and the cross-musl puppet build.
+  binSrcs = lib.mapAttrs (name: args: mkBinSrc ({ inherit name; } // args)) binSources;
 
-  # Workspace-wide deps layer for clippy / `cargo build --workspace` checks
-  # that legitimately span the whole graph. Not used by per-binary builds.
+  # Single dependency layer shared by every binary. Built with `--workspace` so
+  # cargo resolves the full feature union; each bin is then built with
+  # `--workspace --bin <name>`, which resolves that same union and reuses these
+  # artifacts verbatim — one deps build for all bins, no per-group rebuilds.
+  # `doCheck = false` + empty `cargoCheckExtraArgs` keep dev-deps/--all-targets
+  # out of the graph, matching what the `--bin` builds actually activate.
+  binDeps = craneLib.buildDepsOnly (
+    cargoCommonArgs
+    // {
+      src = depsSrc;
+      pname = "treadmill-bin-deps";
+      cargoExtraArgs = "--locked --workspace";
+      doCheck = false;
+      cargoCheckExtraArgs = "";
+    }
+  );
+
+  # Workspace-wide deps layer for clippy / nextest, which span the whole graph
+  # with `--all-targets` (so it includes dev-deps). Distinct from `binDeps`
+  # above, whose feature set omits them.
   workspaceDeps = craneLib.buildDepsOnly (
     cargoCommonArgs
     // {
@@ -292,7 +229,6 @@ let
 
   mkBin =
     {
-      group,
       bin,
       extraBuildInputs ? [ ],
       extraEnv ? { },
@@ -300,10 +236,10 @@ let
     craneLib.buildPackage (
       cargoCommonArgs
       // {
-        src = group.binSrcs.${bin};
+        src = binSrcs.${bin};
         pname = bin;
-        cargoArtifacts = group.deps;
-        cargoExtraArgs = "--locked ${pFlagsFor group.crates} --bin ${bin}";
+        cargoArtifacts = binDeps;
+        cargoExtraArgs = "--locked --workspace --bin ${bin}";
         buildInputs = cargoCommonArgs.buildInputs ++ extraBuildInputs;
         doCheck = false;
       }
@@ -319,7 +255,7 @@ in
     craneLib
     src
     cargoCommonArgs
-    groups
+    binSrcs
     mkBin
     workspaceDeps
     zot
