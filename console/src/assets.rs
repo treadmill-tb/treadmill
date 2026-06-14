@@ -163,6 +163,65 @@ section.card.console-placeholder {
 }
 section.card.console-placeholder .muted { color: #8b949e; }
 
+/* Dispatch form. */
+.form-error {
+  border: 1px solid #e5b3b0;
+  background: #fdecea;
+  color: #b3261e;
+  border-radius: var(--radius);
+  padding: 0.6rem 0.9rem;
+  margin: 0 0 1rem;
+}
+.form-field { margin: 0 0 0.9rem; }
+.form-field label {
+  display: block;
+  color: var(--muted);
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.form-field input,
+.form-field select { min-width: 18rem; max-width: 100%; }
+input[type="text"], input[type="number"], select {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+  flex-wrap: wrap;
+}
+.row input[type="text"] { flex: 1; min-width: 12rem; }
+.secret-toggle { color: var(--muted); white-space: nowrap; }
+.button.row-add, .button.row-remove {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+.target {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.target-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
 /* Login page: a vertical stack of provider buttons. */
 .login-options {
   display: flex;

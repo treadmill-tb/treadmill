@@ -27,6 +27,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/users/{id}", get(me::user))
         // job pages
         .route("/jobs", get(jobs::list))
+        .route("/jobs/new", get(jobs::new_form).post(jobs::dispatch))
         .route("/jobs/{id}", get(jobs::show))
         .route("/jobs/{id}/terminate", post(jobs::terminate))
         // assets
