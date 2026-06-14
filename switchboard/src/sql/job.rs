@@ -856,6 +856,95 @@ pub async fn finalize_unscheduled_as_image_error(
     Ok(row.is_some())
 }
 
+/// Outcome of a user-requested job cancellation (`DELETE /jobs/{id}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelOutcome {
+    /// The job was still `queued` (on no host) and was finalized as
+    /// `user_canceled` immediately.
+    FinalizedNow,
+    /// The job was dispatched; `cancel_requested_at` was set and the owning
+    /// host's worker will converge (StopJob, then finalize).
+    SignalRequested,
+    /// The job was already finalized (or gone); nothing to do.
+    AlreadyFinalized,
+}
+
+/// Request cancellation of a job, within the caller's transaction.
+///
+/// Locks the job row, then dispatches on its state:
+///   - `finalized` (or missing) → no-op ([`CancelOutcome::AlreadyFinalized`]);
+///   - `queued` → finalized as `user_canceled` now, since no host is involved
+///     ([`CancelOutcome::FinalizedNow`]);
+///   - otherwise (dispatched: `scheduled`/`initializing`/`ready`/`terminating`)
+///     → sets `cancel_requested_at` idempotently so the host's worker stops and
+///     finalizes it ([`CancelOutcome::SignalRequested`]).
+///
+/// The `for update` lock serializes against the scheduler's assignment (which
+/// also locks the job row), so the queued-vs-dispatched decision cannot race a
+/// concurrent placement.
+pub async fn request_cancel(
+    job_id: Uuid,
+    at: DateTime<Utc>,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<CancelOutcome, sqlx::Error> {
+    let state = sqlx::query_scalar!(
+        r#"select job_state as "state: SqlJobState"
+           from tml_switchboard.jobs
+           where job_id = $1
+           for update"#,
+        job_id,
+    )
+    .fetch_optional(&mut **txn)
+    .await?;
+
+    // The row vanished between the route's authz check and here (e.g. its owner
+    // was deleted): treat as already gone.
+    let Some(state) = state else {
+        return Ok(CancelOutcome::AlreadyFinalized);
+    };
+
+    match state {
+        SqlJobState::Finalized => Ok(CancelOutcome::AlreadyFinalized),
+        SqlJobState::Queued => {
+            // No host involved; finalize directly. The dispatch columns are
+            // already null on a queued job, satisfying the finalized invariants.
+            sqlx::query!(
+                r#"update tml_switchboard.jobs
+                   set job_state = 'finalized',
+                       termination_reason = 'user_canceled',
+                       task_exit_status = null,
+                       terminated_at = $2,
+                       last_updated_at = default
+                   where job_id = $1 and job_state = 'queued'"#,
+                job_id,
+                at,
+            )
+            .execute(&mut **txn)
+            .await?;
+            Ok(CancelOutcome::FinalizedNow)
+        }
+        SqlJobState::Scheduled
+        | SqlJobState::Initializing
+        | SqlJobState::Ready
+        | SqlJobState::Terminating => {
+            // Dispatched: leave the stop to the host's worker, which re-derives
+            // `switchboard_stop_reason` each reconcile pass. Idempotent: an
+            // already-set signal is preserved.
+            sqlx::query!(
+                r#"update tml_switchboard.jobs
+                   set cancel_requested_at = coalesce(cancel_requested_at, $2),
+                       last_updated_at = default
+                   where job_id = $1"#,
+                job_id,
+                at,
+            )
+            .execute(&mut **txn)
+            .await?;
+            Ok(CancelOutcome::SignalRequested)
+        }
+    }
+}
+
 // pub async fn fetch_all_queued(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJob>, sqlx::Error> {
 //     sqlx::query_as!(
 //         SqlJob,

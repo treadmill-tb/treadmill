@@ -189,6 +189,56 @@ pub async fn get_job(
     Ok(Json(info))
 }
 
+/// Axum handler for `DELETE /jobs/{id}` — request cancellation of a job.
+///
+/// Gated on the caller's `stop` permission (403 for unauthorized, including a
+/// nonexistent job). A still-`queued` job is finalized as `user_canceled`
+/// immediately; a dispatched job has its cancel signal recorded and the owning
+/// host's worker converges (issues StopJob, then finalizes). Returns `202
+/// Accepted` when a cancellation was initiated, or `204 No Content` when the job
+/// was already finalized (idempotent no-op).
+pub async fn cancel(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(job_id): Path<Uuid>,
+) -> Result<StatusCode, StatusCode> {
+    let authorized =
+        engine::can_access_job(state.pool(), subject.user_id(), job_id, JobPermission::Stop)
+            .await
+            .map_err(|e| {
+                tracing::error!("checking job stop access: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    if !authorized {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let mut txn = state.pool().begin().await.map_err(|e| {
+        tracing::error!("opening a transaction to cancel job {job_id}: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let outcome = job::request_cancel(job_id, Utc::now(), &mut txn)
+        .await
+        .map_err(|e| {
+            tracing::error!("requesting cancellation of job {job_id}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    txn.commit().await.map_err(|e| {
+        tracing::error!("committing cancellation of job {job_id}: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(match outcome {
+        // A cancellation was initiated: finalized now (queued) or the worker will
+        // converge (dispatched).
+        job::CancelOutcome::FinalizedNow | job::CancelOutcome::SignalRequested => {
+            StatusCode::ACCEPTED
+        }
+        // Already terminal: nothing to do.
+        job::CancelOutcome::AlreadyFinalized => StatusCode::NO_CONTENT,
+    })
+}
+
 /// Axum handler for `POST /jobs/{id}/log-token`.
 ///
 /// Mints a short-lived, subscribe-scoped NATS **bearer** token for tailing or

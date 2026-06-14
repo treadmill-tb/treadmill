@@ -71,6 +71,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JobInfo'
+    delete: {}
   /hosts/{id}/events:
     get:
       responses:

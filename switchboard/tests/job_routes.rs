@@ -404,6 +404,118 @@ async fn enqueue_honors_an_override_timeout(pool: PgPool) {
     assert_eq!(info.timeout_secs, 2 * 3600);
 }
 
+/// A job's `(job_state, termination_reason)` as enum text.
+async fn job_state_and_reason(pool: &PgPool, job_id: Uuid) -> (String, Option<String>) {
+    sqlx::query_as(
+        "select job_state::text, termination_reason::text \
+         from tml_switchboard.jobs where job_id = $1",
+    )
+    .bind(job_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn canceling_a_queued_job_finalizes_it(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // `bob` owns (and so may stop) a queued job.
+    let token = mock_login_token(&client, addr, "bob").await;
+    let bob = whoami(&client, addr, &token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+    let job_id = seed_job(
+        &pool,
+        bob,
+        token_id,
+        &Digest::from_sha256([8; 32]).encoded(),
+        &[],
+    )
+    .await;
+
+    let resp = client
+        .delete(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    // Queued: finalized synchronously, so a cancellation was initiated (202).
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+
+    let (state, reason) = job_state_and_reason(&pool, job_id).await;
+    assert_eq!(state, "finalized");
+    assert_eq!(reason.as_deref(), Some("user_canceled"));
+
+    // Idempotent: a second cancellation of the now-finalized job is a no-op.
+    let again = client
+        .delete(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(again.status(), reqwest::StatusCode::NO_CONTENT);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn canceling_without_stop_permission_is_forbidden(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // `bob` owns the job; `carol` holds no permission on it.
+    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let bob = whoami(&client, addr, &bob_token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+    let job_id = seed_job(
+        &pool,
+        bob,
+        token_id,
+        &Digest::from_sha256([10; 32]).encoded(),
+        &[],
+    )
+    .await;
+
+    let carol_token = mock_login_token(&client, addr, "carol").await;
+    let resp = client
+        .delete(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // The job is untouched.
+    let (state, _) = job_state_and_reason(&pool, job_id).await;
+    assert_eq!(state, "queued");
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn canceling_a_nonexistent_job_is_forbidden(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let token = mock_login_token(&client, addr, "bob").await;
+    let resp = client
+        .delete(format!("http://{addr}/api/v1/jobs/{}", Uuid::new_v4()))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn owner_reads_own_job_with_secret_redacted(pool: PgPool) {
