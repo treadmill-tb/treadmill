@@ -226,7 +226,7 @@ impl<S: connector::Supervisor> Inner<S> {
         let key_buf: [u8; 16] = rand::random();
         let base64_key = base64::prelude::BASE64_STANDARD.encode(key_buf);
         let uri = Uri::from_str(&format!(
-            "{}/api/v1/supervisors/{}/connect",
+            "{}/api/v1/hosts/{}/connect",
             self.config.switchboard_uri, self.supervisor_id,
         ))
         .map_err(|invalid_url| WsConnectorError::InvalidURL(invalid_url.to_string()))?;

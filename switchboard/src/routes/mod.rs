@@ -120,7 +120,7 @@ pub fn api_router() -> ApiRouter<AppState> {
         //  DELETE /supervisors/{id}
         //  GET /hosts/{id}/events
         .api_route("/hosts/{id}/events", get_with(hosts::list_events, |o| o))
-        //  GET /supervisors/{id}/connect
+        //  GET /hosts/{id}/connect
         // Note that the HTTP verb 'GET' here is not necessarily conformant with REST principles,
         // but is required by RFC6455 §4.1: "The method of the request MUST be GET" (regarding
         // WebSocket HTTP handshakes).
