@@ -249,6 +249,12 @@ impl Scheduler {
         }
 
         txn.commit().await?;
+
+        tracing::debug!(
+            %host_id,
+            %job_id,
+            "assigned job to host"
+        );
         Ok(AssignOutcome::Assigned)
     }
 }
