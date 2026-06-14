@@ -227,6 +227,27 @@ let
     }
   );
 
+  # Compile-once layer for the test checks: builds every workspace test binary
+  # (`--no-run`) on top of workspaceDeps and ships the resulting target/ as a
+  # cargoArtifacts layer. The nextest / nextest-db / integration checks consume
+  # it and only *run* a filtered subset, so the test binaries compile once
+  # instead of once per check. Every consumer selects `--workspace` so cargo's
+  # feature unification matches this layer and nothing recompiles.
+  testArtifacts = craneLib.mkCargoDerivation (
+    cargoCommonArgs
+    // {
+      pname = "treadmill-tests";
+      version = "0.1.0";
+      cargoArtifacts = workspaceDeps;
+      # `--cargo-profile release` matches what craneLib.cargoNextest injects in
+      # the consuming checks; without it the test binaries are built under the
+      # `test` profile and every check recompiles them.
+      buildPhaseCargoCommand = "cargo nextest run --cargo-profile release --workspace --no-run --no-tests=pass";
+      doInstallCargoArtifacts = true;
+      nativeBuildInputs = cargoCommonArgs.nativeBuildInputs ++ [ pkgs.cargo-nextest ];
+    }
+  );
+
   mkBin =
     {
       bin,
@@ -258,6 +279,7 @@ in
     binSrcs
     mkBin
     workspaceDeps
+    testArtifacts
     zot
     ;
 }

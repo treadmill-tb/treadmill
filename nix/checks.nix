@@ -69,7 +69,7 @@
           // {
             pname = "treadmill-nextest";
             version = "0.1.0";
-            cargoArtifacts = cmn.workspaceDeps;
+            cargoArtifacts = cmn.testArtifacts;
             cargoNextestExtraArgs = "--workspace --no-tests=pass";
             partitions = 1;
             partitionType = "count";
@@ -92,7 +92,7 @@
           // {
             pname = "treadmill-nextest-db";
             version = "0.1.0";
-            cargoArtifacts = cmn.workspaceDeps;
+            cargoArtifacts = cmn.testArtifacts;
             cargoNextestExtraArgs = "--workspace --run-ignored only --no-tests=pass";
             partitions = 1;
             partitionType = "count";
@@ -180,8 +180,8 @@
           // {
             pname = "treadmill-tiny-efi-image";
             version = "0.1.0";
-            cargoArtifacts = cmn.workspaceDeps;
-            cargoNextestExtraArgs = "-p treadmill-rs --no-tests=pass -E 'binary(tiny_efi)'";
+            cargoArtifacts = cmn.testArtifacts;
+            cargoNextestExtraArgs = "--workspace --no-tests=pass -E 'binary(tiny_efi)'";
             partitions = 1;
             partitionType = "count";
 
@@ -201,12 +201,12 @@
           // {
             pname = "treadmill-oci-store";
             version = "0.1.0";
-            cargoArtifacts = cmn.workspaceDeps;
+            cargoArtifacts = cmn.testArtifacts;
             # The leases-as-references tests also live in `oci_store::tests` but
             # drive GC and take tens of seconds each; they have their own `lease`
             # check below, so exclude them here.
             cargoNextestExtraArgs =
-              "-p treadmill-supervisor-lib --no-tests=pass "
+              "--workspace --no-tests=pass "
               + "-E 'test(oci_store) & !test(lease_pins_against_gc) & !test(parallel_ensure_present_while_pinned)'";
             partitions = 1;
             partitionType = "count";
@@ -238,9 +238,9 @@
           // {
             pname = "treadmill-lease";
             version = "0.1.0";
-            cargoArtifacts = cmn.workspaceDeps;
+            cargoArtifacts = cmn.testArtifacts;
             cargoNextestExtraArgs =
-              "-p treadmill-supervisor-lib --no-tests=pass "
+              "--workspace --no-tests=pass "
               + "-E 'test(lease_pins_against_gc) | test(parallel_ensure_present_while_pinned)'";
             partitions = 1;
             partitionType = "count";
@@ -268,8 +268,8 @@
           // {
             pname = "treadmill-chain-assembly";
             version = "0.1.0";
-            cargoArtifacts = cmn.workspaceDeps;
-            cargoNextestExtraArgs = "-p treadmill-supervisor-lib --no-tests=pass -E 'binary(chain_assembly)'";
+            cargoArtifacts = cmn.testArtifacts;
+            cargoNextestExtraArgs = "--workspace --no-tests=pass -E 'binary(chain_assembly)'";
             partitions = 1;
             partitionType = "count";
 
@@ -292,8 +292,8 @@
           // {
             pname = "treadmill-qemu-boot";
             version = "0.1.0";
-            cargoArtifacts = cmn.workspaceDeps;
-            cargoNextestExtraArgs = "-p treadmill-qemu-supervisor --no-tests=pass -E 'test(boot_tiny_efi)'";
+            cargoArtifacts = cmn.testArtifacts;
+            cargoNextestExtraArgs = "--workspace --no-tests=pass -E 'test(boot_tiny_efi)'";
             partitions = 1;
             partitionType = "count";
 
@@ -333,9 +333,8 @@
           // {
             pname = "treadmill-nats-log-streaming";
             version = "0.1.0";
-            cargoArtifacts = cmn.workspaceDeps;
-            cargoNextestExtraArgs =
-              "-p treadmill-supervisor-lib -p treadmill-switchboard " + "--no-tests=pass -E 'test(nats_live)'";
+            cargoArtifacts = cmn.testArtifacts;
+            cargoNextestExtraArgs = "--workspace --no-tests=pass -E 'test(nats_live)'";
             partitions = 1;
             partitionType = "count";
 
