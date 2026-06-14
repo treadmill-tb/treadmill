@@ -199,6 +199,14 @@ _: {
             echo "Bootstrapping NATS auth (operator tml-dev / account TMLLOGS)"
             nsc add operator --name tml-dev --sys >/dev/null
             nsc add account --name TMLLOGS >/dev/null
+            nsc edit account --name TMLLOGS \
+              --js-streams -1 \
+              --js-consumer -1 \
+              --js-mem-storage -1 \
+              --js-disk-storage -1 \
+              --js-max-mem-stream -1 \
+              --js-max-disk-stream -1 \
+              >/dev/null
             touch "$nats_dir/bootstrapped"
           fi
 
