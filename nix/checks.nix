@@ -22,6 +22,25 @@
     in
     {
       checks = {
+        shellcheck =
+          let
+            shellScripts = pkgs.lib.fileset.fileFilter (file: file.hasExt "sh") ../.;
+            shellcheckSrc = pkgs.lib.fileset.toSource {
+              root = ../.;
+              fileset = shellScripts;
+            };
+          in
+          pkgs.runCommand "treadmill-shellcheck" { } ''
+            pushd "${shellcheckSrc}"
+            for SCRIPT in $(find . -type f); do
+              echo "Checking $SCRIPT" >&2
+              ${pkgs.shellcheck}/bin/shellcheck "$SCRIPT" || exit 1
+            done
+            echo "All scripts pass shellcheck!" >&2
+            touch $out
+            popd
+          '';
+
         clippy = cmn.craneLib.cargoClippy (
           cmn.cargoCommonArgs
           // {
