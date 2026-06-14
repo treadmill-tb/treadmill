@@ -118,6 +118,8 @@ pub fn api_router() -> ApiRouter<AppState> {
         //  DELETE /supervisors/{id}/current-job
         //  POST /supervisors/new
         //  DELETE /supervisors/{id}
+        //  GET /hosts -- read-only listing of hosts (+ tags, targets, liveness)
+        .api_route("/hosts", get_with(hosts::list, |o| o))
         //  GET /hosts/{id}/events
         .api_route("/hosts/{id}/events", get_with(hosts::list_events, |o| o))
         //  GET /hosts/{id}/connect

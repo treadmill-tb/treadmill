@@ -107,6 +107,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/JobInfo'
     delete: {}
+  /hosts:
+    get:
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HostInfo'
   /hosts/{id}/events:
     get:
       responses:
@@ -379,6 +390,63 @@ components:
       - name
       - source
       - source_ref
+    HostInfo:
+      description: |-
+        A host in the `GET /hosts` listing: its identity, opaque tags, attached
+        targets, and liveness.
+      type: object
+      properties:
+        host_id:
+          type: string
+          format: uuid
+        last_seen_at:
+          description: |-
+            The host's last heartbeat, or `None` if it has never reported (or its
+            worker disconnected cleanly).
+          type:
+          - string
+          - 'null'
+          format: date-time
+        live:
+          description: |-
+            Whether the host's supervisor has heartbeat recently enough to be
+            considered schedulable, computed with the deployment's liveness window.
+          type: boolean
+        name:
+          type: string
+        tags:
+          description: |-
+            Opaque host tags; a job's `host_tag_requirements` match a host whose
+            `tags` are a superset.
+          type: array
+          items:
+            type: string
+        targets:
+          description: The targets (DUTs) wired to this host, in stable order.
+          type: array
+          items:
+            $ref: '#/components/schemas/HostTarget'
+      required:
+      - host_id
+      - name
+      - tags
+      - live
+      - targets
+    HostTarget:
+      description: One target (DUT) attached to a host, as exposed by `GET /hosts`.
+      type: object
+      properties:
+        name:
+          description: Stable per-host label for the DUT (e.g. `"dut0"`).
+          type: string
+        tags:
+          description: Opaque tag set (same convention as host tags).
+          type: array
+          items:
+            type: string
+      required:
+      - name
+      - tags
     ImageGroupInfo:
       description: A registered image group, as returned by the catalog list/inspect routes.
       type: object

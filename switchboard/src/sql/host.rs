@@ -23,6 +23,55 @@ pub struct SqlHostTarget {
     pub tags: Vec<String>,
 }
 
+/// A host's user-facing fields for the `GET /hosts` listing: identity, opaque
+/// tags, and liveness heartbeat. Excludes supervisor credentials and worker
+/// bookkeeping carried on the row.
+#[derive(Debug)]
+pub struct SqlHostListing {
+    pub host_id: Uuid,
+    pub name: String,
+    pub tags: Vec<String>,
+    pub last_seen_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// A target (DUT) row carrying its owning host, for assembling the per-host
+/// target lists of the `GET /hosts` listing in one query.
+#[derive(Debug)]
+pub struct SqlHostTargetListing {
+    pub host_id: Uuid,
+    pub name: String,
+    pub tags: Vec<String>,
+}
+
+/// List all hosts' user-facing fields, ordered by name for a stable picker.
+pub async fn list_for_listing(
+    conn: impl PgExecutor<'_>,
+) -> Result<Vec<SqlHostListing>, sqlx::Error> {
+    sqlx::query_as!(
+        SqlHostListing,
+        r#"select host_id, name, tags, last_seen_at
+           from tml_switchboard.hosts
+           order by name, host_id"#,
+    )
+    .fetch_all(conn)
+    .await
+}
+
+/// All targets (DUTs) across every host, ordered by `(host_id, name)` so a
+/// caller can group them into per-host lists in a single pass.
+pub async fn list_all_targets(
+    conn: impl PgExecutor<'_>,
+) -> Result<Vec<SqlHostTargetListing>, sqlx::Error> {
+    sqlx::query_as!(
+        SqlHostTargetListing,
+        r#"select host_id, name, tags
+           from tml_switchboard.host_targets
+           order by host_id, name"#,
+    )
+    .fetch_all(conn)
+    .await
+}
+
 /// All targets (DUTs) wired to a host, for the scheduler's DUT-requirement
 /// match. Ordered by `target_id` for deterministic matching.
 pub async fn targets_for_host(

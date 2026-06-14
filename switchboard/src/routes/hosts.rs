@@ -1,6 +1,9 @@
 use crate::audit::feed::{AuditFeedResponse, fetch_events_for_entity};
 use axum::Json;
+use std::collections::HashMap;
 use std::net::SocketAddr;
+
+use treadmill_rs::api::switchboard::hosts::{HostInfo, HostTarget};
 
 /// Axum handler for the `/hosts/{id}/events` path.
 pub async fn list_events(
@@ -11,6 +14,57 @@ pub async fn list_events(
     fetch_events_for_entity(&state, &subject, "host", host_id)
         .await
         .map(Json)
+}
+
+/// Axum handler for `GET /hosts` — a read-only listing of every host with its
+/// opaque tags, attached targets (DUTs), and liveness, ordered by name.
+///
+/// This exists so a frontend can populate a host picker; it exposes only the
+/// host's user-facing view (no supervisor credentials or worker bookkeeping).
+/// Any authenticated subject may list. Liveness is computed against the same
+/// heartbeat window the scheduler uses (`host_liveness_timeout`).
+pub async fn list(
+    State(state): State<AppState>,
+    _subject: crate::auth::Subject,
+) -> Result<Json<Vec<HostInfo>>, StatusCode> {
+    let internal = |e: sqlx::Error| {
+        tracing::error!("listing hosts: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+
+    let hosts = crate::sql::host::list_for_listing(state.pool())
+        .await
+        .map_err(internal)?;
+    let targets = crate::sql::host::list_all_targets(state.pool())
+        .await
+        .map_err(internal)?;
+
+    // Group targets by host in one pass (both queries are ordered by host_id).
+    let mut targets_by_host: HashMap<Uuid, Vec<HostTarget>> = HashMap::new();
+    for t in targets {
+        targets_by_host
+            .entry(t.host_id)
+            .or_default()
+            .push(HostTarget {
+                name: t.name,
+                tags: t.tags,
+            });
+    }
+
+    let cutoff = chrono::Utc::now() - state.config().service.host_liveness_timeout;
+    let out = hosts
+        .into_iter()
+        .map(|h| HostInfo {
+            live: h.last_seen_at.is_some_and(|t| t > cutoff),
+            targets: targets_by_host.remove(&h.host_id).unwrap_or_default(),
+            host_id: h.host_id,
+            name: h.name,
+            tags: h.tags,
+            last_seen_at: h.last_seen_at,
+        })
+        .collect();
+
+    Ok(Json(out))
 }
 
 use axum::extract::{ConnectInfo, WebSocketUpgrade, ws};

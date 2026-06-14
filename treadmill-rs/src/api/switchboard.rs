@@ -1,6 +1,7 @@
 pub mod audit;
 #[cfg(feature = "client")]
 pub mod client;
+pub mod hosts;
 pub mod images;
 pub mod jobs;
 pub mod users;
