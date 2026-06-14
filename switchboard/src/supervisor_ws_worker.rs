@@ -852,7 +852,16 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 if sql::host::fetch_current_job(host_id, txn).await? != Some(job_id) {
                     return Ok(false);
                 }
-                Ok(sql::job::finalize_errored(job_id, host_id, reason, message, at, txn).await?)
+                // Finalize the job, but don't unassign from the host just
+                // yet---we're still expecting a final `StateTransition` towards
+                // `Terminated`.
+                //
+                // TODO: does this potentially allow double-finalization? We
+                // should probably prevent that.
+                Ok(
+                    sql::job::finalize_errored(job_id, host_id, reason, message, at, txn, false)
+                        .await?,
+                )
             })
             .await?;
 
@@ -2694,7 +2703,10 @@ mod tests {
             Some("manifest missing"),
             "the error description must be recorded as exit_message"
         );
-        assert_eq!(current_job_of(&pool, host_id).await?, None);
+
+        // Error finalization does not remove job, a sequent StateTransition by
+        // the host/supervisor to `Terminated` does.
+        assert_eq!(current_job_of(&pool, host_id).await?, Some(job_id));
         assert!(matches!(
             worker.last_seen_status,
             Some(ReportedSupervisorStatus::Idle)

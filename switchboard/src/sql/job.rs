@@ -1388,6 +1388,7 @@ pub async fn finalize_errored(
     message: Option<String>,
     at: DateTime<Utc>,
     txn: &mut Transaction<'_, Postgres>,
+    unassign_from_host: bool,
 ) -> Result<bool, sqlx::Error> {
     let transitioned = sqlx::query!(
         r#"
@@ -1417,17 +1418,19 @@ pub async fn finalize_errored(
     }
 
     // Release the host's assignment pointer.
-    sqlx::query!(
-        r#"
-        update tml_switchboard.hosts
-        set current_job = null
-        where host_id = $1 and current_job = $2
-        "#,
-        host_id,
-        job_id,
-    )
-    .execute(&mut **txn)
-    .await?;
+    if unassign_from_host {
+        sqlx::query!(
+            r#"
+            update tml_switchboard.hosts
+            set current_job = null
+            where host_id = $1 and current_job = $2
+            "#,
+            host_id,
+            job_id,
+        )
+        .execute(&mut **txn)
+        .await?;
+    }
 
     Ok(true)
 }
