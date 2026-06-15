@@ -103,14 +103,25 @@
         baseRootfs = ubuntuRootfs;
       };
 
+      # The customized SD image + boot/root blobs are shared between the base
+      # image and the gha-runner overlay (one derivation set -> one blob each),
+      # so the overlay's `lower` digest is byte-identical to the base head blob.
+      raspbianParts = import ../images/raspbian-13/parts.nix {
+        inherit pkgs lib;
+        puppet = self'.packages.tml-puppet-static-aarch64;
+      };
       raspbian-13 = import ../images/raspbian-13/default.nix {
+        inherit mediaTypes mkTreadmillImage;
+        parts = raspbianParts;
+      };
+      raspbian-13-gha-runner = import ../images/raspbian-13/gha-runner.nix {
         inherit
           pkgs
           lib
           mediaTypes
           mkTreadmillImage
           ;
-        puppet = self'.packages.tml-puppet-static-aarch64;
+        parts = raspbianParts;
       };
 
       # name -> { layout; rootLayers; bootLayers; title; }
@@ -132,6 +143,12 @@
           rootLayers = 1;
           bootLayers = 1;
           title = "Raspberry Pi OS 13 (NBD)";
+        };
+        raspbian-13-gha-runner = {
+          layout = raspbian-13-gha-runner;
+          rootLayers = 2;
+          bootLayers = 1;
+          title = "Raspberry Pi OS 13 (NBD) with GitHub Actions Runner";
         };
       };
       # name -> { layout; members = [ { required_host_tags = [ ... ]; } ... ]; }
