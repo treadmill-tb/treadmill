@@ -30,6 +30,7 @@
 
       mediaTypes = import ../images/lib/media-types.nix;
       mkTreadmillImage = import ../images/lib/mk-treadmill-image.nix { inherit pkgs lib mediaTypes; };
+      mkGroupIndex = import ../images/lib/mk-group-index.nix { inherit pkgs lib mediaTypes; };
 
       # --- Phase A smoke ----------------------------------------------------
       # Prove `mkTreadmillImage` against REAL qcow2 blobs before any heavy distro
@@ -152,7 +153,24 @@
         };
       };
       # name -> { layout; members = [ { required_host_tags = [ ... ]; } ... ]; }
-      groupDefs = { };
+      #
+      # The membership table (images/groups.nix) is fed the built image layouts
+      # by name and maps each group through `mkGroupIndex` -> an OCI image-index
+      # layout. `members` is carried into the parse spec below so the drift guard
+      # can assert the per-member required-host-tags reparse to these values.
+      imageLayouts = {
+        inherit
+          ubuntu-2204
+          ubuntu-2204-gha-runner
+          raspbian-13
+          raspbian-13-gha-runner
+          ;
+      };
+      groupMembers = import ../images/groups.nix { images = imageLayouts; };
+      groupDefs = lib.mapAttrs (name: members: {
+        layout = mkGroupIndex { inherit name members; };
+        members = map (m: { required_host_tags = m.requiredHostTags; }) members;
+      }) groupMembers;
 
       # Smoke entries that exercise the helpers but are not shipped products.
       smokeImageDefs = {
