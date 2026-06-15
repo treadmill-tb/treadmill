@@ -19,6 +19,7 @@
     {
       pkgs,
       system,
+      self',
       ...
     }:
     let
@@ -75,8 +76,31 @@
       };
 
       # --- Image / group products (populated phase by phase) ----------------
+      # The image recipes consume the in-tree static `tml-puppet` packages
+      # (nix/puppet-cross-musl.nix) via `self'.packages` — the normal
+      # flake-parts cross-package reference (it does not cause the
+      # `_module.args` recursion; that only happens when `optionalAttrs` gates
+      # the whole perSystem config, which is why `packages` stays unconditional
+      # below).
+      ubuntu-2204 = import ../images/ubuntu-2204/default.nix {
+        inherit
+          pkgs
+          lib
+          mediaTypes
+          mkTreadmillImage
+          ;
+        puppet = self'.packages.tml-puppet-static-x86_64;
+      };
+
       # name -> { layout; rootLayers; bootLayers; title; }
-      imageDefs = { };
+      imageDefs = {
+        ubuntu-2204 = {
+          layout = ubuntu-2204;
+          rootLayers = 1;
+          bootLayers = 0;
+          title = "Ubuntu 22.04";
+        };
+      };
       # name -> { layout; members = [ { required_host_tags = [ ... ]; } ... ]; }
       groupDefs = { };
 
