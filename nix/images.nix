@@ -82,14 +82,25 @@
       # `_module.args` recursion; that only happens when `optionalAttrs` gates
       # the whole perSystem config, which is why `packages` stays unconditional
       # below).
+      # The deb-bootstrapped rootfs is shared between the base image and the
+      # gha-runner overlay so the overlay's `lower` digest is byte-identical to
+      # the base head blob (one derivation -> one store path -> one blob).
+      ubuntuRootfs = import ../images/ubuntu-2204/rootfs.nix {
+        inherit pkgs lib;
+        puppet = self'.packages.tml-puppet-static-x86_64;
+      };
       ubuntu-2204 = import ../images/ubuntu-2204/default.nix {
+        inherit mediaTypes mkTreadmillImage;
+        rootfs = ubuntuRootfs;
+      };
+      ubuntu-2204-gha-runner = import ../images/ubuntu-2204-gha-runner/default.nix {
         inherit
           pkgs
           lib
           mediaTypes
           mkTreadmillImage
           ;
-        puppet = self'.packages.tml-puppet-static-x86_64;
+        baseRootfs = ubuntuRootfs;
       };
 
       # name -> { layout; rootLayers; bootLayers; title; }
@@ -99,6 +110,12 @@
           rootLayers = 1;
           bootLayers = 0;
           title = "Ubuntu 22.04";
+        };
+        ubuntu-2204-gha-runner = {
+          layout = ubuntu-2204-gha-runner;
+          rootLayers = 2;
+          bootLayers = 0;
+          title = "Ubuntu 22.04 with GitHub Actions Runner";
         };
       };
       # name -> { layout; members = [ { required_host_tags = [ ... ]; } ... ]; }
