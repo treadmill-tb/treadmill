@@ -1,24 +1,36 @@
+# Producer-side OCI image builds (doc/images-oci-migration-plan.md §7).
+#
+# Deliberately a SEPARATE workflow from ci.yml: these builds are heavy (deb
+# bootstrap + runInLinuxVM; the raspbian build is full TCG with no KVM) and are
+# excluded from the ordinary `nix flake check` set, so they must never gate
+# normal PRs or the merge queue. They run only when the image tree itself
+# changes, on demand, or weekly to catch upstream deb / RPi-image drift.
 name: treadmill-images
 env:
   TERM: xterm # Makes tput work in actions output
 
 on:
+  push:
+    branches: [main]
+    paths: &image_paths
+      - 'images/**'
+      - 'nix/images.nix'
+      - 'nix/puppet-cross-musl.nix'
+      - '.github/workflows/images.yml'
+  pull_request:
+    paths: *image_paths
   workflow_dispatch:
-    inputs:
-      push_to_ghcr:
-        description: 'Push the built image/group layouts to ghcr.io'
-        type: boolean
-        default: false
+  schedule:
+    # Weekly (Mondays 04:00 UTC): catch upstream deb / Raspberry Pi OS drift.
+    - cron: '0 4 * * 1'
 
-# One run at a time per ref; do not cancel an in-flight (long) build.
+# Cancel superseded PR runs; never cancel main or scheduled runs.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
-  # Needed only when push_to_ghcr is set; harmless otherwise.
-  packages: write
 
 jobs:
   build-images:
@@ -27,4 +39,55 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Stub to be able to run the workflow on another branch.
+      - uses: cachix/install-nix-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: treadmill-tb
+          # Read-only: pull shared deps (e.g. the musl tml-puppet) from the
+          # cache, but NEVER push the image/group layouts — they are large,
+          # rebuilt rarely, and would bloat the binary cache.
+          skipPush: true
+
+      # Build every shipped image + group layout. The raspbian builds run under
+      # TCG (no /dev/kvm for aarch64), so the binary cache is what keeps this
+      # tractable — revisit a larger/self-hosted runner if wall-clock hurts.
+      - name: nix build (image + group layouts)
+        run: |
+          SYSTEM="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
+          nix build --print-build-logs \
+            ".#packages.${SYSTEM}.image-ubuntu-2204" \
+            ".#packages.${SYSTEM}.image-ubuntu-2204-gha-runner" \
+            ".#packages.${SYSTEM}.image-raspbian-13" \
+            ".#packages.${SYSTEM}.image-raspbian-13-gha-runner" \
+            ".#packages.${SYSTEM}.group-ubuntu-2204" \
+            ".#packages.${SYSTEM}.group-ubuntu-2204-gha-runner" \
+            ".#packages.${SYSTEM}.group-raspbian-13" \
+            ".#packages.${SYSTEM}.group-raspbian-13-gha-runner"
+
+      # Drift guard: reparse every built image/group layout with the real
+      # treadmill-rs parser (parse_image / parse_group). Kept as a package, not
+      # a flake check, so the heavy layouts above are never pulled into an
+      # ordinary `nix flake check` (see nix/images.nix header).
+      - name: nix build (images-parse drift guard)
+        run: |
+          SYSTEM="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
+          nix build --print-build-logs ".#packages.${SYSTEM}.images-parse"
+
+      - name: Upload image/group layouts
+        uses: actions/upload-artifact@v4
+        with:
+          name: treadmill-images
+          path: ./result*
+          # Symlinks into /nix/store would otherwise upload as dangling links.
+          follow-symlinks: true
+          if-no-files-found: error
+
+      # --- Stretch / deferred seams (plan §7, §I7) -------------------------
+      # Phase H (ghcr push, main/tag only) adds a `skopeo copy oci:<layout>
+      # docker://ghcr.io/treadmill-tb/<name>:<sha>` step here, pushing group
+      # indexes after their members so the by-digest descriptors resolve.
+      #
+      # Phase I (switchboard registration, deferred) adds a
+      # `register-with-switchboard` step: POST /images + /image-groups (D11
+      # token flow). The digests + required-host-tags it needs are already
+      # emitted by the build above and declared in images/groups.nix.
