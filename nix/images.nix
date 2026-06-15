@@ -103,6 +103,16 @@
         baseRootfs = ubuntuRootfs;
       };
 
+      raspbian-13 = import ../images/raspbian-13/default.nix {
+        inherit
+          pkgs
+          lib
+          mediaTypes
+          mkTreadmillImage
+          ;
+        puppet = self'.packages.tml-puppet-static-aarch64;
+      };
+
       # name -> { layout; rootLayers; bootLayers; title; }
       imageDefs = {
         ubuntu-2204 = {
@@ -116,6 +126,12 @@
           rootLayers = 2;
           bootLayers = 0;
           title = "Ubuntu 22.04 with GitHub Actions Runner";
+        };
+        raspbian-13 = {
+          layout = raspbian-13;
+          rootLayers = 1;
+          bootLayers = 1;
+          title = "Raspberry Pi OS 13 (NBD)";
         };
       };
       # name -> { layout; members = [ { required_host_tags = [ ... ]; } ... ]; }
