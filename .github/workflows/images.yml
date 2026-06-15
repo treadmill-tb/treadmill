@@ -3,34 +3,32 @@
 # Deliberately a SEPARATE workflow from ci.yml: these builds are heavy (deb
 # bootstrap + runInLinuxVM; the raspbian build is full TCG with no KVM) and are
 # excluded from the ordinary `nix flake check` set, so they must never gate
-# normal PRs or the merge queue. They run only when the image tree itself
-# changes, on demand, or weekly to catch upstream deb / RPi-image drift.
+# normal PRs or the merge queue.
+#
+# This workflow NEVER runs automatically: it is `workflow_dispatch`-only, so it
+# runs solely when a human triggers it (against a chosen ref/branch). Pushing
+# the built layouts to ghcr.io is opt-in per run via the `push_to_ghcr` input.
 name: treadmill-images
 env:
   TERM: xterm # Makes tput work in actions output
 
 on:
-  push:
-    branches: [main]
-    paths: &image_paths
-      - 'images/**'
-      - 'nix/images.nix'
-      - 'nix/puppet-cross-musl.nix'
-      - '.github/workflows/images.yml'
-  pull_request:
-    paths: *image_paths
   workflow_dispatch:
-  schedule:
-    # Weekly (Mondays 04:00 UTC): catch upstream deb / Raspberry Pi OS drift.
-    - cron: '0 4 * * 1'
+    inputs:
+      push_to_ghcr:
+        description: 'Push the built image/group layouts to ghcr.io (off = build + verify only)'
+        type: boolean
+        default: false
 
-# Cancel superseded PR runs; never cancel main or scheduled runs.
+# One run at a time per ref; do not cancel an in-flight (long) build.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
+  # Needed only when push_to_ghcr is set; harmless otherwise.
+  packages: write
 
 jobs:
   build-images:
@@ -82,12 +80,48 @@ jobs:
           follow-symlinks: true
           if-no-files-found: error
 
-      # --- Stretch / deferred seams (plan §7, §I7) -------------------------
-      # Phase H (ghcr push, main/tag only) adds a `skopeo copy oci:<layout>
-      # docker://ghcr.io/treadmill-tb/<name>:<sha>` step here, pushing group
-      # indexes after their members so the by-digest descriptors resolve.
-      #
-      # Phase I (switchboard registration, deferred) adds a
-      # `register-with-switchboard` step: POST /images + /image-groups (D11
-      # token flow). The digests + required-host-tags it needs are already
-      # emitted by the build above and declared in images/groups.nix.
+      # --- ghcr push (opt-in per run via the push_to_ghcr input) -----------
+      # Pull the exact built store paths back out of the flake (no rebuild —
+      # they are already realised above) and `skopeo copy` each OCI layout to
+      # ghcr.io/<owner>/<name>. Repos are namespaced by kind:
+      #   * standalone images -> ghcr.io/<owner>/<name>
+      #   * group indexes     -> ghcr.io/<owner>/<name>-group
+      # so the two never clobber each other's :latest. The group layouts are
+      # self-contained (mk-group-index copies every member blob in), so a single
+      # `skopeo copy --all` of the index pushes the index AND all member
+      # manifests/blobs in one shot — the by-digest descriptors resolve without
+      # a separate member-push pass.
+      - name: Push image/group layouts to ghcr.io
+        if: ${{ inputs.push_to_ghcr }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          SYSTEM="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
+          OWNER="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          REGISTRY="ghcr.io/${OWNER}"
+
+          # skopeo from nixpkgs; authenticate to ghcr with the job token.
+          skopeo() { nix run nixpkgs#skopeo -- "$@"; }
+          skopeo login ghcr.io -u "${{ github.actor }}" --password-stdin <<<"$GITHUB_TOKEN"
+
+          # push <attr> <repo>: copy the realised OCI layout to :<sha> + :latest.
+          push() {
+            local attr="$1" repo="$2" path
+            path="$(nix build --no-link --print-out-paths ".#packages.${SYSTEM}.${attr}")"
+            for tag in "${GITHUB_SHA}" latest; do
+              echo "skopeo copy oci:${path} -> docker://${repo}:${tag}"
+              skopeo copy --all "oci:${path}" "docker://${repo}:${tag}"
+            done
+          }
+
+          for name in ubuntu-2204 ubuntu-2204-gha-runner raspbian-13 raspbian-13-gha-runner; do
+            push "image-${name}" "${REGISTRY}/${name}"
+            push "group-${name}" "${REGISTRY}/${name}-group"
+          done
+
+      # --- Deferred seam: switchboard registration (plan §I7) --------------
+      # Phase I (deferred) adds a `register-with-switchboard` step here: POST
+      # /images + /image-groups (D11 token flow). The digests + required-host-
+      # tags it needs are already emitted by the build above and declared in
+      # images/groups.nix.
