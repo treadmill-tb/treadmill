@@ -7,7 +7,6 @@
 # constant, the parse-check is what catches it.
 {
   imageArtifactType = "application/vnd.treadmill.image.v1+json";
-  groupArtifactType = "application/vnd.treadmill.image-group.v1+json";
   diskQcow2 = "application/vnd.treadmill.disk.qcow2";
   bootFatV1 = "application/vnd.treadmill.boot.fat.v1";
   ociEmptyConfig = "application/vnd.oci.empty.v1+json";

@@ -3,16 +3,16 @@
 # This module folds the legacy standalone `images/` repository into the
 # monorepo: it builds the Treadmill production images as proper OCI layouts via
 # the shared `images/lib/` helpers (the siblings of the `nix/tiny-efi.nix`
-# reference fixture) and exposes them as `packages.image-*` / `packages.group-*`.
+# reference fixture) and exposes them as `packages.image-*`.
 #
 # Linux-only (exactly like nix/tiny-efi.nix): the builds need `runInLinuxVM`,
 # `qemu-system-*`, `dosfstools`/`mtools`, deb bootstrapping, etc.
 #
 # Heavy builds are kept OUT of the ordinary `nix flake check` set: the image /
-# group / images-parse outputs are excluded from the package→check promotion in
+# images-parse outputs are excluded from the package→check promotion in
 # nix/checks.nix, so they gate nothing on PRs or the merge queue. They are built
 # explicitly by the separate `.github/workflows/images.yml` workflow via
-# `nix build .#packages.<sys>.{image-*,group-*,images-parse}`.
+# `nix build .#packages.<sys>.{image-*,images-parse}`.
 { inputs, ... }:
 {
   perSystem =
@@ -30,7 +30,6 @@
 
       mediaTypes = import ../images/lib/media-types.nix;
       mkTreadmillImage = import ../images/lib/mk-treadmill-image.nix { inherit pkgs lib mediaTypes; };
-      mkGroupIndex = import ../images/lib/mk-group-index.nix { inherit pkgs lib mediaTypes; };
 
       # --- Phase A smoke ----------------------------------------------------
       # Prove `mkTreadmillImage` against REAL qcow2 blobs before any heavy distro
@@ -76,7 +75,7 @@
         ];
       };
 
-      # --- Image / group products (populated phase by phase) ----------------
+      # --- Image products ---------------------------------------------------
       # The image recipes consume the in-tree static `tml-puppet` packages
       # (nix/puppet-cross-musl.nix) via `self'.packages` — the normal
       # flake-parts cross-package reference (it does not cause the
@@ -152,26 +151,6 @@
           title = "Raspberry Pi OS 13 (NBD) with GitHub Actions Runner";
         };
       };
-      # name -> { layout; members = [ { required_host_tags = [ ... ]; } ... ]; }
-      #
-      # The membership table (images/groups.nix) is fed the built image layouts
-      # by name and maps each group through `mkGroupIndex` -> an OCI image-index
-      # layout. `members` is carried into the parse spec below so the drift guard
-      # can assert the per-member required-host-tags reparse to these values.
-      imageLayouts = {
-        inherit
-          ubuntu-2204
-          ubuntu-2204-gha-runner
-          raspbian-13
-          raspbian-13-gha-runner
-          ;
-      };
-      groupMembers = import ../images/groups.nix { images = imageLayouts; };
-      groupDefs = lib.mapAttrs (name: members: {
-        layout = mkGroupIndex { inherit name members; };
-        members = map (m: { required_host_tags = m.requiredHostTags; }) members;
-      }) groupMembers;
-
       # Smoke entries that exercise the helpers but are not shipped products.
       smokeImageDefs = {
         helper-smoke = {
@@ -195,11 +174,6 @@
             boot_layers = d.bootLayers;
             inherit (d) title;
           }) allImageDefs;
-          groups = lib.mapAttrsToList (name: d: {
-            inherit name;
-            path = d.layout;
-            inherit (d) members;
-          }) groupDefs;
         }
       );
 
@@ -222,7 +196,6 @@
       );
 
       imagePackages = lib.mapAttrs' (name: d: lib.nameValuePair "image-${name}" d.layout) imageDefs;
-      groupPackages = lib.mapAttrs' (name: d: lib.nameValuePair "group-${name}" d.layout) groupDefs;
     in
     {
       # `optionalAttrs` lives INSIDE `packages` (not around the whole config):
@@ -233,7 +206,6 @@
       # nix/tiny-efi.nix. On non-Linux systems `packages` is simply empty.
       packages = lib.optionalAttrs isLinux (
         imagePackages
-        // groupPackages
         // {
           image-helper-smoke = imageHelperSmoke;
           images-parse = imagesParse;

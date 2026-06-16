@@ -356,12 +356,12 @@
       }
       # Promote each package output to a check so `nix flake check`
       # verifies they all build — EXCEPT the producer-side OCI image outputs
-      # (`image-*`, `group-*`, and the `images-parse` drift guard). Those are
-      # heavy distro/TCG builds that must never gate ordinary PRs or the merge
+      # (`image-*` and the `images-parse` drift guard). Those are heavy
+      # distro/TCG builds that must never gate ordinary PRs or the merge
       # queue (doc/images-oci-migration-plan.md §7); the dedicated
       # `.github/workflows/images.yml` builds them explicitly instead.
       // (lib.filterAttrs (
-        name: _: !(lib.hasPrefix "image-" name || lib.hasPrefix "group-" name || name == "images-parse")
+        name: _: !(lib.hasPrefix "image-" name || name == "images-parse")
       ) self'.packages);
     };
 }
