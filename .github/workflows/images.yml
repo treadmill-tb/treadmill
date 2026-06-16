@@ -1,13 +1,3 @@
-# Producer-side OCI image builds (doc/images-oci-migration-plan.md §7).
-#
-# Deliberately a SEPARATE workflow from ci.yml: these builds are heavy (deb
-# bootstrap + runInLinuxVM; the raspbian build is full TCG with no KVM) and are
-# excluded from the ordinary `nix flake check` set, so they must never gate
-# normal PRs or the merge queue.
-#
-# This workflow NEVER runs automatically: it is `workflow_dispatch`-only, so it
-# runs solely when a human triggers it (against a chosen ref/branch). Pushing
-# the built layouts to ghcr.io is opt-in per run via the `push_to_ghcr` input.
 name: treadmill-images
 env:
   TERM: xterm # Makes tput work in actions output
@@ -16,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       push_to_ghcr:
-        description: 'Push the built image/group layouts to ghcr.io (off = build + verify only)'
+        description: 'Push the built image layouts to ghcr.io'
         type: boolean
         default: false
 
@@ -41,37 +31,26 @@ jobs:
       - uses: cachix/cachix-action@v15
         with:
           name: treadmill-tb
-          # Read-only: pull shared deps (e.g. the musl tml-puppet) from the
-          # cache, but NEVER push the image/group layouts — they are large,
-          # rebuilt rarely, and would bloat the binary cache.
+          # Read-only: images embed pre-built dependencies (e.g., puppet), but
+          # aren't pushed to Cachix. Too large, get uploaded to ghcr instead.
           skipPush: true
 
-      # Build every shipped image + group layout. The raspbian builds run under
-      # TCG (no /dev/kvm for aarch64), so the binary cache is what keeps this
-      # tractable — revisit a larger/self-hosted runner if wall-clock hurts.
-      - name: nix build (image + group layouts)
+      - name: nix build (image layouts)
         run: |
           SYSTEM="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
           nix build --print-build-logs \
             ".#packages.${SYSTEM}.image-ubuntu-2204" \
             ".#packages.${SYSTEM}.image-ubuntu-2204-gha-runner" \
             ".#packages.${SYSTEM}.image-raspbian-13" \
-            ".#packages.${SYSTEM}.image-raspbian-13-gha-runner" \
-            ".#packages.${SYSTEM}.group-ubuntu-2204" \
-            ".#packages.${SYSTEM}.group-ubuntu-2204-gha-runner" \
-            ".#packages.${SYSTEM}.group-raspbian-13" \
-            ".#packages.${SYSTEM}.group-raspbian-13-gha-runner"
+            ".#packages.${SYSTEM}.image-raspbian-13-gha-runner"
 
-      # Drift guard: reparse every built image/group layout with the real
-      # treadmill-rs parser (parse_image / parse_group). Kept as a package, not
-      # a flake check, so the heavy layouts above are never pulled into an
-      # ordinary `nix flake check` (see nix/images.nix header).
+      # Sanity check, parse the images using the Rust implementation:
       - name: nix build (images-parse drift guard)
         run: |
           SYSTEM="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
           nix build --print-build-logs ".#packages.${SYSTEM}.images-parse"
 
-      - name: Upload image/group layouts
+      - name: Upload image layouts
         uses: actions/upload-artifact@v4
         with:
           name: treadmill-images
@@ -80,30 +59,31 @@ jobs:
           follow-symlinks: true
           if-no-files-found: error
 
-      # --- ghcr push (opt-in per run via the push_to_ghcr input) -----------
-      # Pull the exact built store paths back out of the flake (no rebuild —
-      # they are already realised above) and `skopeo copy` each OCI layout to
-      # ghcr.io/<owner>/<name>. Repos are namespaced by kind:
-      #   * standalone images -> ghcr.io/<owner>/<name>
-      #   * group indexes     -> ghcr.io/<owner>/<name>-group
-      # so the two never clobber each other's :latest. The group layouts are
-      # self-contained (mk-group-index copies every member blob in), so a single
-      # `skopeo copy --all` of the index pushes the index AND all member
-      # manifests/blobs in one shot — the by-digest descriptors resolve without
-      # a separate member-push pass.
-      - name: Push image/group layouts to ghcr.io
+      # Authenticate to ghcr; writes the credential to ~/.docker/config.json,
+      # which skopeo reads by default in the push step below.
+      - name: Log in to ghcr.io
         if: ${{ inputs.push_to_ghcr }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- ghcr push (conditioned on push_to_ghcr input) -----------
+
+      # Pull the exact built store paths back out of the flake (no rebuild,
+      # already realised above) and `skopeo copy` each OCI layout to
+      # ghcr.io/<owner>/<name>.
+      #
+      # The custom `shell:` resolves skopeo once and puts it on PATH for the
+      # whole script (nix stays available too).
+      - name: Push image layouts to ghcr.io
+        if: ${{ inputs.push_to_ghcr }}
+        shell: nix shell nixpkgs#skopeo --command bash -euo pipefail {0}
         run: |
-          set -euo pipefail
           SYSTEM="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
           OWNER="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           REGISTRY="ghcr.io/${OWNER}"
-
-          # skopeo from nixpkgs; authenticate to ghcr with the job token.
-          skopeo() { nix run nixpkgs#skopeo -- "$@"; }
-          skopeo login ghcr.io -u "${{ github.actor }}" --password-stdin <<<"$GITHUB_TOKEN"
 
           # push <attr> <repo>: copy the realised OCI layout to :<sha> + :latest.
           push() {
@@ -117,11 +97,4 @@ jobs:
 
           for name in ubuntu-2204 ubuntu-2204-gha-runner raspbian-13 raspbian-13-gha-runner; do
             push "image-${name}" "${REGISTRY}/${name}"
-            push "group-${name}" "${REGISTRY}/${name}-group"
           done
-
-      # --- Deferred seam: switchboard registration (plan §I7) --------------
-      # Phase I (deferred) adds a `register-with-switchboard` step here: POST
-      # /images + /image-groups (D11 token flow). The digests + required-host-
-      # tags it needs are already emitted by the build above and declared in
-      # images/groups.nix.
