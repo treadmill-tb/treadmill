@@ -120,15 +120,26 @@ fn check_image(spec: &ImageSpec) {
         .iter()
         .filter(|l| l.role == Some(Role::Boot))
         .collect();
-    assert_eq!(roots.len(), spec.root_layers, "{what}: wrong root-layer count");
-    assert_eq!(boots.len(), spec.boot_layers, "{what}: wrong boot-layer count");
+    assert_eq!(
+        roots.len(),
+        spec.root_layers,
+        "{what}: wrong root-layer count"
+    );
+    assert_eq!(
+        boots.len(),
+        spec.boot_layers,
+        "{what}: wrong boot-layer count"
+    );
 
     // Chain wiring: first root has no lower; each subsequent root backs onto its
     // predecessor; head names the last root layer (no baked backing path is even
     // representable here — the chain is digest references only).
     for (i, layer) in roots.iter().enumerate() {
         if i == 0 {
-            assert_eq!(layer.lower, None, "{what}: first root layer must have no lower");
+            assert_eq!(
+                layer.lower, None,
+                "{what}: first root layer must have no lower"
+            );
         } else {
             assert_eq!(
                 layer.lower.as_ref(),
@@ -146,7 +157,10 @@ fn check_image(spec: &ImageSpec) {
     // Boot layers are standalone: a role but no chain links.
     for layer in &boots {
         assert_eq!(layer.lower, None, "{what}: boot layer must have no lower");
-        assert_ne!(image.head, layer.digest, "{what}: boot layer must not be head");
+        assert_ne!(
+            image.head, layer.digest,
+            "{what}: boot layer must not be head"
+        );
     }
 
     // Every referenced blob is present at the size its descriptor claims.
