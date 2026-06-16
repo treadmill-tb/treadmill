@@ -1,0 +1,30 @@
+name: treadmill-images
+env:
+  TERM: xterm # Makes tput work in actions output
+
+on:
+  workflow_dispatch:
+    inputs:
+      push_to_ghcr:
+        description: 'Push the built image/group layouts to ghcr.io'
+        type: boolean
+        default: false
+
+# One run at a time per ref; do not cancel an in-flight (long) build.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # Needed only when push_to_ghcr is set; harmless otherwise.
+  packages: write
+
+jobs:
+  build-images:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Stub to be able to run the workflow on another branch.
