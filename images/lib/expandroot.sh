@@ -5,6 +5,8 @@ set -e -x
 # the sed expression errors if no [[:alnum:]] match can be made on the
 # device name (in case of trailing snapshots on btrfs, or ZFS, etc.)
 # https://stackoverflow.com/a/15966279
+#
+# shellcheck disable=SC2016
 ROOTDEV="$(findmnt -n -o SOURCE / | sed -E '/^\/dev\/([[:alnum:]]+)$/{s//\1/;b};$q1')"
 echo "Identified root file system device as /dev/$ROOTDEV" >&2
 
