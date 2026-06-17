@@ -4790,6 +4790,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "treadmill-image-check"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "oci-spec 0.10.0",
+ "serde_json",
+ "treadmill-rs",
+]
+
+[[package]]
 name = "treadmill-nbd-netboot-supervisor"
 version = "0.1.0"
 dependencies = [
