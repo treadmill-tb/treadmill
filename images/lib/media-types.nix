@@ -2,9 +2,10 @@
 #
 # These string literals are the ONLY copy of the media types / artifact types /
 # annotation keys on the producer side. Correctness against the consumer (the
-# `treadmill_rs::image::parse` view) is enforced by the §6 parse-check
-# (images-parse), not by hoping these match. If a literal drifts from the Rust
-# constant, the parse-check is what catches it.
+# `treadmill_rs::image::parse` view) is enforced by the §6 per-image parse-check
+# (the `image-check` binary, run via the `image-check-*` derivations), not by
+# hoping these match. If a literal drifts from the Rust constant, that check is
+# what catches it.
 {
   imageArtifactType = "application/vnd.treadmill.image.v1+json";
   diskQcow2 = "application/vnd.treadmill.disk.qcow2";
