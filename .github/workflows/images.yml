@@ -5,6 +5,18 @@ env:
 on:
   workflow_dispatch:
     inputs:
+      # Per-family build toggles. A "family" is a base image plus all of its
+      # derivatives. Keep this list (and the family -> members map in the
+      # "Select image families" step below) in sync with the `imageDefs` table
+      # in nix/images.nix.
+      build_ubuntu_2204:
+        description: 'Build the Ubuntu 22.04 family (base + GitHub Actions runner)'
+        type: boolean
+        default: true
+      build_raspbian_13:
+        description: 'Build the Raspberry Pi OS 13 family (base + GitHub Actions runner)'
+        type: boolean
+        default: true
       push_to_ghcr:
         description: 'Push the built image layouts to ghcr.io'
         type: boolean
@@ -35,28 +47,52 @@ jobs:
           # aren't pushed to Cachix. Too large, get uploaded to ghcr instead.
           skipPush: true
 
-      - name: nix build (image layouts)
+      # Resolve the per-family booleans into the flat list of member images to
+      # build. The family -> members map below mirrors nix/images.nix `imageDefs`
+      # (a family is the base image plus its derivatives) and must be kept in
+      # sync with it by hand — that is the trade-off of per-family boolean inputs
+      # over a nix-eval'd matrix.
+      - name: Select image families
+        env:
+          BUILD_UBUNTU_2204: ${{ inputs.build_ubuntu_2204 }}
+          BUILD_RASPBIAN_13: ${{ inputs.build_raspbian_13 }}
         run: |
-          SYSTEM="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
-          nix build --print-build-logs \
-            ".#packages.${SYSTEM}.image-ubuntu-2204" \
-            ".#packages.${SYSTEM}.image-ubuntu-2204-gha-runner" \
-            ".#packages.${SYSTEM}.image-raspbian-13" \
-            ".#packages.${SYSTEM}.image-raspbian-13-gha-runner"
+          members=""
+          if [ "$BUILD_UBUNTU_2204" = "true" ]; then
+            members="$members ubuntu-2204 ubuntu-2204-gha-runner"
+          fi
+          if [ "$BUILD_RASPBIAN_13" = "true" ]; then
+            members="$members raspbian-13 raspbian-13-gha-runner"
+          fi
+          members="$(echo "$members" | xargs)" # collapse/trim whitespace
+          if [ -z "$members" ]; then
+            echo "::error::No image family selected; enable at least one." >&2
+            exit 1
+          fi
+          echo "Selected images: $members"
+          echo "IMAGE_MEMBERS=$members" >> "$GITHUB_ENV"
 
-      # Sanity check, parse the images using the Rust implementation:
-      - name: nix build (images-parse drift guard)
+      # Build each selected layout and validate it with the `image-check` drift
+      # guard. Building `image-check-<name>` reparses the freshly built layout
+      # and also realises `image-<name>` (its dependency), so a separate
+      # `--out-link` then materialises the layout for upload at zero extra cost.
+      - name: Build and validate image layouts
         run: |
           SYSTEM="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
-          nix build --print-build-logs ".#packages.${SYSTEM}.images-parse"
+          for name in $IMAGE_MEMBERS; do
+            echo "::group::build+check $name"
+            nix build --print-build-logs --no-link ".#packages.${SYSTEM}.image-check-${name}"
+            nix build --print-build-logs --out-link "result-${name}" ".#packages.${SYSTEM}.image-${name}"
+            echo "::endgroup::"
+          done
 
       - name: Upload image layouts
         uses: actions/upload-artifact@v4
         with:
           name: treadmill-images
-          path: ./result*
-          # Symlinks into /nix/store would otherwise upload as dangling links.
-          follow-symlinks: true
+          # `result-*` are symlinks into /nix/store; upload-artifact@v4
+          # dereferences them and uploads the layout contents.
+          path: ./result-*
           if-no-files-found: error
 
       # Authenticate to ghcr; writes the credential to ~/.docker/config.json,
@@ -95,6 +131,6 @@ jobs:
             done
           }
 
-          for name in ubuntu-2204 ubuntu-2204-gha-runner raspbian-13 raspbian-13-gha-runner; do
+          for name in $IMAGE_MEMBERS; do
             push "image-${name}" "${REGISTRY}/${name}"
           done
