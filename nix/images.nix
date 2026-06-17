@@ -8,11 +8,14 @@
 # Linux-only (exactly like nix/tiny-efi.nix): the builds need `runInLinuxVM`,
 # `qemu-system-*`, `dosfstools`/`mtools`, deb bootstrapping, etc.
 #
-# Heavy builds are kept OUT of the ordinary `nix flake check` set: the image /
-# images-parse outputs are excluded from the package→check promotion in
-# nix/checks.nix, so they gate nothing on PRs or the merge queue. They are built
-# explicitly by the separate `.github/workflows/images.yml` workflow via
-# `nix build .#packages.<sys>.{image-*,images-parse}`.
+# Heavy builds are kept OUT of the ordinary `nix flake check` set: every output
+# whose name starts with `image-` (the layouts AND the per-image `image-check-*`
+# drift guards) is excluded from the package→check promotion in nix/checks.nix,
+# so they gate nothing on PRs or the merge queue. They are built explicitly by
+# the separate `.github/workflows/images.yml` workflow via
+# `nix build .#packages.<sys>.{image-*,image-check-*}`. The `image-check` binary
+# itself is cheap and image-independent; it is compiled by the workspace clippy
+# check regardless.
 { inputs, ... }:
 {
   perSystem =
@@ -35,7 +38,7 @@
       # Prove `mkTreadmillImage` against REAL qcow2 blobs before any heavy distro
       # build exists. Self-contained: build a throwaway two-layer qcow2 backing
       # chain from scratch (no cross-module package reference), package it
-      # through the helper, and reparse the result via the images-parse guard.
+      # through the helper, and reparse the result via the image-check guard.
       smokeBlobs =
         pkgs.runCommand "treadmill-image-helper-smoke-blobs" { nativeBuildInputs = [ pkgs.qemu-utils ]; }
           ''
@@ -162,38 +165,31 @@
       };
       allImageDefs = smokeImageDefs // imageDefs;
 
-      # --- images-parse drift guard (§6.1) ----------------------------------
-      # JSON spec consumed by treadmill-rs/tests/images_parse.rs: every built
-      # layout + its expected shape. snake_case keys to match the serde structs.
-      parseSpec = pkgs.writeText "images-parse-spec.json" (
-        builtins.toJSON {
-          images = lib.mapAttrsToList (name: d: {
-            inherit name;
-            path = d.layout;
-            root_layers = d.rootLayers;
-            boot_layers = d.bootLayers;
-            inherit (d) title;
-          }) allImageDefs;
-        }
-      );
+      # --- per-image drift guard (§6.1) -------------------------------------
+      # The standalone `image-check` binary (images/check) reparses ONE built
+      # layout through the real `treadmill_rs::image::parse` view and asserts its
+      # expected shape. Compiling it is cheap and image-independent; the heavy
+      # work is the layout each check points at.
+      imageCheckBin = cmn.mkBin { bin = "image-check"; };
 
-      # Reuse the shared test-binary layer; only RUN the images_parse binary,
-      # pointed at the spec above (same shape as the tiny-efi-image check). This
-      # is a package, not a check, so the ordinary `nix flake check` never pulls
-      # the heavy image layouts it references (see module header).
-      imagesParse = cmn.craneLib.cargoNextest (
-        cmn.cargoCommonArgs
-        // {
-          pname = "treadmill-images-parse";
-          version = "0.1.0";
-          cargoArtifacts = cmn.testArtifacts;
-          cargoNextestExtraArgs = "--workspace --no-tests=pass -E 'binary(images_parse)'";
-          partitions = 1;
-          partitionType = "count";
-
-          TML_IMAGES_PARSE_SPEC = parseSpec;
-        }
-      );
+      # One check derivation per layout, depending on ONLY that layout (so the
+      # whole image set never has to build at once — that was the wart in the old
+      # single `images-parse` spec). Built explicitly by the images workflow, and
+      # excluded from `nix flake check` via the `image-` prefix (see
+      # nix/checks.nix) since each pulls a heavy image build.
+      imageChecks = lib.mapAttrs' (
+        name: d:
+        lib.nameValuePair "image-check-${name}" (
+          pkgs.runCommand "image-check-${name}" { } ''
+            ${imageCheckBin}/bin/image-check ${d.layout} \
+              --name ${lib.escapeShellArg name} \
+              --root-layers ${toString d.rootLayers} \
+              --boot-layers ${toString d.bootLayers} \
+              --title ${lib.escapeShellArg d.title}
+            touch "$out"
+          ''
+        )
+      ) allImageDefs;
 
       imagePackages = lib.mapAttrs' (name: d: lib.nameValuePair "image-${name}" d.layout) imageDefs;
     in
@@ -206,9 +202,10 @@
       # nix/tiny-efi.nix. On non-Linux systems `packages` is simply empty.
       packages = lib.optionalAttrs isLinux (
         imagePackages
+        // imageChecks
         // {
           image-helper-smoke = imageHelperSmoke;
-          images-parse = imagesParse;
+          image-check = imageCheckBin;
         }
       );
     };

@@ -187,6 +187,11 @@ let
         "console"
         "treadmill-rs"
       ];
+      # Producer-side per-image OCI layout drift-check tool (nix/images.nix).
+      image-check.members = [
+        "images/check"
+        "treadmill-rs"
+      ];
       tml-puppet.members = [
         "puppet"
         "treadmill-rs"

@@ -355,13 +355,13 @@
         );
       }
       # Promote each package output to a check so `nix flake check`
-      # verifies they all build — EXCEPT the producer-side OCI image outputs
-      # (`image-*` and the `images-parse` drift guard). Those are heavy
-      # distro/TCG builds that must never gate ordinary PRs or the merge
-      # queue (doc/images-oci-migration-plan.md §7); the dedicated
-      # `.github/workflows/images.yml` builds them explicitly instead.
-      // (lib.filterAttrs (
-        name: _: !(lib.hasPrefix "image-" name || name == "images-parse")
-      ) self'.packages);
+      # verifies they all build — EXCEPT every producer-side OCI output whose
+      # name starts with `image-`: the layouts AND the per-image `image-check-*`
+      # drift guards. Those are heavy distro/TCG builds that must never gate
+      # ordinary PRs or the merge queue (doc/images-oci-migration-plan.md §7);
+      # the dedicated `.github/workflows/images.yml` builds them explicitly
+      # instead. (The `image-check` binary is compiled by the clippy check
+      # regardless, so it stays covered.)
+      // (lib.filterAttrs (name: _: !(lib.hasPrefix "image-" name)) self'.packages);
     };
 }
