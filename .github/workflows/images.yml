@@ -117,6 +117,13 @@ jobs:
         if: ${{ inputs.push_to_ghcr }}
         shell: nix shell nixpkgs#skopeo --command bash -euo pipefail {0}
         run: |
+          # The runner ships a v1 /etc/containers/registries.conf, which this
+          # (newer) skopeo rejects ("must be in v2 format"). Point it at our own
+          # empty v2 config so it ignores the system file.
+          CONTAINERS_REGISTRIES_CONF="${RUNNER_TEMP}/registries.conf"
+          : > "$CONTAINERS_REGISTRIES_CONF"
+          export CONTAINERS_REGISTRIES_CONF
+
           SYSTEM="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
           OWNER="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           REGISTRY="ghcr.io/${OWNER}"
