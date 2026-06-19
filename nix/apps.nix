@@ -159,6 +159,41 @@ _: {
           exec ${../tools/devstack.sh}
         '';
       };
+
+      # `nix run .#qemu-supervisor-local` -- run the QEMU supervisor standalone,
+      # without the switchboard/console/DB/NATS control plane. Brings up a
+      # per-developer zot that sources an image from an upstream registry
+      # (ghcr.io by default), then drives a single job through the
+      # switchboard-less `local` connector (connector/local). The guest console
+      # streams to the terminal; Ctrl-C stops the job and tears down.
+      #
+      # Linux-only (it needs the qemu supervisor + zot, which are themselves
+      # Linux-only here); on other systems the runtime inputs and firmware are
+      # omitted and the script will report the missing firmware.
+      qemu-supervisor-local = pkgs.writeShellApplication {
+        name = "treadmill-qemu-supervisor-local";
+        runtimeInputs = [
+          pkgs.coreutils
+          pkgs.curl
+        ]
+        ++ lib.optionals isLinux [
+          self'.packages.zot
+          self'.packages.treadmill-qemu-supervisor
+          pkgs.skopeo
+          pkgs.qemu
+        ];
+        text = ''
+          # Supervisor binary + per-arch UEFI firmware blobs, injected from Nix
+          # (empty off Linux; the script errors out cleanly then).
+          export TML_SUPERVISOR_BIN="${lib.optionalString isLinux "${self'.packages.treadmill-qemu-supervisor}/bin/treadmill-qemu-supervisor"}"
+          export TML_OVMF_CODE="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-x86_64-code.fd"}"
+          export TML_OVMF_VARS="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-i386-vars.fd"}"
+          export TML_AAVMF_CODE="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-aarch64-code.fd"}"
+          export TML_AAVMF_VARS="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-arm-vars.fd"}"
+
+          exec ${../tools/local-supervisor.sh} "$@"
+        '';
+      };
     in
     {
       apps.view-openapi = {
@@ -171,6 +206,12 @@ _: {
         type = "app";
         program = "${devstack}/bin/treadmill-devstack";
         meta.description = "Run the local dev stack (switchboard + web console)";
+      };
+
+      apps.qemu-supervisor-local = {
+        type = "app";
+        program = "${qemu-supervisor-local}/bin/treadmill-qemu-supervisor-local";
+        meta.description = "Run the QEMU supervisor standalone against a local zot (no switchboard)";
       };
     };
 }

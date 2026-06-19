@@ -4801,6 +4801,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "treadmill-local-connector"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "humantime",
+ "tokio",
+ "tracing",
+ "treadmill-rs",
+ "uuid",
+]
+
+[[package]]
 name = "treadmill-nbd-netboot-supervisor"
 version = "0.1.0"
 dependencies = [
@@ -4853,6 +4866,7 @@ dependencies = [
  "toml 1.1.2+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "treadmill-local-connector",
  "treadmill-rs",
  "treadmill-supervisor-lib",
  "treadmill-tcp-control-socket-server",

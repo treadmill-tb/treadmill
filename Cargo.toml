@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "cli",
+  "connector/local",
   "connector/ws",
   "console",
   "images/check",
@@ -37,6 +38,7 @@ treadmill-console = { path = "console" }
 treadmill-supervisor-lib = { path = "supervisor/lib" }
 treadmill-tcp-control-socket-client = { path = "control-socket/tcp/client" }
 treadmill-tcp-control-socket-server = { path = "control-socket/tcp/server" }
+treadmill-local-connector = { path = "connector/local" }
 treadmill-ws-connector = { path = "connector/ws" }
 
 # Shared third-party dependencies. Versions here are floors; per-member
@@ -51,6 +53,7 @@ clap = "4.5.24"
 futures = { version = "0.3.30", default-features = false }
 futures-util = "0.3.30"
 http = "1.1.0"
+humantime = "2.1.0"
 humantime-serde = "1.1.1"
 insta = "1"
 log = "0.4.22"

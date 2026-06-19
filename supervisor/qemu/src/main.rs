@@ -33,6 +33,11 @@ pub struct QemuSupervisorArgs {
     /// Path to the TOML configuration file
     #[arg(short, long)]
     config_file: PathBuf,
+
+    /// Per-job inputs for the switchboard-less `local` connector
+    /// (`coord_connector = "local"`). Ignored by the other connectors.
+    #[command(flatten)]
+    local_job: Option<treadmill_local_connector::LocalJobArgs>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -1620,6 +1625,58 @@ async fn main() -> Result<()> {
 
             Ok(())
         }
+        SupervisorCoordConnector::Local => {
+            // One-shot, switchboard-less run: drive a single job from the
+            // command-line `LocalJobArgs` against the local OCI store.
+            let local_job = args.local_job.clone().ok_or(anyhow!(
+                "Requested the `local` connector, but no job was supplied on the \
+                 command line (need at least --manifest-digest and --repository)."
+            ))?;
+            if local_job.manifest_digest.is_none() || local_job.repository.is_none() {
+                bail!("The `local` connector requires both --manifest-digest and --repository.");
+            }
+            let registry = config.oci_store.registry.clone();
+
+            // Same cyclic Arc dance as the WsConnector arm: connector and
+            // supervisor reference each other.
+            let mut connector_opt = None;
+
+            let qemu_supervisor = {
+                let connector_opt = &mut connector_opt;
+                Arc::new_cyclic(move |weak_supervisor| {
+                    let connector = Arc::new(treadmill_local_connector::LocalConnector::new(
+                        registry,
+                        local_job,
+                        weak_supervisor.clone(),
+                    ));
+                    *connector_opt = Some(connector.clone());
+                    QemuSupervisor::new(connector, image_store, launcher, args, config)
+                })
+            };
+
+            let connector = connector_opt.take().unwrap();
+
+            // Ctrl-C requests a graceful shutdown: stop the job and let run()
+            // return. A second Ctrl-C (after run() has returned) terminates the
+            // process the usual way.
+            let connector_for_signal = connector.clone();
+            tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    info!("Received Ctrl-C => requesting graceful shutdown...");
+                    connector_for_signal.request_shutdown();
+                }
+            });
+
+            if let Err(()) = connector.run().await {
+                warn!("Local run exited with an error.");
+            } else {
+                info!("Local run finished, shutting down supervisor...");
+            }
+
+            std::mem::drop(qemu_supervisor);
+
+            Ok(())
+        }
         unsupported_connector => {
             bail!("Unsupported coord connector: {:?}", unsupported_connector);
         }
@@ -1874,6 +1931,7 @@ mod tests {
         };
         let args = QemuSupervisorArgs {
             config_file: PathBuf::new(),
+            local_job: None,
         };
 
         let sup = Arc::new(QemuSupervisor::new(
@@ -2272,6 +2330,7 @@ mod tests {
             };
             let args = QemuSupervisorArgs {
                 config_file: PathBuf::new(),
+                local_job: None,
             };
             let sup = Arc::new(QemuSupervisor::new(
                 connector.clone(),

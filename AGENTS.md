@@ -252,7 +252,26 @@ committing.
 
 ---
 
-## 9. Pointers
+## 9. Running a supervisor standalone (no switchboard)
+
+To exercise a supervisor on its own — boot one image and watch the console
+without the switchboard/console/DB/NATS control plane — use:
+
+```bash
+nix run .#qemu-supervisor-local -- --image ghcr.io/<org>/<repo>:<tag>
+```
+
+It starts a per-developer `zot` that sources the image from the upstream
+registry (on-demand pull-through by default; `--copy` does an upfront `skopeo
+copy`), resolves the tag to a manifest digest, and runs the QEMU supervisor
+under the switchboard-less **`local` connector** (`connector/local`,
+`coord_connector = "local"`). The connector synthesizes one `StartJobMessage`
+from CLI flags (`--ssh-key`, `-p key=val`, `--stop-after`, …), streams the guest
+console to the terminal, and tears down on guest-exit or Ctrl-C. The wrapper
+lives in `tools/local-supervisor.sh` (`--arch`, `--no-kvm`, `--mem`, etc.). For
+the full stack instead, use `nix run .#devstack`.
+
+## 10. Pointers
 
 - Architecture & terminology: `README.md`, `doc/img/` (provisional, may be
   outdated pending the post-refactor docs rewrite).

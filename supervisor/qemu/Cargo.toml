@@ -7,6 +7,7 @@ edition.workspace = true
 [dependencies]
 treadmill-rs = { workspace = true }
 treadmill-supervisor-lib = { workspace = true }
+treadmill-local-connector = { workspace = true }
 treadmill-tcp-control-socket-server = { workspace = true }
 treadmill-ws-connector = { workspace = true }
 
@@ -15,7 +16,12 @@ async-trait = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 strfmt = "0.2.4"
-tokio = { workspace = true, features = ["rt-multi-thread", "process", "fs"] }
+tokio = { workspace = true, features = [
+  "rt-multi-thread",
+  "process",
+  "fs",
+  "signal",
+] }
 toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
