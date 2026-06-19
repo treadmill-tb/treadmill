@@ -1,0 +1,68 @@
+# THROWAWAY Phase 0 spike (doc/images-libguestfs-build-plan.md §9).
+# Validates the runner-specific unknowns that can't be checked locally:
+#   * is /dev/kvm present on the x86_64 AND aarch64 hosted runners?
+#   * does virt-customize --install (live apt) work under each, and how long?
+#   * does guestfish partition extraction + mtools FAT edit work on the real
+#     RPi OS image on a native aarch64 runner?
+# Delete this file once Phase 0 is signed off.
+name: images-spike-phase0
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  x86_64-ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tools + KVM probe
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libguestfs-tools mtools qemu-utils curl
+          ls -l /dev/kvm || echo "NO /dev/kvm"
+          # libguestfs uses KVM automatically when /dev/kvm is present.
+      - name: virt-customize an Ubuntu cloud image (timed)
+        run: |
+          set -euxo pipefail
+          url=https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img
+          curl -fL "$url" -o base.img
+          qemu-img create -f qcow2 -b base.img -F qcow2 delta.qcow2
+          /usr/bin/time -v virt-customize -a delta.qcow2 \
+            --install build-essential,vim,tmux \
+            --run-command 'id; apt-get -y purge cloud-init; echo provisioned' \
+            2>&1 | tail -25
+          qemu-img rebase -u -b "" delta.qcow2
+          qemu-img info delta.qcow2
+
+  aarch64-raspbian:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Tools + KVM probe (THE key arm64 question)
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libguestfs-tools mtools qemu-utils xz-utils curl
+          ls -l /dev/kvm && echo "ARM KVM: yes" || echo "ARM KVM: NO (same-arch TCG fallback)"
+      - name: Extract partitions + edit FAT + customize root (timed)
+        run: |
+          set -euxo pipefail
+          url=https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2026-04-21/2026-04-21-raspios-trixie-arm64-lite.img.xz
+          curl -fL "$url" -o rpi.img.xz
+          xz -d rpi.img.xz
+          img=rpi.img
+          virt-filesystems -a "$img" --partitions --long
+          /usr/bin/time -v guestfish --ro -a "$img" run : download /dev/sda1 boot.fat 2>&1 | tail -8
+          guestfish --ro -a "$img" run : download /dev/sda2 root.raw
+          # FAT edit
+          printf '%s\n' 'console=serial0,115200 root=/dev/nbd0 nbdroot=dhcp,root,nbd0 rootwait' \
+            | mcopy -o -i boot.fat - ::cmdline.txt
+          mtype -i boot.fat ::cmdline.txt
+          # root customize delta
+          qemu-img convert -f raw -O qcow2 root.raw layer0.qcow2
+          qemu-img create -f qcow2 -b layer0.qcow2 -F qcow2 delta.qcow2
+          /usr/bin/time -v virt-customize -a delta.qcow2 \
+            --run-command 'id; userdel -r pi || true; useradd -m -u 1000 tml; echo provisioned' \
+            2>&1 | tail -25
