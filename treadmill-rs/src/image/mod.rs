@@ -1,4 +1,5 @@
 pub mod annotations;
+pub mod assemble;
 pub mod blockdev;
 pub mod digest;
 pub mod image_ref;

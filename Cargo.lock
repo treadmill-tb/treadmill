@@ -4790,13 +4790,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "treadmill-image-check"
+name = "treadmill-image-util"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "oci-spec 0.10.0",
  "serde_json",
+ "sha2 0.10.9",
  "treadmill-rs",
 ]
 

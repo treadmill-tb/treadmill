@@ -1,21 +1,23 @@
-# Producer-side OCI image builds (doc/images-oci-migration-plan.md).
+# Producer-side OCI image builds.
 #
-# This module folds the legacy standalone `images/` repository into the
-# monorepo: it builds the Treadmill production images as proper OCI layouts via
-# the shared `images/lib/` helpers (the siblings of the `nix/tiny-efi.nix`
-# reference fixture) and exposes them as `packages.image-*`.
+# This module builds the legacy `vmTools`-based Treadmill production images as
+# OCI layouts and exposes them as `packages.image-*`. The layouts are assembled
+# and validated by the `image-util` binary (images/util); this is the parallel
+# vmTools pipeline that the libguestfs pipeline replaces
+# (doc/images-libguestfs-build-plan.md — the recipe files here go away in its
+# Phase 6).
 #
 # Linux-only (exactly like nix/tiny-efi.nix): the builds need `runInLinuxVM`,
 # `qemu-system-*`, `dosfstools`/`mtools`, deb bootstrapping, etc.
 #
 # Heavy builds are kept OUT of the ordinary `nix flake check` set: every output
-# whose name starts with `image-` (the layouts AND the per-image `image-check-*`
-# drift guards) is excluded from the package→check promotion in nix/checks.nix,
-# so they gate nothing on PRs or the merge queue. They are built explicitly by
-# the separate `.github/workflows/images.yml` workflow via
-# `nix build .#packages.<sys>.{image-*,image-check-*}`. The `image-check` binary
-# itself is cheap and image-independent; it is compiled by the workspace clippy
-# check regardless.
+# whose name starts with `image-` (the layouts, the per-image `image-check-*`
+# drift guards, AND the `image-util` binary) is excluded from the package→check
+# promotion in nix/checks.nix, so they gate nothing on PRs or the merge queue.
+# They are built explicitly by the separate `.github/workflows/images.yml`
+# workflow via `nix build .#packages.<sys>.{image-*,image-check-*}`. The
+# `image-util` binary itself is cheap and image-independent; it is compiled by
+# the workspace clippy check regardless.
 { inputs, ... }:
 {
   perSystem =
@@ -31,14 +33,51 @@
 
       cmn = import ./lib.nix { inherit inputs system pkgs; };
 
-      mediaTypes = import ../images/lib/media-types.nix;
-      mkTreadmillImage = import ../images/lib/mk-treadmill-image.nix { inherit pkgs lib mediaTypes; };
+      # `image-util` owns the OCI media-type / annotation constants and the OCI
+      # layout assembly (`treadmill_rs::image::assemble`, symmetric with the
+      # parser); this binary is its CLI. Compiling it is cheap and
+      # image-independent.
+      imageUtilBin = cmn.mkBin { bin = "image-util"; };
+
+      # The per-image recipes below still tag each layer with a `mediaType`, but
+      # it is vestigial: `image-util` derives the real media type from the layer
+      # role. This 2-entry shim only keeps those references resolving until the
+      # recipes are replaced by `images/lib/build-image.sh`
+      # (doc/images-libguestfs-build-plan.md Phase 6).
+      mediaTypes = {
+        diskQcow2 = "application/vnd.treadmill.disk.qcow2";
+        bootFatV1 = "application/vnd.treadmill.boot.fat.v1";
+      };
+
+      # Producer wrapper: assemble an ordered layer list into a validated OCI
+      # layout via `image-util assemble`. Backing-chain wiring and media types
+      # are derived in Rust (shared with the parser), so this just forwards
+      # role + path in order; `mediaType`/`virtualSize` on layers are ignored
+      # (the qcow2 virtual size is read from each blob's header).
+      mkTreadmillImage =
+        {
+          name,
+          title,
+          version ? null,
+          description ? null,
+          layers,
+        }:
+        pkgs.runCommand "treadmill-image-${name}" { nativeBuildInputs = [ imageUtilBin ]; } ''
+          image-util assemble \
+            --title ${lib.escapeShellArg title} \
+            ${lib.optionalString (version != null) "--version ${lib.escapeShellArg version}"} \
+            ${lib.optionalString (description != null) "--description ${lib.escapeShellArg description}"} \
+            ${
+              lib.concatMapStringsSep " " (l: "--layer ${l.role}=${lib.escapeShellArg (toString l.path)}") layers
+            } \
+            -o "$out"
+        '';
 
       # --- Phase A smoke ----------------------------------------------------
       # Prove `mkTreadmillImage` against REAL qcow2 blobs before any heavy distro
       # build exists. Self-contained: build a throwaway two-layer qcow2 backing
       # chain from scratch (no cross-module package reference), package it
-      # through the helper, and reparse the result via the image-check guard.
+      # through the helper, and reparse the result via `image-util parse`.
       smokeBlobs =
         pkgs.runCommand "treadmill-image-helper-smoke-blobs" { nativeBuildInputs = [ pkgs.qemu-utils ]; }
           ''
@@ -165,12 +204,10 @@
       };
       allImageDefs = smokeImageDefs // imageDefs;
 
-      # --- per-image drift guard (§6.1) -------------------------------------
-      # The standalone `image-check` binary (images/check) reparses ONE built
-      # layout through the real `treadmill_rs::image::parse` view and asserts its
-      # expected shape. Compiling it is cheap and image-independent; the heavy
-      # work is the layout each check points at.
-      imageCheckBin = cmn.mkBin { bin = "image-check"; };
+      # --- per-image drift guard --------------------------------------------
+      # `image-util parse` reparses ONE built layout through the real
+      # `treadmill_rs::image::parse` view and asserts its expected shape. The
+      # heavy work is the layout each check points at, not the shared binary.
 
       # One check derivation per layout, depending on ONLY that layout (so the
       # whole image set never has to build at once — that was the wart in the old
@@ -181,7 +218,7 @@
         name: d:
         lib.nameValuePair "image-check-${name}" (
           pkgs.runCommand "image-check-${name}" { } ''
-            ${imageCheckBin}/bin/image-check ${d.layout} \
+            ${imageUtilBin}/bin/image-util parse ${d.layout} \
               --name ${lib.escapeShellArg name} \
               --root-layers ${toString d.rootLayers} \
               --boot-layers ${toString d.bootLayers} \
@@ -205,7 +242,7 @@
         // imageChecks
         // {
           image-helper-smoke = imageHelperSmoke;
-          image-check = imageCheckBin;
+          image-util = imageUtilBin;
         }
       );
     };

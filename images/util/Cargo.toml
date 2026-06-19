@@ -1,13 +1,13 @@
 [package]
-name = "treadmill-image-check"
+name = "treadmill-image-util"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license = "MIT OR Apache-2.0"
-description = "Validate a built Treadmill OCI image layout against its expected shape"
+description = "Assemble and validate Treadmill OCI image layouts"
 
 [[bin]]
-name = "image-check"
+name = "image-util"
 path = "src/main.rs"
 
 [dependencies]
@@ -15,6 +15,7 @@ treadmill-rs = { workspace = true }
 oci-spec = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 anyhow = { workspace = true }
 
 [lints]
