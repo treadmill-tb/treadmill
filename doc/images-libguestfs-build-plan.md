@@ -1,12 +1,27 @@
 # Treadmill image builds: Nix `vmTools` → libguestfs
 
-Status: planning. Replaces the `vmTools`/`mk-treadmill-image.nix` image-build
+Status: in progress. Replaces the `vmTools`/`mk-treadmill-image.nix` image-build
 machinery under `images/` with a libguestfs-driven shell pipeline plus a single
 Rust `image-util` binary for OCI layout assembly **and** validation.
 
 This plan is scoped to *how the rootfs and OCI layout get built*. The supervisor
 store/launch paths and the `treadmill_rs::image` parser are unchanged except for
 a new, symmetric `assemble` counterpart to the existing `parse`.
+
+### Implementation status (2026-06-19)
+
+- **Phase 0 — local mechanics: DONE.** guestfish partition extraction, mtools
+  FAT edit, the qcow2 overlay→`rebase`→recompose chain, and the qcow2-header
+  virtual-size read all validated under KVM via `nix develop .#images`.
+  **Still owed:** dispatch `.github/workflows/images-spike.yml` (throwaway) on
+  GitHub to confirm aarch64-runner `/dev/kvm` + real `virt-customize --install`
+  timings. Gates Phase 2's *CI* run, not its code.
+- **Phase 1 — `image-util`: DONE** (commit `2201cee`). `treadmill_rs::image::assemble`
+  added (roundtrip-tested against `parse`); `images/check` → `images/util` with
+  `assemble` + `parse` subcommands; `mk-treadmill-image.nix` + `media-types.nix`
+  deleted; `nix/images.nix` assembles via `image-util assemble`. The vmTools
+  recipes still build (parallel pipeline) until Phase 6.
+- **Phase 2 (Ubuntu base) and on: TODO** — see §9.
 
 ---
 

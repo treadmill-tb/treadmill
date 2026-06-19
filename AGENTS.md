@@ -76,6 +76,13 @@ nix develop .#database --command bash -c './switchboard/migrate.sh -v'  # DB she
   for anything that needs a live database: running `#[sqlx::test]` tests,
   regenerating `.sqlx`, or authoring migrations. The cluster is torn down when
   the shell's process exits.
+- **`images`** — the libguestfs image-build pipeline tooling
+  (`virt-customize`/`guestfish` with bundled appliance, `mtools`, `qemu-img`,
+  `xz`, `curl`; `LIBGUESTFS_BACKEND=direct`). Standalone (no Rust/PG/NATS): the
+  in-progress `images/lib/build-image.sh` is plain shell that consumes the
+  Nix-built `tml-puppet` / `image-util` binaries. Image builds need privileged
+  libguestfs + network (live apt), so they run **in this shell**, not as a
+  hermetic Nix check. See `doc/images-libguestfs-build-plan.md`.
 
 ### Sandbox caveat (important for agents)
 
@@ -276,6 +283,10 @@ the full stack instead, use `nix run .#devstack`.
 - Architecture & terminology: `README.md`, `doc/img/` (provisional, may be
   outdated pending the post-refactor docs rewrite).
 - OCI image migration (active): `doc/oci-image-migration-plan.md`.
+- Image builds — Nix `vmTools` → libguestfs migration (active):
+  `doc/images-libguestfs-build-plan.md`. Layouts are assembled + validated by
+  the `image-util` binary (`images/util`); the `images` dev shell (§2) has the
+  build tooling.
 - Switchboard protocol refactor: `doc/switchboard-protocol-refactor-plan.md`.
 - Schema source of truth: `switchboard/SCHEMA.sql`; migration tooling:
   `switchboard/migrate.sh`.
