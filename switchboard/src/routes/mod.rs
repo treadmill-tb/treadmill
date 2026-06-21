@@ -7,7 +7,7 @@ mod users;
 use crate::config::EmbeddedConsoleConfig;
 use crate::serve::AppState;
 use aide::axum::ApiRouter;
-use aide::axum::routing::{delete_with, get_with, post_with};
+use aide::axum::routing::{delete_with, get_with, post_with, put_with};
 use axum::Router;
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -158,8 +158,7 @@ pub fn api_router() -> ApiRouter<AppState> {
         //  GET  /image-groups        -- list owned image groups
         .api_route(
             "/image-groups",
-            post_with(images::create_image_group, |o| o)
-                .get_with(images::list_image_groups, |o| o),
+            post_with(images::create_image_group, |o| o).get_with(images::list_image_groups, |o| o),
         )
         //  GET /image-groups/{id}    -- inspect one image group
         .api_route(
@@ -187,6 +186,13 @@ pub fn api_router() -> ApiRouter<AppState> {
         .api_route(
             "/image-groups/{id}/grants/{subject_id}/{permission}",
             delete_with(images::revoke_image_group_grant, |o| o),
+        )
+        //  PUT /image-groups/{id}/public -- toggle the group's implicit `use`
+        //  grant to everyone (part of the authorization surface, alongside the
+        //  per-subject grants above; not descriptive metadata)
+        .api_route(
+            "/image-groups/{id}/public",
+            put_with(images::set_image_group_public, |o| o),
         )
 }
 

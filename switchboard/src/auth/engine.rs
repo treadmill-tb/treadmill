@@ -206,9 +206,11 @@ impl From<treadmill_rs::api::switchboard::images::ImageGroupPermission> for Imag
 /// Whether `subject_id` may exercise `permission` on the image group.
 ///
 /// Authorized iff the subject is a global admin, owns the group (directly or via
-/// a group it transitively joins), or holds a matching grant — the standard
-/// ownership ∨ grant disjunction over `principals()`. The owner implicitly holds
-/// every permission, so a `manage` query passes for the owner even with no grant.
+/// a group it transitively joins), holds a matching grant — the standard
+/// ownership ∨ grant disjunction over `principals()` — or, for `use` only, the
+/// group is marked `public`. The owner implicitly holds every permission, so a
+/// `manage` query passes for the owner even with no grant; `public` never
+/// confers `manage`.
 pub async fn can_access_image_group(
     conn: impl PgExecutor<'_>,
     subject_id: Uuid,
@@ -230,6 +232,13 @@ pub async fn can_access_image_group(
                  select 1 from tml_switchboard.image_group_grants gr \
                  join principals p on gr.subject_id = p.id \
                  where gr.group_id = $2::uuid and gr.permission::text = $3 \
+             ) \
+             or ( \
+                 $3 = 'use' \
+                 and exists ( \
+                     select 1 from tml_switchboard.image_groups g \
+                     where g.id = $2::uuid and g.public \
+                 ) \
              ) \
          ) as \"authorized!\"",
         subject_id,

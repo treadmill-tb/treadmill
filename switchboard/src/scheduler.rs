@@ -406,7 +406,15 @@ mod tests {
     ) -> anyhow::Result<(Uuid, Vec<Digest>)> {
         let gid = Uuid::new_v4();
         let mut tx = pool.begin().await?;
-        sql::image::create_group(&mut *tx, gid, &format!("group-{name_seed}"), owner, None).await?;
+        sql::image::create_group(
+            &mut *tx,
+            gid,
+            &format!("group-{name_seed}"),
+            owner,
+            None,
+            false,
+        )
+        .await?;
         let mut member_rows = Vec::new();
         let mut member_digests = Vec::new();
         for (index, (seed, req_tags)) in members.iter().enumerate() {

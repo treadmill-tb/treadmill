@@ -41,6 +41,8 @@ pub struct GroupRecord {
     pub name: String,
     pub owner_subject: Option<Uuid>,
     pub label: Option<String>,
+    /// When set, every subject implicitly holds `use` on the group.
+    pub public: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -203,15 +205,34 @@ pub async fn create_group(
     name: &str,
     owner_subject: Uuid,
     label: Option<&str>,
+    public: bool,
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
         r#"insert into tml_switchboard.image_groups
-             (id, name, owner_subject, label)
-           values ($1, $2, $3, $4)"#,
+             (id, name, owner_subject, label, public)
+           values ($1, $2, $3, $4, $5)"#,
         id,
         name,
         owner_subject,
         label,
+        public,
+    )
+    .execute(conn)
+    .await
+    .map(|_| ())
+}
+
+/// Set (or clear) a group's `public` flag, granting/revoking the implicit `use`
+/// permission for every subject.
+pub async fn set_group_public(
+    conn: impl PgExecutor<'_>,
+    id: Uuid,
+    public: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"update tml_switchboard.image_groups set public = $2 where id = $1"#,
+        id,
+        public,
     )
     .execute(conn)
     .await
@@ -225,7 +246,7 @@ pub async fn fetch_group_by_id(
 ) -> Result<Option<GroupRecord>, sqlx::Error> {
     sqlx::query_as!(
         GroupRecord,
-        r#"select id, name, owner_subject, label, created_at
+        r#"select id, name, owner_subject, label, public, created_at
            from tml_switchboard.image_groups where id = $1"#,
         id,
     )
@@ -240,7 +261,7 @@ pub async fn fetch_group_by_name(
 ) -> Result<Option<GroupRecord>, sqlx::Error> {
     sqlx::query_as!(
         GroupRecord,
-        r#"select id, name, owner_subject, label, created_at
+        r#"select id, name, owner_subject, label, public, created_at
            from tml_switchboard.image_groups where name = $1"#,
         name,
     )
@@ -248,16 +269,21 @@ pub async fn fetch_group_by_name(
     .await
 }
 
-/// Groups visible to `subject` (owned by it or a group it transitively joins).
+/// Groups visible to `subject`: those it owns (directly or via a group it
+/// transitively joins) plus every `public` group.
 pub async fn list_owned_groups(
     conn: impl PgExecutor<'_>,
     subject: Uuid,
 ) -> Result<Vec<GroupRecord>, sqlx::Error> {
     sqlx::query_as!(
         GroupRecord,
-        r#"select g.id, g.name, g.owner_subject, g.label, g.created_at
+        r#"select g.id, g.name, g.owner_subject, g.label, g.public, g.created_at
            from tml_switchboard.image_groups g
-           join tml_switchboard.principals($1) p on p.id = g.owner_subject
+           where g.public
+              or exists (
+                  select 1 from tml_switchboard.principals($1) p
+                  where p.id = g.owner_subject
+              )
            order by g.created_at"#,
         subject,
     )

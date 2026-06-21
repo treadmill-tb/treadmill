@@ -17,10 +17,10 @@ use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
 use crate::audit::feed::{AuditFeedResponse, fetch_events_for_entity};
 use crate::audit::model::{Job as AuditJob, Subject as AuditSubject};
 use crate::audit::{self, events};
-use crate::auth::engine::{self, JobPermission};
+use crate::auth::engine::{self, ImageGroupPermission, JobPermission};
 use crate::log_streaming::{self, TokenScope};
 use crate::serve::AppState;
-use crate::sql::job;
+use crate::sql::{image, job};
 
 /// Default and maximum page sizes for `GET /jobs`.
 const DEFAULT_LIST_LIMIT: u32 = 50;
@@ -129,14 +129,18 @@ pub async fn list_events(
 ///     the job is owned by the caller.
 ///   - **Resume/restart.** A `ResumeJob`/`RestartJob` references an existing job;
 ///     the caller must hold `Manage` on it, else `403`.
+///   - **Image group.** An `ImageGroup` job requires `use` on the group (else
+///     `403`, existence not leaked) and freezes a concrete generation now; a
+///     group with no generation to freeze is a `400`.
 ///
-/// Image validity and host eligibility are **not** checked here: an unresolvable
-/// image finalizes the job as `image_error` at dispatch, and host eligibility is
-/// the scheduler's authoritative concern (see the `TODO(authz)` below).
+/// Concrete-image (`Image`) validity and host eligibility are **not** checked
+/// here: an unresolvable image finalizes the job as `image_error` at dispatch,
+/// and host eligibility is the scheduler's authoritative concern (see the
+/// `TODO(authz)` below).
 pub async fn enqueue(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Json(req): Json<JobRequest>,
+    Json(mut req): Json<JobRequest>,
 ) -> Result<(StatusCode, Json<EnqueueJobResponse>), StatusCode> {
     let caller = subject.user_id();
 
@@ -176,6 +180,69 @@ pub async fn enqueue(
         if !authorized {
             return Err(StatusCode::FORBIDDEN);
         }
+    }
+
+    // An image-group job requires `use` on the group and freezes a concrete
+    // generation at enqueue, so the candidate set is reproducible (resolution to
+    // a concrete member still happens per-host at dispatch). Resolve and validate
+    // it up front rather than deferring to dispatch: a missing group or missing
+    // `use` is a 403 (existence is not leaked), and a group with no generation to
+    // freeze is a 400.
+    if let JobInitSpec::ImageGroup {
+        image_group,
+        generation,
+    } = req.init_spec
+    {
+        let may_use = engine::can_access_image_group(
+            state.pool(),
+            caller,
+            image_group,
+            ImageGroupPermission::Use,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("checking `use` on image group {image_group}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        if !may_use {
+            return Err(StatusCode::FORBIDDEN);
+        }
+
+        let frozen = match generation {
+            // An explicitly requested generation must exist (nothing to pin
+            // otherwise); the FK would also reject it, but a 400 here is clearer.
+            Some(g) => {
+                if image::fetch_generation(state.pool(), image_group, g)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(
+                            "looking up generation {g} of image group {image_group}: {e}"
+                        );
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?
+                    .is_none()
+                {
+                    return Err(StatusCode::BAD_REQUEST);
+                }
+                g
+            }
+            None => image::latest_generation(state.pool(), image_group)
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        "resolving latest generation of image group {image_group}: {e}"
+                    );
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?
+                .ok_or(StatusCode::BAD_REQUEST)?,
+        };
+
+        // Pin the resolved generation so the stored freeze is exactly what we
+        // authorized and validated (job::insert would otherwise re-derive it).
+        req.init_spec = JobInitSpec::ImageGroup {
+            image_group,
+            generation: Some(frozen),
+        };
     }
 
     // Resolve the timeout (explicit override, else the deployment default) and

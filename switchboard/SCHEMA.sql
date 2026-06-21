@@ -872,7 +872,9 @@ create table tml_switchboard.image_locations
 -- A named, mutable image group. `name` is the stable moving-target handle a job
 -- references (by id); membership lives in immutable per-generation snapshots
 -- (`image_group_generations` / `image_group_members`). Groups are never deleted
--- (metadata is immortal), so a job that pinned a generation always resolves. See
+-- (metadata is immortal), so a job that pinned a generation always resolves.
+-- `public` grants every subject the `use` permission (run jobs against the
+-- group) without an explicit grant; it never confers `manage`. See
 -- doc/image-groups-mutable-generations-plan.md.
 create table tml_switchboard.image_groups
 (
@@ -880,6 +882,7 @@ create table tml_switchboard.image_groups
     name              text                     not null unique,
     owner_subject     uuid                     references tml_switchboard.subjects (subject_id) on delete set null,
     label             text,
+    public            boolean                  not null default false,
     created_at        timestamp with time zone not null default current_timestamp
 );
 

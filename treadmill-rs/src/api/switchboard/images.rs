@@ -59,6 +59,17 @@ pub struct CreateImageGroupRequest {
     /// Optional human-readable label.
     #[serde(default)]
     pub label: Option<String>,
+    /// When `true`, every subject implicitly holds `use` on the group (may run
+    /// jobs against it) without an explicit grant. Never confers `manage`.
+    #[serde(default)]
+    pub public: bool,
+}
+
+/// `PUT /image-groups/{id}/public`: declare a group public (or private again).
+/// Requires `manage`.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct SetImageGroupPublicRequest {
+    pub public: bool,
 }
 
 /// One member of a new generation; `index` is the member's array position in the
@@ -87,6 +98,8 @@ pub struct ImageGroupInfo {
     pub name: String,
     pub label: Option<String>,
     pub owner_id: Option<Uuid>,
+    /// When `true`, every subject implicitly holds `use` on the group.
+    pub public: bool,
     pub created_at: DateTime<Utc>,
     /// The group's latest generation number, or `None` if it has none yet.
     pub latest_generation: Option<u32>,

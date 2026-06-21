@@ -25,7 +25,9 @@ use tokio::net::TcpListener;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::images::{ImageGroupGenerationInfo, ImageGroupInfo, ImageInfo};
-use treadmill_rs::api::switchboard::{LoginResponse, WhoAmIResponse};
+use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, JobImageRef, JobInfo};
+use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, LoginResponse, WhoAmIResponse};
+use treadmill_rs::api::switchboard_supervisor::RestartPolicy;
 use treadmill_rs::image::Digest;
 use treadmill_switchboard::registry::{RegistryClient, RegistryError};
 use treadmill_switchboard::routes::build_router;
@@ -213,6 +215,78 @@ async fn register_image(
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
     resp.json().await.unwrap()
+}
+
+/// Create an empty image group via `POST /image-groups` and return its view.
+async fn create_group(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    name: &str,
+    public: bool,
+) -> ImageGroupInfo {
+    let resp = client
+        .post(format!("{base}/image-groups"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "name": name, "public": public }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    resp.json().await.unwrap()
+}
+
+/// Append a one-member generation referencing `image_id`.
+async fn add_generation(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    group: Uuid,
+    image: Uuid,
+) {
+    let resp = client
+        .post(format!("{base}/image-groups/{group}/generations"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "members": [
+            { "image_id": image, "required_host_tags": [] },
+        ] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+}
+
+/// `POST /jobs` referencing an image group; returns the raw response so the
+/// caller can assert on the status (the enqueue authorization is under test).
+async fn enqueue_group(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    group: Uuid,
+    generation: Option<u32>,
+) -> reqwest::Response {
+    let req = JobRequest {
+        init_spec: JobInitSpec::ImageGroup {
+            image_group: group,
+            generation,
+        },
+        owner: None,
+        ssh_keys: vec![],
+        restart_policy: RestartPolicy {
+            remaining_restart_count: 0,
+        },
+        parameters: HashMap::new(),
+        host_tag_requirements: vec![],
+        target_requirements: vec![],
+        override_timeout: None,
+    };
+    client
+        .post(format!("{base}/jobs"))
+        .bearer_auth(token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap()
 }
 
 // -- image registration ---------------------------------------------------------
@@ -539,4 +613,124 @@ async fn image_group_permissions_are_enforced(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn enqueue_image_group_checks_use_and_freezes_generation(pool: PgPool) {
+    let mut reg = StubRegistry::default();
+    let m = reg.put(REGISTRY, REPO, image_manifest_bytes("member"));
+    let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
+    let client = http_client();
+    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let base = format!("http://{addr}/api/v1");
+
+    let img = register_image(&client, &base, &bob_token, &m).await;
+    let group = create_group(&client, &base, &bob_token, "ubuntu", false).await;
+
+    // A group with no generation has nothing to freeze: enqueue is a 400.
+    let resp = enqueue_group(&client, &base, &bob_token, group.id, None).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    add_generation(&client, &base, &bob_token, group.id, img.id).await;
+
+    // `latest` is frozen onto the job (generation 1) at enqueue.
+    let resp = enqueue_group(&client, &base, &bob_token, group.id, None).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    let job_id = resp.json::<EnqueueJobResponse>().await.unwrap().job_id;
+    let info: JobInfo = client
+        .get(format!("{base}/jobs/{job_id}"))
+        .bearer_auth(&bob_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(matches!(
+        info.image,
+        JobImageRef::ImageGroup { group_id, generation } if group_id == group.id && generation == 1
+    ));
+
+    // A non-existent explicit generation is a 400; the existing one is accepted.
+    let resp = enqueue_group(&client, &base, &bob_token, group.id, Some(2)).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let resp = enqueue_group(&client, &base, &bob_token, group.id, Some(1)).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+
+    // `carol`, with no access to the private group, cannot enqueue against it
+    // (403, existence not leaked).
+    let carol_token = mock_login_token(&client, addr, "carol").await;
+    let resp = enqueue_group(&client, &base, &carol_token, group.id, None).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn public_grants_use_to_everyone(pool: PgPool) {
+    let mut reg = StubRegistry::default();
+    let m = reg.put(REGISTRY, REPO, image_manifest_bytes("member"));
+    let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
+    let client = http_client();
+    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let base = format!("http://{addr}/api/v1");
+
+    let img = register_image(&client, &base, &bob_token, &m).await;
+    // Created public at the start.
+    let group = create_group(&client, &base, &bob_token, "public-ubuntu", true).await;
+    assert!(group.public);
+    add_generation(&client, &base, &bob_token, group.id, img.id).await;
+
+    // `carol` holds no grant, yet a public group is visible and usable to her.
+    let carol_token = mock_login_token(&client, addr, "carol").await;
+    let resp = client
+        .get(format!("{base}/image-groups/{}", group.id))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let resp = enqueue_group(&client, &base, &carol_token, group.id, None).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+
+    // But `public` confers only `use`, never `manage`: carol cannot append a
+    // generation, nor toggle the flag.
+    let resp = client
+        .post(format!("{base}/image-groups/{}/generations", group.id))
+        .bearer_auth(&carol_token)
+        .json(&serde_json::json!({ "members": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    let resp = client
+        .put(format!("{base}/image-groups/{}/public", group.id))
+        .bearer_auth(&carol_token)
+        .json(&serde_json::json!({ "public": false }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // The owner toggles the group back to private; carol loses `use` again
+    // (404 on inspect, 403 on enqueue).
+    let resp = client
+        .put(format!("{base}/image-groups/{}/public", group.id))
+        .bearer_auth(&bob_token)
+        .json(&serde_json::json!({ "public": false }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert!(!resp.json::<ImageGroupInfo>().await.unwrap().public);
+
+    let resp = client
+        .get(format!("{base}/image-groups/{}", group.id))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+    let resp = enqueue_group(&client, &base, &carol_token, group.id, None).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 }

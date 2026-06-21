@@ -1,4 +1,4 @@
-h1:cpYjkrAsC487UoTzW3UVd8n+DJ2YEquQxyLhmEuGLOQ=
+h1:sPuanJqjgq0yVxSeM4QwLRlXhereBx8WbdKL/lc+dnM=
 00000000000001_base.sql h1:frftxPkUDOJS4m+L8YsWkOiSX2MnDyarR4XiQxbcFk4=
 20250113224121_add_host_job_ssh_endpoints.sql h1:Esa7SvUXholzqUG3gPElKGGXmmEVxZCfpRtN+RCgqUE=
 20250210235044_ssh_endpoint_host_port_struct.sql h1:ASBF7HeYHo27w72gRBmE8BTEUD1ei3PfoZgss9ph3KE=
@@ -20,3 +20,4 @@ h1:cpYjkrAsC487UoTzW3UVd8n+DJ2YEquQxyLhmEuGLOQ=
 20260608031705_add_job_cancel_requested.sql h1:2XbIlsyGS5iw29CMozi83ZsUDDGdLEtfx3vCWyiMdAA=
 20260614025116_add_jobs_listing_index.sql h1:Q1XNcbZ0D6hMXkUcT/6Kr+WrrkgXlpg+evrfujRy7R8=
 20260621174200_image_groups_mutable_generations.sql h1:RGYE4tTwBQAoLj5DN7FGsVqi73t2MhO6jJzTRoCIvgM=
+20260621211154_image_group_public.sql h1:IwhfJyES/B2DcPll09/YF5k3AYO38Cly0rvhCByyUVc=

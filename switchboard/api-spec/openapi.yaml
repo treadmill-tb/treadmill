@@ -426,6 +426,42 @@ paths:
                 type: string
   /image-groups/{id}/grants/{subject_id}/{permission}:
     delete: {}
+  /image-groups/{id}/public:
+    put:
+      requestBody:
+        description: |-
+          `PUT /image-groups/{id}/public`: declare a group public (or private again).
+          Requires `manage`.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetImageGroupPublicRequest'
+        required: true
+      responses:
+        '200':
+          description: A named, mutable image group, as returned by the catalog list/inspect routes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGroupInfo'
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
 components:
   schemas:
     AuditFeedResponse:
@@ -467,6 +503,12 @@ components:
         name:
           description: The stable, globally-unique moving-target handle a job references (by id).
           type: string
+        public:
+          description: |-
+            When `true`, every subject implicitly holds `use` on the group (may run
+            jobs against it) without an explicit grant. Never confers `manage`.
+          type: boolean
+          default: false
       required:
       - name
     Digest:
@@ -683,9 +725,13 @@ components:
           - string
           - 'null'
           format: uuid
+        public:
+          description: When `true`, every subject implicitly holds `use` on the group.
+          type: boolean
       required:
       - id
       - name
+      - public
       - created_at
     ImageGroupPermission:
       description: A permission on an image group; mirrors `tml_switchboard.image_group_permission`.
@@ -1479,6 +1525,16 @@ components:
       - created_at
       - expires_at
       - current
+    SetImageGroupPublicRequest:
+      description: |-
+        `PUT /image-groups/{id}/public`: declare a group public (or private again).
+        Requires `manage`.
+      type: object
+      properties:
+        public:
+          type: boolean
+      required:
+      - public
     SshEndpoint:
       description: An SSH endpoint a running job can be reached on.
       type: object

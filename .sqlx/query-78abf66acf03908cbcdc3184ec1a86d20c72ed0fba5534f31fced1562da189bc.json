@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select g.id, g.name, g.owner_subject, g.label, g.created_at\n           from tml_switchboard.image_groups g\n           join tml_switchboard.principals($1) p on p.id = g.owner_subject\n           order by g.created_at",
+  "query": "select g.id, g.name, g.owner_subject, g.label, g.public, g.created_at\n           from tml_switchboard.image_groups g\n           where g.public\n              or exists (\n                  select 1 from tml_switchboard.principals($1) p\n                  where p.id = g.owner_subject\n              )\n           order by g.created_at",
   "describe": {
     "columns": [
       {
@@ -49,6 +49,17 @@
       },
       {
         "ordinal": 4,
+        "name": "public",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_groups",
+            "name": "public"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -69,8 +80,9 @@
       false,
       true,
       true,
+      false,
       false
     ]
   },
-  "hash": "ad033f672b8329a1027ac5c95b5d78e2a181ece551f2982d3e51bbd567e25f94"
+  "hash": "78abf66acf03908cbcdc3184ec1a86d20c72ed0fba5534f31fced1562da189bc"
 }

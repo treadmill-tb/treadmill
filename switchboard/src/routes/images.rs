@@ -19,9 +19,10 @@ use uuid::Uuid;
 
 use oci_spec::image::ImageManifest;
 use treadmill_rs::api::switchboard::images::{
-    CreateGenerationRequest, CreateImageGroupRequest, GenerationMemberInfo, ImageGroupGenerationInfo,
-    ImageGroupGrantInfo, ImageGroupGrantRequest, ImageGroupInfo, ImageGroupPermission, ImageInfo,
-    ImageLocation, RegisterImageRequest,
+    CreateGenerationRequest, CreateImageGroupRequest, GenerationMemberInfo,
+    ImageGroupGenerationInfo, ImageGroupGrantInfo, ImageGroupGrantRequest, ImageGroupInfo,
+    ImageGroupPermission, ImageInfo, ImageLocation, RegisterImageRequest,
+    SetImageGroupPublicRequest,
 };
 use treadmill_rs::image::parse::{self, ParseError};
 use treadmill_rs::image::{Digest, media_types};
@@ -235,6 +236,7 @@ async fn group_info(
         name: group.name,
         label: group.label,
         owner_id: group.owner_subject,
+        public: group.public,
         created_at: group.created_at,
         latest_generation,
     })
@@ -258,9 +260,16 @@ pub async fn create_image_group(
     }
 
     let id = Uuid::now_v7();
-    image::create_group(state.pool(), id, &req.name, owner, req.label.as_deref())
-        .await
-        .map_err(internal)?;
+    image::create_group(
+        state.pool(),
+        id,
+        &req.name,
+        owner,
+        req.label.as_deref(),
+        req.public,
+    )
+    .await
+    .map_err(internal)?;
 
     let group = image::fetch_group_by_id(state.pool(), id)
         .await
@@ -384,7 +393,10 @@ pub async fn create_generation(
             .map_err(internal)?
             .is_none()
         {
-            tracing::warn!("create_generation references unregistered image {}", m.image_id);
+            tracing::warn!(
+                "create_generation references unregistered image {}",
+                m.image_id
+            );
             return Err(StatusCode::UNPROCESSABLE_ENTITY);
         }
         members.push((m.image_id, m.required_host_tags.clone(), index as i32));
@@ -445,7 +457,11 @@ pub async fn list_image_group_grants(
             let permission = match g.permission.as_str() {
                 "use" => ImageGroupPermission::Use,
                 "manage" => ImageGroupPermission::Manage,
-                other => return Err(internal(format!("unknown image-group permission {other:?}"))),
+                other => {
+                    return Err(internal(format!(
+                        "unknown image-group permission {other:?}"
+                    )));
+                }
             };
             Ok(ImageGroupGrantInfo {
                 subject_id: g.subject_id,
@@ -476,4 +492,25 @@ pub async fn revoke_image_group_grant(
     } else {
         StatusCode::NOT_FOUND
     })
+}
+
+/// `PUT /image-groups/{id}/public`: declare a group public (or private again).
+/// This is part of the authorization surface — `public` is an implicit `use`
+/// grant to *every* subject — so it sits alongside the per-subject grant routes
+/// and is gated on `manage` like them, not treated as descriptive metadata.
+pub async fn set_image_group_public(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(group_id): Path<Uuid>,
+    Json(req): Json<SetImageGroupPublicRequest>,
+) -> Result<Json<ImageGroupInfo>, StatusCode> {
+    require_manage(&state, subject.user_id(), group_id).await?;
+    image::set_group_public(state.pool(), group_id, req.public)
+        .await
+        .map_err(internal)?;
+    let group = image::fetch_group_by_id(state.pool(), group_id)
+        .await
+        .map_err(internal)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(group_info(&state, group).await?))
 }
