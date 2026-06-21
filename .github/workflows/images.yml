@@ -127,7 +127,13 @@ jobs:
       # appliance, so there is no runtime supermin build (no host-kernel
       # readability hack) and no `passt`/`supermin` mismatch with the hosted
       # runner — it is the exact toolchain that builds the image in local dev.
-      - name: Build image layout
+      # Build the base layout, then the gha-runner overlay in the SAME run so the
+      # overlay backs onto the byte-identical base delta (kept in out.build/ by
+      # build-image.sh) — yielding a 3-root-layer chain (layer0 + base delta +
+      # runner delta) whose lower two blobs dedupe with the base image. Each
+      # build-image.sh internally assembles + validates its layout (the base
+      # asserts 2 root layers, the runner asserts 3).
+      - name: Build image layouts (base + gha-runner)
         env:
           LIBGUESTFS_BACKEND: direct
         run: |
@@ -140,19 +146,28 @@ jobs:
           # (passt isn't on the devshell PATH there, so slirp is what we already
           # build + validate with). There is no libguestfs setting to force this.
           sudo rm -f "$(command -v passt || true)" /usr/bin/passt /usr/sbin/passt
+          puppet="${{ steps.bins.outputs.puppet }}/bin/tml-puppet"
+          image_util="${{ steps.bins.outputs.image_util }}/bin/image-util"
           nix develop .#images --command \
             ./images/lib/build-image.sh "${{ matrix.name }}" \
-              --puppet "${{ steps.bins.outputs.puppet }}/bin/tml-puppet" \
-              --image-util "${{ steps.bins.outputs.image_util }}/bin/image-util" \
+              --puppet "$puppet" --image-util "$image_util" \
               -o out
+          nix develop .#images --command \
+            ./images/lib/build-image.sh "${{ matrix.name }}" \
+              --puppet "$puppet" --image-util "$image_util" \
+              --variant gha-runner --base-delta out.build/delta.qcow2 \
+              -o out-gha-runner
 
-      - name: Upload image layout
+      # One artifact carrying both OCI layouts (base + gha-runner overlay) as
+      # top-level out/ and out-gha-runner/ directories. The intermediate build
+      # blobs in out.build/ are deliberately excluded.
+      - name: Upload image layouts
         uses: actions/upload-artifact@v4
         with:
           name: treadmill-image-${{ matrix.name }}
-          # The OCI layout directory (oci-layout, index.json, blobs/). The
-          # intermediate build blobs in out.build/ are deliberately excluded.
-          path: out/
+          path: |
+            out/
+            out-gha-runner/
           if-no-files-found: error
 
       # --- ghcr push (conditioned on push_to_ghcr input) -----------
@@ -169,7 +184,11 @@ jobs:
 
       # `skopeo copy` the OCI layout to ghcr.io/<owner>/<name>:{<sha>,latest}.
       # The custom `shell:` resolves skopeo once and puts it on PATH.
-      - name: Push image layout to ghcr.io
+      # Push both layouts: the base to ghcr.io/<owner>/<name> and the overlay to
+      # ghcr.io/<owner>/<name>-gha-runner, each tagged with the commit sha and
+      # latest. The shared lower layers (layer0 + base delta) dedupe across the
+      # two repositories by digest.
+      - name: Push image layouts to ghcr.io
         if: ${{ inputs.push_to_ghcr }}
         shell: nix shell nixpkgs#skopeo --command bash -euo pipefail {0}
         run: |
@@ -181,8 +200,11 @@ jobs:
           export CONTAINERS_REGISTRIES_CONF
 
           OWNER="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
-          REPO="ghcr.io/${OWNER}/${{ matrix.name }}"
-          for tag in "${GITHUB_SHA}" latest; do
-            echo "skopeo copy oci:out -> docker://${REPO}:${tag}"
-            skopeo copy --all "oci:out" "docker://${REPO}:${tag}"
-          done
+          push() { # <layout-dir> <repo>
+            for tag in "${GITHUB_SHA}" latest; do
+              echo "skopeo copy oci:$1 -> docker://$2:${tag}"
+              skopeo copy --all "oci:$1" "docker://$2:${tag}"
+            done
+          }
+          push out          "ghcr.io/${OWNER}/${{ matrix.name }}"
+          push out-gha-runner "ghcr.io/${OWNER}/${{ matrix.name }}-gha-runner"

@@ -42,7 +42,33 @@ a new, symmetric `assemble` counterpart to the existing `parse`.
   commented placeholder pending Phase 4. **Owed:** a real dispatch to confirm
   hosted-runner `/dev/kvm` + apt timings (the Phase 0 spike, now largely
   subsumed for x86_64 by the workflow itself).
-- **Phase 3 (Ubuntu runner overlay), 4 (Raspbian): TODO** — see §9.
+- **Phase 3 — Ubuntu runner overlay: DONE.** `build-image.sh` grew a
+  `--variant gha-runner` (+ `--base-delta`) path and
+  `images/ubuntu-server-2604/gha-runner/provision.sh`. The overlay backs onto
+  the byte-identical base delta (the base build keeps it in
+  `<out>.build/delta.qcow2`; the runner build refetches the verbatim upstream
+  `layer0` itself and `cp`+`rebase -u`s a working copy of the base delta onto it
+  so the chain is readable for `virt-customize`), yielding a **3-root-layer**
+  chain `layer0 + base-delta + runner-delta`. `images.yml`'s `build` job runs a
+  second `build-image.sh` in the same run, uploads both layouts as one artifact,
+  and (on `push_to_ghcr`) pushes `<name>` + `<name>-gha-runner`.
+  - **Runner is fetched at deploy, not baked.** Pinning a runner tarball goes
+    stale within weeks, so — mirroring the legacy Raspbian overlay — the image
+    only installs `install-gh-actions-runner.service` (a first-boot oneshot) +
+    `gh-actions-runner.service`; the shared
+    `images/lib/install-gh-actions-runner.sh` downloads the *latest* release at
+    deploy time (`RUNNER_ARCH=x64`). It resolves the version from the
+    `releases/latest` redirect (no `jq`/`python3` in the guest) via `curl`
+    (added to the Ubuntu package set).
+  - **Validated locally** (`nix develop .#images`, KVM): both builds pass their
+    internal `image-util parse` (2 and 3 root layers); the runner layout's lower
+    two blobs are byte-identical to the base layout's two root layers (dedupe);
+    a re-chained read of the runner delta confirms both units enabled in
+    `multi-user.target.wants`, the install script present, and `tml`'s shell
+    switched to the journal-login shell. The **boot + runner-registers** gate
+    (§9) needs a `zot` TCP daemon, which is blocked in the build sandbox — still
+    owed on a real runner / dispatch.
+- **Phase 4 (Raspbian): TODO** — see §9.
 
 ---
 
@@ -82,6 +108,7 @@ images/
   lib/
     build-image.sh        # NEW: shared driver (fetch, extract, overlay, virt-customize, finalize, assemble, validate)
     provision-common.sh   # NEW: shared in-guest steps
+    install-gh-actions-runner.sh  # NEW: shared first-boot runner installer (downloads latest; RUNNER_ARCH-parameterized)
     expandroot.sh         # KEPT as-is
   ubuntu-server-2604/         # Ubuntu Server 26.04 LTS (was the ubuntu-2204 base)
     manifest.sh           # NEW: sourced shell (data only)
@@ -314,9 +341,14 @@ in `build-image.sh`:
   `sysrq`/`poweroff -f`, 7z surgery, the `/boot/firmware-mock` + `FWLOC` hack
   (never booting; at runtime `/boot/firmware` is the real TFTP FAT).
 
-**gha-runner overlays (`*/gha-runner/provision.sh`):** mechanical —
-`--copy-in runner-tarball:/opt` + the existing runner-install steps, applied as a
-delta backed by the base delta.
+**gha-runner overlays (`*/gha-runner/provision.sh`):** applied as a delta backed
+by the base delta. `build-image.sh` `--copy-in`s the shared
+`images/lib/install-gh-actions-runner.sh`; the per-image provision installs two
+units — `install-gh-actions-runner.service` (a first-boot oneshot that runs the
+shared script to download the *latest* runner release for `RUNNER_ARCH`, so no
+version is baked into / pinned in the image) and `gh-actions-runner.service`
+(configures + runs it as `tml`) — and switches `tml`'s shell to the
+journal-login shell. The runner tarball is **not** fetched at build time.
 
 ---
 

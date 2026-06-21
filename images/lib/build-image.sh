@@ -5,13 +5,25 @@
 # qcow2 differential overlay (`virt-customize`, no guest boot), finalizes the
 # delta, then assembles + validates an OCI image layout via `image-util`.
 #
-# See doc/images-libguestfs-build-plan.md §5. Phase 2 implements the `disk`
-# (whole-qcow2) Ubuntu base path; the `sd` (Raspbian) type is Phase 4 and the
-# `gha-runner` variant is Phase 3.
+# See doc/images-libguestfs-build-plan.md §5. Two variants of the `disk`
+# (whole-qcow2) Ubuntu path are implemented:
+#
+#   --variant base        the 2-root-layer base image (layer0 + provisioning
+#                         delta).
+#   --variant gha-runner  a 3-root-layer overlay (layer0 + base delta + runner
+#                         delta) that adds the GitHub Actions runner units on
+#                         top of the byte-identical base delta. Requires
+#                         --base-delta pointing at the base build's finalized
+#                         delta (`<base-out>.build/delta.qcow2`).
+#
+# The `sd` (Raspberry Pi OS) type is Phase 4.
 #
 # Usage:
 #   images/lib/build-image.sh <name> --puppet <path> --image-util <path> \
 #       [--variant base] -o <out-layout-dir>
+#   images/lib/build-image.sh <name> --puppet <path> --image-util <path> \
+#       --variant gha-runner --base-delta <base-out>.build/delta.qcow2 \
+#       -o <out-layout-dir>
 #
 # The build's intermediate blobs (layer0, delta) are kept in `<out>.build/` so a
 # later overlay variant can reuse the byte-identical base delta.
@@ -25,10 +37,20 @@ die() {
 	exit 1
 }
 
+# Finalize a provisioning delta in place: trim freed blocks, detach the backing
+# pointer (so it is a standalone differential blob), and compress it.
+finalize_delta() {
+	local d="$1"
+	virt-customize -a "$d" --run-command 'fstrim -av || true'
+	qemu-img rebase -u -b "" -F qcow2 "$d"
+	qemu-img convert -c -O qcow2 "$d" "$d.c" && mv "$d.c" "$d"
+}
+
 name=""
 puppet=""
 image_util=""
 variant="base"
+base_delta=""
 out=""
 
 # The image name is the first positional argument.
@@ -50,6 +72,10 @@ while [ $# -gt 0 ]; do
 		variant="$2"
 		shift 2
 		;;
+	--base-delta)
+		base_delta="$2"
+		shift 2
+		;;
 	-o | --out)
 		out="$2"
 		shift 2
@@ -66,14 +92,20 @@ done
 [ -x "$image_util" ] || die "image-util binary not executable: $image_util"
 
 case "$variant" in
-base) ;;
-gha-runner) die "--variant gha-runner is Phase 3 (overlay); not implemented yet" ;;
-*) die "unknown --variant: $variant (expected: base)" ;;
+base)
+	[ -z "$base_delta" ] || die "--base-delta is only valid with --variant gha-runner"
+	provision="$images_dir/$name/provision.sh"
+	;;
+gha-runner)
+	[ -n "$base_delta" ] || die "--variant gha-runner requires --base-delta <path>"
+	[ -f "$base_delta" ] || die "base delta not found: $base_delta"
+	provision="$images_dir/$name/gha-runner/provision.sh"
+	;;
+*) die "unknown --variant: $variant (expected: base, gha-runner)" ;;
 esac
 
 manifest="$images_dir/$name/manifest.sh"
 [ -f "$manifest" ] || die "no manifest for image $name: $manifest"
-provision="$images_dir/$name/provision.sh"
 [ -f "$provision" ] || die "missing provision script: $provision"
 
 # Absolute paths: virt-customize and image-util run from a temp cwd / appliance.
@@ -81,6 +113,9 @@ mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 puppet="$(cd "$(dirname "$puppet")" && pwd)/$(basename "$puppet")"
 image_util="$(cd "$(dirname "$image_util")" && pwd)/$(basename "$image_util")"
+if [ -n "$base_delta" ]; then
+	base_delta="$(cd "$(dirname "$base_delta")" && pwd)/$(basename "$base_delta")"
+fi
 
 # manifest.sh provides: arch type title version base_image_url base_image_sha256
 # base_image_mirror packages[] rustup_init_url rustup_init_sha256
@@ -90,21 +125,84 @@ source "$manifest"
 
 [ "$type" = disk ] || die "image type '$type' is not implemented (Phase 2 is disk-only; sd is Phase 4)"
 
+# The runner variant ships as a distinct image (extra root layer + a suffixed
+# name/title); the base variant ships the manifest's name/title verbatim.
+if [ "$variant" = gha-runner ]; then
+	image_name="$name-gha-runner"
+	image_title="$title with GitHub Actions Runner"
+else
+	image_name="$name"
+	image_title="$title"
+fi
+
 # Intermediate blobs live alongside the layout; kept for overlay reuse.
 work_dir="${out%/}.build"
 rm -rf "$work_dir"
 mkdir -p "$work_dir"
 work_dir="$(cd "$work_dir" && pwd)"
-echo "build-image: $name ($variant) -> $out   (work dir: $work_dir)" >&2
+echo "build-image: $image_name ($variant) -> $out   (work dir: $work_dir)" >&2
 
 # --- 1. Fetch + verify the upstream base ----------------------------------
 # The amd64 cloud image is already a qcow2; it becomes the lowest, content-
-# addressed root layer (the dedupe blob) verbatim.
+# addressed root layer (the dedupe blob) verbatim. The runner overlay refetches
+# it (rather than reusing the base build's copy) so this script stays self-
+# contained; the sha256 guarantees the resulting layer0 blob is byte-identical
+# to the base build's, so the two layouts share it in the registry.
 layer0="$work_dir/layer0.qcow2"
 echo "build-image: fetching base image..." >&2
 curl -fL "$base_image_url" -o "$layer0" || die "failed to fetch base image"
 echo "${base_image_sha256}  ${layer0}" | sha256sum -c - ||
 	die "base image checksum mismatch"
+
+if [ "$variant" = gha-runner ]; then
+	# --- gha-runner overlay: a third root layer over the base delta --------
+	# The OCI chain is layer0 -> base-delta -> runner-delta. The base-delta blob
+	# in the chain is the byte-identical finalized base delta (passed via
+	# --base-delta), so it dedupes with the base image's head blob. To CUSTOMIZE
+	# on top of it we need a readable chain, so work on a COPY whose backing is
+	# re-pointed at layer0 (rebase -u only rewrites the header; the data clusters
+	# — hence the digest of the blob we actually ship — are untouched).
+	base_delta_work="$work_dir/base-delta.work.qcow2"
+	cp "$base_delta" "$base_delta_work"
+	qemu-img rebase -u -b "$layer0" -F qcow2 "$base_delta_work"
+
+	# The runner delta backs onto the (re-chained) base delta. No disk grow: the
+	# base delta already carries the grown partition table + filesystem.
+	delta="$work_dir/delta.qcow2"
+	qemu-img create -f qcow2 -b "$base_delta_work" -F qcow2 "$delta" >/dev/null
+
+	# No --network / --install / rustup: the overlay only writes the runner units
+	# (the runner itself is downloaded at first boot, see
+	# images/lib/install-gh-actions-runner.sh).
+	virt-customize -a "$delta" \
+		--memsize 2048 --smp 2 \
+		--copy-in "$images_dir/lib/install-gh-actions-runner.sh":/opt \
+		--run "$provision"
+
+	finalize_delta "$delta"
+
+	# Assemble + validate: three root layers (verbatim upstream, base delta,
+	# runner delta). The base delta is the byte-identical --base-delta blob.
+	"$image_util" assemble \
+		--name "$image_name" \
+		--title "$image_title" \
+		--version "$version" \
+		--layer "root=$layer0" \
+		--layer "root=$base_delta" \
+		--layer "root=$delta" \
+		-o "$out"
+
+	"$image_util" parse "$out" \
+		--name "$image_name" \
+		--root-layers 3 \
+		--boot-layers 0 \
+		--title "$image_title"
+
+	echo "build-image: $image_name -> $out (OK)" >&2
+	exit 0
+fi
+
+# --- base variant ---------------------------------------------------------
 
 # --- 2. rustup-init (fetched + verified, copied into the guest) -----------
 rustup_init="$work_dir/rustup-init"
@@ -164,24 +262,22 @@ virt-customize -a "$delta" \
 	--run "$provision"
 
 # --- 5. Finalize: trim, detach backing, compress --------------------------
-virt-customize -a "$delta" --run-command 'fstrim -av || true'
-qemu-img rebase -u -b "" -F qcow2 "$delta"
-qemu-img convert -c -O qcow2 "$delta" "$delta.c" && mv "$delta.c" "$delta"
+finalize_delta "$delta"
 
 # --- 6. Assemble + validate the OCI layout --------------------------------
 # disk base: two root layers (verbatim upstream + our delta).
 "$image_util" assemble \
-	--name "$name" \
-	--title "$title" \
+	--name "$image_name" \
+	--title "$image_title" \
 	--version "$version" \
 	--layer "root=$layer0" \
 	--layer "root=$delta" \
 	-o "$out"
 
 "$image_util" parse "$out" \
-	--name "$name" \
+	--name "$image_name" \
 	--root-layers 2 \
 	--boot-layers 0 \
-	--title "$title"
+	--title "$image_title"
 
-echo "build-image: $name -> $out (OK)" >&2
+echo "build-image: $image_name -> $out (OK)" >&2
