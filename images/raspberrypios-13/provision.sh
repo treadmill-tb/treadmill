@@ -10,8 +10,8 @@
 # /boot/firmware is the real TFTP FAT.
 set -eu
 
-# --- drop the stock pi user (we run as tml, created in provision-common) ---
-userdel -r pi 2>/dev/null || true
+# The stock pi user (UID 1000) is already gone: provision-common.sh frees UID
+# 1000 before creating tml.
 
 # --- extra device groups for the tml user (RPi peripherals) ----------------
 # plugdev + tty are added in provision-common; dialout (serial) and gpio are

@@ -22,6 +22,15 @@ if [[ ${#serial_consoles[@]} -eq 0 ]]; then
 fi
 
 # --- treadmill user: passwordless sudo ------------------------------------
+# Some base images ship a default user at UID 1000 (Raspberry Pi OS's `pi`); free
+# the slot before claiming it for tml so useradd does not fail "UID 1000 is not
+# unique". Cloud images that defer their default user to first boot (Ubuntu) have
+# it free already, so this is a no-op there. `set -eu` is fine: the pipe's status
+# is cut's (0) even when getent finds no such uid.
+existing_uid1000="$(getent passwd 1000 | cut -d: -f1)"
+if [ -n "$existing_uid1000" ] && [ "$existing_uid1000" != tml ]; then
+	userdel -r "$existing_uid1000" 2>/dev/null || true
+fi
 useradd -m -u 1000 -s /bin/bash tml
 usermod -a -G plugdev tml
 usermod -a -G tty tml
