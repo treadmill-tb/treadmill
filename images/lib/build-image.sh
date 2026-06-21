@@ -121,6 +121,60 @@ nbd_release() {
 	nbd_dev="" nbd_mnt=""
 }
 
+# Resolve an fstab spec (LABEL=/UUID=/PARTUUID=/PARTLABEL=/ a /dev path) to the
+# matching partition OF THE NBD DEVICE, printing the node. Scoped to $nbd_dev's
+# partitions so a label/UUID is never confused with an identically-tagged
+# partition on the build host's own disk (the runner is itself a cloud image and
+# may carry the very same cloudimg-rootfs/BOOT/UEFI labels).
+resolve_nbd_part() { # <fstab-spec>
+	local spec="$1" tag val p
+	case "$spec" in
+	LABEL=*) tag=LABEL val="${spec#LABEL=}" ;;
+	UUID=*) tag=UUID val="${spec#UUID=}" ;;
+	PARTUUID=*) tag=PARTUUID val="${spec#PARTUUID=}" ;;
+	PARTLABEL=*) tag=PARTLABEL val="${spec#PARTLABEL=}" ;;
+	/dev/*)
+		echo "$spec"
+		return 0
+		;;
+	*) return 1 ;;
+	esac
+	for p in "${nbd_dev}"p*; do
+		[ -b "$p" ] || continue
+		[ "$($SUDO blkid -s "$tag" -o value "$p" 2>/dev/null)" = "$val" ] && {
+			echo "$p"
+			return 0
+		}
+	done
+	return 1
+}
+
+# Mount the image's other on-disk filesystems under an already-mounted root, per
+# its /etc/fstab. The Ubuntu 26.04 cloud image splits /boot and /boot/efi into
+# their own partitions (p13 ext4, p15 vfat); without them mounted, in-guest tools
+# that write under /boot — update-grub -> /boot/grub, kernel/initramfs postinst —
+# fail ("cannot create /boot/grub/grub.cfg.new: Directory nonexistent"). The
+# libguestfs appliance mounted these automatically; the nspawn backend does it
+# here. Driven by the root fstab so it tracks the image's real layout; mounts
+# shallowest-first (so /boot precedes /boot/efi). nbd_cleanup's recursive umount
+# tears them all down.
+mount_disk_boot_parts() { # <root-mnt>
+	local root_mnt="$1" fstab="$1/etc/fstab" spec mp fstype rest slashes dev _
+	[ -f "$fstab" ] || return 0
+	while read -r spec mp fstype rest; do
+		case "$spec" in "" | \#*) continue ;; esac
+		[ "$mp" != / ] || continue
+		case "$mp" in /*) ;; *) continue ;; esac
+		case "$fstype" in swap | proc | sysfs | tmpfs | devpts | devtmpfs | none) continue ;; esac
+		slashes="${mp//[!\/]/}"
+		printf '%s\t%s\t%s\n' "${#slashes}" "$mp" "$spec"
+	done <"$fstab" | sort -n -k1,1 | while IFS="$(printf '\t')" read -r _ mp spec; do
+		dev="$(resolve_nbd_part "$spec")" || die "cannot resolve fstab spec '$spec' (for $mp) to an $nbd_dev partition"
+		$SUDO mkdir -p "$root_mnt$mp"
+		$SUDO mount "$dev" "$root_mnt$mp"
+	done
+}
+
 # Grow a root delta + its filesystem by $build_grow so apt has room. The shipped
 # virtual size grows accordingly — harmless: expandroot grows root to the host
 # disk at deploy, and the compressed blob only stores used clusters. The fs/
@@ -243,6 +297,9 @@ nspawn_provision() {
 		$SUDO partprobe "$nbd_dev" 2>/dev/null || true
 		udevadm settle 2>/dev/null || true
 		$SUDO mount "${nbd_dev}p1" "$nbd_mnt"
+		# Mount the image's separate /boot, /boot/efi, … (per its fstab) so in-guest
+		# tools that write under them (update-grub, kernel postinst) work.
+		mount_disk_boot_parts "$nbd_mnt"
 	else
 		$SUDO mount "$nbd_dev" "$nbd_mnt"
 	fi
@@ -250,13 +307,19 @@ nspawn_provision() {
 
 	# Expose the NBD-mapped root device(s) inside the container so device-probing
 	# tools operate on the real backing device. Notably grub-probe (run by
-	# update-grub in the Ubuntu provision) canonicalizes the root device read from
-	# /proc/self/mountinfo and fails ("failed to get canonical path of
-	# /dev/nbd0p1") when the node is absent from the container's /dev. nspawn
-	# auto-allows bound device nodes in its device cgroup; read access suffices.
-	# disk: the whole device + the root partition; sd: just the whole device.
+	# update-grub in the Ubuntu provision) canonicalizes a mounted filesystem's
+	# device read from /proc/self/mountinfo (root AND the separate /boot) and fails
+	# ("failed to get canonical path of /dev/nbd0p1") when the node is absent from
+	# the container's /dev. nspawn auto-allows bound device nodes in its device
+	# cgroup; read access suffices. disk: the whole device + every partition node
+	# (root/boot/efi/…); sd: just the whole device (a bare-ext4 root).
 	local nspawn_dev_binds=(--bind="$nbd_dev")
-	[ "$t" = disk ] && nspawn_dev_binds+=(--bind="${nbd_dev}p1")
+	if [ "$t" = disk ]; then
+		local _p
+		for _p in "${nbd_dev}"p*; do
+			[ -b "$_p" ] && nspawn_dev_binds+=(--bind="$_p")
+		done
+	fi
 
 	# For an sd image, loop-mount the boot FAT at the guest's /boot/firmware so the
 	# distro's own kernel/initramfs machinery writes the regenerated initrd (and
