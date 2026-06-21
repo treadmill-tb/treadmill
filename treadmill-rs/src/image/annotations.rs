@@ -20,24 +20,6 @@ pub const QCOW2_LOWER: &str = "ci.treadmill.qcow2.lower";
 /// Advertised qcow2 virtual size of a layer, in bytes (descriptor-level).
 pub const QCOW2_VIRTUAL_SIZE: &str = "ci.treadmill.qcow2.virtual-size";
 
-/// Eligibility criteria of an image-group member: the set of host tags a host
-/// must carry (as a superset) for this member to be selectable on it
-/// (descriptor-level). The value is a comma-separated list of opaque tag strings
-/// (e.g. `arch=arm64,raspberrypi-4`); see [`parse_tag_list`].
-pub const REQUIRED_HOST_TAGS: &str = "ci.treadmill.required-host-tags";
-
-/// Parse a [`REQUIRED_HOST_TAGS`]-style annotation value into its tags: split on
-/// commas, trim each, and drop empties. Tags are otherwise opaque (the matcher
-/// never interprets their internal structure).
-pub fn parse_tag_list(value: &str) -> Vec<String> {
-    value
-        .split(',')
-        .map(|t| t.trim())
-        .filter(|t| !t.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
 /// Standard OCI annotation keys that Treadmill populates.
 pub mod oci {
     /// Human-readable image/title label.
@@ -111,19 +93,5 @@ mod tests {
             "tmpfs".parse::<Role>(),
             Err(UnknownValue("tmpfs".to_string())),
         );
-    }
-
-    #[test]
-    fn tag_list_splits_trims_and_drops_empties() {
-        assert_eq!(
-            parse_tag_list("arch=arm64, raspberrypi-4 ,,ble"),
-            vec![
-                "arch=arm64".to_string(),
-                "raspberrypi-4".to_string(),
-                "ble".to_string(),
-            ],
-        );
-        assert!(parse_tag_list("").is_empty());
-        assert!(parse_tag_list("  ,  ").is_empty());
     }
 }

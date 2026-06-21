@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select g.id, g.index_digest, g.owner_subject, g.label, g.created_at\n           from tml_switchboard.image_groups g\n           join tml_switchboard.principals($1) p on p.id = g.owner_subject\n           order by g.created_at",
+  "query": "select g.id, g.name, g.owner_subject, g.label, g.created_at\n           from tml_switchboard.image_groups g\n           join tml_switchboard.principals($1) p on p.id = g.owner_subject\n           order by g.created_at",
   "describe": {
     "columns": [
       {
@@ -16,12 +16,12 @@
       },
       {
         "ordinal": 1,
-        "name": "index_digest",
+        "name": "name",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "tml_switchboard.image_groups",
-            "name": "index_digest"
+            "name": "name"
           }
         }
       },
@@ -72,5 +72,5 @@
       false
     ]
   },
-  "hash": "c323ba3a6381d69822d6cca3e20a13f3d49dc760d8bfef6a84e6ae83abb9fdf1"
+  "hash": "ad033f672b8329a1027ac5c95b5d78e2a181ece551f2982d3e51bbd567e25f94"
 }

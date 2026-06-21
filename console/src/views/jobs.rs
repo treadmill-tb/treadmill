@@ -9,6 +9,7 @@ use maud::{Markup, html};
 use treadmill_rs::api::switchboard::JobState;
 use treadmill_rs::api::switchboard::jobs::JobImageRef;
 use treadmill_rs::image::Digest;
+use uuid::Uuid;
 
 /// Human label for a [`JobState`].
 pub fn job_state_label(state: JobState) -> &'static str {
@@ -46,16 +47,27 @@ pub fn short_digest(digest: &Digest) -> String {
     }
 }
 
+/// Abbreviate a catalog UUID to its first 8 hex characters for compact display;
+/// callers show the full value in a `title` attribute.
+fn short_id(id: &Uuid) -> String {
+    let full = id.simple().to_string();
+    format!("{}…", &full[..8])
+}
+
 /// Render what a job is based on, with a link to the referenced job for
-/// resume/restart and an abbreviated digest (full value in the `title`) for
-/// image/group.
+/// resume/restart and an abbreviated catalog id (full value in the `title`) for
+/// an image or image group; a group also shows its frozen generation.
 pub fn image_ref(image: &JobImageRef) -> Markup {
     match image {
-        JobImageRef::Image { digest } => html! {
-            code title=(digest.to_string()) { (short_digest(digest)) }
+        JobImageRef::Image { image_id } => html! {
+            code title=(image_id.to_string()) { (short_id(image_id)) }
         },
-        JobImageRef::ImageGroup { digest } => html! {
-            "group " code title=(digest.to_string()) { (short_digest(digest)) }
+        JobImageRef::ImageGroup {
+            group_id,
+            generation,
+        } => html! {
+            "group " code title=(group_id.to_string()) { (short_id(group_id)) }
+            " gen " (generation)
         },
         JobImageRef::Resume { job_id } => html! {
             "resume of " a href=(format!("/jobs/{job_id}")) { code { (job_id) } }

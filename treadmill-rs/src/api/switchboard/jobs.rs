@@ -33,19 +33,19 @@ pub struct LogStreamCredentials {
     pub expires_in_secs: u64,
 }
 
-/// What a job is based off, as seen by `GET /jobs/{id}`. Collapses the four
-/// mutually-exclusive DB columns (`image_digest` / `image_group_digest` /
-/// `resume_job_id` / `restart_job_id`) into a single tagged variant; the
-/// separately-recorded concrete dispatch digest is reported alongside as
-/// [`JobInfo::resolved_image_digest`].
+/// What a job is based off, as seen by `GET /jobs/{id}`. Collapses the
+/// mutually-exclusive DB columns (`image_id` / `image_group_id` +
+/// `image_group_generation` / `resume_job_id` / `restart_job_id`) into a single
+/// tagged variant; the separately-recorded concrete dispatch digest is reported
+/// alongside as [`JobInfo::resolved_image_digest`].
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JobImageRef {
-    /// Based off a concrete catalog image, addressed by its OCI manifest digest.
-    Image { digest: Digest },
-    /// Based off a registered image *group*, addressed by its index digest; the
-    /// concrete member is chosen at dispatch.
-    ImageGroup { digest: Digest },
+    /// Based off a concrete catalog image, addressed by its catalog id.
+    Image { image_id: Uuid },
+    /// Based off a registered image *group*, addressed by its id plus the frozen
+    /// generation; the concrete member is chosen at dispatch.
+    ImageGroup { group_id: Uuid, generation: u32 },
     /// Resumes a previously started job.
     Resume { job_id: Uuid },
     /// Restarts a previously started job (inherits its image reference).

@@ -174,6 +174,73 @@ pub async fn can_access_job(
     .await
 }
 
+/// A permission on an image group; mirrors `tml_switchboard.image_group_permission`
+/// and the API's [`ApiImageGroupPermission`].
+///
+/// [`ApiImageGroupPermission`]:
+///     treadmill_rs::api::switchboard::images::ImageGroupPermission
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageGroupPermission {
+    Use,
+    Manage,
+}
+impl ImageGroupPermission {
+    /// The textual value as stored in the `image_group_permission` enum.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ImageGroupPermission::Use => "use",
+            ImageGroupPermission::Manage => "manage",
+        }
+    }
+}
+impl From<treadmill_rs::api::switchboard::images::ImageGroupPermission> for ImageGroupPermission {
+    fn from(p: treadmill_rs::api::switchboard::images::ImageGroupPermission) -> Self {
+        use treadmill_rs::api::switchboard::images::ImageGroupPermission as Api;
+        match p {
+            Api::Use => ImageGroupPermission::Use,
+            Api::Manage => ImageGroupPermission::Manage,
+        }
+    }
+}
+
+/// Whether `subject_id` may exercise `permission` on the image group.
+///
+/// Authorized iff the subject is a global admin, owns the group (directly or via
+/// a group it transitively joins), or holds a matching grant — the standard
+/// ownership ∨ grant disjunction over `principals()`. The owner implicitly holds
+/// every permission, so a `manage` query passes for the owner even with no grant.
+pub async fn can_access_image_group(
+    conn: impl PgExecutor<'_>,
+    subject_id: Uuid,
+    group_id: Uuid,
+    permission: ImageGroupPermission,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        "with principals(id) as ( \
+             select id from tml_switchboard.principals($1::uuid) \
+         ) \
+         select ( \
+             exists (select 1 from principals where id = $4::uuid) \
+             or exists ( \
+                 select 1 from tml_switchboard.image_groups g \
+                 join principals p on g.owner_subject = p.id \
+                 where g.id = $2::uuid \
+             ) \
+             or exists ( \
+                 select 1 from tml_switchboard.image_group_grants gr \
+                 join principals p on gr.subject_id = p.id \
+                 where gr.group_id = $2::uuid and gr.permission::text = $3 \
+             ) \
+         ) as \"authorized!\"",
+        subject_id,
+        group_id,
+        permission.as_str(),
+        ADMINS_GROUP_ID,
+    )
+    .fetch_one(conn)
+    .await
+}
+
 /// Returns the complete set of permissions `subject_id` holds on `host_id`.
 /// If the subject is an owner or global admin, this returns all permissions.
 pub async fn host_permissions(

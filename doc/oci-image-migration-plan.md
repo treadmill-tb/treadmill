@@ -141,6 +141,15 @@ writes, and GC live in the daemon.
 
 ### 5.3 switchboard DB (new migrations)
 
+> **Superseded (image groups).** The `image_groups` / `image_group_members`
+> shape below — a group as a frozen OCI **index** pinned by `index_digest`, with
+> members rebuilt from that index — has been replaced. Groups are now *mutable,
+> named* switchboard entities with an append-only series of immutable
+> **generations**; jobs reference a group by `id` (+ frozen generation), not an
+> index digest. The `images` / `image_locations` tables below are unchanged. See
+> `doc/image-groups-mutable-generations-plan.md` and the IMAGE CATALOG section of
+> `switchboard/SCHEMA.sql` for the authoritative model.
+
 ```
 images(                   -- identity is the digest, NOT a location (D16)
   id uuid pk,
@@ -375,8 +384,12 @@ The canonical registry is **not** protected by supervisor leases. Instead:
   an `images` row + first `image_locations` row. Promotion/mirror = `skopeo copy`
   into the canonical registry then INSERT a `canonical`/`system` location (D16);
   the digest and all existing references are unchanged.
-- `POST /image-groups`: register an index digest; switchboard pulls the index,
-  validates each member, and populates `image_group_members` for the matcher.
+- **Image groups (superseded):** groups are no longer registered as an index
+  digest. `POST /image-groups` creates an empty, *named* group; membership is
+  appended as immutable full-replacement **generations**
+  (`POST /image-groups/{id}/generations`) whose members are pre-registered images
+  referenced by id, with `required_host_tags` from the payload. No registry pull.
+  See `doc/image-groups-mutable-generations-plan.md` §5.
 - `GET /images`, `GET /image-groups`: list/inspect (ownership-scoped).
 
 ### 8.2 Token issuer (D11)
@@ -423,9 +436,12 @@ axes and the `tag_config` string are gone, §10 resolved):
   requirement to a *distinct* `host_targets` row whose tags ⊇ the requirement
   (Kuhn's, in Rust, since this isn't clean SQL). **Nothing is stored**: a job
   on a host simply has access to every DUT physically wired to that host.
-- **Image-group selection** picks the `image_group_members` row whose
-  `required_host_tags ⊆ host.tags` (most-specific wins; ties → registration
-  `position`), yielding the concrete `manifest_digest`.
+- **Image-group selection** picks the admissible member of the job's *frozen
+  generation* (`image_group_generation`, pinned at enqueue) whose
+  `required_host_tags ⊆ host.tags` (most-specific wins; ties → the member's
+  `index`), yielding the concrete `manifest_digest`. The candidate set is the
+  generation's `image_group_members`; see
+  `doc/image-groups-mutable-generations-plan.md`.
 
 **Dispatch transaction** (per candidate host, `try_assign`): lock the host row
 `FOR UPDATE` (host-before-job lock order, matching the worker, so no deadlock),

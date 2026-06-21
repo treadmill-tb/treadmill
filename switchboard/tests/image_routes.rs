@@ -1,36 +1,43 @@
 //! End-to-end tests for the image-catalog REST API.
 //!
-//! These mirror `user_routes.rs`: provision a user via the GitHub OAuth callback
-//! against a `wiremock` stand-in, then drive the `/images` and `/image-groups`
-//! routes over HTTP against the real router and an ephemeral Postgres. The
-//! registry the routes pull manifests from is a canned in-memory
+//! Drive the real router over a loopback socket against ephemeral Postgres,
+//! authenticating via the development mock-OAuth provider (no external service,
+//! so multiple distinct users — `bob`, `carol` — are trivial to provision). The
+//! registry the `/images` routes pull manifests from is a canned in-memory
 //! [`StubRegistry`] (these tests have no Zot), so validation runs against real
 //! OCI wire-format JSON without a registry daemon.
+//!
+//! Image *groups* are mutable, named switchboard entities (see
+//! `doc/image-groups-mutable-generations-plan.md`): created empty, then given
+//! membership by appending immutable, full-replacement generations whose members
+//! are pre-registered images referenced by id. No registry pull is involved in
+//! group/generation creation.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use reqwest::redirect::Policy;
 use sha2::{Digest as _, Sha256};
 use sqlx::PgPool;
 use tokio::net::TcpListener;
-use treadmill_rs::api::switchboard::LoginResponse;
-use treadmill_rs::api::switchboard::images::{ImageGroupInfo, ImageInfo};
+use uuid::Uuid;
+
+use treadmill_rs::api::switchboard::images::{ImageGroupGenerationInfo, ImageGroupInfo, ImageInfo};
+use treadmill_rs::api::switchboard::{LoginResponse, WhoAmIResponse};
 use treadmill_rs::image::Digest;
 use treadmill_switchboard::registry::{RegistryClient, RegistryError};
 use treadmill_switchboard::routes::build_router;
 use treadmill_switchboard::serve::AppState;
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod common;
-use common::test_config;
+use common::test_config_mock;
 
 // -- canned registry ------------------------------------------------------------
 
 /// An in-memory registry mapping `(registry, repository, digest)` to the exact
-/// manifest/index bytes the test staged.
+/// manifest bytes the test staged.
 #[derive(Default)]
 struct StubRegistry {
     docs: HashMap<(String, String, String), Vec<u8>>,
@@ -106,59 +113,10 @@ fn image_manifest_bytes(title: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-/// An image-group index with one member at `member_digest`, eligible on hosts
-/// carrying all of `required_host_tags` (a comma-separated list).
-fn image_index_bytes(member_digest: &Digest, required_host_tags: &str) -> Vec<u8> {
-    format!(
-        r#"{{
-          "schemaVersion": 2,
-          "mediaType": "application/vnd.oci.image.index.v1+json",
-          "artifactType": "application/vnd.treadmill.image-group.v1+json",
-          "manifests": [
-            {{ "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "{member}", "size": 111,
-               "annotations": {{ "ci.treadmill.required-host-tags": "{required_host_tags}" }} }}
-          ]
-        }}"#,
-        member = member_digest.encoded(),
-    )
-    .into_bytes()
-}
+// -- harness --------------------------------------------------------------------
 
-// -- login harness (mirrors user_routes.rs) -------------------------------------
-
-async fn mount_github(server: &MockServer) {
-    Mock::given(method("POST"))
-        .and(path("/login/oauth/access_token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "access_token": "gho_test_token",
-            "token_type": "bearer",
-            "scope": "read:user,user:email,read:org",
-        })))
-        .mount(server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/user"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "id": 12345,
-            "login": "octocat",
-            "name": "The Octocat",
-            "avatar_url": "https://example.com/octocat.png",
-        })))
-        .mount(server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/user/emails"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-            { "email": "octo@example.com", "verified": true, "primary": true },
-        ])))
-        .mount(server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/user/memberships/orgs"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
-        .mount(server)
-        .await;
-}
+const REGISTRY: &str = "registry.example.com:5000";
+const REPO: &str = "u/octocat/ubuntu";
 
 async fn spawn_server(state: AppState) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -175,56 +133,98 @@ async fn spawn_server(state: AppState) -> SocketAddr {
     addr
 }
 
-async fn run_login(client: &reqwest::Client, addr: SocketAddr, pool: &PgPool) -> LoginResponse {
-    let login_resp = client
-        .get(format!("http://{addr}/api/v1/auth/github/login"))
-        .send()
-        .await
-        .unwrap();
-    assert!(login_resp.status().is_redirection());
-    let state: String = sqlx::query_scalar("select state from tml_switchboard.oauth_flows")
-        .fetch_one(pool)
-        .await
-        .unwrap();
-    let cb_resp = client
+/// Spawn the router backed by `registry` and the mock-OAuth config.
+async fn spawn_with_registry(pool: &PgPool, registry: Arc<dyn RegistryClient>) -> SocketAddr {
+    let state = AppState::with_registry(pool.clone(), test_config_mock(), registry);
+    spawn_server(state).await
+}
+
+/// A reqwest client that does not auto-follow redirects (the mock login flow
+/// hands back a `Location` we follow by hand).
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap()
+}
+
+/// Drive a full mock login for `identity` and return the issued bearer token.
+async fn mock_login_token(client: &reqwest::Client, addr: SocketAddr, identity: &str) -> String {
+    let login = client
         .get(format!(
-            "http://{addr}/api/v1/auth/github/callback?code=CANNED_CODE&state={state}"
+            "http://{addr}/api/v1/auth/mock/login?identity={identity}"
         ))
         .send()
         .await
         .unwrap();
-    assert_eq!(cb_resp.status(), reqwest::StatusCode::OK);
-    cb_resp.json().await.unwrap()
-}
-
-/// Provision a user via login and spawn a server backed by `registry`.
-async fn login_with_registry(
-    pool: &PgPool,
-    registry: Arc<dyn RegistryClient>,
-) -> (SocketAddr, String, MockServer) {
-    let gh = MockServer::start().await;
-    mount_github(&gh).await;
-    let state = AppState::with_registry(pool.clone(), test_config(&gh.uri()), registry);
-    let addr = spawn_server(state).await;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
+    assert!(
+        login.status().is_redirection(),
+        "mock login should redirect"
+    );
+    let location = login
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .expect("redirect must carry a Location")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let cb = client
+        .get(format!("http://{addr}{location}"))
+        .send()
+        .await
         .unwrap();
-    let session = run_login(&client, addr, pool).await;
-    (addr, session.token.encode_for_http(), gh)
+    assert_eq!(cb.status(), reqwest::StatusCode::OK);
+    cb.json::<LoginResponse>()
+        .await
+        .unwrap()
+        .token
+        .encode_for_http()
 }
 
-const REGISTRY: &str = "registry.example.com:5000";
-const REPO: &str = "u/octocat/ubuntu";
+/// The authenticated caller's own `user_id`, via `GET /auth/whoami`.
+async fn whoami(client: &reqwest::Client, addr: SocketAddr, token: &str) -> Uuid {
+    let resp = client
+        .get(format!("http://{addr}/api/v1/auth/whoami"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    resp.json::<WhoAmIResponse>().await.unwrap().user_id
+}
+
+/// Register a staged manifest via `POST /images` and return its catalog view.
+async fn register_image(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    digest: &Digest,
+) -> ImageInfo {
+    let resp = client
+        .post(format!("{base}/images"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({
+            "registry": REGISTRY,
+            "repository": REPO,
+            "manifest_digest": digest.encoded(),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    resp.json().await.unwrap()
+}
+
+// -- image registration ---------------------------------------------------------
 
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn register_list_and_inspect_image(pool: PgPool) {
     let mut reg = StubRegistry::default();
-    let manifest = image_manifest_bytes("Ubuntu test");
-    let digest = reg.put(REGISTRY, REPO, manifest);
-    let (addr, token, _gh) = login_with_registry(&pool, Arc::new(reg)).await;
-    let client = reqwest::Client::new();
+    let digest = reg.put(REGISTRY, REPO, image_manifest_bytes("Ubuntu test"));
+    let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
+    let client = http_client();
+    let token = mock_login_token(&client, addr, "bob").await;
     let base = format!("http://{addr}/api/v1");
 
     // POST /images registers the image and reports its single external location.
@@ -290,8 +290,9 @@ async fn register_list_and_inspect_image(pool: PgPool) {
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn rejects_unknown_and_malformed_manifests(pool: PgPool) {
     // An empty registry: nothing staged, so the pull fails (502).
-    let (addr, token, _gh) = login_with_registry(&pool, Arc::new(StubRegistry::default())).await;
-    let client = reqwest::Client::new();
+    let addr = spawn_with_registry(&pool, Arc::new(StubRegistry::default())).await;
+    let client = http_client();
+    let token = mock_login_token(&client, addr, "bob").await;
     let base = format!("http://{addr}/api/v1");
 
     let unknown = Digest::from_sha256([7u8; 32]);
@@ -309,7 +310,8 @@ async fn rejects_unknown_and_malformed_manifests(pool: PgPool) {
     // A staged document that is not a Treadmill artifact is rejected (422).
     let mut reg = StubRegistry::default();
     let bogus = reg.put(REGISTRY, REPO, br#"{"schemaVersion":2,"mediaType":"x","config":{"mediaType":"y","digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","size":0},"layers":[]}"#.to_vec());
-    let (addr, token, _gh) = login_with_registry(&pool, Arc::new(reg)).await;
+    let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
+    let token = mock_login_token(&client, addr, "bob").await;
     let base = format!("http://{addr}/api/v1");
     let resp = client
         .post(format!("{base}/images"))
@@ -323,42 +325,70 @@ async fn rejects_unknown_and_malformed_manifests(pool: PgPool) {
     assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+// -- image groups ---------------------------------------------------------------
+
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-async fn register_and_inspect_image_group(pool: PgPool) {
+async fn create_group_append_generations_and_inspect(pool: PgPool) {
+    // Two member images, registered as concrete images first.
     let mut reg = StubRegistry::default();
-    let member = image_manifest_bytes("group member");
-    let member_digest = reg.put(REGISTRY, REPO, member);
-    let index = image_index_bytes(&member_digest, "arch=arm64, raspberrypi-4");
-    let index_digest = reg.put(REGISTRY, REPO, index);
-    let (addr, token, _gh) = login_with_registry(&pool, Arc::new(reg)).await;
-    let client = reqwest::Client::new();
+    let m0 = reg.put(REGISTRY, REPO, image_manifest_bytes("member 0"));
+    let m1 = reg.put(REGISTRY, REPO, image_manifest_bytes("member 1"));
+    let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
+    let client = http_client();
+    let token = mock_login_token(&client, addr, "bob").await;
     let base = format!("http://{addr}/api/v1");
 
+    let img0 = register_image(&client, &base, &token, &m0).await;
+    let img1 = register_image(&client, &base, &token, &m1).await;
+
+    // POST /image-groups creates an empty, named group with no generation yet.
     let resp = client
         .post(format!("{base}/image-groups"))
         .bearer_auth(&token)
-        .json(&serde_json::json!({
-            "registry": REGISTRY, "repository": REPO, "index_digest": index_digest.encoded(),
-            "label": "ubuntu group",
-        }))
+        .json(&serde_json::json!({ "name": "ubuntu", "label": "Ubuntu group" }))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
-    let info: ImageGroupInfo = resp.json().await.unwrap();
-    assert_eq!(info.index_digest, index_digest);
-    assert_eq!(info.members.len(), 1);
-    let m = &info.members[0];
-    assert_eq!(m.manifest_digest, member_digest);
+    let group: ImageGroupInfo = resp.json().await.unwrap();
+    assert_eq!(group.name, "ubuntu");
+    assert_eq!(group.label.as_deref(), Some("Ubuntu group"));
+    assert_eq!(group.latest_generation, None);
+
+    // POST a first generation: member 0 generic, member 1 more specific.
+    let resp = client
+        .post(format!("{base}/image-groups/{}/generations", group.id))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "members": [
+            { "image_id": img0.id, "required_host_tags": ["arch=arm64"] },
+            { "image_id": img1.id, "required_host_tags": ["arch=arm64", "raspberrypi-4"] },
+        ] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    let gen1: ImageGroupGenerationInfo = resp.json().await.unwrap();
+    assert_eq!(gen1.generation, 1);
+    assert_eq!(gen1.members.len(), 2);
+    // Members come back in array (index) order; the manifest digest is recovered.
+    assert_eq!(gen1.members[0].index, 0);
+    assert_eq!(gen1.members[0].image_id, img0.id);
+    assert_eq!(gen1.members[0].manifest_digest, m0);
     assert_eq!(
-        m.required_host_tags,
+        gen1.members[0].required_host_tags,
+        vec!["arch=arm64".to_string()]
+    );
+    assert_eq!(gen1.members[1].index, 1);
+    assert_eq!(gen1.members[1].image_id, img1.id);
+    assert_eq!(
+        gen1.members[1].required_host_tags,
         vec!["arch=arm64".to_string(), "raspberrypi-4".to_string()]
     );
 
-    // The member was also registered as a standalone image (same repo).
-    let member_img: ImageInfo = client
-        .get(format!("{base}/images/{}", member_digest.encoded()))
+    // The group now reports its latest generation.
+    let info: ImageGroupInfo = client
+        .get(format!("{base}/image-groups/{}", group.id))
         .bearer_auth(&token)
         .send()
         .await
@@ -366,11 +396,28 @@ async fn register_and_inspect_image_group(pool: PgPool) {
         .json()
         .await
         .unwrap();
-    assert_eq!(member_img.manifest_digest, member_digest);
+    assert_eq!(info.latest_generation, Some(1));
 
-    // GET /image-groups/{digest} inspects the group.
-    let one: ImageGroupInfo = client
-        .get(format!("{base}/image-groups/{}", index_digest.encoded()))
+    // A second generation fully replaces the membership (just member 1 now) and
+    // increments the generation number.
+    let resp = client
+        .post(format!("{base}/image-groups/{}/generations", group.id))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "members": [
+            { "image_id": img1.id, "required_host_tags": [] },
+        ] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    let gen2: ImageGroupGenerationInfo = resp.json().await.unwrap();
+    assert_eq!(gen2.generation, 2);
+    assert_eq!(gen2.members.len(), 1);
+    assert_eq!(gen2.members[0].image_id, img1.id);
+
+    // Generation 1 is immutable and still inspectable after the replacement.
+    let one: ImageGroupGenerationInfo = client
+        .get(format!("{base}/image-groups/{}/generations/1", group.id))
         .bearer_auth(&token)
         .send()
         .await
@@ -378,5 +425,118 @@ async fn register_and_inspect_image_group(pool: PgPool) {
         .json()
         .await
         .unwrap();
-    assert_eq!(one.id, info.id);
+    assert_eq!(one.members.len(), 2);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn create_generation_rejects_an_unregistered_image(pool: PgPool) {
+    let addr = spawn_with_registry(&pool, Arc::new(StubRegistry::default())).await;
+    let client = http_client();
+    let token = mock_login_token(&client, addr, "bob").await;
+    let base = format!("http://{addr}/api/v1");
+
+    let group: ImageGroupInfo = client
+        .post(format!("{base}/image-groups"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "name": "empty" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // A member image id that was never registered is a 422.
+    let resp = client
+        .post(format!("{base}/image-groups/{}/generations", group.id))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "members": [
+            { "image_id": Uuid::new_v4(), "required_host_tags": [] },
+        ] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn image_group_permissions_are_enforced(pool: PgPool) {
+    let addr = spawn_with_registry(&pool, Arc::new(StubRegistry::default())).await;
+    let client = http_client();
+    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let base = format!("http://{addr}/api/v1");
+
+    // `bob` owns a group; `carol` initially has no access to it.
+    let group: ImageGroupInfo = client
+        .post(format!("{base}/image-groups"))
+        .bearer_auth(&bob_token)
+        .json(&serde_json::json!({ "name": "private" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let carol_token = mock_login_token(&client, addr, "carol").await;
+    let carol = whoami(&client, addr, &carol_token).await;
+
+    // Carol cannot even see the group (404, not 403 — existence is not leaked).
+    let resp = client
+        .get(format!("{base}/image-groups/{}", group.id))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+    // Bob grants Carol `use`: she can now inspect it, but creating a generation
+    // needs `manage` (403).
+    let resp = client
+        .post(format!("{base}/image-groups/{}/grants", group.id))
+        .bearer_auth(&bob_token)
+        .json(&serde_json::json!({ "subject_id": carol, "permission": "use" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+
+    let resp = client
+        .get(format!("{base}/image-groups/{}", group.id))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let resp = client
+        .post(format!("{base}/image-groups/{}/generations", group.id))
+        .bearer_auth(&carol_token)
+        .json(&serde_json::json!({ "members": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // Bob grants Carol `manage`: she may now append a generation (an empty
+    // membership is a valid full replacement).
+    let resp = client
+        .post(format!("{base}/image-groups/{}/grants", group.id))
+        .bearer_auth(&bob_token)
+        .json(&serde_json::json!({ "subject_id": carol, "permission": "manage" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+
+    let resp = client
+        .post(format!("{base}/image-groups/{}/generations", group.id))
+        .bearer_auth(&carol_token)
+        .json(&serde_json::json!({ "members": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
 }

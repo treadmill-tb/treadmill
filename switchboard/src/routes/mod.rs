@@ -154,17 +154,39 @@ pub fn api_router() -> ApiRouter<AppState> {
         )
         //  GET /images/{digest}      -- inspect one image
         .api_route("/images/{digest}", get_with(images::get_image, |o| o))
-        //  POST /image-groups        -- register an image group by index digest
+        //  POST /image-groups        -- create an empty, named image group
         //  GET  /image-groups        -- list owned image groups
         .api_route(
             "/image-groups",
-            post_with(images::register_image_group, |o| o)
+            post_with(images::create_image_group, |o| o)
                 .get_with(images::list_image_groups, |o| o),
         )
-        //  GET /image-groups/{digest} -- inspect one image group
+        //  GET /image-groups/{id}    -- inspect one image group
         .api_route(
-            "/image-groups/{digest}",
+            "/image-groups/{id}",
             get_with(images::get_image_group, |o| o),
+        )
+        //  POST /image-groups/{id}/generations -- append a full-replacement generation
+        .api_route(
+            "/image-groups/{id}/generations",
+            post_with(images::create_generation, |o| o),
+        )
+        //  GET /image-groups/{id}/generations/{n} -- inspect one generation
+        .api_route(
+            "/image-groups/{id}/generations/{n}",
+            get_with(images::get_generation, |o| o),
+        )
+        //  POST /image-groups/{id}/grants -- grant use/manage to a subject
+        //  GET  /image-groups/{id}/grants -- list grants
+        .api_route(
+            "/image-groups/{id}/grants",
+            post_with(images::grant_image_group, |o| o)
+                .get_with(images::list_image_group_grants, |o| o),
+        )
+        //  DELETE /image-groups/{id}/grants/{subject_id}/{permission} -- revoke a grant
+        .api_route(
+            "/image-groups/{id}/grants/{subject_id}/{permission}",
+            delete_with(images::revoke_image_group_grant, |o| o),
         )
 }
 

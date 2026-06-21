@@ -8,7 +8,6 @@ pub mod users;
 
 use crate::api::supervisor_puppet::ParameterValue;
 use crate::api::switchboard_supervisor::RestartPolicy;
-use crate::image::Digest;
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -111,19 +110,25 @@ pub enum JobInitSpec {
     RestartJob { job_id: Uuid },
 
     /// Base this job off a concrete image registered in the switchboard
-    /// catalog, addressed by its OCI manifest digest. At dispatch the
-    /// switchboard resolves the digest to its registry locations and hands the
+    /// catalog, addressed by its catalog id (`POST /images`). At dispatch the
+    /// switchboard resolves the image to its registry locations and hands the
     /// supervisor a content-addressed [`ImageSpecification::Image`].
     ///
     /// [`ImageSpecification::Image`]:
     ///     crate::api::switchboard_supervisor::ImageSpecification::Image
-    Image { image: Digest },
+    Image { image: Uuid },
 
-    /// Base this job off a registered image *group* (an OCI image index),
-    /// addressed by its index digest. After a host is chosen, the switchboard
-    /// matcher selects the group member whose required host tags the chosen
-    /// host satisfies and dispatches that concrete member's digest.
-    ImageGroup { image_group: Digest },
+    /// Base this job off a registered image *group*, addressed by its stable id.
+    /// `generation` pins a specific membership snapshot; when omitted, the
+    /// group's latest generation is resolved and frozen onto the job at enqueue.
+    /// After a host is chosen, the switchboard matcher selects the generation's
+    /// member whose required host tags the chosen host satisfies and dispatches
+    /// that concrete member.
+    ImageGroup {
+        image_group: Uuid,
+        #[serde(default)]
+        generation: Option<u32>,
+    },
 }
 
 /// The execution-lifecycle state of a job, mirroring the

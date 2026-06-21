@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from tml_switchboard.image_group_grants\n           where group_id = $1 and subject_id = $2\n             and permission = $3::text::tml_switchboard.image_group_permission\n           returning group_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "group_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_group_grants",
+            "name": "group_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f726d8a7ed4e4e9dece8e4ef427e3fb9e941c44483d1a0a598233cc7d2d03698"
+}

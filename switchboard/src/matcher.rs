@@ -1,18 +1,20 @@
-//! Group → concrete image matching (`doc/oci-image-migration-plan.md` §8.3).
+//! Group → concrete image matching
+//! (`doc/image-groups-mutable-generations-plan.md`).
 //!
-//! When a job names an image *group* (an OCI index), the switchboard must, after
-//! choosing a host, pick the single group member appropriate for that host.
+//! When a job names an image *group*, the switchboard must, after choosing a
+//! host, pick the single group member appropriate for that host. The candidate
+//! set is the membership of the job's **frozen generation** (the
+//! `image_group_members` rows of the generation pinned onto the job at enqueue).
 //! Selection is by **host tags only**: each member carries a set of
-//! `required_host_tags` (authored on the index descriptor, denormalized into
-//! `image_group_members` at registration), and a member is admissible for a host
-//! iff the host's tags are a superset of that set. Target (DUT) tags play no part
-//! in image selection.
+//! `required_host_tags` (supplied when the generation is created), and a member
+//! is admissible for a host iff the host's tags are a superset of that set.
+//! Target (DUT) tags play no part in image selection.
 //!
 //! Among the admissible members the most *specific* one wins — the one requiring
 //! the largest tag set — so a host that satisfies a more constrained member gets
 //! it in preference to a looser fallback. Ties on specificity resolve to the
-//! earliest member (registration order, carried as `position`), so the choice is
-//! always deterministic.
+//! earliest member (the member's `index` within the generation), so the choice
+//! is always deterministic.
 
 use std::collections::BTreeSet;
 

@@ -428,24 +428,31 @@ create table tml_switchboard.jobs
     owner_id                    uuid references tml_switchboard.subjects (subject_id) on delete set null,
 
     -- These specify the job image and the nature of the job. A job's image is
-    -- referenced content-addressed against the switchboard image catalog: either
-    -- a concrete image (`image_digest`, the OCI manifest digest of a registered
-    -- `images` row) or an image group (`image_group_digest`, the index digest of
-    -- a registered `image_groups` row) resolved to a concrete member at dispatch.
-    --  (1) normal job:    exactly one of image_digest / image_group_digest is
-    --                     set; both resume_job_id and restart_job_id are null
-    --  (2) restarted job: exactly one of image_digest / image_group_digest is
-    --                     set; restart_job_id is set
-    --  (3) resumed job:   resume_job_id is set; both image digests are null
+    -- referenced against the switchboard image catalog: either a concrete image
+    -- (`image_id`, a registered `images` row) or an image group (`image_group_id`
+    -- plus the frozen `image_group_generation`, an `image_group_generations` row)
+    -- resolved to a concrete member at dispatch.
+    --  (1) normal job:    exactly one of image_id / image_group_id is set; both
+    --                     resume_job_id and restart_job_id are null
+    --  (2) restarted job: exactly one of image_id / image_group_id is set;
+    --                     restart_job_id is set
+    --  (3) resumed job:   resume_job_id is set; image_id / image_group_id null
+    -- `image_group_generation` is set exactly when `image_group_id` is: the
+    -- generation is frozen at enqueue so the candidate set is reproducible.
+    -- The FKs to `images` / `image_group_generations` are added by ALTER TABLE
+    -- after the IMAGE CATALOG section, since those tables are defined later in
+    -- this file (same forward-reference pattern as `hosts.current_job`).
     resume_job_id               uuid references tml_switchboard.jobs (job_id) on delete no action,
     restart_job_id              uuid references tml_switchboard.jobs (job_id) on delete no action,
-    image_digest                text,
-    image_group_digest          text,
+    image_id                    uuid,
+    image_group_id              uuid,
+    image_group_generation      int,
 
-    -- The concrete image manifest digest actually dispatched, recorded at
-    -- dispatch for reproducibility/audit. For a concrete-image job this equals
-    -- `image_digest`; for a group job it is the member the matcher selected.
-    resolved_image_digest       text,
+    -- The concrete image actually dispatched, recorded at dispatch for
+    -- reproducibility/audit (the digest is recovered by join to `images`). For a
+    -- concrete-image job this equals `image_id`; for a group job it is the member
+    -- the matcher selected. Images are immortal, so no cascade.
+    resolved_image_id           uuid,
 
     -- SSH keys to be injected, if any
     ssh_keys                    text[]                           not null,
@@ -514,13 +521,17 @@ create table tml_switchboard.jobs
 
     -- Two allowed init states:
     --  (1) resume_job_id = null, restart_job_id = _, and exactly one of
-    --      image_digest / image_group_digest is set
-    --  (2) resume_job_id != null, restart_job_id = null, both image digests null
+    --      image_id / image_group_id is set; image_group_generation is set iff
+    --      image_group_id is
+    --  (2) resume_job_id != null, restart_job_id = null, and image_id /
+    --      image_group_id / image_group_generation all null
     constraint valid_init_spec check (
       (resume_job_id is null
-         and (image_digest is not null)::int + (image_group_digest is not null)::int = 1)
+         and (image_id is not null)::int + (image_group_id is not null)::int = 1
+         and (image_group_id is null) = (image_group_generation is null))
         or (resume_job_id is not null and restart_job_id is null
-              and image_digest is null and image_group_digest is null)
+              and image_id is null and image_group_id is null
+              and image_group_generation is null)
     ),
 
     -- Restart count >= 0
@@ -811,14 +822,18 @@ $$;
 -- IMAGE CATALOG
 -- ===========================================================================
 --
--- The switchboard is the catalog of OCI images and image groups (see
+-- The switchboard is the catalog of OCI images (see
 -- doc/oci-image-migration-plan.md §5.3/§8). It stores only references --
 -- `{registry, repository}` locations and the content-addressed digest -- never
 -- image bytes. An image's *identity* is its OCI manifest digest; the same digest
 -- may be served from several locations (registry redundancy, promotion to a
 -- canonical/system mirror), so locations are a separate table (D12/D16). A job
--- referencing an image by digest is resolved, at dispatch, to that digest plus
--- its ordered locations and handed to the supervisor.
+-- referencing an image by id is resolved, at dispatch, to its digest plus its
+-- ordered locations and handed to the supervisor.
+--
+-- Image *groups* are mutable, named, generationed entities (no longer OCI
+-- artifacts); see doc/image-groups-mutable-generations-plan.md and the group
+-- tables further below.
 
 -- A registered Treadmill image, identified by its OCI manifest digest. `attrs`
 -- is free-form metadata projected off the validated manifest at registration
@@ -854,35 +869,103 @@ create table tml_switchboard.image_locations
     constraint valid_location_status check (status in ('external', 'canonical', 'system'))
 );
 
--- A registered Treadmill image group: an OCI image index, pinned by its index
--- digest. Its members are concrete `images` rows (in the same repository as the
--- index), denormalized into `image_group_members` for the dispatch-time matcher.
+-- A named, mutable image group. `name` is the stable moving-target handle a job
+-- references (by id); membership lives in immutable per-generation snapshots
+-- (`image_group_generations` / `image_group_members`). Groups are never deleted
+-- (metadata is immortal), so a job that pinned a generation always resolves. See
+-- doc/image-groups-mutable-generations-plan.md.
 create table tml_switchboard.image_groups
 (
     id                uuid                     not null primary key,
-    index_digest      text                     not null unique,
+    name              text                     not null unique,
     owner_subject     uuid                     references tml_switchboard.subjects (subject_id) on delete set null,
     label             text,
     created_at        timestamp with time zone not null default current_timestamp
 );
 
--- One selectable member of a group, denormalized from the index for the matcher
--- (group + host tags -> concrete image). A member's eligibility is a set of
--- required host tags (authored per index member, see `parse_group`): the member
--- is admissible for a host iff `hosts.tags` is a superset of `required_host_tags`.
--- Among admissible members the most specific (largest required set) wins, ties
--- broken by `position` (the member's order in the index). Image selection uses
--- HOST tags only; target/DUT tags are irrelevant here. Rebuilt wholesale from the
--- index when the group is (re)registered.
+-- One immutable snapshot of a group's membership. Every membership edit appends
+-- a new generation (per-group monotonic from 1, allocated under an advisory lock
+-- in the create-generation transaction). Append-only: a trigger blocks
+-- UPDATE/DELETE (same pattern as audit_events). `created_by` is provenance.
+create table tml_switchboard.image_group_generations
+(
+    group_id   uuid                     not null references tml_switchboard.image_groups (id) on delete cascade,
+    generation int                      not null,
+    created_by uuid                     references tml_switchboard.subjects (subject_id) on delete set null,
+    created_at timestamp with time zone not null default current_timestamp,
+
+    primary key (group_id, generation),
+    constraint generation_positive check (generation >= 1)
+);
+
+-- The members of ONE generation (full replacement per generation). A member's
+-- eligibility is a set of required host tags: the member is admissible for a host
+-- iff `hosts.tags` is a superset of `required_host_tags`. Among admissible
+-- members the most specific (largest required set) wins, ties broken by `index`
+-- (the member's explicit array position in the create-generation request). Image
+-- selection uses HOST tags only; target/DUT tags are irrelevant here. `image_id`
+-- references an immortal `images` row (no cascade: images are never deleted).
 create table tml_switchboard.image_group_members
 (
-    group_id            uuid                     not null references tml_switchboard.image_groups (id) on delete cascade,
-    image_id            uuid                     not null references tml_switchboard.images (id) on delete cascade,
+    group_id            uuid                     not null,
+    generation          int                      not null,
+    image_id            uuid                     not null references tml_switchboard.images (id),
     required_host_tags  text[]                   not null default '{}',
-    position            int                      not null,
+    index               int                      not null,
 
-    primary key (group_id, image_id)
+    primary key (group_id, generation, image_id),
+    unique (group_id, generation, index),
+    foreign key (group_id, generation)
+        references tml_switchboard.image_group_generations (group_id, generation)
+        on delete cascade
 );
+
+-- Append-only enforcement for generations: a generation snapshot is immutable
+-- once created (every membership edit appends a new generation). Functionally
+-- identical to `deny_audit_event_change`, duplicated here so the IMAGE CATALOG
+-- section does not forward-reference the AUDIT LOG section.
+create or replace function tml_switchboard.deny_generation_change()
+    returns trigger
+    language plpgsql as
+$$
+begin
+    raise exception 'image-group generations are append-only (% on %.%)',
+        TG_OP, TG_TABLE_SCHEMA, TG_TABLE_NAME;
+end;
+$$;
+
+create trigger image_group_generations_append_only
+    before update or delete on tml_switchboard.image_group_generations
+    for each row execute function tml_switchboard.deny_generation_change();
+
+-- Image-group permissions. Authorization is the standard ownership ∨ grant
+-- disjunction evaluated via `principals()`; the owner holds `manage` implicitly.
+-- All grants are user-managed (no irrevocable/fixed grants as jobs have), so no
+-- revocability trigger.
+create type tml_switchboard.image_group_permission as enum ('use', 'manage');
+
+create table tml_switchboard.image_group_grants
+(
+    group_id   uuid                     not null references tml_switchboard.image_groups (id) on delete cascade,
+    subject_id uuid                     not null references tml_switchboard.subjects (subject_id) on delete cascade,
+    permission tml_switchboard.image_group_permission not null,
+    granted_at timestamp with time zone not null default current_timestamp,
+
+    primary key (group_id, subject_id, permission)
+);
+
+-- The jobs table's image references, added here because `jobs` is defined before
+-- the IMAGE CATALOG section (forward-reference pattern, as for `hosts.current_job`).
+-- Images and generations are immortal, so all of these are ON DELETE NO ACTION.
+ALTER TABLE tml_switchboard.jobs
+    ADD FOREIGN KEY (image_id)
+    REFERENCES tml_switchboard.images (id) ON DELETE NO ACTION;
+ALTER TABLE tml_switchboard.jobs
+    ADD FOREIGN KEY (resolved_image_id)
+    REFERENCES tml_switchboard.images (id) ON DELETE NO ACTION;
+ALTER TABLE tml_switchboard.jobs
+    ADD FOREIGN KEY (image_group_id, image_group_generation)
+    REFERENCES tml_switchboard.image_group_generations (group_id, generation) ON DELETE NO ACTION;
 
 -- ===========================================================================
 -- AUDIT LOG

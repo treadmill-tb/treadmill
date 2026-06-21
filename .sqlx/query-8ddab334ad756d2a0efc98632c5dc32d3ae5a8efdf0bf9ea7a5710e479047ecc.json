@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select m.image_id, i.manifest_digest,\n                  m.required_host_tags, m.position\n           from tml_switchboard.image_group_members m\n           join tml_switchboard.images i on i.id = m.image_id\n           where m.group_id = $1\n           order by m.position",
+  "query": "select m.image_id, i.manifest_digest,\n                  m.required_host_tags, m.\"index\"\n           from tml_switchboard.image_group_members m\n           join tml_switchboard.images i on i.id = m.image_id\n           where m.group_id = $1 and m.generation = $2\n           order by m.\"index\"",
   "describe": {
     "columns": [
       {
@@ -38,19 +38,20 @@
       },
       {
         "ordinal": 3,
-        "name": "position",
+        "name": "index",
         "type_info": "Int4",
         "origin": {
           "Table": {
             "table": "tml_switchboard.image_group_members",
-            "name": "position"
+            "name": "index"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Int4"
       ]
     },
     "nullable": [
@@ -60,5 +61,5 @@
       false
     ]
   },
-  "hash": "aab570a4887569d3bb1ed9375dca2ac8049fcaab06be68b8f8bfe6a1b42e99a1"
+  "hash": "8ddab334ad756d2a0efc98632c5dc32d3ae5a8efdf0bf9ea7a5710e479047ecc"
 }

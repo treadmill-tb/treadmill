@@ -27,7 +27,6 @@ use treadmill_rs::api::switchboard::{
     JobInitSpec, JobRequest, JobState, LoginResponse, WhoAmIResponse,
 };
 use treadmill_rs::api::switchboard_supervisor::RestartPolicy;
-use treadmill_rs::image::Digest;
 
 /// The built-in admins group subject (`engine::ADMINS_GROUP_ID`). `alice` is a
 /// member, so she may file a job under it.
@@ -151,20 +150,37 @@ async fn latest_token_id(pool: &PgPool, user_id: Uuid) -> Uuid {
     .unwrap()
 }
 
+/// Register a throwaway concrete image (unique digest, no location) and return
+/// its catalog id. A job's `image_id` is an FK into `images`, so the seed/enqueue
+/// helpers need a real row to reference. Uses the runtime query API, so no
+/// `.sqlx` entry is needed.
+async fn register_image(pool: &PgPool) -> Uuid {
+    let id = Uuid::new_v4();
+    let id_hex = id.simple().to_string();
+    let digest = format!("sha256:{id_hex:0>64}");
+    sqlx::query(
+        "insert into tml_switchboard.images \
+           (id, manifest_digest, artifact_type, owner_subject, attrs) \
+         values ($1, $2, 'application/vnd.treadmill.image.v1+json', null, '{}'::jsonb)",
+    )
+    .bind(id)
+    .bind(digest)
+    .execute(pool)
+    .await
+    .unwrap();
+    id
+}
+
 /// Insert a `queued`, concrete-image job owned by `owner`, with the given
-/// parameters (`key`, `value`, `secret`). Returns the job id. Uses the runtime
-/// query API, so no `.sqlx` entry is needed.
-async fn seed_job(
-    pool: &PgPool,
-    owner: Uuid,
-    token: Uuid,
-    image_digest: &str,
-    params: &[(&str, &str, bool)],
-) -> Uuid {
+/// parameters (`key`, `value`, `secret`). A fresh image is registered and
+/// referenced by id. Returns the job id. Uses the runtime query API, so no
+/// `.sqlx` entry is needed.
+async fn seed_job(pool: &PgPool, owner: Uuid, token: Uuid, params: &[(&str, &str, bool)]) -> Uuid {
     let job_id = Uuid::new_v4();
+    let image_id = register_image(pool).await;
     sqlx::query(
         "insert into tml_switchboard.jobs \
-           (job_id, owner_id, image_digest, ssh_keys, restart_policy, \
+           (job_id, owner_id, image_id, ssh_keys, restart_policy, \
             enqueued_by_token_id, host_tag_requirements, job_timeout, \
             job_state, queued_at) \
          values ($1, $2, $3, '{}', row(0)::tml_switchboard.restart_policy, \
@@ -172,7 +188,7 @@ async fn seed_job(
     )
     .bind(job_id)
     .bind(owner)
-    .bind(image_digest)
+    .bind(image_id)
     .bind(token)
     .execute(pool)
     .await
@@ -200,13 +216,13 @@ async fn seed_job_at(
     pool: &PgPool,
     owner: Uuid,
     token: Uuid,
-    image_digest: &str,
     queued_at: chrono::DateTime<chrono::Utc>,
 ) -> Uuid {
     let job_id = Uuid::new_v4();
+    let image_id = register_image(pool).await;
     sqlx::query(
         "insert into tml_switchboard.jobs \
-           (job_id, owner_id, image_digest, ssh_keys, restart_policy, \
+           (job_id, owner_id, image_id, ssh_keys, restart_policy, \
             enqueued_by_token_id, host_tag_requirements, job_timeout, \
             job_state, queued_at) \
          values ($1, $2, $3, '{}', row(0)::tml_switchboard.restart_policy, \
@@ -214,7 +230,7 @@ async fn seed_job_at(
     )
     .bind(job_id)
     .bind(owner)
-    .bind(image_digest)
+    .bind(image_id)
     .bind(token)
     .bind(queued_at)
     .execute(pool)
@@ -238,30 +254,9 @@ async fn list_paginates_readable_jobs_newest_first(pool: PgPool) {
 
     // Three jobs at distinct, increasing queue times: j2 is newest.
     let base = chrono::Utc::now() - chrono::Duration::hours(1);
-    let j0 = seed_job_at(
-        &pool,
-        bob,
-        token_id,
-        &Digest::from_sha256([20; 32]).encoded(),
-        base,
-    )
-    .await;
-    let j1 = seed_job_at(
-        &pool,
-        bob,
-        token_id,
-        &Digest::from_sha256([21; 32]).encoded(),
-        base + chrono::Duration::minutes(1),
-    )
-    .await;
-    let j2 = seed_job_at(
-        &pool,
-        bob,
-        token_id,
-        &Digest::from_sha256([22; 32]).encoded(),
-        base + chrono::Duration::minutes(2),
-    )
-    .await;
+    let j0 = seed_job_at(&pool, bob, token_id, base).await;
+    let j1 = seed_job_at(&pool, bob, token_id, base + chrono::Duration::minutes(1)).await;
+    let j2 = seed_job_at(&pool, bob, token_id, base + chrono::Duration::minutes(2)).await;
 
     // First page of 2: newest first (j2, j1), with a cursor for more.
     let page1: JobListResponse = client
@@ -305,26 +300,12 @@ async fn list_scopes_to_readable_jobs(pool: PgPool) {
     let alice_token = mock_login_token(&client, addr, "alice").await;
     let alice = whoami(&client, addr, &alice_token).await;
     let alice_tok = latest_token_id(&pool, alice).await;
-    let alice_job = seed_job(
-        &pool,
-        alice,
-        alice_tok,
-        &Digest::from_sha256([30; 32]).encoded(),
-        &[],
-    )
-    .await;
+    let alice_job = seed_job(&pool, alice, alice_tok, &[]).await;
 
     let bob_token = mock_login_token(&client, addr, "bob").await;
     let bob = whoami(&client, addr, &bob_token).await;
     let bob_tok = latest_token_id(&pool, bob).await;
-    let bob_job = seed_job(
-        &pool,
-        bob,
-        bob_tok,
-        &Digest::from_sha256([31; 32]).encoded(),
-        &[],
-    )
-    .await;
+    let bob_job = seed_job(&pool, bob, bob_tok, &[]).await;
 
     // `bob` sees only his own job.
     let bob_list: JobListResponse = client
@@ -387,13 +368,8 @@ async fn enqueue_and_cancel_emit_audit_events(pool: PgPool) {
     let token = mock_login_token(&client, addr, "bob").await;
 
     // Enqueue a job, then cancel it (still queued, so it finalizes immediately).
-    let req = image_job_request(
-        None,
-        JobInitSpec::Image {
-            image: Digest::from_sha256([40; 32]),
-        },
-        None,
-    );
+    let image = register_image(&pool).await;
+    let req = image_job_request(None, JobInitSpec::Image { image }, None);
     let job_id = client
         .post(format!("http://{addr}/api/v1/jobs"))
         .bearer_auth(&token)
@@ -485,13 +461,8 @@ async fn enqueue_creates_a_queued_job_owned_by_caller(pool: PgPool) {
 
     let token = mock_login_token(&client, addr, "bob").await;
     let bob = whoami(&client, addr, &token).await;
-    let req = image_job_request(
-        None,
-        JobInitSpec::Image {
-            image: Digest::from_sha256([9; 32]),
-        },
-        None,
-    );
+    let image = register_image(&pool).await;
+    let req = image_job_request(None, JobInitSpec::Image { image }, None);
 
     let resp = client
         .post(format!("http://{addr}/api/v1/jobs"))
@@ -530,13 +501,8 @@ async fn enqueue_under_a_group_the_caller_belongs_to(pool: PgPool) {
 
     // `alice` is a member of the admins group, so she may own the job under it.
     let token = mock_login_token(&client, addr, "alice").await;
-    let req = image_job_request(
-        Some(ADMINS_GROUP_ID),
-        JobInitSpec::Image {
-            image: Digest::from_sha256([3; 32]),
-        },
-        None,
-    );
+    let image = register_image(&pool).await;
+    let req = image_job_request(Some(ADMINS_GROUP_ID), JobInitSpec::Image { image }, None);
 
     let resp = client
         .post(format!("http://{addr}/api/v1/jobs"))
@@ -572,10 +538,12 @@ async fn enqueue_with_unrelated_owner_is_forbidden(pool: PgPool) {
     // `bob` is not a member of any group, and certainly not of a random subject,
     // so he cannot file a job under it.
     let token = mock_login_token(&client, addr, "bob").await;
+    // The unrelated-owner check rejects this (403) before the image is ever
+    // looked up, so an unregistered image id is fine here.
     let req = image_job_request(
         Some(Uuid::new_v4()),
         JobInitSpec::Image {
-            image: Digest::from_sha256([4; 32]),
+            image: Uuid::new_v4(),
         },
         None,
     );
@@ -603,14 +571,7 @@ async fn restarting_a_job_without_manage_is_forbidden(pool: PgPool) {
     let alice_token = mock_login_token(&client, addr, "alice").await;
     let alice = whoami(&client, addr, &alice_token).await;
     let alice_tok = latest_token_id(&pool, alice).await;
-    let existing = seed_job(
-        &pool,
-        alice,
-        alice_tok,
-        &Digest::from_sha256([5; 32]).encoded(),
-        &[],
-    )
-    .await;
+    let existing = seed_job(&pool, alice, alice_tok, &[]).await;
 
     let bob_token = mock_login_token(&client, addr, "bob").await;
     let req = image_job_request(None, JobInitSpec::RestartJob { job_id: existing }, None);
@@ -635,11 +596,10 @@ async fn enqueue_honors_an_override_timeout(pool: PgPool) {
         .unwrap();
 
     let token = mock_login_token(&client, addr, "bob").await;
+    let image = register_image(&pool).await;
     let req = image_job_request(
         None,
-        JobInitSpec::Image {
-            image: Digest::from_sha256([6; 32]),
-        },
+        JobInitSpec::Image { image },
         Some(chrono::Duration::hours(2)),
     );
 
@@ -690,14 +650,7 @@ async fn canceling_a_queued_job_finalizes_it(pool: PgPool) {
     let token = mock_login_token(&client, addr, "bob").await;
     let bob = whoami(&client, addr, &token).await;
     let token_id = latest_token_id(&pool, bob).await;
-    let job_id = seed_job(
-        &pool,
-        bob,
-        token_id,
-        &Digest::from_sha256([8; 32]).encoded(),
-        &[],
-    )
-    .await;
+    let job_id = seed_job(&pool, bob, token_id, &[]).await;
 
     let resp = client
         .delete(format!("http://{addr}/api/v1/jobs/{job_id}"))
@@ -735,14 +688,7 @@ async fn canceling_without_stop_permission_is_forbidden(pool: PgPool) {
     let bob_token = mock_login_token(&client, addr, "bob").await;
     let bob = whoami(&client, addr, &bob_token).await;
     let token_id = latest_token_id(&pool, bob).await;
-    let job_id = seed_job(
-        &pool,
-        bob,
-        token_id,
-        &Digest::from_sha256([10; 32]).encoded(),
-        &[],
-    )
-    .await;
+    let job_id = seed_job(&pool, bob, token_id, &[]).await;
 
     let carol_token = mock_login_token(&client, addr, "carol").await;
     let resp = client
@@ -790,15 +736,20 @@ async fn owner_reads_own_job_with_secret_redacted(pool: PgPool) {
     let token = mock_login_token(&client, addr, "bob").await;
     let bob = whoami(&client, addr, &token).await;
     let token_id = latest_token_id(&pool, bob).await;
-    let image = Digest::from_sha256([7; 32]);
     let job_id = seed_job(
         &pool,
         bob,
         token_id,
-        &image.encoded(),
         &[("api_key", "s3cr3t", true), ("region", "us-east", false)],
     )
     .await;
+    // The image the seed helper registered and bound onto the job.
+    let image_id: Uuid =
+        sqlx::query_scalar("select image_id from tml_switchboard.jobs where job_id = $1")
+            .bind(job_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     let resp = client
         .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
@@ -812,7 +763,7 @@ async fn owner_reads_own_job_with_secret_redacted(pool: PgPool) {
     assert_eq!(info.job_id, job_id);
     assert_eq!(info.owner_id, Some(bob));
     assert_eq!(info.state, JobState::Queued);
-    assert!(matches!(info.image, JobImageRef::Image { digest } if digest == image));
+    assert!(matches!(info.image, JobImageRef::Image { image_id: got } if got == image_id));
 
     // Secret parameter: flagged secret, value withheld.
     let secret = &info.parameters["api_key"];
@@ -837,14 +788,7 @@ async fn admin_reads_any_job(pool: PgPool) {
     let bob_token = mock_login_token(&client, addr, "bob").await;
     let bob = whoami(&client, addr, &bob_token).await;
     let token_id = latest_token_id(&pool, bob).await;
-    let job_id = seed_job(
-        &pool,
-        bob,
-        token_id,
-        &Digest::from_sha256([1; 32]).encoded(),
-        &[],
-    )
-    .await;
+    let job_id = seed_job(&pool, bob, token_id, &[]).await;
 
     let alice_token = mock_login_token(&client, addr, "alice").await;
     let resp = client
@@ -870,14 +814,7 @@ async fn stranger_is_forbidden_from_reading_a_job(pool: PgPool) {
     let bob_token = mock_login_token(&client, addr, "bob").await;
     let bob = whoami(&client, addr, &bob_token).await;
     let token_id = latest_token_id(&pool, bob).await;
-    let job_id = seed_job(
-        &pool,
-        bob,
-        token_id,
-        &Digest::from_sha256([2; 32]).encoded(),
-        &[],
-    )
-    .await;
+    let job_id = seed_job(&pool, bob, token_id, &[]).await;
 
     let carol_token = mock_login_token(&client, addr, "carol").await;
     let resp = client

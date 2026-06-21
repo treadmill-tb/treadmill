@@ -1,15 +1,13 @@
 //! Media types and artifact types for Treadmill OCI images.
 //!
 //! A Treadmill image is an OCI image manifest in *pure-artifact* form (empty
-//! config + an `artifactType`), and an image *group* is an OCI image index.
-//! Individual blobs carry Treadmill-specific media types describing their role
-//! in a backing chain. See `doc/oci-image-migration-plan.md` §D1/§D2/§D4.
+//! config + an `artifactType`). Individual blobs carry Treadmill-specific media
+//! types describing their role in a backing chain. See
+//! `doc/oci-image-migration-plan.md` §D1/§D2/§D4. (Image *groups* are no longer
+//! OCI artifacts; see `doc/image-groups-mutable-generations-plan.md`.)
 
 /// `artifactType` of a Treadmill image manifest (pure artifact, empty config).
 pub const IMAGE_ARTIFACT_TYPE: &str = "application/vnd.treadmill.image.v1+json";
-
-/// `artifactType` of a Treadmill image group (an OCI image index).
-pub const IMAGE_GROUP_ARTIFACT_TYPE: &str = "application/vnd.treadmill.image-group.v1+json";
 
 /// Media type of a qcow2 disk blob (one layer of a backing chain).
 pub const DISK_QCOW2: &str = "application/vnd.treadmill.disk.qcow2";
@@ -21,8 +19,6 @@ pub const BOOT_FAT_V1: &str = "application/vnd.treadmill.boot.fat.v1";
 pub mod oci {
     /// OCI image manifest.
     pub const MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
-    /// OCI image index (used for image groups).
-    pub const INDEX: &str = "application/vnd.oci.image.index.v1+json";
     /// The canonical empty config descriptor (`{}`), marking a pure artifact.
     pub const EMPTY_CONFIG: &str = "application/vnd.oci.empty.v1+json";
 }

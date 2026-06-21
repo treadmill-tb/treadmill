@@ -310,13 +310,14 @@ paths:
     post:
       requestBody:
         description: |-
-          `POST /image-groups`: register an image group by its OCI index digest. The
-          switchboard pulls the index, validates each member, and records the group
-          plus its (image, location, denormalized-member) rows for the matcher.
+          `POST /image-groups`: create an empty, named image group. The caller becomes
+          its owner; membership is added afterwards via per-generation snapshots (see
+          [`CreateGenerationRequest`]). See
+          `doc/image-groups-mutable-generations-plan.md`.
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RegisterImageGroupRequest'
+              $ref: '#/components/schemas/CreateImageGroupRequest'
         required: true
       responses:
         '400':
@@ -337,15 +338,94 @@ paths:
             text/plain:
               schema:
                 type: string
-  /image-groups/{digest}:
+  /image-groups/{id}:
     get:
       responses:
         '200':
-          description: A registered image group, as returned by the catalog list/inspect routes.
+          description: A named, mutable image group, as returned by the catalog list/inspect routes.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ImageGroupInfo'
+  /image-groups/{id}/generations:
+    post:
+      requestBody:
+        description: |-
+          `POST /image-groups/{id}/generations`: append a new, immutable
+          full-replacement generation of a group's membership.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGenerationRequest'
+        required: true
+      responses:
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+  /image-groups/{id}/generations/{n}:
+    get:
+      responses:
+        '200':
+          description: One immutable generation (membership snapshot) of an image group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGroupGenerationInfo'
+  /image-groups/{id}/grants:
+    get:
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImageGroupGrantInfo'
+    post:
+      requestBody:
+        description: '`POST /image-groups/{id}/grants`: grant `permission` on the group to a subject.'
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageGroupGrantRequest'
+        required: true
+      responses:
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+  /image-groups/{id}/grants/{subject_id}/{permission}:
+    delete: {}
 components:
   schemas:
     AuditFeedResponse:
@@ -358,12 +438,88 @@ components:
             $ref: '#/components/schemas/RenderedAuditRow'
       required:
       - events
+    CreateGenerationRequest:
+      description: |-
+        `POST /image-groups/{id}/generations`: append a new, immutable
+        full-replacement generation of a group's membership.
+      type: object
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/GenerationMemberSpec'
+      required:
+      - members
+    CreateImageGroupRequest:
+      description: |-
+        `POST /image-groups`: create an empty, named image group. The caller becomes
+        its owner; membership is added afterwards via per-generation snapshots (see
+        [`CreateGenerationRequest`]). See
+        `doc/image-groups-mutable-generations-plan.md`.
+      type: object
+      properties:
+        label:
+          description: Optional human-readable label.
+          type:
+          - string
+          - 'null'
+          default: null
+        name:
+          description: The stable, globally-unique moving-target handle a job references (by id).
+          type: string
+      required:
+      - name
     Digest:
       description: |-
         A content-addressable OCI digest over 32 bytes of SHA-256.
 
         Formats as the canonical OCI string `sha256:<64 lower-case hex>`.
       type: string
+    GenerationMemberInfo:
+      description: |-
+        One member of a generation, as returned by the inspect route. A member is
+        admissible for a host iff the host's tags are a superset of
+        `required_host_tags`.
+      type: object
+      properties:
+        image_id:
+          type: string
+          format: uuid
+        index:
+          type: integer
+          format: uint32
+          minimum: 0
+        manifest_digest:
+          $ref: '#/components/schemas/Digest'
+        required_host_tags:
+          type: array
+          items:
+            type: string
+      required:
+      - image_id
+      - manifest_digest
+      - required_host_tags
+      - index
+    GenerationMemberSpec:
+      description: |-
+        One member of a new generation; `index` is the member's array position in the
+        request, used as the deterministic tie-break among equally-specific members.
+      type: object
+      properties:
+        image_id:
+          description: Image to include; must already be registered via `POST /images`.
+          type: string
+          format: uuid
+        required_host_tags:
+          description: |-
+            Host tags a host must carry (as a superset) for this member to be
+            selectable on it.
+          type: array
+          default: []
+          items:
+            type: string
+      required:
+      - image_id
     GroupMembership:
       description: |-
         One group the user belongs to, including transitive memberships resolved via
@@ -447,8 +603,60 @@ components:
       required:
       - name
       - tags
+    ImageGroupGenerationInfo:
+      description: One immutable generation (membership snapshot) of an image group.
+      type: object
+      properties:
+        created_at:
+          type: string
+          format: date-time
+        created_by:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        generation:
+          type: integer
+          format: uint32
+          minimum: 0
+        group_id:
+          type: string
+          format: uuid
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/GenerationMemberInfo'
+      required:
+      - group_id
+      - generation
+      - created_at
+      - members
+    ImageGroupGrantInfo:
+      description: One grant on an image group, as returned by the list-grants route.
+      type: object
+      properties:
+        permission:
+          $ref: '#/components/schemas/ImageGroupPermission'
+        subject_id:
+          type: string
+          format: uuid
+      required:
+      - subject_id
+      - permission
+    ImageGroupGrantRequest:
+      description: '`POST /image-groups/{id}/grants`: grant `permission` on the group to a subject.'
+      type: object
+      properties:
+        permission:
+          $ref: '#/components/schemas/ImageGroupPermission'
+        subject_id:
+          type: string
+          format: uuid
+      required:
+      - subject_id
+      - permission
     ImageGroupInfo:
-      description: A registered image group, as returned by the catalog list/inspect routes.
+      description: A named, mutable image group, as returned by the catalog list/inspect routes.
       type: object
       properties:
         created_at:
@@ -457,16 +665,19 @@ components:
         id:
           type: string
           format: uuid
-        index_digest:
-          $ref: '#/components/schemas/Digest'
         label:
           type:
           - string
           - 'null'
-        members:
-          type: array
-          items:
-            $ref: '#/components/schemas/ImageGroupMember'
+        latest_generation:
+          description: The group's latest generation number, or `None` if it has none yet.
+          type:
+          - integer
+          - 'null'
+          format: uint32
+          minimum: 0
+        name:
+          type: string
         owner_id:
           type:
           - string
@@ -474,24 +685,17 @@ components:
           format: uuid
       required:
       - id
-      - index_digest
+      - name
       - created_at
-      - members
-    ImageGroupMember:
-      description: |-
-        One selectable member of a registered group. A member is admissible for a
-        host iff the host's tags are a superset of `required_host_tags`.
-      type: object
-      properties:
-        manifest_digest:
-          $ref: '#/components/schemas/Digest'
-        required_host_tags:
-          type: array
-          items:
-            type: string
-      required:
-      - manifest_digest
-      - required_host_tags
+    ImageGroupPermission:
+      description: A permission on an image group; mirrors `tml_switchboard.image_group_permission`.
+      oneOf:
+      - description: May run a job referencing the group (and so its member images).
+        type: string
+        const: use
+      - description: May create generations and manage grants (owner holds this implicitly).
+        type: string
+        const: manage
     ImageInfo:
       description: A registered image, as returned by the catalog list/inspect routes.
       type: object
@@ -542,36 +746,43 @@ components:
       - status
     JobImageRef:
       description: |-
-        What a job is based off, as seen by `GET /jobs/{id}`. Collapses the four
-        mutually-exclusive DB columns (`image_digest` / `image_group_digest` /
-        `resume_job_id` / `restart_job_id`) into a single tagged variant; the
-        separately-recorded concrete dispatch digest is reported alongside as
-        [`JobInfo::resolved_image_digest`].
+        What a job is based off, as seen by `GET /jobs/{id}`. Collapses the
+        mutually-exclusive DB columns (`image_id` / `image_group_id` +
+        `image_group_generation` / `resume_job_id` / `restart_job_id`) into a single
+        tagged variant; the separately-recorded concrete dispatch digest is reported
+        alongside as [`JobInfo::resolved_image_digest`].
       oneOf:
-      - description: Based off a concrete catalog image, addressed by its OCI manifest digest.
+      - description: Based off a concrete catalog image, addressed by its catalog id.
         type: object
         properties:
-          digest:
-            $ref: '#/components/schemas/Digest'
+          image_id:
+            type: string
+            format: uuid
           type:
             type: string
             const: image
         required:
         - type
-        - digest
+        - image_id
       - description: |-
-          Based off a registered image *group*, addressed by its index digest; the
-          concrete member is chosen at dispatch.
+          Based off a registered image *group*, addressed by its id plus the frozen
+          generation; the concrete member is chosen at dispatch.
         type: object
         properties:
-          digest:
-            $ref: '#/components/schemas/Digest'
+          generation:
+            type: integer
+            format: uint32
+            minimum: 0
+          group_id:
+            type: string
+            format: uuid
           type:
             type: string
             const: image_group
         required:
         - type
-        - digest
+        - group_id
+        - generation
       - description: Resumes a previously started job.
         type: object
         properties:
@@ -759,8 +970,8 @@ components:
         - job_id
       - description: |-
           Base this job off a concrete image registered in the switchboard
-          catalog, addressed by its OCI manifest digest. At dispatch the
-          switchboard resolves the digest to its registry locations and hands the
+          catalog, addressed by its catalog id (`POST /images`). At dispatch the
+          switchboard resolves the image to its registry locations and hands the
           supervisor a content-addressed [`ImageSpecification::Image`].
 
           [`ImageSpecification::Image`]:
@@ -768,7 +979,8 @@ components:
         type: object
         properties:
           image:
-            $ref: '#/components/schemas/Digest'
+            type: string
+            format: uuid
           type:
             type: string
             const: image
@@ -776,14 +988,24 @@ components:
         - type
         - image
       - description: |-
-          Base this job off a registered image *group* (an OCI image index),
-          addressed by its index digest. After a host is chosen, the switchboard
-          matcher selects the group member whose required host tags the chosen
-          host satisfies and dispatches that concrete member's digest.
+          Base this job off a registered image *group*, addressed by its stable id.
+          `generation` pins a specific membership snapshot; when omitted, the
+          group's latest generation is resolved and frozen onto the job at enqueue.
+          After a host is chosen, the switchboard matcher selects the generation's
+          member whose required host tags the chosen host satisfies and dispatches
+          that concrete member.
         type: object
         properties:
+          generation:
+            type:
+            - integer
+            - 'null'
+            format: uint32
+            default: null
+            minimum: 0
           image_group:
-            $ref: '#/components/schemas/Digest'
+            type: string
+            format: uuid
           type:
             type: string
             const: image_group
@@ -1104,33 +1326,6 @@ components:
       required:
       - user_id
       - username
-    RegisterImageGroupRequest:
-      description: |-
-        `POST /image-groups`: register an image group by its OCI index digest. The
-        switchboard pulls the index, validates each member, and records the group
-        plus its (image, location, denormalized-member) rows for the matcher.
-      type: object
-      properties:
-        index_digest:
-          description: The OCI index digest identifying the group.
-          allOf:
-          - $ref: '#/components/schemas/Digest'
-        label:
-          description: Optional human-readable label.
-          type:
-          - string
-          - 'null'
-          default: null
-        registry:
-          description: Registry authority (`host:port`) the index can be pulled from.
-          type: string
-        repository:
-          description: Repository path within the registry (members live in the same repo).
-          type: string
-      required:
-      - registry
-      - repository
-      - index_digest
     RegisterImageRequest:
       description: |-
         `POST /images`: register a concrete image by digest. The switchboard pulls

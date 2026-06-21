@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, index_digest, owner_subject, label, created_at\n           from tml_switchboard.image_groups where index_digest = $1",
+  "query": "select id, name, owner_subject, label, created_at\n           from tml_switchboard.image_groups where name = $1",
   "describe": {
     "columns": [
       {
@@ -16,12 +16,12 @@
       },
       {
         "ordinal": 1,
-        "name": "index_digest",
+        "name": "name",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "tml_switchboard.image_groups",
-            "name": "index_digest"
+            "name": "name"
           }
         }
       },
@@ -72,5 +72,5 @@
       false
     ]
   },
-  "hash": "d4438ae60341898a8c753fd8e58a0e967585028b0aebf04c73edb12a51efcf12"
+  "hash": "4c6871358fcb38f5d3461ef3eceb080e2f76dc50f1d3c8cac5b984f43c8c07a6"
 }

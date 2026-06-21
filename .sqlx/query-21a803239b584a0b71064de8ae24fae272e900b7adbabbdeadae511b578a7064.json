@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        insert into tml_switchboard.jobs\n        (\n          job_id,\n          owner_id,\n          resume_job_id,\n          restart_job_id,\n          image_id,\n          image_group_id,\n          image_group_generation,\n          ssh_keys,\n          restart_policy,\n          enqueued_by_token_id,\n          host_tag_requirements,\n          job_timeout,\n          job_state,\n          initializing_stage,\n          queued_at,\n          started_at,\n          dispatched_on_host_id,\n          ssh_endpoints,\n          termination_reason,\n          task_exit_status,\n          exit_message,\n          terminated_at,\n          last_updated_at\n        )\n        values (\n          $1,       -- job_id\n          $13,\t    -- owner_id\n          $2,\t    -- resume_job_id\n          $3,\t    -- restart_job_id\n          $4,\t    -- image_id\n          $5,\t    -- image_group_id\n          $6,\t    -- image_group_generation\n          $7,\t    -- ssh_keys\n          $8,\t    -- restart_policy\n          $9,\t    -- enqueued_by_token_id\n          $10,\t    -- host_tag_requirements\n          $11,\t    -- job_timeout\n          'queued', -- job_state\n          null,\t    -- initializing_stage\n          $12,\t    -- queued_at\n          null,\t    -- started_at\n          null,\t    -- dispatched_on_host_id\n          null,\t    -- ssh_endpoints\n          null,\t    -- termination_reason\n          null,\t    -- task_exit_status\n          null,\t    -- exit_message\n          null,\t    -- terminated_at\n          default   -- last_updated_at\n        )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "TextArray",
+        {
+          "Custom": {
+            "name": "tml_switchboard.restart_policy",
+            "kind": {
+              "Composite": [
+                [
+                  "remaining_restart_count",
+                  "Int4"
+                ]
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "TextArray",
+        "Interval",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "21a803239b584a0b71064de8ae24fae272e900b7adbabbdeadae511b578a7064"
+}

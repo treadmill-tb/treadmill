@@ -1,12 +1,15 @@
-//! Image-catalog REST routes: register images / image groups by digest and
-//! list/inspect them (`doc/oci-image-migration-plan.md` §8.1).
+//! Image-catalog REST routes.
 //!
-//! Registration pulls the manifest (or index) from the user's registry **by
-//! digest**, validates it is a well-formed Treadmill artifact via
-//! [`treadmill_rs::image::parse`], and records reference rows — never bytes.
-//! Group registration additionally pulls and validates each member manifest and
-//! denormalizes the members into `image_group_members` for the dispatch-time
-//! matcher.
+//! Concrete images are registered by digest: registration pulls the manifest
+//! from the user's registry, validates it is a well-formed Treadmill artifact via
+//! [`treadmill_rs::image::parse`], and records reference rows — never bytes
+//! (`doc/oci-image-migration-plan.md` §8.1).
+//!
+//! Image *groups* are mutable, named, generationed switchboard entities (see
+//! `doc/image-groups-mutable-generations-plan.md`): a group is created empty, and
+//! its membership is replaced wholesale by appending immutable generations whose
+//! members are pre-registered images referenced by id. No registry pull is
+//! involved.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -14,14 +17,16 @@ use http::StatusCode;
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
-use oci_spec::image::{ImageIndex, ImageManifest};
+use oci_spec::image::ImageManifest;
 use treadmill_rs::api::switchboard::images::{
-    ImageGroupInfo, ImageGroupMember, ImageInfo, ImageLocation, RegisterImageGroupRequest,
-    RegisterImageRequest,
+    CreateGenerationRequest, CreateImageGroupRequest, GenerationMemberInfo, ImageGroupGenerationInfo,
+    ImageGroupGrantInfo, ImageGroupGrantRequest, ImageGroupInfo, ImageGroupPermission, ImageInfo,
+    ImageLocation, RegisterImageRequest,
 };
 use treadmill_rs::image::parse::{self, ParseError};
 use treadmill_rs::image::{Digest, media_types};
 
+use crate::auth::engine::{self, ImageGroupPermission as Perm};
 use crate::registry::RegistryError;
 use crate::serve::AppState;
 use crate::sql::image;
@@ -216,167 +221,52 @@ pub async fn get_image(
     Ok(Json(image_info(&state, rec).await?))
 }
 
-/// Ensure a group member's image is registered, returning its row id. The member
-/// manifest is pulled (same repository as the index), validated, and recorded
-/// with an `external` location if not already present.
-async fn ensure_member_image(
+/// Assemble the API view of a group from its record, reading the latest
+/// generation number.
+async fn group_info(
     state: &AppState,
-    owner: Uuid,
-    registry: &str,
-    repository: &str,
-    digest: &Digest,
-) -> Result<Uuid, StatusCode> {
-    let digest_str = digest.encoded();
-    if let Some(existing) = image::fetch_by_digest(state.pool(), &digest_str)
-        .await
-        .map_err(internal)?
-    {
-        image::upsert_location(state.pool(), existing.id, registry, repository, "external")
-            .await
-            .map_err(internal)?;
-        return Ok(existing.id);
-    }
-
-    let bytes = pull_verified(state, registry, repository, digest).await?;
-    let manifest: ImageManifest = serde_json::from_slice(&bytes).map_err(|e| {
-        tracing::warn!("group member {digest} is not valid OCI JSON: {e}");
-        StatusCode::UNPROCESSABLE_ENTITY
-    })?;
-    let parsed = parse::parse_image(&manifest).map_err(invalid)?;
-    let attrs = serde_json::json!({
-        "title": parsed.title,
-        "head": parsed.head.encoded(),
-        "layers": parsed.layers.len(),
-    });
-
-    let id = Uuid::now_v7();
-    let mut tx = state.pool().begin().await.map_err(internal)?;
-    image::insert(
-        &mut *tx,
-        id,
-        &digest_str,
-        media_types::IMAGE_ARTIFACT_TYPE,
-        owner,
-        None,
-        &attrs,
-    )
-    .await
-    .map_err(internal)?;
-    image::upsert_location(&mut *tx, id, registry, repository, "external")
+    group: image::GroupRecord,
+) -> Result<ImageGroupInfo, StatusCode> {
+    let latest_generation = image::latest_generation(state.pool(), group.id)
         .await
         .map_err(internal)?;
-    tx.commit().await.map_err(internal)?;
-    Ok(id)
+    Ok(ImageGroupInfo {
+        id: group.id,
+        name: group.name,
+        label: group.label,
+        owner_id: group.owner_subject,
+        created_at: group.created_at,
+        latest_generation,
+    })
 }
 
-/// `POST /image-groups`: register an image group by its OCI index digest.
-pub async fn register_image_group(
+/// `POST /image-groups`: create an empty, named image group. The caller owns it.
+pub async fn create_image_group(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Json(req): Json<RegisterImageGroupRequest>,
+    Json(req): Json<CreateImageGroupRequest>,
 ) -> Result<(StatusCode, Json<ImageGroupInfo>), StatusCode> {
     let owner = subject.user_id();
 
-    let bytes = pull_verified(&state, &req.registry, &req.repository, &req.index_digest).await?;
-    let index: ImageIndex = serde_json::from_slice(&bytes).map_err(|e| {
-        tracing::warn!("index {} is not valid OCI JSON: {e}", req.index_digest);
-        StatusCode::UNPROCESSABLE_ENTITY
-    })?;
-    let members = parse::parse_group(&index).map_err(invalid)?;
-
-    let index_str = req.index_digest.encoded();
-
-    // First registrant owns the group (index_digest is unique).
-    let existing = image::fetch_group_by_digest(state.pool(), &index_str)
+    // Names are globally unique; surface a clash as a 409 rather than a 500.
+    if image::fetch_group_by_name(state.pool(), &req.name)
         .await
-        .map_err(internal)?;
-    if let Some(existing) = &existing
-        && !subject_reaches(&state, owner, existing.owner_subject).await?
+        .map_err(internal)?
+        .is_some()
     {
         return Err(StatusCode::CONFLICT);
     }
 
-    // Validate + register every member before recording the group, so a bad
-    // member rejects the whole registration.
-    let mut resolved = Vec::with_capacity(members.len());
-    for member in &members {
-        let image_id = ensure_member_image(
-            &state,
-            owner,
-            &req.registry,
-            &req.repository,
-            &member.digest,
-        )
-        .await?;
-        resolved.push((image_id, member));
-    }
-
-    let group_id = match &existing {
-        Some(g) => g.id,
-        None => {
-            let id = Uuid::now_v7();
-            image::insert_group(state.pool(), id, &index_str, owner, req.label.as_deref())
-                .await
-                .map_err(internal)?;
-            id
-        }
-    };
-
-    // Rebuild the denormalized member set from the index, preserving index order
-    // as `position` for deterministic matcher tie-breaks.
-    image::clear_members(state.pool(), group_id)
+    let id = Uuid::now_v7();
+    image::create_group(state.pool(), id, &req.name, owner, req.label.as_deref())
         .await
         .map_err(internal)?;
-    for (position, (image_id, member)) in resolved.iter().enumerate() {
-        image::insert_member(
-            state.pool(),
-            group_id,
-            *image_id,
-            &member.required_host_tags,
-            position as i32,
-        )
-        .await
-        .map_err(internal)?;
-    }
 
-    let status = if existing.is_some() {
-        StatusCode::OK
-    } else {
-        StatusCode::CREATED
-    };
-    let info = group_info(&state, group_id, &index_str).await?;
-    Ok((status, Json(info)))
-}
-
-/// Assemble the API view of a group from its id, reading back the members.
-async fn group_info(
-    state: &AppState,
-    group_id: Uuid,
-    index_digest: &str,
-) -> Result<ImageGroupInfo, StatusCode> {
-    let group = image::fetch_group_by_digest(state.pool(), index_digest)
+    let group = image::fetch_group_by_id(state.pool(), id)
         .await
         .map_err(internal)?
         .ok_or_else(|| internal("group vanished immediately after insert"))?;
-    let members = image::members_for_group(state.pool(), group_id)
-        .await
-        .map_err(internal)?
-        .into_iter()
-        .map(|m| {
-            Ok(ImageGroupMember {
-                manifest_digest: m.manifest_digest.parse().map_err(internal)?,
-                required_host_tags: m.required_host_tags,
-            })
-        })
-        .collect::<Result<Vec<_>, StatusCode>>()?;
-    Ok(ImageGroupInfo {
-        id: group.id,
-        index_digest: group.index_digest.parse().map_err(internal)?,
-        owner_id: group.owner_subject,
-        label: group.label,
-        created_at: group.created_at,
-        members,
-    })
+    Ok((StatusCode::CREATED, Json(group_info(&state, group).await?)))
 }
 
 /// `GET /image-groups`: list groups the caller owns (directly or via a group).
@@ -389,25 +279,201 @@ pub async fn list_image_groups(
         .map_err(internal)?;
     let mut out = Vec::with_capacity(groups.len());
     for g in groups {
-        out.push(group_info(&state, g.id, &g.index_digest).await?);
+        out.push(group_info(&state, g).await?);
     }
     Ok(Json(out))
 }
 
-/// `GET /image-groups/{digest}`: inspect one group the caller can reach.
-pub async fn get_image_group(
-    State(state): State<AppState>,
-    subject: crate::auth::Subject,
-    Path(digest): Path<String>,
-) -> Result<Json<ImageGroupInfo>, StatusCode> {
-    let group = image::fetch_group_by_digest(state.pool(), &digest)
+/// Load a group, returning 404 unless the caller may at least `use` it (owner,
+/// `use`/`manage` grant, or admin). Don't leak existence to others.
+async fn visible_group(
+    state: &AppState,
+    subject: Uuid,
+    group_id: Uuid,
+) -> Result<image::GroupRecord, StatusCode> {
+    let group = image::fetch_group_by_id(state.pool(), group_id)
         .await
         .map_err(internal)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    if !subject_reaches(&state, subject.user_id(), group.owner_subject).await? {
+    let visible = engine::can_access_image_group(state.pool(), subject, group_id, Perm::Use)
+        .await
+        .map_err(internal)?;
+    if !visible {
         return Err(StatusCode::NOT_FOUND);
     }
-    Ok(Json(
-        group_info(&state, group.id, &group.index_digest).await?,
-    ))
+    Ok(group)
+}
+
+/// Require `manage` on a group (owner or admin implicitly), 404 if the caller
+/// cannot even see it, 403 if they can see it but lack `manage`.
+async fn require_manage(
+    state: &AppState,
+    subject: Uuid,
+    group_id: Uuid,
+) -> Result<image::GroupRecord, StatusCode> {
+    let group = visible_group(state, subject, group_id).await?;
+    let manage = engine::can_access_image_group(state.pool(), subject, group_id, Perm::Manage)
+        .await
+        .map_err(internal)?;
+    if !manage {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(group)
+}
+
+/// `GET /image-groups/{id}`: inspect one group the caller can reach.
+pub async fn get_image_group(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(group_id): Path<Uuid>,
+) -> Result<Json<ImageGroupInfo>, StatusCode> {
+    let group = visible_group(&state, subject.user_id(), group_id).await?;
+    Ok(Json(group_info(&state, group).await?))
+}
+
+/// Assemble the API view of a generation, reading back its members in `index`
+/// order.
+async fn generation_info(
+    state: &AppState,
+    group_id: Uuid,
+    generation: u32,
+) -> Result<ImageGroupGenerationInfo, StatusCode> {
+    let gen_row = image::fetch_generation(state.pool(), group_id, generation)
+        .await
+        .map_err(internal)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let members = image::members_for_generation(state.pool(), group_id, generation)
+        .await
+        .map_err(internal)?
+        .into_iter()
+        .map(|m| {
+            Ok(GenerationMemberInfo {
+                image_id: m.image_id,
+                manifest_digest: m.manifest_digest.parse().map_err(internal)?,
+                required_host_tags: m.required_host_tags,
+                index: m.index as u32,
+            })
+        })
+        .collect::<Result<Vec<_>, StatusCode>>()?;
+    Ok(ImageGroupGenerationInfo {
+        group_id,
+        generation,
+        created_at: gen_row.created_at,
+        created_by: gen_row.created_by,
+        members,
+    })
+}
+
+/// `POST /image-groups/{id}/generations`: append a full-replacement generation.
+/// Requires `manage`. Every `image_id` must already be registered (the FK also
+/// enforces); `required_host_tags` come from the payload, `index` from order.
+pub async fn create_generation(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(group_id): Path<Uuid>,
+    Json(req): Json<CreateGenerationRequest>,
+) -> Result<(StatusCode, Json<ImageGroupGenerationInfo>), StatusCode> {
+    require_manage(&state, subject.user_id(), group_id).await?;
+
+    // Validate every member image exists up front (clearer than relying on the
+    // FK violation), and build the `(image_id, tags, index)` rows in array order.
+    let mut members = Vec::with_capacity(req.members.len());
+    for (index, m) in req.members.iter().enumerate() {
+        if image::fetch_by_id(state.pool(), m.image_id)
+            .await
+            .map_err(internal)?
+            .is_none()
+        {
+            tracing::warn!("create_generation references unregistered image {}", m.image_id);
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        members.push((m.image_id, m.required_host_tags.clone(), index as i32));
+    }
+
+    let mut tx = state.pool().begin().await.map_err(internal)?;
+    let generation = image::create_generation(&mut tx, group_id, subject.user_id(), &members)
+        .await
+        .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
+
+    let info = generation_info(&state, group_id, generation).await?;
+    Ok((StatusCode::CREATED, Json(info)))
+}
+
+/// `GET /image-groups/{id}/generations/{n}`: inspect one generation.
+pub async fn get_generation(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path((group_id, generation)): Path<(Uuid, u32)>,
+) -> Result<Json<ImageGroupGenerationInfo>, StatusCode> {
+    visible_group(&state, subject.user_id(), group_id).await?;
+    Ok(Json(generation_info(&state, group_id, generation).await?))
+}
+
+/// `POST /image-groups/{id}/grants`: grant `use`/`manage` to a subject. Requires
+/// `manage`.
+pub async fn grant_image_group(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(group_id): Path<Uuid>,
+    Json(req): Json<ImageGroupGrantRequest>,
+) -> Result<StatusCode, StatusCode> {
+    require_manage(&state, subject.user_id(), group_id).await?;
+    image::grant_image_group(
+        state.pool(),
+        group_id,
+        req.subject_id,
+        Perm::from(req.permission).as_str(),
+    )
+    .await
+    .map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /image-groups/{id}/grants`: list a group's grants. Requires `manage`.
+pub async fn list_image_group_grants(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(group_id): Path<Uuid>,
+) -> Result<Json<Vec<ImageGroupGrantInfo>>, StatusCode> {
+    require_manage(&state, subject.user_id(), group_id).await?;
+    let grants = image::list_image_group_grants(state.pool(), group_id)
+        .await
+        .map_err(internal)?
+        .into_iter()
+        .map(|g| {
+            let permission = match g.permission.as_str() {
+                "use" => ImageGroupPermission::Use,
+                "manage" => ImageGroupPermission::Manage,
+                other => return Err(internal(format!("unknown image-group permission {other:?}"))),
+            };
+            Ok(ImageGroupGrantInfo {
+                subject_id: g.subject_id,
+                permission,
+            })
+        })
+        .collect::<Result<Vec<_>, StatusCode>>()?;
+    Ok(Json(grants))
+}
+
+/// `DELETE /image-groups/{id}/grants/{subject_id}/{permission}`: revoke a grant.
+/// Requires `manage`.
+pub async fn revoke_image_group_grant(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path((group_id, target, permission)): Path<(Uuid, Uuid, String)>,
+) -> Result<StatusCode, StatusCode> {
+    require_manage(&state, subject.user_id(), group_id).await?;
+    // Reject an unknown permission word with a 400 rather than silently no-op.
+    if permission != "use" && permission != "manage" {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let removed = image::revoke_image_group(state.pool(), group_id, target, &permission)
+        .await
+        .map_err(internal)?;
+    Ok(if removed {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    })
 }

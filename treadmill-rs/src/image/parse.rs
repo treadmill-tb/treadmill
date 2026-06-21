@@ -1,14 +1,15 @@
-//! Reading and validating Treadmill structure off OCI manifests and indexes.
+//! Reading and validating Treadmill structure off OCI manifests.
 //!
-//! OCI gives us generic `ImageManifest`/`ImageIndex` types; this module projects
-//! them onto the Treadmill-meaningful view — a backing chain of qcow2 layers for
-//! an image, or the selectable members of an image group — while validating the
-//! invariants the rest of the system relies on (see
-//! `doc/oci-image-migration-plan.md` §5).
+//! OCI gives us a generic `ImageManifest` type; this module projects it onto the
+//! Treadmill-meaningful view — a backing chain of qcow2 layers for an image —
+//! while validating the invariants the rest of the system relies on (see
+//! `doc/oci-image-migration-plan.md` §5). Image *groups* are no longer OCI
+//! artifacts: they are mutable, generationed switchboard entities (see
+//! `doc/image-groups-mutable-generations-plan.md`).
 
 use std::str::FromStr;
 
-use oci_spec::image::{Descriptor, ImageIndex, ImageManifest};
+use oci_spec::image::{Descriptor, ImageManifest};
 
 use super::annotations::{self, Role};
 use super::digest::{Digest, DigestParseError};
@@ -35,25 +36,11 @@ pub struct TreadmillImage {
     pub title: Option<String>,
 }
 
-/// One member of a Treadmill image group, read off an OCI index descriptor.
-///
-/// A member's eligibility is the set of host tags a host must carry (as a
-/// superset) for the member to be selectable on it (see the matcher). These are
-/// authored on the index descriptor via the [`annotations::REQUIRED_HOST_TAGS`]
-/// annotation; target/DUT tags play no part in image selection.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct GroupMember {
-    pub digest: Digest,
-    pub required_host_tags: Vec<String>,
-}
-
-/// Why an OCI manifest or index failed to parse as a Treadmill image/group.
+/// Why an OCI manifest failed to parse as a Treadmill image.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ParseError {
     /// `artifactType` was missing or not the Treadmill image type.
     NotTreadmillImage,
-    /// `artifactType` was missing or not the Treadmill image-group type.
-    NotTreadmillGroup,
     /// A descriptor digest did not parse as a [`Digest`].
     BadDigest(DigestParseError),
     /// The `ci.treadmill.role` annotation had an unrecognized value.
@@ -71,12 +58,6 @@ impl std::fmt::Display for ParseError {
         match self {
             ParseError::NotTreadmillImage => {
                 write!(f, "manifest is not a Treadmill image (wrong artifactType)")
-            }
-            ParseError::NotTreadmillGroup => {
-                write!(
-                    f,
-                    "index is not a Treadmill image group (wrong artifactType)"
-                )
             }
             ParseError::BadDigest(e) => write!(f, "invalid descriptor digest: {e}"),
             ParseError::UnknownRole(v) => write!(f, "unrecognized {}: {v:?}", annotations::ROLE),
@@ -165,28 +146,6 @@ pub fn parse_image(manifest: &ImageManifest) -> Result<TreadmillImage, ParseErro
     })
 }
 
-/// Parse and validate an OCI image index as a Treadmill image group.
-pub fn parse_group(index: &ImageIndex) -> Result<Vec<GroupMember>, ParseError> {
-    match index.artifact_type() {
-        Some(mt) if mt.to_string() == media_types::IMAGE_GROUP_ARTIFACT_TYPE => {}
-        _ => return Err(ParseError::NotTreadmillGroup),
-    }
-
-    index
-        .manifests()
-        .iter()
-        .map(|desc| {
-            let required_host_tags = annotation(desc, annotations::REQUIRED_HOST_TAGS)
-                .map(|v| annotations::parse_tag_list(v))
-                .unwrap_or_default();
-            Ok(GroupMember {
-                digest: descriptor_digest(desc)?,
-                required_host_tags,
-            })
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,35 +226,5 @@ mod tests {
             parse_json(&image_manifest_json(OVERLAY, "not-a-number", true)),
             Err(ParseError::BadVirtualSize("not-a-number".to_string())),
         );
-    }
-
-    #[test]
-    fn parses_image_group() {
-        let json = format!(
-            r#"{{
-              "schemaVersion": 2,
-              "mediaType": "application/vnd.oci.image.index.v1+json",
-              "artifactType": "application/vnd.treadmill.image-group.v1+json",
-              "manifests": [
-                {{ "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "{BASE}", "size": 111,
-                   "platform": {{ "architecture": "arm64", "os": "linux", "variant": "v8" }},
-                   "annotations": {{ "ci.treadmill.required-host-tags": "arch=arm64, raspberrypi-4" }} }},
-                {{ "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "{OVERLAY}", "size": 222 }}
-              ]
-            }}"#
-        );
-        let idx: ImageIndex = serde_json::from_str(&json).unwrap();
-        let members = parse_group(&idx).unwrap();
-        assert_eq!(members.len(), 2);
-        // Required host tags come off the descriptor annotation; the OCI
-        // `platform` is ignored for selection.
-        assert_eq!(members[0].digest, BASE.parse().unwrap());
-        assert_eq!(
-            members[0].required_host_tags,
-            vec!["arch=arm64".to_string(), "raspberrypi-4".to_string()],
-        );
-        // A member with no annotation has no requirements (admissible anywhere).
-        assert_eq!(members[1].digest, OVERLAY.parse().unwrap());
-        assert!(members[1].required_host_tags.is_empty());
     }
 }

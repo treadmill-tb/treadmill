@@ -1304,6 +1304,26 @@ mod tests {
         Ok(token_id)
     }
 
+    /// Register a throwaway concrete image (unique digest, no registry location)
+    /// and return its id. Concrete-image jobs reference a real `images` row to
+    /// satisfy the `image_id` FK and `valid_init_spec`; a per-call id keeps the
+    /// `manifest_digest` unique across repeated inserts in one test.
+    async fn insert_image(pool: &PgPool) -> anyhow::Result<Uuid> {
+        let image_id = Uuid::new_v4();
+        let id_hex = image_id.simple().to_string();
+        let digest = format!("sha256:{id_hex:0>64}");
+        sqlx::query(
+            "insert into tml_switchboard.images \
+             (id, manifest_digest, artifact_type, owner_subject, attrs) \
+             values ($1, $2, 'application/vnd.oci.image.manifest.v1+json', null, '{}'::jsonb)",
+        )
+        .bind(image_id)
+        .bind(digest)
+        .execute(pool)
+        .await?;
+        Ok(image_id)
+    }
+
     /// Insert a job already bound to `host_id` in the given `job_state`
     /// (e.g. `"scheduled"`, `"ready"`). `started_at` is set iff the state is one
     /// of the executing states, matching the `started_at_iso_executing` CHECK.
@@ -1316,14 +1336,16 @@ mod tests {
         remaining_restarts: i32,
     ) -> anyhow::Result<Uuid> {
         let job_id = Uuid::new_v4();
+        let image_id = insert_image(pool).await?;
         sqlx::query(
             "insert into tml_switchboard.jobs \
-             (job_id, resume_job_id, restart_job_id, image_digest, image_group_digest, ssh_keys, \
+             (job_id, resume_job_id, restart_job_id, image_id, image_group_id, \
+              image_group_generation, ssh_keys, \
               restart_policy, enqueued_by_token_id, host_tag_requirements, job_timeout, job_state, \
               initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
               termination_reason, task_exit_status, exit_message, terminated_at, last_updated_at) \
              values \
-             ($1, null, null, $2, null, '{}'::text[], row($3)::tml_switchboard.restart_policy, \
+             ($1, null, null, $2, null, null, '{}'::text[], row($3)::tml_switchboard.restart_policy, \
               $4, '{}'::text[], interval '1 hour', $5::tml_switchboard.job_state, null, \
               now(), \
               case when $5::tml_switchboard.job_state \
@@ -1333,7 +1355,7 @@ mod tests {
               null, null, null, null, default)",
         )
         .bind(job_id)
-        .bind(format!("sha256:{}", "0".repeat(64)))
+        .bind(image_id)
         .bind(remaining_restarts)
         .bind(token_id)
         .bind(job_state)
@@ -1371,20 +1393,22 @@ mod tests {
         host_id: Uuid,
     ) -> anyhow::Result<Uuid> {
         let job_id = Uuid::new_v4();
+        let image_id = insert_image(pool).await?;
         sqlx::query(
             "insert into tml_switchboard.jobs \
-             (job_id, resume_job_id, restart_job_id, image_digest, image_group_digest, ssh_keys, \
+             (job_id, resume_job_id, restart_job_id, image_id, image_group_id, \
+              image_group_generation, ssh_keys, \
               restart_policy, enqueued_by_token_id, host_tag_requirements, job_timeout, job_state, \
               initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
               termination_reason, task_exit_status, exit_message, terminated_at, last_updated_at) \
              values \
-             ($1, null, null, $2, null, '{}'::text[], row(0)::tml_switchboard.restart_policy, \
+             ($1, null, null, $2, null, null, '{}'::text[], row(0)::tml_switchboard.restart_policy, \
               $3, '{}'::text[], interval '1 hour', 'finalized', null, \
               now(), null, null, null, \
               'workload_exited', null, null, now(), default)",
         )
         .bind(job_id)
-        .bind(format!("sha256:{}", "0".repeat(64)))
+        .bind(image_id)
         .bind(token_id)
         .execute(pool)
         .await?;
@@ -2651,32 +2675,29 @@ mod tests {
         Ok(())
     }
 
-    /// Register an image whose digest matches [`insert_job`]'s (`sha256:00…0`)
-    /// with a single location, and pin it as `job_id`'s `resolved_image_digest`
-    /// — the precondition the scheduler establishes before a job is dispatched.
-    /// Returns the digest and the location's `(registry, repository)` so the
-    /// caller can assert the built `StartJob` carries them.
+    /// Give `job_id`'s requested image a single registry location and pin it as
+    /// the job's `resolved_image_id` — the precondition the scheduler
+    /// establishes before a job is dispatched. Returns the resolved digest and
+    /// the location's `(registry, repository)` so the caller can assert the
+    /// built `StartJob` carries them.
     async fn register_resolved_image(
         pool: &PgPool,
-        owner: Uuid,
         job_id: Uuid,
     ) -> anyhow::Result<(treadmill_rs::image::Digest, String, String)> {
-        let digest_str = format!("sha256:{}", "0".repeat(64));
-        let image_id = Uuid::new_v4();
-        sql::image::insert(
-            pool,
-            image_id,
-            &digest_str,
-            "application/vnd.oci.image.manifest.v1+json",
-            owner,
-            None,
-            &serde_json::json!({}),
-        )
-        .await?;
+        let image_id: Uuid =
+            sqlx::query_scalar("select image_id from tml_switchboard.jobs where job_id = $1")
+                .bind(job_id)
+                .fetch_one(pool)
+                .await?;
         let (registry, repository) = ("registry.example".to_string(), "team/image".to_string());
         sql::image::upsert_location(pool, image_id, &registry, &repository, "canonical").await?;
+        let digest_str: String =
+            sqlx::query_scalar("select manifest_digest from tml_switchboard.images where id = $1")
+                .bind(image_id)
+                .fetch_one(pool)
+                .await?;
         let digest: treadmill_rs::image::Digest = digest_str.parse().expect("valid digest");
-        sql::job::set_resolved_image(job_id, &digest, pool).await?;
+        sql::job::set_resolved_image(job_id, image_id, pool).await?;
         Ok((digest, registry, repository))
     }
 
@@ -2692,8 +2713,7 @@ mod tests {
         let token_id = insert_token(&pool, user_id).await?;
         let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
         set_current_job(&pool, host_id, Some(job_id)).await?;
-        let (digest, registry, repository) =
-            register_resolved_image(&pool, user_id, job_id).await?;
+        let (digest, registry, repository) = register_resolved_image(&pool, job_id).await?;
 
         let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let (_to_worker, mut from_worker, mut worker) =
@@ -2806,8 +2826,7 @@ mod tests {
 
         // Concrete image: resolved digest + its locations.
         let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
-        let (digest, _registry, _repository) =
-            register_resolved_image(&pool, user_id, job_id).await?;
+        let (digest, _registry, _repository) = register_resolved_image(&pool, job_id).await?;
         let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
         let msg = sql::job::build_start_job_message(&job, &mut conn, None)
             .await
@@ -2825,19 +2844,20 @@ mod tests {
         }
 
         // Resume job: `ResumeJob` carrying the original job's id. A resume row has
-        // no image/group digest (the `valid_init_spec` invariant), so it is
+        // no image/group reference (the `valid_init_spec` invariant), so it is
         // inserted directly rather than via `insert_job`. `resume_job_id` is an FK,
         // so it must point at a real job — reuse the concrete one above.
         let resume_target = job_id;
         let resume_job = Uuid::new_v4();
         sqlx::query(
             "insert into tml_switchboard.jobs \
-             (job_id, resume_job_id, restart_job_id, image_digest, image_group_digest, ssh_keys, \
+             (job_id, resume_job_id, restart_job_id, image_id, image_group_id, \
+              image_group_generation, ssh_keys, \
               restart_policy, enqueued_by_token_id, host_tag_requirements, job_timeout, job_state, \
               initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
               termination_reason, task_exit_status, exit_message, terminated_at, last_updated_at) \
              values \
-             ($1, $2, null, null, null, '{}'::text[], row(0)::tml_switchboard.restart_policy, \
+             ($1, $2, null, null, null, null, '{}'::text[], row(0)::tml_switchboard.restart_policy, \
               $3, '{}'::text[], interval '1 hour', 'queued', null, now(), null, null, null, \
               null, null, null, null, default)",
         )
@@ -2877,7 +2897,7 @@ mod tests {
         let mut conn = pool.acquire().await?;
 
         let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
-        register_resolved_image(&pool, user_id, job_id).await?;
+        register_resolved_image(&pool, job_id).await?;
         let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
 
         // A throwaway account seed: doubles as the JWT signing key.
@@ -3530,7 +3550,7 @@ mod tests {
         request_cancel(&pool, job_id).await?;
         // A resolved image is registered so that, absent the cancel, this job
         // *would* be dispatched — proving the cancel is what suppresses StartJob.
-        register_resolved_image(&pool, user_id, job_id).await?;
+        register_resolved_image(&pool, job_id).await?;
 
         let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let (_to_worker, mut from_worker, mut worker) =

@@ -48,37 +48,91 @@ pub struct ImageInfo {
     pub locations: Vec<ImageLocation>,
 }
 
-/// `POST /image-groups`: register an image group by its OCI index digest. The
-/// switchboard pulls the index, validates each member, and records the group
-/// plus its (image, location, denormalized-member) rows for the matcher.
+/// `POST /image-groups`: create an empty, named image group. The caller becomes
+/// its owner; membership is added afterwards via per-generation snapshots (see
+/// [`CreateGenerationRequest`]). See
+/// `doc/image-groups-mutable-generations-plan.md`.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct RegisterImageGroupRequest {
-    /// Registry authority (`host:port`) the index can be pulled from.
-    pub registry: String,
-    /// Repository path within the registry (members live in the same repo).
-    pub repository: String,
-    /// The OCI index digest identifying the group.
-    pub index_digest: Digest,
+pub struct CreateImageGroupRequest {
+    /// The stable, globally-unique moving-target handle a job references (by id).
+    pub name: String,
     /// Optional human-readable label.
     #[serde(default)]
     pub label: Option<String>,
 }
 
-/// One selectable member of a registered group. A member is admissible for a
-/// host iff the host's tags are a superset of `required_host_tags`.
+/// One member of a new generation; `index` is the member's array position in the
+/// request, used as the deterministic tie-break among equally-specific members.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct ImageGroupMember {
-    pub manifest_digest: Digest,
+pub struct GenerationMemberSpec {
+    /// Image to include; must already be registered via `POST /images`.
+    pub image_id: Uuid,
+    /// Host tags a host must carry (as a superset) for this member to be
+    /// selectable on it.
+    #[serde(default)]
     pub required_host_tags: Vec<String>,
 }
 
-/// A registered image group, as returned by the catalog list/inspect routes.
+/// `POST /image-groups/{id}/generations`: append a new, immutable
+/// full-replacement generation of a group's membership.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct CreateGenerationRequest {
+    pub members: Vec<GenerationMemberSpec>,
+}
+
+/// A named, mutable image group, as returned by the catalog list/inspect routes.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct ImageGroupInfo {
     pub id: Uuid,
-    pub index_digest: Digest,
-    pub owner_id: Option<Uuid>,
+    pub name: String,
     pub label: Option<String>,
+    pub owner_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
-    pub members: Vec<ImageGroupMember>,
+    /// The group's latest generation number, or `None` if it has none yet.
+    pub latest_generation: Option<u32>,
+}
+
+/// One member of a generation, as returned by the inspect route. A member is
+/// admissible for a host iff the host's tags are a superset of
+/// `required_host_tags`.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationMemberInfo {
+    pub image_id: Uuid,
+    pub manifest_digest: Digest,
+    pub required_host_tags: Vec<String>,
+    pub index: u32,
+}
+
+/// One immutable generation (membership snapshot) of an image group.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct ImageGroupGenerationInfo {
+    pub group_id: Uuid,
+    pub generation: u32,
+    pub created_at: DateTime<Utc>,
+    pub created_by: Option<Uuid>,
+    pub members: Vec<GenerationMemberInfo>,
+}
+
+/// A permission on an image group; mirrors `tml_switchboard.image_group_permission`.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageGroupPermission {
+    /// May run a job referencing the group (and so its member images).
+    Use,
+    /// May create generations and manage grants (owner holds this implicitly).
+    Manage,
+}
+
+/// `POST /image-groups/{id}/grants`: grant `permission` on the group to a subject.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct ImageGroupGrantRequest {
+    pub subject_id: Uuid,
+    pub permission: ImageGroupPermission,
+}
+
+/// One grant on an image group, as returned by the list-grants route.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct ImageGroupGrantInfo {
+    pub subject_id: Uuid,
+    pub permission: ImageGroupPermission,
 }

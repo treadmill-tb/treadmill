@@ -6,7 +6,6 @@
 //! convention, the overview ends with the head of the job's audit log.
 
 use std::collections::{BTreeMap, HashMap};
-use std::str::FromStr;
 
 use axum::Form;
 use axum::extract::{Path, Query, State};
@@ -17,13 +16,12 @@ use treadmill_rs::api::switchboard::client::ClientError;
 use treadmill_rs::api::switchboard::jobs::{JobInfo, JobParameterView, JobSummary};
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
 use treadmill_rs::api::switchboard_supervisor::{ParameterValue, RestartPolicy};
-use treadmill_rs::image::Digest;
 use uuid::Uuid;
 
 use crate::serve::AppState;
 use crate::session::Session;
 use crate::views::audit::audit_feed;
-use crate::views::jobs::{image_ref, job_state_badge, short_digest};
+use crate::views::jobs::{image_ref, job_state_badge};
 use crate::views::{PageError, layout, timestamp};
 
 /// Query parameters for `GET /jobs` — the opaque keyset cursor for the next
@@ -479,7 +477,7 @@ impl FormState {
     /// Assemble a [`JobRequest`] from the form, or return a user-facing error
     /// message. Empty rows are dropped; an empty target (no tags) is dropped.
     fn build_request(&self) -> Result<JobRequest, String> {
-        let image_group = Digest::from_str(self.image_group.trim())
+        let image_group = Uuid::parse_str(self.image_group.trim())
             .map_err(|_| "Select an image group.".to_string())?;
 
         let owner = if self.owner.is_empty() || self.owner == "self" {
@@ -540,7 +538,10 @@ impl FormState {
             .collect();
 
         Ok(JobRequest {
-            init_spec: JobInitSpec::ImageGroup { image_group },
+            init_spec: JobInitSpec::ImageGroup {
+                image_group,
+                generation: None,
+            },
             owner,
             ssh_keys: nonempty(&self.ssh_keys),
             restart_policy: RestartPolicy {
@@ -559,7 +560,7 @@ struct FormOptions {
     username: String,
     /// `(value, label)` for the owner `<select>` (self + the caller's groups).
     owners: Vec<(String, String)>,
-    /// `(index-digest, label)` for the image-group `<select>`.
+    /// `(group-id, label)` for the image-group `<select>`.
     image_groups: Vec<(String, String)>,
     /// `(host-id, label)` for the (inert) host `<select>`.
     hosts: Vec<(String, String)>,
@@ -581,11 +582,8 @@ async fn load_options(session: &Session) -> Result<FormOptions, PageError> {
     let image_groups = groups
         .iter()
         .map(|g| {
-            let label = g
-                .label
-                .clone()
-                .unwrap_or_else(|| short_digest(&g.index_digest));
-            (g.index_digest.to_string(), label)
+            let label = g.label.clone().unwrap_or_else(|| g.name.clone());
+            (g.id.to_string(), label)
         })
         .collect();
 
@@ -804,8 +802,8 @@ fn targets_section(targets: &[Vec<String>]) -> Markup {
 mod tests {
     use super::*;
 
-    /// A syntactically valid image-group digest for tests.
-    const DIGEST: &str = "sha256:abababababababababababababababababababababababababababababababab";
+    /// A syntactically valid image-group id for tests.
+    const GROUP_ID: &str = "00000000-0000-0000-0000-0000000000ab";
 
     fn pair(k: &str, v: &str) -> (String, String) {
         (k.to_string(), v.to_string())
@@ -814,7 +812,7 @@ mod tests {
     #[test]
     fn from_pairs_collects_indexed_and_nested_fields() {
         let pairs = vec![
-            pair("image_group", DIGEST),
+            pair("image_group", GROUP_ID),
             pair("owner", "self"),
             pair("ssh_key[0]", "key-a"),
             pair("ssh_key[1]", "key-b"),
@@ -831,7 +829,7 @@ mod tests {
         ];
         let form = FormState::from_pairs(&pairs);
 
-        assert_eq!(form.image_group, DIGEST);
+        assert_eq!(form.image_group, GROUP_ID);
         assert_eq!(form.ssh_keys, vec!["key-a", "key-b"]);
         assert_eq!(form.host_tags, vec!["arch=arm64"]);
         assert_eq!(form.params.len(), 2);
@@ -872,7 +870,7 @@ mod tests {
     #[test]
     fn build_request_drops_empties_and_maps_fields() {
         let form = FormState {
-            image_group: DIGEST.into(),
+            image_group: GROUP_ID.into(),
             owner: "self".into(),
             restart_count: "2".into(),
             timeout_secs: "  ".into(),
@@ -921,11 +919,11 @@ mod tests {
                 ("self".into(), "me (alice)".into()),
                 ("group-1".into(), "my-team".into()),
             ],
-            image_groups: vec![(DIGEST.into(), "my-group".into())],
+            image_groups: vec![(GROUP_ID.into(), "my-group".into())],
             hosts: vec![("host-1".into(), "rpi-lab-03".into())],
         };
         let form = FormState {
-            image_group: DIGEST.into(),
+            image_group: GROUP_ID.into(),
             ssh_keys: vec!["key-a".into()],
             targets: vec![vec!["dut=nrf52".into()]],
             ..FormState::default()
@@ -947,7 +945,7 @@ mod tests {
     fn build_request_parses_timeout_and_group_owner() {
         let owner = Uuid::new_v4();
         let form = FormState {
-            image_group: DIGEST.into(),
+            image_group: GROUP_ID.into(),
             owner: owner.to_string(),
             timeout_secs: "3600".into(),
             ..FormState::default()
