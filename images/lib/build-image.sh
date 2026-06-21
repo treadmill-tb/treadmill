@@ -152,11 +152,12 @@ grow_root_delta_nspawn() {
 # --- provisioning backends -------------------------------------------------
 # Both backends apply the same plan to a delta, handed across via these globals
 # the caller sets before calling provision_delta:
-#   prov_copy_in  array of "host-src:guest-destdir" (src dropped INTO destdir)
-#   prov_install  array of apt package names (may be empty)
-#   prov_run      array of host script paths, run in-guest in order
-#   prov_network  "yes"|"no" (only meaningful to virt-customize; nspawn always
-#                 shares the host network namespace)
+#   prov_copy_in    array of "host-src:guest-destdir" (src dropped INTO destdir)
+#   prov_preinstall array of host script paths, run in-guest BEFORE the install
+#   prov_install    array of apt package names (may be empty)
+#   prov_run        array of host script paths, run in-guest AFTER the install
+#   prov_network    "yes"|"no" (only meaningful to virt-customize; nspawn always
+#                   shares the host network namespace)
 # Neither backend forwards the host environment to the run scripts (they source
 # /tmp/provision.env), so the two stay behaviourally identical.
 
@@ -170,6 +171,12 @@ virtcustomize_provision() {
 	local ci
 	for ci in "${prov_copy_in[@]}"; do
 		args+=(--copy-in "${ci%%:*}:${ci#*:}")
+	done
+	# Pre-install hooks (e.g. RPi MODULES=most) must precede --install: ops run in
+	# command-line order.
+	local s
+	for s in "${prov_preinstall[@]}"; do
+		args+=(--run "$s")
 	done
 	if [ "${#prov_install[@]}" -gt 0 ]; then
 		args+=(--install "$(
@@ -218,24 +225,30 @@ nspawn_provision() {
 		$SUDO cp -a "$src" "$mnt$dest/"
 	done
 
-	# nspawn shares the host network namespace by default, so apt reaches the
-	# mirror with no extra plumbing.
+	# Pre-install hooks run BEFORE apt (e.g. the RPi sets MODULES=most so
+	# nbd-client's initramfs regeneration can build a portable initramfs without
+	# probing the build host's root device — see images/<name>/pre-install.sh).
+	local s
+	for s in "${prov_preinstall[@]}"; do
+		nspawn_run "$mnt" "$s"
+	done
+
+	# nspawn shares the host network namespace by default; --resolv-conf=copy-host
+	# drops the host's working /etc/resolv.conf into the container so apt can
+	# resolve the mirror (the Ubuntu cloud image's /etc/resolv.conf is a symlink to
+	# the systemd-resolved stub, which dangles with no resolved running inside the
+	# container). nspawn restores the image's original resolv.conf on exit.
 	# --register=no keeps this throwaway container off systemd-machined (no dbus
 	# dependency on the runner).
 	if [ "${#prov_install[@]}" -gt 0 ]; then
-		$SUDO systemd-nspawn --quiet --register=no -D "$mnt" -- \
+		$SUDO systemd-nspawn --quiet --register=no --resolv-conf=copy-host -D "$mnt" -- \
 			/bin/sh -c 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"' \
 			_ "${prov_install[@]}"
 	fi
 
-	# Run each provision script inside the container in order. Copy it in first
-	# (virt-customize --run does this implicitly), then exec it via its shebang.
-	local r guest
-	for r in "${prov_run[@]}"; do
-		guest="/tmp/$(basename "$r")"
-		$SUDO install -m 0755 "$r" "$mnt$guest"
-		$SUDO systemd-nspawn --quiet --register=no -D "$mnt" -- "$guest"
-		$SUDO rm -f "$mnt$guest"
+	# Run each provision script inside the container, in order, after install.
+	for s in "${prov_run[@]}"; do
+		nspawn_run "$mnt" "$s"
 	done
 
 	# Trim freed blocks now, while mounted, so the compressed delta stays tight
@@ -243,6 +256,17 @@ nspawn_provision() {
 	$SUDO fstrim -v "$mnt" || true
 
 	nbd_release
+}
+
+# Run a host script inside the nspawn container: copy it in (virt-customize --run
+# does this implicitly), exec via its shebang, remove. --resolv-conf=copy-host so
+# any apt the script does can resolve names (restored on exit, see above).
+nspawn_run() {
+	local mnt="$1" script="$2" guest
+	guest="/tmp/$(basename "$script")"
+	$SUDO install -m 0755 "$script" "$mnt$guest"
+	$SUDO systemd-nspawn --quiet --register=no --resolv-conf=copy-host -D "$mnt" -- "$guest"
+	$SUDO rm -f "$mnt$guest"
 }
 
 # Extract the SD card image's two partitions (p1 = FAT boot, p2 = ext4 root) to
@@ -533,6 +557,11 @@ if [ "$variant" = base ]; then
 		"$images_dir/lib/expandroot.sh:/opt"
 		"$prov_env:/tmp"
 	)
+	# Optional per-image pre-install hook (runs in-guest before apt), e.g. the
+	# RPi sets MODULES=most so nbd-client's initramfs regeneration succeeds.
+	prov_preinstall=()
+	[ -f "$images_dir/$name/pre-install.sh" ] &&
+		prov_preinstall=("$images_dir/$name/pre-install.sh")
 	prov_install=("${packages[@]}")
 	prov_run=("$images_dir/lib/provision-common.sh" "$provision")
 	provision_delta "$delta" "$type"
@@ -554,6 +583,7 @@ else
 	# images/lib/install-gh-actions-runner.sh).
 	prov_network=no
 	prov_copy_in=("$images_dir/lib/install-gh-actions-runner.sh:/opt")
+	prov_preinstall=()
 	prov_install=()
 	prov_run=("$provision")
 	provision_delta "$delta" "$type"
