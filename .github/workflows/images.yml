@@ -90,6 +90,13 @@ jobs:
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y libguestfs-tools mtools qemu-utils xz-utils curl
+          # apt's libguestfs builds its appliance at runtime with supermin, which
+          # reads the host kernel — but Ubuntu ships /boot/vmlinuz-* as 0600
+          # (root only), so non-root libguestfs fails with "supermin exited with
+          # error status 1". Make the kernel world-readable (the standard CI
+          # workaround). (Locally the Nix libguestfs-with-appliance ships a
+          # prebuilt appliance and never runs supermin, so this isn't needed.)
+          sudo chmod 0644 /boot/vmlinuz-*
           # libguestfs (direct backend) KVM-accelerates when /dev/kvm is present;
           # surface it for debugging (TCG fallback is far slower but still works).
           ls -l /dev/kvm || echo "NO /dev/kvm — libguestfs will fall back to TCG"
