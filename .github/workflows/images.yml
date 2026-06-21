@@ -103,12 +103,17 @@ jobs:
           skipPush: true
 
       # build-image.sh consumes prebuilt binaries; build them once per runner
-      # (natively for the runner's architecture).
+      # (natively for the runner's architecture). Capture the store paths
+      # directly rather than `-o <link>`, whose symlink would collide with the
+      # in-tree `puppet/` crate directory.
       - name: Build puppet + image-util
+        id: bins
         run: |
           set -euxo pipefail
-          nix build --print-build-logs -o puppet ".#${{ matrix.puppet }}"
-          nix build --print-build-logs -o image-util '.#image-util'
+          puppet="$(nix build --print-build-logs --no-link --print-out-paths ".#${{ matrix.puppet }}")"
+          image_util="$(nix build --print-build-logs --no-link --print-out-paths '.#image-util')"
+          echo "puppet=$puppet" >> "$GITHUB_OUTPUT"
+          echo "image_util=$image_util" >> "$GITHUB_OUTPUT"
 
       # Fetch + verify the upstream base, provision a qcow2 overlay delta via
       # virt-customize (no guest boot), then assemble + validate the OCI layout.
@@ -118,8 +123,8 @@ jobs:
         run: |
           set -euxo pipefail
           ./images/lib/build-image.sh "${{ matrix.name }}" \
-            --puppet ./puppet/bin/tml-puppet \
-            --image-util ./image-util/bin/image-util \
+            --puppet "${{ steps.bins.outputs.puppet }}/bin/tml-puppet" \
+            --image-util "${{ steps.bins.outputs.image_util }}/bin/image-util" \
             -o out
 
       - name: Upload image layout
