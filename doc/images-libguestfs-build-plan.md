@@ -32,7 +32,16 @@ a new, symmetric `assemble` counterpart to the existing `parse`.
     (`cloud-images.ubuntu.com/releases/26.04/release-20260612/…`); rustup-init =
     the pinned upstream archive (`static.rust-lang.org/rustup/archive/1.29.0/…`).
     Both sha256-verified on every fetch (drift guard).
-- **Phase 3 (Ubuntu runner overlay) and on: TODO** — see §9.
+- **Phase 5 — CI cutover (Ubuntu): pulled forward / partial.** `images.yml`
+  overwritten to drive the libguestfs pipeline (the legacy vmTools workflow was
+  not yet rolled out to prod): a `prepare` job maps per-family dispatch
+  checkboxes to a matched-arch matrix; the `build` job does apt-libguestfs +
+  nix-built bins + `build-image.sh` + artifact + optional ghcr push (sha+latest).
+  Only `ubuntu-server-2604` (x86_64) is live; `raspberrypios-13` (aarch64) is a
+  commented placeholder pending Phase 4. **Owed:** a real dispatch to confirm
+  hosted-runner `/dev/kvm` + apt timings (the Phase 0 spike, now largely
+  subsumed for x86_64 by the workflow itself).
+- **Phase 3 (Ubuntu runner overlay), 4 (Raspbian): TODO** — see §9.
 
 ---
 
@@ -312,18 +321,25 @@ delta backed by the base delta.
 
 ## 8. CI
 
-Split `images.yml` into `images-ubuntu.yml` (`runs-on: ubuntu-latest`) and
-`images-raspbian.yml` (`runs-on: ubuntu-24.04-arm`); both `workflow_dispatch`,
-non-cancelling `concurrency`. Each:
+A single `images.yml` (`workflow_dispatch`, non-cancelling `concurrency`), with
+per-family dispatch checkboxes and a matrix that runs each family on a
+matched-arch hosted runner (Ubuntu → `ubuntu-latest`, Raspberry Pi OS →
+`ubuntu-24.04-arm`). A `prepare` job resolves the checkboxes into the build
+matrix (the single place mapping family → runner + static-puppet package); the
+`build` job, per matrix entry:
 
-1. `apt-get install -y libguestfs-tools mtools qemu-utils`.
+1. `apt-get install -y libguestfs-tools mtools qemu-utils xz-utils curl` (Ubuntu
+   ships `virt-customize` *in* `libguestfs-tools`; nixpkgs splits it into
+   `guestfs-tools`, which is why the `images` devshell needs that extra pkg).
 2. `install-nix-action` + read-only `cachix-action` (only to build the binaries).
 3. `nix build .#tml-puppet-static-<arch> -o puppet` and `nix build .#image-util -o image-util`.
-4. `build-image.sh <name> --puppet ./puppet/bin/tml-puppet --image-util ./image-util/bin/image-util --variant base -o out-base`
-   then `--variant gha-runner --base-delta out-base/.../delta.qcow2 -o out-runner`
-   (same run → byte-identical base delta). `build-image.sh` assembles and
-   validates each layout internally.
-5. On `push_to_ghcr`: `skopeo copy` the layouts to ghcr.
+4. `build-image.sh <name> --puppet ./puppet/bin/tml-puppet --image-util ./image-util/bin/image-util -o out`
+   (assembles + validates internally), then `upload-artifact` the `out/` layout.
+5. On `push_to_ghcr`: `skopeo copy oci:out` to `ghcr.io/<owner>/<name>:{<sha>,latest}`.
+
+The `gha-runner` overlay variant (a second `build-image.sh` invocation backed by
+the base delta) folds in with Phase 3; the Raspberry Pi `ubuntu-24.04-arm` row is
+a placeholder until the Phase 4 `sd` path lands.
 
 ---
 

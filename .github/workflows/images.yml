@@ -2,21 +2,23 @@ name: treadmill-images
 env:
   TERM: xterm # Makes tput work in actions output
 
+# Producer-side image builds via the libguestfs pipeline
+# (doc/images-libguestfs-build-plan.md). Each image *family* builds on its own
+# hosted runner with a matched host architecture (KVM-accelerated libguestfs):
+# Ubuntu on x86_64, Raspberry Pi OS on aarch64. The dispatch checkboxes select
+# which families to actually build; the `prepare` job turns them into the build
+# matrix. Add new families to that step as their build-image.sh path lands.
 on:
   workflow_dispatch:
     inputs:
-      # Per-family build toggles. A "family" is a base image plus all of its
-      # derivatives. Keep this list (and the family -> members map in the
-      # "Select image families" step below) in sync with the `imageDefs` table
-      # in nix/images.nix.
-      build_ubuntu_2204:
-        description: 'Build the Ubuntu 22.04 family (base + GitHub Actions runner)'
+      build_ubuntu_server_2604:
+        description: 'Build the Ubuntu Server 26.04 family'
         type: boolean
         default: true
-      build_raspbian_13:
-        description: 'Build the Raspberry Pi OS 13 family (base + GitHub Actions runner)'
+      build_raspberrypios_13:
+        description: 'Build the Raspberry Pi OS 13 family (Phase 4 — not yet implemented)'
         type: boolean
-        default: true
+        default: false
       push_to_ghcr:
         description: 'Push the built image layouts to ghcr.io'
         type: boolean
@@ -33,67 +35,103 @@ permissions:
   packages: write
 
 jobs:
-  build-images:
+  # Resolve the dispatch checkboxes into a build matrix: one entry per selected
+  # family, carrying its runner architecture and the matching static puppet
+  # package. This is the single place that maps families -> (runner, puppet).
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Select image families
+        id: select
+        env:
+          BUILD_UBUNTU_SERVER_2604: ${{ inputs.build_ubuntu_server_2604 }}
+          BUILD_RASPBERRYPIOS_13: ${{ inputs.build_raspberrypios_13 }}
+        run: |
+          set -euo pipefail
+          include='[]'
+          add() { include="$(jq -c --argjson o "$1" '. + [$o]' <<<"$include")"; }
+
+          if [ "$BUILD_UBUNTU_SERVER_2604" = "true" ]; then
+            add '{"name":"ubuntu-server-2604","runs-on":"ubuntu-latest","puppet":"tml-puppet-static-x86_64"}'
+          fi
+
+          # Phase 4 placeholder — the aarch64 Raspberry Pi OS family. Wire this
+          # up once build-image.sh grows its `sd` path (boot FAT + root delta):
+          #   add '{"name":"raspberrypios-13","runs-on":"ubuntu-24.04-arm","puppet":"tml-puppet-static-aarch64"}'
+          if [ "$BUILD_RASPBERRYPIOS_13" = "true" ]; then
+            echo "::error::raspberrypios-13 is not yet implemented (Phase 4: build-image.sh sd path)." >&2
+            exit 1
+          fi
+
+          if [ "$(jq 'length' <<<"$include")" -eq 0 ]; then
+            echo "::error::No image family selected; enable at least one." >&2
+            exit 1
+          fi
+          echo "Selected families: $include"
+          echo "matrix={\"include\":$include}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runs-on }}
 
     steps:
       - uses: actions/checkout@v4
+
+      # libguestfs/virt-customize come from the distro: Ubuntu ships
+      # virt-customize *in* libguestfs-tools (unlike the nixpkgs split, which
+      # puts it in guestfs-tools). Nix is used only for the two binaries below.
+      - name: Install libguestfs build tools
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libguestfs-tools mtools qemu-utils xz-utils curl
+          # libguestfs (direct backend) KVM-accelerates when /dev/kvm is present;
+          # surface it for debugging (TCG fallback is far slower but still works).
+          ls -l /dev/kvm || echo "NO /dev/kvm — libguestfs will fall back to TCG"
 
       - uses: cachix/install-nix-action@v30
       - uses: cachix/cachix-action@v15
         with:
           name: treadmill-tb
-          # Read-only: images embed pre-built dependencies (e.g., puppet), but
-          # aren't pushed to Cachix. Too large, get uploaded to ghcr instead.
+          # Read-only: we only pull cached Rust deps for the binaries; the image
+          # layouts are too large for Cachix and go to ghcr instead.
           skipPush: true
 
-      # Resolve the per-family booleans into the flat list of member images to
-      # build. The family -> members map below mirrors nix/images.nix `imageDefs`
-      # (a family is the base image plus its derivatives) and must be kept in
-      # sync with it by hand — that is the trade-off of per-family boolean inputs
-      # over a nix-eval'd matrix.
-      - name: Select image families
+      # build-image.sh consumes prebuilt binaries; build them once per runner
+      # (natively for the runner's architecture).
+      - name: Build puppet + image-util
+        run: |
+          set -euxo pipefail
+          nix build --print-build-logs -o puppet ".#${{ matrix.puppet }}"
+          nix build --print-build-logs -o image-util '.#image-util'
+
+      # Fetch + verify the upstream base, provision a qcow2 overlay delta via
+      # virt-customize (no guest boot), then assemble + validate the OCI layout.
+      - name: Build image layout
         env:
-          BUILD_UBUNTU_2204: ${{ inputs.build_ubuntu_2204 }}
-          BUILD_RASPBIAN_13: ${{ inputs.build_raspbian_13 }}
+          LIBGUESTFS_BACKEND: direct
         run: |
-          members=""
-          if [ "$BUILD_UBUNTU_2204" = "true" ]; then
-            members="$members ubuntu-2204 ubuntu-2204-gha-runner"
-          fi
-          if [ "$BUILD_RASPBIAN_13" = "true" ]; then
-            members="$members raspbian-13 raspbian-13-gha-runner"
-          fi
-          members="$(echo "$members" | xargs)" # collapse/trim whitespace
-          if [ -z "$members" ]; then
-            echo "::error::No image family selected; enable at least one." >&2
-            exit 1
-          fi
-          echo "Selected images: $members"
-          echo "IMAGE_MEMBERS=$members" >> "$GITHUB_ENV"
+          set -euxo pipefail
+          ./images/lib/build-image.sh "${{ matrix.name }}" \
+            --puppet ./puppet/bin/tml-puppet \
+            --image-util ./image-util/bin/image-util \
+            -o out
 
-      # Build each selected layout and validate it with the `image-check` drift
-      # guard. Building `image-check-<name>` reparses the freshly built layout
-      # and also realises `image-<name>` (its dependency), so a separate
-      # `--out-link` then materialises the layout for upload at zero extra cost.
-      - name: Build and validate image layouts
-        run: |
-          SYSTEM="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
-          for name in $IMAGE_MEMBERS; do
-            echo "::group::build+check $name"
-            nix build --print-build-logs --no-link ".#packages.${SYSTEM}.image-check-${name}"
-            nix build --print-build-logs --out-link "result-${name}" ".#packages.${SYSTEM}.image-${name}"
-            echo "::endgroup::"
-          done
-
-      - name: Upload image layouts
+      - name: Upload image layout
         uses: actions/upload-artifact@v4
         with:
-          name: treadmill-images
-          # `result-*` are symlinks into /nix/store; upload-artifact@v4
-          # dereferences them and uploads the layout contents.
-          path: ./result-*
+          name: treadmill-image-${{ matrix.name }}
+          # The OCI layout directory (oci-layout, index.json, blobs/). The
+          # intermediate build blobs in out.build/ are deliberately excluded.
+          path: out/
           if-no-files-found: error
+
+      # --- ghcr push (conditioned on push_to_ghcr input) -----------
 
       # Authenticate to ghcr; writes the credential to ~/.docker/config.json,
       # which skopeo reads by default in the push step below.
@@ -105,15 +143,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # --- ghcr push (conditioned on push_to_ghcr input) -----------
-
-      # Pull the exact built store paths back out of the flake (no rebuild,
-      # already realised above) and `skopeo copy` each OCI layout to
-      # ghcr.io/<owner>/<name>.
-      #
-      # The custom `shell:` resolves skopeo once and puts it on PATH for the
-      # whole script (nix stays available too).
-      - name: Push image layouts to ghcr.io
+      # `skopeo copy` the OCI layout to ghcr.io/<owner>/<name>:{<sha>,latest}.
+      # The custom `shell:` resolves skopeo once and puts it on PATH.
+      - name: Push image layout to ghcr.io
         if: ${{ inputs.push_to_ghcr }}
         shell: nix shell nixpkgs#skopeo --command bash -euo pipefail {0}
         run: |
@@ -124,20 +156,9 @@ jobs:
           : > "$CONTAINERS_REGISTRIES_CONF"
           export CONTAINERS_REGISTRIES_CONF
 
-          SYSTEM="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
           OWNER="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
-          REGISTRY="ghcr.io/${OWNER}"
-
-          # push <attr> <repo>: copy the realised OCI layout to :<sha> + :latest.
-          push() {
-            local attr="$1" repo="$2" path
-            path="$(nix build --no-link --print-out-paths ".#packages.${SYSTEM}.${attr}")"
-            for tag in "${GITHUB_SHA}" latest; do
-              echo "skopeo copy oci:${path} -> docker://${repo}:${tag}"
-              skopeo copy --all "oci:${path}" "docker://${repo}:${tag}"
-            done
-          }
-
-          for name in $IMAGE_MEMBERS; do
-            push "image-${name}" "${REGISTRY}/${name}"
+          REPO="ghcr.io/${OWNER}/${{ matrix.name }}"
+          for tag in "${GITHUB_SHA}" latest; do
+            echo "skopeo copy oci:out -> docker://${REPO}:${tag}"
+            skopeo copy --all "oci:out" "docker://${REPO}:${tag}"
           done
