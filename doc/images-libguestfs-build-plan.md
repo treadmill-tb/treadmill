@@ -82,6 +82,16 @@ a new, symmetric `assemble` counterpart to the existing `parse`.
 >   partition extraction (`qemu-nbd` + `dd`), and the finalize `fstrim` (done
 >   while the delta is mounted for provisioning) — all run natively with host
 >   tools over the NBD device. The mtools FAT edit was already VM-free.
+> - **sd boot FAT** — for the Raspberry Pi OS image the boot FAT is loop-mounted
+>   at the guest's `/boot/firmware` during provisioning, so installing
+>   `nbd-client` lets the distro's own kernel/initramfs machinery write the
+>   regenerated netboot initrd (and any `config.txt` update) straight onto the
+>   boot layer, exactly as on a booted single-image system. A per-image
+>   pre-install hook (`images/<name>/pre-install.sh`) sets `MODULES=most` first
+>   so `mkinitramfs` builds a portable initramfs without probing the (NBD) root
+>   device, which it cannot resolve in the container. This is nspawn-only:
+>   virt-customize operates on the root delta alone and cannot mount the separate
+>   FAT (moot in practice — the aarch64 RPi build runs under nspawn).
 >
 > So `--backend nspawn` runs at native speed with **no `/dev/kvm`** (the aarch64
 > hosted runner lacks it; the appliance would otherwise run under TCG) and, key

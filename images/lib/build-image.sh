@@ -63,7 +63,9 @@ nbd_dev=""
 nbd_mnt=""
 nbd_qemu=""
 nbd_cleanup() {
-	[ -n "$nbd_mnt" ] && $SUDO umount "$nbd_mnt" 2>/dev/null || true
+	# Recursive: a caller may nest a loop mount (the sd boot FAT) under $nbd_mnt;
+	# umount -R unmounts it first and auto-detaches its loop device.
+	[ -n "$nbd_mnt" ] && $SUDO umount -R "$nbd_mnt" 2>/dev/null || true
 	[ -n "$nbd_dev" ] && $SUDO "$nbd_qemu" --disconnect "$nbd_dev" >/dev/null 2>&1 || true
 	[ -n "$nbd_mnt" ] && rmdir "$nbd_mnt" 2>/dev/null || true
 }
@@ -158,6 +160,10 @@ grow_root_delta_nspawn() {
 #   prov_run        array of host script paths, run in-guest AFTER the install
 #   prov_network    "yes"|"no" (only meaningful to virt-customize; nspawn always
 #                   shares the host network namespace)
+#   prov_boot_fat   sd boot-FAT image to mount at the guest's /boot/firmware so
+#                   the distro writes the regenerated initrd onto the boot layer
+#                   (nspawn only — virt-customize operates on the root delta
+#                   alone and can't mount the separate FAT; empty otherwise)
 # Neither backend forwards the host environment to the run scripts (they source
 # /tmp/provision.env), so the two stay behaviourally identical.
 
@@ -215,6 +221,17 @@ nspawn_provision() {
 		$SUDO mount "$nbd_dev" "$nbd_mnt"
 	fi
 	local mnt="$nbd_mnt"
+
+	# For an sd image, loop-mount the boot FAT at the guest's /boot/firmware so the
+	# distro's own kernel/initramfs machinery writes the regenerated initrd (and
+	# any config.txt update) straight onto the boot layer — exactly as on a booted
+	# single-image system. Without this the initrd would land orphaned in the root
+	# layer's /boot. Nested under $mnt, so nbd_cleanup's recursive umount tears it
+	# down (and auto-detaches the loop).
+	if [ -n "${prov_boot_fat:-}" ]; then
+		$SUDO mkdir -p "$mnt/boot/firmware"
+		$SUDO mount -t vfat -o loop "$prov_boot_fat" "$mnt/boot/firmware"
+	fi
 
 	# Copy-ins: virt-customize --copy-in src:destdir drops src INTO destdir; the
 	# trailing slash makes cp match that (the destdir exists in the guest root).
@@ -564,6 +581,11 @@ if [ "$variant" = base ]; then
 		prov_preinstall=("$images_dir/$name/pre-install.sh")
 	prov_install=("${packages[@]}")
 	prov_run=("$images_dir/lib/provision-common.sh" "$provision")
+	# sd: mount the boot FAT during provisioning so nbd-client's initramfs lands
+	# on the boot layer (see nspawn_provision). boot_fat is the mtools-edited FAT
+	# from step 2; disk images have none.
+	prov_boot_fat=""
+	[ "$type" = sd ] && prov_boot_fat="$boot_fat"
 	provision_delta "$delta" "$type"
 else
 	# gha-runner overlay: a root layer over the base delta. The OCI chain backs
@@ -586,6 +608,9 @@ else
 	prov_preinstall=()
 	prov_install=()
 	prov_run=("$provision")
+	# The overlay reuses the base build's boot FAT verbatim (initrd and all) and
+	# changes only the root, so it never touches /boot/firmware.
+	prov_boot_fat=""
 	provision_delta "$delta" "$type"
 fi
 
