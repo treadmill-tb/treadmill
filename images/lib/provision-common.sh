@@ -134,7 +134,13 @@ done
 
 # --- networking: systemd-networkd + resolved, DHCP + IPv6 SLAAC -----------
 # Privacy extensions off (stable addresses for a testbed). The RPi NIC is `eth0`
-# via net.ifnames=0, hence the en*/eth* match.
+# via net.ifnames=0, hence the en*/eth* match. KeepConfiguration=yes is for the
+# RPi NBD-netboot image, whose root filesystem is reached over eth0: it tells
+# networkd to keep the address the initramfs (ip=dhcp) already configured instead
+# of flushing and re-DHCPing on start, which would drop the NBD link mid-boot. It
+# is harmless on disk-root images (Ubuntu), where it only makes networkd preserve
+# the lease across a restart. (On RPi the stock NetworkManager is masked in the
+# per-image provision so networkd actually owns eth0.)
 mkdir -p /etc/systemd/network
 cat >/etc/systemd/network/10-eth.network <<'NETWORK'
 [Match]
@@ -143,6 +149,7 @@ Name=en* eth*
 DHCP=yes
 IPv6AcceptRA=yes
 IPv6PrivacyExtensions=no
+KeepConfiguration=yes
 [Link]
 RequiredForOnline=true
 NETWORK

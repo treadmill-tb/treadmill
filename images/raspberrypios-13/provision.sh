@@ -48,6 +48,19 @@ for unit in \
 	ln -snf /dev/null "/etc/systemd/system/$unit"
 done
 
+# --- networking: hand eth0 to systemd-networkd (enabled in provision-common) ---
+# Raspberry Pi OS defaults to NetworkManager; mask it (and dhcpcd, if present) so
+# it does not fight networkd for eth0 and the 10-eth.network config actually
+# applies. eth0 carries the NBD root, so networkd keeps the initramfs-acquired
+# lease (KeepConfiguration=yes, set in provision-common) rather than dropping the
+# link. Masked via the /dev/null symlink (offline-safe, no running systemd).
+for unit in \
+	NetworkManager.service \
+	NetworkManager-wait-online.service \
+	dhcpcd.service; do
+	ln -snf /dev/null "/etc/systemd/system/$unit"
+done
+
 # --- ssh: enabled directly (sshswitch, which keys off the boot-FAT ssh.txt,
 # --- is masked above); provision-common owns unique host keys per deployment.
 systemctl enable ssh.service

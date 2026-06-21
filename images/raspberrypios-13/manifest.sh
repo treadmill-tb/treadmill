@@ -30,7 +30,11 @@ export rustup_init_sha256="9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6f
 # nbd-client is pulled from the live Debian/Raspberry Pi OS archive (apt, like
 # the rest of our package installs) rather than a pinned .deb on a personal
 # mirror. openssh-server / udev / dbus / systemd-networkd are already present.
-export packages=(nbd-client)
+# systemd-resolved is its own package on Debian (split out of systemd) and is not
+# in the RPi OS Lite base, but provision-common.sh's networking enables it and
+# points /etc/resolv.conf at its stub — so pull it in here (the Ubuntu cloud
+# image already ships it).
+export packages=(nbd-client systemd-resolved)
 
 # The netboot target has no D-Bus auto-discovery: the puppet daemon reaches the
 # supervisor over TCP, at the default gateway on port 3859. The `$(ip route …)`
