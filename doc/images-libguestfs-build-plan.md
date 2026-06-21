@@ -35,8 +35,9 @@ a new, symmetric `assemble` counterpart to the existing `parse`.
 - **Phase 5 — CI cutover (Ubuntu): pulled forward / partial.** `images.yml`
   overwritten to drive the libguestfs pipeline (the legacy vmTools workflow was
   not yet rolled out to prod): a `prepare` job maps per-family dispatch
-  checkboxes to a matched-arch matrix; the `build` job does apt-libguestfs +
-  nix-built bins + `build-image.sh` + artifact + optional ghcr push (sha+latest).
+  checkboxes to a matched-arch matrix; the `build` job builds the nix bins, then
+  runs `build-image.sh` inside `nix develop .#images` (prebuilt libguestfs
+  appliance) + artifact + optional ghcr push (sha+latest).
   Only `ubuntu-server-2604` (x86_64) is live; `raspberrypios-13` (aarch64) is a
   commented placeholder pending Phase 4. **Owed:** a real dispatch to confirm
   hosted-runner `/dev/kvm` + apt timings (the Phase 0 spike, now largely
@@ -328,14 +329,21 @@ matched-arch hosted runner (Ubuntu → `ubuntu-latest`, Raspberry Pi OS →
 matrix (the single place mapping family → runner + static-puppet package); the
 `build` job, per matrix entry:
 
-1. `apt-get install -y libguestfs-tools mtools qemu-utils xz-utils curl` (Ubuntu
-   ships `virt-customize` *in* `libguestfs-tools`; nixpkgs splits it into
-   `guestfs-tools`, which is why the `images` devshell needs that extra pkg).
-2. `install-nix-action` + read-only `cachix-action` (only to build the binaries).
-3. `nix build .#tml-puppet-static-<arch> -o puppet` and `nix build .#image-util -o image-util`.
-4. `build-image.sh <name> --puppet ./puppet/bin/tml-puppet --image-util ./image-util/bin/image-util -o out`
-   (assembles + validates internally), then `upload-artifact` the `out/` layout.
-5. On `push_to_ghcr`: `skopeo copy oci:out` to `ghcr.io/<owner>/<name>:{<sha>,latest}`.
+1. `install-nix-action` + read-only `cachix-action`.
+2. Build the binaries: `nix build --no-link --print-out-paths
+   .#tml-puppet-static-<arch>` and `.#image-util` (capture the store paths — an
+   `-o puppet` out-link would collide with the in-tree `puppet/` crate dir).
+3. Run `build-image.sh` **inside `nix develop .#images`** (assembles + validates
+   internally), then `upload-artifact` the `out/` layout. The libguestfs
+   toolchain comes from the devshell's `libguestfs-with-appliance` — a *prebuilt*
+   appliance, so no runtime `supermin` build (no host-kernel readability hack)
+   and the same network backend that works in local dev. The distro (apt)
+   libguestfs was tried first but fought the hosted runner (supermin needs the
+   0600 host kernel; its `passt` network backend exits 1).
+4. On `push_to_ghcr`: `skopeo copy oci:out` to `ghcr.io/<owner>/<name>:{<sha>,latest}`.
+
+(A temporary `cachix push` of the two binaries sits between 2 and 3 so reruns
+substitute them instead of recompiling.)
 
 The `gha-runner` overlay variant (a second `build-image.sh` invocation backed by
 the base delta) folds in with Phase 3; the Raspberry Pi `ubuntu-24.04-arm` row is
