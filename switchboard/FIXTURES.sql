@@ -6,30 +6,64 @@
 -- subjects are removed.
 --
 TRUNCATE TABLE tml_switchboard.hosts CASCADE;
+
+
 TRUNCATE TABLE tml_switchboard.api_tokens CASCADE;
+
+
 TRUNCATE TABLE tml_switchboard.users CASCADE;
-DELETE FROM tml_switchboard.subjects WHERE kind = 'user';
+
+
+DELETE FROM tml_switchboard.subjects
+WHERE
+    kind = 'user';
 
 
 -- A fake admin user (authority comes from membership in the `admins` group, not
 -- from any column on the user row).
-INSERT INTO tml_switchboard.subjects (subject_id, kind)
-VALUES ('2c71904b-a9b7-4e22-9d56-8a5d80567ccd', 'user');
-INSERT INTO tml_switchboard.users (subject_id, username, full_name, locked)
-VALUES ('2c71904b-a9b7-4e22-9d56-8a5d80567ccd', 'fake_admin1', 'Fake Admin', FALSE);
-INSERT INTO tml_switchboard.group_members (group_id, member_id, source)
-VALUES (
-    '00000000-0000-0000-0000-000000000001',
-    '2c71904b-a9b7-4e22-9d56-8a5d80567ccd',
-    'manual'
-);
+INSERT INTO
+    tml_switchboard.subjects (subject_id, kind)
+VALUES
+    ('2c71904b-a9b7-4e22-9d56-8a5d80567ccd', 'user');
+
+
+INSERT INTO
+    tml_switchboard.users (subject_id, username, full_name, locked)
+VALUES
+    (
+        '2c71904b-a9b7-4e22-9d56-8a5d80567ccd',
+        'fake_admin1',
+        'Fake Admin',
+        FALSE
+    );
+
+
+INSERT INTO
+    tml_switchboard.group_members (group_id, member_id, source)
+VALUES
+    (
+        '00000000-0000-0000-0000-000000000001',
+        '2c71904b-a9b7-4e22-9d56-8a5d80567ccd',
+        'manual'
+    );
 
 
 -- A fake regular user.
-INSERT INTO tml_switchboard.subjects (subject_id, kind)
-VALUES ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'user');
-INSERT INTO tml_switchboard.users (subject_id, username, full_name, locked)
-VALUES ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'fake_user1', 'Fake User', FALSE);
+INSERT INTO
+    tml_switchboard.subjects (subject_id, kind)
+VALUES
+    ('8752ca01-a650-4716-b0a1-d2f1860e4175', 'user');
+
+
+INSERT INTO
+    tml_switchboard.users (subject_id, username, full_name, locked)
+VALUES
+    (
+        '8752ca01-a650-4716-b0a1-d2f1860e4175',
+        'fake_user1',
+        'Fake User',
+        FALSE
+    );
 
 
 -- A fake host, owned by fake_user1.

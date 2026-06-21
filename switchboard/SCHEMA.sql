@@ -1,6 +1,6 @@
 -- -*- fill-column: 80; -*-
+CREATE SCHEMA tml_switchboard;
 
-create schema tml_switchboard;
 
 -- ===========================================================================
 -- SUBJECTS: users and groups, unified
@@ -17,43 +17,44 @@ create schema tml_switchboard;
 -- `system` subjects are non-human service actors (the switchboard worker,
 -- internal automation). They do not log in via OAuth; they authenticate via API
 -- tokens. They are seeded out of band (see FIXTURES.sql), not created by login.
-create type tml_switchboard.subject_kind as enum ('user', 'group', 'system');
-create table tml_switchboard.subjects
-(
-    subject_id uuid                         not null primary key,
-    kind       tml_switchboard.subject_kind not null
+CREATE TYPE tml_switchboard.subject_kind AS enum('user', 'group', 'system');
+
+
+CREATE TABLE tml_switchboard.subjects (
+    subject_id uuid NOT NULL PRIMARY KEY,
+    kind tml_switchboard.subject_kind NOT NULL
 );
+
 
 -- A human (or system) principal. Authentication is fully external (OAuth); there
 -- is no password. `username` is the internal Treadmill handle, suggested from
 -- the provider login at first sign-in but freely changeable, hence its own
 -- uniqueness independent of any provider identity. `locked` deactivates the
 -- account without deleting it (preserving job/audit provenance).
-create table tml_switchboard.users
-(
-    subject_id uuid not null primary key references tml_switchboard.subjects (subject_id) on delete cascade,
-    username   text not null unique,
-    full_name  text,
+CREATE TABLE tml_switchboard.users (
+    subject_id uuid NOT NULL PRIMARY KEY REFERENCES tml_switchboard.subjects (subject_id) ON DELETE CASCADE,
+    username text NOT NULL UNIQUE,
+    full_name text,
     avatar_url text,
-    locked     bool not null default false
+    locked bool NOT NULL DEFAULT FALSE
 );
+
 
 -- The OAuth identity link. Keyed on the provider's STABLE numeric user id (as
 -- text), never the login handle -- handles are renameable and reusable, so a
 -- handle key would eventually mis-link accounts. `provider_login` records the
 -- current handle for display only. A user holds at most one identity per
 -- provider. This table is the seam that makes additional providers cheap later.
-create table tml_switchboard.user_identities
-(
-    provider         text not null,
-    provider_user_id text not null,
-    user_id          uuid not null references tml_switchboard.users (subject_id) on delete cascade,
-    provider_login   text,
-    linked_at        timestamp with time zone not null default current_timestamp,
-
-    primary key (provider, provider_user_id),
-    unique (user_id, provider)
+CREATE TABLE tml_switchboard.user_identities (
+    provider text NOT NULL,
+    provider_user_id text NOT NULL,
+    user_id uuid NOT NULL REFERENCES tml_switchboard.users (subject_id) ON DELETE CASCADE,
+    provider_login text,
+    linked_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (provider, provider_user_id),
+    UNIQUE (user_id, provider)
 );
+
 
 -- Verified email addresses, used to link a future provider login to an existing
 -- user (same verified email => same person). Globally unique so it can serve as
@@ -61,32 +62,38 @@ create table tml_switchboard.user_identities
 -- surfaced it. ONLY verified addresses live here (`check (verified)`): linking
 -- on an unverified address would allow account takeover by claiming someone
 -- else's email on the external provider.
-create table tml_switchboard.user_emails
-(
-    email    text not null primary key,
-    user_id  uuid not null references tml_switchboard.users (subject_id) on delete cascade,
-    provider text not null,
-    verified bool not null,
-    added_at timestamp with time zone not null default current_timestamp,
-
-    check (verified)
+CREATE TABLE tml_switchboard.user_emails (
+    email text NOT NULL PRIMARY KEY,
+    user_id uuid NOT NULL REFERENCES tml_switchboard.users (subject_id) ON DELETE CASCADE,
+    provider text NOT NULL,
+    verified bool NOT NULL,
+    added_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
+    CHECK (verified)
 );
+
 
 -- A group/organization. Owns resources and aggregates members like any subject.
-create table tml_switchboard.groups
-(
-    subject_id uuid not null primary key references tml_switchboard.subjects (subject_id) on delete cascade,
-    name       text not null unique
+CREATE TABLE tml_switchboard.groups (
+    subject_id uuid NOT NULL PRIMARY KEY REFERENCES tml_switchboard.subjects (subject_id) ON DELETE CASCADE,
+    name text NOT NULL UNIQUE
 );
+
 
 -- The system-global admin group. Its UUID is a hard-coded well-known constant so
 -- it can be referenced directly in authorization queries. Global admin authority
 -- = membership in this group; orphaned resources (owner_id IS NULL) are
 -- manageable only by its members.
-insert into tml_switchboard.subjects (subject_id, kind)
-values ('00000000-0000-0000-0000-000000000001', 'group');
-insert into tml_switchboard.groups (subject_id, name)
-values ('00000000-0000-0000-0000-000000000001', 'admins');
+INSERT INTO
+    tml_switchboard.subjects (subject_id, kind)
+VALUES
+    ('00000000-0000-0000-0000-000000000001', 'group');
+
+
+INSERT INTO
+    tml_switchboard.groups (subject_id, name)
+VALUES
+    ('00000000-0000-0000-0000-000000000001', 'admins');
+
 
 -- The system actor. A `system` subject (non-human service principal) with a
 -- hard-coded well-known UUID, so the switchboard can attribute the audit events
@@ -95,8 +102,11 @@ values ('00000000-0000-0000-0000-000000000001', 'admins');
 -- directly in code. It is a bare `subjects` row with no `users`/`groups`
 -- extension: it never logs in and owns nothing; it exists only to be named as
 -- the actor of system-originated events.
-insert into tml_switchboard.subjects (subject_id, kind)
-values ('00000000-0000-0000-0000-000000000002', 'system');
+INSERT INTO
+    tml_switchboard.subjects (subject_id, kind)
+VALUES
+    ('00000000-0000-0000-0000-000000000002', 'system');
+
 
 -- ===========================================================================
 -- GROUP MEMBERSHIP: a many-to-many DAG with provenance
@@ -116,23 +126,25 @@ values ('00000000-0000-0000-0000-000000000002', 'system');
 -- orgs that both feed it), and each must be an independent, separately-reconciled
 -- row. It is NOT NULL (default '') so it participates in the PK uniformly;
 -- manual rows simply carry the empty string.
-create type tml_switchboard.membership_source as enum ('manual', 'github_org');
-create table tml_switchboard.group_members
-(
-    group_id   uuid                              not null references tml_switchboard.groups (subject_id)   on delete cascade,
-    member_id  uuid                              not null references tml_switchboard.subjects (subject_id) on delete cascade,
-    source     tml_switchboard.membership_source not null,
-    source_ref text                              not null default '',
+CREATE TYPE tml_switchboard.membership_source AS enum('manual', 'github_org');
 
-    primary key (group_id, member_id, source, source_ref),
 
+CREATE TABLE tml_switchboard.group_members (
+    group_id uuid NOT NULL REFERENCES tml_switchboard.groups (subject_id) ON DELETE CASCADE,
+    member_id uuid NOT NULL REFERENCES tml_switchboard.subjects (subject_id) ON DELETE CASCADE,
+    source tml_switchboard.membership_source NOT NULL,
+    source_ref text NOT NULL DEFAULT '',
+    PRIMARY KEY (group_id, member_id, source, source_ref),
     -- Trivial self-cycle is a cheap declarative constraint; longer cycles need
     -- the reachability trigger below.
-    constraint no_self_membership check (group_id <> member_id)
+    CONSTRAINT no_self_membership CHECK (group_id <> member_id)
 );
+
+
 -- Upward traversal (member -> the groups it belongs to) hits `member_id`; the PK
 -- already indexes the `group_id` prefix for downward traversal.
-create index group_members_member_id_idx on tml_switchboard.group_members (member_id);
+CREATE INDEX group_members_member_id_idx ON tml_switchboard.group_members (member_id);
+
 
 -- Enforce that the membership graph stays acyclic. Adding the edge "group_id
 -- contains member_id" closes a cycle iff member_id can already reach group_id by
@@ -149,10 +161,7 @@ create index group_members_member_id_idx on tml_switchboard.group_members (membe
 -- committed edge -- so any attempt that would close a cycle sees it and aborts.
 -- (Assumes READ COMMITTED, the default. Under higher isolation, use SERIALIZABLE
 -- instead, whose SSI detects the same conflict and aborts one transaction.)
-create or replace function tml_switchboard.group_members_no_cycle()
-    returns trigger
-    language plpgsql as
-$$
+CREATE OR REPLACE FUNCTION tml_switchboard.group_members_no_cycle () returns trigger language plpgsql AS $$
 begin
     perform pg_advisory_xact_lock(hashtext('tml_switchboard.group_members'));
 
@@ -174,10 +183,14 @@ begin
 end;
 $$;
 
+
 -- DELETE can never create a cycle, so the check runs on INSERT/UPDATE only.
-create constraint trigger group_members_acyclic
-    after insert or update on tml_switchboard.group_members
-    for each row execute function tml_switchboard.group_members_no_cycle();
+CREATE CONSTRAINT TRIGGER group_members_acyclic
+AFTER insert
+OR
+UPDATE ON tml_switchboard.group_members FOR each ROW
+EXECUTE function tml_switchboard.group_members_no_cycle ();
+
 
 -- Declares that a group's membership is auto-synced from an external source
 -- (e.g. a GitHub organization). The reconciler iterates these bindings -- lazily
@@ -190,17 +203,16 @@ create constraint trigger group_members_acyclic
 -- for display only. A group may sync from several sources, and one source may
 -- feed several groups, hence the composite key. `last_synced_at` is null until
 -- the first successful reconciliation.
-create table tml_switchboard.group_auto_sources
-(
-    group_id       uuid                              not null references tml_switchboard.groups (subject_id) on delete cascade,
-    provider       text                              not null,
-    external_id    text                              not null,
-    external_name  text,
-    membership_via tml_switchboard.membership_source not null,
+CREATE TABLE tml_switchboard.group_auto_sources (
+    group_id uuid NOT NULL REFERENCES tml_switchboard.groups (subject_id) ON DELETE CASCADE,
+    provider text NOT NULL,
+    external_id text NOT NULL,
+    external_name text,
+    membership_via tml_switchboard.membership_source NOT NULL,
     last_synced_at timestamp with time zone,
-
-    primary key (group_id, provider, external_id)
+    PRIMARY KEY (group_id, provider, external_id)
 );
+
 
 -- ===========================================================================
 -- API TOKENS
@@ -213,32 +225,32 @@ create table tml_switchboard.group_auto_sources
 --
 -- Tokens have both natural expiration and an explicit revocation mechanism,
 -- which voids a token before it expires.
-create type tml_switchboard.api_token_revocation as
-(
-    revoked_at         timestamp with time zone,
+CREATE TYPE tml_switchboard.api_token_revocation AS (
+    revoked_at timestamp with time zone,
     revocation_reason text
 );
+
+
 -- `user_agent` and `created_ip`/`created_port` record the provenance of a token
 -- at mint time (the client that requested it), surfaced in the session-list API
 -- and mirrored into the `session_token_issued` audit event. `created_ip` is the
 -- client address as resolved by the server's trusted-proxy policy (text rather
 -- than `inet` so a proxy-supplied value that fails to parse is still recorded
 -- verbatim for forensics). `comment` is an optional user-supplied label.
-create table tml_switchboard.api_tokens
-(
-    token_id     uuid                     not null primary key,
-    token        bytea                    not null unique,
-    user_id      uuid                     not null references tml_switchboard.users (subject_id) on delete cascade,
-    revoked      tml_switchboard.api_token_revocation,
-    created_at   timestamp with time zone not null,
-    expires_at   timestamp with time zone not null,
-    user_agent   text,
-    comment      text,
-    created_ip   text,
+CREATE TABLE tml_switchboard.api_tokens (
+    token_id uuid NOT NULL PRIMARY KEY,
+    token bytea NOT NULL UNIQUE,
+    user_id uuid NOT NULL REFERENCES tml_switchboard.users (subject_id) ON DELETE CASCADE,
+    revoked tml_switchboard.api_token_revocation,
+    created_at timestamp with time zone NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    user_agent text,
+    comment text,
+    created_ip text,
     created_port integer,
-
-    check (octet_length(token) = 128)
+    CHECK (octet_length(token) = 128)
 );
+
 
 -- ===========================================================================
 -- OAUTH FLOWS
@@ -252,31 +264,36 @@ create table tml_switchboard.api_tokens
 -- knows which token endpoint and identity mapping to use. Rows are deleted on
 -- successful callback and swept after `expires_at`; a never-completed flow
 -- simply expires.
-create table tml_switchboard.oauth_flows
-(
-    state         text                     not null primary key,
-    provider      text                     not null,
+CREATE TABLE tml_switchboard.oauth_flows (
+    state text NOT NULL PRIMARY KEY,
+    provider text NOT NULL,
     pkce_verifier text,
-    created_at    timestamp with time zone not null default current_timestamp,
-    expires_at    timestamp with time zone not null
+    created_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
+    expires_at timestamp with time zone NOT NULL
 );
+
 
 -- ===========================================================================
 -- HOSTS
 -- ===========================================================================
-
 -- Host + Port tuple for ssh_endpoints of a host.
-create domain tml_switchboard.port as integer
-    check (value >= 0 and value < 65535);
-create domain tml_switchboard.ssh_host as text
-    check (value is not null);
-create domain tml_switchboard.ssh_port as tml_switchboard.port
-    check (value is not null);
-create type tml_switchboard.ssh_endpoint as
-(
+CREATE DOMAIN tml_switchboard.port AS integer CHECK (
+    value >= 0
+    AND value < 65535
+);
+
+
+CREATE DOMAIN tml_switchboard.ssh_host AS text CHECK (value IS NOT NULL);
+
+
+CREATE DOMAIN tml_switchboard.ssh_port AS tml_switchboard.port CHECK (value IS NOT NULL);
+
+
+CREATE TYPE tml_switchboard.ssh_endpoint AS (
     ssh_host tml_switchboard.ssh_host,
     ssh_port tml_switchboard.ssh_port
 );
+
 
 -- All hosts must be registered with the switchboard database: any host not
 -- registered will be turned away at the gate, so to speak. A host is the
@@ -288,24 +305,20 @@ create type tml_switchboard.ssh_endpoint as
 --
 -- The auth_token field authenticates the host's supervisor: a 256-byte random
 -- string uniquely identifying the supervisor on connect.
-create table tml_switchboard.hosts
-(
-    host_id            uuid   not null primary key,
-    name               text   not null,
-    auth_token         bytea  not null unique,
-    tags               text[] not null,
-
+CREATE TABLE tml_switchboard.hosts (
+    host_id uuid NOT NULL PRIMARY KEY,
+    name text NOT NULL,
+    auth_token bytea NOT NULL UNIQUE,
+    tags TEXT[] NOT NULL,
     -- Owning subject (user or group). NULL means orphaned: the resource has no
     -- owner and is manageable only by members of the admin group. Resources are
     -- orphaned (not cascade-deleted) when their owner is deleted, hence
     -- `on delete set null`.
-    owner_id           uuid references tml_switchboard.subjects (subject_id) on delete set null,
-
+    owner_id uuid REFERENCES tml_switchboard.subjects (subject_id) ON DELETE SET NULL,
     -- SSH endpoints that all jobs executing on this host are reachable under.
     -- Each endpoint is a "hostname:port" tuple. IPv6 addreses are enclosed in
     -- square brackets, such as "[::1]:22".
-    ssh_endpoints      tml_switchboard.ssh_endpoint[] not null,
-
+    ssh_endpoints tml_switchboard.ssh_endpoint[] NOT NULL,
     -- A host can either be idle or have a job assigned. This column keeps
     -- track of this state. If a job is assigned, then the host is not idle,
     -- and the "sub-state" is determined through the job's state data.
@@ -319,15 +332,13 @@ create table tml_switchboard.hosts
     -- sole writer). The partial unique index below enforces the half that is
     -- expressible as a pure constraint: a job is `current_job` for at most one
     -- host. FK constraint added after `jobs` is defined below.
-    current_job        uuid,
-
+    current_job uuid,
     -- Each host is driven by at most one supervisor connection, serviced by a
     -- worker. To prevent multiple concurrent workers claiming ownership of the
     -- same host, each host--worker combination is assigned a unique,
     -- monotonically increasing "worker instance ID", checked by subsequent DB
     -- operations.
     worker_instance_id bigint NOT NULL DEFAULT 0,
-
     -- Liveness heartbeat: the current worker refreshes this on each periodic
     -- tick, and clears it to NULL when it disconnects cleanly (without having
     -- been superseded). A host is "live" -- eligible for the scheduler to
@@ -337,11 +348,11 @@ create table tml_switchboard.hosts
     -- clean disconnect does not). This is the DB-only signal by which the
     -- (out-of-process) scheduler learns which hosts have a live supervisor; no
     -- in-process channel couples them.
-    last_seen_at       timestamp with time zone,
-
-    check (octet_length(auth_token) = 128),
-    check (worker_instance_id >= 0)
+    last_seen_at timestamp with time zone,
+    CHECK (octet_length(auth_token) = 128),
+    CHECK (worker_instance_id >= 0)
 );
+
 
 -- ===========================================================================
 -- JOBS
@@ -350,16 +361,13 @@ create table tml_switchboard.hosts
 -- The database job table is an archive of inactive jobs, a persistent store for
 -- reconstructing switchboard state after a restart, and a record of final exit
 -- status.
-
 -- Restart policy dictates the number of times a job can be restarted
 -- automatically by the switchboard.
-create type tml_switchboard.restart_policy as
-(
-    remaining_restart_count integer
-);
+CREATE TYPE tml_switchboard.restart_policy AS (remaining_restart_count integer);
+
 
 -- The job's execution lifecycle state.
-create type tml_switchboard.job_state as enum (
+CREATE TYPE tml_switchboard.job_state AS enum(
     -- Accepted, no host assigned yet; eligible for scheduling.
     'queued',
     -- Bound to a host but StartJob not yet sent; no longer eligible for
@@ -373,21 +381,23 @@ create type tml_switchboard.job_state as enum (
     'terminating',
     -- Terminal; carries termination_reason and terminated_at.
     'finalized'
-    );
+);
+
 
 -- The sub-stage of an `initializing` job, mirroring the wire-level
 -- `JobInitializingStage`.
-create type tml_switchboard.job_initializing_stage as enum (
+CREATE TYPE tml_switchboard.job_initializing_stage AS enum(
     'starting',
     'fetching_image',
     'allocating',
     'provisioning',
     'booting'
-    );
+);
+
 
 -- Why a job terminated. Set once, at finalization. Orthogonal to the task's exit
 -- status (success/failure of the user workload) and to any exit message.
-create type tml_switchboard.termination_reason as enum (
+CREATE TYPE tml_switchboard.termination_reason AS enum(
     -- workload-driven (the job's own process ended it)
     'workload_exited',
     'workload_self_canceled',
@@ -405,28 +415,23 @@ create type tml_switchboard.termination_reason as enum (
     'host_unreachable',
     'resume_failed',
     'internal_error'
-    );
+);
+
 
 -- The host-reported outcome of the user's workload (its "task outcome"), as
 -- relayed by the host's supervisor. Set out-of-band of termination and
 -- revisable while assigned: `pending` until known, then `success`/`failure`.
 -- Once set it is never cleared. Orthogonal to termination_reason.
-create type tml_switchboard.task_exit_status as enum (
-    'pending',
-    'success',
-    'failure'
-    );
+CREATE TYPE tml_switchboard.task_exit_status AS enum('pending', 'success', 'failure');
 
-create table tml_switchboard.jobs
-(
-    job_id                      uuid                             not null primary key,
 
+CREATE TABLE tml_switchboard.jobs (
+    job_id uuid NOT NULL PRIMARY KEY,
     -- Owning subject (user or group). NULL means orphaned (see hosts). For a
     -- job started by a user on a group-owned host, the user is the owner; the
     -- owning group's control over the job is conferred separately, as an
     -- irrevocable grant inserted at dispatch time (see job_grants).
-    owner_id                    uuid references tml_switchboard.subjects (subject_id) on delete set null,
-
+    owner_id uuid REFERENCES tml_switchboard.subjects (subject_id) ON DELETE SET NULL,
     -- These specify the job image and the nature of the job. A job's image is
     -- referenced against the switchboard image catalog: either a concrete image
     -- (`image_id`, a registered `images` row) or an image group (`image_group_id`
@@ -442,58 +447,45 @@ create table tml_switchboard.jobs
     -- The FKs to `images` / `image_group_generations` are added by ALTER TABLE
     -- after the IMAGE CATALOG section, since those tables are defined later in
     -- this file (same forward-reference pattern as `hosts.current_job`).
-    resume_job_id               uuid references tml_switchboard.jobs (job_id) on delete no action,
-    restart_job_id              uuid references tml_switchboard.jobs (job_id) on delete no action,
-    image_id                    uuid,
-    image_group_id              uuid,
-    image_group_generation      int,
-
+    resume_job_id uuid REFERENCES tml_switchboard.jobs (job_id) ON DELETE NO ACTION,
+    restart_job_id uuid REFERENCES tml_switchboard.jobs (job_id) ON DELETE NO ACTION,
+    image_id uuid,
+    image_group_id uuid,
+    image_group_generation int,
     -- The concrete image actually dispatched, recorded at dispatch for
     -- reproducibility/audit (the digest is recovered by join to `images`). For a
     -- concrete-image job this equals `image_id`; for a group job it is the member
     -- the matcher selected. Images are immortal, so no cascade.
-    resolved_image_id           uuid,
-
+    resolved_image_id uuid,
     -- SSH keys to be injected, if any
-    ssh_keys                    text[]                           not null,
-
+    ssh_keys TEXT[] NOT NULL,
     -- Restart policy
-    restart_policy              tml_switchboard.restart_policy   not null,
-
+    restart_policy tml_switchboard.restart_policy NOT NULL,
     -- Token the job was enqueued by. Used to determine which hosts a job
     -- can run on.
-    enqueued_by_token_id        uuid                             not null references tml_switchboard.api_tokens (token_id) on delete no action,
-
+    enqueued_by_token_id uuid NOT NULL REFERENCES tml_switchboard.api_tokens (token_id) ON DELETE NO ACTION,
     -- Host eligibility: the set of tags a host must carry (as a superset) for
     -- this job to be schedulable onto it. Opaque strings, matched by containment
     -- against `hosts.tags`. Target (DUT) requirements live in the separate
     -- `job_target_requirements` table.
-    host_tag_requirements       text[]                           not null default '{}',
-
+    host_tag_requirements TEXT[] NOT NULL DEFAULT '{}',
     -- The amount of time the job can run before it is killed.
-    job_timeout                 interval                         not null,
-
+    job_timeout interval NOT NULL,
     -- The latest known execution-lifecycle state of the job.
-    job_state                   tml_switchboard.job_state        not null,
-
+    job_state tml_switchboard.job_state NOT NULL,
     -- The sub-stage while `job_state = 'initializing'`; null otherwise.
-    initializing_stage          tml_switchboard.job_initializing_stage,
-
+    initializing_stage tml_switchboard.job_initializing_stage,
     -- The time at which the job was queued. If after
     -- [config:api.jobs.queue_timeout] the job is still queued, it is canceled.
-    queued_at                   timestamp with time zone         not null,
-
+    queued_at timestamp with time zone NOT NULL,
     -- The time at which the job was started.
-    started_at                  timestamp with time zone,
-
+    started_at timestamp with time zone,
     -- ID of the host the job was dispatched to, so the switchboard can
     -- discern job failure on supervisor reconnection after a dual failure.
-    dispatched_on_host_id       uuid,
-
+    dispatched_on_host_id uuid,
     -- SSH endpoints that this job is reachable under, populated once scheduled on
     -- a host that exposes endpoints.
-    ssh_endpoints               tml_switchboard.ssh_endpoint[],
-
+    ssh_endpoints tml_switchboard.ssh_endpoint[],
     -- User-requested cancellation signal: the DB side of user-cancel. When set,
     -- the assigned job's worker converges the job to `finalized` with
     -- `termination_reason = user_canceled`. It is re-read on every reconcile pass
@@ -501,94 +493,99 @@ create table tml_switchboard.jobs
     -- against fresh state and composes with a later API that sets this column.
     -- NULL means no cancellation requested. Queued (unassigned) jobs are the
     -- scheduler/reaper's responsibility, not a worker's.
-    cancel_requested_at         timestamp with time zone,
-
+    cancel_requested_at timestamp with time zone,
     -- Filled out when transitioned into `finalized`. `termination_reason` records
     -- *why* the job stopped; `task_exit_status` records the *result of the user
     -- workload* (independent of the reason); `exit_message` is an optional
     -- human-readable note. Captured workload output is stored in object storage,
     -- not here.
-    termination_reason          tml_switchboard.termination_reason,
-    task_exit_status            tml_switchboard.task_exit_status,
-    exit_message                text,
-    terminated_at               timestamp with time zone,
-
+    termination_reason tml_switchboard.termination_reason,
+    task_exit_status tml_switchboard.task_exit_status,
+    exit_message text,
+    terminated_at timestamp with time zone,
     -- Bookkeeping; set via `last_updated_at = DEFAULT` on UPDATE, per
     -- https://www.morling.dev/blog/last-updated-columns-with-postgres/.
-    last_updated_at             timestamp with time zone         not null default current_timestamp,
-
+    last_updated_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
     ---->> INVARIANT CHECKING <<----
-
     -- Two allowed init states:
     --  (1) resume_job_id = null, restart_job_id = _, and exactly one of
     --      image_id / image_group_id is set; image_group_generation is set iff
     --      image_group_id is
     --  (2) resume_job_id != null, restart_job_id = null, and image_id /
     --      image_group_id / image_group_generation all null
-    constraint valid_init_spec check (
-      (resume_job_id is null
-         and (image_id is not null)::int + (image_group_id is not null)::int = 1
-         and (image_group_id is null) = (image_group_generation is null))
-        or (resume_job_id is not null and restart_job_id is null
-              and image_id is null and image_group_id is null
-              and image_group_generation is null)
+    CONSTRAINT valid_init_spec CHECK (
+        (
+            resume_job_id IS NULL
+            AND (image_id IS NOT NULL)::int + (image_group_id IS NOT NULL)::int = 1
+            AND (image_group_id IS NULL) = (image_group_generation IS NULL)
+        )
+        OR (
+            resume_job_id IS NOT NULL
+            AND restart_job_id IS NULL
+            AND image_id IS NULL
+            AND image_group_id IS NULL
+            AND image_group_generation IS NULL
+        )
     ),
-
     -- Restart count >= 0
-    constraint valid_restart_policy check (
-      (restart_policy).remaining_restart_count >= 0
-    ),
-
+    CONSTRAINT valid_restart_policy CHECK ((restart_policy).remaining_restart_count >= 0),
     -- A host is bound from `scheduled` onwards (through `finalized`);
     -- `dispatched_on_host_id` tracks that binding for the assigned,
     -- not-yet-terminal lifecycle states.
-    constraint dispatched_host_iso_assigned check (
-      (dispatched_on_host_id is not null) =
-        (job_state in ('scheduled', 'initializing', 'ready', 'terminating'))
+    CONSTRAINT dispatched_host_iso_assigned CHECK (
+        (dispatched_on_host_id IS NOT NULL) = (
+            job_state IN (
+                'scheduled',
+                'initializing',
+                'ready',
+                'terminating'
+            )
+        )
     ),
-
     -- `started_at` is set exactly while executing, i.e. once dispatched
     -- (`initializing`) and until terminal.
-    constraint started_at_iso_executing check (
-      (started_at is not null) =
-        (job_state in ('initializing', 'ready', 'terminating'))
+    CONSTRAINT started_at_iso_executing CHECK (
+        (started_at IS NOT NULL) = (
+            job_state IN ('initializing', 'ready', 'terminating')
+        )
     ),
-
     -- The terminal record is set exactly when `finalized`.
-    constraint termination_reason_iso_finalized check (
-      (termination_reason is not null) = (job_state = 'finalized')
+    CONSTRAINT termination_reason_iso_finalized CHECK (
+        (termination_reason IS NOT NULL) = (job_state = 'finalized')
     ),
-    constraint terminated_at_iso_finalized check (
-      (terminated_at is not null) = (job_state = 'finalized')
+    CONSTRAINT terminated_at_iso_finalized CHECK (
+        (terminated_at IS NOT NULL) = (job_state = 'finalized')
     ),
-
     -- `task_exit_status` is absent while `queued` (no host assigned yet) and
     -- may be present in any later state.
-    constraint task_exit_status_absent_while_queued check (
-      task_exit_status is null or job_state <> 'queued'
+    CONSTRAINT task_exit_status_absent_while_queued CHECK (
+        task_exit_status IS NULL
+        OR job_state <> 'queued'
     ),
-
     -- `initializing_stage` is present exactly while `initializing`.
-    constraint initializing_stage_iso_initializing check (
-      (initializing_stage is not null) = (job_state = 'initializing')
+    CONSTRAINT initializing_stage_iso_initializing CHECK (
+        (initializing_stage IS NOT NULL) = (job_state = 'initializing')
     )
 );
 
+
 ALTER TABLE tml_switchboard.hosts
-    ADD FOREIGN KEY (current_job)
-    REFERENCES tml_switchboard.jobs (job_id) ON DELETE NO ACTION;
+ADD FOREIGN KEY (current_job) REFERENCES tml_switchboard.jobs (job_id) ON DELETE NO ACTION;
+
 
 -- A job may be the `current_job` of at most one host. Partial (only over
 -- non-null `current_job`) so idle hosts don't collide on NULL.
-CREATE UNIQUE INDEX hosts_current_job_unique
-    ON tml_switchboard.hosts (current_job)
-    WHERE current_job IS NOT NULL;
+CREATE UNIQUE INDEX hosts_current_job_unique ON tml_switchboard.hosts (current_job)
+WHERE
+    current_job IS NOT NULL;
+
 
 -- Host tags are opaque strings (`key=value` pairs or bare flags, by convention
 -- only -- the matcher never parses them). A job requests a host whose tags are a
 -- superset of the job's `host_tag_requirements`; the GIN index backs that
 -- containment (`tags @> required`) lookup over the host pool.
 CREATE INDEX hosts_tags_gin ON tml_switchboard.hosts USING gin (tags);
+
 
 -- ===========================================================================
 -- HOST TARGETS (DUTs)
@@ -601,22 +598,20 @@ CREATE INDEX hosts_tags_gin ON tml_switchboard.hosts USING gin (tags);
 -- DUT whose tags satisfy it (a bipartite match, done in the application). Target
 -- tags do NOT participate in image selection -- that is host-tag-only (see
 -- `image_group_members`).
-create table tml_switchboard.host_targets
-(
-    target_id  uuid   not null primary key,
-    host_id    uuid   not null references tml_switchboard.hosts (host_id) on delete cascade,
-
+CREATE TABLE tml_switchboard.host_targets (
+    target_id uuid NOT NULL PRIMARY KEY,
+    host_id uuid NOT NULL REFERENCES tml_switchboard.hosts (host_id) ON DELETE CASCADE,
     -- Stable per-host label for the DUT (e.g. "dut0").
-    name       text   not null,
-
+    name text NOT NULL,
     -- Opaque tag set, same convention as host tags.
-    tags       text[] not null default '{}',
-
-    unique (host_id, name)
+    tags TEXT[] NOT NULL DEFAULT '{}',
+    UNIQUE (host_id, name)
 );
+
 
 -- Backs the per-target containment (`tags @> required`) match during scheduling.
 CREATE INDEX host_targets_tags_gin ON tml_switchboard.host_targets USING gin (tags);
+
 
 -- ===========================================================================
 -- PERMISSIONS / ACLs
@@ -637,11 +632,7 @@ CREATE INDEX host_targets_tags_gin ON tml_switchboard.host_targets USING gin (ta
 -- only that subject's memberships via `group_members_member_id_idx`, instead of
 -- materializing the closure for every subject. Ownership and grant checks are
 -- tested against this whole set (see `src/auth/engine.rs`).
-create or replace function tml_switchboard.principals(arg_subject uuid)
-    returns table (id uuid)
-    language sql
-    stable as
-$$
+CREATE OR REPLACE FUNCTION tml_switchboard.principals (arg_subject uuid) returns TABLE (id uuid) language sql stable AS $$
     with recursive reached(id) as (
         select arg_subject
         union
@@ -651,6 +642,7 @@ $$
     )
     select id from reached;
 $$;
+
 
 --
 -- `manage` is the meta-permission: holding it lets a subject edit the resource's
@@ -664,30 +656,31 @@ $$;
 -- by trigger); they are cleared only when the resource itself is deleted
 -- (FK cascade). The switchboard inserts a row as revocable, then UPDATEs
 -- revocable -> false to lock it.
-create type tml_switchboard.host_permission as enum ('read', 'start', 'ssh', 'manage');
-create type tml_switchboard.job_permission as enum ('read', 'stop', 'ssh', 'manage');
+CREATE TYPE tml_switchboard.host_permission AS enum('read', 'start', 'ssh', 'manage');
 
-create table tml_switchboard.host_grants
-(
-    host_id    uuid                              not null references tml_switchboard.hosts (host_id)         on delete cascade,
-    subject_id uuid                              not null references tml_switchboard.subjects (subject_id) on delete cascade,
-    permission tml_switchboard.host_permission   not null,
-    revocable  bool                              not null default true,
-    granted_at timestamp with time zone          not null default current_timestamp,
 
-    primary key (host_id, subject_id, permission)
+CREATE TYPE tml_switchboard.job_permission AS enum('read', 'stop', 'ssh', 'manage');
+
+
+CREATE TABLE tml_switchboard.host_grants (
+    host_id uuid NOT NULL REFERENCES tml_switchboard.hosts (host_id) ON DELETE CASCADE,
+    subject_id uuid NOT NULL REFERENCES tml_switchboard.subjects (subject_id) ON DELETE CASCADE,
+    permission tml_switchboard.host_permission NOT NULL,
+    revocable bool NOT NULL DEFAULT TRUE,
+    granted_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (host_id, subject_id, permission)
 );
 
-create table tml_switchboard.job_grants
-(
-    job_id     uuid                            not null references tml_switchboard.jobs (job_id)        on delete cascade,
-    subject_id uuid                            not null references tml_switchboard.subjects (subject_id) on delete cascade,
-    permission tml_switchboard.job_permission  not null,
-    revocable  bool                            not null default true,
-    granted_at timestamp with time zone        not null default current_timestamp,
 
-    primary key (job_id, subject_id, permission)
+CREATE TABLE tml_switchboard.job_grants (
+    job_id uuid NOT NULL REFERENCES tml_switchboard.jobs (job_id) ON DELETE CASCADE,
+    subject_id uuid NOT NULL REFERENCES tml_switchboard.subjects (subject_id) ON DELETE CASCADE,
+    permission tml_switchboard.job_permission NOT NULL,
+    revocable bool NOT NULL DEFAULT TRUE,
+    granted_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (job_id, subject_id, permission)
 );
+
 
 -- Block deletion or modification of irrevocable (revocable = false) grants. A
 -- CHECK constraint governs what rows may exist, not who may delete them, so this
@@ -696,10 +689,7 @@ create table tml_switchboard.job_grants
 -- gated by it, so resource deletion still cleans grants up. Setting revocable
 -- false on a currently-revocable row is permitted -- that is how the switchboard
 -- locks a freshly-inserted grant.
-create or replace function tml_switchboard.deny_irrevocable_grant_change()
-    returns trigger
-    language plpgsql as
-$$
+CREATE OR REPLACE FUNCTION tml_switchboard.deny_irrevocable_grant_change () returns trigger language plpgsql AS $$
 begin
     if OLD.revocable = false then
         raise exception 'grant on %.% for % is irrevocable',
@@ -712,33 +702,34 @@ begin
 end;
 $$;
 
-create trigger host_grants_irrevocable
-    before delete or update on tml_switchboard.host_grants
-    for each row execute function tml_switchboard.deny_irrevocable_grant_change();
-create trigger job_grants_irrevocable
-    before delete or update on tml_switchboard.job_grants
-    for each row execute function tml_switchboard.deny_irrevocable_grant_change();
+
+CREATE TRIGGER host_grants_irrevocable before delete
+OR
+UPDATE ON tml_switchboard.host_grants FOR each ROW
+EXECUTE function tml_switchboard.deny_irrevocable_grant_change ();
+
+
+CREATE TRIGGER job_grants_irrevocable before delete
+OR
+UPDATE ON tml_switchboard.job_grants FOR each ROW
+EXECUTE function tml_switchboard.deny_irrevocable_grant_change ();
+
 
 -- ===========================================================================
 -- JOB PARAMETERS
 -- ===========================================================================
+CREATE TYPE tml_switchboard.parameter_value AS (value text, is_secret bool);
 
-create type tml_switchboard.parameter_value as
-(
-    value     text,
-    is_secret bool
-);
 
 -- A table of its own because per-job parameter key uniqueness is a useful
 -- property to enforce.
-create table tml_switchboard.job_parameters
-(
-    job_id uuid                            not null references tml_switchboard.jobs (job_id) on delete cascade,
-    key    text                            not null,
-    value  tml_switchboard.parameter_value not null,
-
-    primary key (job_id, key)
+CREATE TABLE tml_switchboard.job_parameters (
+    job_id uuid NOT NULL REFERENCES tml_switchboard.jobs (job_id) ON DELETE CASCADE,
+    key text NOT NULL,
+    value tml_switchboard.parameter_value NOT NULL,
+    PRIMARY KEY (job_id, key)
 );
+
 
 -- ===========================================================================
 -- JOB TARGET REQUIREMENTS
@@ -751,14 +742,13 @@ create table tml_switchboard.job_parameters
 -- rows requests no DUTs (e.g. a pure-VM job). The concrete DUT chosen for each
 -- requirement is recorded at schedule time (a future `job_assigned_targets`
 -- table, added with the scheduler).
-create table tml_switchboard.job_target_requirements
-(
-    job_id    uuid   not null references tml_switchboard.jobs (job_id) on delete cascade,
-    req_index int    not null,
-    tags      text[] not null default '{}',
-
-    primary key (job_id, req_index)
+CREATE TABLE tml_switchboard.job_target_requirements (
+    job_id uuid NOT NULL REFERENCES tml_switchboard.jobs (job_id) ON DELETE CASCADE,
+    req_index int NOT NULL,
+    tags TEXT[] NOT NULL DEFAULT '{}',
+    PRIMARY KEY (job_id, req_index)
 );
+
 
 -- ===========================================================================
 -- SCHEDULING
@@ -768,18 +758,19 @@ create table tml_switchboard.job_target_requirements
 -- DB-only (no in-process channels), so they can be distributed across processes;
 -- for now both poll, and Postgres LISTEN/NOTIFY can replace polling later. See
 -- doc/oci-image-migration-plan.md §8.3.
-
 -- The scheduler scans queued jobs oldest-first; a partial index keeps that scan
 -- cheap as the (mostly non-queued) jobs table grows.
-create index jobs_queued_idx on tml_switchboard.jobs (queued_at)
-    where job_state = 'queued';
+CREATE INDEX jobs_queued_idx ON tml_switchboard.jobs (queued_at)
+WHERE
+    job_state = 'queued';
+
 
 -- `GET /jobs` lists readable jobs newest-first with keyset pagination on
 -- `(queued_at, job_id)`. This index (matching that order) turns the listing into
 -- an index range scan and makes the keyset seek depth-independent, across all
 -- job states (unlike the partial index above).
-create index jobs_queued_at_job_id_idx
-    on tml_switchboard.jobs (queued_at desc, job_id desc);
+CREATE INDEX jobs_queued_at_job_id_idx ON tml_switchboard.jobs (queued_at DESC, job_id DESC);
+
 
 -- Hosts a job may be dispatched onto, by the set-based criteria SQL expresses
 -- well: the host is idle (no current job), live (its worker's heartbeat
@@ -797,14 +788,10 @@ create index jobs_queued_at_job_id_idx
 -- `host_grants`, evaluated via `principals()`) should be folded in here as an
 -- additional join/EXISTS predicate so unauthorized hosts never become
 -- candidates. Until then the scheduler may place a job on any tag-eligible host.
-create function tml_switchboard.eligible_hosts(
-    p_job_id          uuid,
+CREATE FUNCTION tml_switchboard.eligible_hosts (
+    p_job_id uuid,
     p_liveness_cutoff timestamp with time zone
-)
-    returns setof uuid
-    language sql
-    stable as
-$$
+) returns setof uuid language sql stable AS $$
     select h.host_id
     from tml_switchboard.hosts h
     where h.current_job is null
@@ -817,6 +804,7 @@ $$
       )
     order by h.host_id;
 $$;
+
 
 -- ===========================================================================
 -- IMAGE CATALOG
@@ -834,40 +822,35 @@ $$;
 -- Image *groups* are mutable, named, generationed entities (no longer OCI
 -- artifacts); see doc/image-groups-mutable-generations-plan.md and the group
 -- tables further below.
-
 -- A registered Treadmill image, identified by its OCI manifest digest. `attrs`
 -- is free-form metadata projected off the validated manifest at registration
 -- time; `artifact_type` records the manifest's `artifactType` for display.
-create table tml_switchboard.images
-(
-    id                uuid                     not null primary key,
-    manifest_digest   text                     not null unique,
-    artifact_type     text                     not null,
-
+CREATE TABLE tml_switchboard.images (
+    id uuid NOT NULL PRIMARY KEY,
+    manifest_digest text NOT NULL UNIQUE,
+    artifact_type text NOT NULL,
     -- Owning subject (user or group). NULL means orphaned (cf. hosts/jobs): the
     -- resource survives its owner's deletion but is then admin-only.
-    owner_subject     uuid                     references tml_switchboard.subjects (subject_id) on delete set null,
-
-    label             text,
-    attrs             jsonb                    not null default '{}'::jsonb,
-    created_at        timestamp with time zone not null default current_timestamp
+    owner_subject uuid REFERENCES tml_switchboard.subjects (subject_id) ON DELETE SET NULL,
+    label text,
+    attrs jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone NOT NULL DEFAULT current_timestamp
 );
+
 
 -- The registry locations a given image's bytes can be pulled from. `status`
 -- distinguishes the user's original `external` registry from `canonical`/`system`
 -- mirrors added by promotion (the digest never changes; promotion is an INSERT).
-create table tml_switchboard.image_locations
-(
-    image_id          uuid                     not null references tml_switchboard.images (id) on delete cascade,
-    registry          text                     not null,
-    repository        text                     not null,
-    status            text                     not null,
-    added_at          timestamp with time zone not null default current_timestamp,
-
-    primary key (image_id, registry, repository),
-
-    constraint valid_location_status check (status in ('external', 'canonical', 'system'))
+CREATE TABLE tml_switchboard.image_locations (
+    image_id uuid NOT NULL REFERENCES tml_switchboard.images (id) ON DELETE CASCADE,
+    registry text NOT NULL,
+    repository text NOT NULL,
+    status text NOT NULL,
+    added_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (image_id, registry, repository),
+    CONSTRAINT valid_location_status CHECK (status IN ('external', 'canonical', 'system'))
 );
+
 
 -- A named, mutable image group. `name` is the stable moving-target handle a job
 -- references (by id); membership lives in immutable per-generation snapshots
@@ -876,30 +859,29 @@ create table tml_switchboard.image_locations
 -- `public` grants every subject the `use` permission (run jobs against the
 -- group) without an explicit grant; it never confers `manage`. See
 -- doc/image-groups-mutable-generations-plan.md.
-create table tml_switchboard.image_groups
-(
-    id                uuid                     not null primary key,
-    name              text                     not null unique,
-    owner_subject     uuid                     references tml_switchboard.subjects (subject_id) on delete set null,
-    label             text,
-    public            boolean                  not null default false,
-    created_at        timestamp with time zone not null default current_timestamp
+CREATE TABLE tml_switchboard.image_groups (
+    id uuid NOT NULL PRIMARY KEY,
+    name text NOT NULL UNIQUE,
+    owner_subject uuid REFERENCES tml_switchboard.subjects (subject_id) ON DELETE SET NULL,
+    label text,
+    public boolean NOT NULL DEFAULT FALSE,
+    created_at timestamp with time zone NOT NULL DEFAULT current_timestamp
 );
+
 
 -- One immutable snapshot of a group's membership. Every membership edit appends
 -- a new generation (per-group monotonic from 1, allocated under an advisory lock
 -- in the create-generation transaction). Append-only: a trigger blocks
 -- UPDATE/DELETE (same pattern as audit_events). `created_by` is provenance.
-create table tml_switchboard.image_group_generations
-(
-    group_id   uuid                     not null references tml_switchboard.image_groups (id) on delete cascade,
-    generation int                      not null,
-    created_by uuid                     references tml_switchboard.subjects (subject_id) on delete set null,
-    created_at timestamp with time zone not null default current_timestamp,
-
-    primary key (group_id, generation),
-    constraint generation_positive check (generation >= 1)
+CREATE TABLE tml_switchboard.image_group_generations (
+    group_id uuid NOT NULL REFERENCES tml_switchboard.image_groups (id) ON DELETE CASCADE,
+    generation int NOT NULL,
+    created_by uuid REFERENCES tml_switchboard.subjects (subject_id) ON DELETE SET NULL,
+    created_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (group_id, generation),
+    CONSTRAINT generation_positive CHECK (generation >= 1)
 );
+
 
 -- The members of ONE generation (full replacement per generation). A member's
 -- eligibility is a set of required host tags: the member is admissible for a host
@@ -908,67 +890,66 @@ create table tml_switchboard.image_group_generations
 -- (the member's explicit array position in the create-generation request). Image
 -- selection uses HOST tags only; target/DUT tags are irrelevant here. `image_id`
 -- references an immortal `images` row (no cascade: images are never deleted).
-create table tml_switchboard.image_group_members
-(
-    group_id            uuid                     not null,
-    generation          int                      not null,
-    image_id            uuid                     not null references tml_switchboard.images (id),
-    required_host_tags  text[]                   not null default '{}',
-    index               int                      not null,
-
-    primary key (group_id, generation, image_id),
-    unique (group_id, generation, index),
-    foreign key (group_id, generation)
-        references tml_switchboard.image_group_generations (group_id, generation)
-        on delete cascade
+CREATE TABLE tml_switchboard.image_group_members (
+    group_id uuid NOT NULL,
+    generation int NOT NULL,
+    image_id uuid NOT NULL REFERENCES tml_switchboard.images (id),
+    required_host_tags TEXT[] NOT NULL DEFAULT '{}',
+    index int NOT NULL,
+    PRIMARY KEY (group_id, generation, image_id),
+    UNIQUE (group_id, generation, index),
+    FOREIGN key (group_id, generation) REFERENCES tml_switchboard.image_group_generations (group_id, generation) ON DELETE CASCADE
 );
+
 
 -- Append-only enforcement for generations: a generation snapshot is immutable
 -- once created (every membership edit appends a new generation). Functionally
 -- identical to `deny_audit_event_change`, duplicated here so the IMAGE CATALOG
 -- section does not forward-reference the AUDIT LOG section.
-create or replace function tml_switchboard.deny_generation_change()
-    returns trigger
-    language plpgsql as
-$$
+CREATE OR REPLACE FUNCTION tml_switchboard.deny_generation_change () returns trigger language plpgsql AS $$
 begin
     raise exception 'image-group generations are append-only (% on %.%)',
         TG_OP, TG_TABLE_SCHEMA, TG_TABLE_NAME;
 end;
 $$;
 
-create trigger image_group_generations_append_only
-    before update or delete on tml_switchboard.image_group_generations
-    for each row execute function tml_switchboard.deny_generation_change();
+
+CREATE TRIGGER image_group_generations_append_only before
+UPDATE
+OR delete ON tml_switchboard.image_group_generations FOR each ROW
+EXECUTE function tml_switchboard.deny_generation_change ();
+
 
 -- Image-group permissions. Authorization is the standard ownership ∨ grant
 -- disjunction evaluated via `principals()`; the owner holds `manage` implicitly.
 -- All grants are user-managed (no irrevocable/fixed grants as jobs have), so no
 -- revocability trigger.
-create type tml_switchboard.image_group_permission as enum ('use', 'manage');
+CREATE TYPE tml_switchboard.image_group_permission AS enum('use', 'manage');
 
-create table tml_switchboard.image_group_grants
-(
-    group_id   uuid                     not null references tml_switchboard.image_groups (id) on delete cascade,
-    subject_id uuid                     not null references tml_switchboard.subjects (subject_id) on delete cascade,
-    permission tml_switchboard.image_group_permission not null,
-    granted_at timestamp with time zone not null default current_timestamp,
 
-    primary key (group_id, subject_id, permission)
+CREATE TABLE tml_switchboard.image_group_grants (
+    group_id uuid NOT NULL REFERENCES tml_switchboard.image_groups (id) ON DELETE CASCADE,
+    subject_id uuid NOT NULL REFERENCES tml_switchboard.subjects (subject_id) ON DELETE CASCADE,
+    permission tml_switchboard.image_group_permission NOT NULL,
+    granted_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (group_id, subject_id, permission)
 );
+
 
 -- The jobs table's image references, added here because `jobs` is defined before
 -- the IMAGE CATALOG section (forward-reference pattern, as for `hosts.current_job`).
 -- Images and generations are immortal, so all of these are ON DELETE NO ACTION.
 ALTER TABLE tml_switchboard.jobs
-    ADD FOREIGN KEY (image_id)
-    REFERENCES tml_switchboard.images (id) ON DELETE NO ACTION;
+ADD FOREIGN KEY (image_id) REFERENCES tml_switchboard.images (id) ON DELETE NO ACTION;
+
+
 ALTER TABLE tml_switchboard.jobs
-    ADD FOREIGN KEY (resolved_image_id)
-    REFERENCES tml_switchboard.images (id) ON DELETE NO ACTION;
+ADD FOREIGN KEY (resolved_image_id) REFERENCES tml_switchboard.images (id) ON DELETE NO ACTION;
+
+
 ALTER TABLE tml_switchboard.jobs
-    ADD FOREIGN KEY (image_group_id, image_group_generation)
-    REFERENCES tml_switchboard.image_group_generations (group_id, generation) ON DELETE NO ACTION;
+ADD FOREIGN KEY (image_group_id, image_group_generation) REFERENCES tml_switchboard.image_group_generations (group_id, generation) ON DELETE NO ACTION;
+
 
 -- ===========================================================================
 -- AUDIT LOG
@@ -985,7 +966,6 @@ ALTER TABLE tml_switchboard.jobs
 -- the viewer's permissions on the related entity. Secret VALUES (e.g. the
 -- contents of `parameter_value.is_secret` parameters) must never be embedded in
 -- a payload -- store the key name and a redacted marker instead.
-
 -- One row per state change or observational event. Append-only: a trigger blocks
 -- UPDATE/DELETE in normal operation (see `deny_audit_event_change` below); the
 -- relation cascade exists only for a future GC that deletes whole events
@@ -999,27 +979,31 @@ ALTER TABLE tml_switchboard.jobs
 -- (correlation ids come from `tracing`); the audit row must survive either way.
 -- Worker-driven transitions with no human actor reference the well-known
 -- `system` subject seeded above.
-create table tml_switchboard.audit_events
-(
-    event_id       uuid                     not null primary key,
-    event_type     text                     not null,
-    payload        jsonb                    not null,
-    actor_id       uuid                     not null,
+CREATE TABLE tml_switchboard.audit_events (
+    event_id uuid NOT NULL PRIMARY KEY,
+    event_type text NOT NULL,
+    payload jsonb NOT NULL,
+    actor_id uuid NOT NULL,
     correlation_id uuid,
-    created_at     timestamp with time zone not null default current_timestamp
+    created_at timestamp with time zone NOT NULL DEFAULT current_timestamp
 );
-create index audit_events_created_at_idx
-    on tml_switchboard.audit_events (created_at);
+
+
+CREATE INDEX audit_events_created_at_idx ON tml_switchboard.audit_events (created_at);
+
 
 -- The entity kinds an audit event can relate to. `subject` covers both users and
 -- groups (matching the unified subjects model above); resource-scoped relations
 -- use `job` or `host`.
-create type tml_switchboard.audit_entity_kind as enum ('job', 'host', 'subject');
+CREATE TYPE tml_switchboard.audit_entity_kind AS enum('job', 'host', 'subject');
+
+
 -- An event's role with respect to a related entity. `actor` is the principal
 -- that caused it; `subject` is the entity acted upon; `context` is any
 -- additional entity whose viewers should also be able to see the event (e.g.
 -- the host on which a job ran).
-create type tml_switchboard.audit_role as enum ('actor', 'subject', 'context');
+CREATE TYPE tml_switchboard.audit_role AS enum('actor', 'subject', 'context');
+
 
 -- Links an event to an entity it relates to, with the view policy for THIS
 -- relation. `entity_id` is a PLAIN uuid with NO foreign key: that is what keeps
@@ -1034,22 +1018,21 @@ create type tml_switchboard.audit_role as enum ('actor', 'subject', 'context');
 -- is disjunctive across relations: a viewer sees the event if they satisfy ANY
 -- one relation's policy. Permission-implication (e.g. `manage` => `read`) is a
 -- deliberate non-goal; matching is exact.
-create table tml_switchboard.audit_event_relations
-(
-    event_id    uuid                              not null
-                  references tml_switchboard.audit_events (event_id) on delete cascade,
-    entity_kind tml_switchboard.audit_entity_kind not null,
-    entity_id   uuid                              not null,
-    role        tml_switchboard.audit_role        not null,
-    view_policy text                              not null,
-
-    primary key (event_id, entity_kind, entity_id, role)
+CREATE TABLE tml_switchboard.audit_event_relations (
+    event_id uuid NOT NULL REFERENCES tml_switchboard.audit_events (event_id) ON DELETE CASCADE,
+    entity_kind tml_switchboard.audit_entity_kind NOT NULL,
+    entity_id uuid NOT NULL,
+    role tml_switchboard.audit_role NOT NULL,
+    view_policy text NOT NULL,
+    PRIMARY KEY (event_id, entity_kind, entity_id, role)
 );
+
+
 -- The feed's hot path: "events for entity (kind, id), newest first". UUIDv7
 -- `event_id` is time-ordered, so a DESC scan on this index also yields
 -- chronological order without a separate sort.
-create index audit_event_relations_entity_idx
-    on tml_switchboard.audit_event_relations (entity_kind, entity_id, event_id desc);
+CREATE INDEX audit_event_relations_entity_idx ON tml_switchboard.audit_event_relations (entity_kind, entity_id, event_id DESC);
+
 
 -- Enforce append-only on `audit_events`: any direct UPDATE or DELETE raises.
 -- Same trigger pattern as `deny_irrevocable_grant_change` above. FK-cascade
@@ -1057,16 +1040,15 @@ create index audit_event_relations_entity_idx
 -- this trigger (it fires on `audit_events`, not relations), so a deliberate GC
 -- that drops the trigger to remove whole events still cleans the relation rows
 -- up via the cascade.
-create or replace function tml_switchboard.deny_audit_event_change()
-    returns trigger
-    language plpgsql as
-$$
+CREATE OR REPLACE FUNCTION tml_switchboard.deny_audit_event_change () returns trigger language plpgsql AS $$
 begin
     raise exception 'audit events are append-only (% on %.%)',
         TG_OP, TG_TABLE_SCHEMA, TG_TABLE_NAME;
 end;
 $$;
 
-create trigger audit_events_append_only
-    before update or delete on tml_switchboard.audit_events
-    for each row execute function tml_switchboard.deny_audit_event_change();
+
+CREATE TRIGGER audit_events_append_only before
+UPDATE
+OR delete ON tml_switchboard.audit_events FOR each ROW
+EXECUTE function tml_switchboard.deny_audit_event_change ();
