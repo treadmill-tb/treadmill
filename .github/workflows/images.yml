@@ -133,6 +133,13 @@ jobs:
         run: |
           set -euxo pipefail
           ls -l /dev/kvm || echo "NO /dev/kvm — libguestfs will fall back to TCG"
+          # libguestfs auto-prefers passt for --network when a `passt` binary is
+          # on PATH, but passt exits 1 on the hosted runner ("passt exited with
+          # status 1"). The hosted Ubuntu image ships /usr/bin/passt; remove it so
+          # libguestfs falls back to qemu's slirp user-net. This matches local dev
+          # (passt isn't on the devshell PATH there, so slirp is what we already
+          # build + validate with). There is no libguestfs setting to force this.
+          sudo rm -f "$(command -v passt || true)" /usr/bin/passt /usr/sbin/passt
           nix develop .#images --command \
             ./images/lib/build-image.sh "${{ matrix.name }}" \
               --puppet "${{ steps.bins.outputs.puppet }}/bin/tml-puppet" \

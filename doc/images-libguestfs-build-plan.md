@@ -339,7 +339,11 @@ matrix (the single place mapping family → runner + static-puppet package); the
    appliance, so no runtime `supermin` build (no host-kernel readability hack)
    and the same network backend that works in local dev. The distro (apt)
    libguestfs was tried first but fought the hosted runner (supermin needs the
-   0600 host kernel; its `passt` network backend exits 1).
+   0600 host kernel). Either way libguestfs auto-prefers `passt` for `--network`
+   when a `passt` binary is on PATH, and passt exits 1 on the hosted runner; the
+   step `rm`s the runner's `/usr/bin/passt` so libguestfs falls back to qemu
+   slirp user-net (what local dev uses — there is no libguestfs setting to force
+   it, only the passt-runnable autodetect).
 4. On `push_to_ghcr`: `skopeo copy oci:out` to `ghcr.io/<owner>/<name>:{<sha>,latest}`.
 
 (A temporary `cachix push` of the two binaries sits between 2 and 3 so reruns
