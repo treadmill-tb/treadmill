@@ -8,7 +8,7 @@ This plan is scoped to *how the rootfs and OCI layout get built*. The supervisor
 store/launch paths and the `treadmill_rs::image` parser are unchanged except for
 a new, symmetric `assemble` counterpart to the existing `parse`.
 
-### Implementation status (2026-06-19)
+### Implementation status (2026-06-21)
 
 - **Phase 0 — local mechanics: DONE.** guestfish partition extraction, mtools
   FAT edit, the qcow2 overlay→`rebase`→recompose chain, and the qcow2-header
@@ -21,7 +21,18 @@ a new, symmetric `assemble` counterpart to the existing `parse`.
   `assemble` + `parse` subcommands; `mk-treadmill-image.nix` + `media-types.nix`
   deleted; `nix/images.nix` assembles via `image-util assemble`. The vmTools
   recipes still build (parallel pipeline) until Phase 6.
-- **Phase 2 (Ubuntu base) and on: TODO** — see §9.
+- **Phase 2 — Ubuntu base: DONE.** `images/lib/build-image.sh` (disk path),
+  `images/lib/provision-common.sh`, and `images/ubuntu-server-2604/{manifest,provision}.sh`.
+  `image-util assemble`+`parse` (2 root layers) wired and validated.
+  - **Renamed + bumped:** the base is **`ubuntu-server-2604`** (Ubuntu Server
+    26.04 LTS, "resolute") — the cloud image is the *server* (headless) variant,
+    and we track the latest LTS. The legacy `images/ubuntu-2204/{rootfs,default}.nix`
+    vmTools recipes are untouched (parallel pipeline; deleted in Phase 6).
+  - **No personal mirror.** Base = the pinned dated upstream cloudimg
+    (`cloud-images.ubuntu.com/releases/26.04/release-20260612/…`); rustup-init =
+    the pinned upstream archive (`static.rust-lang.org/rustup/archive/1.29.0/…`).
+    Both sha256-verified on every fetch (drift guard).
+- **Phase 3 (Ubuntu runner overlay) and on: TODO** — see §9.
 
 ---
 
@@ -62,7 +73,7 @@ images/
     build-image.sh        # NEW: shared driver (fetch, extract, overlay, virt-customize, finalize, assemble, validate)
     provision-common.sh   # NEW: shared in-guest steps
     expandroot.sh         # KEPT as-is
-  ubuntu-2204/
+  ubuntu-server-2604/         # Ubuntu Server 26.04 LTS (was the ubuntu-2204 base)
     manifest.sh           # NEW: sourced shell (data only)
     provision.sh          # NEW
     gha-runner/provision.sh   # NEW
@@ -132,14 +143,18 @@ New `treadmill_rs::image::assemble` (the pure half, in the model crate):
 ## 4. `manifest.sh` (data only, sourced — no TOML, no parser)
 
 ```sh
-# images/ubuntu-2204/manifest.sh
+# images/ubuntu-server-2604/manifest.sh
 arch="x86_64"
 type="disk"                       # whole-disk qcow2 base
-title="Ubuntu 22.04"
-version="22.04"
-base_image_url="https://cloud-images.ubuntu.com/releases/22.04/release-20260601/ubuntu-22.04-server-cloudimg-amd64.img"
-base_image_sha256="..."
-base_image_mirror="https://alpha.mirror.svc.schuermann.io/files/treadmill-tb/..."
+title="Ubuntu Server 26.04"
+version="26.04"
+# Pinned dated upstream release (server cloudimg is already a qcow2). No personal
+# mirror — base + rustup-init come from upstream stable URLs, sha256-verified on
+# every fetch.
+base_image_url="https://cloud-images.ubuntu.com/releases/26.04/release-20260612/ubuntu-26.04-server-cloudimg-amd64.img"
+base_image_sha256="0c9fb915bab0b36b361d3bf8aeae2115dda19d81a306656964de048033481670"
+rustup_init_url="https://static.rust-lang.org/rustup/archive/1.29.0/x86_64-unknown-linux-gnu/rustup-init"
+rustup_init_sha256="4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
 packages=(vim tmux htop build-essential git usbutils pciutils nload nano gnupg bc mtr zip unzip wget gpg ca-certificates dbus)
 puppet_daemon_args='--transport auto_discover'
 serial_consoles=(ttyS0)
@@ -170,8 +185,8 @@ nbd_cmdline="console=serial0,115200 ip=dhcp root=/dev/nbd0 rw nbdroot=dhcp,root,
 ```
 source images/<name>/manifest.sh
 
-# 1. Fetch + verify base (mirror fallback)
-curl -fL "$base_image_url" -o base.dl || curl -fL "$base_image_mirror" -o base.dl
+# 1. Fetch + verify base (upstream URL; sha256 is the drift guard)
+curl -fL "$base_image_url" -o base.dl
 echo "$base_image_sha256  base.dl" | sha256sum -c -
 
 # 2. Produce the lowest root layer (verbatim upstream) and the boot blob:
@@ -267,7 +282,7 @@ bits from the legacy `rootfs.nix` / `parts.nix`:
 
 ## 7. Per-image `provision.sh`
 
-**Ubuntu (`ubuntu-2204/provision.sh`):**
+**Ubuntu (`ubuntu-server-2604/provision.sh`):**
 - `apt-get purge -y cloud-init`; `rm -f /etc/netplan/*.yaml` (networkd drives the net).
 - grub serial console: `GRUB_CMDLINE_LINUX="console=ttyS0"`, `GRUB_TERMINAL="serial"`,
   drop `quiet`; `update-grub`. Partitioning/UEFI/`grub-install`/initramfs come from

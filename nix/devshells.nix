@@ -128,9 +128,13 @@
       imagesShell = pkgs.mkShell {
         name = "treadmill-images-shell";
         packages = with pkgs; [
-          # virt-customize + guestfish, with the prebuilt appliance bundled (no
-          # supermin build on first use).
+          # guestfish + the C virt-* tools (virt-copy-in, virt-filesystems, …),
+          # with the prebuilt appliance bundled (no supermin build on first use).
           libguestfs-with-appliance
+          # virt-customize/virt-sysprep live in the separate guestfs-tools
+          # package (the OCaml tools were split out of libguestfs upstream); it
+          # reuses the appliance above.
+          guestfs-tools
           # mcopy/mtype/mdir: edit cmdline.txt / ssh.txt in the raw FAT boot blob
           # (boot layers have no overlay mechanism, so the FAT is mutated in place).
           mtools
