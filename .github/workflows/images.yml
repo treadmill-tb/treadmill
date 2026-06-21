@@ -117,28 +117,29 @@ jobs:
           cachix push treadmill-tb \
             "${{ steps.bins.outputs.puppet }}" "${{ steps.bins.outputs.image_util }}"
 
-      # The nspawn backend provisions natively in a systemd-nspawn container over
-      # the qcow2 delta (mapped via qemu-nbd) instead of booting the libguestfs
-      # appliance — full native speed with no /dev/kvm (the aarch64 runner lacks
-      # it; the appliance would otherwise run under TCG). systemd-nspawn comes
-      # from systemd-container; qemu-nbd is already in the `images` devshell.
-      - name: Install nspawn provisioning backend
+      # The nspawn backend is fully VM-free: it provisions in a systemd-nspawn
+      # container and does all image surgery (root grow, SD extraction, fstrim)
+      # natively over a qemu-nbd-mapped device — no libguestfs appliance, so no
+      # /dev/kvm dependency (the aarch64 runner lacks it; the appliance would
+      # otherwise run under TCG) and no Nix `images` devshell (its prebuilt
+      # libguestfs appliance is x86-only, so it can't even evaluate on the arm
+      # runner). All tooling comes from apt; the puppet + image-util binaries are
+      # still built via `nix build` (the step above).
+      - name: Install image build toolchain (nspawn backend)
         if: ${{ matrix.backend == 'nspawn' }}
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y systemd-container parted
+          # systemd-container: systemd-nspawn. qemu-utils: qemu-img + qemu-nbd.
+          # cloud-guest-utils: growpart. e2fsprogs: resize2fs/e2fsck. mtools: FAT
+          # edit. xz-utils: decompress the SD image. parted: partprobe.
+          sudo apt-get install -y \
+            systemd-container qemu-utils cloud-guest-utils e2fsprogs \
+            mtools xz-utils parted curl
           sudo modprobe nbd max_part=16
 
-      # Fetch + verify the upstream base, provision a qcow2 overlay delta (via
-      # the selected backend, no guest boot), then assemble + validate the OCI
-      # layout.
-      #
-      # The libguestfs toolchain comes from the `images` devshell, NOT the distro
-      # (apt) libguestfs: the Nix `libguestfs-with-appliance` ships a PREBUILT
-      # appliance, so there is no runtime supermin build (no host-kernel
-      # readability hack) and no `passt`/`supermin` mismatch with the hosted
-      # runner — it is the exact toolchain that builds the image in local dev.
+      # Fetch + verify the upstream base, provision a qcow2 overlay delta (via the
+      # selected backend, no guest boot), then assemble + validate the OCI layout.
       # Build the base layout, then the gha-runner overlay in the SAME run so the
       # overlay backs onto the byte-identical base delta (kept in out.build/ by
       # build-image.sh) — yielding a 3-root-layer chain (layer0 + base delta +
@@ -146,37 +147,25 @@ jobs:
       # build-image.sh internally assembles + validates its layout (the base
       # asserts 2 root layers, the runner asserts 3).
       - name: Build image layouts (base + gha-runner)
-        env:
-          LIBGUESTFS_BACKEND: direct
         run: |
           set -euxo pipefail
-          ls -l /dev/kvm || echo "NO /dev/kvm — libguestfs will fall back to TCG"
-          # libguestfs auto-prefers passt for --network when a `passt` binary is
-          # on PATH, but passt exits 1 on the hosted runner ("passt exited with
-          # status 1"). The hosted Ubuntu image ships /usr/bin/passt; remove it so
-          # libguestfs falls back to qemu's slirp user-net. This matches local dev
-          # (passt isn't on the devshell PATH there, so slirp is what we already
-          # build + validate with). There is no libguestfs setting to force this.
-          sudo rm -f "$(command -v passt || true)" /usr/bin/passt /usr/sbin/passt
           puppet="${{ steps.bins.outputs.puppet }}/bin/tml-puppet"
           image_util="${{ steps.bins.outputs.image_util }}/bin/image-util"
-          nix develop .#images --command \
-            ./images/lib/build-image.sh "${{ matrix.name }}" \
-              --puppet "$puppet" --image-util "$image_util" \
-              --backend "${{ matrix.backend }}" \
-              -o out
+          ./images/lib/build-image.sh "${{ matrix.name }}" \
+            --puppet "$puppet" --image-util "$image_util" \
+            --backend "${{ matrix.backend }}" \
+            -o out
           # The overlay backs onto the base build's byte-identical delta; sd
           # images (Raspberry Pi OS) additionally share its boot blob verbatim.
           runner_args=(--variant gha-runner --base-delta out.build/delta.qcow2)
           if [ -f out.build/boot.fat ]; then
             runner_args+=(--boot-fat out.build/boot.fat)
           fi
-          nix develop .#images --command \
-            ./images/lib/build-image.sh "${{ matrix.name }}" \
-              --puppet "$puppet" --image-util "$image_util" \
-              --backend "${{ matrix.backend }}" \
-              "${runner_args[@]}" \
-              -o out-gha-runner
+          ./images/lib/build-image.sh "${{ matrix.name }}" \
+            --puppet "$puppet" --image-util "$image_util" \
+            --backend "${{ matrix.backend }}" \
+            "${runner_args[@]}" \
+            -o out-gha-runner
 
       # One artifact carrying both OCI layouts (base + gha-runner overlay) as
       # top-level out/ and out-gha-runner/ directories. The intermediate build

@@ -70,23 +70,35 @@ a new, symmetric `assemble` counterpart to the existing `parse`.
     owed on a real runner / dispatch.
 - **Phase 4 (Raspbian): TODO** — see §9.
 
-> **Note (provisioning backend, 2026-06-21).** `build-image.sh` grew a
+> **Note (build backend, 2026-06-21).** `build-image.sh` grew a
 > `--backend virt-customize|nspawn` switch. The default `virt-customize` is
-> unchanged (rootless, boots the libguestfs appliance) and stays the local-dev
-> path. CI now passes `--backend nspawn`: provisioning (copy-ins, `apt`, the
-> `provision-*.sh` runs) happens in a `systemd-nspawn` container over the qcow2
-> delta mapped via `qemu-nbd` — **no appliance VM, so it runs at native speed
-> with no `/dev/kvm`** (the aarch64 hosted runner lacks it; the appliance would
-> otherwise run under TCG). Only the *execution* step moves: the delta/backing
-> chain, `image-util assemble/parse`, and the OCI dedup design are untouched, so
-> base + overlay (built in the same CI run, same backend) still share
-> byte-identical lower layers. `guestfish` partition extraction + `grow_root_delta`
-> still use the appliance, but those are lightweight (one TCG boot, no apt). The
-> nspawn path needs root + the `nbd` module (escalated per-op via `$SUDO`);
-> `systemd-nspawn` comes from the `systemd-container` apt package on the runner,
-> `qemu-nbd` from the `images` devshell. Cross-arch (x86 building aarch64) was
-> considered and rejected: the native-arch runner already gives native speed, so
-> no `qemu-user`/`binfmt`.
+> unchanged (rootless, libguestfs appliance) and stays the **local-dev** path.
+> CI passes `--backend nspawn`, which is **fully VM-free** — no libguestfs at
+> all:
+>
+> - **Provisioning** (copy-ins, `apt`, the `provision-*.sh` runs) happens in a
+>   `systemd-nspawn` container over the qcow2 delta mapped via `qemu-nbd`.
+> - **Image surgery** — the root grow (`growpart` + `resize2fs`), the SD
+>   partition extraction (`qemu-nbd` + `dd`), and the finalize `fstrim` (done
+>   while the delta is mounted for provisioning) — all run natively with host
+>   tools over the NBD device. The mtools FAT edit was already VM-free.
+>
+> So `--backend nspawn` runs at native speed with **no `/dev/kvm`** (the aarch64
+> hosted runner lacks it; the appliance would otherwise run under TCG) and, key
+> for aarch64, **no Nix `images` devshell**: its prebuilt libguestfs appliance is
+> `platforms = [i686, x86_64]`-only, so the devshell can't even *evaluate* on the
+> arm runner. The CI build now takes its tooling from apt (`systemd-container`,
+> `qemu-utils`, `cloud-guest-utils`, `e2fsprogs`, `mtools`, `xz-utils`, `parted`);
+> only the `tml-puppet` + `image-util` binaries still come from `nix build`.
+>
+> The delta/backing chain, `image-util assemble/parse`, and the OCI dedup design
+> are untouched, so base + overlay (built in the same CI run, same backend) still
+> share byte-identical lower layers. The nspawn path needs root + the `nbd`
+> module (escalated per-op via `$SUDO`); a single `/dev/nbd0` session is opened
+> per surgery step, torn down via an `EXIT` trap (a `RETURN` trap is skipped when
+> `set -e` exits the shell on a failed command, which would leak the device).
+> Cross-arch (x86 building aarch64) was considered and rejected: the native-arch
+> runner already gives native speed, so no `qemu-user`/`binfmt`.
 
 ---
 

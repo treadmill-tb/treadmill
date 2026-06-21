@@ -43,20 +43,73 @@ die() {
 }
 
 # Finalize a provisioning delta in place: trim freed blocks, detach the backing
-# pointer (so it is a standalone differential blob), and compress it.
+# pointer (so it is a standalone differential blob), and compress it. The
+# nspawn backend already fstrimmed the delta while it was mounted (see
+# nspawn_provision); only the virt-customize backend needs the appliance pass.
 finalize_delta() {
 	local d="$1"
-	virt-customize -a "$d" --run-command 'fstrim -av || true'
+	[ "$backend" = nspawn ] || virt-customize -a "$d" --run-command 'fstrim -av || true'
 	qemu-img rebase -u -b "" -F qcow2 "$d"
 	qemu-img convert -c -O qcow2 "$d" "$d.c" && mv "$d.c" "$d"
 }
 
+# --- NBD lifecycle (nspawn-backend surgery) --------------------------------
+# The nspawn backend does all image surgery (grow, SD extraction, provisioning)
+# natively over an NBD-mapped device instead of the libguestfs appliance. One
+# global device at a time, torn down via an EXIT trap: under `set -e` a failed
+# command exits the shell outright and RETURN traps are skipped, which would
+# leak the connected device / mount. Callers pair nbd_connect with nbd_release.
+nbd_dev=""
+nbd_mnt=""
+nbd_qemu=""
+nbd_cleanup() {
+	[ -n "$nbd_mnt" ] && $SUDO umount "$nbd_mnt" 2>/dev/null || true
+	[ -n "$nbd_dev" ] && $SUDO "$nbd_qemu" --disconnect "$nbd_dev" >/dev/null 2>&1 || true
+	[ -n "$nbd_mnt" ] && rmdir "$nbd_mnt" 2>/dev/null || true
+}
+
+# Map <image> (qcow2 by default; pass a second arg, e.g. "raw", to force the
+# format) onto /dev/nbd0 and arm teardown. qemu-nbd resolves a qcow2 backing
+# chain transparently. It comes from the toolchain on PATH; resolve it
+# absolutely so the call survives sudo's secure_path.
+nbd_connect() {
+	nbd_qemu="$(command -v qemu-nbd)"
+	nbd_dev=/dev/nbd0
+	nbd_mnt=""
+	trap nbd_cleanup EXIT
+	# max_part>0 so the kernel scans the partition table (the disk type's root is
+	# a partition); the module default of 0 would hide /dev/nbd0p1.
+	$SUDO modprobe nbd max_part=16
+	local fmt_args=()
+	[ -n "${2:-}" ] && fmt_args=(--format="$2")
+	$SUDO "$nbd_qemu" --connect="$nbd_dev" "${fmt_args[@]}" "$1"
+}
+
+# Unmount + disconnect whatever nbd_connect (and the caller's mount) acquired,
+# then disarm the trap and reset state so a later EXIT / second call is a no-op.
+nbd_release() {
+	nbd_cleanup
+	trap - EXIT
+	nbd_dev="" nbd_mnt=""
+}
+
 # Grow a root delta + its filesystem by $build_grow so apt has room. The shipped
 # virtual size grows accordingly — harmless: expandroot grows root to the host
-# disk at deploy, and the compressed blob only stores used clusters.
+# disk at deploy, and the compressed blob only stores used clusters. The fs/
+# partition surgery runs via the libguestfs appliance (virt-customize backend)
+# or natively over an NBD-mapped device (nspawn backend).
 grow_root_delta() {
 	local d="$1" t="$2"
 	qemu-img resize "$d" "+${build_grow:-4G}" >/dev/null
+	if [ "$backend" = nspawn ]; then
+		grow_root_delta_nspawn "$d" "$t"
+	else
+		grow_root_delta_guestfish "$d" "$t"
+	fi
+}
+
+grow_root_delta_guestfish() {
+	local d="$1" t="$2"
 	if [ "$t" = disk ]; then
 		# Whole-disk image: extend the (physically last) root partition into the
 		# new space, then the filesystem. Root is partition 1 on the Ubuntu cloud
@@ -77,6 +130,23 @@ grow_root_delta() {
 			resize2fs /dev/sda
 		GFS
 	fi
+}
+
+# nspawn backend: same grow, host tools over NBD. growpart relocates the GPT
+# secondary header and resizes the (physically last) root partition — the
+# equivalent of part-expand-gpt + part-resize; resize2fs grows the fs.
+grow_root_delta_nspawn() {
+	local d="$1" t="$2"
+	nbd_connect "$d"
+	if [ "$t" = disk ]; then
+		$SUDO growpart "$nbd_dev" 1
+		$SUDO e2fsck -fy "${nbd_dev}p1" || true
+		$SUDO resize2fs "${nbd_dev}p1"
+	else
+		$SUDO e2fsck -fy "$nbd_dev" || true
+		$SUDO resize2fs "$nbd_dev"
+	fi
+	nbd_release
 }
 
 # --- provisioning backends -------------------------------------------------
@@ -114,19 +184,6 @@ virtcustomize_provision() {
 	virt-customize "${args[@]}"
 }
 
-# State for nspawn_cleanup, set by nspawn_provision before it acquires each
-# resource. An EXIT trap (not RETURN: under `set -e` a failed command exits the
-# shell outright and RETURN traps are skipped, leaking the NBD device) tears them
-# down. The function clears them again on success.
-nspawn_mnt=""
-nspawn_nbd=""
-nspawn_qemu_nbd=""
-nspawn_cleanup() {
-	[ -n "$nspawn_mnt" ] && $SUDO umount "$nspawn_mnt" 2>/dev/null || true
-	[ -n "$nspawn_nbd" ] && $SUDO "$nspawn_qemu_nbd" --disconnect "$nspawn_nbd" >/dev/null 2>&1 || true
-	[ -n "$nspawn_mnt" ] && rmdir "$nspawn_mnt" 2>/dev/null || true
-}
-
 # --backend nspawn: provision natively in a systemd-nspawn container over the
 # qcow2 delta exposed as an NBD block device — no appliance VM, so it runs at
 # native speed on a matched-arch host with no /dev/kvm (the aarch64 hosted
@@ -136,29 +193,21 @@ nspawn_cleanup() {
 # build (and the nix toolchain on PATH) stays unprivileged.
 nspawn_provision() {
 	local delta="$1" t="$2"
-	# qemu-nbd comes from the nix devshell; resolve it absolutely so it survives
-	# sudo's secure_path. systemd-nspawn / mount / etc. are host tools.
-	nspawn_qemu_nbd="$(command -v qemu-nbd)"
-	nspawn_nbd=/dev/nbd0
-	nspawn_mnt="$(mktemp -d)"
-	trap nspawn_cleanup EXIT
-
-	# max_part>0 so the kernel scans the partition table (disk type's root is a
-	# partition); the module's default of 0 would hide /dev/nbd0p1.
-	$SUDO modprobe nbd max_part=16
-	$SUDO "$nspawn_qemu_nbd" --connect="$nspawn_nbd" "$delta"
+	nbd_connect "$delta"
 
 	# disk: GPT, root is partition 1 (/dev/nbd0p1). sd: the delta is a bare ext4
 	# (layer0 is the extracted root partition), so the device itself is the fs.
-	# Mirrors the disk/sd split in grow_root_delta.
+	# Mirrors the disk/sd split in grow_root_delta. nbd_mnt is set here (not in a
+	# subshell) so nbd_cleanup can unmount it.
+	nbd_mnt="$(mktemp -d)"
 	if [ "$t" = disk ]; then
-		$SUDO partprobe "$nspawn_nbd" 2>/dev/null || true
+		$SUDO partprobe "$nbd_dev" 2>/dev/null || true
 		udevadm settle 2>/dev/null || true
-		$SUDO mount "${nspawn_nbd}p1" "$nspawn_mnt"
+		$SUDO mount "${nbd_dev}p1" "$nbd_mnt"
 	else
-		$SUDO mount "$nspawn_nbd" "$nspawn_mnt"
+		$SUDO mount "$nbd_dev" "$nbd_mnt"
 	fi
-	local mnt="$nspawn_mnt"
+	local mnt="$nbd_mnt"
 
 	# Copy-ins: virt-customize --copy-in src:destdir drops src INTO destdir; the
 	# trailing slash makes cp match that (the destdir exists in the guest root).
@@ -189,11 +238,44 @@ nspawn_provision() {
 		$SUDO rm -f "$mnt$guest"
 	done
 
-	# Release the resources now and disarm the trap; reset the state so a later
-	# EXIT (or a second call) cleans up nothing.
-	trap - EXIT
-	nspawn_cleanup
-	nspawn_mnt="" nspawn_nbd=""
+	# Trim freed blocks now, while mounted, so the compressed delta stays tight
+	# (the nspawn backend skips finalize_delta's appliance fstrim).
+	$SUDO fstrim -v "$mnt" || true
+
+	nbd_release
+}
+
+# Extract the SD card image's two partitions (p1 = FAT boot, p2 = ext4 root) to
+# host files. The virt-customize backend uses guestfish; the nspawn backend maps
+# the raw image via NBD and dd's the partitions out (no appliance).
+extract_sd_parts() {
+	if [ "$backend" = nspawn ]; then
+		extract_sd_parts_nspawn "$@"
+	else
+		extract_sd_parts_guestfish "$@"
+	fi
+}
+
+extract_sd_parts_guestfish() {
+	local img="$1" out_fat="$2" out_root="$3"
+	guestfish --ro -a "$img" <<-GFS
+		run
+		download /dev/sda1 $out_fat
+		download /dev/sda2 $out_root
+	GFS
+}
+
+extract_sd_parts_nspawn() {
+	local img="$1" out_fat="$2" out_root="$3"
+	nbd_connect "$img" raw
+	$SUDO partprobe "$nbd_dev" 2>/dev/null || true
+	udevadm settle 2>/dev/null || true
+	$SUDO dd if="${nbd_dev}p1" of="$out_fat" bs=4M status=none
+	$SUDO dd if="${nbd_dev}p2" of="$out_root" bs=4M status=none
+	# dd ran as root; hand the blobs back to the build user so mtools/qemu-img can
+	# rewrite them unprivileged.
+	$SUDO chown "$(id -u):$(id -g)" "$out_fat" "$out_root"
+	nbd_release
 }
 
 # Dispatch a delta's provisioning to the selected backend.
@@ -391,18 +473,14 @@ boot_fat=""
 if [ "$type" = disk ]; then
 	mv "$base_dl" "$layer0"
 else
-	# Decompress the SD image, then extract its two partitions with guestfish
-	# (no guest boot): p1 = FAT boot, p2 = ext4 root.
+	# Decompress the SD image, then extract its two partitions (no guest boot):
+	# p1 = FAT boot, p2 = ext4 root.
 	sd_img="$work_dir/sd.img"
 	xz -dc "$base_dl" >"$sd_img" || die "failed to decompress sd image"
 	rm -f "$base_dl"
 	root_raw="$work_dir/root.raw"
 	extracted_fat="$work_dir/boot.fat"
-	guestfish --ro -a "$sd_img" <<-GFS
-		run
-		download /dev/sda1 $extracted_fat
-		download /dev/sda2 $root_raw
-	GFS
+	extract_sd_parts "$sd_img" "$extracted_fat" "$root_raw"
 	qemu-img convert -f raw -O qcow2 "$root_raw" "$layer0"
 	rm -f "$sd_img" "$root_raw"
 
