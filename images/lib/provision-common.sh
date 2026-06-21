@@ -41,7 +41,13 @@ DBUSCONF
 # --- treadmill puppet daemon ----------------------------------------------
 # Type=notify: only report started once connected to the supervisor.
 # NotifyAccess=main: ignore status updates from child processes.
-# ExecStart is assembled from the per-image $puppet_daemon_args.
+# ExecStart is assembled from the per-image $puppet_daemon_args (expanded here,
+# when the unit is written). Wrapped in `bash -c 'exec …'` so transports whose
+# args need runtime evaluation work — e.g. the netboot RPi passes
+# `--tcp-control-socket-addr "$(ip route …)"`, which must be resolved at service
+# start, not at build time (the unquoted heredoc leaves the `$(…)` literal in
+# the unit). `exec` keeps tml-puppet as the main PID, so Type=notify/main still
+# sees its sd_notify. NB: $puppet_daemon_args must not contain a single quote.
 cat >/etc/systemd/system/tml-puppet.service <<SERVICE
 [Install]
 WantedBy=multi-user.target
@@ -55,7 +61,7 @@ ExecStartPre=/bin/mkdir -p /run/tml/parameters /home/tml/.ssh
 ExecStartPre=/usr/bin/touch /home/tml/.ssh/authorized_keys
 ExecStartPre=/bin/chmod 500 /home/tml/.ssh
 ExecStartPre=/bin/chown -R tml /home/tml/.ssh
-ExecStart=/usr/local/bin/tml-puppet daemon ${puppet_daemon_args} --authorized-keys-file /home/tml/.ssh/authorized_keys --exit-on-authorized-keys-update-error --job-info-dir /run/tml --parameters-dir /run/tml/parameters
+ExecStart=/bin/bash -c 'exec /usr/local/bin/tml-puppet daemon ${puppet_daemon_args} --authorized-keys-file /home/tml/.ssh/authorized_keys --exit-on-authorized-keys-update-error --job-info-dir /run/tml --parameters-dir /run/tml/parameters'
 Restart=always
 RestartSec=5s
 SERVICE

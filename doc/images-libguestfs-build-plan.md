@@ -114,8 +114,8 @@ images/
     manifest.sh           # NEW: sourced shell (data only)
     provision.sh          # NEW
     gha-runner/provision.sh   # NEW
-  raspbian-13/
-    manifest.sh           # NEW
+  raspberrypios-13/           # Raspberry Pi OS 13 (was the raspbian-13 base)
+    manifest.sh           # NEW: sourced shell (data only)
     provision.sh          # NEW
     gha-runner/provision.sh   # NEW
   util/                   # RENAMED from images/check (was treadmill-image-check / image-check)
@@ -198,15 +198,18 @@ serial_consoles=(ttyS0)
 ```
 
 ```sh
-# images/raspbian-13/manifest.sh
+# images/raspberrypios-13/manifest.sh
 arch="aarch64"
 type="sd"                         # FAT boot partition + ext4 root partition
 title="Raspberry Pi OS 13 (NBD)"
 version="13"
+# No personal mirror: base + aarch64 rustup-init come from upstream stable URLs,
+# sha256-verified on every fetch (same as the Ubuntu base).
 base_image_url="https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2026-04-21/2026-04-21-raspios-trixie-arm64-lite.img.xz"
-base_image_sha256="..."
-base_image_mirror="https://alpha.mirror.svc.schuermann.io/files/treadmill-tb/2026-04-21-raspios-trixie-arm64-lite.img.xz"
-packages=()                       # nbd-client installed from a local .deb in provision.sh
+base_image_sha256="4cd31df026fd82243805a326dc0cafd7383f7e3d30c9413e7044d507aae281e2"
+rustup_init_url="https://static.rust-lang.org/rustup/archive/1.29.0/aarch64-unknown-linux-gnu/rustup-init"
+rustup_init_sha256="9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792"
+packages=(nbd-client)             # pulled from the live archive (apt), not a pinned .deb
 puppet_daemon_args='--transport tcp --tcp-control-socket-addr "$(ip route show 0.0.0.0/0 | cut -d" " -f3 | head -n1):3859"'
 serial_consoles=(ttyAMA0 ttyAMA10)
 nbd_cmdline="console=serial0,115200 ip=dhcp root=/dev/nbd0 rw nbdroot=dhcp,root,nbd0 rootfstype=ext4 fsckfix rootwait net.ifnames=0 loglevel=7"

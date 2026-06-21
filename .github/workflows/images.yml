@@ -16,7 +16,7 @@ on:
         type: boolean
         default: true
       build_raspberrypios_13:
-        description: 'Build the Raspberry Pi OS 13 family (Phase 4 — not yet implemented)'
+        description: 'Build the Raspberry Pi OS 13 family'
         type: boolean
         default: false
       push_to_ghcr:
@@ -57,12 +57,10 @@ jobs:
             add '{"name":"ubuntu-server-2604","runs-on":"ubuntu-latest","puppet":"tml-puppet-static-x86_64"}'
           fi
 
-          # Phase 4 placeholder — the aarch64 Raspberry Pi OS family. Wire this
-          # up once build-image.sh grows its `sd` path (boot FAT + root delta):
-          #   add '{"name":"raspberrypios-13","runs-on":"ubuntu-24.04-arm","puppet":"tml-puppet-static-aarch64"}'
+          # The aarch64 Raspberry Pi OS family builds on a matched-arch hosted
+          # runner (the libguestfs appliance has no cross-arch support).
           if [ "$BUILD_RASPBERRYPIOS_13" = "true" ]; then
-            echo "::error::raspberrypios-13 is not yet implemented (Phase 4: build-image.sh sd path)." >&2
-            exit 1
+            add '{"name":"raspberrypios-13","runs-on":"ubuntu-24.04-arm","puppet":"tml-puppet-static-aarch64"}'
           fi
 
           if [ "$(jq 'length' <<<"$include")" -eq 0 ]; then
@@ -152,10 +150,16 @@ jobs:
             ./images/lib/build-image.sh "${{ matrix.name }}" \
               --puppet "$puppet" --image-util "$image_util" \
               -o out
+          # The overlay backs onto the base build's byte-identical delta; sd
+          # images (Raspberry Pi OS) additionally share its boot blob verbatim.
+          runner_args=(--variant gha-runner --base-delta out.build/delta.qcow2)
+          if [ -f out.build/boot.fat ]; then
+            runner_args+=(--boot-fat out.build/boot.fat)
+          fi
           nix develop .#images --command \
             ./images/lib/build-image.sh "${{ matrix.name }}" \
               --puppet "$puppet" --image-util "$image_util" \
-              --variant gha-runner --base-delta out.build/delta.qcow2 \
+              "${runner_args[@]}" \
               -o out-gha-runner
 
       # One artifact carrying both OCI layouts (base + gha-runner overlay) as
