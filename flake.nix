@@ -45,7 +45,6 @@
         ./nix/apps.nix
         ./nix/puppet-cross-musl.nix
         ./nix/tiny-efi.nix
-        ./nix/images.nix
         ./nix/devshells.nix
         ./nix/checks.nix
         ./nix/docker.nix

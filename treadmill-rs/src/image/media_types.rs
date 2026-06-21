@@ -3,8 +3,8 @@
 //! A Treadmill image is an OCI image manifest in *pure-artifact* form (empty
 //! config + an `artifactType`). Individual blobs carry Treadmill-specific media
 //! types describing their role in a backing chain. See
-//! `doc/oci-image-migration-plan.md` §D1/§D2/§D4. (Image *groups* are no longer
-//! OCI artifacts; see `doc/image-groups-mutable-generations-plan.md`.)
+//! `doc/oci-image-migration-plan.md` §D1/§D2/§D4. (Image *groups* are not OCI
+//! artifacts; they are mutable, generationed switchboard entities.)
 
 /// `artifactType` of a Treadmill image manifest (pure artifact, empty config).
 pub const IMAGE_ARTIFACT_TYPE: &str = "application/vnd.treadmill.image.v1+json";

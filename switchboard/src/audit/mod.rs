@@ -19,8 +19,6 @@
 //! Audit rows are persisted, then published to (2)/(3) only AFTER the
 //! transaction commits -- a rolled-back state change never announces an event.
 //!
-//! See `AUDIT_LOG_PLAN.md` for the full design rationale.
-//!
 //! ## Module layout
 //!
 //! - [`model`]: the typed event vocabulary -- the [`AuditEvent`] trait plus the

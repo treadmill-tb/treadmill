@@ -287,6 +287,5 @@ the full stack instead, use `nix run .#devstack`.
   `doc/images-libguestfs-build-plan.md`. Layouts are assembled + validated by
   the `image-util` binary (`images/util`); the `images` dev shell (§2) has the
   build tooling.
-- Switchboard protocol refactor: `doc/switchboard-protocol-refactor-plan.md`.
 - Schema source of truth: `switchboard/SCHEMA.sql`; migration tooling:
   `switchboard/migrate.sh`.

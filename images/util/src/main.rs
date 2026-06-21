@@ -3,13 +3,12 @@
 //! Two subcommands, sharing the `treadmill_rs::image` model so the producer and
 //! the consumer cannot drift:
 //!
-//! * `assemble` — store blob files into a content-addressed OCI layout and write
-//!   the manifest/index, deriving the backing-chain wiring from layer order +
-//!   role via [`treadmill_rs::image::assemble`].
+//! * `assemble` — store blob files into a content-addressed OCI layout and
+//!   write the manifest/index, deriving the backing-chain wiring from layer
+//!   order + role via [`treadmill_rs::image::assemble`].
 //! * `parse` — reparse ONE built layout through the real
-//!   [`treadmill_rs::image::parse`] view and assert the structural invariants the
-//!   rest of the system relies on (the per-image drift guard, run via the
-//!   `image-check-*` derivations in `nix/images.nix`).
+//!   [`treadmill_rs::image::parse`] view and assert the structural invariants
+//!   the rest of the system relies on.
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};

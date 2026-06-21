@@ -3,7 +3,7 @@
 //! Drives the real authorization-code flow against a `wiremock` server standing
 //! in for GitHub: a real ephemeral Postgres (via `#[sqlx::test]`), the real
 //! reqwest/JSON/transaction/reconcile code paths, and only GitHub's HTTP
-//! responses faked. See `OAUTH_LOGIN_PLAN.md` §8.
+//! responses faked.
 //!
 //! Queries here use sqlx's runtime API (not the `query!` macros) so the test
 //! needs no entry in the offline `.sqlx` cache.

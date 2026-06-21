@@ -7,11 +7,10 @@
 //! [`StubRegistry`] (these tests have no Zot), so validation runs against real
 //! OCI wire-format JSON without a registry daemon.
 //!
-//! Image *groups* are mutable, named switchboard entities (see
-//! `doc/image-groups-mutable-generations-plan.md`): created empty, then given
-//! membership by appending immutable, full-replacement generations whose members
-//! are pre-registered images referenced by id. No registry pull is involved in
-//! group/generation creation.
+//! Image *groups* are mutable, named switchboard entities: created empty, then
+//! given membership by appending immutable, full-replacement generations whose
+//! members are pre-registered images referenced by id. No registry pull is
+//! involved in group/generation creation.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

@@ -3,9 +3,7 @@
 **Status:** proposed roadmap · **Date:** 2026-06-06
 
 > This document is a **one-time implementation roadmap**, not the image-format
-> specification. Following the convention established by
-> `doc/switchboard-protocol-refactor-plan.md`, the specification itself lives
-> **in the code** to avoid drift:
+> specification. The specification itself lives **in the code** to avoid drift:
 >
 > - **Semantics** (media types, annotation keys, layer/backing-chain rules,
 >   selection rules) live as **Rustdoc** on the image types in
@@ -147,8 +145,8 @@ writes, and GC live in the daemon.
 > named* switchboard entities with an append-only series of immutable
 > **generations**; jobs reference a group by `id` (+ frozen generation), not an
 > index digest. The `images` / `image_locations` tables below are unchanged. See
-> `doc/image-groups-mutable-generations-plan.md` and the IMAGE CATALOG section of
-> `switchboard/SCHEMA.sql` for the authoritative model.
+> the IMAGE CATALOG section of `switchboard/SCHEMA.sql` for the authoritative
+> model.
 
 ```
 images(                   -- identity is the digest, NOT a location (D16)
@@ -389,7 +387,6 @@ The canonical registry is **not** protected by supervisor leases. Instead:
   appended as immutable full-replacement **generations**
   (`POST /image-groups/{id}/generations`) whose members are pre-registered images
   referenced by id, with `required_host_tags` from the payload. No registry pull.
-  See `doc/image-groups-mutable-generations-plan.md` §5.
 - `GET /images`, `GET /image-groups`: list/inspect (ownership-scoped).
 
 ### 8.2 Token issuer (D11)
@@ -440,8 +437,7 @@ axes and the `tag_config` string are gone, §10 resolved):
   generation* (`image_group_generation`, pinned at enqueue) whose
   `required_host_tags ⊆ host.tags` (most-specific wins; ties → the member's
   `index`), yielding the concrete `manifest_digest`. The candidate set is the
-  generation's `image_group_members`; see
-  `doc/image-groups-mutable-generations-plan.md`.
+  generation's `image_group_members`.
 
 **Dispatch transaction** (per candidate host, `try_assign`): lock the host row
 `FOR UPDATE` (host-before-job lock order, matching the worker, so no deadlock),

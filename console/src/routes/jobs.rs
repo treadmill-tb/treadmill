@@ -697,9 +697,8 @@ fn render_dispatch(opts: &FormOptions, form: &FormState, error: Option<String>) 
                         }
                         // TODO(console): the host dropdown is currently inert —
                         // its value is ignored and derives no tag requirements.
-                        // Wiring host selection (and deciding host-pinning
-                        // semantics) is a later change; see
-                        // doc/console-job-pages-plan.md §6.
+                        // Wiring it requires a host-pinning semantics decision
+                        // (likely a reserved tml.host/id=<uuid> tag requirement).
                         p.muted { "Note: host selection is not yet wired up; jobs match on the tags below." }
                     }
                 }

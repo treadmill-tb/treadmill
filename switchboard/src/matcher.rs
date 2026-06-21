@@ -1,5 +1,4 @@
-//! Group → concrete image matching
-//! (`doc/image-groups-mutable-generations-plan.md`).
+//! Group → concrete image matching.
 //!
 //! When a job names an image *group*, the switchboard must, after choosing a
 //! host, pick the single group member appropriate for that host. The candidate

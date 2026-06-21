@@ -5,8 +5,7 @@
 //! The catalog stores only references for concrete images — a content-addressed
 //! digest and the `{registry, repository}` locations that serve it — never image
 //! bytes (see `doc/oci-image-migration-plan.md` §5.3/§8). Image *groups* are
-//! mutable, named, generationed entities (see
-//! `doc/image-groups-mutable-generations-plan.md`). These helpers back the
+//! mutable, named, generationed entities. These helpers back the
 //! registration/list routes ([`crate::routes::images`]) and the dispatch-time
 //! image resolver ([`crate::sql::job`]).
 

@@ -10,7 +10,6 @@
 //!      identity, provision the local user, and issue a session token.
 //!   3. `GET /auth/whoami` reports the identity behind a bearer token.
 //!
-//! See `OAUTH_LOGIN_PLAN.md` §5–§7.
 
 use crate::audit::model::Subject as AuditSubject;
 use crate::audit::{self, events};

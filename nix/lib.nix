@@ -188,7 +188,7 @@ let
         "console"
         "treadmill-rs"
       ];
-      # Producer-side OCI layout assemble + validate tool (nix/images.nix).
+      # Producer-side OCI layout assemble + validate tool.
       image-util.members = [
         "images/util"
         "treadmill-rs"

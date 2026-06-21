@@ -50,8 +50,7 @@ pub struct ImageInfo {
 
 /// `POST /image-groups`: create an empty, named image group. The caller becomes
 /// its owner; membership is added afterwards via per-generation snapshots (see
-/// [`CreateGenerationRequest`]). See
-/// `doc/image-groups-mutable-generations-plan.md`.
+/// [`CreateGenerationRequest`]).
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct CreateImageGroupRequest {
     /// The stable, globally-unique moving-target handle a job references (by id).

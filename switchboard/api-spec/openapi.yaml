@@ -312,8 +312,7 @@ paths:
         description: |-
           `POST /image-groups`: create an empty, named image group. The caller becomes
           its owner; membership is added afterwards via per-generation snapshots (see
-          [`CreateGenerationRequest`]). See
-          `doc/image-groups-mutable-generations-plan.md`.
+          [`CreateGenerationRequest`]).
         content:
           application/json:
             schema:
@@ -490,8 +489,7 @@ components:
       description: |-
         `POST /image-groups`: create an empty, named image group. The caller becomes
         its owner; membership is added afterwards via per-generation snapshots (see
-        [`CreateGenerationRequest`]). See
-        `doc/image-groups-mutable-generations-plan.md`.
+        [`CreateGenerationRequest`]).
       type: object
       properties:
         label:

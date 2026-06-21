@@ -439,7 +439,8 @@ impl SqlJob {
             return Ok((spec, Some(rec.id)));
         }
 
-        if let (Some(group_id), Some(generation)) = (self.image_group_id, self.image_group_generation)
+        if let (Some(group_id), Some(generation)) =
+            (self.image_group_id, self.image_group_generation)
         {
             let members =
                 image::members_for_generation(&mut *conn, group_id, generation as u32).await?;

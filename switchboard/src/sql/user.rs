@@ -1,5 +1,5 @@
 //! User provisioning from an external OAuth identity, plus auto-group
-//! reconciliation. See `OAUTH_LOGIN_PLAN.md` §6 and §9.
+//! reconciliation.
 //!
 //! Every state change here rides through the audit chokepoint
 //! ([`audit::transition`]) so the login flow leaves a gapless, attributable
@@ -523,7 +523,7 @@ async fn unique_username(conn: &mut PgConnection, base: &str) -> Result<String, 
 /// of org ids they currently belong to. Computes the add/remove deltas as plain
 /// reads, then routes each individual change through the audit chokepoint so
 /// every membership mutation is logged. Only ever touches `source = 'github_org'`
-/// rows, so manual memberships are preserved. See `OAUTH_LOGIN_PLAN.md` §9.3.
+/// rows, so manual memberships are preserved.
 async fn reconcile_auto_groups(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,

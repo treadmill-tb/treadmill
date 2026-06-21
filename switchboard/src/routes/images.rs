@@ -5,11 +5,10 @@
 //! [`treadmill_rs::image::parse`], and records reference rows — never bytes
 //! (`doc/oci-image-migration-plan.md` §8.1).
 //!
-//! Image *groups* are mutable, named, generationed switchboard entities (see
-//! `doc/image-groups-mutable-generations-plan.md`): a group is created empty, and
-//! its membership is replaced wholesale by appending immutable generations whose
-//! members are pre-registered images referenced by id. No registry pull is
-//! involved.
+//! Image *groups* are mutable, named, generationed switchboard entities: a group
+//! is created empty, and its membership is replaced wholesale by appending
+//! immutable generations whose members are pre-registered images referenced by id.
+//! No registry pull is involved.
 
 use axum::Json;
 use axum::extract::{Path, State};
