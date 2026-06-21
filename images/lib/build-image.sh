@@ -70,6 +70,30 @@ nbd_cleanup() {
 	[ -n "$nbd_mnt" ] && rmdir "$nbd_mnt" 2>/dev/null || true
 }
 
+# qemu-nbd --connect / --disconnect are asynchronous w.r.t. the kernel: connect
+# can return before /sys/block/<dev>/size is populated, and disconnect before the
+# device is fully released, so reusing /dev/nbd0 across a release+reconnect races
+# with teardown. An immediate access then fails ("can't read superblock"). Gate
+# on the sysfs signals: wait for the previous owner to drop (pid gone) before
+# connecting, and for a non-zero size after. The disk path's partprobe/settle hid
+# this for partitions; the sd path mounts the bare device directly with no settle.
+nbd_wait_free() { # <dev>
+	local d="${1#/dev/}" _
+	for _ in $(seq 1 100); do
+		[ -e "/sys/block/$d/pid" ] || return 0
+		sleep 0.1
+	done
+	return 0 # best-effort: proceed even if sysfs still shows it busy
+}
+nbd_wait_ready() { # <dev>
+	local d="${1#/dev/}" _
+	for _ in $(seq 1 100); do
+		[ "$(cat "/sys/block/$d/size" 2>/dev/null || echo 0)" != 0 ] && return 0
+		sleep 0.1
+	done
+	die "nbd device $1 did not become ready"
+}
+
 # Map <image> (qcow2 by default; pass a second arg, e.g. "raw", to force the
 # format) onto /dev/nbd0 and arm teardown. qemu-nbd resolves a qcow2 backing
 # chain transparently. It comes from the toolchain on PATH; resolve it
@@ -82,9 +106,11 @@ nbd_connect() {
 	# max_part>0 so the kernel scans the partition table (the disk type's root is
 	# a partition); the module default of 0 would hide /dev/nbd0p1.
 	$SUDO modprobe nbd max_part=16
+	nbd_wait_free "$nbd_dev"
 	local fmt_args=()
 	[ -n "${2:-}" ] && fmt_args=(--format="$2")
 	$SUDO "$nbd_qemu" --connect="$nbd_dev" "${fmt_args[@]}" "$1"
+	nbd_wait_ready "$nbd_dev"
 }
 
 # Unmount + disconnect whatever nbd_connect (and the caller's mount) acquired,
@@ -222,6 +248,16 @@ nspawn_provision() {
 	fi
 	local mnt="$nbd_mnt"
 
+	# Expose the NBD-mapped root device(s) inside the container so device-probing
+	# tools operate on the real backing device. Notably grub-probe (run by
+	# update-grub in the Ubuntu provision) canonicalizes the root device read from
+	# /proc/self/mountinfo and fails ("failed to get canonical path of
+	# /dev/nbd0p1") when the node is absent from the container's /dev. nspawn
+	# auto-allows bound device nodes in its device cgroup; read access suffices.
+	# disk: the whole device + the root partition; sd: just the whole device.
+	local nspawn_dev_binds=(--bind="$nbd_dev")
+	[ "$t" = disk ] && nspawn_dev_binds+=(--bind="${nbd_dev}p1")
+
 	# For an sd image, loop-mount the boot FAT at the guest's /boot/firmware so the
 	# distro's own kernel/initramfs machinery writes the regenerated initrd (and
 	# any config.txt update) straight onto the boot layer — exactly as on a booted
@@ -267,7 +303,7 @@ nspawn_provision() {
 			$SUDO mv "$resolv" "$resolv_bak"
 		fi
 		$SUDO cp -fL /etc/resolv.conf "$resolv"
-		$SUDO systemd-nspawn --quiet --register=no -D "$mnt" -- \
+		$SUDO systemd-nspawn --quiet --register=no "${nspawn_dev_binds[@]}" -D "$mnt" -- \
 			/bin/sh -c 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"' \
 			_ "${prov_install[@]}"
 		$SUDO rm -f "$resolv"
@@ -291,12 +327,13 @@ nspawn_provision() {
 # /tmp: nspawn overmounts /tmp (and /run) with a fresh tmpfs, which would shadow
 # the installed file (execv ENOENT — the original RPi pre-install CI failure). No
 # --resolv-conf: only the apt phase needs DNS (handled above); the run scripts do
-# not hit the network.
+# not hit the network. The NBD root device(s) are bound in (nspawn_dev_binds, set
+# by the caller) so a script's grub-probe/etc. can reach the real backing device.
 nspawn_run() {
 	local mnt="$1" script="$2" guest
 	guest="/var/tmp/$(basename "$script")"
 	$SUDO install -m 0755 "$script" "$mnt$guest"
-	$SUDO systemd-nspawn --quiet --register=no -D "$mnt" -- "$guest"
+	$SUDO systemd-nspawn --quiet --register=no "${nspawn_dev_binds[@]}" -D "$mnt" -- "$guest"
 	$SUDO rm -f "$mnt$guest"
 }
 
