@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Shared in-guest provisioning for Treadmill images.
 #
 # Runs under `virt-customize --run`: the target root is mounted and the guest
@@ -11,8 +11,15 @@ set -eu
 
 # Manifest-derived values handed in by build-image.sh (the host environment is
 # not forwarded across virt-customize --run): puppet_daemon_args, serial_consoles.
+puppet_daemon_args=""
+declare -a serial_consoles=()
 # shellcheck source=/dev/null
 . /tmp/provision.env
+: "${puppet_daemon_args:?puppet_daemon_args missing from $manifest}"
+if (( ${#serial_consoles[@]} == 0 )); then
+	echo "Error: serial_consoles array is empty in $manifest" >&2
+	exit 1
+fi
 
 # --- treadmill user: passwordless sudo ------------------------------------
 useradd -m -u 1000 -s /bin/bash tml
@@ -107,7 +114,7 @@ SERVICE
 systemctl enable ssh-generate-host-keys.service
 
 # --- serial console autologin for the tml user ----------------------------
-for dev in $serial_consoles; do
+for dev in "${serial_consoles[@]}"; do
 	mkdir -p "/etc/systemd/system/serial-getty@${dev}.service.d"
 	cat >"/etc/systemd/system/serial-getty@${dev}.service.d/override.conf" <<'OVERRIDE'
 [Service]

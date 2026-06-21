@@ -159,11 +159,41 @@ if [ -n "$boot_fat_in" ]; then
 	boot_fat_in="$(cd "$(dirname "$boot_fat_in")" && pwd)/$(basename "$boot_fat_in")"
 fi
 
-# manifest.sh provides: arch type title version base_image_url base_image_sha256
-# packages[] rustup_init_url rustup_init_sha256 puppet_daemon_args
-# serial_consoles[]; sd images also: nbd_cmdline.
+# Variables sourced from the manifest below. Declared here and then checked to
+# be populated to silence shellcheck warnings and prevent accidental drift:
+arch="" type="" title="" version="" base_image_url="" base_image_sha256=""
+rustup_init_url="" rustup_init_sha256="" puppet_daemon_args="" nbd_cmdline=""
+declare -a packages=()
+declare -a serial_consoles=()
+
 # shellcheck source=/dev/null
 source "$manifest"
+
+# Enforce manifest-exported string variables are set and non-empty:
+: "${arch:?arch missing from $manifest}"
+: "${type:?type missing from $manifest}"
+: "${title:?title missing from $manifest}"
+: "${version:?version missing from $manifest}"
+: "${base_image_url:?base_image_url missing from $manifest}"
+: "${base_image_sha256:?base_image_sha256 missing from $manifest}"
+: "${rustup_init_url:?rustup_init_url missing from $manifest}"
+: "${rustup_init_sha256:?rustup_init_sha256 missing from $manifest}"
+: "${puppet_daemon_args:?puppet_daemon_args missing from $manifest}"
+
+# Enforce manifest-provided array variables are populated.
+if (( ${#packages[@]} == 0 )); then
+	echo "Error: packages array is empty in $manifest" >&2
+	exit 1
+fi
+if (( ${#serial_consoles[@]} == 0 )); then
+	echo "Error: serial_consoles array is empty in $manifest" >&2
+	exit 1
+fi
+
+# Enforce manifest-provided conditional variables are populated.
+if [[ "$type" == "sd" ]]; then
+	: "${nbd_cmdline:?nbd_cmdline missing from $manifest for sd type}"
+fi
 
 case "$type" in
 disk | sd) ;;
