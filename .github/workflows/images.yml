@@ -54,13 +54,13 @@ jobs:
           add() { include="$(jq -c --argjson o "$1" '. + [$o]' <<<"$include")"; }
 
           if [ "$BUILD_UBUNTU_SERVER_2604" = "true" ]; then
-            add '{"name":"ubuntu-server-2604","runs-on":"ubuntu-latest","puppet":"tml-puppet-static-x86_64"}'
+            add '{"name":"ubuntu-server-2604","runs-on":"ubuntu-latest","puppet":"tml-puppet-static-x86_64","backend":"nspawn"}'
           fi
 
           # The aarch64 Raspberry Pi OS family builds on a matched-arch hosted
           # runner (the libguestfs appliance has no cross-arch support).
           if [ "$BUILD_RASPBERRYPIOS_13" = "true" ]; then
-            add '{"name":"raspberrypios-13","runs-on":"ubuntu-24.04-arm","puppet":"tml-puppet-static-aarch64"}'
+            add '{"name":"raspberrypios-13","runs-on":"ubuntu-24.04-arm","puppet":"tml-puppet-static-aarch64","backend":"nspawn"}'
           fi
 
           if [ "$(jq 'length' <<<"$include")" -eq 0 ]; then
@@ -117,8 +117,22 @@ jobs:
           cachix push treadmill-tb \
             "${{ steps.bins.outputs.puppet }}" "${{ steps.bins.outputs.image_util }}"
 
-      # Fetch + verify the upstream base, provision a qcow2 overlay delta via
-      # virt-customize (no guest boot), then assemble + validate the OCI layout.
+      # The nspawn backend provisions natively in a systemd-nspawn container over
+      # the qcow2 delta (mapped via qemu-nbd) instead of booting the libguestfs
+      # appliance — full native speed with no /dev/kvm (the aarch64 runner lacks
+      # it; the appliance would otherwise run under TCG). systemd-nspawn comes
+      # from systemd-container; qemu-nbd is already in the `images` devshell.
+      - name: Install nspawn provisioning backend
+        if: ${{ matrix.backend == 'nspawn' }}
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y systemd-container parted
+          sudo modprobe nbd max_part=16
+
+      # Fetch + verify the upstream base, provision a qcow2 overlay delta (via
+      # the selected backend, no guest boot), then assemble + validate the OCI
+      # layout.
       #
       # The libguestfs toolchain comes from the `images` devshell, NOT the distro
       # (apt) libguestfs: the Nix `libguestfs-with-appliance` ships a PREBUILT
@@ -149,6 +163,7 @@ jobs:
           nix develop .#images --command \
             ./images/lib/build-image.sh "${{ matrix.name }}" \
               --puppet "$puppet" --image-util "$image_util" \
+              --backend "${{ matrix.backend }}" \
               -o out
           # The overlay backs onto the base build's byte-identical delta; sd
           # images (Raspberry Pi OS) additionally share its boot blob verbatim.
@@ -159,6 +174,7 @@ jobs:
           nix develop .#images --command \
             ./images/lib/build-image.sh "${{ matrix.name }}" \
               --puppet "$puppet" --image-util "$image_util" \
+              --backend "${{ matrix.backend }}" \
               "${runner_args[@]}" \
               -o out-gha-runner
 

@@ -79,10 +79,137 @@ grow_root_delta() {
 	fi
 }
 
+# --- provisioning backends -------------------------------------------------
+# Both backends apply the same plan to a delta, handed across via these globals
+# the caller sets before calling provision_delta:
+#   prov_copy_in  array of "host-src:guest-destdir" (src dropped INTO destdir)
+#   prov_install  array of apt package names (may be empty)
+#   prov_run      array of host script paths, run in-guest in order
+#   prov_network  "yes"|"no" (only meaningful to virt-customize; nspawn always
+#                 shares the host network namespace)
+# Neither backend forwards the host environment to the run scripts (they source
+# /tmp/provision.env), so the two stay behaviourally identical.
+
+# Default backend: boots the libguestfs appliance (rootless, runs on any host
+# arch). The appliance falls back to TCG when /dev/kvm is absent — slow on the
+# aarch64 hosted runner, which is why CI selects the nspawn backend there.
+virtcustomize_provision() {
+	local delta="$1"
+	local args=(-a "$delta" --memsize 2048 --smp 2)
+	[ "${prov_network:-no}" = yes ] && args+=(--network)
+	local ci
+	for ci in "${prov_copy_in[@]}"; do
+		args+=(--copy-in "${ci%%:*}:${ci#*:}")
+	done
+	if [ "${#prov_install[@]}" -gt 0 ]; then
+		args+=(--install "$(
+			IFS=,
+			echo "${prov_install[*]}"
+		)")
+	fi
+	local r
+	for r in "${prov_run[@]}"; do
+		args+=(--run "$r")
+	done
+	virt-customize "${args[@]}"
+}
+
+# State for nspawn_cleanup, set by nspawn_provision before it acquires each
+# resource. An EXIT trap (not RETURN: under `set -e` a failed command exits the
+# shell outright and RETURN traps are skipped, leaking the NBD device) tears them
+# down. The function clears them again on success.
+nspawn_mnt=""
+nspawn_nbd=""
+nspawn_qemu_nbd=""
+nspawn_cleanup() {
+	[ -n "$nspawn_mnt" ] && $SUDO umount "$nspawn_mnt" 2>/dev/null || true
+	[ -n "$nspawn_nbd" ] && $SUDO "$nspawn_qemu_nbd" --disconnect "$nspawn_nbd" >/dev/null 2>&1 || true
+	[ -n "$nspawn_mnt" ] && rmdir "$nspawn_mnt" 2>/dev/null || true
+}
+
+# --backend nspawn: provision natively in a systemd-nspawn container over the
+# qcow2 delta exposed as an NBD block device — no appliance VM, so it runs at
+# native speed on a matched-arch host with no /dev/kvm (the aarch64 hosted
+# runner). The qcow2 backing chain resolves through NBD (reads fall through to
+# the lower layers, writes land in the delta), exactly as with virt-customize.
+# Needs root for nbd/mount/nspawn; escalates per-op via $SUDO so the rest of the
+# build (and the nix toolchain on PATH) stays unprivileged.
+nspawn_provision() {
+	local delta="$1" t="$2"
+	# qemu-nbd comes from the nix devshell; resolve it absolutely so it survives
+	# sudo's secure_path. systemd-nspawn / mount / etc. are host tools.
+	nspawn_qemu_nbd="$(command -v qemu-nbd)"
+	nspawn_nbd=/dev/nbd0
+	nspawn_mnt="$(mktemp -d)"
+	trap nspawn_cleanup EXIT
+
+	# max_part>0 so the kernel scans the partition table (disk type's root is a
+	# partition); the module's default of 0 would hide /dev/nbd0p1.
+	$SUDO modprobe nbd max_part=16
+	$SUDO "$nspawn_qemu_nbd" --connect="$nspawn_nbd" "$delta"
+
+	# disk: GPT, root is partition 1 (/dev/nbd0p1). sd: the delta is a bare ext4
+	# (layer0 is the extracted root partition), so the device itself is the fs.
+	# Mirrors the disk/sd split in grow_root_delta.
+	if [ "$t" = disk ]; then
+		$SUDO partprobe "$nspawn_nbd" 2>/dev/null || true
+		udevadm settle 2>/dev/null || true
+		$SUDO mount "${nspawn_nbd}p1" "$nspawn_mnt"
+	else
+		$SUDO mount "$nspawn_nbd" "$nspawn_mnt"
+	fi
+	local mnt="$nspawn_mnt"
+
+	# Copy-ins: virt-customize --copy-in src:destdir drops src INTO destdir; the
+	# trailing slash makes cp match that (the destdir exists in the guest root).
+	local ci src dest
+	for ci in "${prov_copy_in[@]}"; do
+		src="${ci%%:*}"
+		dest="${ci#*:}"
+		$SUDO cp -a "$src" "$mnt$dest/"
+	done
+
+	# nspawn shares the host network namespace by default, so apt reaches the
+	# mirror with no extra plumbing.
+	# --register=no keeps this throwaway container off systemd-machined (no dbus
+	# dependency on the runner).
+	if [ "${#prov_install[@]}" -gt 0 ]; then
+		$SUDO systemd-nspawn --quiet --register=no -D "$mnt" -- \
+			/bin/sh -c 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"' \
+			_ "${prov_install[@]}"
+	fi
+
+	# Run each provision script inside the container in order. Copy it in first
+	# (virt-customize --run does this implicitly), then exec it via its shebang.
+	local r guest
+	for r in "${prov_run[@]}"; do
+		guest="/tmp/$(basename "$r")"
+		$SUDO install -m 0755 "$r" "$mnt$guest"
+		$SUDO systemd-nspawn --quiet --register=no -D "$mnt" -- "$guest"
+		$SUDO rm -f "$mnt$guest"
+	done
+
+	# Release the resources now and disarm the trap; reset the state so a later
+	# EXIT (or a second call) cleans up nothing.
+	trap - EXIT
+	nspawn_cleanup
+	nspawn_mnt="" nspawn_nbd=""
+}
+
+# Dispatch a delta's provisioning to the selected backend.
+provision_delta() {
+	if [ "$backend" = nspawn ]; then
+		nspawn_provision "$1" "$2"
+	else
+		virtcustomize_provision "$1"
+	fi
+}
+
 name=""
 puppet=""
 image_util=""
 variant="base"
+backend="virt-customize"
 base_delta=""
 boot_fat_in=""
 out=""
@@ -104,6 +231,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--variant)
 		variant="$2"
+		shift 2
+		;;
+	--backend)
+		backend="$2"
 		shift 2
 		;;
 	--base-delta)
@@ -128,6 +259,21 @@ done
 [ -n "$out" ] || die "missing -o <out-layout-dir>"
 [ -x "$puppet" ] || die "puppet binary not executable: $puppet"
 [ -x "$image_util" ] || die "image-util binary not executable: $image_util"
+
+# The nspawn backend (CI: native-arch, no /dev/kvm) provisions in a container
+# over an NBD-mapped delta; it needs root + its host tools. The default
+# virt-customize backend stays rootless. $SUDO escalates only the privileged
+# ops, so the unprivileged rest of the build keeps the nix toolchain on PATH.
+SUDO=""
+case "$backend" in
+virt-customize) ;;
+nspawn)
+	[ "$(id -u)" = 0 ] || SUDO=sudo
+	command -v systemd-nspawn >/dev/null || die "nspawn backend needs systemd-nspawn (apt: systemd-container)"
+	command -v qemu-nbd >/dev/null || die "nspawn backend needs qemu-nbd"
+	;;
+*) die "unknown --backend: $backend (expected: virt-customize, nspawn)" ;;
+esac
 
 case "$variant" in
 base)
@@ -299,24 +445,19 @@ if [ "$variant" = base ]; then
 	qemu-img create -f qcow2 -b "$layer0" -F qcow2 "$delta" >/dev/null
 	grow_root_delta "$delta" "$type"
 
-	# --install <pkg,pkg,...> only when the manifest lists packages.
-	install_args=()
-	if [ "${#packages[@]}" -gt 0 ]; then
-		install_args=(--install "$(
-			IFS=,
-			echo "${packages[*]}"
-		)")
-	fi
-
-	virt-customize -a "$delta" \
-		--network --memsize 2048 --smp 2 \
-		--copy-in "$puppet":/usr/local/bin \
-		--copy-in "$rustup_init":/opt \
-		--copy-in "$images_dir/lib/expandroot.sh":/opt \
-		--copy-in "$prov_env":/tmp \
-		"${install_args[@]}" \
-		--run "$images_dir/lib/provision-common.sh" \
-		--run "$provision"
+	# Provision via the selected backend: copy in the puppet/rustup/expandroot
+	# payload + the manifest env, install the manifest packages (needs network),
+	# then run the shared + per-image provision scripts.
+	prov_network=yes
+	prov_copy_in=(
+		"$puppet:/usr/local/bin"
+		"$rustup_init:/opt"
+		"$images_dir/lib/expandroot.sh:/opt"
+		"$prov_env:/tmp"
+	)
+	prov_install=("${packages[@]}")
+	prov_run=("$images_dir/lib/provision-common.sh" "$provision")
+	provision_delta "$delta" "$type"
 else
 	# gha-runner overlay: a root layer over the base delta. The OCI chain backs
 	# onto the byte-identical base delta (--base-delta) so it dedupes with the
@@ -330,13 +471,14 @@ else
 
 	qemu-img create -f qcow2 -b "$base_delta_work" -F qcow2 "$delta" >/dev/null
 
-	# No --network / --install / rustup: the overlay only writes the runner units
-	# (the runner itself is downloaded at first boot, see
+	# No network / install / rustup: the overlay only writes the runner units (the
+	# runner itself is downloaded at first boot, see
 	# images/lib/install-gh-actions-runner.sh).
-	virt-customize -a "$delta" \
-		--memsize 2048 --smp 2 \
-		--copy-in "$images_dir/lib/install-gh-actions-runner.sh":/opt \
-		--run "$provision"
+	prov_network=no
+	prov_copy_in=("$images_dir/lib/install-gh-actions-runner.sh:/opt")
+	prov_install=()
+	prov_run=("$provision")
+	provision_delta "$delta" "$type"
 fi
 
 # --- 4. Finalize: trim, detach backing, compress --------------------------

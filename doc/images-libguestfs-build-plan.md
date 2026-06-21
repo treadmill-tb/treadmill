@@ -70,6 +70,24 @@ a new, symmetric `assemble` counterpart to the existing `parse`.
     owed on a real runner / dispatch.
 - **Phase 4 (Raspbian): TODO** — see §9.
 
+> **Note (provisioning backend, 2026-06-21).** `build-image.sh` grew a
+> `--backend virt-customize|nspawn` switch. The default `virt-customize` is
+> unchanged (rootless, boots the libguestfs appliance) and stays the local-dev
+> path. CI now passes `--backend nspawn`: provisioning (copy-ins, `apt`, the
+> `provision-*.sh` runs) happens in a `systemd-nspawn` container over the qcow2
+> delta mapped via `qemu-nbd` — **no appliance VM, so it runs at native speed
+> with no `/dev/kvm`** (the aarch64 hosted runner lacks it; the appliance would
+> otherwise run under TCG). Only the *execution* step moves: the delta/backing
+> chain, `image-util assemble/parse`, and the OCI dedup design are untouched, so
+> base + overlay (built in the same CI run, same backend) still share
+> byte-identical lower layers. `guestfish` partition extraction + `grow_root_delta`
+> still use the appliance, but those are lightweight (one TCG boot, no apt). The
+> nspawn path needs root + the `nbd` module (escalated per-op via `$SUDO`);
+> `systemd-nspawn` comes from the `systemd-container` apt package on the runner,
+> `qemu-nbd` from the `images` devshell. Cross-arch (x86 building aarch64) was
+> considered and rejected: the native-arch runner already gives native speed, so
+> no `qemu-user`/`binfmt`.
+
 ---
 
 ## 1. Decisions (settled)
