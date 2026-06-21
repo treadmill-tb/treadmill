@@ -164,6 +164,7 @@ let
       supervisorShared = [
         "treadmill-rs"
         "control-socket/tcp/server"
+        "connector/local"
         "connector/ws"
         "supervisor/lib"
       ];
