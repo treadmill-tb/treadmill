@@ -165,7 +165,7 @@ grow_root_delta_nspawn() {
 #                   (nspawn only — virt-customize operates on the root delta
 #                   alone and can't mount the separate FAT; empty otherwise)
 # Neither backend forwards the host environment to the run scripts (they source
-# /tmp/provision.env), so the two stay behaviourally identical.
+# /var/tmp/provision.env), so the two stay behaviourally identical.
 
 # Default backend: boots the libguestfs appliance (rootless, runs on any host
 # arch). The appliance falls back to TCG when /dev/kvm is absent — slow on the
@@ -250,17 +250,28 @@ nspawn_provision() {
 		nspawn_run "$mnt" "$s"
 	done
 
-	# nspawn shares the host network namespace by default; --resolv-conf=copy-host
-	# drops the host's working /etc/resolv.conf into the container so apt can
-	# resolve the mirror (the Ubuntu cloud image's /etc/resolv.conf is a symlink to
-	# the systemd-resolved stub, which dangles with no resolved running inside the
-	# container). nspawn restores the image's original resolv.conf on exit.
-	# --register=no keeps this throwaway container off systemd-machined (no dbus
-	# dependency on the runner).
+	# apt needs working DNS, but the Ubuntu cloud image ships /etc/resolv.conf as a
+	# symlink to the systemd-resolved stub (127.0.0.53), which dangles inside the
+	# container (no resolved running). Swap the host's resolv.conf in for the
+	# install, then restore the image's original verbatim. We manage this by hand
+	# rather than via nspawn's --resolv-conf=: copy-host can't write through the
+	# dangling symlink (it stays broken — the original CI failure), and
+	# replace-host bakes the host's file into the shipped image (nspawn does NOT
+	# restore it on exit). nspawn shares the host network namespace, so even a
+	# 127.0.0.53 stub copied from the host resolves here. --register=no keeps this
+	# throwaway container off systemd-machined (no dbus dependency on the runner).
 	if [ "${#prov_install[@]}" -gt 0 ]; then
-		$SUDO systemd-nspawn --quiet --register=no --resolv-conf=copy-host -D "$mnt" -- \
+		local resolv="$mnt/etc/resolv.conf" resolv_bak=""
+		if [ -e "$resolv" ] || [ -L "$resolv" ]; then
+			resolv_bak="$resolv.tml-orig"
+			$SUDO mv "$resolv" "$resolv_bak"
+		fi
+		$SUDO cp -fL /etc/resolv.conf "$resolv"
+		$SUDO systemd-nspawn --quiet --register=no -D "$mnt" -- \
 			/bin/sh -c 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"' \
 			_ "${prov_install[@]}"
+		$SUDO rm -f "$resolv"
+		[ -n "$resolv_bak" ] && $SUDO mv "$resolv_bak" "$resolv"
 	fi
 
 	# Run each provision script inside the container, in order, after install.
@@ -276,13 +287,16 @@ nspawn_provision() {
 }
 
 # Run a host script inside the nspawn container: copy it in (virt-customize --run
-# does this implicitly), exec via its shebang, remove. --resolv-conf=copy-host so
-# any apt the script does can resolve names (restored on exit, see above).
+# does this implicitly), exec via its shebang, remove. Staged under /var/tmp, not
+# /tmp: nspawn overmounts /tmp (and /run) with a fresh tmpfs, which would shadow
+# the installed file (execv ENOENT — the original RPi pre-install CI failure). No
+# --resolv-conf: only the apt phase needs DNS (handled above); the run scripts do
+# not hit the network.
 nspawn_run() {
 	local mnt="$1" script="$2" guest
-	guest="/tmp/$(basename "$script")"
+	guest="/var/tmp/$(basename "$script")"
 	$SUDO install -m 0755 "$script" "$mnt$guest"
-	$SUDO systemd-nspawn --quiet --register=no --resolv-conf=copy-host -D "$mnt" -- "$guest"
+	$SUDO systemd-nspawn --quiet --register=no -D "$mnt" -- "$guest"
 	$SUDO rm -f "$mnt$guest"
 }
 
@@ -572,7 +586,7 @@ if [ "$variant" = base ]; then
 		"$puppet:/usr/local/bin"
 		"$rustup_init:/opt"
 		"$images_dir/lib/expandroot.sh:/opt"
-		"$prov_env:/tmp"
+		"$prov_env:/var/tmp"
 	)
 	# Optional per-image pre-install hook (runs in-guest before apt), e.g. the
 	# RPi sets MODULES=most so nbd-client's initramfs regeneration succeeds.

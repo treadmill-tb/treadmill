@@ -14,7 +14,7 @@ set -eu
 puppet_daemon_args=""
 declare -a serial_consoles=()
 # shellcheck source=/dev/null
-. /tmp/provision.env
+. /var/tmp/provision.env
 : "${puppet_daemon_args:?puppet_daemon_args missing from $manifest}"
 if [[ ${#serial_consoles[@]} -eq 0 ]]; then
 	echo "Error: serial_consoles array is empty in $manifest" >&2
