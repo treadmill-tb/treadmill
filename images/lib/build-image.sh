@@ -181,11 +181,11 @@ source "$manifest"
 : "${puppet_daemon_args:?puppet_daemon_args missing from $manifest}"
 
 # Enforce manifest-provided array variables are populated.
-if (( ${#packages[@]} == 0 )); then
+if [[ ${#packages[@]} -eq 0 ]]; then
 	echo "Error: packages array is empty in $manifest" >&2
 	exit 1
 fi
-if (( ${#serial_consoles[@]} == 0 )); then
+if [[ ${#serial_consoles[@]} -eq 0 ]]; then
 	echo "Error: serial_consoles array is empty in $manifest" >&2
 	exit 1
 fi
