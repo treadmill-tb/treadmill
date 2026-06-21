@@ -301,7 +301,10 @@ fi
 
 if [ "$mode" = "copy" ]; then
   echo "Copying $registry_host/$repo:$ref into the local registry"
-  skopeo --insecure-policy copy --dest-tls-verify=false \
+  skopeo \
+    --registries-conf /dev/null \
+    --insecure-policy copy \
+    --dest-tls-verify=false \
     "docker://$registry_host/$repo:$ref" \
     "docker://$zot_authority/$repo:$ref"
 fi
@@ -309,8 +312,16 @@ fi
 # `skopeo inspect` against the local registry resolves the manifest digest; in
 # sync mode this is also what triggers the on-demand pull-through.
 echo "Resolving $repo:$ref to a manifest digest"
-manifest_digest="$(skopeo inspect --tls-verify=false \
-  --format '{{.Digest}}' "docker://$zot_authority/$repo:$ref")"
+manifest_digest="$(\
+  skopeo inspect \
+    --raw \
+    --registries-conf /dev/null \
+    --tls-verify=false \
+    "docker://$zot_authority/$repo:$ref" \
+  | sha256sum \
+  | awk '{ print "sha256:" $1; }' \
+)"
+echo "$manifest_digest"
 if [ -z "$manifest_digest" ]; then
   echo "Failed to resolve a manifest digest for $repo:$ref." >&2
   exit 1
