@@ -358,7 +358,10 @@ if [ "$enable_supervisor" = 1 ]; then
   fi
   if [ ! -e "$zot_dir/.tml-pushed" ]; then
     echo "Pushing tiny-efi fixture into zot (treadmill/tiny-efi:latest)"
-    skopeo --insecure-policy copy --dest-tls-verify=false \
+    skopeo \
+      --registries-conf /dev/null \
+      --insecure-policy copy \
+      --dest-tls-verify=false \
       "oci:$fixture_layout" \
       "docker://127.0.0.1:$zot_port/treadmill/tiny-efi:latest"
     touch "$zot_dir/.tml-pushed"
@@ -397,12 +400,14 @@ fi
 if [ "$enable_supervisor" = 1 ]; then
   manifest_digest="$(jq -r '.manifests[0].digest' "$fixture_layout/index.json")"
   echo "Registering tiny-efi image ($manifest_digest)"
-  if curl -fsS -X POST "http://127.0.0.1:$sb_port/api/v1/images" \
-       -H "Authorization: Bearer $api_token_bearer" \
-       -H 'content-type: application/json' \
-       -d "{\"registry\":\"127.0.0.1:$zot_port\",\"repository\":\"treadmill/tiny-efi\",\"manifest_digest\":\"$manifest_digest\",\"label\":\"tiny-efi (dev)\"}" \
-       >/dev/null; then
-    echo "  registered."
+  if RESP="$(\
+    curl -fsS -X POST "http://127.0.0.1:$sb_port/api/v1/images" \
+     -H "Authorization: Bearer $api_token_bearer" \
+     -H 'content-type: application/json' \
+     -d "{\"registry\":\"127.0.0.1:$zot_port\",\"repository\":\"treadmill/tiny-efi\",\"manifest_digest\":\"$manifest_digest\",\"label\":\"tiny-efi (dev)\"}" \
+  )"; then
+    tiny_efi_image_id="$(echo "$RESP" | jq -r .id)"
+    echo "  registered as $tiny_efi_image_id"
   else
     echo "  ! image registration failed (continuing)" >&2
   fi
