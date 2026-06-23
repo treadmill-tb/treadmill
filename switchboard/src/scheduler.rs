@@ -313,7 +313,7 @@ mod tests {
              values ($1, $2, $3, null, now(), now() + interval '1 day')",
         )
         .bind(id)
-        .bind(vec![0u8; 128])
+        .bind(vec![0u8; 32])
         .bind(user_id)
         .execute(pool)
         .await?;
@@ -328,9 +328,9 @@ mod tests {
         last_seen: Option<DateTime<Utc>>,
     ) -> anyhow::Result<Uuid> {
         let id = Uuid::new_v4();
-        // `auth_token` is UNIQUE and must be exactly 128 bytes; seed it from the
+        // `auth_token` is UNIQUE and must be exactly 32 bytes; seed it from the
         // host id so multiple hosts in one test don't collide.
-        let mut auth_token = vec![0u8; 128];
+        let mut auth_token = vec![0u8; 32];
         auth_token[..16].copy_from_slice(id.as_bytes());
         sqlx::query(
             "insert into tml_switchboard.hosts \

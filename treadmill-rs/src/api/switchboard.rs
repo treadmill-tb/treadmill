@@ -24,7 +24,7 @@ use uuid::Uuid;
 pub struct AuthToken(
     #[serde_as(as = "Base64")]
     #[schemars(with = "String")]
-    pub [u8; 128],
+    pub [u8; 32],
 );
 impl AuthToken {
     pub fn encode_for_http(self) -> String {

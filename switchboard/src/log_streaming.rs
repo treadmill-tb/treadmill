@@ -22,7 +22,7 @@
 //! The NATS server validates the granted pub/sub scope itself — that is the
 //! "storage enforces the per-job token" property the design relies on.
 //!
-//! The opaque 128-byte API token in [`crate::auth::token`] is unrelated to these
+//! The opaque 32-byte API token in [`crate::auth::token`] is unrelated to these
 //! NATS JWTs; do not conflate them.
 //!
 //! ### Testability

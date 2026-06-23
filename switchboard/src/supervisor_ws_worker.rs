@@ -1297,7 +1297,7 @@ mod tests {
              values ($1, $2, $3, null, now(), now() + interval '1 day')",
         )
         .bind(token_id)
-        .bind(vec![0u8; 128])
+        .bind(vec![0u8; 32])
         .bind(user_id)
         .execute(pool)
         .await?;

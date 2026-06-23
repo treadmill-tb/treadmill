@@ -176,7 +176,7 @@ pub async fn try_authenticate_for_host(
 
     let (flag, token_vec) = match maybe_record {
         Some(token_vec) => (subtle::Choice::from(1), token_vec.auth_token),
-        None => (subtle::Choice::from(0), vec![0u8; 128]),
+        None => (subtle::Choice::from(0), vec![0u8; 32]),
     };
 
     let sec_token =

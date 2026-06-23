@@ -79,9 +79,9 @@ async fn mock_login_token(client: &reqwest::Client, addr: SocketAddr, identity: 
 async fn seed_live_host(pool: &PgPool, name: &str, tags: &[&str], target_tags: &[&str]) -> Uuid {
     let host_id = Uuid::new_v4();
     let tags: Vec<String> = tags.iter().map(|s| s.to_string()).collect();
-    // A unique 128-byte auth token (the column is `unique`); the first bytes
+    // A unique 32-byte auth token (the column is `unique`); the first bytes
     // encode the host id so concurrent seeds in one test never collide.
-    let mut auth_token = vec![0u8; 128];
+    let mut auth_token = vec![0u8; 32];
     auth_token[..16].copy_from_slice(host_id.as_bytes());
 
     sqlx::query(

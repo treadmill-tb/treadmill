@@ -138,7 +138,7 @@ CREATE TABLE tml_switchboard.api_tokens (
     comment text,
     created_ip text,
     created_port integer,
-    CHECK (octet_length(token) = 128)
+    CHECK (octet_length(token) = 32)
 );
 
 
@@ -179,7 +179,7 @@ CREATE TABLE tml_switchboard.hosts (
     current_job uuid,
     worker_instance_id bigint NOT NULL DEFAULT 0,
     last_seen_at timestamp with time zone,
-    CHECK (octet_length(auth_token) = 128),
+    CHECK (octet_length(auth_token) = 32),
     CHECK (worker_instance_id >= 0)
 );
 

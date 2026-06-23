@@ -41,7 +41,7 @@ impl Display for Revocation {
 /// Minimal information about a token (does not include actual token).
 #[derive(Debug, Clone)]
 pub struct SqlApiTokenMetadata {
-    /// The token ID (which is NOT the secret 128-byte token itself, but rather the label of that
+    /// The token ID (which is NOT the secret 32-byte token itself, but rather the label of that
     /// token within the system).
     pub token_id: Uuid,
     /// If this is `Some`, then the token was at some prior time revoked; the information inside the
@@ -126,7 +126,7 @@ impl Transition for IssueSessionToken {
         _w: &WriteToken,
     ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
         // Time-ordered (v7) for primary-key insert locality. This is only the
-        // token's identifier; the token *secret* is the separate 128-byte
+        // token's identifier; the token *secret* is the separate 32-byte
         // `SecurityToken` generated below, so v7's embedded timestamp leaks
         // nothing sensitive.
         let token_id = Uuid::now_v7();
