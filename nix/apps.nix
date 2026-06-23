@@ -1,13 +1,17 @@
-_: {
+{ inputs, ... }:
+{
   perSystem =
     {
       pkgs,
+      system,
       self',
       ...
     }:
     let
       inherit (pkgs) lib;
       inherit (pkgs.stdenv) isLinux;
+
+      cmn = import ./lib.nix { inherit inputs system pkgs; };
 
       # The committed switchboard OpenAPI snapshot. Pinned into the store so the
       # app works from a clean checkout; override by passing a path argument
@@ -194,6 +198,35 @@ _: {
           exec ${../tools/local-supervisor.sh} "$@"
         '';
       };
+
+      # Regenerate the committed `.sqlx` query cache that the `SQLX_OFFLINE`
+      # builds (CI, `nix build`) compile against, after editing a
+      # `query!`/`query_as!` call.
+      #
+      # Re-uses the database shell's `ephemeralPostgresHook`.
+      switchboard-sqlx-prepare = pkgs.writeShellApplication {
+        name = "switchboard-sqlx-prepare";
+        runtimeInputs = with pkgs; [
+          postgresql
+          sqlx-cli
+          coreutils
+        ];
+        text = ''
+          set -euo pipefail
+
+          # Spin up an ephemeral Postgres and export DATABASE_URL; the watcher
+          # this forks tears the cluster down when the script exits.
+          ${cmn.ephemeralPostgresHook}
+
+          # Apply the migrations to the fresh DB.
+          cd switchboard && sqlx migrate run --source migrations && cd ..
+
+          # Force a full recompile so the prepare step collects ALL queries,
+          # then write the root /.sqlx cache.
+          cargo clean -p treadmill-switchboard
+          cargo sqlx prepare --workspace -- --all-targets
+        '';
+      };
     in
     {
       apps.view-openapi = {
@@ -212,6 +245,12 @@ _: {
         type = "app";
         program = "${qemu-supervisor-local}/bin/treadmill-qemu-supervisor-local";
         meta.description = "Run the QEMU supervisor standalone against a local zot (no switchboard)";
+      };
+
+      apps.switchboard-sqlx-prepare = {
+        type = "app";
+        program = "${switchboard-sqlx-prepare}/bin/switchboard-sqlx-prepare";
+        meta.description = "Regenerate the committed root .sqlx query cache via the database devshell";
       };
     };
 }

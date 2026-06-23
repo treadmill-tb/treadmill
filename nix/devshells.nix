@@ -81,41 +81,9 @@
             sqlx-cli
           ]);
 
-        shellHook = defaultShell.shellHook + ''
-          export PG_BASE_DIR="$(mktemp -d /tmp/tmlswbmigratedb-XXXXX)"
-
-          echo "Initializing new Postgres database in $PG_BASE_DIR"
-          initdb -D "$PG_BASE_DIR"
-
-          pg_ctl -D "$PG_BASE_DIR" -l "$PG_BASE_DIR/log" \
-            -o "-h ''' --unix_socket_directories='$PG_BASE_DIR'" start
-
-          # Tear down Postgres and its scratch dir once the shell is gone. A
-          # plain `trap ... EXIT` is not enough: `nix develop -c CMD` execs the
-          # command, replacing the shell that holds the trap, so it never fires
-          # and the detached pg_ctl daemon is orphaned in /tmp. Instead, fork a
-          # watcher keyed on this shell's PID. exec preserves the PID, so the
-          # watcher fires on every exit path -- interactive exit, `-c`, even a
-          # killed terminal -- and only ever touches its own cluster, so
-          # concurrent database shells don't clean up each other.
-          __tml_db_pid=$$
-          (
-            while kill -0 "$__tml_db_pid" 2>/dev/null; do sleep 1; done
-            pg_ctl -D "$PG_BASE_DIR" stop -m immediate >/dev/null 2>&1
-            rm -rf "$PG_BASE_DIR"
-          ) &
-          disown
-
-          export PGHOST="$PG_BASE_DIR"
-          export PGHOST_URIENCODE="$(printf '%s' "$PGHOST" | ${pkgs.jq}/bin/jq -sRr @uri)"
-          export PGUSER="$(whoami)"
-          export PGDATABASE="postgres"
-          export DATABASE_URL="postgresql://''${PGUSER}@''${PGHOST_URIENCODE}/''${PGDATABASE}"
-
-          export TML_DATABASE__HOST="$PGHOST"
-          export TML_DATABASE__DATABASE="$PGDATABASE"
-          export TML_DATABASE__USER="$PGUSER"
-        '';
+        # Bring up the throwaway Postgres cluster + DATABASE_URL via the shared
+        # snippet (also used by the `switchboard-sqlx-prepare` app).
+        shellHook = defaultShell.shellHook + cmn.ephemeralPostgresHook;
       };
 
       # Image-build shell: the libguestfs pipeline tooling

@@ -275,6 +275,49 @@ let
   # Vendored Project Zot registry (see nix/pkgs/zot.nix) — the per-server store
   # daemon / pull-through cache for the OCI image migration.
   zot = pkgs.callPackage ./pkgs/zot.nix { };
+
+  # Shell snippet to run a throwaway Postgres cluster in a fresh temp
+  # dir. Exports DATABASE_URL (+ the PG* / TML_DATABASE__* vars) pointing at it,
+  # and forks a PID-keyed watcher that tears the cluster down when the owning
+  # process exits.
+  ephemeralPostgresHook = ''
+    PG_BASE_DIR="$(mktemp -d /tmp/tmlswbmigratedb-XXXXX)"
+    export PG_BASE_DIR
+
+    echo "Initializing new Postgres database in $PG_BASE_DIR"
+    initdb -D "$PG_BASE_DIR"
+
+    pg_ctl -D "$PG_BASE_DIR" -l "$PG_BASE_DIR/log" \
+      -o "-h ''' --unix_socket_directories='$PG_BASE_DIR'" start
+
+    # Tear down Postgres and its scratch dir once the owning process is gone. A
+    # plain `trap ... EXIT` is not enough: `nix develop -c CMD` execs the
+    # command, replacing the shell that holds the trap, so it never fires and
+    # the detached pg_ctl daemon is orphaned in /tmp. Instead, fork a watcher
+    # keyed on this process's PID. exec preserves the PID, so the watcher fires
+    # on every exit path -- interactive exit, `-c`, even a killed terminal --
+    # and only ever touches its own cluster, so concurrent users don't clean up
+    # each other.
+    __tml_db_pid=$$
+    (
+      while kill -0 "$__tml_db_pid" 2>/dev/null; do sleep 1; done
+      pg_ctl -D "$PG_BASE_DIR" stop -m immediate >/dev/null 2>&1
+      rm -rf "$PG_BASE_DIR"
+    ) &
+    disown
+
+    export PGHOST="$PG_BASE_DIR"
+    PGHOST_URIENCODE="$(printf '%s' "$PGHOST" | ${pkgs.jq}/bin/jq -sRr @uri)"
+    export PGHOST_URIENCODE
+    PGUSER="$(whoami)"
+    export PGUSER
+    export PGDATABASE="postgres"
+    export DATABASE_URL="postgresql://''${PGUSER}@''${PGHOST_URIENCODE}/''${PGDATABASE}"
+
+    export TML_DATABASE__HOST="$PGHOST"
+    export TML_DATABASE__DATABASE="$PGDATABASE"
+    export TML_DATABASE__USER="$PGUSER"
+  '';
 in
 {
   inherit
@@ -287,5 +330,6 @@ in
     workspaceDeps
     testArtifacts
     zot
+    ephemeralPostgresHook
     ;
 }
