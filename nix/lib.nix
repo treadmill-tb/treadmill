@@ -7,8 +7,8 @@ let
   inherit (pkgs) lib;
   inherit (inputs) crane fenix;
 
-  toolchain = fenix.packages.${system}.stable.toolchain;
-  craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
+  rustToolchain = fenix.packages.${system}.stable.toolchain;
+  craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
   workspaceRoot = ../.;
 
@@ -321,7 +321,7 @@ let
 in
 {
   inherit
-    toolchain
+    rustToolchain
     craneLib
     src
     cargoCommonArgs

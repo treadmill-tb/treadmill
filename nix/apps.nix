@@ -207,12 +207,20 @@
       switchboard-sqlx-prepare = pkgs.writeShellApplication {
         name = "switchboard-sqlx-prepare";
         runtimeInputs = with pkgs; [
+          cmn.rustToolchain
           postgresql
           sqlx-cli
           coreutils
+          pkg-config
         ];
         text = ''
           set -euo pipefail
+
+          # Need explicit export, runtimeInputs only adds bin output:
+          export OPENSSL_DIR="${pkgs.openssl.dev}"
+          export OPENSSL_LIB_DIR="${pkgs.openssl.out}/lib"
+          export PKG_CONFIG_PATH="${pkgs.openssl.dev}/lib/pkgconfig:''${PKG_CONFIG_PATH:-}"
+          export LD_LIBRARY_PATH="${pkgs.openssl.out}/lib:''${LD_LIBRARY_PATH:-}"
 
           # Spin up an ephemeral Postgres and export DATABASE_URL; the watcher
           # this forks tears the cluster down when the script exits.
