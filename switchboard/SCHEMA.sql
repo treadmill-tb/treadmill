@@ -372,7 +372,7 @@ CREATE TYPE tml_switchboard.job_state AS enum(
     'queued',
     -- Bound to a host but StartJob not yet sent; no longer eligible for
     -- (re)scheduling. dispatched_on_host_id set, started_at null.
-    'scheduled',
+    'assigned',
     -- Assigned & starting up; carries initializing_stage.
     'initializing',
     -- Assigned & running.
@@ -483,8 +483,8 @@ CREATE TABLE tml_switchboard.jobs (
     -- ID of the host the job was dispatched to, so the switchboard can
     -- discern job failure on supervisor reconnection after a dual failure.
     dispatched_on_host_id uuid,
-    -- SSH endpoints that this job is reachable under, populated once scheduled on
-    -- a host that exposes endpoints.
+    -- SSH endpoints that this job is reachable under, populated once assigned
+    -- to a host that exposes endpoints.
     ssh_endpoints tml_switchboard.ssh_endpoint[],
     -- User-requested cancellation signal: the DB side of user-cancel. When set,
     -- the assigned job's worker converges the job to `finalized` with
@@ -529,13 +529,13 @@ CREATE TABLE tml_switchboard.jobs (
     ),
     -- Restart count >= 0
     CONSTRAINT valid_restart_policy CHECK ((restart_policy).remaining_restart_count >= 0),
-    -- A host is bound from `scheduled` onwards (through `finalized`);
+    -- A host is bound from `assigned` onwards (through `finalized`);
     -- `dispatched_on_host_id` tracks that binding for the assigned,
     -- not-yet-terminal lifecycle states.
     CONSTRAINT dispatched_host_iso_assigned CHECK (
         (dispatched_on_host_id IS NOT NULL) = (
             job_state IN (
-                'scheduled',
+                'assigned',
                 'initializing',
                 'ready',
                 'terminating'

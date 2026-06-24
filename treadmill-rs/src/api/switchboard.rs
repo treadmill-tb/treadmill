@@ -133,7 +133,7 @@ pub enum JobInitSpec {
 
 /// The execution-lifecycle state of a job, mirroring the
 /// `tml_switchboard.job_state` DB enum. This is the switchboard's own view of
-/// where a job is in its lifecycle (queued → scheduled → executing → finalized),
+/// where a job is in its lifecycle (queued → assigned → executing → finalized),
 /// distinct from the supervisor-reported
 /// [`RunningJobState`](crate::api::switchboard_supervisor::RunningJobState).
 #[derive(schemars::JsonSchema, Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -142,7 +142,7 @@ pub enum JobState {
     /// Enqueued, awaiting placement onto a host by the scheduler.
     Queued,
     /// Placed on a host but not yet reported as executing.
-    Scheduled,
+    Assigned,
     /// The host is bringing the job up (see
     /// [`JobInitializingStage`](crate::api::switchboard_supervisor::JobInitializingStage)).
     Initializing,
@@ -180,7 +180,7 @@ pub struct JobRequest {
     pub parameters: HashMap<String, ParameterValue>,
 
     /// Host eligibility: the set of tags the chosen host must carry (as a
-    /// superset) for this job to be scheduled onto it. Tags are opaque strings
+    /// superset) for this job to be assigned to it. Tags are opaque strings
     /// (`key=value` pairs or bare flags, by convention only), matched by
     /// containment against the host's tags.
     #[serde(default)]

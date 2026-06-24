@@ -293,7 +293,7 @@ pub enum JobInitializingStage {
 /// # Mapping to the DB `job_state`
 ///
 /// The DB `job_state` enum (`switchboard/SCHEMA.sql`) is a superset of this one:
-/// it adds the switchboard-owned bookends `queued` and `scheduled` (before a
+/// it adds the switchboard-owned bookends `queued` and `assigned` (before a
 /// supervisor reports anything) and `finalized` (after termination). The
 /// assigned, supervisor-owned sub-states map one-to-one:
 ///

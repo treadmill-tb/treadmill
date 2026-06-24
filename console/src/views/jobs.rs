@@ -15,7 +15,7 @@ use uuid::Uuid;
 pub fn job_state_label(state: JobState) -> &'static str {
     match state {
         JobState::Queued => "queued",
-        JobState::Scheduled => "scheduled",
+        JobState::Assigned => "assigned",
         JobState::Initializing => "initializing",
         JobState::Ready => "ready",
         JobState::Terminating => "terminating",
@@ -27,7 +27,7 @@ pub fn job_state_label(state: JobState) -> &'static str {
 /// stylesheet can color it.
 pub fn job_state_badge(state: JobState) -> Markup {
     let class = match state {
-        JobState::Queued | JobState::Scheduled => "state-pending",
+        JobState::Queued | JobState::Assigned => "state-pending",
         JobState::Initializing | JobState::Terminating => "state-busy",
         JobState::Ready => "state-ready",
         JobState::Finalized => "state-done",

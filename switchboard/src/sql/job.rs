@@ -23,7 +23,7 @@ pub mod parameters;
 #[sqlx(type_name = "tml_switchboard.job_state", rename_all = "snake_case")]
 pub enum SqlJobState {
     Queued,
-    Scheduled,
+    Assigned,
     Initializing,
     Ready,
     Terminating,
@@ -33,7 +33,7 @@ impl From<SqlJobState> for JobState {
     fn from(value: SqlJobState) -> Self {
         match value {
             SqlJobState::Queued => JobState::Queued,
-            SqlJobState::Scheduled => JobState::Scheduled,
+            SqlJobState::Assigned => JobState::Assigned,
             SqlJobState::Initializing => JobState::Initializing,
             SqlJobState::Ready => JobState::Ready,
             SqlJobState::Terminating => JobState::Terminating,
@@ -595,7 +595,7 @@ impl SqlJob {
     ///
     /// User-cancel takes precedence over an also-expired deadline. Returns `None`
     /// for a job that should keep running — including a not-yet-started
-    /// (`scheduled`) job that is not canceled, since queue-timeout is the
+    /// (`assigned`) job that is not canceled, since queue-timeout is the
     /// scheduler's concern, not the worker's.
     pub fn switchboard_stop_reason(&self, now: DateTime<Utc>) -> Option<SqlTerminationReason> {
         if self.cancel_requested_at.is_some() {
@@ -1025,7 +1025,7 @@ pub enum CancelOutcome {
 ///   - `finalized` (or missing) → no-op ([`CancelOutcome::AlreadyFinalized`]);
 ///   - `queued` → finalized as `user_canceled` now, since no host is involved
 ///     ([`CancelOutcome::FinalizedNow`]);
-///   - otherwise (dispatched: `scheduled`/`initializing`/`ready`/`terminating`)
+///   - otherwise (dispatched: `assigned`/`initializing`/`ready`/`terminating`)
 ///     → sets `cancel_requested_at` idempotently so the host's worker stops and
 ///     finalizes it ([`CancelOutcome::SignalRequested`]).
 ///
@@ -1073,7 +1073,7 @@ pub async fn request_cancel(
             .await?;
             Ok(CancelOutcome::FinalizedNow)
         }
-        SqlJobState::Scheduled
+        SqlJobState::Assigned
         | SqlJobState::Initializing
         | SqlJobState::Ready
         | SqlJobState::Terminating => {
@@ -1129,7 +1129,7 @@ pub async fn request_cancel(
 //         task_exit_status as "task_exit_status: _", exit_message, terminated_at,
 //         last_updated_at
 //         from tml_switchboard.jobs
-//         where job_state in ('scheduled', 'initializing', 'ready', 'terminating');
+//         where job_state in ('assigned', 'initializing', 'ready', 'terminating');
 //         "#
 //     )
 //     .fetch_all(conn)
@@ -1168,7 +1168,7 @@ pub async fn request_cancel(
 /// one (see the `RunningJobState` Rustdoc on the `Terminated` fold).
 ///
 /// `started_at` is back-filled to `at` if it was null (e.g. adopting `ready`
-/// over a still-`scheduled` row), satisfying the `started_at_iso_executing`
+/// over a still-`assigned` row), satisfying the `started_at_iso_executing`
 /// CHECK. Idempotent: re-adopting the same state is a harmless rewrite.
 ///
 /// Must be called inside the worker's `with_txn` so the takeover/staleness
@@ -1207,7 +1207,7 @@ pub async fn set_running_state(
 ///
 /// The executing states (`Initializing`/`Ready`/`Terminating`) go through
 /// [`set_running_state`] (which back-fills `started_at`, so adopting over a
-/// still-`scheduled` row is valid). `Terminated` finalizes the job via
+/// still-`assigned` row is valid). `Terminated` finalizes the job via
 /// [`finalize_terminated`] (`termination_reason = workload_exited`, no restart):
 /// in that case the function returns `true`, signalling the caller it must
 /// `StopJob`-ack so the supervisor can release its retained terminal record. The

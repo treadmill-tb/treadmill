@@ -347,7 +347,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     ///
     /// Let `J_sb = hosts.current_job`, `S = its job_state`, and `J_sup` = the
     /// reported `OngoingJob` id, if any. The convergence table, split by `S`
-    /// because a never-started (`scheduled`), a was-running
+    /// because a never-started (`assigned`), a was-running
     /// (`initializing`/`ready`/`terminating`), and an already-terminal
     /// (`finalized`) job each mean something different when the supervisor is
     /// `Idle`:
@@ -356,9 +356,9 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// |--------------------|------------------------|------------|
     /// | none               | `Idle`                 | aligned; no action |
     /// | none               | `OngoingJob(J)`        | zombie → `StopJob(J)` |
-    /// | `(J, scheduled)`   | `Idle`                 | not started yet → `StartJob(J)` (idempotent re-send; no DB change) |
-    /// | `(J, scheduled)`   | `OngoingJob(J)`        | picked up → adopt reported `job_state` |
-    /// | `(J, scheduled)`   | `OngoingJob(J'≠J)`     | foreign zombie → `StopJob(J')`; leave `J` scheduled for the next pass to start |
+    /// | `(J, assigned)`   | `Idle`                 | not started yet → `StartJob(J)` (idempotent re-send; no DB change) |
+    /// | `(J, assigned)`   | `OngoingJob(J)`        | picked up → adopt reported `job_state` |
+    /// | `(J, assigned)`   | `OngoingJob(J'≠J)`     | foreign zombie → `StopJob(J')`; leave `J` assigned for the next pass to start |
     /// | `(J, running)`     | `Idle`                 | dropped → finalize `host_dropped_job` (+ `RestartPolicy`) |
     /// | `(J, running)`     | `OngoingJob(J)`        | adopt reported `job_state`; a `Terminated` finalizes + `StopJob(J)` ack |
     /// | `(J, running)`     | `OngoingJob(J'≠J)`     | finalize `J` dropped (+ `RestartPolicy`); `StopJob(J')` |
@@ -545,10 +545,10 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                             }
                         } else {
                             match (job.job_state(), reported) {
-                                // Scheduled + Idle: the supervisor hasn't picked it
+                                // Assigned + Idle: the supervisor hasn't picked it
                                 // up yet — (re)dispatch it. No DB change; the next
                                 // pass adopts the reported running state.
-                                (SqlJobState::Scheduled, ReportedSupervisorStatus::Idle) => {
+                                (SqlJobState::Assigned, ReportedSupervisorStatus::Idle) => {
                                     let msg = sql::job::build_start_job_message(
                                         &job,
                                         txn,
@@ -559,11 +559,11 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                                     Some(SwitchboardToSupervisor::StartJob(msg))
                                 }
 
-                                // Scheduled + the supervisor reports *this* job: it
+                                // Assigned + the supervisor reports *this* job: it
                                 // picked it up — adopt the reported running state
-                                // (scheduled → initializing/ready/...).
+                                // (assigned → initializing/ready/...).
                                 (
-                                    SqlJobState::Scheduled,
+                                    SqlJobState::Assigned,
                                     ReportedSupervisorStatus::OngoingJob {
                                         job_id: j_sup,
                                         job_state,
@@ -577,11 +577,11 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                                     ))
                                 }
 
-                                // Scheduled, but the supervisor is busy with some
+                                // Assigned, but the supervisor is busy with some
                                 // *other* job: that one is a zombie. Stop it and
-                                // leave `id` scheduled for the next pass to start.
+                                // leave `id` assigned for the next pass to start.
                                 (
-                                    SqlJobState::Scheduled,
+                                    SqlJobState::Assigned,
                                     ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. },
                                 ) => Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
                                     job_id: j_sup,
@@ -1325,7 +1325,7 @@ mod tests {
     }
 
     /// Insert a job already bound to `host_id` in the given `job_state`
-    /// (e.g. `"scheduled"`, `"ready"`). `started_at` is set iff the state is one
+    /// (e.g. `"assigned"`, `"ready"`). `started_at` is set iff the state is one
     /// of the executing states, matching the `started_at_iso_executing` CHECK.
     /// `remaining_restarts` seeds the restart policy (cases 3/5 honor it).
     async fn insert_job(
@@ -2106,7 +2106,7 @@ mod tests {
         let user_id = insert_user(&pool).await?;
         let token_id = insert_token(&pool, user_id).await?;
         // Bound but not yet started; the supervisor reports it is now running.
-        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
         set_current_job(&pool, host_id, Some(job_id)).await?;
 
         let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
@@ -2701,17 +2701,17 @@ mod tests {
         Ok((digest, registry, repository))
     }
 
-    /// Scheduled + the supervisor is idle: the job hasn't been picked up yet, so
-    /// the worker dispatches `StartJob`. The DB stays `scheduled` (the send is
+    /// Assigned + the supervisor is idle: the job hasn't been picked up yet, so
+    /// the worker dispatches `StartJob`. The DB stays `assigned` (the send is
     /// idempotent; a later pass adopts the reported running state), and the
     /// emitted message carries the scheduler-resolved image + its locations.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn reconcile_scheduled_idle_dispatches_start_job(pool: PgPool) -> anyhow::Result<()> {
+    async fn reconcile_assigned_idle_dispatches_start_job(pool: PgPool) -> anyhow::Result<()> {
         let host_id = insert_host(&pool).await?;
         let user_id = insert_user(&pool).await?;
         let token_id = insert_token(&pool, user_id).await?;
-        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
         set_current_job(&pool, host_id, Some(job_id)).await?;
         let (digest, registry, repository) = register_resolved_image(&pool, job_id).await?;
 
@@ -2723,25 +2723,25 @@ mod tests {
         worker
             .reconcile()
             .await
-            .expect("scheduled + idle reconcile should succeed");
+            .expect("assigned + idle reconcile should succeed");
 
         assert_eq!(
             job_state_of(&pool, job_id).await?,
-            "scheduled",
-            "scheduled + idle: StartJob must not transition the DB state"
+            "assigned",
+            "assigned + idle: StartJob must not transition the DB state"
         );
         assert_eq!(
             current_job_of(&pool, host_id).await?,
             Some(job_id),
-            "scheduled + idle: the assignment must be retained"
+            "assigned + idle: the assignment must be retained"
         );
         match decode_outbound(
             from_worker
                 .try_recv()
-                .expect("scheduled + idle: a StartJob must be emitted"),
+                .expect("assigned + idle: a StartJob must be emitted"),
         ) {
             SwitchboardToSupervisor::StartJob(m) => {
-                assert_eq!(m.job_id, job_id, "StartJob must target the scheduled job");
+                assert_eq!(m.job_id, job_id, "StartJob must target the assigned job");
                 match m.image_spec {
                     ImageSpecification::Image {
                         manifest_digest,
@@ -2760,23 +2760,21 @@ mod tests {
                 assert!(m.ssh_keys.is_empty(), "insert_job seeds no ssh keys");
                 assert!(m.parameters.is_empty(), "insert_job seeds no parameters");
             }
-            other => panic!("scheduled + idle: expected StartJob, got {other:?}"),
+            other => panic!("assigned + idle: expected StartJob, got {other:?}"),
         }
         Ok(())
     }
 
-    /// Scheduled, but the supervisor is busy with some *other* job: that job is a
-    /// zombie to stop, while the scheduled job is left untouched for the next
+    /// Assigned, but the supervisor is busy with some *other* job: that job is a
+    /// zombie to stop, while the assigned job is left untouched for the next
     /// pass to start (no StartJob this pass, no DB transition).
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn reconcile_scheduled_foreign_zombie_keeps_scheduled(
-        pool: PgPool,
-    ) -> anyhow::Result<()> {
+    async fn reconcile_assigned_foreign_zombie_keeps_assigned(pool: PgPool) -> anyhow::Result<()> {
         let host_id = insert_host(&pool).await?;
         let user_id = insert_user(&pool).await?;
         let token_id = insert_token(&pool, user_id).await?;
-        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
         set_current_job(&pool, host_id, Some(job_id)).await?;
 
         let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
@@ -2791,12 +2789,12 @@ mod tests {
         worker
             .reconcile()
             .await
-            .expect("scheduled + foreign zombie reconcile should succeed");
+            .expect("assigned + foreign zombie reconcile should succeed");
 
         assert_eq!(
             job_state_of(&pool, job_id).await?,
-            "scheduled",
-            "the scheduled job must be left scheduled for the next pass"
+            "assigned",
+            "the assigned job must be left assigned for the next pass"
         );
         assert_eq!(
             current_job_of(&pool, host_id).await?,
@@ -2825,7 +2823,7 @@ mod tests {
         let mut conn = pool.acquire().await?;
 
         // Concrete image: resolved digest + its locations.
-        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
         let (digest, _registry, _repository) = register_resolved_image(&pool, job_id).await?;
         let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
         let msg = sql::job::build_start_job_message(&job, &mut conn, None)
@@ -2896,7 +2894,7 @@ mod tests {
         let token_id = insert_token(&pool, user_id).await?;
         let mut conn = pool.acquire().await?;
 
-        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
         register_resolved_image(&pool, job_id).await?;
         let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
 
@@ -2975,7 +2973,7 @@ mod tests {
         let host_id = insert_host(&pool).await?;
         let user_id = insert_user(&pool).await?;
         let token_id = insert_token(&pool, user_id).await?;
-        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
         set_current_job(&pool, host_id, Some(job_id)).await?;
 
         let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
@@ -3124,7 +3122,7 @@ mod tests {
         let host_id = insert_host(&pool).await?;
         let user_id = insert_user(&pool).await?;
         let token_id = insert_token(&pool, user_id).await?;
-        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
         set_current_job(&pool, host_id, Some(job_id)).await?;
 
         let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
@@ -3187,7 +3185,7 @@ mod tests {
         let token_id = insert_token(&pool, user_id).await?;
         // The job exists and is bound to the host row, but is NOT the host's
         // current_job (nothing is assigned), so the event must be dropped.
-        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
 
         let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let (_to_worker, mut from_worker, mut worker) =
@@ -3206,7 +3204,7 @@ mod tests {
 
         assert_eq!(
             job_state_of(&pool, job_id).await?,
-            "scheduled",
+            "assigned",
             "an event for an unassigned job must not mutate it"
         );
         assert!(
@@ -3535,17 +3533,17 @@ mod tests {
         Ok(())
     }
 
-    /// User-cancel of a still-`scheduled` job (never started): finalize as
+    /// User-cancel of a still-`assigned` job (never started): finalize as
     /// `user_canceled` instead of dispatching it — no StartJob is emitted.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn reconcile_user_cancel_scheduled_finalizes_without_start(
+    async fn reconcile_user_cancel_assigned_finalizes_without_start(
         pool: PgPool,
     ) -> anyhow::Result<()> {
         let host_id = insert_host(&pool).await?;
         let user_id = insert_user(&pool).await?;
         let token_id = insert_token(&pool, user_id).await?;
-        let job_id = insert_job(&pool, token_id, host_id, "scheduled", 0).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
         set_current_job(&pool, host_id, Some(job_id)).await?;
         request_cancel(&pool, job_id).await?;
         // A resolved image is registered so that, absent the cancel, this job
@@ -3560,18 +3558,18 @@ mod tests {
         worker
             .reconcile()
             .await
-            .expect("user-cancel (scheduled) reconcile should succeed");
+            .expect("user-cancel (assigned) reconcile should succeed");
 
         assert_eq!(job_state_of(&pool, job_id).await?, "finalized");
         assert_eq!(
             termination_reason_of(&pool, job_id).await?.as_deref(),
             Some("user_canceled"),
-            "a canceled scheduled job must finalize as user_canceled"
+            "a canceled assigned job must finalize as user_canceled"
         );
         assert_eq!(current_job_of(&pool, host_id).await?, None);
         assert!(
             from_worker.try_recv().is_err(),
-            "a canceled scheduled job must not be dispatched"
+            "a canceled assigned job must not be dispatched"
         );
         Ok(())
     }

@@ -4,7 +4,7 @@
 //! It coordinates with the per-host [`SupervisorWSWorker`] **entirely through the
 //! database** — it never holds an in-process handle to a worker — so the two can
 //! be distributed across processes later. The scheduler writes the assignment
-//! (`hosts.current_job` + `jobs.job_state = 'scheduled'`); the host's own worker
+//! (`hosts.current_job` + `jobs.job_state = 'assigned'`); the host's own worker
 //! observes it and issues `StartJob`. For now this is poll-based; Postgres
 //! `LISTEN`/`NOTIFY` can replace the polling later without schema changes.
 //!
@@ -41,7 +41,7 @@ pub struct Scheduler {
 /// Outcome of attempting to place one job on one candidate host.
 #[derive(Debug, PartialEq, Eq)]
 enum AssignOutcome {
-    /// The job was scheduled onto the host.
+    /// The job was assigned to the host.
     Assigned,
     /// The host does not admit this job (DUT requirements unmet, or no image
     /// group member matches it) — try the next candidate host.
@@ -234,7 +234,7 @@ impl Scheduler {
         }
         sqlx::query!(
             r#"update tml_switchboard.jobs
-               set job_state = 'scheduled',
+               set job_state = 'assigned',
                    dispatched_on_host_id = $2,
                    last_updated_at = default
                where job_id = $1 and job_state = 'queued'"#,
@@ -638,7 +638,7 @@ mod tests {
         scheduler(pool.clone()).tick().await?;
 
         assert_eq!(host_current_job(&pool, host).await?, Some(job));
-        assert_eq!(job_state(&pool, job).await?, "scheduled");
+        assert_eq!(job_state(&pool, job).await?, "assigned");
         assert_eq!(job_dispatched_host(&pool, job).await?, Some(host));
         assert_eq!(
             job_resolved_digest(&pool, job).await?,
@@ -719,7 +719,7 @@ mod tests {
         let ok =
             enqueue_image(&pool, token, img, &["arch=arm64"], &[&["board=nrf52840dk"]]).await?;
         scheduler(pool.clone()).tick().await?;
-        assert_eq!(job_state(&pool, ok).await?, "scheduled");
+        assert_eq!(job_state(&pool, ok).await?, "assigned");
         assert_eq!(host_current_job(&pool, host).await?, Some(ok));
 
         // A second host with only ONE nRF DUT cannot satisfy a job needing TWO.
@@ -743,7 +743,7 @@ mod tests {
         // Wire a second nRF DUT onto host2 → now it can.
         add_target(&pool, host2, &["board=nrf52840dk"]).await?;
         scheduler(pool.clone()).tick().await?;
-        assert_eq!(job_state(&pool, needs_two).await?, "scheduled");
+        assert_eq!(job_state(&pool, needs_two).await?, "assigned");
         assert_eq!(host_current_job(&pool, host2).await?, Some(needs_two));
         Ok(())
     }
@@ -779,7 +779,7 @@ mod tests {
         scheduler(pool.clone()).tick().await?;
 
         assert_eq!(host_current_job(&pool, host).await?, Some(older));
-        assert_eq!(job_state(&pool, older).await?, "scheduled");
+        assert_eq!(job_state(&pool, older).await?, "assigned");
         assert_eq!(
             job_state(&pool, newer).await?,
             "queued",
@@ -842,7 +842,7 @@ mod tests {
             .bind(host)
             .execute(&pool)
             .await?;
-        sqlx::query("update tml_switchboard.jobs set job_state='scheduled', dispatched_on_host_id=$2 where job_id=$1")
+        sqlx::query("update tml_switchboard.jobs set job_state='assigned', dispatched_on_host_id=$2 where job_id=$1")
             .bind(running)
             .bind(host)
             .execute(&pool)

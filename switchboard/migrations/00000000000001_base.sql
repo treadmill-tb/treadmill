@@ -189,7 +189,7 @@ CREATE TYPE tml_switchboard.restart_policy AS (remaining_restart_count integer);
 
 CREATE TYPE tml_switchboard.job_state AS enum(
     'queued',
-    'scheduled',
+    'assigned',
     'initializing',
     'ready',
     'terminating',
@@ -269,7 +269,7 @@ CREATE TABLE tml_switchboard.jobs (
     CONSTRAINT dispatched_host_iso_assigned CHECK (
         (dispatched_on_host_id IS NOT NULL) = (
             job_state IN (
-                'scheduled',
+                'assigned',
                 'initializing',
                 'ready',
                 'terminating'

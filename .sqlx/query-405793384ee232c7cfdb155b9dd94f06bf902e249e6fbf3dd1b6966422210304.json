@@ -178,7 +178,7 @@
             "kind": {
               "Enum": [
                 "queued",
-                "scheduled",
+                "assigned",
                 "initializing",
                 "ready",
                 "terminating",
