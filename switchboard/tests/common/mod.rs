@@ -10,8 +10,8 @@
 #![allow(dead_code)]
 
 use treadmill_switchboard::config::{
-    DatabaseConfig, GitHubOAuthConfig, LogConfig, MockOAuthConfig, OAuthConfig, ServerConfig,
-    ServiceConfig, SwitchboardConfig,
+    DatabaseConfig, GitHubOAuthConfig, MockOAuthConfig, OAuthConfig, ServerConfig, ServiceConfig,
+    SwitchboardConfig,
 };
 
 /// A throwaway [`SwitchboardConfig`] for tests.
@@ -42,9 +42,6 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
             supervisor_ping_interval: std::time::Duration::from_secs(30),
             supervisor_pong_dead: std::time::Duration::from_secs(60),
             supervisor_reconcile_interval: std::time::Duration::from_secs(30),
-        },
-        log: LogConfig {
-            use_tokio_console_subscriber: false,
         },
         oauth: OAuthConfig {
             github: Some(GitHubOAuthConfig {

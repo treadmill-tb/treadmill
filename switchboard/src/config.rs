@@ -13,8 +13,6 @@ pub struct SwitchboardConfig {
     pub server: ServerConfig,
     /// Configuration of the Switchboard service.
     pub service: ServiceConfig,
-    /// Configuration of Switchboard logging.
-    pub log: LogConfig,
     /// OAuth login providers. Optional: a deployment without any provider
     /// configured simply cannot issue interactive logins.
     #[serde(default)]
@@ -235,12 +233,6 @@ pub struct ServiceConfig {
     /// sets scheduling latency, not liveness-detection cadence.
     #[serde(with = "humantime_serde")]
     pub supervisor_reconcile_interval: Duration,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct LogConfig {
-    /// Whether to include `console-subscriber`.
-    pub use_tokio_console_subscriber: bool,
 }
 
 /// Load the switchboard configuration.

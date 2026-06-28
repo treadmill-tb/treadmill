@@ -11,9 +11,6 @@ treadmill-rs = { workspace = true }
 # crate is light); whether it is served is a runtime config decision.
 treadmill-console = { workspace = true }
 
-# For debugging reasons
-console-subscriber = "0.5.0"
-
 # Utility
 uuid = { workspace = true, features = ["serde", "fast-rng", "v4", "v7"] }
 # Avatar-URL validation on profile updates (scheme/host checks).

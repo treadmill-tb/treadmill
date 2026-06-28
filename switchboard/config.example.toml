@@ -18,9 +18,6 @@ supervisor_ping_interval = "2s"
 supervisor_pong_dead = "10s"
 supervisor_reconcile_interval = "5s"
 
-[log]
-use_tokio_console_subscriber = false
-
 # OAuth login providers. Optional; omit the whole section to disable interactive
 # login. Each provider is independently optional.
 #

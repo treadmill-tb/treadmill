@@ -106,12 +106,7 @@ pub async fn pg_pool_from_config(db_config: &DatabaseConfig) -> Result<PgPool, s
 pub async fn serve(serve_command: ServeCommand) -> anyhow::Result<()> {
     let config = super::config::load_configuration(serve_command.config.as_deref())?;
 
-    if config.log.use_tokio_console_subscriber {
-        console_subscriber::init();
-    } else {
-        // Note: this is DIFFERENT from `tracing_subscriber::fmt().init()`
-        tracing_subscriber::fmt::init();
-    }
+    tracing_subscriber::fmt::init();
 
     // The mock OAuth provider is an unauthenticated login bypass intended only
     // for local development; warn loudly at startup if it is enabled so it can
