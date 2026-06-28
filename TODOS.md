@@ -33,3 +33,10 @@ redirect with a **back-channel one-time-code exchange**:
 Net effect: the bearer token never touches the browser or any URL. This also
 generalizes the single `browser_success_redirect` value into a proper
 multi-origin `return_to` allowlist.
+
+## Re-Sync Verified/Non-Verified Emails on Login
+
+Currently, the auth code does not properly re-sync emails on login. Previously
+unverified emails that are now verified upstream aren't marked as such, emails
+aren't removed, and now-unverified emails aren't transitioned in the switchboard
+DB.

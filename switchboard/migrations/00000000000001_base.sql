@@ -35,8 +35,7 @@ CREATE TABLE tml_switchboard.user_emails (
     user_id uuid NOT NULL REFERENCES tml_switchboard.users (subject_id) ON DELETE CASCADE,
     provider text NOT NULL,
     verified bool NOT NULL,
-    added_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
-    CHECK (verified)
+    added_at timestamp with time zone NOT NULL DEFAULT current_timestamp
 );
 
 

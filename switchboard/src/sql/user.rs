@@ -6,6 +6,8 @@
 //! trail. Pure lookups (resolve-by-identity, link-by-email, username
 //! de-duplication, the reconcile diff) stay plain reads.
 
+use std::borrow::Cow;
+
 use crate::audit::model::Subject as AuditSubject;
 use crate::audit::{self, Transition, WriteToken, events};
 use crate::auth::engine::ADMINS_GROUP_ID;
@@ -40,13 +42,24 @@ pub async fn provision_user(
         Some(uid) => (uid, false),
         None => {
             // 2. Otherwise, try to link by a shared verified email (read only).
-            let linked: Vec<Uuid> = if identity.verified_emails.is_empty() {
+            let verified_emails: Vec<&str> = identity
+                .emails
+                .iter()
+                .filter_map(|e| {
+                    if e.verified {
+                        Some(e.address.as_ref())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let linked: Vec<Uuid> = if verified_emails.is_empty() {
                 Vec::new()
             } else {
                 sqlx::query_scalar!(
                     "select distinct user_id from tml_switchboard.user_emails \
-                     where email = any($1::text[]);",
-                    &identity.verified_emails,
+                     where verified = true and email = any($1::text[]);",
+                    verified_emails as _,
                 )
                 .fetch_all(&mut **tx)
                 .await?
@@ -114,27 +127,37 @@ pub async fn provision_user(
         .await?;
     }
 
-    // 4. Record verified emails, emitting an event only for ones genuinely new
-    // to the system (an address already on file, even another user's, is left
-    // untouched and unlogged).
-    let present: Vec<String> = if identity.verified_emails.is_empty() {
+    // 4. Record emails from the identify, emitting an event only for ones
+    // genuinely new to the system (an address already on file, even another
+    // user's, is left untouched and unlogged).
+    //
+    // TODO: this should also mark previously unverified emails as verified,
+    // remove emails when they vanish from the OAuth provider, and revoke the
+    // "verified" attribute when an email is no longer reported as verified by
+    // the upstream provider.
+    let present: Vec<Cow<str>> = if identity.emails.is_empty() {
         Vec::new()
     } else {
+        let all_emails: Vec<&str> = identity.emails.iter().map(|e| e.address.as_ref()).collect();
         sqlx::query_scalar!(
             "select email from tml_switchboard.user_emails where email = any($1::text[]);",
-            &identity.verified_emails,
+            &all_emails as _,
         )
         .fetch_all(&mut **tx)
         .await?
+        .into_iter()
+        .map(|email| email.into())
+        .collect()
     };
-    for email in &identity.verified_emails {
-        if !present.contains(email) {
+    for email in &identity.emails {
+        if !present.contains(&email.address) {
             audit::transition(
                 tx,
                 AddEmail {
                     user_id,
                     provider,
-                    email,
+                    email: &email.address,
+                    verified: email.verified,
                 },
             )
             .await?;
@@ -310,6 +333,7 @@ struct AddEmail<'a> {
     user_id: Uuid,
     provider: &'a str,
     email: &'a str,
+    verified: bool,
 }
 
 impl Transition for AddEmail<'_> {
@@ -323,10 +347,11 @@ impl Transition for AddEmail<'_> {
     ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
         sqlx::query!(
             "insert into tml_switchboard.user_emails (email, user_id, provider, verified) \
-             values ($1, $2, $3, true) on conflict (email) do nothing;",
+             values ($1, $2, $3, $4) on conflict (email) do nothing;",
             self.email,
             self.user_id,
             self.provider,
+            self.verified,
         )
         .execute(&mut *conn)
         .await?;
@@ -336,6 +361,7 @@ impl Transition for AddEmail<'_> {
             user: AuditSubject(self.user_id),
             provider: self.provider.to_string(),
             email: self.email.to_string(),
+            verified: self.verified,
         };
         Ok(((), event))
     }

@@ -171,14 +171,26 @@ async fn github_login_provisions_and_reconciles(pool: PgPool) {
             .unwrap();
     assert_eq!(username, "octocat");
 
-    // Only the verified email was recorded.
-    let emails: Vec<String> =
-        sqlx::query_scalar("select email from tml_switchboard.user_emails where user_id = $1")
-            .bind(user_id)
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-    assert_eq!(emails, vec!["octo@example.com".to_string()]);
+    // Verified tag of emails was recorded properly.
+    let verified_emails: Vec<String> = sqlx::query_scalar(
+        "select email from tml_switchboard.user_emails where verified = true and user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(verified_emails, vec!["octo@example.com".to_string()]);
+    let unverified_emails: Vec<String> = sqlx::query_scalar(
+        "select email from tml_switchboard.user_emails where verified = false and user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        unverified_emails,
+        vec!["unverified@example.com".to_string()]
+    );
 
     // The github_org membership was reconciled in.
     let auto_members: i64 = sqlx::query_scalar(

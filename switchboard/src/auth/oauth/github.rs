@@ -1,6 +1,6 @@
 //! GitHub OAuth provider.
 
-use super::{ExternalIdentity, OAuthAccessToken, OAuthError, OAuthProvider};
+use super::{Email, ExternalIdentity, OAuthAccessToken, OAuthError, OAuthProvider};
 use crate::config::GitHubOAuthConfig;
 use async_trait::async_trait;
 use oauth2::basic::BasicClient;
@@ -147,23 +147,29 @@ impl OAuthProvider for GithubProvider {
             Ok(emails) => emails,
             Err(e) => {
                 tracing::warn!(
-                    "failed to fetch GitHub verified emails; provisioning without linkable \
-                     emails (commonly a missing `user:email` scope on the token): {e}"
+                    "failed to fetch GitHub user emails; provisioning without linkable \
+                     emails (perhaps a missing `user:email` scope on the token?): {e}"
                 );
                 Vec::new()
             }
         };
-        let verified_emails = emails
-            .into_iter()
-            .filter(|e| e.verified)
-            .map(|e| e.email)
-            .collect();
         Ok(ExternalIdentity {
             provider_user_id: user.id.to_string(),
             login: user.login,
             full_name: user.name,
             avatar_url: user.avatar_url,
-            verified_emails,
+            emails: emails
+                .into_iter()
+                .map(
+                    |GhEmail {
+                         email: address,
+                         verified,
+                     }| Email {
+                        address: address.into(),
+                        verified,
+                    },
+                )
+                .collect(),
         })
     }
 

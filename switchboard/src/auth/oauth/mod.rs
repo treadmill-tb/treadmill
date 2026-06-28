@@ -8,12 +8,29 @@ pub mod github;
 pub mod mock;
 
 use async_trait::async_trait;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use thiserror::Error;
 
 /// An access token obtained from an OAuth provider, used to call its API.
 #[derive(Clone)]
 pub struct OAuthAccessToken(pub String);
+
+/// Email addresses fetched from an OAuth provider.
+///
+/// `verified` means that the OAuth provider promises to have verified that this
+/// email address belongs to the given user *AND* that we trust this information
+/// for the purposes of linking other OAuth handles to a given user.
+#[derive(Debug, Clone)]
+pub struct Email<'a> {
+    /// The email address.
+    ///
+    /// This is a [`Cow`] to allow it to be used in constants for test fixtures.
+    pub address: Cow<'a, str>,
+    /// Whether the OAuth provider claims (and we trust) that this email address
+    /// has been verified to belong to the respective user.
+    pub verified: bool,
+}
 
 /// Identity information fetched from a provider after a successful login.
 #[derive(Debug, Clone)]
@@ -28,8 +45,8 @@ pub struct ExternalIdentity {
     pub full_name: Option<String>,
     /// URL of the user's avatar, if any.
     pub avatar_url: Option<String>,
-    /// ONLY verified email addresses. Used to link a login to an existing user.
-    pub verified_emails: Vec<String>,
+    /// Email addresses of the user (both verified & unverified).
+    pub emails: Vec<Email<'static>>,
 }
 
 /// Things that can go wrong talking to an OAuth provider.

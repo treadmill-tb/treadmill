@@ -83,9 +83,10 @@ define_event! {
         user: Subject @ view(SelfAccess),
         provider: String,
         email: String,
+        verified: bool,
     }
     event_type = "user_email_added";
-    render = "verified email {email} added via {provider}";
+    render = "email {email} (verified = {verified:?}) added via {provider}";
 }
 
 define_event! {

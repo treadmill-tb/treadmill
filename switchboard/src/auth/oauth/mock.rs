@@ -15,9 +15,10 @@
 //!
 //! [`authorize`]: OAuthProvider::authorize
 
-use super::{ExternalIdentity, OAuthAccessToken, OAuthError, OAuthProvider};
+use super::{Email, ExternalIdentity, OAuthAccessToken, OAuthError, OAuthProvider};
 use async_trait::async_trait;
 use oauth2::CsrfToken;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// One built-in mock identity. `key` doubles as the stable provider user id, so
@@ -29,8 +30,8 @@ pub struct MockIdentity {
     pub login: &'static str,
     /// Display name.
     pub full_name: &'static str,
-    /// A single verified email, used for account linking.
-    pub email: &'static str,
+    /// User emails, can be verified or unverified.
+    pub emails: &'static [Email<'static>],
     /// Whether logging in as this identity grants global admin (see
     /// [`OAuthProvider::grants_global_admin`]).
     pub admin: bool,
@@ -42,21 +43,36 @@ pub const MOCK_IDENTITIES: &[MockIdentity] = &[
         key: "alice",
         login: "alice",
         full_name: "Alice Example",
-        email: "alice@example.test",
+        emails: &[
+            Email {
+                address: Cow::Borrowed("alice@example.test"),
+                verified: true,
+            },
+            Email {
+                address: Cow::Borrowed("alice-alt@example.org"),
+                verified: false,
+            },
+        ],
         admin: true,
     },
     MockIdentity {
         key: "bob",
         login: "bob",
         full_name: "Bob Example",
-        email: "bob@example.test",
+        emails: &[Email {
+            address: Cow::Borrowed("bob@example.test"),
+            verified: true,
+        }],
         admin: false,
     },
     MockIdentity {
         key: "carol",
         login: "carol",
         full_name: "Carol Example",
-        email: "carol@example.test",
+        emails: &[Email {
+            address: Cow::Borrowed("carol@example.test"),
+            verified: false,
+        }],
         admin: false,
     },
 ];
@@ -116,7 +132,7 @@ impl OAuthProvider for MockProvider {
             login: id.login.to_string(),
             full_name: Some(id.full_name.to_string()),
             avatar_url: None,
-            verified_emails: vec![id.email.to_string()],
+            emails: id.emails.into(),
         })
     }
 
