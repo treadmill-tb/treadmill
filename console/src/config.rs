@@ -7,7 +7,7 @@
 use std::net::SocketAddr;
 use std::path::Path;
 
-use miette::{IntoDiagnostic, WrapErr};
+use anyhow::Context;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -46,13 +46,13 @@ impl ServerConfig {
 
 /// Load configuration from an optional TOML file overlaid with environment
 /// variables, mirroring the switchboard's loader.
-pub fn load_configuration(path: Option<&Path>) -> miette::Result<ConsoleConfig> {
+pub fn load_configuration(path: Option<&Path>) -> anyhow::Result<ConsoleConfig> {
     use figment::providers::{self, Format};
     let f = figment::Figment::new();
 
     let f = if let Some(p) = path {
         if !p.exists() {
-            return Err(miette::miette!(
+            return Err(anyhow::anyhow!(
                 "Specified configuration file '{}' does not exist",
                 p.display()
             ));
@@ -65,6 +65,5 @@ pub fn load_configuration(path: Option<&Path>) -> miette::Result<ConsoleConfig> 
 
     f.merge(providers::Env::prefixed("TML_CONSOLE_").split("__"))
         .extract()
-        .into_diagnostic()
-        .wrap_err("Failed to extract console configuration")
+        .context("Failed to extract console configuration")
 }

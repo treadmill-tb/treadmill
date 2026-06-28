@@ -5,7 +5,7 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use miette::{IntoDiagnostic, WrapErr};
+use anyhow::Context;
 use tokio::net::TcpListener;
 use treadmill_rs::api::switchboard::client::SwitchboardClient;
 
@@ -52,7 +52,7 @@ pub struct ServeCommand {
     config: Option<PathBuf>,
 }
 
-pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
+pub async fn serve(serve_command: ServeCommand) -> anyhow::Result<()> {
     let config = crate::config::load_configuration(serve_command.config.as_deref())?;
 
     tracing_subscriber::fmt::init();
@@ -63,8 +63,7 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
 
     let listener = TcpListener::bind(bind_address)
         .await
-        .into_diagnostic()
-        .wrap_err_with(|| format!("failed to bind console server to {bind_address}"))?;
+        .with_context(|| format!("failed to bind console server to {bind_address}"))?;
     tracing::info!("Console listening on {bind_address}");
 
     axum::serve(
@@ -72,6 +71,5 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await
-    .into_diagnostic()
-    .wrap_err("(console server exited)")
+    .context("(console server exited)")
 }

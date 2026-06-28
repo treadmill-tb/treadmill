@@ -1,7 +1,7 @@
 use crate::config::{DatabaseConfig, DatabaseCredentials, SwitchboardConfig};
 use crate::log_streaming::{LogStreaming, NatsLogStreamProvisioner};
 use crate::registry::{OciRegistryClient, RegistryClient};
-use miette::{IntoDiagnostic, WrapErr};
+use anyhow::Context;
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
 use std::net::SocketAddr;
@@ -103,7 +103,7 @@ pub async fn pg_pool_from_config(db_config: &DatabaseConfig) -> Result<PgPool, s
     PgPool::connect_with(pg_options).await
 }
 
-pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
+pub async fn serve(serve_command: ServeCommand) -> anyhow::Result<()> {
     let config = super::config::load_configuration(serve_command.config.as_deref())?;
 
     if config.log.use_tokio_console_subscriber {
@@ -136,8 +136,7 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
 
     let pg_pool = pg_pool_from_config(&config.database)
         .await
-        .into_diagnostic()
-        .wrap_err("failed to connect to database")?;
+        .context("failed to connect to database")?;
 
     // Apply database migrations automatically. The migrations are embedded in
     // this binary, and any changes to ./migrations (from the project root) will
@@ -145,8 +144,7 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
     sqlx::migrate!()
         .run(&pg_pool)
         .await
-        .into_diagnostic()
-        .wrap_err("failed to migrate database")?;
+        .context("failed to migrate database")?;
 
     let bind_address = config.server.bind_address;
 
@@ -171,8 +169,7 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
             );
             let provisioner = NatsLogStreamProvisioner::connect(ls_config)
                 .await
-                .into_diagnostic()
-                .wrap_err("failed to connect to NATS for log streaming")?;
+                .context("failed to connect to NATS for log streaming")?;
             Some(LogStreaming {
                 config: ls_config.clone(),
                 provisioner: Arc::new(provisioner),
@@ -195,6 +192,5 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
     server
         .serve(router.into_make_service_with_connect_info::<SocketAddr>())
         .await
-        .into_diagnostic()
-        .wrap_err("(server exited)")
+        .context("(server exited)")
 }

@@ -1,4 +1,4 @@
-use miette::{IntoDiagnostic, WrapErr};
+use anyhow::Context;
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -244,13 +244,13 @@ pub struct LogConfig {
 }
 
 /// Load the switchboard configuration.
-pub fn load_configuration(path: Option<&Path>) -> miette::Result<SwitchboardConfig> {
+pub fn load_configuration(path: Option<&Path>) -> anyhow::Result<SwitchboardConfig> {
     use figment::providers::{self, Format};
     let f = figment::Figment::new();
 
     let f = if let Some(p) = path {
         if !p.exists() {
-            return Err(miette::miette!(
+            return Err(anyhow::anyhow!(
                 "Specified configuration file '{}' does not exist",
                 p.display()
             ));
@@ -264,6 +264,5 @@ pub fn load_configuration(path: Option<&Path>) -> miette::Result<SwitchboardConf
 
     f.merge(providers::Env::prefixed("TML_").split("__"))
         .extract()
-        .into_diagnostic()
-        .wrap_err("Failed to extract switchboard configuration")
+        .context("Failed to extract switchboard configuration")
 }

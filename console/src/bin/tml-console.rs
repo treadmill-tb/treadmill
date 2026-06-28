@@ -17,7 +17,7 @@ pub enum Command {
 }
 
 impl Command {
-    async fn run(self) -> miette::Result<()> {
+    async fn run(self) -> anyhow::Result<()> {
         match self {
             Command::Serve(serve_cmd) => treadmill_console::serve::serve(serve_cmd).await,
         }

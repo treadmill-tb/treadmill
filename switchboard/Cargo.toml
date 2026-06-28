@@ -111,8 +111,6 @@ toml = { workspace = true }
 
 # Error derives
 thiserror = { workspace = true }
-# TODO: Phase out
-miette = { version = "7.6", features = ["fancy"] }
 base64 = { workspace = true }
 anyhow.workspace = true
 
