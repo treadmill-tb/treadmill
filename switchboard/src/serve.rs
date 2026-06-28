@@ -181,11 +181,15 @@ pub async fn serve(serve_command: ServeCommand) -> anyhow::Result<()> {
     );
     let router = super::routes::build_router(app_state);
 
-    let server = axum_server::bind(bind_address);
+    let listener = tokio::net::TcpListener::bind(bind_address)
+        .await
+        .with_context(|| format!("failed to bind server to {bind_address}"))?;
     tracing::info!("Bound server to {bind_address}");
 
-    server
-        .serve(router.into_make_service_with_connect_info::<SocketAddr>())
-        .await
-        .context("(server exited)")
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .context("(server exited)")
 }
