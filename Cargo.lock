@@ -2441,7 +2441,7 @@ dependencies = [
  "http-auth",
  "jsonwebtoken",
  "lazy_static",
- "oci-spec 0.9.0",
+ "oci-spec",
  "olpc-cjson",
  "regex",
  "reqwest 0.13.4",
@@ -2459,23 +2459,6 @@ name = "oci-spec"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8445a2631507cec628a15fdd6154b54a3ab3f20ed4fe9d73a3b8b7a4e1ba03a"
-dependencies = [
- "const_format",
- "derive_builder",
- "getset",
- "regex",
- "serde",
- "serde_json",
- "strum",
- "strum_macros",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "oci-spec"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3df6f876ad774d6a676f7e968f5c3edacc32f90e65fe680a8b686235396556fb"
 dependencies = [
  "const_format",
  "derive_builder",
@@ -4430,7 +4413,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "oci-spec 0.10.0",
+ "oci-spec",
  "serde_json",
  "sha2 0.10.9",
  "treadmill-rs",
@@ -4493,7 +4476,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "oci-spec 0.10.0",
+ "oci-spec",
  "serde",
  "serde_json",
  "strfmt",
@@ -4520,7 +4503,7 @@ dependencies = [
  "fundu",
  "http",
  "insta",
- "oci-spec 0.10.0",
+ "oci-spec",
  "reqwest 0.12.28",
  "schemars 1.2.1",
  "serde",
@@ -4542,7 +4525,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "oci-client",
- "oci-spec 0.10.0",
+ "oci-spec",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
@@ -4579,7 +4562,7 @@ dependencies = [
  "nkeys",
  "oauth2",
  "oci-client",
- "oci-spec 0.10.0",
+ "oci-spec",
  "rand 0.10.1",
  "reqwest 0.12.28",
  "schemars 1.2.1",
