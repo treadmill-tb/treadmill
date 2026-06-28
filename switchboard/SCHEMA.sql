@@ -2,21 +2,26 @@
 CREATE SCHEMA tml_switchboard;
 
 
--- ===========================================================================
--- SUBJECTS: users and groups, unified
--- ===========================================================================
+-- =============================================================================
+-- SUBJECTS: users and groups
+-- =============================================================================
 --
--- Users and groups are both "subjects": principals that can (a) own resources,
--- (b) be granted permissions on resources, and (c) be members of groups. To
--- avoid scattering polymorphic (kind, id) pairs across every ownership,
--- membership, and grant table, both users and groups extend a single
--- `subjects` row. Every ownership/grant/membership FK in this schema therefore
--- references `subjects(subject_id)`, and "a user or a group" is expressible as
--- one foreign key.
+-- Users and groups are both "subjects": principals that can
+--   1. own resources,
+--   2. be granted permissions on resources, and
+--   3. be members of groups.
+--
+-- To avoid scattering polymorphic (kind, id) pairs across every ownership,
+-- membership, and grant table, both users and groups extend a single `subjects`
+-- row. Every ownership/grant/membership FK in this schema therefore references
+-- `subjects(subject_id)`, and "a user or a group" is expressible as one foreign
+-- key.
 --
 -- `system` subjects are non-human service actors (the switchboard worker,
--- internal automation). They do not log in via OAuth; they authenticate via API
--- tokens. They are seeded out of band (see FIXTURES.sql), not created by login.
+-- internal automation). `system` subjects may not be associated with a `user`
+-- role (in which case the system resolves their IDs to some entity internally).
+-- They are seeded out of band, through SQL migrations or by an administrator.
+-- They can't be created / log in interactively.
 CREATE TYPE tml_switchboard.subject_kind AS enum('user', 'group', 'system');
 
 
@@ -26,11 +31,14 @@ CREATE TABLE tml_switchboard.subjects (
 );
 
 
--- A human (or system) principal. Authentication is fully external (OAuth); there
--- is no password. `username` is the internal Treadmill handle, suggested from
--- the provider login at first sign-in but freely changeable, hence its own
--- uniqueness independent of any provider identity. `locked` deactivates the
--- account without deleting it (preserving job/audit provenance).
+-- A human (or system) principal.
+--
+-- - `username` is the internal Treadmill handle, suggested from the provider
+--   login at first sign-in but freely changeable, hence its own uniqueness
+--   independent of any provider identity.
+-- - `locked` deactivates the account without deleting it (preserving job/audit
+--   provenance). A locked account must not be able to login, and its tokens
+--   must not be accepted.
 CREATE TABLE tml_switchboard.users (
     subject_id uuid NOT NULL PRIMARY KEY REFERENCES tml_switchboard.subjects (subject_id) ON DELETE CASCADE,
     username text NOT NULL UNIQUE,
@@ -40,11 +48,12 @@ CREATE TABLE tml_switchboard.users (
 );
 
 
--- The OAuth identity link. Keyed on the provider's STABLE numeric user id (as
--- text), never the login handle -- handles are renameable and reusable, so a
--- handle key would eventually mis-link accounts. `provider_login` records the
--- current handle for display only. A user holds at most one identity per
--- provider. This table is the seam that makes additional providers cheap later.
+-- User <-> OAuth identity link.
+--
+-- - `provider_user_id`: a *stable* user identifier with the provier.
+-- - `provider_login` current external handle for display only.
+--
+-- A user holds at most one identity per provider.
 CREATE TABLE tml_switchboard.user_identities (
     provider text NOT NULL,
     provider_user_id text NOT NULL,
@@ -57,9 +66,12 @@ CREATE TABLE tml_switchboard.user_identities (
 
 
 -- Verified email addresses, used to link a future provider login to an existing
--- user (same verified email => same person). Globally unique so it can serve as
--- that linking key, multi-row per user, and tagged with the provider that
--- surfaced it. ONLY verified addresses live here (`check (verified)`): linking
+-- user (same verified email => same person).
+--
+-- Globally unique so it can serve as that linking key, multi-row per user, and
+-- tagged with the provider that originates from.
+--
+-- Only `verified` email addresses must be used for any sensitive flow: linking
 -- on an unverified address would allow account takeover by claiming someone
 -- else's email on the external provider.
 CREATE TABLE tml_switchboard.user_emails (
@@ -78,10 +90,11 @@ CREATE TABLE tml_switchboard.groups (
 );
 
 
--- The system-global admin group. Its UUID is a hard-coded well-known constant so
--- it can be referenced directly in authorization queries. Global admin authority
--- = membership in this group; orphaned resources (owner_id IS NULL) are
--- manageable only by its members.
+-- The system-global admin group.
+--
+-- Its UUID is a hard-coded well-known constant so it can be referenced directly
+-- in authorization queries. Global admin authority = membership in this group;
+-- orphaned resources (owner_id IS NULL) are manageable only by its members.
 INSERT INTO
     tml_switchboard.subjects (subject_id, kind)
 VALUES
@@ -94,37 +107,40 @@ VALUES
     ('00000000-0000-0000-0000-000000000001', 'admins');
 
 
--- The system actor. A `system` subject (non-human service principal) with a
--- hard-coded well-known UUID, so the switchboard can attribute the audit events
--- it raises on its own initiative -- worker-driven job lifecycle transitions,
--- host assignment, internal automation -- to a stable actor referenceable
--- directly in code. It is a bare `subjects` row with no `users`/`groups`
--- extension: it never logs in and owns nothing; it exists only to be named as
--- the actor of system-originated events.
+-- The system actor.
+--
+-- A `system` subject (non-human service principal) with a hard-coded well-known
+-- UUID, so the switchboard can attribute the audit events it raises on its own
+-- initiative -- worker-driven job lifecycle transitions, host assignment,
+-- internal automation -- to a stable actor referenceable directly in code.
+--
+-- It is a bare `subjects` row with no `users`/`groups` extension: it never logs
+-- in and owns nothing; it exists only to be named as the actor of
+-- system-originated events.
 INSERT INTO
     tml_switchboard.subjects (subject_id, kind)
 VALUES
     ('00000000-0000-0000-0000-000000000002', 'system');
 
 
--- ===========================================================================
+-- =============================================================================
 -- GROUP MEMBERSHIP: a many-to-many DAG with provenance
--- ===========================================================================
+-- =============================================================================
 --
 -- `member_id` references `subjects`, so a member may itself be a group -- this
 -- is what gives nested groups. Membership is therefore a directed graph; we
 -- enforce that it stays acyclic (see trigger below).
 --
--- `source` records WHO added the membership. The same subject may be both a
+-- `source` records WHO added the membership: the same subject may be both a
 -- manually-added member and an auto-group member, so `source` is part of the
 -- primary key. Auto-sync (e.g. GitHub org reconciliation) only ever
 -- inserts/deletes rows of its own source, so it can never clobber manual
 -- memberships, and vice versa. `source_ref` carries the external key (e.g. the
 -- GitHub org id) for auto sources and is part of the primary key too: a subject
 -- may be in one group via several sources of the same kind (e.g. two GitHub
--- orgs that both feed it), and each must be an independent, separately-reconciled
--- row. It is NOT NULL (default '') so it participates in the PK uniformly;
--- manual rows simply carry the empty string.
+-- orgs that both feed it), and each must be an independent,
+-- separately-reconciled row. It is NOT NULL (default '') so it participates in
+-- the PK uniformly; manual rows simply carry the empty string.
 CREATE TYPE tml_switchboard.membership_source AS enum('manual', 'github_org');
 
 
@@ -146,20 +162,21 @@ CREATE INDEX group_members_member_id_idx ON tml_switchboard.group_members (membe
 
 
 -- Enforce that the membership graph stays acyclic. Adding the edge "group_id
--- contains member_id" closes a cycle iff member_id can already reach group_id by
--- following existing "contains" edges. Updates are rare and traversal is hot, so
--- paying a reachability check on write only is the right trade.
+-- contains member_id" closes a cycle iff member_id can already reach group_id
+-- by following existing "contains" edges. Updates are rare and traversal is
+-- hot, so paying a reachability check on write only is the right trade.
 --
--- Correctness under concurrency: two transactions could each add an edge that is
--- individually acyclic but jointly cyclic, neither seeing the other's
+-- Correctness under concurrency: two transactions could each add an edge that
+-- is individually acyclic but jointly cyclic, neither seeing the other's
 -- uncommitted row. We close that hole *inside the trigger* with a
 -- transaction-scoped advisory lock held until commit. It does not conflict with
 -- the INSERT's ROW EXCLUSIVE table lock (so no deadlock), and it serializes all
 -- membership mutations: a waiter resumes only after the holder commits, and
 -- under READ COMMITTED its fresh per-statement snapshot then includes that
 -- committed edge -- so any attempt that would close a cycle sees it and aborts.
--- (Assumes READ COMMITTED, the default. Under higher isolation, use SERIALIZABLE
--- instead, whose SSI detects the same conflict and aborts one transaction.)
+-- (Assumes READ COMMITTED, the default. Under higher isolation, use
+-- SERIALIZABLE instead, whose SSI detects the same conflict and aborts one
+-- transaction.)
 CREATE OR REPLACE FUNCTION tml_switchboard.group_members_no_cycle () returns trigger language plpgsql AS $$
 begin
     perform pg_advisory_xact_lock(hashtext('tml_switchboard.group_members'));
@@ -192,12 +209,13 @@ EXECUTE function tml_switchboard.group_members_no_cycle ();
 
 
 -- Declares that a group's membership is auto-synced from an external source
--- (e.g. a GitHub organization). The reconciler iterates these bindings -- lazily
--- on a member's re-auth and periodically -- and for each one inserts/deletes
--- `group_members` rows with `source = 'github_org'` and `source_ref =
--- external_id`, touching only auto rows so manual memberships are preserved.
+-- (e.g. a GitHub organization). The reconciler iterates these bindings --
+-- lazily on a member's re-auth and periodically -- and for each one
+-- inserts/deletes `group_members` rows with `source = 'github_org'` and
+-- `source_ref = external_id`, touching only auto rows so manual memberships are
+-- preserved.
 --
--- `external_id` is the provider's STABLE identifier for the source (e.g. the
+-- `external_id` is the provider's stable identifier for the source (e.g. the
 -- GitHub org's numeric id), not its renameable login; `external_name` is kept
 -- for display only. A group may sync from several sources, and one source may
 -- feed several groups, hence the composite key. `last_synced_at` is null until
@@ -213,29 +231,26 @@ CREATE TABLE tml_switchboard.group_auto_sources (
 );
 
 
--- ===========================================================================
+-- =============================================================================
 -- API TOKENS
--- ===========================================================================
---
--- Programmatic auth for clients that cannot perform an interactive OAuth flow
--- (CLI, CI, system actors). A token currently acts with the FULL authority of
--- its owning subject; per-token scoping is intentionally deferred and can be
--- added later as a `token_grants` table without disturbing this one.
---
--- Tokens have both natural expiration and an explicit revocation mechanism,
--- which voids a token before it expires.
+-- =============================================================================
 CREATE TYPE tml_switchboard.api_token_revocation AS (
     revoked_at timestamp with time zone,
     revocation_reason text
 );
 
 
+-- A token currently acts with the full authority of its owning subject;
+-- per-token scoping can be added later as a `token_grants` table without
+-- disturbing this one.
+--
+-- Tokens have both natural expiration and an explicit revocation mechanism,
+-- which voids a token before it expires.
+--
 -- `user_agent` and `created_ip`/`created_port` record the provenance of a token
 -- at mint time (the client that requested it), surfaced in the session-list API
--- and mirrored into the `session_token_issued` audit event. `created_ip` is the
--- client address as resolved by the server's trusted-proxy policy (text rather
--- than `inet` so a proxy-supplied value that fails to parse is still recorded
--- verbatim for forensics). `comment` is an optional user-supplied label.
+-- and mirrored into the `session_token_issued` audit event. `comment` is an
+-- optional user-supplied label.
 CREATE TABLE tml_switchboard.api_tokens (
     token_id uuid NOT NULL PRIMARY KEY,
     token bytea NOT NULL UNIQUE,
@@ -245,24 +260,27 @@ CREATE TABLE tml_switchboard.api_tokens (
     expires_at timestamp with time zone NOT NULL,
     user_agent text,
     comment text,
+    -- `created_{ip,port}` nullable, for when a token is minted manually by an
+    -- operator. In that case, the `user_agent` should be populated
+    -- appropriately, and an audit event inserted manually.
     created_ip text,
     created_port integer,
     CHECK (octet_length(token) = 32)
 );
 
 
--- ===========================================================================
+-- =============================================================================
 -- OAUTH FLOWS
--- ===========================================================================
+-- =============================================================================
 --
 -- Short-lived server-side record of an in-flight OAuth authorization-code flow.
 -- When the switchboard redirects a user to the provider it mints a random CSRF
--- `state` and persists it here; on callback it looks the state up (consuming the
--- row) to confirm the response corresponds to a flow this server actually
+-- `state` and persists it here; on callback it looks the state up (consuming
+-- the row) to confirm the response corresponds to a flow this server actually
 -- initiated. `provider` records which provider the flow targets so the callback
 -- knows which token endpoint and identity mapping to use. Rows are deleted on
--- successful callback and swept after `expires_at`; a never-completed flow
--- simply expires.
+-- successful callback and can be swept after `expires_at`; a never-completed
+-- flow simply expires.
 CREATE TABLE tml_switchboard.oauth_flows (
     state text NOT NULL PRIMARY KEY,
     provider text NOT NULL,
@@ -272,10 +290,11 @@ CREATE TABLE tml_switchboard.oauth_flows (
 );
 
 
--- ===========================================================================
+-- =============================================================================
 -- HOSTS
--- ===========================================================================
--- Host + Port tuple for ssh_endpoints of a host.
+-- =============================================================================
+--
+-- Host + port tuple for ssh_endpoints of a host.
 CREATE DOMAIN tml_switchboard.port AS integer CHECK (
     value >= 0
     AND value < 65535
@@ -294,33 +313,39 @@ CREATE TYPE tml_switchboard.ssh_endpoint AS (
 );
 
 
--- All hosts must be registered with the switchboard database: any host not
--- registered will be turned away at the gate, so to speak. A host is the
--- managed device that actually runs the user workload; the supervisor is the
--- software process that drives it and is the WebSocket peer of the switchboard.
--- The `hosts` row carries both the host's user-facing properties (name, tags,
--- ssh_endpoints, owner) and the credentials/state of the supervisor authorized
--- to drive it (auth_token, worker_instance_id) — one row per host.
+-- A host is the managed device that actually runs the user workload; the
+-- supervisor is the software process that drives it and is the WebSocket peer
+-- of the switchboard.
 --
--- The auth_token field authenticates the host's supervisor: a 256-byte random
+-- The `hosts` table carries both the host's user-facing properties (name, tags,
+-- ssh_endpoints, owner) and the credentials/state of the supervisor authorized
+-- to drive it (auth_token, worker_instance_id).
+--
+-- The auth_token field authenticates the host's supervisor: a 32-byte random
 -- string uniquely identifying the supervisor on connect.
 CREATE TABLE tml_switchboard.hosts (
     host_id uuid NOT NULL PRIMARY KEY,
     name text NOT NULL,
     auth_token bytea NOT NULL UNIQUE,
+    -- Host-specific tags, separate from target (DUT) tags.
     tags TEXT[] NOT NULL,
-    -- Owning subject (user or group). NULL means orphaned: the resource has no
-    -- owner and is manageable only by members of the admin group. Resources are
-    -- orphaned (not cascade-deleted) when their owner is deleted, hence
-    -- `on delete set null`.
+    -- Owning subject (user or group).
+    --
+    -- NULL means orphaned: the resource has no owner and is manageable only by
+    -- members of the admin group. Resources are orphaned (not cascade-deleted)
+    -- when their owner is deleted, hence `on delete set null`.
     owner_id uuid REFERENCES tml_switchboard.subjects (subject_id) ON DELETE SET NULL,
     -- SSH endpoints that all jobs executing on this host are reachable under.
     -- Each endpoint is a "hostname:port" tuple. IPv6 addreses are enclosed in
     -- square brackets, such as "[::1]:22".
+    --
+    -- TODO: in the future, SSH endpoints & proxies may be dynamically assigned.
+    -- In that case, this column would be removed, and the assigned endpoints
+    -- will only be written to the `jobs` table.
     ssh_endpoints tml_switchboard.ssh_endpoint[] NOT NULL,
-    -- A host can either be idle or have a job assigned. This column keeps
-    -- track of this state. If a job is assigned, then the host is not idle,
-    -- and the "sub-state" is determined through the job's state data.
+    -- A host can either be idle or have a job assigned. This column keeps track
+    -- of this state. If a job is assigned, then the host is not idle, and the
+    -- "sub-state" is determined through the job's state data.
     --
     -- This is the *canonical* "assigned job" pointer. The invariant
     --
@@ -331,6 +356,12 @@ CREATE TABLE tml_switchboard.hosts (
     -- sole writer). The partial unique index below enforces the half that is
     -- expressible as a pure constraint: a job is `current_job` for at most one
     -- host. FK constraint added after `jobs` is defined below.
+    --
+    -- Note: a host can be assigned a job that is already finalized. That is OK,
+    -- and intended, as the supervisor WS worker will explicitly ask a
+    -- supervisor to drop a given job. Only when the supervisor reports that it
+    -- no longer holds a job will this row be cleared, and the host becomes idle
+    -- and eligible for scheduling new jobs.
     current_job uuid,
     -- Each host is driven by at most one supervisor connection, serviced by a
     -- worker. To prevent multiple concurrent workers claiming ownership of the
@@ -339,29 +370,36 @@ CREATE TABLE tml_switchboard.hosts (
     -- operations.
     worker_instance_id bigint NOT NULL DEFAULT 0,
     -- Liveness heartbeat: the current worker refreshes this on each periodic
-    -- tick, and clears it to NULL when it disconnects cleanly (without having
-    -- been superseded). A host is "live" -- eligible for the scheduler to
-    -- dispatch onto -- iff `last_seen_at` is non-null and recent (within the
-    -- configured staleness window). NULL ⇒ no connected supervisor; a stale
-    -- timestamp ⇒ the worker died silently (the heartbeat catches what a missed
-    -- clean disconnect does not). This is the DB-only signal by which the
-    -- (out-of-process) scheduler learns which hosts have a live supervisor; no
-    -- in-process channel couples them.
+    -- ping response, and clears it to NULL when it disconnects cleanly (without
+    -- having been superseded by another WS worker).
+    --
+    -- A host is "live" (eligible for the scheduler to dispatch onto) iff
+    -- `last_seen_at` is non-null and recent (within a separately configured
+    -- staleness window).
+    --
+    -- - NULL -> no connected supervisor (although non-NULL does not mean a
+    --   supervisor is connected).
+    --
+    -- - A stale timestamp -> the WS worker died silently or the supervisor has
+    --   not responsed to a ping within that time.
+    --
+    -- The scheduler uses this field when filtering for supervisors eligible for
+    -- scheduling a given job.
     last_seen_at timestamp with time zone,
     CHECK (octet_length(auth_token) = 32),
     CHECK (worker_instance_id >= 0)
 );
 
 
--- ===========================================================================
+-- =============================================================================
 -- JOBS
--- ===========================================================================
+-- =============================================================================
 --
--- The database job table is an archive of inactive jobs, a persistent store for
--- reconstructing switchboard state after a restart, and a record of final exit
--- status.
 -- Restart policy dictates the number of times a job can be restarted
--- automatically by the switchboard.
+-- automatically by the switchboard. Currently just a primitive counter (in the
+-- future, the policy may become more expressive). The switchboard may
+-- internally expose an upper bound on this, or require special permissions to
+-- set a given restart count).
 CREATE TYPE tml_switchboard.restart_policy AS (remaining_restart_count integer);
 
 
@@ -372,19 +410,20 @@ CREATE TYPE tml_switchboard.job_state AS enum(
     -- Bound to a host but StartJob not yet sent; no longer eligible for
     -- (re)scheduling. dispatched_on_host_id set, started_at null.
     'assigned',
-    -- Assigned & starting up; carries initializing_stage.
+    -- Assigned & starting up; sub-states in `initializing_stage`.
     'initializing',
     -- Assigned & running.
     'ready',
     -- Assigned & shutting down.
     'terminating',
-    -- Terminal; carries termination_reason and terminated_at.
+    -- Terminal; `termination_reason` and `terminated_at` are populated.
     'finalized'
 );
 
 
 -- The sub-stage of an `initializing` job, mirroring the wire-level
--- `JobInitializingStage`.
+-- `JobInitializingStage`. Not intended to be used/interpreted in the
+-- switchboard, just informational for the user.
 CREATE TYPE tml_switchboard.job_initializing_stage AS enum(
     'starting',
     'fetching_image',
@@ -394,8 +433,8 @@ CREATE TYPE tml_switchboard.job_initializing_stage AS enum(
 );
 
 
--- Why a job terminated. Set once, at finalization. Orthogonal to the task's exit
--- status (success/failure of the user workload) and to any exit message.
+-- Why a job terminated. Set once, at finalization. Orthogonal to the task's
+-- exit status (success/failure of the user workload) and to any exit message.
 CREATE TYPE tml_switchboard.termination_reason AS enum(
     -- workload-driven (the job's own process ended it)
     'workload_exited', -- e.g., QEMU process exits
@@ -418,32 +457,43 @@ CREATE TYPE tml_switchboard.termination_reason AS enum(
 
 
 -- The host-reported outcome of the user's workload (its "task outcome"), as
--- relayed by the host's supervisor. Set out-of-band of termination and
--- revisable while assigned: `pending` until known, then `success`/`failure`.
--- Once set it is never cleared. Orthogonal to termination_reason.
+-- relayed by the host's supervisor.
+--
+-- Set out-of-band of termination and revisable while assigned: `pending` until
+-- known, then `success`/`failure`. Once set it is never cleared. Orthogonal to
+-- termination_reason.
 CREATE TYPE tml_switchboard.task_exit_status AS enum('pending', 'success', 'failure');
 
 
 CREATE TABLE tml_switchboard.jobs (
     job_id uuid NOT NULL PRIMARY KEY,
-    -- Owning subject (user or group). NULL means orphaned (see hosts). For a
-    -- job started by a user on a group-owned host, the user is the owner; the
-    -- owning group's control over the job is conferred separately, as an
-    -- irrevocable grant inserted at dispatch time (see job_grants).
+    -- Owning subject (user or group).
+    --
+    -- NULL means orphaned (see hosts).
+    --
+    -- For a job started by a user on a host owned by another subject (e.g.,
+    -- other user that has granted access, or group that the useris a member
+    -- of), the enqueueing user is the owner; the host owner's control over the
+    -- job is conferred separately, as an irrevocable grant inserted at dispatch
+    -- time (see job_grants).
     owner_id uuid REFERENCES tml_switchboard.subjects (subject_id) ON DELETE SET NULL,
-    -- These specify the job image and the nature of the job. A job's image is
-    -- referenced against the switchboard image catalog: either a concrete image
-    -- (`image_id`, a registered `images` row) or an image group (`image_group_id`
-    -- plus the frozen `image_group_generation`, an `image_group_generations` row)
-    -- resolved to a concrete member at dispatch.
+    -- These columns specify the job image and the nature of the job. A job's
+    -- image is referenced against the switchboard image catalog: either a
+    -- concrete image (`image_id`, a registered `images` row) or an image group
+    -- (`image_group_id` plus the frozen `image_group_generation`, an
+    -- `image_group_generations` row) resolved to a concrete member at dispatch.
+    --
     --  (1) normal job:    exactly one of image_id / image_group_id is set; both
     --                     resume_job_id and restart_job_id are null
+    --
     --  (2) restarted job: exactly one of image_id / image_group_id is set;
     --                     restart_job_id is set
+    --
     --  (3) resumed job:   resume_job_id is set; image_id / image_group_id null
+    --
     -- `image_group_generation` is set exactly when `image_group_id` is: the
-    -- generation is frozen at enqueue so the candidate set is reproducible.
-    -- The FKs to `images` / `image_group_generations` are added by ALTER TABLE
+    -- generation is frozen at enqueue so the candidate set is reproducible. The
+    -- FKs to `images` / `image_group_generations` are added by ALTER TABLE
     -- after the IMAGE CATALOG section, since those tables are defined later in
     -- this file (same forward-reference pattern as `hosts.current_job`).
     resume_job_id uuid REFERENCES tml_switchboard.jobs (job_id) ON DELETE NO ACTION,
@@ -452,21 +502,23 @@ CREATE TABLE tml_switchboard.jobs (
     image_group_id uuid,
     image_group_generation int,
     -- The concrete image actually dispatched, recorded at dispatch for
-    -- reproducibility/audit (the digest is recovered by join to `images`). For a
-    -- concrete-image job this equals `image_id`; for a group job it is the member
-    -- the matcher selected. Images are immortal, so no cascade.
+    -- reproducibility/audit (the digest is recovered by join to `images`).
+    --
+    -- For a concrete-image job this equals `image_id`; for a group job it is
+    -- the member the matcher selected.
     resolved_image_id uuid,
-    -- SSH keys to be injected, if any
+    -- SSH keys to be injected into the job, if any. Can be updated throughout
+    -- the job's lifetime, new keys get deployed through the puppet.
     ssh_keys TEXT[] NOT NULL,
-    -- Restart policy
+    -- Job's restart policy.
     restart_policy tml_switchboard.restart_policy NOT NULL,
-    -- Token the job was enqueued by. Used to determine which hosts a job
-    -- can run on.
+    -- Token the job was enqueued by. Used to determine which hosts a job can
+    -- run on, based on the subject that the token belongs to.
     enqueued_by_token_id uuid NOT NULL REFERENCES tml_switchboard.api_tokens (token_id) ON DELETE NO ACTION,
     -- Host eligibility: the set of tags a host must carry (as a superset) for
-    -- this job to be schedulable onto it. Opaque strings, matched by containment
-    -- against `hosts.tags`. Target (DUT) requirements live in the separate
-    -- `job_target_requirements` table.
+    -- this job to be schedulable onto it. Opaque strings, matched by
+    -- containment against `hosts.tags`. Target (DUT) requirements live in the
+    -- separate `job_target_requirements` table.
     host_tag_requirements TEXT[] NOT NULL DEFAULT '{}',
     -- The amount of time the job can run before it is killed.
     job_timeout interval NOT NULL,
@@ -475,29 +527,33 @@ CREATE TABLE tml_switchboard.jobs (
     -- The sub-stage while `job_state = 'initializing'`; null otherwise.
     initializing_stage tml_switchboard.job_initializing_stage,
     -- The time at which the job was queued. If after
-    -- [config:api.jobs.queue_timeout] the job is still queued, it is canceled.
+    -- [config:api.jobs.queue_timeout] the job is still queued, it is
+    -- terminated.
     queued_at timestamp with time zone NOT NULL,
     -- The time at which the job was started.
     started_at timestamp with time zone,
-    -- ID of the host the job was dispatched to, so the switchboard can
-    -- discern job failure on supervisor reconnection after a dual failure.
+    -- ID of the host the job was dispatched to.
     dispatched_on_host_id uuid,
     -- SSH endpoints that this job is reachable under, populated once assigned
     -- to a host that exposes endpoints.
     ssh_endpoints tml_switchboard.ssh_endpoint[],
-    -- User-requested cancellation signal: the DB side of user-cancel. When set,
-    -- the assigned job's worker converges the job to `finalized` with
-    -- `termination_reason = user_canceled`. It is re-read on every reconcile pass
-    -- (alongside the execution-timeout deadline), so the decision is always made
-    -- against fresh state and composes with a later API that sets this column.
-    -- NULL means no cancellation requested. Queued (unassigned) jobs are the
+    -- User-requested termination signal: the DB side of user-terminate.
+    --
+    -- When set, the assigned job's worker converges the job to `finalized` with
+    -- `termination_reason = user_terminated`. It is re-read on every reconcile
+    -- pass (alongside the execution-timeout deadline), so the decision is
+    -- always made against fresh state and composes with a later API that sets
+    -- this column.
+    --
+    -- NULL means no termination requested. Queued (unassigned) jobs are the
     -- scheduler/reaper's responsibility, not a worker's.
-    -- Filled out when transitioned into `finalized`. `termination_reason` records
-    -- *why* the job stopped; `task_exit_status` records the *result of the user
-    -- workload* (independent of the reason); `exit_message` is an optional
-    -- human-readable note. Captured workload output is stored in object storage,
-    -- not here.
     terminate_requested_at timestamp with time zone,
+    -- Filled out when transitioned into `finalized`.
+    --
+    -- `termination_reason` records *why* the job stopped; `task_exit_status`
+    -- records the *result of the user workload* (independent of the reason);
+    -- `exit_message` is an optional human-readable note. Captured workload
+    -- output is stored in object storage, not here.
     termination_reason tml_switchboard.termination_reason,
     task_exit_status tml_switchboard.task_exit_status,
     exit_message text,
@@ -580,23 +636,23 @@ WHERE
 
 
 -- Host tags are opaque strings (`key=value` pairs or bare flags, by convention
--- only -- the matcher never parses them). A job requests a host whose tags are a
--- superset of the job's `host_tag_requirements`; the GIN index backs that
+-- only -- the matcher never parses them). A job requests a host whose tags are
+-- a superset of the job's `host_tag_requirements`; the GIN index backs that
 -- containment (`tags @> required`) lookup over the host pool.
 CREATE INDEX hosts_tags_gin ON tml_switchboard.hosts USING gin (tags);
 
 
--- ===========================================================================
+-- =============================================================================
 -- HOST TARGETS (DUTs)
--- ===========================================================================
+-- =============================================================================
 --
 -- A host drives one or more attached targets (devices under test). Each target
 -- carries its own opaque tag set (e.g. `board=nrf52840dk`, `ble`, `gpio`),
 -- independent of the host's tags. A job requests an array of targets, each by a
--- required tag subset; the scheduler assigns each requested target to a distinct
--- DUT whose tags satisfy it (a bipartite match, done in the application). Target
--- tags do NOT participate in image selection -- that is host-tag-only (see
--- `image_group_members`).
+-- required tag subset; the scheduler assigns each requested target to a
+-- distinct DUT whose tags satisfy it (a bipartite match, done in the
+-- application). Target tags do NOT participate in image selection -- that is
+-- host-tag-only (see `image_group_members`).
 CREATE TABLE tml_switchboard.host_targets (
     target_id uuid NOT NULL PRIMARY KEY,
     host_id uuid NOT NULL REFERENCES tml_switchboard.hosts (host_id) ON DELETE CASCADE,
@@ -608,21 +664,22 @@ CREATE TABLE tml_switchboard.host_targets (
 );
 
 
--- Backs the per-target containment (`tags @> required`) match during scheduling.
+-- Backs the per-target containment (`tags @> required`) match during
+-- scheduling.
 CREATE INDEX host_targets_tags_gin ON tml_switchboard.host_targets USING gin (tags);
 
 
--- ===========================================================================
+-- =============================================================================
 -- PERMISSIONS / ACLs
--- ===========================================================================
+-- =============================================================================
 --
 -- Authorization is ownership + explicit grants. Each resource carries an
 -- `owner_id` (above); the grant tables below record additional (subject,
--- permission) entries. A subject is authorized for a permission on a resource if
--- it (or any group it transitively belongs to) owns the resource or holds a
--- matching grant -- the *policy* disjunction is evaluated in application SQL, not
--- here. The one shared building block both sides of that disjunction need -- the
--- set of a subject's transitive group memberships -- is the `principals`
+-- permission) entries. A subject is authorized for a permission on a resource
+-- if it (or any group it transitively belongs to) owns the resource or holds a
+-- matching grant -- the *policy* disjunction is evaluated in application SQL,
+-- not here. The one shared building block both sides of that disjunction need
+-- -- the set of a subject's transitive group memberships -- is the `principals`
 -- function below, so the application query stays free of the recursive CTE.
 --
 -- `principals(arg_subject)` returns the subject itself plus every group it
@@ -643,18 +700,18 @@ CREATE OR REPLACE FUNCTION tml_switchboard.principals (arg_subject uuid) returns
 $$;
 
 
---
--- `manage` is the meta-permission: holding it lets a subject edit the resource's
--- ACL (add/revoke grants) and transfer ownership. The owner holds it implicitly.
+-- `manage` is the meta-permission: holding it lets a subject edit the
+-- resource's ACL (add/revoke grants) and transfer ownership. The owner holds it
+-- implicitly.
 --
 -- `revocable` distinguishes user-manageable grants (default true) from "fixed"
 -- grants the switchboard inserts and then marks irrevocable -- e.g. when a user
--- starts a job on a group-owned host, the owning group is given an
--- irrevocable `stop` grant on the job, because the job consumes that group's
+-- starts a job on a host owned by a group the user is member of, or owned by a
+-- subject that has given the user a grant, the host-owning subjet is given an
+-- irrevocable `stop` grant on the job, because the job consumes that owner's
 -- resources. Irrevocable rows cannot be deleted or modified by anyone (enforced
--- by trigger); they are cleared only when the resource itself is deleted
--- (FK cascade). The switchboard inserts a row as revocable, then UPDATEs
--- revocable -> false to lock it.
+-- by trigger); they are cleared only when the resource itself is deleted (FK
+-- cascade).
 CREATE TYPE tml_switchboard.host_permission AS enum('read', 'start', 'ssh', 'manage');
 
 
@@ -714,9 +771,10 @@ UPDATE ON tml_switchboard.job_grants FOR each ROW
 EXECUTE function tml_switchboard.deny_irrevocable_grant_change ();
 
 
--- ===========================================================================
+-- =============================================================================
 -- JOB PARAMETERS
--- ===========================================================================
+-- =============================================================================
+--
 CREATE TYPE tml_switchboard.parameter_value AS (value text, is_secret bool);
 
 
@@ -730,9 +788,9 @@ CREATE TABLE tml_switchboard.job_parameters (
 );
 
 
--- ===========================================================================
+-- =============================================================================
 -- JOB TARGET REQUIREMENTS
--- ===========================================================================
+-- =============================================================================
 --
 -- The ordered array of targets (DUTs) a job requests. One row per requested
 -- target; `req_index` is its position in the submitted array (so a job asking
@@ -749,14 +807,13 @@ CREATE TABLE tml_switchboard.job_target_requirements (
 );
 
 
--- ===========================================================================
+-- =============================================================================
 -- SCHEDULING
--- ===========================================================================
+-- =============================================================================
 --
 -- Coordination between the scheduler and the per-host supervisor workers is
--- DB-only (no in-process channels), so they can be distributed across processes;
--- for now both poll, and Postgres LISTEN/NOTIFY can replace polling later. See
--- doc/oci-image-migration-plan.md §8.3.
+-- DB-only (no in-process channels)
+--
 -- The scheduler scans queued jobs oldest-first; a partial index keeps that scan
 -- cheap as the (mostly non-queued) jobs table grows.
 CREATE INDEX jobs_queued_idx ON tml_switchboard.jobs (queued_at)
@@ -765,28 +822,29 @@ WHERE
 
 
 -- `GET /jobs` lists readable jobs newest-first with keyset pagination on
--- `(queued_at, job_id)`. This index (matching that order) turns the listing into
--- an index range scan and makes the keyset seek depth-independent, across all
--- job states (unlike the partial index above).
+-- `(queued_at, job_id)`. This index (matching that order) turns the listing
+-- into an index range scan and makes the keyset seek depth-independent, across
+-- all job states (unlike the partial index above).
 CREATE INDEX jobs_queued_at_job_id_idx ON tml_switchboard.jobs (queued_at DESC, job_id DESC);
 
 
--- Hosts a job may be dispatched onto, by the set-based criteria SQL expresses
--- well: the host is idle (no current job), live (its worker's heartbeat
+-- Hosts a job may be dispatched onto, by the set-based criteria SQL expresses:
+-- the host is idle (no current job), live (its worker's heartbeat
 -- `last_seen_at` is newer than the caller-supplied staleness cutoff), and
 -- host-tag eligible (its opaque `tags` are a superset of the job's
 -- `host_tag_requirements`). `tags @> '{}'` holds for every host, so a job with
 -- no host-tag requirements matches all idle/live hosts.
 --
 -- This is only the cheap pre-filter: the scheduler additionally applies the
--- target/DUT bipartite match and the image resolution (neither of which belongs
--- in SQL) under a row lock in its dispatch transaction.
+-- target/DUT bipartite match and the image resolution under a row lock in its
+-- dispatch transaction.
 --
--- TODO(authz): this does NOT yet restrict to hosts the job's enqueuing principal
--- is permitted to use. Authorization (host ownership, or a `start` entry in
--- `host_grants`, evaluated via `principals()`) should be folded in here as an
--- additional join/EXISTS predicate so unauthorized hosts never become
--- candidates. Until then the scheduler may place a job on any tag-eligible host.
+-- TODO(authz): this does NOT yet restrict to hosts the job's enqueuing
+-- principal is permitted to use. Authorization (host ownership, or a `start`
+-- entry in `host_grants`, evaluated via `principals()`) should be folded in
+-- here as an additional join/EXISTS predicate so unauthorized hosts never
+-- become candidates. Until then the scheduler may place a job on any
+-- tag-eligible host.
 CREATE FUNCTION tml_switchboard.eligible_hosts (
     p_job_id uuid,
     p_liveness_cutoff timestamp with time zone
@@ -809,18 +867,15 @@ $$;
 -- IMAGE CATALOG
 -- ===========================================================================
 --
--- The switchboard is the catalog of OCI images (see
--- doc/oci-image-migration-plan.md §5.3/§8). It stores only references --
--- `{registry, repository}` locations and the content-addressed digest -- never
--- image bytes. An image's *identity* is its OCI manifest digest; the same digest
--- may be served from several locations (registry redundancy, promotion to a
--- canonical/system mirror), so locations are a separate table (D12/D16). A job
+-- The switchboard maintains catalog of Treadmill OCI images.
+--
+-- An image's *identity* is its OCI manifest digest; the same digest may be
+-- served from several locations, so locations are a separate table. A job
 -- referencing an image by id is resolved, at dispatch, to its digest plus its
 -- ordered locations and handed to the supervisor.
 --
--- Image *groups* are mutable, named, generationed entities (no longer OCI
--- artifacts); see doc/image-groups-mutable-generations-plan.md and the group
--- tables further below.
+-- Image *groups* are mutable, named, generationed entities.
+--
 -- A registered Treadmill image, identified by its OCI manifest digest. `attrs`
 -- is free-form metadata projected off the validated manifest at registration
 -- time; `artifact_type` records the manifest's `artifactType` for display.
@@ -838,8 +893,15 @@ CREATE TABLE tml_switchboard.images (
 
 
 -- The registry locations a given image's bytes can be pulled from. `status`
--- distinguishes the user's original `external` registry from `canonical`/`system`
--- mirrors added by promotion (the digest never changes; promotion is an INSERT).
+-- distinguishes the user's original `external` registry from
+-- `canonical`/`system` mirrors added by promotion (the digest never changes;
+-- promotion is an INSERT).
+--
+-- We use `canonical` / `system` to track the expected reliability/longevity of
+-- the image and/or mirror. A `system` mirror is assumed to be under the control
+-- of the Treadmill system administrators and always available. Certain images
+-- may be said to live in `canonical` mirrors, which are assumed to be highly
+-- available as well, although outside of the system's control.
 CREATE TABLE tml_switchboard.image_locations (
     image_id uuid NOT NULL REFERENCES tml_switchboard.images (id) ON DELETE CASCADE,
     registry text NOT NULL,
@@ -851,13 +913,16 @@ CREATE TABLE tml_switchboard.image_locations (
 );
 
 
--- A named, mutable image group. `name` is the stable moving-target handle a job
--- references (by id); membership lives in immutable per-generation snapshots
+-- A named, mutable image group.
+--
+-- `name` is the stable moving-target handle a job references (by id), such as
+-- "ubuntu-2604".
+--
+-- Image membership lives in immutable per-generation snapshots
 -- (`image_group_generations` / `image_group_members`). Groups are never deleted
 -- (metadata is immortal), so a job that pinned a generation always resolves.
 -- `public` grants every subject the `use` permission (run jobs against the
--- group) without an explicit grant; it never confers `manage`. See
--- doc/image-groups-mutable-generations-plan.md.
+-- group) without an explicit grant.
 CREATE TABLE tml_switchboard.image_groups (
     id uuid NOT NULL PRIMARY KEY,
     name text NOT NULL UNIQUE,
@@ -869,8 +934,8 @@ CREATE TABLE tml_switchboard.image_groups (
 
 
 -- One immutable snapshot of a group's membership. Every membership edit appends
--- a new generation (per-group monotonic from 1, allocated under an advisory lock
--- in the create-generation transaction). Append-only: a trigger blocks
+-- a new generation (per-group monotonic from 1, allocated under an advisory
+-- lock in the create-generation transaction). Append-only: a trigger blocks
 -- UPDATE/DELETE (same pattern as audit_events). `created_by` is provenance.
 CREATE TABLE tml_switchboard.image_group_generations (
     group_id uuid NOT NULL REFERENCES tml_switchboard.image_groups (id) ON DELETE CASCADE,
@@ -882,13 +947,16 @@ CREATE TABLE tml_switchboard.image_group_generations (
 );
 
 
--- The members of ONE generation (full replacement per generation). A member's
--- eligibility is a set of required host tags: the member is admissible for a host
--- iff `hosts.tags` is a superset of `required_host_tags`. Among admissible
--- members the most specific (largest required set) wins, ties broken by `index`
--- (the member's explicit array position in the create-generation request). Image
--- selection uses HOST tags only; target/DUT tags are irrelevant here. `image_id`
--- references an immortal `images` row (no cascade: images are never deleted).
+-- The members of ONE generation (full replacement per generation).
+--
+-- A member's eligibility is a set of required host tags: the member is
+-- admissible for a host iff `hosts.tags` is a superset of `required_host_tags`.
+--
+-- Among admissible members the most specific (largest required set) wins, ties
+-- broken by `index` (the member's explicit array position in the
+-- create-generation request). Image selection uses HOST tags only; target/DUT
+-- tags are irrelevant here. `image_id` references an immortal `images` row (no
+-- cascade: images are never deleted).
 CREATE TABLE tml_switchboard.image_group_members (
     group_id uuid NOT NULL,
     generation int NOT NULL,
@@ -920,9 +988,9 @@ EXECUTE function tml_switchboard.deny_generation_change ();
 
 
 -- Image-group permissions. Authorization is the standard ownership ∨ grant
--- disjunction evaluated via `principals()`; the owner holds `manage` implicitly.
--- All grants are user-managed (no irrevocable/fixed grants as jobs have), so no
--- revocability trigger.
+-- disjunction evaluated via `principals()`; the owner holds `manage`
+-- implicitly. All grants are user-managed (no irrevocable/fixed grants as jobs
+-- have), so no revocability trigger.
 CREATE TYPE tml_switchboard.image_group_permission AS enum('use', 'manage');
 
 
@@ -935,9 +1003,10 @@ CREATE TABLE tml_switchboard.image_group_grants (
 );
 
 
--- The jobs table's image references, added here because `jobs` is defined before
--- the IMAGE CATALOG section (forward-reference pattern, as for `hosts.current_job`).
--- Images and generations are immortal, so all of these are ON DELETE NO ACTION.
+-- The jobs table's image references, added here because `jobs` is defined
+-- before the IMAGE CATALOG section (forward-reference pattern, as for
+-- `hosts.current_job`). Images and generations are immortal, so all of these
+-- are ON DELETE NO ACTION.
 ALTER TABLE tml_switchboard.jobs
 ADD FOREIGN KEY (image_id) REFERENCES tml_switchboard.images (id) ON DELETE NO ACTION;
 
@@ -958,14 +1027,14 @@ ADD FOREIGN KEY (image_group_id, image_group_generation) REFERENCES tml_switchbo
 -- observational events). Written in the SAME transaction as the change it
 -- describes, via the `audit::transition`/`audit::emit` chokepoint in the Rust
 -- code -- so a rolled-back state change never leaves an event behind, and an
--- event provably describes its mutation. See `AUDIT_LOG_PLAN.md` for the design.
+-- event provably describes its mutation.
 --
 -- Payloads are stored as raw structured JSON and rendered at view time by a
 -- per-event-type renderer keyed off `event_type`; the read API redacts based on
 -- the viewer's permissions on the related entity. Secret VALUES (e.g. the
 -- contents of `parameter_value.is_secret` parameters) must never be embedded in
--- a payload -- store the key name and a redacted marker instead.
--- One row per state change or observational event. Append-only: a trigger blocks
+-- a payload -- store the key name and a redacted marker instead. One row per
+-- state change or observational event. Append-only: a trigger blocks
 -- UPDATE/DELETE in normal operation (see `deny_audit_event_change` below); the
 -- relation cascade exists only for a future GC that deletes whole events
 -- deliberately by temporarily bypassing the trigger.
@@ -1010,9 +1079,9 @@ CREATE TYPE tml_switchboard.audit_role AS enum('actor', 'subject', 'context');
 -- (matching the `owner_id on delete set null` provenance rationale above).
 --
 -- `view_policy` is the EXACT permission a viewer must hold on `entity` to see
--- the event through this relation -- one of the host/job permission enum
--- values ('read'|'start'|'ssh'|'stop'|'manage') stored as text so the same
--- column covers both resource kinds, plus the sentinel 'operator_only' for
+-- the event through this relation -- one of the host/job permission enum values
+-- ('read'|'start'|'ssh'|'stop'|'manage') stored as text so the same column
+-- covers both resource kinds, plus the sentinel 'operator_only' for
 -- system-internal events that never surface in a user-facing feed. Visibility
 -- is disjunctive across relations: a viewer sees the event if they satisfy ANY
 -- one relation's policy. Permission-implication (e.g. `manage` => `read`) is a
