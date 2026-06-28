@@ -41,7 +41,6 @@ thiserror = { workspace = true, optional = true }
 client = ["dep:reqwest", "dep:thiserror"]
 
 [dev-dependencies]
-insta = { workspace = true }
 serde_json = { workspace = true }
 
 [lints]

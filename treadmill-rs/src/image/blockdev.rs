@@ -131,7 +131,18 @@ mod tests {
 
     #[test]
     fn blockdev_three_layer_chain() {
-        insta::assert_snapshot!(three_layer().blockdev_args().join("\n"));
+        let expected = [
+            "driver=file,node-name=tml-lower-0-file,filename=/store/treadmill/img/blobs/sha256/base,read-only=on",
+            "driver=qcow2,node-name=tml-lower-0,file=tml-lower-0-file,read-only=on",
+            "driver=file,node-name=tml-lower-1-file,filename=/store/treadmill/img/blobs/sha256/mid,read-only=on",
+            "driver=qcow2,node-name=tml-lower-1,file=tml-lower-1-file,read-only=on,backing=tml-lower-0",
+            "driver=file,node-name=tml-lower-2-file,filename=/store/treadmill/img/blobs/sha256/head,read-only=on",
+            "driver=qcow2,node-name=tml-lower-2,file=tml-lower-2-file,read-only=on,backing=tml-lower-1",
+            "driver=file,node-name=tml-disk-file,filename=/run/treadmill/jobs/abc/overlay.qcow2",
+            "driver=qcow2,node-name=tml-disk,file=tml-disk-file,backing=tml-lower-2",
+        ]
+        .join("\n");
+        assert_eq!(three_layer().blockdev_args().join("\n"), expected);
     }
 
     #[test]
