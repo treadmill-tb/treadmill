@@ -2,7 +2,8 @@
 //! session/token listing and revocation, and the per-user audit feed.
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::Path;
+use axum::extract::State;
 use http::StatusCode;
 use uuid::Uuid;
 
@@ -13,6 +14,7 @@ use treadmill_rs::api::switchboard::users::{
 
 use crate::audit;
 use crate::audit::feed::{AuditFeedResponse, fetch_events_for_entity};
+use crate::routes::params::{IdPath, TokenIdPath};
 use crate::serve::AppState;
 use crate::sql::api_token::{self, RevokeToken};
 use crate::sql::user::{RenameUser, UpdateUserProfile};
@@ -244,7 +246,7 @@ pub async fn patch_me(
 pub async fn get_user(
     State(state): State<AppState>,
     _subject: crate::auth::Subject,
-    Path(user_id): Path<Uuid>,
+    Path(IdPath { id: user_id }): Path<IdPath>,
 ) -> Result<Json<PublicUserProfile>, StatusCode> {
     let row = sqlx::query!(
         "select username, full_name, avatar_url \
@@ -310,7 +312,7 @@ pub async fn list_tokens(
 pub async fn revoke_token(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(token_id): Path<Uuid>,
+    Path(TokenIdPath { token_id }): Path<TokenIdPath>,
 ) -> Result<StatusCode, StatusCode> {
     let user_id = subject.user_id();
 
@@ -346,7 +348,7 @@ pub async fn revoke_token(
 pub async fn list_events(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(user_id): Path<Uuid>,
+    Path(IdPath { id: user_id }): Path<IdPath>,
 ) -> Result<Json<AuditFeedResponse>, StatusCode> {
     fetch_events_for_entity(&state, &subject, "subject", user_id)
         .await

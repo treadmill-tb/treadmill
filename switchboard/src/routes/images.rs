@@ -11,7 +11,8 @@
 //! No registry pull is involved.
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::Path;
+use axum::extract::State;
 use http::StatusCode;
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
@@ -28,6 +29,7 @@ use treadmill_rs::image::{Digest, media_types};
 
 use crate::auth::engine::{self, ImageGroupPermission as Perm};
 use crate::registry::RegistryError;
+use crate::routes::params::{DigestPath, GenerationPath, GrantPath, IdPath};
 use crate::serve::AppState;
 use crate::sql::image;
 
@@ -208,7 +210,7 @@ pub async fn list_images(
 pub async fn get_image(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(digest): Path<String>,
+    Path(DigestPath { digest }): Path<DigestPath>,
 ) -> Result<Json<ImageInfo>, StatusCode> {
     let rec = image::fetch_by_digest(state.pool(), &digest)
         .await
@@ -333,7 +335,7 @@ async fn require_manage(
 pub async fn get_image_group(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(group_id): Path<Uuid>,
+    Path(IdPath { id: group_id }): Path<IdPath>,
 ) -> Result<Json<ImageGroupInfo>, StatusCode> {
     let group = visible_group(&state, subject.user_id(), group_id).await?;
     Ok(Json(group_info(&state, group).await?))
@@ -378,7 +380,7 @@ async fn generation_info(
 pub async fn create_generation(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(group_id): Path<Uuid>,
+    Path(IdPath { id: group_id }): Path<IdPath>,
     Json(req): Json<CreateGenerationRequest>,
 ) -> Result<(StatusCode, Json<ImageGroupGenerationInfo>), StatusCode> {
     require_manage(&state, subject.user_id(), group_id).await?;
@@ -415,7 +417,10 @@ pub async fn create_generation(
 pub async fn get_generation(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path((group_id, generation)): Path<(Uuid, u32)>,
+    Path(GenerationPath {
+        id: group_id,
+        n: generation,
+    }): Path<GenerationPath>,
 ) -> Result<Json<ImageGroupGenerationInfo>, StatusCode> {
     visible_group(&state, subject.user_id(), group_id).await?;
     Ok(Json(generation_info(&state, group_id, generation).await?))
@@ -426,7 +431,7 @@ pub async fn get_generation(
 pub async fn grant_image_group(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(group_id): Path<Uuid>,
+    Path(IdPath { id: group_id }): Path<IdPath>,
     Json(req): Json<ImageGroupGrantRequest>,
 ) -> Result<StatusCode, StatusCode> {
     require_manage(&state, subject.user_id(), group_id).await?;
@@ -445,7 +450,7 @@ pub async fn grant_image_group(
 pub async fn list_image_group_grants(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(group_id): Path<Uuid>,
+    Path(IdPath { id: group_id }): Path<IdPath>,
 ) -> Result<Json<Vec<ImageGroupGrantInfo>>, StatusCode> {
     require_manage(&state, subject.user_id(), group_id).await?;
     let grants = image::list_image_group_grants(state.pool(), group_id)
@@ -476,7 +481,11 @@ pub async fn list_image_group_grants(
 pub async fn revoke_image_group_grant(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path((group_id, target, permission)): Path<(Uuid, Uuid, String)>,
+    Path(GrantPath {
+        id: group_id,
+        subject_id: target,
+        permission,
+    }): Path<GrantPath>,
 ) -> Result<StatusCode, StatusCode> {
     require_manage(&state, subject.user_id(), group_id).await?;
     // Reject an unknown permission word with a 400 rather than silently no-op.
@@ -500,7 +509,7 @@ pub async fn revoke_image_group_grant(
 pub async fn set_image_group_public(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(group_id): Path<Uuid>,
+    Path(IdPath { id: group_id }): Path<IdPath>,
     Json(req): Json<SetImageGroupPublicRequest>,
 ) -> Result<Json<ImageGroupInfo>, StatusCode> {
     require_manage(&state, subject.user_id(), group_id).await?;

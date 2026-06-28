@@ -9,7 +9,7 @@ use treadmill_rs::api::switchboard::hosts::{HostInfo, HostTarget};
 pub async fn list_events(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(host_id): Path<Uuid>,
+    Path(IdPath { id: host_id }): Path<IdPath>,
 ) -> Result<Json<AuditFeedResponse>, StatusCode> {
     fetch_events_for_entity(&state, &subject, "host", host_id)
         .await
@@ -67,8 +67,9 @@ pub async fn list(
     Ok(Json(out))
 }
 
+use axum::extract::Path;
+use axum::extract::State;
 use axum::extract::{ConnectInfo, WebSocketUpgrade, ws};
-use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use axum_extra::TypedHeader;
 
@@ -87,6 +88,7 @@ use treadmill_rs::api::switchboard_supervisor::{ProtocolVersion, ServerHello};
 use uuid::Uuid;
 
 use crate::auth::token::SecurityToken;
+use crate::routes::params::IdPath;
 use crate::serve::AppState;
 use crate::sql;
 use crate::supervisor_ws_worker::{SupervisorWSWorker, SupervisorWSWorkerConfig};
@@ -103,7 +105,7 @@ pub async fn connect(
     State(state): State<AppState>,
     ConnectInfo(socket_addr): ConnectInfo<SocketAddr>,
     TypedHeader(Authorization(bearer)): TypedHeader<Authorization<Bearer>>,
-    Path(host_id): Path<Uuid>,
+    Path(IdPath { id: host_id }): Path<IdPath>,
     headers: HeaderMap,
 ) -> Response {
     let auth_token = match SecurityToken::try_from(bearer) {

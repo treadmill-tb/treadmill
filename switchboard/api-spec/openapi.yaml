@@ -80,6 +80,16 @@ paths:
       - token: []
   /jobs/{id}/events:
     get:
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -95,6 +105,16 @@ paths:
       - token: []
   /jobs/{id}/log-token:
     post:
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -119,6 +139,16 @@ paths:
       - token: []
   /jobs/{id}:
     get:
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -138,6 +168,16 @@ paths:
       security:
       - token: []
     delete:
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -164,6 +204,16 @@ paths:
       - token: []
   /hosts/{id}/events:
     get:
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -185,6 +235,15 @@ paths:
         required: true
         schema:
           type: string
+        style: simple
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
         style: simple
       responses:
         '101':
@@ -294,6 +353,16 @@ paths:
       - token: []
   /users/me/tokens/{token_id}:
     delete:
+      parameters:
+      - in: path
+        name: token_id
+        description: The token's unique identifier.
+        required: true
+        schema:
+          description: The token's unique identifier.
+          type: string
+          format: uuid
+        style: simple
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -303,6 +372,16 @@ paths:
       - token: []
   /users/{id}:
     get:
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -320,6 +399,16 @@ paths:
       - token: []
   /users/{id}/events:
     get:
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -388,6 +477,15 @@ paths:
       - token: []
   /images/{digest}:
     get:
+      parameters:
+      - in: path
+        name: digest
+        description: The image's OCI manifest digest (`sha256:<hex>`).
+        required: true
+        schema:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        style: simple
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -456,6 +554,16 @@ paths:
       - token: []
   /image-groups/{id}:
     get:
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -471,6 +579,16 @@ paths:
       - token: []
   /image-groups/{id}/generations:
     post:
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
       requestBody:
         description: |-
           `POST /image-groups/{id}/generations`: append a new, immutable
@@ -507,6 +625,26 @@ paths:
       - token: []
   /image-groups/{id}/generations/{n}:
     get:
+      parameters:
+      - in: path
+        name: id
+        description: The image group's unique identifier.
+        required: true
+        schema:
+          description: The image group's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      - in: path
+        name: n
+        description: The generation number within the group.
+        required: true
+        schema:
+          description: The generation number within the group.
+          type: integer
+          format: uint32
+          minimum: 0
+        style: simple
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -522,6 +660,16 @@ paths:
       - token: []
   /image-groups/{id}/grants:
     get:
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -538,6 +686,16 @@ paths:
       security:
       - token: []
     post:
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
       requestBody:
         description: '`POST /image-groups/{id}/grants`: grant `permission` on the group to a subject.'
         content:
@@ -572,6 +730,33 @@ paths:
       - token: []
   /image-groups/{id}/grants/{subject_id}/{permission}:
     delete:
+      parameters:
+      - in: path
+        name: id
+        description: The image group's unique identifier.
+        required: true
+        schema:
+          description: The image group's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      - in: path
+        name: permission
+        description: The permission being revoked (`use` or `manage`).
+        required: true
+        schema:
+          description: The permission being revoked (`use` or `manage`).
+          type: string
+        style: simple
+      - in: path
+        name: subject_id
+        description: The subject (user or group) the grant applies to.
+        required: true
+        schema:
+          description: The subject (user or group) the grant applies to.
+          type: string
+          format: uuid
+        style: simple
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -581,6 +766,16 @@ paths:
       - token: []
   /image-groups/{id}/public:
     put:
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
       requestBody:
         description: |-
           `PUT /image-groups/{id}/public`: declare a group public (or private again).
@@ -680,6 +875,15 @@ components:
 
         Formats as the canonical OCI string `sha256:<64 lower-case hex>`.
       type: string
+    DigestPath:
+      description: The `{digest}` segment of an image route.
+      type: object
+      properties:
+        digest:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+      required:
+      - digest
     GenerationMemberInfo:
       description: |-
         One member of a generation, as returned by the inspect route. A member is
@@ -725,6 +929,41 @@ components:
             type: string
       required:
       - image_id
+    GenerationPath:
+      description: The `{id}/generations/{n}` segments of an image-group generation route.
+      type: object
+      properties:
+        id:
+          description: The image group's unique identifier.
+          type: string
+          format: uuid
+        n:
+          description: The generation number within the group.
+          type: integer
+          format: uint32
+          minimum: 0
+      required:
+      - id
+      - n
+    GrantPath:
+      description: The `{id}/grants/{subject_id}/{permission}` segments of a grant route.
+      type: object
+      properties:
+        id:
+          description: The image group's unique identifier.
+          type: string
+          format: uuid
+        permission:
+          description: The permission being revoked (`use` or `manage`).
+          type: string
+        subject_id:
+          description: The subject (user or group) the grant applies to.
+          type: string
+          format: uuid
+      required:
+      - id
+      - subject_id
+      - permission
     GroupMembership:
       description: |-
         One group the user belongs to, including transitive memberships (e.g. via
@@ -806,6 +1045,16 @@ components:
       required:
       - name
       - tags
+    IdPath:
+      description: A single `{id}` UUID segment.
+      type: object
+      properties:
+        id:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+      required:
+      - id
     ImageGroupGenerationInfo:
       description: One immutable generation (membership snapshot) of an image group.
       type: object
@@ -1770,6 +2019,16 @@ components:
       - description: An unexpected internal failure.
         type: string
         const: internal_error
+    TokenIdPath:
+      description: The `{token_id}` segment of a token route.
+      type: object
+      properties:
+        token_id:
+          description: The token's unique identifier.
+          type: string
+          format: uuid
+      required:
+      - token_id
     TokenRevocation:
       description: When and why a token was revoked.
       type: object

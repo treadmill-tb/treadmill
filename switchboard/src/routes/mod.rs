@@ -2,6 +2,7 @@ mod auth;
 mod hosts;
 mod images;
 mod jobs;
+mod params;
 mod users;
 
 use crate::config::EmbeddedConsoleConfig;

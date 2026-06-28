@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::Path;
+use axum::extract::{Query, State};
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use http::StatusCode;
@@ -19,6 +20,7 @@ use crate::audit::model::{Job as AuditJob, Subject as AuditSubject};
 use crate::audit::{self, events};
 use crate::auth::engine::{self, ImageGroupPermission, JobPermission};
 use crate::log_streaming::{self, TokenScope};
+use crate::routes::params::IdPath;
 use crate::serve::AppState;
 use crate::sql::{image, job};
 
@@ -110,7 +112,7 @@ const READ_TOKEN_TTL: Duration = Duration::from_secs(5 * 60);
 pub async fn list_events(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(job_id): Path<Uuid>,
+    Path(IdPath { id: job_id }): Path<IdPath>,
 ) -> Result<Json<AuditFeedResponse>, StatusCode> {
     fetch_events_for_entity(&state, &subject, "job", job_id)
         .await
@@ -325,7 +327,7 @@ pub async fn enqueue(
 pub async fn get_job(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(job_id): Path<Uuid>,
+    Path(IdPath { id: job_id }): Path<IdPath>,
 ) -> Result<Json<JobInfo>, StatusCode> {
     let authorized =
         engine::can_access_job(state.pool(), subject.user_id(), job_id, JobPermission::Read)
@@ -369,7 +371,7 @@ pub async fn get_job(
 pub async fn terminate(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(job_id): Path<Uuid>,
+    Path(IdPath { id: job_id }): Path<IdPath>,
 ) -> Result<StatusCode, StatusCode> {
     let authorized =
         engine::can_access_job(state.pool(), subject.user_id(), job_id, JobPermission::Stop)
@@ -437,7 +439,7 @@ pub async fn terminate(
 pub async fn log_token(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(job_id): Path<Uuid>,
+    Path(IdPath { id: job_id }): Path<IdPath>,
 ) -> Result<Json<LogStreamCredentials>, StatusCode> {
     // Gate on the job's `read` permission (owner, an explicit read grant, or a
     // global admin). A job that does not exist yields `false` here, so the
