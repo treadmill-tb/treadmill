@@ -207,8 +207,8 @@ CREATE TYPE tml_switchboard.job_initializing_stage AS enum(
 
 CREATE TYPE tml_switchboard.termination_reason AS enum(
     'workload_exited',
-    'workload_self_canceled',
-    'user_canceled',
+    'workload_self_terminated',
+    'user_terminated',
     'queue_timeout',
     'execution_timeout',
     'image_error',
@@ -244,7 +244,7 @@ CREATE TABLE tml_switchboard.jobs (
     started_at timestamp with time zone,
     dispatched_on_host_id uuid,
     ssh_endpoints tml_switchboard.ssh_endpoint[],
-    cancel_requested_at timestamp with time zone,
+    terminate_requested_at timestamp with time zone,
     termination_reason tml_switchboard.termination_reason,
     task_exit_status tml_switchboard.task_exit_status,
     exit_message text,

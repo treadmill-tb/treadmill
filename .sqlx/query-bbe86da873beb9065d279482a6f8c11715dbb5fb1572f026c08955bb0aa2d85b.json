@@ -158,8 +158,8 @@
             "kind": {
               "Enum": [
                 "workload_exited",
-                "workload_self_canceled",
-                "user_canceled",
+                "workload_self_terminated",
+                "user_terminated",
                 "queue_timeout",
                 "execution_timeout",
                 "image_error",

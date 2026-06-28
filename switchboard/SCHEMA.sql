@@ -398,14 +398,14 @@ CREATE TYPE tml_switchboard.job_initializing_stage AS enum(
 -- status (success/failure of the user workload) and to any exit message.
 CREATE TYPE tml_switchboard.termination_reason AS enum(
     -- workload-driven (the job's own process ended it)
-    'workload_exited',
-    'workload_self_canceled',
-    -- externally canceled
-    'user_canceled',
+    'workload_exited', -- e.g., QEMU process exits
+    'workload_self_terminated', -- e.g., termination requested with puppet
+    -- externally terminated
+    'user_terminated',
     -- timeouts
     'queue_timeout',
     'execution_timeout',
-    -- bad / unfetchable image (user fault)
+    -- bad / unfetchable image
     'image_error',
     -- infrastructure failure ("crashed / dead")
     'host_match_error',
@@ -492,12 +492,12 @@ CREATE TABLE tml_switchboard.jobs (
     -- against fresh state and composes with a later API that sets this column.
     -- NULL means no cancellation requested. Queued (unassigned) jobs are the
     -- scheduler/reaper's responsibility, not a worker's.
-    cancel_requested_at timestamp with time zone,
     -- Filled out when transitioned into `finalized`. `termination_reason` records
     -- *why* the job stopped; `task_exit_status` records the *result of the user
     -- workload* (independent of the reason); `exit_message` is an optional
     -- human-readable note. Captured workload output is stored in object storage,
     -- not here.
+    terminate_requested_at timestamp with time zone,
     termination_reason tml_switchboard.termination_reason,
     task_exit_status tml_switchboard.task_exit_status,
     exit_message text,

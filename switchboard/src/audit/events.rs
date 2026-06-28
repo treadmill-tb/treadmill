@@ -189,15 +189,15 @@ define_event! {
 }
 
 define_event! {
-    /// A user requested cancellation of a job (`DELETE /jobs/{id}`). Visible to
+    /// A user requested termination of a job (`DELETE /jobs/{id}`). Visible to
     /// anyone who can read the job. `finalized_immediately` distinguishes a job
     /// canceled while still queued (finalized on the spot, no host involved)
     /// from a dispatched job whose stop the owning host's worker converges.
-    JobCanceled v1 {
+    JobTerminated v1 {
         actor: Subject,
         job: Job @ view(Read),
         finalized_immediately: bool,
     }
-    event_type = "job_canceled";
-    render = "requested job cancellation";
+    event_type = "job_terminated";
+    render = "requested job termination";
 }

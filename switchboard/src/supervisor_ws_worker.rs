@@ -369,7 +369,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// # The `finalized` rows: sticky-host recovery
     ///
     /// A job can be `finalized` while `hosts.current_job` still points at it: a
-    /// job that errors or is canceled finalizes terminally, but the host pointer
+    /// job that errors or is terminated finalizes terminally, but the host pointer
     /// is only released once the host reports the job gone (a `Terminated`
     /// transition, or — via these rows — a reconcile that observes it gone). If
     /// the host never follows up (e.g. it errors out without reporting
@@ -489,8 +489,8 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
 
                         // Stop pre-check: should this assigned job be stopped for
                         // a switchboard-side reason (execution timeout or user
-                        // cancel)? Re-derived from the freshly-fetched row on
-                        // every pass, so an extended deadline (or a cancel signal
+                        // terminate)? Re-derived from the freshly-fetched row on
+                        // every pass, so an extended deadline (or a terminate signal
                         // set since the last pass) is always honored against
                         // current DB state — we never terminate on stale data.
                         if let Some(reason) = job.switchboard_stop_reason(at) {
@@ -3218,10 +3218,10 @@ mod tests {
         Ok(())
     }
 
-    // -- stop pre-check: execution timeout & user cancel --------------------
+    // -- stop pre-check: execution timeout & user terminate --------------------
     //
     // These pin down reconcile's "should this assigned job stop?" pre-check,
-    // shared by execution-timeout and user-cancel. Both are re-derived from
+    // shared by execution-timeout and user-terminate. Both are re-derived from
     // fresh DB state each pass (see `SqlJob::switchboard_stop_reason`).
 
     /// Push a running job's `started_at` two hours into the past so it is over
@@ -3237,10 +3237,10 @@ mod tests {
         Ok(())
     }
 
-    /// Set the DB-side user-cancel signal (`cancel_requested_at`).
-    async fn request_cancel(pool: &PgPool, job_id: Uuid) -> anyhow::Result<()> {
+    /// Set the DB-side user-terminate signal (`terminate_requested_at`).
+    async fn request_terminate(pool: &PgPool, job_id: Uuid) -> anyhow::Result<()> {
         sqlx::query(
-            "update tml_switchboard.jobs set cancel_requested_at = now() where job_id = $1",
+            "update tml_switchboard.jobs set terminate_requested_at = now() where job_id = $1",
         )
         .bind(job_id)
         .execute(pool)
@@ -3403,17 +3403,17 @@ mod tests {
         Ok(())
     }
 
-    /// User-cancel while the supervisor still reports the job running: (re)issue
+    /// User-terminate while the supervisor still reports the job running: (re)issue
     /// StopJob, keep tracking it.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn reconcile_user_cancel_running_stops(pool: PgPool) -> anyhow::Result<()> {
+    async fn reconcile_user_terminate_running_stops(pool: PgPool) -> anyhow::Result<()> {
         let host_id = insert_host(&pool).await?;
         let user_id = insert_user(&pool).await?;
         let token_id = insert_token(&pool, user_id).await?;
         let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
         set_current_job(&pool, host_id, Some(job_id)).await?;
-        request_cancel(&pool, job_id).await?;
+        request_terminate(&pool, job_id).await?;
 
         let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let (_to_worker, mut from_worker, mut worker) =
@@ -3426,13 +3426,13 @@ mod tests {
         worker
             .reconcile()
             .await
-            .expect("user-cancel (running) reconcile should succeed");
+            .expect("user-terminate (running) reconcile should succeed");
 
         assert_eq!(current_job_of(&pool, host_id).await?, Some(job_id));
         match decode_outbound(
             from_worker
                 .try_recv()
-                .expect("a StopJob must be issued for the canceled job"),
+                .expect("a StopJob must be issued for the terminated job"),
         ) {
             SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
             other => panic!("expected StopJob, got {other:?}"),
@@ -3440,13 +3440,13 @@ mod tests {
         Ok(())
     }
 
-    /// User-cancel and the supervisor reports the job `Terminated` (a retained
-    /// terminal record): finalize as `user_canceled` and `StopJob`-ack, but keep
+    /// User-terminate and the supervisor reports the job `Terminated` (a retained
+    /// terminal record): finalize as `user_terminated` and `StopJob`-ack, but keep
     /// the assignment until the supervisor reports the job gone — the column must
     /// not be cleared while the supervisor still holds the record.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn reconcile_user_cancel_terminated_keeps_then_releases(
+    async fn reconcile_user_terminate_terminated_keeps_then_releases(
         pool: PgPool,
     ) -> anyhow::Result<()> {
         let host_id = insert_host(&pool).await?;
@@ -3454,7 +3454,7 @@ mod tests {
         let token_id = insert_token(&pool, user_id).await?;
         let job_id = insert_job(&pool, token_id, host_id, "terminating", 0).await?;
         set_current_job(&pool, host_id, Some(job_id)).await?;
-        request_cancel(&pool, job_id).await?;
+        request_terminate(&pool, job_id).await?;
 
         let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let (_to_worker, mut from_worker, mut worker) =
@@ -3467,13 +3467,13 @@ mod tests {
         worker
             .reconcile()
             .await
-            .expect("user-cancel (terminated) reconcile should succeed");
+            .expect("user-terminate (terminated) reconcile should succeed");
 
         assert_eq!(job_state_of(&pool, job_id).await?, "finalized");
         assert_eq!(
             termination_reason_of(&pool, job_id).await?.as_deref(),
-            Some("user_canceled"),
-            "a canceled job must finalize as user_canceled"
+            Some("user_terminated"),
+            "a terminated job must finalize as user_terminated"
         );
         assert_eq!(
             current_job_of(&pool, host_id).await?,
@@ -3490,7 +3490,7 @@ mod tests {
         worker
             .reconcile()
             .await
-            .expect("user-cancel (terminated) follow-up reconcile should succeed");
+            .expect("user-terminate (terminated) follow-up reconcile should succeed");
         assert_eq!(
             current_job_of(&pool, host_id).await?,
             None,
@@ -3499,11 +3499,11 @@ mod tests {
         Ok(())
     }
 
-    /// User-cancel and the supervisor reports `Idle` (job already gone): finalize
-    /// as `user_canceled`.
+    /// User-terminate and the supervisor reports `Idle` (job already gone): finalize
+    /// as `user_terminated`.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn reconcile_user_cancel_idle_finalizes_user_canceled(
+    async fn reconcile_user_terminate_idle_finalizes_user_terminated(
         pool: PgPool,
     ) -> anyhow::Result<()> {
         let host_id = insert_host(&pool).await?;
@@ -3511,7 +3511,7 @@ mod tests {
         let token_id = insert_token(&pool, user_id).await?;
         let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
         set_current_job(&pool, host_id, Some(job_id)).await?;
-        request_cancel(&pool, job_id).await?;
+        request_terminate(&pool, job_id).await?;
 
         let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let (_to_worker, _from_worker, mut worker) =
@@ -3521,23 +3521,23 @@ mod tests {
         worker
             .reconcile()
             .await
-            .expect("user-cancel (idle) reconcile should succeed");
+            .expect("user-terminate (idle) reconcile should succeed");
 
         assert_eq!(job_state_of(&pool, job_id).await?, "finalized");
         assert_eq!(
             termination_reason_of(&pool, job_id).await?.as_deref(),
-            Some("user_canceled"),
-            "a canceled job must finalize as user_canceled"
+            Some("user_terminated"),
+            "a terminated job must finalize as user_terminated"
         );
         assert_eq!(current_job_of(&pool, host_id).await?, None);
         Ok(())
     }
 
-    /// User-cancel of a still-`assigned` job (never started): finalize as
-    /// `user_canceled` instead of dispatching it — no StartJob is emitted.
+    /// User-terminate of a still-`assigned` job (never started): finalize as
+    /// `user_terminated` instead of dispatching it — no StartJob is emitted.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn reconcile_user_cancel_assigned_finalizes_without_start(
+    async fn reconcile_user_terminate_assigned_finalizes_without_start(
         pool: PgPool,
     ) -> anyhow::Result<()> {
         let host_id = insert_host(&pool).await?;
@@ -3545,9 +3545,9 @@ mod tests {
         let token_id = insert_token(&pool, user_id).await?;
         let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
         set_current_job(&pool, host_id, Some(job_id)).await?;
-        request_cancel(&pool, job_id).await?;
-        // A resolved image is registered so that, absent the cancel, this job
-        // *would* be dispatched — proving the cancel is what suppresses StartJob.
+        request_terminate(&pool, job_id).await?;
+        // A resolved image is registered so that, absent the terminate, this job
+        // *would* be dispatched — proving the terminate is what suppresses StartJob.
         register_resolved_image(&pool, job_id).await?;
 
         let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
@@ -3558,18 +3558,18 @@ mod tests {
         worker
             .reconcile()
             .await
-            .expect("user-cancel (assigned) reconcile should succeed");
+            .expect("user-terminate (assigned) reconcile should succeed");
 
         assert_eq!(job_state_of(&pool, job_id).await?, "finalized");
         assert_eq!(
             termination_reason_of(&pool, job_id).await?.as_deref(),
-            Some("user_canceled"),
-            "a canceled assigned job must finalize as user_canceled"
+            Some("user_terminated"),
+            "a terminated assigned job must finalize as user_terminated"
         );
         assert_eq!(current_job_of(&pool, host_id).await?, None);
         assert!(
             from_worker.try_recv().is_err(),
-            "a canceled assigned job must not be dispatched"
+            "a terminated assigned job must not be dispatched"
         );
         Ok(())
     }

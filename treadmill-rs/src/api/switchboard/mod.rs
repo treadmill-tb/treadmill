@@ -206,12 +206,13 @@ pub struct JobRequest {
 #[derive(schemars::JsonSchema, Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminationReason {
-    /// The job's own workload ended it.
+    /// The job's workload terminated (e.g., QEMU VM shutdown).
     WorkloadExited,
-    /// The job requested its own cancellation.
-    WorkloadSelfCanceled,
-    /// Externally canceled by a user.
-    UserCanceled,
+    /// The job requested its own termination (e.g., by requesting termination
+    /// through the puppet).
+    WorkloadSelfTerminated,
+    /// Externally terminated by a user.
+    UserTerminated,
     /// Timed out while still queued.
     QueueTimeout,
     /// Timed out while dispatched/executing.
@@ -235,8 +236,8 @@ impl Display for TerminationReason {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             TerminationReason::WorkloadExited => "workload exited",
-            TerminationReason::WorkloadSelfCanceled => "workload requested cancellation",
-            TerminationReason::UserCanceled => "canceled by user",
+            TerminationReason::WorkloadSelfTerminated => "workload requested termination",
+            TerminationReason::UserTerminated => "terminated by user",
             TerminationReason::QueueTimeout => "timed out in queue",
             TerminationReason::ExecutionTimeout => "timed out while executing",
             TerminationReason::ImageError => "image error",
@@ -245,7 +246,7 @@ impl Display for TerminationReason {
             TerminationReason::HostDroppedJob => "host dropped job",
             TerminationReason::HostUnreachable => "host unreachable",
             TerminationReason::ResumeFailed => "failed to resume job",
-            TerminationReason::InternalError => "internal switchboard error",
+            TerminationReason::InternalError => "internal error",
         };
         f.write_str(s)
     }

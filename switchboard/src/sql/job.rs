@@ -84,8 +84,8 @@ impl From<JobInitializingStage> for SqlJobInitializingStage {
 )]
 pub enum SqlTerminationReason {
     WorkloadExited,
-    WorkloadSelfCanceled,
-    UserCanceled,
+    WorkloadSelfTerminated,
+    UserTerminated,
     QueueTimeout,
     ExecutionTimeout,
     ImageError,
@@ -100,8 +100,10 @@ impl From<SqlTerminationReason> for TerminationReason {
     fn from(value: SqlTerminationReason) -> Self {
         match value {
             SqlTerminationReason::WorkloadExited => TerminationReason::WorkloadExited,
-            SqlTerminationReason::WorkloadSelfCanceled => TerminationReason::WorkloadSelfCanceled,
-            SqlTerminationReason::UserCanceled => TerminationReason::UserCanceled,
+            SqlTerminationReason::WorkloadSelfTerminated => {
+                TerminationReason::WorkloadSelfTerminated
+            }
+            SqlTerminationReason::UserTerminated => TerminationReason::UserTerminated,
             SqlTerminationReason::QueueTimeout => TerminationReason::QueueTimeout,
             SqlTerminationReason::ExecutionTimeout => TerminationReason::ExecutionTimeout,
             SqlTerminationReason::ImageError => TerminationReason::ImageError,
@@ -118,8 +120,10 @@ impl From<TerminationReason> for SqlTerminationReason {
     fn from(value: TerminationReason) -> Self {
         match value {
             TerminationReason::WorkloadExited => SqlTerminationReason::WorkloadExited,
-            TerminationReason::WorkloadSelfCanceled => SqlTerminationReason::WorkloadSelfCanceled,
-            TerminationReason::UserCanceled => SqlTerminationReason::UserCanceled,
+            TerminationReason::WorkloadSelfTerminated => {
+                SqlTerminationReason::WorkloadSelfTerminated
+            }
+            TerminationReason::UserTerminated => SqlTerminationReason::UserTerminated,
             TerminationReason::QueueTimeout => SqlTerminationReason::QueueTimeout,
             TerminationReason::ExecutionTimeout => SqlTerminationReason::ExecutionTimeout,
             TerminationReason::ImageError => SqlTerminationReason::ImageError,
@@ -384,9 +388,9 @@ pub struct SqlJob {
     dispatched_on_host_id: Option<Uuid>,
     ssh_endpoints: Option<Vec<SqlSshEndpoint>>,
 
-    // The DB side of user-cancel: set when cancellation is requested, consumed by
-    // the worker's reconcile (see `switchboard_stop_reason`).
-    cancel_requested_at: Option<DateTime<Utc>>,
+    // The DB side of user-terminate: set when termination is requested,
+    // consumed by the worker's reconcile (see `switchboard_stop_reason`).
+    terminate_requested_at: Option<DateTime<Utc>>,
 
     // Filled out when transitioned into `finalized` job state
     #[allow(dead_code)]
@@ -585,21 +589,21 @@ impl SqlJob {
     }
 
     /// The switchboard-side reason this *assigned* job should be stopped, if any
-    /// — the convergence pre-check shared by execution-timeout and user-cancel.
+    /// — the convergence pre-check shared by execution-timeout and user-terminate.
     ///
     /// Re-derived from fresh DB state on every reconcile pass (never cached), so
-    /// an extended deadline or a (future) cleared cancel is honored right up to
+    /// an extended deadline or a (future) cleared terminate is honored right up to
     /// the moment the job is actually stopped:
-    ///   - `cancel_requested_at` set                  → `UserCanceled`
+    ///   - `terminate_requested_at` set                  → `UserTerminated`
     ///   - started and past `started_at + job_timeout` → `ExecutionTimeout`
     ///
-    /// User-cancel takes precedence over an also-expired deadline. Returns `None`
+    /// User-terminate takes precedence over an also-expired deadline. Returns `None`
     /// for a job that should keep running — including a not-yet-started
-    /// (`assigned`) job that is not canceled, since queue-timeout is the
+    /// (`assigned`) job that is not terminated, since queue-timeout is the
     /// scheduler's concern, not the worker's.
     pub fn switchboard_stop_reason(&self, now: DateTime<Utc>) -> Option<SqlTerminationReason> {
-        if self.cancel_requested_at.is_some() {
-            return Some(SqlTerminationReason::UserCanceled);
+        if self.terminate_requested_at.is_some() {
+            return Some(SqlTerminationReason::UserTerminated);
         }
         if let Some(started_at) = self.started_at
             && started_at + self.timeout() <= now
@@ -625,7 +629,7 @@ pub async fn fetch_by_job_id(
         queued_at, job_state as "job_state: _",
         initializing_stage as "initializing_stage: _", started_at,
         dispatched_on_host_id, ssh_endpoints as "ssh_endpoints: _",
-        cancel_requested_at,
+        terminate_requested_at,
         termination_reason as "termination_reason: _",
         task_exit_status as "task_exit_status: _", exit_message, terminated_at,
         last_updated_at
@@ -1006,37 +1010,37 @@ pub async fn finalize_unscheduled_as_image_error(
     Ok(row.is_some())
 }
 
-/// Outcome of a user-requested job cancellation (`DELETE /jobs/{id}`).
+/// Outcome of a user-requested job termination (`DELETE /jobs/{id}`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CancelOutcome {
+pub enum TerminateOutcome {
     /// The job was still `queued` (on no host) and was finalized as
-    /// `user_canceled` immediately.
+    /// `user_terminated` immediately.
     FinalizedNow,
-    /// The job was dispatched; `cancel_requested_at` was set and the owning
+    /// The job was dispatched; `terminate_requested_at` was set and the owning
     /// host's worker will converge (StopJob, then finalize).
     SignalRequested,
     /// The job was already finalized (or gone); nothing to do.
     AlreadyFinalized,
 }
 
-/// Request cancellation of a job, within the caller's transaction.
+/// Request termination of a job, within the caller's transaction.
 ///
 /// Locks the job row, then dispatches on its state:
-///   - `finalized` (or missing) → no-op ([`CancelOutcome::AlreadyFinalized`]);
-///   - `queued` → finalized as `user_canceled` now, since no host is involved
-///     ([`CancelOutcome::FinalizedNow`]);
+///   - `finalized` (or missing) → no-op ([`TerminateOutcome::AlreadyFinalized`]);
+///   - `queued` → finalized as `user_terminated` now, since no host is involved
+///     ([`TerminateOutcome::FinalizedNow`]);
 ///   - otherwise (dispatched: `assigned`/`initializing`/`ready`/`terminating`)
-///     → sets `cancel_requested_at` idempotently so the host's worker stops and
-///     finalizes it ([`CancelOutcome::SignalRequested`]).
+///     → sets `terminate_requested_at` idempotently so the host's worker stops and
+///     finalizes it ([`TerminateOutcome::SignalRequested`]).
 ///
 /// The `for update` lock serializes against the scheduler's assignment (which
 /// also locks the job row), so the queued-vs-dispatched decision cannot race a
 /// concurrent placement.
-pub async fn request_cancel(
+pub async fn request_terminate(
     job_id: Uuid,
     at: DateTime<Utc>,
     txn: &mut Transaction<'_, Postgres>,
-) -> Result<CancelOutcome, sqlx::Error> {
+) -> Result<TerminateOutcome, sqlx::Error> {
     let state = sqlx::query_scalar!(
         r#"select job_state as "state: SqlJobState"
            from tml_switchboard.jobs
@@ -1050,18 +1054,18 @@ pub async fn request_cancel(
     // The row vanished between the route's authz check and here (e.g. its owner
     // was deleted): treat as already gone.
     let Some(state) = state else {
-        return Ok(CancelOutcome::AlreadyFinalized);
+        return Ok(TerminateOutcome::AlreadyFinalized);
     };
 
     match state {
-        SqlJobState::Finalized => Ok(CancelOutcome::AlreadyFinalized),
+        SqlJobState::Finalized => Ok(TerminateOutcome::AlreadyFinalized),
         SqlJobState::Queued => {
             // No host involved; finalize directly. The dispatch columns are
             // already null on a queued job, satisfying the finalized invariants.
             sqlx::query!(
                 r#"update tml_switchboard.jobs
                    set job_state = 'finalized',
-                       termination_reason = 'user_canceled',
+                       termination_reason = 'user_terminated',
                        task_exit_status = null,
                        terminated_at = $2,
                        last_updated_at = default
@@ -1071,7 +1075,7 @@ pub async fn request_cancel(
             )
             .execute(&mut **txn)
             .await?;
-            Ok(CancelOutcome::FinalizedNow)
+            Ok(TerminateOutcome::FinalizedNow)
         }
         SqlJobState::Assigned
         | SqlJobState::Initializing
@@ -1082,7 +1086,7 @@ pub async fn request_cancel(
             // already-set signal is preserved.
             sqlx::query!(
                 r#"update tml_switchboard.jobs
-                   set cancel_requested_at = coalesce(cancel_requested_at, $2),
+                   set terminate_requested_at = coalesce(terminate_requested_at, $2),
                        last_updated_at = default
                    where job_id = $1"#,
                 job_id,
@@ -1090,7 +1094,7 @@ pub async fn request_cancel(
             )
             .execute(&mut **txn)
             .await?;
-            Ok(CancelOutcome::SignalRequested)
+            Ok(TerminateOutcome::SignalRequested)
         }
     }
 }
@@ -1306,8 +1310,8 @@ pub async fn finalize_terminated(
 
 /// Finalize a job with an explicit, switchboard-determined `reason`, within the
 /// caller's transaction. Backs reconcile's stop pre-check (execution-timeout and
-/// user-cancel): when the worker decides an assigned job must stop, the eventual
-/// terminal record carries `reason` (e.g. `execution_timeout` / `user_canceled`)
+/// user-terminate): when the worker decides an assigned job must stop, the eventual
+/// terminal record carries `reason` (e.g. `execution_timeout` / `user_terminated`)
 /// rather than a workload-driven one.
 ///
 /// Records only the reason and `terminated_at` and clears the assignment columns.

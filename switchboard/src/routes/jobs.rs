@@ -358,15 +358,15 @@ pub async fn get_job(
     Ok(Json(info))
 }
 
-/// Axum handler for `DELETE /jobs/{id}` — request cancellation of a job.
+/// Axum handler for `DELETE /jobs/{id}` — request termination of a job.
 ///
 /// Gated on the caller's `stop` permission (403 for unauthorized, including a
-/// nonexistent job). A still-`queued` job is finalized as `user_canceled`
-/// immediately; a dispatched job has its cancel signal recorded and the owning
+/// nonexistent job). A still-`queued` job is finalized as `user_terminated`
+/// immediately; a dispatched job has its terminate signal recorded and the owning
 /// host's worker converges (issues StopJob, then finalizes). Returns `202
-/// Accepted` when a cancellation was initiated, or `204 No Content` when the job
+/// Accepted` when a termination was initiated, or `204 No Content` when the job
 /// was already finalized (idempotent no-op).
-pub async fn cancel(
+pub async fn terminate(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Path(job_id): Path<Uuid>,
@@ -383,48 +383,48 @@ pub async fn cancel(
     }
 
     let mut txn = state.pool().begin().await.map_err(|e| {
-        tracing::error!("opening a transaction to cancel job {job_id}: {e}");
+        tracing::error!("opening a transaction to terminate job {job_id}: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    let outcome = job::request_cancel(job_id, Utc::now(), &mut txn)
+    let outcome = job::request_terminate(job_id, Utc::now(), &mut txn)
         .await
         .map_err(|e| {
-            tracing::error!("requesting cancellation of job {job_id}: {e}");
+            tracing::error!("requesting termination of job {job_id}: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    // Audit only an actual cancellation; re-canceling an already-finalized job
+    // Audit only an actual termination; re-terminating an already-finalized job
     // changed nothing, so it records nothing. Emitted in-transaction so the
     // event commits atomically with the state change (or not at all).
-    if outcome != job::CancelOutcome::AlreadyFinalized {
+    if outcome != job::TerminateOutcome::AlreadyFinalized {
         audit::emit(
             &mut txn,
-            &events::JobCanceled {
+            &events::JobTerminated {
                 actor: AuditSubject(subject.user_id()),
                 job: AuditJob(job_id),
-                finalized_immediately: outcome == job::CancelOutcome::FinalizedNow,
+                finalized_immediately: outcome == job::TerminateOutcome::FinalizedNow,
             },
         )
         .await
         .map_err(|e| {
-            tracing::error!("emitting JobCanceled for {job_id}: {e}");
+            tracing::error!("emitting JobTerminated for {job_id}: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
     }
 
     txn.commit().await.map_err(|e| {
-        tracing::error!("committing cancellation of job {job_id}: {e}");
+        tracing::error!("committing termination of job {job_id}: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
     Ok(match outcome {
-        // A cancellation was initiated: finalized now (queued) or the worker will
+        // A termination was initiated: finalized now (queued) or the worker will
         // converge (dispatched).
-        job::CancelOutcome::FinalizedNow | job::CancelOutcome::SignalRequested => {
+        job::TerminateOutcome::FinalizedNow | job::TerminateOutcome::SignalRequested => {
             StatusCode::ACCEPTED
         }
         // Already terminal: nothing to do.
-        job::CancelOutcome::AlreadyFinalized => StatusCode::NO_CONTENT,
+        job::TerminateOutcome::AlreadyFinalized => StatusCode::NO_CONTENT,
     })
 }
 

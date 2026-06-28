@@ -101,10 +101,10 @@ pub fn api_router() -> ApiRouter<AppState> {
         //  POST /jobs/{id}/log-token -- mint a NATS read token for this job's logs
         .api_route("/jobs/{id}/log-token", post_with(jobs::log_token, |o| o))
         //  GET    /jobs/{id} -- fetch one job's full info
-        //  DELETE /jobs/{id} -- request cancellation of a job
+        //  DELETE /jobs/{id} -- request termination of a job
         .api_route(
             "/jobs/{id}",
-            get_with(jobs::get_job, |o| o).delete_with(jobs::cancel, |o| o),
+            get_with(jobs::get_job, |o| o).delete_with(jobs::terminate, |o| o),
         )
         // supervisor management group
         //  GET /supervisors (+ <FILTERS>)
