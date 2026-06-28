@@ -138,21 +138,7 @@ impl OAuthProvider for GithubProvider {
         token: &OAuthAccessToken,
     ) -> Result<ExternalIdentity, OAuthError> {
         let user: GhUser = self.get_json(token, "/user").await?;
-        // Best-effort: an account may not have granted user:email; without it we
-        // simply provision without linkable emails rather than failing login.
-        // Log the failure rather than swallowing it silently: a missing
-        // `user:email` scope (a 403 here) is the usual reason a logged-in user
-        // shows no emails, and is otherwise invisible.
-        let emails: Vec<GhEmail> = match self.get_json(token, "/user/emails").await {
-            Ok(emails) => emails,
-            Err(e) => {
-                tracing::warn!(
-                    "failed to fetch GitHub user emails; provisioning without linkable \
-                     emails (perhaps a missing `user:email` scope on the token?): {e}"
-                );
-                Vec::new()
-            }
-        };
+        let emails: Vec<GhEmail> = self.get_json(token, "/user/emails").await?;
         Ok(ExternalIdentity {
             provider_user_id: user.id.to_string(),
             login: user.login,
