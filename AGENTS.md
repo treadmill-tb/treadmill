@@ -124,6 +124,7 @@ nix build .#checks.x86_64-linux.<name> -L
 | `nextest` | Workspace tests **without** a database. `#[sqlx::test]`/DB tests must be `#[ignore]`d so this passes them over (see §6). |
 | `nextest-db` | The DB-backed tests: spins up ephemeral Postgres and runs `--run-ignored only`. **This is where `#[ignore]`d `#[sqlx::test]` and DB-backed unit tests actually execute.** |
 | `switchboard-migrations-consistency` | Asserts `switchboard/migrations/` replays to exactly `switchboard/SCHEMA.sql` (same as `./migrate.sh -v`). |
+| `openapi-spec` | Validates the committed `switchboard/api-spec/openapi.yaml` against the OpenAPI 3.1 schema (`openapi-spec-validator`, runs offline). The `openapi_spec` test keeps that file in sync with the code; this check ensures it is a valid document. |
 | `tiny-efi-image`, `oci-store`, `lease`, `chain-assembly`, `qemu-boot` | OCI-migration integration checks (build the `tiny-efi` fixture, exercise the OCI store / GC leases / qcow2 backing-chain assembly / an aarch64 boot). Linux-only; skip cleanly when their external tool/fixture env vars are unset. |
 
 After a change, the usual verification set is: scoped `cargo build` + `clippy`,

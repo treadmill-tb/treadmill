@@ -41,6 +41,17 @@
             popd
           '';
 
+        # Validate the committed switchboard OpenAPI spec against the OpenAPI
+        # 3.1 schema. The drift test (`openapi_spec`) keeps this file in sync
+        # with the code; this check additionally guarantees it is a valid
+        # OpenAPI document. `openapi-spec-validator` bundles its schemas, so it
+        # runs offline in the build sandbox.
+        openapi-spec = pkgs.runCommand "treadmill-openapi-spec-valid" { } ''
+          ${pkgs.python3Packages.openapi-spec-validator}/bin/openapi-spec-validator \
+            ${../switchboard/api-spec/openapi.yaml}
+          touch $out
+        '';
+
         clippy = cmn.craneLib.cargoClippy (
           cmn.cargoCommonArgs
           // {
