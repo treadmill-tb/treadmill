@@ -7,6 +7,12 @@ pub mod extract;
 pub mod oauth;
 pub mod token;
 
+/// Name under which the user bearer-token security scheme is registered in the
+/// OpenAPI components. Referenced by every operation that extracts a [`Subject`]
+/// (see `Subject`'s `aide::OperationInput` impl) and registered once in
+/// [`crate::routes::openapi_spec`].
+pub const SECURITY_SCHEME: &str = "token";
+
 /// Accessible _subject_ information (see module docs).
 pub struct SubjectDetail {
     token_info: Arc<SqlApiTokenMetadata>,

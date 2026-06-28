@@ -90,11 +90,45 @@ impl FromRequestParts<AppState> for Subject {
 // #[derive(Debug)]
 // pub struct AuthSource<AS: AuthorizationSource>(pub AS);
 
+/// Every authenticated operation extracts a [`Subject`], so this impl is where
+/// the shared auth contract is documented: the operation requires the bearer
+/// [`SECURITY_SCHEME`](crate::auth::SECURITY_SCHEME), and the extractor itself
+/// can reject with `401` (missing/malformed/expired/revoked token) or `403`
+/// (the account is locked) before the handler runs.
 impl aide::OperationInput for Subject {
     fn operation_input(
         _ctx: &mut aide::generate::GenContext,
-        _operation: &mut aide::openapi::Operation,
+        operation: &mut aide::openapi::Operation,
     ) {
+        use aide::openapi::{ReferenceOr, Response, SecurityRequirement, StatusCode};
+
+        let mut requirement = SecurityRequirement::new();
+        requirement.insert(super::SECURITY_SCHEME.to_string(), Vec::new());
+        operation.security.push(requirement);
+
+        let responses = operation.responses.get_or_insert_with(Default::default);
+        responses
+            .responses
+            .entry(StatusCode::Code(401))
+            .or_insert_with(|| {
+                ReferenceOr::Item(Response {
+                    description: "Authentication failed: the bearer token is missing, \
+                              malformed, expired, or revoked."
+                        .to_string(),
+                    ..Default::default()
+                })
+            });
+        responses
+            .responses
+            .entry(StatusCode::Code(403))
+            .or_insert_with(|| {
+                ReferenceOr::Item(Response {
+                    description: "The authenticated account is locked, or lacks permission \
+                              for this resource."
+                        .to_string(),
+                    ..Default::default()
+                })
+            });
     }
 }
 

@@ -196,6 +196,46 @@ pub fn api_router() -> ApiRouter<AppState> {
         )
 }
 
+/// Build the OpenAPI document for the client API.
+///
+/// Shared by the `dump-openapi` binary and the `openapi_spec` drift test so the
+/// two entry points cannot diverge. Registers the bearer security scheme that
+/// authenticated operations reference via the
+/// [`Subject`](crate::auth::Subject) extractor.
+pub fn openapi_spec() -> aide::openapi::OpenApi {
+    use aide::openapi::{Components, Info, OpenApi, ReferenceOr, SecurityScheme};
+
+    let mut api = OpenApi {
+        info: Info {
+            title: "Treadmill Switchboard API".to_string(),
+            version: "0.1.0".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let _ = api_router().finish_api(&mut api);
+
+    api.components
+        .get_or_insert_with(Components::default)
+        .security_schemes
+        .insert(
+            crate::auth::SECURITY_SCHEME.to_string(),
+            ReferenceOr::Item(SecurityScheme::Http {
+                scheme: "bearer".to_string(),
+                bearer_format: None,
+                description: Some(
+                    "A Treadmill user API token, presented as \
+                     `Authorization: Bearer <token>`."
+                        .to_string(),
+                ),
+                extensions: Default::default(),
+            }),
+        );
+
+    api
+}
+
 async fn not_found() -> impl IntoResponse {
     (StatusCode::NOT_FOUND, "no such route")
 }

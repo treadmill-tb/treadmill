@@ -9,9 +9,8 @@
 //! UPDATE_SCHEMA=1 cargo test -p treadmill-switchboard --test openapi_spec
 //! ```
 
-use aide::openapi::{Info, OpenApi};
 use std::path::{Path, PathBuf};
-use treadmill_switchboard::routes::api_router;
+use treadmill_switchboard::routes::openapi_spec;
 
 fn snapshot_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("api-spec")
@@ -19,16 +18,7 @@ fn snapshot_dir() -> PathBuf {
 
 #[test]
 fn test_openapi_schema_drift() {
-    let mut api = OpenApi {
-        info: Info {
-            title: "Treadmill Switchboard API".to_string(),
-            version: "0.1.0".to_string(),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-
-    let _ = api_router().finish_api(&mut api);
+    let api = openapi_spec();
 
     let generated = serde_norway::to_string(&api).expect("serialize openapi spec");
 

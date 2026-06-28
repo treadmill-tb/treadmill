@@ -27,6 +27,10 @@ paths:
           minimum: 0
         style: form
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: |-
             Response body of `GET /jobs`: a page of jobs the caller can read, newest
@@ -40,6 +44,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JobListResponse'
+      security:
+      - token: []
     post:
       requestBody:
         content:
@@ -48,6 +54,10 @@ paths:
               $ref: '#/components/schemas/JobRequest'
         required: true
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '400':
           description: Failed to parse the request body as JSON
           content:
@@ -66,18 +76,30 @@ paths:
             text/plain:
               schema:
                 type: string
+      security:
+      - token: []
   /jobs/{id}/events:
     get:
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: A page of rendered audit events for one entity, newest first.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuditFeedResponse'
+      security:
+      - token: []
   /jobs/{id}/log-token:
     post:
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: |-
             Connection credentials for tailing/replaying a job's console logs over NATS,
@@ -93,9 +115,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LogStreamCredentials'
+      security:
+      - token: []
   /jobs/{id}:
     get:
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: |-
             The full server-side view of a single job, returned by `GET /jobs/{id}`.
@@ -107,10 +135,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JobInfo'
-    delete: {}
+      security:
+      - token: []
+    delete:
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+      security:
+      - token: []
   /hosts:
     get:
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: ''
           content:
@@ -119,15 +160,23 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/HostInfo'
+      security:
+      - token: []
   /hosts/{id}/events:
     get:
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: A page of rendered audit events for one entity, newest first.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuditFeedResponse'
+      security:
+      - token: []
   /hosts/{id}/connect:
     get:
       parameters:
@@ -168,6 +217,10 @@ paths:
   /users/me:
     get:
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: |-
             The owner's full view of their own profile: the public subset plus the
@@ -176,6 +229,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SelfUserProfile'
+      security:
+      - token: []
     patch:
       requestBody:
         description: |-
@@ -188,6 +243,10 @@ paths:
               $ref: '#/components/schemas/UpdateProfileRequest'
         required: true
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: |-
             The owner's full view of their own profile: the public subset plus the
@@ -214,9 +273,15 @@ paths:
             text/plain:
               schema:
                 type: string
+      security:
+      - token: []
   /users/me/tokens:
     get:
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: ''
           content:
@@ -225,11 +290,24 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/SessionInfo'
+      security:
+      - token: []
   /users/me/tokens/{token_id}:
-    delete: {}
+    delete:
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+      security:
+      - token: []
   /users/{id}:
     get:
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: |-
             The world-readable subset of a user profile: only data deemed safe to expose
@@ -238,18 +316,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PublicUserProfile'
+      security:
+      - token: []
   /users/{id}/events:
     get:
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: A page of rendered audit events for one entity, newest first.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuditFeedResponse'
+      security:
+      - token: []
   /images:
     get:
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: ''
           content:
@@ -258,6 +348,8 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/ImageInfo'
+      security:
+      - token: []
     post:
       requestBody:
         description: |-
@@ -270,6 +362,10 @@ paths:
               $ref: '#/components/schemas/RegisterImageRequest'
         required: true
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '400':
           description: Failed to parse the request body as JSON
           content:
@@ -288,18 +384,30 @@ paths:
             text/plain:
               schema:
                 type: string
+      security:
+      - token: []
   /images/{digest}:
     get:
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: A registered image, as returned by the catalog list/inspect routes.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ImageInfo'
+      security:
+      - token: []
   /image-groups:
     get:
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: ''
           content:
@@ -308,6 +416,8 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/ImageGroupInfo'
+      security:
+      - token: []
     post:
       requestBody:
         description: |-
@@ -320,6 +430,10 @@ paths:
               $ref: '#/components/schemas/CreateImageGroupRequest'
         required: true
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '400':
           description: Failed to parse the request body as JSON
           content:
@@ -338,15 +452,23 @@ paths:
             text/plain:
               schema:
                 type: string
+      security:
+      - token: []
   /image-groups/{id}:
     get:
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: A named, mutable image group, as returned by the catalog list/inspect routes.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ImageGroupInfo'
+      security:
+      - token: []
   /image-groups/{id}/generations:
     post:
       requestBody:
@@ -359,6 +481,10 @@ paths:
               $ref: '#/components/schemas/CreateGenerationRequest'
         required: true
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '400':
           description: Failed to parse the request body as JSON
           content:
@@ -377,18 +503,30 @@ paths:
             text/plain:
               schema:
                 type: string
+      security:
+      - token: []
   /image-groups/{id}/generations/{n}:
     get:
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: One immutable generation (membership snapshot) of an image group.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ImageGroupGenerationInfo'
+      security:
+      - token: []
   /image-groups/{id}/grants:
     get:
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: ''
           content:
@@ -397,6 +535,8 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/ImageGroupGrantInfo'
+      security:
+      - token: []
     post:
       requestBody:
         description: '`POST /image-groups/{id}/grants`: grant `permission` on the group to a subject.'
@@ -406,6 +546,10 @@ paths:
               $ref: '#/components/schemas/ImageGroupGrantRequest'
         required: true
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '400':
           description: Failed to parse the request body as JSON
           content:
@@ -424,8 +568,17 @@ paths:
             text/plain:
               schema:
                 type: string
+      security:
+      - token: []
   /image-groups/{id}/grants/{subject_id}/{permission}:
-    delete: {}
+    delete:
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+      security:
+      - token: []
   /image-groups/{id}/public:
     put:
       requestBody:
@@ -438,6 +591,10 @@ paths:
               $ref: '#/components/schemas/SetImageGroupPublicRequest'
         required: true
       responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: A named, mutable image group, as returned by the catalog list/inspect routes.
           content:
@@ -462,7 +619,14 @@ paths:
             text/plain:
               schema:
                 type: string
+      security:
+      - token: []
 components:
+  securitySchemes:
+    token:
+      type: http
+      scheme: bearer
+      description: 'A Treadmill user API token, presented as `Authorization: Bearer <token>`.'
   schemas:
     AuditFeedResponse:
       description: A page of rendered audit events for one entity, newest first.

@@ -1,17 +1,7 @@
-use aide::openapi::{Info, OpenApi};
-use treadmill_switchboard::routes::api_router;
+use treadmill_switchboard::routes::openapi_spec;
 
 fn main() {
-    let mut api = OpenApi {
-        info: Info {
-            title: "Treadmill Switchboard API".to_string(),
-            version: "0.1.0".to_string(),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-
-    let _ = api_router().finish_api(&mut api);
+    let api = openapi_spec();
 
     // YAML: matches the committed snapshot format (api-spec/openapi.yaml).
     print!("{}", serde_norway::to_string(&api).unwrap());
