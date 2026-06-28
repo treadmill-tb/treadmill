@@ -29,8 +29,8 @@ const MAX_LIST_LIMIT: u32 = 200;
 /// Query parameters for `GET /jobs`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub(crate) struct ListQuery {
-    /// Page size; clamped to `[1, MAX_LIST_LIMIT]`, defaulting to
-    /// `DEFAULT_LIST_LIMIT`.
+    /// Maximum number of jobs per page. Omitted or out-of-range values fall
+    /// back to the server's default and bounds.
     limit: Option<u32>,
     /// Opaque keyset cursor from a previous response's `next_cursor`.
     cursor: Option<String>,

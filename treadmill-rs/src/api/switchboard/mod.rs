@@ -111,11 +111,8 @@ pub enum JobInitSpec {
 
     /// Base this job off a concrete image registered in the switchboard
     /// catalog, addressed by its catalog id (`POST /images`). At dispatch the
-    /// switchboard resolves the image to its registry locations and hands the
-    /// supervisor a content-addressed [`ImageSpecification::Image`].
-    ///
-    /// [`ImageSpecification::Image`]:
-    ///     crate::api::switchboard_supervisor::ImageSpecification::Image
+    /// switchboard resolves the image to its registry locations for the
+    /// supervisor.
     Image { image: Uuid },
 
     /// Base this job off a registered image *group*, addressed by its stable id.
@@ -131,11 +128,8 @@ pub enum JobInitSpec {
     },
 }
 
-/// The execution-lifecycle state of a job, mirroring the
-/// `tml_switchboard.job_state` DB enum. This is the switchboard's own view of
-/// where a job is in its lifecycle (queued → assigned → executing → finalized),
-/// distinct from the supervisor-reported
-/// [`RunningJobState`](crate::api::switchboard_supervisor::RunningJobState).
+/// Where a job is in its execution lifecycle: queued → assigned → initializing
+/// → ready → terminating → finalized.
 #[derive(schemars::JsonSchema, Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
@@ -143,8 +137,7 @@ pub enum JobState {
     Queued,
     /// Placed on a host but not yet reported as executing.
     Assigned,
-    /// The host is bringing the job up (see
-    /// [`JobInitializingStage`](crate::api::switchboard_supervisor::JobInitializingStage)).
+    /// The host is bringing the job up (see `initializing_stage`).
     Initializing,
     /// The job is running and ready.
     Ready,
@@ -163,7 +156,7 @@ pub struct JobRequest {
     /// The subject (user or group) to own the enqueued job. Must be the caller
     /// itself or a group the caller is a member of; absent, ownership defaults
     /// to the caller. Ownership decides who can later read, stop, and manage the
-    /// job (see `job_grants`).
+    /// job.
     #[serde(default)]
     pub owner: Option<Uuid>,
 
@@ -188,8 +181,8 @@ pub struct JobRequest {
 
     /// Target (DUT) eligibility: an ordered array of requested targets, each a
     /// set of tags an attached DUT must carry (as a superset). The scheduler
-    /// assigns each entry to a distinct `host_targets` row on the chosen host.
-    /// Empty requests no DUTs. Target tags do not affect image selection.
+    /// assigns each entry to a distinct attached target (DUT) on the chosen
+    /// host. Empty requests no DUTs. Target tags do not affect image selection.
     #[serde(default)]
     pub target_requirements: Vec<Vec<String>>,
 
@@ -200,9 +193,8 @@ pub struct JobRequest {
 
 /// Why a job terminated.
 ///
-/// This records *why* a job stopped and is orthogonal to the
-/// [`TaskExitStatus`] (the success/failure of the user's workload) and to any
-/// `exit_message`. Mirrors the `tml_switchboard.termination_reason` DB enum.
+/// This records *why* a job stopped and is orthogonal to the `task_exit_status`
+/// (the success/failure of the user's workload) and to any `exit_message`.
 #[derive(schemars::JsonSchema, Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminationReason {

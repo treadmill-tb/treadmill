@@ -16,12 +16,12 @@ paths:
       - in: query
         name: limit
         description: |-
-          Page size; clamped to `[1, MAX_LIST_LIMIT]`, defaulting to
-          `DEFAULT_LIST_LIMIT`.
+          Maximum number of jobs per page. Omitted or out-of-range values fall
+          back to the server's default and bounds.
         schema:
           description: |-
-            Page size; clamped to `[1, MAX_LIST_LIMIT]`, defaulting to
-            `DEFAULT_LIST_LIMIT`.
+            Maximum number of jobs per page. Omitted or out-of-range values fall
+            back to the server's default and bounds.
           type: integer
           format: uint32
           minimum: 0
@@ -33,8 +33,9 @@ paths:
             first.
 
             Pagination is **keyset** on `(queued_at, job_id)` descending: when
-            `next_cursor` is `Some`, pass it back as the `cursor` query parameter to
-            fetch the next page; `None` means the last page. There is no total count.
+            `next_cursor` is non-null, pass it back as the `cursor` query parameter to
+            fetch the next page; a null `next_cursor` means the last page. There is no
+            total count.
           content:
             application/json:
               schema:
@@ -178,9 +179,9 @@ paths:
     patch:
       requestBody:
         description: |-
-          A patch to the caller's own profile. Each field uses a double `Option` so an
-          absent field (leave unchanged) is distinguishable from an explicit `null`
-          (clear the value). `username` is non-nullable, so a single `Option` suffices.
+          A patch to the caller's own profile. Omitting a field leaves it unchanged;
+          sending an explicit `null` clears it. `username` cannot be cleared, only
+          changed.
         content:
           application/json:
             schema:
@@ -262,7 +263,7 @@ paths:
         description: |-
           `POST /images`: register a concrete image by digest. The switchboard pulls
           the manifest from `registry/repository@manifest_digest`, validates it is a
-          Treadmill image, and records an `images` row plus this first location.
+          Treadmill image, and records the image plus its first location.
         content:
           application/json:
             schema:
@@ -562,8 +563,8 @@ components:
       - image_id
     GroupMembership:
       description: |-
-        One group the user belongs to, including transitive memberships resolved via
-        the `principals()` function.
+        One group the user belongs to, including transitive memberships (e.g. via
+        nested groups or a linked GitHub org).
       type: object
       properties:
         group_id:
@@ -572,9 +573,7 @@ components:
         name:
           type: string
         source:
-          description: |-
-            How the membership arose (`direct`, `github_org`, ...), as stored in
-            `tml_switchboard.membership_source`.
+          description: How the membership arose (`direct`, `github_org`, ...).
           type: string
         source_ref:
           description: |-
@@ -597,8 +596,8 @@ components:
           format: uuid
         last_seen_at:
           description: |-
-            The host's last heartbeat, or `None` if it has never reported (or its
-            worker disconnected cleanly).
+            The host's last heartbeat, or null if it has never reported (or its
+            supervisor disconnected cleanly).
           type:
           - string
           - 'null'
@@ -710,7 +709,7 @@ components:
           - string
           - 'null'
         latest_generation:
-          description: The group's latest generation number, or `None` if it has none yet.
+          description: The group's latest generation number, or null if it has none yet.
           type:
           - integer
           - 'null'
@@ -732,7 +731,7 @@ components:
       - public
       - created_at
     ImageGroupPermission:
-      description: A permission on an image group; mirrors `tml_switchboard.image_group_permission`.
+      description: A permission on an image group.
       oneOf:
       - description: May run a job referencing the group (and so its member images).
         type: string
@@ -790,11 +789,10 @@ components:
       - status
     JobImageRef:
       description: |-
-        What a job is based off, as seen by `GET /jobs/{id}`. Collapses the
-        mutually-exclusive DB columns (`image_id` / `image_group_id` +
-        `image_group_generation` / `resume_job_id` / `restart_job_id`) into a single
-        tagged variant; the separately-recorded concrete dispatch digest is reported
-        alongside as [`JobInfo::resolved_image_digest`].
+        What a job is based off, as seen by `GET /jobs/{id}`: a concrete image, an
+        image group (with the frozen generation), or a resume/restart of an earlier
+        job. The concrete manifest digest actually dispatched is reported separately
+        as `resolved_image_digest`.
       oneOf:
       - description: Based off a concrete catalog image, addressed by its catalog id.
         type: object
@@ -861,7 +859,7 @@ components:
       type: object
       properties:
         dispatched_on_host_id:
-          description: The host the job is (or was) dispatched on; `None` if unplaced.
+          description: The host the job is (or was) dispatched on; null if unplaced.
           type:
           - string
           - 'null'
@@ -883,9 +881,7 @@ components:
           allOf:
           - $ref: '#/components/schemas/JobImageRef'
         initializing_stage:
-          description: |-
-            The sub-stage while `state` is [`JobState::Initializing`]; `None`
-            otherwise.
+          description: The sub-stage while `state` is `initializing`; null otherwise.
           anyOf:
           - $ref: '#/components/schemas/JobInitializingStage'
           - type: 'null'
@@ -898,7 +894,7 @@ components:
           format: date-time
         owner_id:
           description: |-
-            Owning subject (user or group); `None` if the owner was deleted
+            Owning subject (user or group); null if the owner was deleted
             (orphaned).
           type:
           - string
@@ -916,14 +912,14 @@ components:
         resolved_image_digest:
           description: |-
             The concrete manifest digest actually dispatched, recorded at dispatch;
-            `None` until then.
+            null until then.
           anyOf:
           - $ref: '#/components/schemas/Digest'
           - type: 'null'
         restart_policy:
           $ref: '#/components/schemas/RestartPolicy'
         ssh_endpoints:
-          description: SSH endpoints the running job is reachable on; `None` until reported.
+          description: SSH endpoints the running job is reachable on; null until reported.
           type:
           - array
           - 'null'
@@ -934,7 +930,7 @@ components:
           items:
             type: string
         started_at:
-          description: When the job was dispatched onto a host; `None` if not yet started.
+          description: When the job was dispatched onto a host; null if not yet started.
           type:
           - string
           - 'null'
@@ -955,18 +951,18 @@ components:
         task_exit_status:
           description: |-
             The user workload's success/failure outcome, orthogonal to
-            `termination_reason`; `None` if never reported.
+            `termination_reason`; null if never reported.
           anyOf:
           - $ref: '#/components/schemas/TaskExitStatus'
           - type: 'null'
         terminated_at:
-          description: When the job was finalized; `None` until then.
+          description: When the job was finalized; null until then.
           type:
           - string
           - 'null'
           format: date-time
         termination_reason:
-          description: Why the job terminated; `None` until finalized.
+          description: Why the job terminated; null until finalized.
           anyOf:
           - $ref: '#/components/schemas/TerminationReason'
           - type: 'null'
@@ -1015,11 +1011,8 @@ components:
       - description: |-
           Base this job off a concrete image registered in the switchboard
           catalog, addressed by its catalog id (`POST /images`). At dispatch the
-          switchboard resolves the image to its registry locations and hands the
-          supervisor a content-addressed [`ImageSpecification::Image`].
-
-          [`ImageSpecification::Image`]:
-              crate::api::switchboard_supervisor::ImageSpecification::Image
+          switchboard resolves the image to its registry locations for the
+          supervisor.
         type: object
         properties:
           image:
@@ -1086,8 +1079,9 @@ components:
         first.
 
         Pagination is **keyset** on `(queued_at, job_id)` descending: when
-        `next_cursor` is `Some`, pass it back as the `cursor` query parameter to
-        fetch the next page; `None` means the last page. There is no total count.
+        `next_cursor` is non-null, pass it back as the `cursor` query parameter to
+        fetch the next page; a null `next_cursor` means the last page. There is no
+        total count.
       type: object
       properties:
         jobs:
@@ -1095,7 +1089,7 @@ components:
           items:
             $ref: '#/components/schemas/JobSummary'
         next_cursor:
-          description: Opaque cursor for the next page, or `None` on the last page.
+          description: Opaque cursor for the next page, or null on the last page.
           type:
           - string
           - 'null'
@@ -1104,15 +1098,16 @@ components:
     JobParameterView:
       description: |-
         One job parameter as exposed by `GET /jobs/{id}`. A parameter flagged
-        `secret` is **redacted**: its `value` is `None` and only the key + flag are
-        visible. Non-secret parameters carry their plaintext `value`.
+        `secret` is **redacted**: its `value` is null and only the key and the
+        `secret` flag are visible. Non-secret parameters carry their plaintext
+        `value`.
       type: object
       properties:
         secret:
           description: Whether this parameter was submitted as secret.
           type: boolean
         value:
-          description: The plaintext value, or `None` when `secret` (withheld).
+          description: The plaintext value, or null when the parameter is secret (withheld).
           type:
           - string
           - 'null'
@@ -1144,7 +1139,7 @@ components:
             The subject (user or group) to own the enqueued job. Must be the caller
             itself or a group the caller is a member of; absent, ownership defaults
             to the caller. Ownership decides who can later read, stop, and manage the
-            job (see `job_grants`).
+            job.
           type:
           - string
           - 'null'
@@ -1172,8 +1167,8 @@ components:
           description: |-
             Target (DUT) eligibility: an ordered array of requested targets, each a
             set of tags an attached DUT must carry (as a superset). The scheduler
-            assigns each entry to a distinct `host_targets` row on the chosen host.
-            Empty requests no DUTs. Target tags do not affect image selection.
+            assigns each entry to a distinct attached target (DUT) on the chosen
+            host. Empty requests no DUTs. Target tags do not affect image selection.
           type: array
           default: []
           items:
@@ -1187,11 +1182,8 @@ components:
       - parameters
     JobState:
       description: |-
-        The execution-lifecycle state of a job, mirroring the
-        `tml_switchboard.job_state` DB enum. This is the switchboard's own view of
-        where a job is in its lifecycle (queued → assigned → executing → finalized),
-        distinct from the supervisor-reported
-        [`RunningJobState`](crate::api::switchboard_supervisor::RunningJobState).
+        Where a job is in its execution lifecycle: queued → assigned → initializing
+        → ready → terminating → finalized.
       oneOf:
       - description: Enqueued, awaiting placement onto a host by the scheduler.
         type: string
@@ -1199,9 +1191,7 @@ components:
       - description: Placed on a host but not yet reported as executing.
         type: string
         const: assigned
-      - description: |-
-          The host is bringing the job up (see
-          [`JobInitializingStage`](crate::api::switchboard_supervisor::JobInitializingStage)).
+      - description: The host is bringing the job up (see `initializing_stage`).
         type: string
         const: initializing
       - description: The job is running and ready.
@@ -1222,7 +1212,7 @@ components:
       type: object
       properties:
         dispatched_on_host_id:
-          description: The host the job is (or was) dispatched on; `None` if unplaced.
+          description: The host the job is (or was) dispatched on; null if unplaced.
           type:
           - string
           - 'null'
@@ -1233,7 +1223,7 @@ components:
           type: string
           format: uuid
         owner_id:
-          description: Owning subject (user or group); `None` if orphaned.
+          description: Owning subject (user or group); null if orphaned.
           type:
           - string
           - 'null'
@@ -1290,8 +1280,8 @@ components:
           - 'null'
         limit:
           description: |-
-            Page size; clamped to `[1, MAX_LIST_LIMIT]`, defaulting to
-            `DEFAULT_LIST_LIMIT`.
+            Maximum number of jobs per page. Omitted or out-of-range values fall
+            back to the server's default and bounds.
           type:
           - integer
           - 'null'
@@ -1374,7 +1364,7 @@ components:
       description: |-
         `POST /images`: register a concrete image by digest. The switchboard pulls
         the manifest from `registry/repository@manifest_digest`, validates it is a
-        Treadmill image, and records an `images` row plus this first location.
+        Treadmill image, and records the image plus its first location.
       type: object
       properties:
         label:
@@ -1575,19 +1565,20 @@ components:
       description: |-
         Why a job terminated.
 
-        This records *why* a job stopped and is orthogonal to the
-        [`TaskExitStatus`] (the success/failure of the user's workload) and to any
-        `exit_message`. Mirrors the `tml_switchboard.termination_reason` DB enum.
+        This records *why* a job stopped and is orthogonal to the `task_exit_status`
+        (the success/failure of the user's workload) and to any `exit_message`.
       oneOf:
-      - description: The job's own workload ended it.
+      - description: The job's workload terminated (e.g., QEMU VM shutdown).
         type: string
         const: workload_exited
-      - description: The job requested its own cancellation.
+      - description: |-
+          The job requested its own termination (e.g., by requesting termination
+          through the puppet).
         type: string
-        const: workload_self_canceled
-      - description: Externally canceled by a user.
+        const: workload_self_terminated
+      - description: Externally terminated by a user.
         type: string
-        const: user_canceled
+        const: user_terminated
       - description: Timed out while still queued.
         type: string
         const: queue_timeout
@@ -1629,9 +1620,9 @@ components:
       - reason
     UpdateProfileRequest:
       description: |-
-        A patch to the caller's own profile. Each field uses a double `Option` so an
-        absent field (leave unchanged) is distinguishable from an explicit `null`
-        (clear the value). `username` is non-nullable, so a single `Option` suffices.
+        A patch to the caller's own profile. Omitting a field leaves it unchanged;
+        sending an explicit `null` clears it. `username` cannot be cleared, only
+        changed.
       type: object
       properties:
         avatar_url:

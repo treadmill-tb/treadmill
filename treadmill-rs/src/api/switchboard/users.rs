@@ -31,14 +31,13 @@ pub struct PublicUserProfile {
     pub github: Option<LinkedGitHub>,
 }
 
-/// One group the user belongs to, including transitive memberships resolved via
-/// the `principals()` function.
+/// One group the user belongs to, including transitive memberships (e.g. via
+/// nested groups or a linked GitHub org).
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct GroupMembership {
     pub group_id: Uuid,
     pub name: String,
-    /// How the membership arose (`direct`, `github_org`, ...), as stored in
-    /// `tml_switchboard.membership_source`.
+    /// How the membership arose (`direct`, `github_org`, ...).
     pub source: String,
     /// The external reference backing an auto-sourced membership (e.g. the
     /// GitHub org id); empty for direct memberships.
@@ -59,9 +58,9 @@ pub struct SelfUserProfile {
     pub locked: bool,
 }
 
-/// A patch to the caller's own profile. Each field uses a double `Option` so an
-/// absent field (leave unchanged) is distinguishable from an explicit `null`
-/// (clear the value). `username` is non-nullable, so a single `Option` suffices.
+/// A patch to the caller's own profile. Omitting a field leaves it unchanged;
+/// sending an explicit `null` clears it. `username` cannot be cleared, only
+/// changed.
 #[derive(schemars::JsonSchema, Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateProfileRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]

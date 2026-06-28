@@ -31,8 +31,8 @@ pub struct HostInfo {
     /// Whether the host's supervisor has heartbeat recently enough to be
     /// considered schedulable, computed with the deployment's liveness window.
     pub live: bool,
-    /// The host's last heartbeat, or `None` if it has never reported (or its
-    /// worker disconnected cleanly).
+    /// The host's last heartbeat, or null if it has never reported (or its
+    /// supervisor disconnected cleanly).
     pub last_seen_at: Option<DateTime<Utc>>,
     /// The targets (DUTs) wired to this host, in stable order.
     pub targets: Vec<HostTarget>,

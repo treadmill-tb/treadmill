@@ -13,7 +13,7 @@ use crate::image::Digest;
 
 /// `POST /images`: register a concrete image by digest. The switchboard pulls
 /// the manifest from `registry/repository@manifest_digest`, validates it is a
-/// Treadmill image, and records an `images` row plus this first location.
+/// Treadmill image, and records the image plus its first location.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterImageRequest {
     /// Registry authority (`host:port`) the manifest can be pulled from.
@@ -100,7 +100,7 @@ pub struct ImageGroupInfo {
     /// When `true`, every subject implicitly holds `use` on the group.
     pub public: bool,
     pub created_at: DateTime<Utc>,
-    /// The group's latest generation number, or `None` if it has none yet.
+    /// The group's latest generation number, or null if it has none yet.
     pub latest_generation: Option<u32>,
 }
 
@@ -125,7 +125,7 @@ pub struct ImageGroupGenerationInfo {
     pub members: Vec<GenerationMemberInfo>,
 }
 
-/// A permission on an image group; mirrors `tml_switchboard.image_group_permission`.
+/// A permission on an image group.
 #[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageGroupPermission {
