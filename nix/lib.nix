@@ -18,15 +18,13 @@ let
   # missing their manifests.
   workspaceSkeleton = craneLib.fileset.cargoTomlAndLock workspaceRoot;
 
-  # Switchboard's non-Rust build inputs: offline sqlx query cache plus
-  # files baked in via include_str!/include_bytes! (SCHEMA, FIXTURES,
-  # example config) and the migrations directory the binary expects at
-  # runtime.
+  # Switchboard's non-Rust build inputs: offline sqlx query cache plus files
+  # baked in via include_str!/include_bytes! (SCHEMA, example config) and the
+  # migrations directory the binary expects at runtime.
   switchboardData = lib.fileset.unions [
     (lib.fileset.maybeMissing (workspaceRoot + "/.sqlx"))
     (lib.fileset.maybeMissing (workspaceRoot + "/switchboard/migrations"))
     (lib.fileset.maybeMissing (workspaceRoot + "/switchboard/SCHEMA.sql"))
-    (lib.fileset.maybeMissing (workspaceRoot + "/switchboard/FIXTURES.sql"))
     (lib.fileset.maybeMissing (workspaceRoot + "/switchboard/config.example.toml"))
     # Committed OpenAPI snapshot read by the api-spec drift-guard test.
     (lib.fileset.maybeMissing (workspaceRoot + "/switchboard/api-spec"))
