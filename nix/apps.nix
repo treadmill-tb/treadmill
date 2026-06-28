@@ -216,6 +216,17 @@
         text = ''
           set -euo pipefail
 
+          # Find the git repository root relative to the user's PWD. We need to
+          # run `sqlx migrate run` from a consistent directory, as it produces
+          # diverging results when run from the workspace root or the
+          # switchboard crate:
+          REPO_ROOT=$(${pkgs.git}/bin/git rev-parse --show-toplevel 2>/dev/null)
+          if [ -z "$REPO_ROOT" ]; then
+            echo "Error: Not running inside a git repository."
+            exit 1
+          fi
+          cd "$REPO_ROOT"
+
           # Need explicit export, runtimeInputs only adds bin output:
           export OPENSSL_DIR="${pkgs.openssl.dev}"
           export OPENSSL_LIB_DIR="${pkgs.openssl.out}/lib"
@@ -233,6 +244,38 @@
           # then write the root /.sqlx cache.
           cargo clean -p treadmill-switchboard
           cargo sqlx prepare --workspace -- --all-targets
+        '';
+      };
+
+      # Wrapper around the `switchboard/migrate.sh` script:
+      #
+      # Re-uses the database shell's `ephemeralPostgresHook`.
+      switchboard-migrate = pkgs.writeShellApplication {
+        name = "switchboard-migrate";
+        runtimeInputs = with pkgs; [
+          atlas
+          postgresql
+          sqlx-cli
+        ];
+        text = ''
+          set -euo pipefail
+
+          # Find the git repository root relative to the user's PWD. We use this
+          # to locate the `migrate.sh` script and use the repo root as our PWD:
+          REPO_ROOT=$(${pkgs.git}/bin/git rev-parse --show-toplevel 2>/dev/null)
+          if [ -z "$REPO_ROOT" ]; then
+            echo "Error: Not running inside a git repository."
+            exit 1
+          fi
+          cd "$REPO_ROOT"
+
+          # Spin up an ephemeral Postgres and export DATABASE_URL; the watcher
+          # this forks tears the cluster down when the script exits.
+          ${cmn.ephemeralPostgresHook}
+
+          # Forward the user's args to `migrate.sh`. We don't `exec` it, as that
+          # would prevent the ephemeral Postgres from shutting down cleanly:
+          ./switchboard/migrate.sh "$@"
         '';
       };
     in
@@ -259,6 +302,12 @@
         type = "app";
         program = "${switchboard-sqlx-prepare}/bin/switchboard-sqlx-prepare";
         meta.description = "Regenerate the committed root .sqlx query cache via the database devshell";
+      };
+
+      apps.switchboard-migrate = {
+        type = "app";
+        program = "${switchboard-migrate}/bin/switchboard-migrate";
+        meta.description = "Run the switchboard/migrate.sh script with an ephemeral Postgres";
       };
     };
 }
