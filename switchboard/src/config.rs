@@ -1,7 +1,7 @@
 use miette::{IntoDiagnostic, WrapErr};
 use serde::Deserialize;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 use treadmill_rs::util::chrono::duration as human_duration;
 
@@ -193,8 +193,6 @@ pub enum DatabaseCredentials {
 pub struct ServerConfig {
     /// Socket address to bind to.
     pub bind_address: SocketAddr,
-    /// Optional TLS mode for testing only.
-    pub testing_only_tls_config: Option<TestingOnlyTlsConfig>,
     /// Header names, in priority order, to trust for the real client address
     /// when the switchboard runs behind a reverse proxy (e.g.
     /// `["X-Forwarded-For"]`). Empty (the default) means trust ONLY the raw
@@ -202,14 +200,6 @@ pub struct ServerConfig {
     /// known to set them, or a client could spoof its recorded address.
     #[serde(default)]
     pub trusted_proxy_headers: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct TestingOnlyTlsConfig {
-    /// Public key (for TLS).
-    pub cert: PathBuf,
-    /// Private key (for TLS).
-    pub key: PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize)]

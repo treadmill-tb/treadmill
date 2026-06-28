@@ -31,7 +31,6 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
         },
         server: ServerConfig {
             bind_address: "127.0.0.1:0".parse().unwrap(),
-            testing_only_tls_config: None,
             trusted_proxy_headers: Vec::new(),
         },
         service: ServiceConfig {

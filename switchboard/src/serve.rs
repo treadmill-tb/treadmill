@@ -149,7 +149,6 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
         .wrap_err("failed to migrate database")?;
 
     let bind_address = config.server.bind_address;
-    let tls_config = config.server.testing_only_tls_config.clone();
 
     // Spawn the job scheduler. It coordinates with the per-host supervisor
     // workers entirely through the database (no in-process channel), so it just
@@ -190,42 +189,12 @@ pub async fn serve(serve_command: ServeCommand) -> miette::Result<()> {
     );
     let router = super::routes::build_router(app_state);
 
-    enum Server {
-        PlainHttp(axum_server::Server<SocketAddr>),
-        Tls(axum_server::Server<SocketAddr, axum_server::tls_rustls::RustlsAcceptor>),
-    }
-
-    let server = match tls_config {
-        None => Server::PlainHttp(axum_server::bind(bind_address)),
-        Some(tls) => {
-            let rustls_config =
-                axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls.cert, &tls.key)
-                    .await
-                    .into_diagnostic()
-                    .wrap_err("Failed to load RusTls configuration for public server")?;
-            let server = axum_server::bind_rustls(bind_address, rustls_config);
-
-            tracing::warn!(
-                "-- WARNING -- DEVELOPMENT-ONLY TLS MODE IS ENABLED. PLEASE DO NOT USE THIS IN PRODUCTION."
-            );
-
-            Server::Tls(server)
-        }
-    };
+    let server = axum_server::bind(bind_address);
     tracing::info!("Bound server to {bind_address}");
 
-    match server {
-        Server::PlainHttp(server) => {
-            server
-                .serve(router.into_make_service_with_connect_info::<SocketAddr>())
-                .await
-        }
-        Server::Tls(server) => {
-            server
-                .serve(router.into_make_service_with_connect_info::<SocketAddr>())
-                .await
-        }
-    }
-    .into_diagnostic()
-    .wrap_err("(server exited)")
+    server
+        .serve(router.into_make_service_with_connect_info::<SocketAddr>())
+        .await
+        .into_diagnostic()
+        .wrap_err("(server exited)")
 }

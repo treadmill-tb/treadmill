@@ -8,12 +8,6 @@ auth.password = ""
 [server]
 bind_address = "0.0.0.0:8081"
 
-# Uncomment this to enable a TLS support.
-# DO NOT USE THIS IN PRODUCTION.
-#[server.testing_only_tls_config]
-#cert = "config/tls/localhost-public.pem"
-#key = "config/tls/localhost.pem"
-
 [service]
 default_token_timeout = "7d"
 default_job_timeout = "30m"
