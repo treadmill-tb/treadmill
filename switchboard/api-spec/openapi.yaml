@@ -5,6 +5,10 @@ info:
 paths:
   /jobs:
     get:
+      tags:
+      - Jobs
+      summary: List jobs
+      operationId: listJobs
       parameters:
       - in: query
         name: cursor
@@ -47,6 +51,10 @@ paths:
       security:
       - token: []
     post:
+      tags:
+      - Jobs
+      summary: Enqueue a job
+      operationId: enqueueJob
       requestBody:
         content:
           application/json:
@@ -76,10 +84,20 @@ paths:
             text/plain:
               schema:
                 type: string
+        '201':
+          description: The job was enqueued; the response carries its id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnqueueJobResponse'
       security:
       - token: []
   /jobs/{id}/events:
     get:
+      tags:
+      - Jobs
+      summary: List a job's audit events
+      operationId: listJobEvents
       parameters:
       - in: path
         name: id
@@ -105,6 +123,10 @@ paths:
       - token: []
   /jobs/{id}/log-token:
     post:
+      tags:
+      - Jobs
+      summary: Create a log-streaming token for a job
+      operationId: createJobLogToken
       parameters:
       - in: path
         name: id
@@ -135,10 +157,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LogStreamCredentials'
+        '503':
+          description: Log streaming is not enabled on this deployment.
       security:
       - token: []
   /jobs/{id}:
     get:
+      tags:
+      - Jobs
+      summary: Get a job
+      operationId: getJob
       parameters:
       - in: path
         name: id
@@ -168,6 +196,10 @@ paths:
       security:
       - token: []
     delete:
+      tags:
+      - Jobs
+      summary: Terminate a job
+      operationId: terminateJob
       parameters:
       - in: path
         name: id
@@ -183,10 +215,18 @@ paths:
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
         '403':
           description: The authenticated account is locked, or lacks permission for this resource.
+        '202':
+          description: Termination was initiated.
+        '204':
+          description: The job was already finalized; nothing to do.
       security:
       - token: []
   /hosts:
     get:
+      tags:
+      - Hosts
+      summary: List hosts
+      operationId: listHosts
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -204,6 +244,10 @@ paths:
       - token: []
   /hosts/{id}/events:
     get:
+      tags:
+      - Hosts
+      summary: List a host's audit events
+      operationId: listHostEvents
       parameters:
       - in: path
         name: id
@@ -229,6 +273,10 @@ paths:
       - token: []
   /hosts/{id}/connect:
     get:
+      tags:
+      - Hosts
+      summary: Open a host's supervisor WebSocket
+      operationId: connectHost
       parameters:
       - in: header
         name: authorization
@@ -275,6 +323,10 @@ paths:
                 type: string
   /users/me:
     get:
+      tags:
+      - Users
+      summary: Get the current user's profile
+      operationId: getCurrentUser
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -291,6 +343,10 @@ paths:
       security:
       - token: []
     patch:
+      tags:
+      - Users
+      summary: Update the current user's profile
+      operationId: updateCurrentUser
       requestBody:
         description: |-
           A patch to the caller's own profile. Omitting a field leaves it unchanged;
@@ -332,10 +388,16 @@ paths:
             text/plain:
               schema:
                 type: string
+        '409':
+          description: The requested username is already taken.
       security:
       - token: []
   /users/me/tokens:
     get:
+      tags:
+      - Users
+      summary: List the current user's tokens
+      operationId: listCurrentUserTokens
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -353,6 +415,10 @@ paths:
       - token: []
   /users/me/tokens/{token_id}:
     delete:
+      tags:
+      - Users
+      summary: Revoke one of the current user's tokens
+      operationId: revokeCurrentUserToken
       parameters:
       - in: path
         name: token_id
@@ -368,10 +434,18 @@ paths:
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
         '403':
           description: The authenticated account is locked, or lacks permission for this resource.
+        '204':
+          description: The token was revoked.
+        '404':
+          description: No such token belonging to the caller.
       security:
       - token: []
   /users/{id}:
     get:
+      tags:
+      - Users
+      summary: Get a user's public profile
+      operationId: getUser
       parameters:
       - in: path
         name: id
@@ -395,10 +469,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PublicUserProfile'
+        '404':
+          description: No such user.
       security:
       - token: []
   /users/{id}/events:
     get:
+      tags:
+      - Users
+      summary: List a user's audit events
+      operationId: listUserEvents
       parameters:
       - in: path
         name: id
@@ -424,6 +504,10 @@ paths:
       - token: []
   /images:
     get:
+      tags:
+      - Images
+      summary: List images
+      operationId: listImages
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -440,6 +524,10 @@ paths:
       security:
       - token: []
     post:
+      tags:
+      - Images
+      summary: Register an image
+      operationId: registerImage
       requestBody:
         description: |-
           `POST /images`: register a concrete image by digest. The switchboard pulls
@@ -473,10 +561,30 @@ paths:
             text/plain:
               schema:
                 type: string
+        '201':
+          description: The image was newly registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageInfo'
+        '200':
+          description: The image was already registered; this location was added.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageInfo'
+        '409':
+          description: This digest is already registered to another owner.
+        '502':
+          description: The image's registry could not be reached or returned an error.
       security:
       - token: []
   /images/{digest}:
     get:
+      tags:
+      - Images
+      summary: Get an image
+      operationId: getImage
       parameters:
       - in: path
         name: digest
@@ -497,10 +605,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ImageInfo'
+        '404':
+          description: No such image, or it is not visible to the caller.
       security:
       - token: []
   /image-groups:
     get:
+      tags:
+      - Image groups
+      summary: List image groups
+      operationId: listImageGroups
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -517,6 +631,10 @@ paths:
       security:
       - token: []
     post:
+      tags:
+      - Image groups
+      summary: Create an image group
+      operationId: createImageGroup
       requestBody:
         description: |-
           `POST /image-groups`: create an empty, named image group. The caller becomes
@@ -550,10 +668,22 @@ paths:
             text/plain:
               schema:
                 type: string
+        '201':
+          description: The image group was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGroupInfo'
+        '409':
+          description: An image group with that name already exists.
       security:
       - token: []
   /image-groups/{id}:
     get:
+      tags:
+      - Image groups
+      summary: Get an image group
+      operationId: getImageGroup
       parameters:
       - in: path
         name: id
@@ -575,10 +705,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ImageGroupInfo'
+        '404':
+          description: No such image group, or it is not visible to the caller.
       security:
       - token: []
   /image-groups/{id}/generations:
     post:
+      tags:
+      - Image groups
+      summary: Append a generation to an image group
+      operationId: createImageGroupGeneration
       parameters:
       - in: path
         name: id
@@ -621,10 +757,22 @@ paths:
             text/plain:
               schema:
                 type: string
+        '201':
+          description: The generation was appended.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGroupGenerationInfo'
+        '404':
+          description: No such image group, or it is not visible to the caller.
       security:
       - token: []
   /image-groups/{id}/generations/{n}:
     get:
+      tags:
+      - Image groups
+      summary: Get an image-group generation
+      operationId: getImageGroupGeneration
       parameters:
       - in: path
         name: id
@@ -656,10 +804,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ImageGroupGenerationInfo'
+        '404':
+          description: No such image group or generation.
       security:
       - token: []
   /image-groups/{id}/grants:
     get:
+      tags:
+      - Image groups
+      summary: List an image group's grants
+      operationId: listImageGroupGrants
       parameters:
       - in: path
         name: id
@@ -686,6 +840,10 @@ paths:
       security:
       - token: []
     post:
+      tags:
+      - Image groups
+      summary: Grant a permission on an image group
+      operationId: createImageGroupGrant
       parameters:
       - in: path
         name: id
@@ -726,10 +884,18 @@ paths:
             text/plain:
               schema:
                 type: string
+        '204':
+          description: The grant was recorded.
+        '404':
+          description: No such image group, or it is not visible to the caller.
       security:
       - token: []
   /image-groups/{id}/grants/{subject_id}/{permission}:
     delete:
+      tags:
+      - Image groups
+      summary: Revoke a grant on an image group
+      operationId: revokeImageGroupGrant
       parameters:
       - in: path
         name: id
@@ -762,10 +928,18 @@ paths:
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
         '403':
           description: The authenticated account is locked, or lacks permission for this resource.
+        '204':
+          description: The grant was revoked.
+        '404':
+          description: No matching grant to revoke.
       security:
       - token: []
   /image-groups/{id}/public:
     put:
+      tags:
+      - Image groups
+      summary: Set an image group's public flag
+      operationId: setImageGroupPublic
       parameters:
       - in: path
         name: id
@@ -814,6 +988,8 @@ paths:
             text/plain:
               schema:
                 type: string
+        '404':
+          description: No such image group, or it is not visible to the caller.
       security:
       - token: []
 components:
@@ -884,6 +1060,15 @@ components:
           type: string
       required:
       - digest
+    EnqueueJobResponse:
+      description: 'Response body of `POST /jobs`: the id assigned to the freshly enqueued job.'
+      type: object
+      properties:
+        job_id:
+          type: string
+          format: uuid
+      required:
+      - job_id
     GenerationMemberInfo:
       description: |-
         One member of a generation, as returned by the inspect route. A member is
@@ -2060,3 +2245,14 @@ components:
           type:
           - string
           - 'null'
+tags:
+- name: Jobs
+  description: Enqueue, inspect, and terminate jobs.
+- name: Hosts
+  description: Inspect hosts and their attached targets.
+- name: Images
+  description: Register and inspect catalog images.
+- name: Image groups
+  description: Manage image groups, their generations, and grants.
+- name: Users
+  description: Profiles, sessions, and audit feeds.
