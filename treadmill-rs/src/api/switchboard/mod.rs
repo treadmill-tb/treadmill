@@ -6,8 +6,7 @@ pub mod images;
 pub mod jobs;
 pub mod users;
 
-use crate::api::supervisor_puppet::ParameterValue;
-use crate::api::switchboard_supervisor::RestartPolicy;
+use crate::api::switchboard::jobs::{JobParameter, RestartPolicy};
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -104,16 +103,16 @@ pub struct MockIdentityInfo {
 #[serde(rename_all = "snake_case")]
 pub enum JobInitSpec {
     /// Resume a previously started job.
-    ResumeJob { job_id: Uuid },
+    Resume { job_id: Uuid },
 
-    /// Restart a job.
-    RestartJob { job_id: Uuid },
+    /// Restart a previously started job (inherits its image reference).
+    Restart { job_id: Uuid },
 
     /// Base this job off a concrete image registered in the switchboard
     /// catalog, addressed by its catalog id (`POST /images`). At dispatch the
     /// switchboard resolves the image to its registry locations for the
     /// supervisor.
-    Image { image: Uuid },
+    Image { image_id: Uuid },
 
     /// Base this job off a registered image *group*, addressed by its stable id.
     /// `generation` pins a specific membership snapshot; when omitted, the
@@ -122,7 +121,7 @@ pub enum JobInitSpec {
     /// member whose required host tags the chosen host satisfies and dispatches
     /// that concrete member.
     ImageGroup {
-        image_group: Uuid,
+        group_id: Uuid,
         #[serde(default)]
         generation: Option<u32>,
     },
@@ -170,7 +169,7 @@ pub struct JobRequest {
 
     /// A hash map of parameters provided to this job execution. These
     /// parameters are provided to the puppet daemon.
-    pub parameters: HashMap<String, ParameterValue>,
+    pub parameters: HashMap<String, JobParameter>,
 
     /// Host eligibility: the set of tags the chosen host must carry (as a
     /// superset) for this job to be assigned to it. Tags are opaque strings

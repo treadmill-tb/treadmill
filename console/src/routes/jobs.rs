@@ -13,9 +13,10 @@ use axum::response::{IntoResponse, Redirect, Response};
 use maud::{Markup, html};
 use serde::Deserialize;
 use treadmill_rs::api::switchboard::client::ClientError;
-use treadmill_rs::api::switchboard::jobs::{JobInfo, JobParameterView, JobSummary};
+use treadmill_rs::api::switchboard::jobs::{
+    JobInfo, JobParameter, JobParameterView, JobSummary, RestartPolicy,
+};
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
-use treadmill_rs::api::switchboard_supervisor::{ParameterValue, RestartPolicy};
 use uuid::Uuid;
 
 use crate::serve::AppState;
@@ -187,7 +188,7 @@ fn details_card(job: &JobInfo, caller: Option<Uuid>) -> Markup {
                     (job.ssh_keys.len()) " key(s)"
                 } }
                 dt { "Restart policy" }
-                dd { (job.restart_policy.remaining_restart_count) " remaining" }
+                dd { (job.restart_policy.remaining_restarts) " remaining" }
                 dt { "Host tags" }
                 dd { (tag_list(&job.host_tag_requirements)) }
                 dt { "Targets" }
@@ -289,9 +290,9 @@ fn console_placeholder() -> Markup {
 }
 
 fn initializing_stage_label(
-    stage: &treadmill_rs::api::switchboard_supervisor::JobInitializingStage,
+    stage: &treadmill_rs::api::switchboard::jobs::JobInitializingStage,
 ) -> &'static str {
-    use treadmill_rs::api::switchboard_supervisor::JobInitializingStage as S;
+    use treadmill_rs::api::switchboard::jobs::JobInitializingStage as S;
     match stage {
         S::Starting => "starting",
         S::FetchingImage => "fetching image",
@@ -301,10 +302,8 @@ fn initializing_stage_label(
     }
 }
 
-fn task_exit_label(
-    status: &treadmill_rs::api::switchboard_supervisor::TaskExitStatus,
-) -> &'static str {
-    use treadmill_rs::api::switchboard_supervisor::TaskExitStatus as T;
+fn task_exit_label(status: &treadmill_rs::api::switchboard::jobs::TaskExitStatus) -> &'static str {
+    use treadmill_rs::api::switchboard::jobs::TaskExitStatus as T;
     match status {
         T::Pending => "pending",
         T::Success => "success",
@@ -487,7 +486,7 @@ impl FormState {
         };
 
         let restart = self.restart_count.trim();
-        let remaining_restart_count = if restart.is_empty() {
+        let max_restarts = if restart.is_empty() {
             0
         } else {
             restart
@@ -515,14 +514,14 @@ impl FormState {
                 .collect()
         };
 
-        let parameters: HashMap<String, ParameterValue> = self
+        let parameters: HashMap<String, JobParameter> = self
             .params
             .iter()
             .filter(|p| !p.key.trim().is_empty())
             .map(|p| {
                 (
                     p.key.trim().to_string(),
-                    ParameterValue {
+                    JobParameter {
                         value: p.value.clone(),
                         secret: p.secret,
                     },
@@ -539,14 +538,12 @@ impl FormState {
 
         Ok(JobRequest {
             init_spec: JobInitSpec::ImageGroup {
-                image_group,
+                group_id: image_group,
                 generation: None,
             },
             owner,
             ssh_keys: nonempty(&self.ssh_keys),
-            restart_policy: RestartPolicy {
-                remaining_restart_count,
-            },
+            restart_policy: RestartPolicy { max_restarts },
             parameters,
             host_tag_requirements: nonempty(&self.host_tags),
             target_requirements,
@@ -894,7 +891,7 @@ mod tests {
         let req = form.build_request().expect("valid request");
         assert!(matches!(req.init_spec, JobInitSpec::ImageGroup { .. }));
         assert_eq!(req.owner, None);
-        assert_eq!(req.restart_policy.remaining_restart_count, 2);
+        assert_eq!(req.restart_policy.max_restarts, 2);
         assert_eq!(req.override_timeout, None);
         assert_eq!(req.ssh_keys, vec!["key-a"]);
         assert_eq!(req.host_tag_requirements, vec!["arch=arm64"]);

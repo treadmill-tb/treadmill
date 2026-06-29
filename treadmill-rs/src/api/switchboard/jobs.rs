@@ -7,8 +7,96 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::switchboard::{JobState, TerminationReason};
-use crate::api::switchboard_supervisor::{JobInitializingStage, RestartPolicy, TaskExitStatus};
 use crate::image::Digest;
+
+/// The fine-grained stage of a job that is still coming up, exposed as
+/// `initializing_stage` on [`JobInfo`] while its `state` is `initializing` (and
+/// null in every other state). A job advances through these stages in order as
+/// the host fetches its image, allocates resources, provisions the environment,
+/// and boots, before it becomes `ready`.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobInitializingStage {
+    /// Generic starting stage, reported before any more specific stage applies.
+    Starting,
+    /// Fetching the job's image.
+    FetchingImage,
+    /// Acquiring resources (such as the root filesystem) for the environment.
+    Allocating,
+    /// Applying the requested customizations to the base system.
+    Provisioning,
+    /// The host is booting; the job becomes `ready` once it is up.
+    Booting,
+}
+
+/// The user workload's success/failure outcome, exposed as `task_exit_status`
+/// on [`JobInfo`]/[`JobSummary`].
+///
+/// It is orthogonal to *why* the job terminated (see [`TerminationReason`]): the
+/// outcome reflects the workload's own result, reported by the host while the
+/// job runs and revisable until it ends. `pending` means the workload was still
+/// running when last reported; a null `task_exit_status` means no outcome was
+/// ever reported.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskExitStatus {
+    /// The workload is running; its result is not yet determined.
+    Pending,
+    /// The workload completed successfully.
+    Success,
+    /// The workload failed.
+    Failure,
+}
+
+/// How many times a job may be **automatically restarted** after it is dropped
+/// by its host, supplied with the job at enqueue (`POST /jobs`).
+///
+/// Each automatic restart enqueues a successor that inherits one fewer; the
+/// count a running job still has left is reported back as [`RestartPolicyState`]
+/// on [`JobInfo`]. A `max_restarts` of `0` disables automatic restarts.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct RestartPolicy {
+    /// Maximum number of automatic restarts to grant this job.
+    pub max_restarts: u32,
+}
+
+/// The automatic-restart budget a job still has left, exposed as
+/// `restart_policy` on [`JobInfo`].
+///
+/// A job enqueued with a [`RestartPolicy`] starts at its `max_restarts`; each
+/// automatic restart spends one, so this reports how many restarts the job (or
+/// the successor currently standing in for it) still has remaining.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct RestartPolicyState {
+    /// How many automatic restarts this job still has remaining.
+    pub remaining_restarts: u32,
+}
+
+/// One parameter supplied with a job at enqueue (`POST /jobs`), passed through
+/// to the puppet daemon running the workload.
+///
+/// Flag a parameter `secret` to have its value withheld wherever the job is
+/// later read back (it surfaces as a redacted [`JobParameterView`]); non-secret
+/// parameters are returned verbatim.
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Clone)]
+pub struct JobParameter {
+    /// The parameter's value.
+    pub value: String,
+    /// Whether to treat the value as secret (withheld when the job is read
+    /// back).
+    pub secret: bool,
+}
+
+impl std::fmt::Debug for JobParameter {
+    /// Custom [`std::fmt::Debug`] that never prints a secret parameter's value,
+    /// so a debug-formatted job request cannot leak it into logs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        f.debug_struct("JobParameter")
+            .field("secret", &self.secret)
+            .field("value", if self.secret { &"***" } else { &self.value })
+            .finish()
+    }
+}
 
 /// Connection credentials for tailing/replaying a job's console logs over NATS,
 /// returned by `POST /jobs/{id}/log-token`.
@@ -94,7 +182,7 @@ pub struct JobInfo {
     pub resolved_image_digest: Option<Digest>,
 
     pub ssh_keys: Vec<String>,
-    pub restart_policy: RestartPolicy,
+    pub restart_policy: RestartPolicyState,
     /// Host eligibility tags this job requires (superset match against a host's
     /// tags).
     pub host_tag_requirements: Vec<String>,

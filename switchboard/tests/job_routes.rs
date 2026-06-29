@@ -20,13 +20,13 @@ use tokio::net::TcpListener;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
+use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobImageRef, JobInfo, JobListResponse, LogStreamCredentials,
 };
 use treadmill_rs::api::switchboard::{
     JobInitSpec, JobRequest, JobState, LoginResponse, WhoAmIResponse,
 };
-use treadmill_rs::api::switchboard_supervisor::RestartPolicy;
 
 /// The built-in admins group subject (`engine::ADMINS_GROUP_ID`). `alice` is a
 /// member, so she may file a job under it.
@@ -369,7 +369,7 @@ async fn enqueue_and_cancel_emit_audit_events(pool: PgPool) {
 
     // Enqueue a job, then cancel it (still queued, so it finalizes immediately).
     let image = register_image(&pool).await;
-    let req = image_job_request(None, JobInitSpec::Image { image }, None);
+    let req = image_job_request(None, JobInitSpec::Image { image_id: image }, None);
     let job_id = client
         .post(format!("http://{addr}/api/v1/jobs"))
         .bearer_auth(&token)
@@ -440,9 +440,7 @@ fn image_job_request(
         init_spec,
         owner,
         ssh_keys: vec![],
-        restart_policy: RestartPolicy {
-            remaining_restart_count: 0,
-        },
+        restart_policy: RestartPolicy { max_restarts: 0 },
         parameters: HashMap::new(),
         host_tag_requirements: vec![],
         target_requirements: vec![],
@@ -462,7 +460,7 @@ async fn enqueue_creates_a_queued_job_owned_by_caller(pool: PgPool) {
     let token = mock_login_token(&client, addr, "bob").await;
     let bob = whoami(&client, addr, &token).await;
     let image = register_image(&pool).await;
-    let req = image_job_request(None, JobInitSpec::Image { image }, None);
+    let req = image_job_request(None, JobInitSpec::Image { image_id: image }, None);
 
     let resp = client
         .post(format!("http://{addr}/api/v1/jobs"))
@@ -502,7 +500,11 @@ async fn enqueue_under_a_group_the_caller_belongs_to(pool: PgPool) {
     // `alice` is a member of the admins group, so she may own the job under it.
     let token = mock_login_token(&client, addr, "alice").await;
     let image = register_image(&pool).await;
-    let req = image_job_request(Some(ADMINS_GROUP_ID), JobInitSpec::Image { image }, None);
+    let req = image_job_request(
+        Some(ADMINS_GROUP_ID),
+        JobInitSpec::Image { image_id: image },
+        None,
+    );
 
     let resp = client
         .post(format!("http://{addr}/api/v1/jobs"))
@@ -543,7 +545,7 @@ async fn enqueue_with_unrelated_owner_is_forbidden(pool: PgPool) {
     let req = image_job_request(
         Some(Uuid::new_v4()),
         JobInitSpec::Image {
-            image: Uuid::new_v4(),
+            image_id: Uuid::new_v4(),
         },
         None,
     );
@@ -574,7 +576,7 @@ async fn restarting_a_job_without_manage_is_forbidden(pool: PgPool) {
     let existing = seed_job(&pool, alice, alice_tok, &[]).await;
 
     let bob_token = mock_login_token(&client, addr, "bob").await;
-    let req = image_job_request(None, JobInitSpec::RestartJob { job_id: existing }, None);
+    let req = image_job_request(None, JobInitSpec::Restart { job_id: existing }, None);
 
     let resp = client
         .post(format!("http://{addr}/api/v1/jobs"))
@@ -599,7 +601,7 @@ async fn enqueue_honors_an_override_timeout(pool: PgPool) {
     let image = register_image(&pool).await;
     let req = image_job_request(
         None,
-        JobInitSpec::Image { image },
+        JobInitSpec::Image { image_id: image },
         Some(chrono::Duration::hours(2)),
     );
 

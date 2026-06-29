@@ -6,12 +6,14 @@ use sqlx::postgres::types::PgInterval;
 use sqlx::{PgExecutor, Postgres, Transaction};
 use std::collections::BTreeSet;
 use treadmill_rs::api::switchboard::jobs::{
-    JobImageRef, JobInfo, JobParameterView, JobSummary, SshEndpoint,
+    JobImageRef, JobInfo, JobInitializingStage as ClientJobInitializingStage, JobParameterView,
+    JobSummary, RestartPolicy as ClientRestartPolicy, RestartPolicyState, SshEndpoint,
+    TaskExitStatus as ClientTaskExitStatus,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, TerminationReason};
 use treadmill_rs::api::switchboard_supervisor::{
-    ImageLocation, ImageSpecification, JobInitializingStage, RestartPolicy, RunningJobState,
-    StartJobMessage, TaskExitStatus,
+    ImageLocation, ImageSpecification, JobInitializingStage, ParameterValue, RestartPolicy,
+    RunningJobState, StartJobMessage, TaskExitStatus,
 };
 use treadmill_rs::connector::JobErrorKind;
 use treadmill_rs::image::Digest;
@@ -54,14 +56,14 @@ pub enum SqlJobInitializingStage {
     Provisioning,
     Booting,
 }
-impl From<SqlJobInitializingStage> for JobInitializingStage {
+impl From<SqlJobInitializingStage> for ClientJobInitializingStage {
     fn from(value: SqlJobInitializingStage) -> Self {
         match value {
-            SqlJobInitializingStage::Starting => JobInitializingStage::Starting,
-            SqlJobInitializingStage::FetchingImage => JobInitializingStage::FetchingImage,
-            SqlJobInitializingStage::Allocating => JobInitializingStage::Allocating,
-            SqlJobInitializingStage::Provisioning => JobInitializingStage::Provisioning,
-            SqlJobInitializingStage::Booting => JobInitializingStage::Booting,
+            SqlJobInitializingStage::Starting => ClientJobInitializingStage::Starting,
+            SqlJobInitializingStage::FetchingImage => ClientJobInitializingStage::FetchingImage,
+            SqlJobInitializingStage::Allocating => ClientJobInitializingStage::Allocating,
+            SqlJobInitializingStage::Provisioning => ClientJobInitializingStage::Provisioning,
+            SqlJobInitializingStage::Booting => ClientJobInitializingStage::Booting,
         }
     }
 }
@@ -147,12 +149,12 @@ pub enum SqlTaskExitStatus {
     Success,
     Failure,
 }
-impl From<SqlTaskExitStatus> for TaskExitStatus {
+impl From<SqlTaskExitStatus> for ClientTaskExitStatus {
     fn from(value: SqlTaskExitStatus) -> Self {
         match value {
-            SqlTaskExitStatus::Pending => TaskExitStatus::Pending,
-            SqlTaskExitStatus::Success => TaskExitStatus::Success,
-            SqlTaskExitStatus::Failure => TaskExitStatus::Failure,
+            SqlTaskExitStatus::Pending => ClientTaskExitStatus::Pending,
+            SqlTaskExitStatus::Success => ClientTaskExitStatus::Success,
+            SqlTaskExitStatus::Failure => ClientTaskExitStatus::Failure,
         }
     }
 }
@@ -178,6 +180,13 @@ impl From<SqlRestartPolicy> for RestartPolicy {
         }
     }
 }
+impl From<SqlRestartPolicy> for RestartPolicyState {
+    fn from(value: SqlRestartPolicy) -> Self {
+        Self {
+            remaining_restarts: u32::try_from(value.remaining_restart_count).unwrap_or(0),
+        }
+    }
+}
 
 pub async fn insert(
     job_request: JobRequest,
@@ -195,8 +204,8 @@ pub async fn insert(
         Option<Uuid>,
         Option<i32>,
     ) = match job_request.init_spec {
-        JobInitSpec::ResumeJob { job_id } => (Some(job_id), None, None, None, None),
-        JobInitSpec::RestartJob { job_id } => {
+        JobInitSpec::Resume { job_id } => (Some(job_id), None, None, None, None),
+        JobInitSpec::Restart { job_id } => {
             let predecessor = sqlx::query!(
                 r#"
                     select resume_job_id, restart_job_id, image_id,
@@ -216,9 +225,9 @@ pub async fn insert(
                 predecessor.image_group_generation,
             )
         }
-        JobInitSpec::Image { image } => (None, None, Some(image), None, None),
+        JobInitSpec::Image { image_id } => (None, None, Some(image_id), None, None),
         JobInitSpec::ImageGroup {
-            image_group,
+            group_id,
             generation,
         } => {
             // Freeze the candidate set: pin an explicit generation, else the
@@ -226,15 +235,15 @@ pub async fn insert(
             // generation before reaching here, so the fallback is defensive.
             let generation = match generation {
                 Some(g) => g,
-                None => image::latest_generation(conn.as_mut(), image_group)
+                None => image::latest_generation(conn.as_mut(), group_id)
                     .await?
                     .ok_or_else(|| {
                         sqlx::Error::Protocol(format!(
-                            "image group {image_group} has no generation to freeze"
+                            "image group {group_id} has no generation to freeze"
                         ))
                     })?,
             };
-            (None, None, None, Some(image_group), Some(generation as i32))
+            (None, None, None, Some(group_id), Some(generation as i32))
         }
     };
 
@@ -300,10 +309,8 @@ pub async fn insert(
         image_group_generation,
         job_request.ssh_keys.as_slice(),
         SqlRestartPolicy {
-            remaining_restart_count: i32::try_from(
-                job_request.restart_policy.remaining_restart_count
-            )
-            .unwrap(),
+            remaining_restart_count: i32::try_from(job_request.restart_policy.max_restarts)
+                .unwrap(),
         } as SqlRestartPolicy,
         as_token_id,
         job_request.host_tag_requirements.as_slice(),
@@ -960,7 +967,22 @@ pub async fn build_start_job_message(
         concrete_image_spec(rec.id, &rec.manifest_digest, conn).await?
     };
 
-    let parameters = parameters::fetch_by_job_id(job.job_id, &mut *conn).await?;
+    // Parameters are stored in the client-facing [`JobParameter`] shape; the
+    // supervisor protocol carries its own structurally-identical
+    // [`ParameterValue`], so translate at this dispatch boundary.
+    let parameters = parameters::fetch_by_job_id(job.job_id, &mut *conn)
+        .await?
+        .into_iter()
+        .map(|(key, p)| {
+            (
+                key,
+                ParameterValue {
+                    value: p.value,
+                    secret: p.secret,
+                },
+            )
+        })
+        .collect();
 
     // Mint the per-job write token when log streaming is enabled. The matching
     // JetStream stream is created by the caller outside the host row lock (NATS
@@ -1546,13 +1568,13 @@ pub async fn finalize_dropped_and_maybe_restart(
     let parameters = parameters::fetch_by_job_id(job_id, &mut **txn).await?;
     let target_requirements = target_requirements_for_job(job_id, &mut **txn).await?;
     let job_request = JobRequest {
-        init_spec: JobInitSpec::RestartJob { job_id },
+        init_spec: JobInitSpec::Restart { job_id },
         // Ownership is passed to `insert` explicitly (below); this field is the
         // user-facing requested owner and is unused on the internal path.
         owner: None,
         ssh_keys: predecessor.ssh_keys.clone(),
-        restart_policy: RestartPolicy {
-            remaining_restart_count: usize::try_from(remaining - 1).unwrap_or(0),
+        restart_policy: ClientRestartPolicy {
+            max_restarts: u32::try_from(remaining - 1).unwrap_or(0),
         },
         parameters: parameters.clone(),
         host_tag_requirements: predecessor.host_tag_requirements.clone(),

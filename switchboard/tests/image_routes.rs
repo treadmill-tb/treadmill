@@ -24,9 +24,9 @@ use tokio::net::TcpListener;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::images::{ImageGroupGenerationInfo, ImageGroupInfo, ImageInfo};
+use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, JobImageRef, JobInfo};
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, LoginResponse, WhoAmIResponse};
-use treadmill_rs::api::switchboard_supervisor::RestartPolicy;
 use treadmill_rs::image::Digest;
 use treadmill_switchboard::registry::{RegistryClient, RegistryError};
 use treadmill_switchboard::routes::build_router;
@@ -266,14 +266,12 @@ async fn enqueue_group(
 ) -> reqwest::Response {
     let req = JobRequest {
         init_spec: JobInitSpec::ImageGroup {
-            image_group: group,
+            group_id: group,
             generation,
         },
         owner: None,
         ssh_keys: vec![],
-        restart_policy: RestartPolicy {
-            remaining_restart_count: 0,
-        },
+        restart_policy: RestartPolicy { max_restarts: 0 },
         parameters: HashMap::new(),
         host_tag_requirements: vec![],
         target_requirements: vec![],

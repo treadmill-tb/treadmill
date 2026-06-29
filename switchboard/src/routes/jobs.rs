@@ -130,7 +130,7 @@ pub async fn list_events(
 ///   - **Owner.** `req.owner`, if set, must be the caller itself or a group the
 ///     caller belongs to (`requested ∈ principals(caller)`), else `403`; absent,
 ///     the job is owned by the caller.
-///   - **Resume/restart.** A `ResumeJob`/`RestartJob` references an existing job;
+///   - **Resume/restart.** A `Resume`/`Restart` references an existing job;
 ///     the caller must hold `Manage` on it, else `403`.
 ///   - **Image group.** An `ImageGroup` job requires `use` on the group (else
 ///     `403`, existence not leaked) and freezes a concrete generation now; a
@@ -172,7 +172,7 @@ pub async fn enqueue(
     // Resuming or restarting exposes the referenced job; require `Manage` on it.
     // (Independent of the owner check above — the requested owner may differ from
     // the referenced job's owner; both gates must pass.)
-    if let JobInitSpec::ResumeJob { job_id } | JobInitSpec::RestartJob { job_id } = req.init_spec {
+    if let JobInitSpec::Resume { job_id } | JobInitSpec::Restart { job_id } = req.init_spec {
         let authorized =
             engine::can_access_job(state.pool(), caller, job_id, JobPermission::Manage)
                 .await
@@ -192,19 +192,19 @@ pub async fn enqueue(
     // `use` is a 403 (existence is not leaked), and a group with no generation to
     // freeze is a 400.
     if let JobInitSpec::ImageGroup {
-        image_group,
+        group_id,
         generation,
     } = req.init_spec
     {
         let may_use = engine::can_access_image_group(
             state.pool(),
             caller,
-            image_group,
+            group_id,
             ImageGroupPermission::Use,
         )
         .await
         .map_err(|e| {
-            tracing::error!("checking `use` on image group {image_group}: {e}");
+            tracing::error!("checking `use` on image group {group_id}: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
         if !may_use {
@@ -215,12 +215,10 @@ pub async fn enqueue(
             // An explicitly requested generation must exist (nothing to pin
             // otherwise); the FK would also reject it, but a 400 here is clearer.
             Some(g) => {
-                if image::fetch_generation(state.pool(), image_group, g)
+                if image::fetch_generation(state.pool(), group_id, g)
                     .await
                     .map_err(|e| {
-                        tracing::error!(
-                            "looking up generation {g} of image group {image_group}: {e}"
-                        );
+                        tracing::error!("looking up generation {g} of image group {group_id}: {e}");
                         StatusCode::INTERNAL_SERVER_ERROR
                     })?
                     .is_none()
@@ -229,12 +227,10 @@ pub async fn enqueue(
                 }
                 g
             }
-            None => image::latest_generation(state.pool(), image_group)
+            None => image::latest_generation(state.pool(), group_id)
                 .await
                 .map_err(|e| {
-                    tracing::error!(
-                        "resolving latest generation of image group {image_group}: {e}"
-                    );
+                    tracing::error!("resolving latest generation of image group {group_id}: {e}");
                     StatusCode::INTERNAL_SERVER_ERROR
                 })?
                 .ok_or(StatusCode::BAD_REQUEST)?,
@@ -243,7 +239,7 @@ pub async fn enqueue(
         // Pin the resolved generation so the stored freeze is exactly what we
         // authorized and validated (job::insert would otherwise re-derive it).
         req.init_spec = JobInitSpec::ImageGroup {
-            image_group,
+            group_id,
             generation: Some(frozen),
         };
     }

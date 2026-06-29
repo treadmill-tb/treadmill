@@ -274,8 +274,8 @@ mod tests {
     use sqlx::PgPool;
     use sqlx::postgres::types::PgInterval;
     use std::collections::HashMap;
+    use treadmill_rs::api::switchboard::jobs::RestartPolicy;
     use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
-    use treadmill_rs::api::switchboard_supervisor::RestartPolicy;
     use treadmill_rs::image::{Digest, media_types};
 
     fn scheduler(pool: PgPool) -> Scheduler {
@@ -454,9 +454,7 @@ mod tests {
             init_spec,
             owner: None,
             ssh_keys: vec![],
-            restart_policy: RestartPolicy {
-                remaining_restart_count: 0,
-            },
+            restart_policy: RestartPolicy { max_restarts: 0 },
             parameters: HashMap::new(),
             host_tag_requirements: tags(host_tag_requirements),
             target_requirements: target_requirements.iter().map(|r| tags(r)).collect(),
@@ -488,7 +486,7 @@ mod tests {
         enqueue(
             pool,
             token,
-            JobInitSpec::Image { image },
+            JobInitSpec::Image { image_id: image },
             host_tag_requirements,
             target_requirements,
             Utc::now(),
@@ -669,7 +667,7 @@ mod tests {
             &pool,
             token,
             JobInitSpec::ImageGroup {
-                image_group: group,
+                group_id: group,
                 generation: None,
             },
             &["arch=arm64"],
@@ -760,7 +758,7 @@ mod tests {
         let older = enqueue(
             &pool,
             token,
-            JobInitSpec::Image { image: img },
+            JobInitSpec::Image { image_id: img },
             &["arch=arm64"],
             &[],
             now - Duration::seconds(10),
@@ -769,7 +767,7 @@ mod tests {
         let newer = enqueue(
             &pool,
             token,
-            JobInitSpec::Image { image: img },
+            JobInitSpec::Image { image_id: img },
             &["arch=arm64"],
             &[],
             now,
