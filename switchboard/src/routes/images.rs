@@ -28,16 +28,11 @@ use treadmill_rs::image::parse::{self, ParseError};
 use treadmill_rs::image::{Digest, media_types};
 
 use crate::auth::engine::{self, ImageGroupPermission as Perm};
+use crate::http_error::internal;
 use crate::registry::RegistryError;
 use crate::routes::params::{DigestPath, GenerationPath, GrantPath, IdPath};
 use crate::serve::AppState;
 use crate::sql::image;
-
-/// Map any unexpected error to a 500, logging it.
-fn internal(e: impl std::fmt::Display) -> StatusCode {
-    tracing::error!("image route internal error: {e}");
-    StatusCode::INTERNAL_SERVER_ERROR
-}
 
 /// A pull failure is the caller's problem (bad registry/repo/digest): 502 so it
 /// is distinguishable from a switchboard fault, with the cause logged.

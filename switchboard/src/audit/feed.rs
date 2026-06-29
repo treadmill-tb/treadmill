@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::audit::registry::{ViewerCtx, render};
 use crate::auth::Subject;
 use crate::auth::engine;
+use crate::http_error::OrInternal;
 use crate::serve::AppState;
 
 // The wire types live in the shared `treadmill-rs` crate so HTTP clients (the
@@ -70,10 +71,7 @@ pub(crate) async fn fetch_events_for_entity(
     let viewer_id = subject.user_id();
     let is_admin = engine::is_admin(state.pool(), viewer_id)
         .await
-        .map_err(|e| {
-            tracing::error!("failed to check admin status: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .or_internal("checking admin status")?;
 
     let mut allowed_policies: Vec<String> = Vec::new();
 
@@ -82,19 +80,13 @@ pub(crate) async fn fetch_events_for_entity(
             "host" => {
                 let perms = engine::host_permissions(state.pool(), viewer_id, entity_id)
                     .await
-                    .map_err(|e| {
-                        tracing::error!("failed to compute host permissions: {e}");
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    })?;
+                    .or_internal("computing host permissions")?;
                 allowed_policies.extend(perms.into_iter().map(|p| p.as_str().to_string()));
             }
             "job" => {
                 let perms = engine::job_permissions(state.pool(), viewer_id, entity_id)
                     .await
-                    .map_err(|e| {
-                        tracing::error!("failed to compute job permissions: {e}");
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    })?;
+                    .or_internal("computing job permissions")?;
                 allowed_policies.extend(perms.into_iter().map(|p| p.as_str().to_string()));
             }
             "subject" => {
@@ -154,10 +146,7 @@ pub(crate) async fn fetch_events_for_entity(
     )
     .fetch_all(state.pool())
     .await
-    .map_err(|e| {
-        tracing::error!("failed to fetch audit events: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    .or_internal("fetching audit events")?;
 
     // If the extra row came back, there is another page; the cursor points at
     // the last row we keep. Rendering below may drop individual rows, but

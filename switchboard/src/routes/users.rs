@@ -14,6 +14,7 @@ use treadmill_rs::api::switchboard::users::{
 
 use crate::audit;
 use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_entity};
+use crate::http_error::internal;
 use crate::routes::params::{IdPath, TokenIdPath};
 use crate::serve::AppState;
 use crate::sql::api_token::{self, RevokeToken};
@@ -35,12 +36,6 @@ const RESERVED_USERNAMES: &[&str] = &[
     "auth",
     "api",
 ];
-
-/// Map any error to a 500, logging it. Used for unexpected DB failures.
-fn internal(e: impl std::fmt::Display) -> StatusCode {
-    tracing::error!("user route internal error: {e}");
-    StatusCode::INTERNAL_SERVER_ERROR
-}
 
 /// Enforce `^[a-z0-9][a-z0-9-]{1,38}$`: 2..=39 chars, leading alphanumeric, rest
 /// lowercase-alphanumeric or hyphen.

@@ -29,17 +29,12 @@ pub async fn list(
     State(state): State<AppState>,
     _subject: crate::auth::Subject,
 ) -> Result<Json<Vec<HostInfo>>, StatusCode> {
-    let internal = |e: sqlx::Error| {
-        tracing::error!("listing hosts: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    };
-
     let hosts = crate::sql::host::list_for_listing(state.pool())
         .await
-        .map_err(internal)?;
+        .or_internal("listing hosts")?;
     let targets = crate::sql::host::list_all_targets(state.pool())
         .await
-        .map_err(internal)?;
+        .or_internal("listing host targets")?;
 
     // Group targets by host in one pass (both queries are ordered by host_id).
     let mut targets_by_host: HashMap<Uuid, Vec<HostTarget>> = HashMap::new();
@@ -90,6 +85,7 @@ use treadmill_rs::api::switchboard_supervisor::{ProtocolVersion, ServerHello};
 use uuid::Uuid;
 
 use crate::auth::token::SecurityToken;
+use crate::http_error::OrInternal;
 use crate::routes::params::IdPath;
 use crate::serve::AppState;
 use crate::sql;

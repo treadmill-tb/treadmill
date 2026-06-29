@@ -19,6 +19,7 @@ use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_ent
 use crate::audit::model::{Job as AuditJob, Subject as AuditSubject};
 use crate::audit::{self, events};
 use crate::auth::engine::{self, ImageGroupPermission, JobPermission};
+use crate::http_error::OrInternal;
 use crate::log_streaming::{self, TokenScope};
 use crate::routes::params::IdPath;
 use crate::serve::AppState;
@@ -87,10 +88,7 @@ pub async fn list(
     let fetch = i64::from(limit) + 1;
     let mut jobs = job::list_visible(subject.user_id(), after, fetch, state.pool())
         .await
-        .map_err(|e| {
-            tracing::error!("listing visible jobs: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .or_internal("listing visible jobs")?;
 
     let next_cursor = if jobs.len() as i64 > i64::from(limit) {
         jobs.truncate(limit as usize);
@@ -157,10 +155,7 @@ pub async fn enqueue(
             )
             .fetch_one(state.pool())
             .await
-            .map_err(|e| {
-                tracing::error!("checking requested job owner reachability: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            .or_internal("checking requested job owner reachability")?;
             if !reachable {
                 return Err(StatusCode::FORBIDDEN);
             }
@@ -176,10 +171,9 @@ pub async fn enqueue(
         let authorized =
             engine::can_access_job(state.pool(), caller, job_id, JobPermission::Manage)
                 .await
-                .map_err(|e| {
-                    tracing::error!("checking manage access on referenced job {job_id}: {e}");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
+                .or_internal(&format!(
+                    "checking manage access on referenced job {job_id}"
+                ))?;
         if !authorized {
             return Err(StatusCode::FORBIDDEN);
         }
@@ -203,10 +197,7 @@ pub async fn enqueue(
             ImageGroupPermission::Use,
         )
         .await
-        .map_err(|e| {
-            tracing::error!("checking `use` on image group {group_id}: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .or_internal(&format!("checking `use` on image group {group_id}"))?;
         if !may_use {
             return Err(StatusCode::FORBIDDEN);
         }
@@ -217,10 +208,9 @@ pub async fn enqueue(
             Some(g) => {
                 if image::fetch_generation(state.pool(), group_id, g)
                     .await
-                    .map_err(|e| {
-                        tracing::error!("looking up generation {g} of image group {group_id}: {e}");
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    })?
+                    .or_internal(&format!(
+                        "looking up generation {g} of image group {group_id}"
+                    ))?
                     .is_none()
                 {
                     return Err(StatusCode::BAD_REQUEST);
@@ -229,10 +219,9 @@ pub async fn enqueue(
             }
             None => image::latest_generation(state.pool(), group_id)
                 .await
-                .map_err(|e| {
-                    tracing::error!("resolving latest generation of image group {group_id}: {e}");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?
+                .or_internal(&format!(
+                    "resolving latest generation of image group {group_id}"
+                ))?
                 .ok_or(StatusCode::BAD_REQUEST)?,
         };
 
@@ -267,10 +256,11 @@ pub async fn enqueue(
     // job ids sort by creation time (see also the `queued_at` listing order).
     let job_id = Uuid::now_v7();
     let parameters = req.parameters.clone();
-    let mut txn = state.pool().begin().await.map_err(|e| {
-        tracing::error!("opening a transaction to enqueue a job: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let mut txn = state
+        .pool()
+        .begin()
+        .await
+        .or_internal("opening a transaction to enqueue a job")?;
     job::insert(
         req,
         job_id,
@@ -281,16 +271,10 @@ pub async fn enqueue(
         &mut txn,
     )
     .await
-    .map_err(|e| {
-        tracing::error!("inserting enqueued job {job_id}: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    .or_internal(&format!("inserting enqueued job {job_id}"))?;
     job::parameters::insert(job_id, parameters, txn.as_mut())
         .await
-        .map_err(|e| {
-            tracing::error!("inserting parameters for job {job_id}: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .or_internal(&format!("inserting parameters for job {job_id}"))?;
 
     // Record the enqueue in the same transaction, so the audit row commits
     // atomically with the job (a rolled-back insert announces nothing).
@@ -302,15 +286,11 @@ pub async fn enqueue(
         },
     )
     .await
-    .map_err(|e| {
-        tracing::error!("emitting JobEnqueued for {job_id}: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    .or_internal(&format!("emitting JobEnqueued for {job_id}"))?;
 
-    txn.commit().await.map_err(|e| {
-        tracing::error!("committing enqueued job {job_id}: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    txn.commit()
+        .await
+        .or_internal(&format!("committing enqueued job {job_id}"))?;
 
     Ok((StatusCode::CREATED, Json(EnqueueJobResponse { job_id })))
 }
@@ -329,30 +309,25 @@ pub async fn get_job(
     let authorized =
         engine::can_access_job(state.pool(), subject.user_id(), job_id, JobPermission::Read)
             .await
-            .map_err(|e| {
-                tracing::error!("checking job read access for get_job: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            .or_internal("checking job read access for get_job")?;
     if !authorized {
         return Err(StatusCode::FORBIDDEN);
     }
 
-    let mut conn = state.pool().acquire().await.map_err(|e| {
-        tracing::error!("acquiring a connection for get_job: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let mut conn = state
+        .pool()
+        .acquire()
+        .await
+        .or_internal("acquiring a connection for get_job")?;
+    // The `read` check above already passed, so the row exists; a missing row
+    // here is a genuine internal inconsistency, not a 404.
     let sql_job = job::fetch_by_job_id(job_id, &mut *conn)
         .await
-        .map_err(|e| {
-            // The `read` check above already passed, so the row exists; a missing row
-            // here is a genuine internal inconsistency, not a 404.
-            tracing::error!("fetching job {job_id} for get_job: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    let info = sql_job.into_info(&mut conn).await.map_err(|e| {
-        tracing::error!("rendering job {job_id} into JobInfo: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+        .or_internal(&format!("fetching job {job_id} for get_job"))?;
+    let info = sql_job
+        .into_info(&mut conn)
+        .await
+        .or_internal(&format!("rendering job {job_id} into JobInfo"))?;
 
     Ok(Json(info))
 }
@@ -373,24 +348,19 @@ pub async fn terminate(
     let authorized =
         engine::can_access_job(state.pool(), subject.user_id(), job_id, JobPermission::Stop)
             .await
-            .map_err(|e| {
-                tracing::error!("checking job stop access: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            .or_internal("checking job stop access")?;
     if !authorized {
         return Err(StatusCode::FORBIDDEN);
     }
 
-    let mut txn = state.pool().begin().await.map_err(|e| {
-        tracing::error!("opening a transaction to terminate job {job_id}: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let mut txn = state
+        .pool()
+        .begin()
+        .await
+        .or_internal(&format!("opening a transaction to terminate job {job_id}"))?;
     let outcome = job::request_terminate(job_id, Utc::now(), &mut txn)
         .await
-        .map_err(|e| {
-            tracing::error!("requesting termination of job {job_id}: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .or_internal(&format!("requesting termination of job {job_id}"))?;
 
     // Audit only an actual termination; re-terminating an already-finalized job
     // changed nothing, so it records nothing. Emitted in-transaction so the
@@ -405,16 +375,12 @@ pub async fn terminate(
             },
         )
         .await
-        .map_err(|e| {
-            tracing::error!("emitting JobTerminated for {job_id}: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .or_internal(&format!("emitting JobTerminated for {job_id}"))?;
     }
 
-    txn.commit().await.map_err(|e| {
-        tracing::error!("committing termination of job {job_id}: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    txn.commit()
+        .await
+        .or_internal(&format!("committing termination of job {job_id}"))?;
 
     Ok(match outcome {
         // A termination was initiated: finalized now (queued) or the worker will
@@ -444,10 +410,7 @@ pub async fn log_token(
     let authorized =
         engine::can_access_job(state.pool(), subject.user_id(), job_id, JobPermission::Read)
             .await
-            .map_err(|e| {
-                tracing::error!("checking job read access for a log token: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            .or_internal("checking job read access for a log token")?;
     if !authorized {
         return Err(StatusCode::FORBIDDEN);
     }
@@ -464,10 +427,7 @@ pub async fn log_token(
         TokenScope::Subscribe,
         Some(READ_TOKEN_TTL),
     )
-    .map_err(|e| {
-        tracing::error!("minting a log read token: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    .or_internal("minting a log read token")?;
 
     Ok(Json(LogStreamCredentials {
         nats_url: log_streaming.config.nats_url.clone(),

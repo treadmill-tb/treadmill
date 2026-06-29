@@ -18,6 +18,7 @@ use crate::auth::oauth::OAuthProvider;
 use crate::auth::oauth::github::GithubProvider;
 use crate::auth::oauth::mock::{MOCK_IDENTITIES, MockProvider};
 use crate::client_addr::ClientAddr;
+use crate::http_error::OrInternal;
 use crate::serve::AppState;
 use crate::sql;
 use crate::sql::api_token::IssueSessionToken;
@@ -50,10 +51,8 @@ fn provider_for(
                 tracing::warn!("GitHub login requested but no [oauth.github] is configured");
                 StatusCode::NOT_FOUND
             })?;
-            let provider = GithubProvider::from_config(cfg).map_err(|e| {
-                tracing::error!("failed to build GitHub provider: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            let provider =
+                GithubProvider::from_config(cfg).or_internal("building the GitHub provider")?;
             Ok(Box::new(provider))
         }
         "mock" => {
@@ -124,18 +123,14 @@ pub async fn login(
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Redirect, StatusCode> {
     let provider = provider_for(&state, &provider_name)?;
-    let (url, csrf) = provider.authorize(&query).map_err(|e| {
-        tracing::error!("failed to build authorization URL: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let (url, csrf) = provider
+        .authorize(&query)
+        .or_internal("building the authorization URL")?;
 
     let expires_at = Utc::now() + Duration::minutes(FLOW_LIFETIME_MINUTES);
     sql::oauth_flow::insert_flow(state.pool(), csrf.secret(), provider.name(), expires_at)
         .await
-        .map_err(|e| {
-            tracing::error!("failed to persist OAuth flow: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .or_internal("persisting the OAuth flow")?;
 
     Ok(Redirect::to(&url))
 }
@@ -173,10 +168,7 @@ pub async fn callback(
     // the provider it was started for) before spending a token exchange on it.
     let flow_provider = sql::oauth_flow::consume_flow(state.pool(), &query.state)
         .await
-        .map_err(|e| {
-            tracing::error!("failed to consume OAuth flow: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .or_internal("consuming the OAuth flow")?;
     match flow_provider {
         Some(p) if p == provider.name() => {}
         Some(p) => {
@@ -218,17 +210,15 @@ pub async fn callback(
     // Provision the user and mint the session token atomically: a crash between
     // the two must never leave a user without, or a token referencing a missing
     // user.
-    let mut tx = state.pool().begin().await.map_err(|e| {
-        tracing::error!("failed to open transaction: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let mut tx = state
+        .pool()
+        .begin()
+        .await
+        .or_internal("opening a transaction")?;
     let (user_id, new_user) =
         sql::user::provision_user(&mut tx, provider.name(), &identity, &org_ids)
             .await
-            .map_err(|e| {
-                tracing::error!("failed to provision user: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            .or_internal("provisioning the user")?;
     // A locked account is still provisioned/refreshed (we keep its data and the
     // provisioning audit trail current), but is refused a token. Commit the
     // refusal — including its audit row — and stop.
@@ -238,10 +228,7 @@ pub async fn callback(
     )
     .fetch_one(&mut *tx)
     .await
-    .map_err(|e| {
-        tracing::error!("failed to read lock status for {user_id}: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    .or_internal(&format!("reading lock status for {user_id}"))?;
     if locked {
         audit::emit(
             &mut tx,
@@ -256,14 +243,10 @@ pub async fn callback(
             },
         )
         .await
-        .map_err(|e| {
-            tracing::error!("failed to record locked-login denial: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-        tx.commit().await.map_err(|e| {
-            tracing::error!("failed to commit locked-login transaction: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .or_internal("recording the locked-login denial")?;
+        tx.commit()
+            .await
+            .or_internal("committing the locked-login transaction")?;
         tracing::warn!("user {user_id} login denied: account is locked");
         return Err(StatusCode::FORBIDDEN);
     }
@@ -273,10 +256,7 @@ pub async fn callback(
     if provider.grants_global_admin(&identity) {
         sql::user::ensure_global_admin(&mut tx, user_id)
             .await
-            .map_err(|e| {
-                tracing::error!("failed to grant global admin to {user_id}: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            .or_internal(&format!("granting global admin to {user_id}"))?;
     }
 
     let (session_token, expires_at) = audit::transition(
@@ -291,10 +271,7 @@ pub async fn callback(
         },
     )
     .await
-    .map_err(|e| {
-        tracing::error!("failed to issue session token: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    .or_internal("issuing the session token")?;
 
     // Login marker: one row per successful callback, recording the resolved
     // address and whether this login created the account.
@@ -312,15 +289,11 @@ pub async fn callback(
         },
     )
     .await
-    .map_err(|e| {
-        tracing::error!("failed to record login event: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    .or_internal("recording the login event")?;
 
-    tx.commit().await.map_err(|e| {
-        tracing::error!("failed to commit login transaction: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    tx.commit()
+        .await
+        .or_internal("committing the login transaction")?;
 
     tracing::info!("user {user_id} logged in via {}", provider.name());
     let login = LoginResponse {
@@ -338,10 +311,9 @@ pub async fn callback(
 
     match browser_redirect {
         Some(target) => {
-            let mut url = url::Url::parse(target).map_err(|e| {
-                tracing::error!("invalid oauth.browser_success_redirect {target:?}: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            let mut url = url::Url::parse(target).or_internal(&format!(
+                "parsing oauth.browser_success_redirect {target:?}"
+            ))?;
             url.query_pairs_mut()
                 .append_pair("token", &login.token.encode_for_http())
                 .append_pair("expires_at", &login.expires_at.to_rfc3339());
@@ -364,10 +336,7 @@ pub async fn whoami(
     )
     .fetch_one(state.pool())
     .await
-    .map_err(|e| {
-        tracing::error!("failed to look up user {user_id}: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    .or_internal(&format!("looking up user {user_id}"))?;
 
     Ok(Json(WhoAmIResponse {
         user_id,
