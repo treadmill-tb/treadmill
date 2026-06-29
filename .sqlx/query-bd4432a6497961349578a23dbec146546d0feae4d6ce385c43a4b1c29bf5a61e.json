@@ -13,7 +13,8 @@
               "Enum": [
                 "job",
                 "host",
-                "subject"
+                "subject",
+                "image_group"
               ]
             }
           }

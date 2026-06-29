@@ -23,6 +23,7 @@ use sqlx::PgPool;
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
+use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::images::{ImageGroupGenerationInfo, ImageGroupInfo, ImageInfo};
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, JobImageRef, JobInfo};
@@ -610,6 +611,88 @@ async fn image_group_permissions_are_enforced(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn image_group_events_feed_records_acl_and_catalog_changes(pool: PgPool) {
+    let mut reg = StubRegistry::default();
+    let m = reg.put(REGISTRY, REPO, image_manifest_bytes("member"));
+    let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
+    let client = http_client();
+    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let base = format!("http://{addr}/api/v1");
+
+    // Exercise the whole catalog/ACL surface on one group.
+    let img = register_image(&client, &base, &bob_token, &m).await;
+    let group = create_group(&client, &base, &bob_token, "audited", false).await;
+    add_generation(&client, &base, &bob_token, group.id, img.id).await;
+
+    let carol_token = mock_login_token(&client, addr, "carol").await;
+    let carol = whoami(&client, addr, &carol_token).await;
+
+    let grant = client
+        .post(format!("{base}/image-groups/{}/grants", group.id))
+        .bearer_auth(&bob_token)
+        .json(&serde_json::json!({ "subject_id": carol, "permission": "use" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(grant.status(), reqwest::StatusCode::NO_CONTENT);
+
+    let public = client
+        .put(format!("{base}/image-groups/{}/public", group.id))
+        .bearer_auth(&bob_token)
+        .json(&serde_json::json!({ "public": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(public.status(), reqwest::StatusCode::OK);
+
+    let revoke = client
+        .delete(format!(
+            "{base}/image-groups/{}/grants/{carol}/use",
+            group.id
+        ))
+        .bearer_auth(&bob_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoke.status(), reqwest::StatusCode::NO_CONTENT);
+
+    // The owner (a manager) sees the full group feed: one row per change above.
+    let feed: AuditFeedResponse = client
+        .get(format!("{base}/image-groups/{}/events", group.id))
+        .bearer_auth(&bob_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let types: Vec<&str> = feed.events.iter().map(|e| e.event_type.as_str()).collect();
+    for expected in [
+        "image_group_created.v1",
+        "image_group_generation_created.v1",
+        "image_group_grant_created.v1",
+        "image_group_public_set.v1",
+        "image_group_grant_revoked.v1",
+    ] {
+        assert!(
+            types.contains(&expected),
+            "missing {expected}: got {types:?}"
+        );
+    }
+
+    // The feed is manage-gated: `carol` holds only `use` (via the now-public
+    // group), so she can see the group but not its audit feed (403).
+    let forbidden = client
+        .get(format!("{base}/image-groups/{}/events", group.id))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(forbidden.status(), reqwest::StatusCode::FORBIDDEN);
 }
 
 #[sqlx::test]

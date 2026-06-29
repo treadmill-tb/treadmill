@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::engine::{HostPermission, JobPermission};
+use crate::auth::engine::{HostPermission, ImageGroupPermission, JobPermission};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -29,6 +29,10 @@ pub struct Host(pub Uuid);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Subject(pub Uuid);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ImageGroup(pub Uuid);
 
 /// Static identity + visibility of an audit event type, plus the instance
 /// data needed to persist a single occurrence of it.
@@ -75,6 +79,7 @@ pub enum EntityRef {
     Job(Uuid),
     Host(Uuid),
     Subject(Uuid),
+    ImageGroup(Uuid),
 }
 
 impl EntityRef {
@@ -85,13 +90,17 @@ impl EntityRef {
             EntityRef::Job(_) => "job",
             EntityRef::Host(_) => "host",
             EntityRef::Subject(_) => "subject",
+            EntityRef::ImageGroup(_) => "image_group",
         }
     }
 
     /// The underlying entity id, used as `audit_event_relations.entity_id`.
     pub fn id(self) -> Uuid {
         match self {
-            EntityRef::Job(id) | EntityRef::Host(id) | EntityRef::Subject(id) => id,
+            EntityRef::Job(id)
+            | EntityRef::Host(id)
+            | EntityRef::Subject(id)
+            | EntityRef::ImageGroup(id) => id,
         }
     }
 }
@@ -165,16 +174,18 @@ impl ViewPolicy {
 pub enum Permission {
     Host(HostPermission),
     Job(JobPermission),
+    ImageGroup(ImageGroupPermission),
 }
 
 impl Permission {
     /// The textual enum value (matches the underlying `host_permission` /
-    /// `job_permission` enum values: `'read' | 'start' | 'ssh' | 'stop' |
-    /// 'manage'`).
+    /// `job_permission` / `image_group_permission` enum values: `'read' |
+    /// 'start' | 'ssh' | 'stop' | 'use' | 'manage'`).
     pub fn as_str(self) -> &'static str {
         match self {
             Permission::Host(p) => p.as_str(),
             Permission::Job(p) => p.as_str(),
+            Permission::ImageGroup(p) => p.as_str(),
         }
     }
 }
@@ -188,5 +199,11 @@ impl From<HostPermission> for Permission {
 impl From<JobPermission> for Permission {
     fn from(p: JobPermission) -> Self {
         Permission::Job(p)
+    }
+}
+
+impl From<ImageGroupPermission> for Permission {
+    fn from(p: ImageGroupPermission) -> Self {
+        Permission::ImageGroup(p)
     }
 }

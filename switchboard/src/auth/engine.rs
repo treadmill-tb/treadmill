@@ -185,11 +185,24 @@ pub enum ImageGroupPermission {
     Manage,
 }
 impl ImageGroupPermission {
+    pub const ALL: &'static [ImageGroupPermission] =
+        &[ImageGroupPermission::Use, ImageGroupPermission::Manage];
+
     /// The textual value as stored in the `image_group_permission` enum.
     pub fn as_str(self) -> &'static str {
         match self {
             ImageGroupPermission::Use => "use",
             ImageGroupPermission::Manage => "manage",
+        }
+    }
+
+    /// Parse the textual value as stored in the `image_group_permission` enum;
+    /// the inverse of [`as_str`](Self::as_str). `None` for an unrecognized string.
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "use" => Some(ImageGroupPermission::Use),
+            "manage" => Some(ImageGroupPermission::Manage),
+            _ => None,
         }
     }
 }
@@ -340,6 +353,60 @@ pub async fn job_permissions(
         Ok(rows
             .into_iter()
             .filter_map(|s: String| JobPermission::from_db_str(&s))
+            .collect())
+    }
+}
+
+/// Returns the complete set of permissions `subject_id` holds on `group_id`.
+/// Owner or global admin yields all permissions; a `public` group confers
+/// `use` on everyone. Mirrors [`can_access_image_group`] but enumerates rather
+/// than testing one permission, for the audit feed's policy match.
+pub async fn image_group_permissions(
+    conn: impl PgExecutor<'_>,
+    subject_id: Uuid,
+    group_id: Uuid,
+) -> Result<Vec<ImageGroupPermission>, sqlx::Error> {
+    let rows = sqlx::query_scalar!(
+        r#"
+        with principals(id) as (
+             select id from tml_switchboard.principals($1::uuid)
+         ),
+         is_global_or_owner as (
+             select (
+                 exists (select 1 from principals where id = $3::uuid)
+                 or exists (
+                     select 1 from tml_switchboard.image_groups g
+                     join principals p on g.owner_subject = p.id
+                     where g.id = $2::uuid
+                 )
+             ) as is_auth
+         )
+         select '*' as "perm!" from is_global_or_owner where is_auth
+         union
+         select g.permission::text as "perm!"
+         from tml_switchboard.image_group_grants g
+         join principals p on g.subject_id = p.id
+         where g.group_id = $2::uuid
+           and not (select is_auth from is_global_or_owner)
+         union
+         select 'use' as "perm!"
+         from tml_switchboard.image_groups g
+         where g.id = $2::uuid and g.public
+           and not (select is_auth from is_global_or_owner)
+        "#,
+        subject_id,
+        group_id,
+        ADMINS_GROUP_ID,
+    )
+    .fetch_all(conn)
+    .await?;
+
+    if rows.iter().any(|s| s == "*") {
+        Ok(ImageGroupPermission::ALL.to_vec())
+    } else {
+        Ok(rows
+            .into_iter()
+            .filter_map(|s: String| ImageGroupPermission::from_db_str(&s))
             .collect())
     }
 }

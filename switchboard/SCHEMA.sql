@@ -1062,8 +1062,8 @@ CREATE INDEX audit_events_created_at_idx ON tml_switchboard.audit_events (create
 
 -- The entity kinds an audit event can relate to. `subject` covers both users and
 -- groups (matching the unified subjects model above); resource-scoped relations
--- use `job` or `host`.
-CREATE TYPE tml_switchboard.audit_entity_kind AS enum('job', 'host', 'subject');
+-- use `job`, `host`, or `image_group`.
+CREATE TYPE tml_switchboard.audit_entity_kind AS enum('job', 'host', 'subject', 'image_group');
 
 
 -- An event's role with respect to a related entity. `actor` is the principal

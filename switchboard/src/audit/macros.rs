@@ -41,6 +41,15 @@ macro_rules! __audit_process_field {
             })
         }
     };
+    ($rels:ident, $val:expr, ImageGroup @ view($view:ident)) => {
+        $rels.push($crate::audit::model::Relation {
+            entity: $crate::audit::model::EntityRef::ImageGroup($val.0),
+            role: $crate::audit::model::Role::Subject,
+            view: $crate::audit::model::ViewPolicy::Permission(
+                $crate::auth::engine::ImageGroupPermission::$view.into(),
+            ),
+        })
+    };
     // `Subject @ view(SelfAccess)` marks the event as visible to the subject it
     // points at (the user it is about), with the `Subject` role. This arm must
     // precede the generic `Subject @ view($view)` arm below, since `SelfAccess`

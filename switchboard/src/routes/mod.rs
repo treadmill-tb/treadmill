@@ -324,6 +324,21 @@ pub fn api_router() -> ApiRouter<AppState> {
                     })
             }),
         )
+        //  GET /image-groups/{id}/events -- the group's audit feed (manage-gated)
+        .api_route(
+            "/image-groups/{id}/events",
+            get_with(images::list_events, |o| {
+                doc(
+                    o,
+                    "listImageGroupEvents",
+                    "Image groups",
+                    "List an image group's audit events",
+                )
+                .response_with::<404, (), _>(|r| {
+                    r.description("No such image group, or it is not visible to the caller.")
+                })
+            }),
+        )
         //  POST /image-groups/{id}/generations -- append a full-replacement generation
         .api_route(
             "/image-groups/{id}/generations",

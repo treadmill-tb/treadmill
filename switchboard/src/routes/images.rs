@@ -12,7 +12,7 @@
 
 use axum::Json;
 use axum::extract::Path;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use http::StatusCode;
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
@@ -27,6 +27,9 @@ use treadmill_rs::api::switchboard::images::{
 use treadmill_rs::image::parse::{self, ParseError};
 use treadmill_rs::image::{Digest, media_types};
 
+use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_entity};
+use crate::audit::model::{ImageGroup as AuditImageGroup, Subject as AuditSubject};
+use crate::audit::{self, events};
 use crate::auth::engine::{self, ImageGroupPermission as Perm};
 use crate::http_error::internal;
 use crate::registry::RegistryError;
@@ -177,6 +180,17 @@ pub async fn register_image(
     image::upsert_location(&mut *tx, id, &req.registry, &req.repository, "external")
         .await
         .map_err(internal)?;
+    audit::emit(
+        &mut tx,
+        &events::ImageRegistered {
+            actor: AuditSubject(owner),
+            owner: AuditSubject(owner),
+            image_id: id,
+            manifest_digest: digest_str.clone(),
+        },
+    )
+    .await
+    .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
 
     let rec = image::fetch_by_digest(state.pool(), &digest_str)
@@ -256,8 +270,9 @@ pub async fn create_image_group(
     }
 
     let id = Uuid::now_v7();
+    let mut tx = state.pool().begin().await.map_err(internal)?;
     image::create_group(
-        state.pool(),
+        &mut *tx,
         id,
         &req.name,
         owner,
@@ -266,6 +281,18 @@ pub async fn create_image_group(
     )
     .await
     .map_err(internal)?;
+    audit::emit(
+        &mut tx,
+        &events::ImageGroupCreated {
+            actor: AuditSubject(owner),
+            owner: AuditSubject(owner),
+            group: AuditImageGroup(id),
+            name: req.name.clone(),
+        },
+    )
+    .await
+    .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
 
     let group = image::fetch_group_by_id(state.pool(), id)
         .await
@@ -402,6 +429,17 @@ pub async fn create_generation(
     let generation = image::create_generation(&mut tx, group_id, subject.user_id(), &members)
         .await
         .map_err(internal)?;
+    audit::emit(
+        &mut tx,
+        &events::ImageGroupGenerationCreated {
+            actor: AuditSubject(subject.user_id()),
+            group: AuditImageGroup(group_id),
+            generation: i64::from(generation),
+            member_count: members.len() as i64,
+        },
+    )
+    .await
+    .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
 
     let info = generation_info(&state, group_id, generation).await?;
@@ -430,14 +468,23 @@ pub async fn grant_image_group(
     Json(req): Json<ImageGroupGrantRequest>,
 ) -> Result<StatusCode, StatusCode> {
     require_manage(&state, subject.user_id(), group_id).await?;
-    image::grant_image_group(
-        state.pool(),
-        group_id,
-        req.subject_id,
-        Perm::from(req.permission).as_str(),
+    let permission = Perm::from(req.permission);
+    let mut tx = state.pool().begin().await.map_err(internal)?;
+    image::grant_image_group(&mut *tx, group_id, req.subject_id, permission.as_str())
+        .await
+        .map_err(internal)?;
+    audit::emit(
+        &mut tx,
+        &events::ImageGroupGrantCreated {
+            actor: AuditSubject(subject.user_id()),
+            group: AuditImageGroup(group_id),
+            grantee: AuditSubject(req.subject_id),
+            permission: permission.as_str().to_string(),
+        },
     )
     .await
     .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -487,9 +534,25 @@ pub async fn revoke_image_group_grant(
     if permission != "use" && permission != "manage" {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let removed = image::revoke_image_group(state.pool(), group_id, target, &permission)
+    let mut tx = state.pool().begin().await.map_err(internal)?;
+    let removed = image::revoke_image_group(&mut *tx, group_id, target, &permission)
         .await
         .map_err(internal)?;
+    // Only a grant that actually existed is an auditable change.
+    if removed {
+        audit::emit(
+            &mut tx,
+            &events::ImageGroupGrantRevoked {
+                actor: AuditSubject(subject.user_id()),
+                group: AuditImageGroup(group_id),
+                grantee: AuditSubject(target),
+                permission: permission.clone(),
+            },
+        )
+        .await
+        .map_err(internal)?;
+    }
+    tx.commit().await.map_err(internal)?;
     Ok(if removed {
         StatusCode::NO_CONTENT
     } else {
@@ -508,12 +571,42 @@ pub async fn set_image_group_public(
     Json(req): Json<SetImageGroupPublicRequest>,
 ) -> Result<Json<ImageGroupInfo>, StatusCode> {
     require_manage(&state, subject.user_id(), group_id).await?;
-    image::set_group_public(state.pool(), group_id, req.public)
+    let mut tx = state.pool().begin().await.map_err(internal)?;
+    image::set_group_public(&mut *tx, group_id, req.public)
         .await
         .map_err(internal)?;
+    audit::emit(
+        &mut tx,
+        &events::ImageGroupPublicSet {
+            actor: AuditSubject(subject.user_id()),
+            group: AuditImageGroup(group_id),
+            public: req.public,
+        },
+    )
+    .await
+    .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
+
     let group = image::fetch_group_by_id(state.pool(), group_id)
         .await
         .map_err(internal)?
         .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(group_info(&state, group).await?))
+}
+
+/// `GET /image-groups/{id}/events`: the group's audit feed (grants, generations,
+/// public-flag changes, creation). Gated on `manage` — the events carry the
+/// `manage` view policy, so a viewer who only holds `use` would see an empty
+/// feed; requiring `manage` makes that explicit (404 if the group is not even
+/// visible, 403 if visible but unmanaged).
+pub async fn list_events(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(IdPath { id: group_id }): Path<IdPath>,
+    Query(query): Query<AuditFeedQuery>,
+) -> Result<Json<AuditFeedResponse>, StatusCode> {
+    require_manage(&state, subject.user_id(), group_id).await?;
+    fetch_events_for_entity(&state, &subject, "image_group", group_id, &query)
+        .await
+        .map(Json)
 }

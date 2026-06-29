@@ -788,6 +788,62 @@ paths:
           description: No such image group, or it is not visible to the caller.
       security:
       - token: []
+  /image-groups/{id}/events:
+    get:
+      tags:
+      - Image groups
+      summary: List an image group's audit events
+      operationId: listImageGroupEvents
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      - in: query
+        name: cursor
+        description: Opaque keyset cursor from a previous response's `next_cursor`.
+        schema:
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
+          type: string
+        style: form
+      - in: query
+        name: limit
+        description: |-
+          Maximum number of events per page. Omitted or out-of-range values fall
+          back to the server's default and bounds.
+        schema:
+          description: |-
+            Maximum number of events per page. Omitted or out-of-range values fall
+            back to the server's default and bounds.
+          type: integer
+          format: uint32
+          minimum: 0
+        style: form
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: |-
+            A page of rendered audit events for one entity, newest first.
+
+            Paginated by keyset: when `next_cursor` is non-null, pass it back as the
+            `cursor` query parameter to fetch the next (older) page; a null `next_cursor`
+            means the last page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditFeedResponse'
+        '404':
+          description: No such image group, or it is not visible to the caller.
+      security:
+      - token: []
   /image-groups/{id}/generations:
     post:
       tags:
