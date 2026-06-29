@@ -1381,6 +1381,25 @@ pub async fn finalize_with_reason(
     Ok(transitioned.is_some())
 }
 
+/// The recorded `termination_reason` of a job, but only if it is `finalized`;
+/// `None` for a non-terminal job. Used by the audit layer to label a
+/// `JobFinalized` event with the reason just persisted by a `finalize_*` call,
+/// so the event and the row cannot disagree on why the job ended.
+pub async fn finalized_reason(
+    job_id: Uuid,
+    conn: impl sqlx::PgExecutor<'_>,
+) -> Result<Option<String>, sqlx::Error> {
+    let reason = sqlx::query_scalar!(
+        r#"select termination_reason::text
+           from tml_switchboard.jobs
+           where job_id = $1 and job_state = 'finalized'"#,
+        job_id,
+    )
+    .fetch_optional(conn)
+    .await?;
+    Ok(reason.flatten())
+}
+
 /// Map a supervisor-reported [`JobErrorKind`] to the terminal
 /// [`TerminationReason`] the switchboard records for it. Image problems become
 /// `ImageError`, a failed resume `ResumeFailed`, an explicit supervisor-internal

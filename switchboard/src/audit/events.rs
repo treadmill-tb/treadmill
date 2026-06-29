@@ -10,7 +10,7 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::audit::model::{ImageGroup, Job, Subject};
+use crate::audit::model::{Host, ImageGroup, Job, Subject};
 use crate::define_event;
 
 define_event! {
@@ -200,6 +200,56 @@ define_event! {
     }
     event_type = "job_terminated";
     render = "requested job termination";
+}
+
+define_event! {
+    /// The scheduler dispatched a queued job onto a host (`queued` → `assigned`).
+    /// Attributed to the system actor; visible to anyone who can read the job and,
+    /// as context, to viewers of the host it landed on.
+    JobAssigned v1 {
+        actor: Subject,
+        job: Job @ view(Read),
+        host: Host @ view(Read),
+    }
+    event_type = "job_assigned";
+    render = "assigned the job to a host";
+}
+
+define_event! {
+    /// A job reached a terminal state (`finalized`). `reason` is the recorded
+    /// `termination_reason` (e.g. `workload_exited`, `execution_timeout`,
+    /// `user_terminated`, `host_dropped_job`, `image_error`, ...). Attributed to
+    /// the system actor; visible to job readers and, as context, to host viewers.
+    JobFinalized v1 {
+        actor: Subject,
+        job: Job @ view(Read),
+        host: Host @ view(Read),
+        reason: String,
+    }
+    event_type = "job_finalized";
+    render = "job finalized ({reason})";
+}
+
+define_event! {
+    /// A supervisor opened (and authenticated) a WebSocket for its host, which
+    /// the switchboard then marks live. Visible to host viewers.
+    SupervisorConnected v1 {
+        actor: Subject,
+        host: Host @ view(Read),
+    }
+    event_type = "supervisor_connected";
+    render = "supervisor connected";
+}
+
+define_event! {
+    /// A supervisor's WebSocket closed and the host was marked not-live (the
+    /// clean-disconnect path). Visible to host viewers.
+    SupervisorDisconnected v1 {
+        actor: Subject,
+        host: Host @ view(Read),
+    }
+    event_type = "supervisor_disconnected";
+    render = "supervisor disconnected";
 }
 
 define_event! {

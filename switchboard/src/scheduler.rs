@@ -24,6 +24,8 @@ use futures_util::TryStreamExt;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::audit::model::{Host as AuditHost, Job as AuditJob, Subject as AuditSubject};
+use crate::audit::{self, SYSTEM_ACTOR_ID, events};
 use crate::matcher::{self, TargetCandidate};
 use crate::sql;
 use crate::sql::job::{ImageResolveError, SqlJobState};
@@ -211,6 +213,18 @@ impl Scheduler {
                 tracing::warn!("finalizing job {job_id} as image_error: {e}");
                 sql::job::finalize_unscheduled_as_image_error(job_id, Utc::now(), &mut *txn)
                     .await?;
+                if let Some(reason) = sql::job::finalized_reason(job_id, &mut *txn).await? {
+                    audit::emit(
+                        &mut txn,
+                        &events::JobFinalized {
+                            actor: AuditSubject(SYSTEM_ACTOR_ID),
+                            job: AuditJob(job_id),
+                            host: AuditHost(host_id),
+                            reason,
+                        },
+                    )
+                    .await?;
+                }
                 txn.commit().await?;
                 return Ok(AssignOutcome::JobDone);
             }
@@ -246,6 +260,16 @@ impl Scheduler {
         if let Some(image_id) = resolved_image_id {
             sql::job::set_resolved_image(job_id, image_id, &mut *txn).await?;
         }
+
+        audit::emit(
+            &mut txn,
+            &events::JobAssigned {
+                actor: AuditSubject(SYSTEM_ACTOR_ID),
+                job: AuditJob(job_id),
+                host: AuditHost(host_id),
+            },
+        )
+        .await?;
 
         txn.commit().await?;
 
@@ -543,6 +567,20 @@ mod tests {
         .await?)
     }
 
+    /// The audit event types related to `job_id` (via any relation), oldest-first.
+    async fn audit_event_types_for_job(pool: &PgPool, job_id: Uuid) -> anyhow::Result<Vec<String>> {
+        Ok(sqlx::query_scalar(
+            "select e.event_type \
+             from tml_switchboard.audit_events e \
+             join tml_switchboard.audit_event_relations r on e.event_id = r.event_id \
+             where r.entity_kind = 'job' and r.entity_id = $1 \
+             order by e.created_at",
+        )
+        .bind(job_id)
+        .fetch_all(pool)
+        .await?)
+    }
+
     async fn host_current_job(pool: &PgPool, host_id: Uuid) -> anyhow::Result<Option<Uuid>> {
         Ok(
             sqlx::query_scalar("select current_job from tml_switchboard.hosts where host_id = $1")
@@ -645,6 +683,11 @@ mod tests {
         assert!(
             job_started_at(&pool, job).await?.is_none(),
             "started_at stays null until the job actually initializes"
+        );
+        let types = audit_event_types_for_job(&pool, job).await?;
+        assert!(
+            types.contains(&"job_assigned.v1".to_string()),
+            "expected a job_assigned event, got {types:?}"
         );
         Ok(())
     }
@@ -821,6 +864,11 @@ mod tests {
         assert_eq!(
             job_termination(&pool, job).await?.as_deref(),
             Some("image_error")
+        );
+        let types = audit_event_types_for_job(&pool, job).await?;
+        assert!(
+            types.contains(&"job_finalized.v1".to_string()),
+            "expected a job_finalized event, got {types:?}"
         );
         Ok(())
     }

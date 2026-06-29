@@ -11,6 +11,8 @@ use treadmill_rs::api::switchboard_supervisor::{
 };
 use uuid::Uuid;
 
+use crate::audit::model::{Host as AuditHost, Job as AuditJob, Subject as AuditSubject};
+use crate::audit::{self, SYSTEM_ACTOR_ID, events};
 use crate::log_streaming::LogStreaming;
 use crate::sql;
 
@@ -316,6 +318,14 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
             .ctx
             .with_txn(async |txn| {
                 sql::host::mark_dead(host_id, txn).await?;
+                audit::emit(
+                    txn,
+                    &events::SupervisorDisconnected {
+                        actor: AuditSubject(SYSTEM_ACTOR_ID),
+                        host: AuditHost(host_id),
+                    },
+                )
+                .await?;
                 Ok(())
             })
             .await
@@ -635,6 +645,26 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     }
                 };
 
+                // A job that reached `finalized` during this pass (any finalize
+                // branch above, or an adopted `Terminated`) is a major lifecycle
+                // transition worth recording exactly once. The already-finalized
+                // sticky-host case returned early above, so an assigned job that is
+                // finalized *here* must have transitioned during this pass.
+                if let Some(id) = j_sb
+                    && let Some(reason) = sql::job::finalized_reason(id, &mut **txn).await?
+                {
+                    audit::emit(
+                        txn,
+                        &events::JobFinalized {
+                            actor: AuditSubject(SYSTEM_ACTOR_ID),
+                            job: AuditJob(id),
+                            host: AuditHost(host_id),
+                            reason,
+                        },
+                    )
+                    .await?;
+                }
+
                 Ok(command)
             })
             .await?;
@@ -887,9 +917,31 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 if sql::host::fetch_current_job(host_id, txn).await? != Some(job_id) {
                     return Ok(None);
                 }
-                Ok(Some(
-                    sql::job::apply_running_state(job_id, state_for_txn, at, txn).await?,
-                ))
+                // A repeated `Terminated` report must not re-emit a finalize event:
+                // the row transition is guarded, but `apply_running_state` returns
+                // `true` for any `Terminated`, transition or not. Record whether the
+                // job was already terminal before adopting the state.
+                let was_finalized = sql::job::finalized_reason(job_id, &mut **txn)
+                    .await?
+                    .is_some();
+                let terminated =
+                    sql::job::apply_running_state(job_id, state_for_txn, at, txn).await?;
+                if terminated
+                    && !was_finalized
+                    && let Some(reason) = sql::job::finalized_reason(job_id, &mut **txn).await?
+                {
+                    audit::emit(
+                        txn,
+                        &events::JobFinalized {
+                            actor: AuditSubject(SYSTEM_ACTOR_ID),
+                            job: AuditJob(job_id),
+                            host: AuditHost(host_id),
+                            reason,
+                        },
+                    )
+                    .await?;
+                }
+                Ok(Some(terminated))
             })
             .await?;
 
@@ -947,7 +999,23 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 if sql::host::fetch_current_job(host_id, txn).await? != Some(job_id) {
                     return Ok(false);
                 }
-                Ok(sql::job::finalize_errored(job_id, reason, message, at, txn).await?)
+                let finalized =
+                    sql::job::finalize_errored(job_id, reason, message, at, txn).await?;
+                if finalized
+                    && let Some(reason) = sql::job::finalized_reason(job_id, &mut **txn).await?
+                {
+                    audit::emit(
+                        txn,
+                        &events::JobFinalized {
+                            actor: AuditSubject(SYSTEM_ACTOR_ID),
+                            job: AuditJob(job_id),
+                            host: AuditHost(host_id),
+                            reason,
+                        },
+                    )
+                    .await?;
+                }
+                Ok(finalized)
             })
             .await?;
 
@@ -989,6 +1057,14 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         self.ctx
             .with_txn(async move |txn| {
                 sql::host::touch_heartbeat(host_id, txn).await?;
+                audit::emit(
+                    txn,
+                    &events::SupervisorConnected {
+                        actor: AuditSubject(SYSTEM_ACTOR_ID),
+                        host: AuditHost(host_id),
+                    },
+                )
+                .await?;
                 Ok(())
             })
             .await?;
