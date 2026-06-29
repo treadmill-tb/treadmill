@@ -161,7 +161,9 @@ pub fn api_router() -> ApiRouter<AppState> {
         //  GET /hosts -- read-only listing of hosts (+ tags, targets, liveness)
         .api_route(
             "/hosts",
-            get_with(hosts::list, |o| doc(o, "listHosts", "Hosts", "List hosts")),
+            get_with(hosts::list, |o| {
+                doc(o, "listHosts", "Hosts", "List hosts").description(NOT_PAGINATED)
+            }),
         )
         //  GET /hosts/{id}/events
         .api_route(
@@ -220,6 +222,7 @@ pub fn api_router() -> ApiRouter<AppState> {
                     "Users",
                     "List the current user's tokens",
                 )
+                .description(NOT_PAGINATED)
             }),
         )
         //  DELETE /users/me/tokens/{token_id} -- revoke own token
@@ -276,7 +279,7 @@ pub fn api_router() -> ApiRouter<AppState> {
                     })
             })
             .get_with(images::list_images, |o| {
-                doc(o, "listImages", "Images", "List images")
+                doc(o, "listImages", "Images", "List images").description(NOT_PAGINATED)
             }),
         )
         //  GET /images/{digest}      -- inspect one image
@@ -308,6 +311,7 @@ pub fn api_router() -> ApiRouter<AppState> {
             })
             .get_with(images::list_image_groups, |o| {
                 doc(o, "listImageGroups", "Image groups", "List image groups")
+                    .description(NOT_PAGINATED)
             }),
         )
         //  GET /image-groups/{id}    -- inspect one image group
@@ -376,6 +380,7 @@ pub fn api_router() -> ApiRouter<AppState> {
                     "Image groups",
                     "List an image group's grants",
                 )
+                .description(NOT_PAGINATED)
             }),
         )
         //  DELETE /image-groups/{id}/grants/{subject_id}/{permission} -- revoke a grant
@@ -410,6 +415,11 @@ pub fn api_router() -> ApiRouter<AppState> {
             }),
         )
 }
+
+/// Operation description for the list routes that return their whole result
+/// set in one response (unlike `GET /jobs` and the audit feeds, which page).
+const NOT_PAGINATED: &str =
+    "Returns the complete set in a stable order; this route is not paginated.";
 
 /// Set the operationId, tag, and summary shared by a documented operation.
 /// `operation_id` is camelCase; generators re-case it to the target language.

@@ -1,5 +1,6 @@
-use crate::audit::feed::{AuditFeedResponse, fetch_events_for_entity};
+use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_entity};
 use axum::Json;
+use axum::extract::Query;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
@@ -10,8 +11,9 @@ pub async fn list_events(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Path(IdPath { id: host_id }): Path<IdPath>,
+    Query(query): Query<AuditFeedQuery>,
 ) -> Result<Json<AuditFeedResponse>, StatusCode> {
-    fetch_events_for_entity(&state, &subject, "host", host_id)
+    fetch_events_for_entity(&state, &subject, "host", host_id, &query)
         .await
         .map(Json)
 }

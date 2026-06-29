@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select subject_id, permission::text as \"permission!\"\n           from tml_switchboard.image_group_grants\n           where group_id = $1\n           order by granted_at",
+  "query": "select subject_id, permission::text as \"permission!\"\n           from tml_switchboard.image_group_grants\n           where group_id = $1\n           order by granted_at, subject_id, permission",
   "describe": {
     "columns": [
       {
@@ -31,5 +31,5 @@
       null
     ]
   },
-  "hash": "7010316c637dd12feb268209e35edd755ecf33e1733bb90783de123018ae7984"
+  "hash": "818a39166145fe194e111d654990c6ed19ddd8e437f140445217f4ac0a46b332"
 }

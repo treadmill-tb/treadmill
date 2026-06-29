@@ -188,7 +188,7 @@ pub async fn list_owned(
                   i.attrs as "attrs: serde_json::Value", i.created_at
            from tml_switchboard.images i
            join tml_switchboard.principals($1) p on p.id = i.owner_subject
-           order by i.created_at"#,
+           order by i.created_at, i.id"#,
         subject,
     )
     .fetch_all(conn)
@@ -283,7 +283,7 @@ pub async fn list_owned_groups(
                   select 1 from tml_switchboard.principals($1) p
                   where p.id = g.owner_subject
               )
-           order by g.created_at"#,
+           order by g.created_at, g.id"#,
         subject,
     )
     .fetch_all(conn)
@@ -459,7 +459,7 @@ pub async fn list_image_group_grants(
         r#"select subject_id, permission::text as "permission!"
            from tml_switchboard.image_group_grants
            where group_id = $1
-           order by granted_at"#,
+           order by granted_at, subject_id, permission"#,
         group_id,
     )
     .fetch_all(conn)

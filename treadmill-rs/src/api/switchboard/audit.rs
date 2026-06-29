@@ -11,9 +11,15 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// A page of rendered audit events for one entity, newest first.
+///
+/// Paginated by keyset: when `next_cursor` is non-null, pass it back as the
+/// `cursor` query parameter to fetch the next (older) page; a null `next_cursor`
+/// means the last page.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct AuditFeedResponse {
     pub events: Vec<RenderedAuditRow>,
+    /// Opaque cursor for the next page, or null on the last page.
+    pub next_cursor: Option<String>,
 }
 
 /// One audit event, already rendered to a human-readable `message` for the

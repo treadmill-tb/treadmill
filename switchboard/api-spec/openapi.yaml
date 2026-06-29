@@ -108,13 +108,38 @@ paths:
           type: string
           format: uuid
         style: simple
+      - in: query
+        name: cursor
+        description: Opaque keyset cursor from a previous response's `next_cursor`.
+        schema:
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
+          type: string
+        style: form
+      - in: query
+        name: limit
+        description: |-
+          Maximum number of events per page. Omitted or out-of-range values fall
+          back to the server's default and bounds.
+        schema:
+          description: |-
+            Maximum number of events per page. Omitted or out-of-range values fall
+            back to the server's default and bounds.
+          type: integer
+          format: uint32
+          minimum: 0
+        style: form
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
         '403':
           description: The authenticated account is locked, or lacks permission for this resource.
         '200':
-          description: A page of rendered audit events for one entity, newest first.
+          description: |-
+            A page of rendered audit events for one entity, newest first.
+
+            Paginated by keyset: when `next_cursor` is non-null, pass it back as the
+            `cursor` query parameter to fetch the next (older) page; a null `next_cursor`
+            means the last page.
           content:
             application/json:
               schema:
@@ -226,6 +251,7 @@ paths:
       tags:
       - Hosts
       summary: List hosts
+      description: Returns the complete set in a stable order; this route is not paginated.
       operationId: listHosts
       responses:
         '401':
@@ -258,13 +284,38 @@ paths:
           type: string
           format: uuid
         style: simple
+      - in: query
+        name: cursor
+        description: Opaque keyset cursor from a previous response's `next_cursor`.
+        schema:
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
+          type: string
+        style: form
+      - in: query
+        name: limit
+        description: |-
+          Maximum number of events per page. Omitted or out-of-range values fall
+          back to the server's default and bounds.
+        schema:
+          description: |-
+            Maximum number of events per page. Omitted or out-of-range values fall
+            back to the server's default and bounds.
+          type: integer
+          format: uint32
+          minimum: 0
+        style: form
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
         '403':
           description: The authenticated account is locked, or lacks permission for this resource.
         '200':
-          description: A page of rendered audit events for one entity, newest first.
+          description: |-
+            A page of rendered audit events for one entity, newest first.
+
+            Paginated by keyset: when `next_cursor` is non-null, pass it back as the
+            `cursor` query parameter to fetch the next (older) page; a null `next_cursor`
+            means the last page.
           content:
             application/json:
               schema:
@@ -397,6 +448,7 @@ paths:
       tags:
       - Users
       summary: List the current user's tokens
+      description: Returns the complete set in a stable order; this route is not paginated.
       operationId: listCurrentUserTokens
       responses:
         '401':
@@ -489,13 +541,38 @@ paths:
           type: string
           format: uuid
         style: simple
+      - in: query
+        name: cursor
+        description: Opaque keyset cursor from a previous response's `next_cursor`.
+        schema:
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
+          type: string
+        style: form
+      - in: query
+        name: limit
+        description: |-
+          Maximum number of events per page. Omitted or out-of-range values fall
+          back to the server's default and bounds.
+        schema:
+          description: |-
+            Maximum number of events per page. Omitted or out-of-range values fall
+            back to the server's default and bounds.
+          type: integer
+          format: uint32
+          minimum: 0
+        style: form
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
         '403':
           description: The authenticated account is locked, or lacks permission for this resource.
         '200':
-          description: A page of rendered audit events for one entity, newest first.
+          description: |-
+            A page of rendered audit events for one entity, newest first.
+
+            Paginated by keyset: when `next_cursor` is non-null, pass it back as the
+            `cursor` query parameter to fetch the next (older) page; a null `next_cursor`
+            means the last page.
           content:
             application/json:
               schema:
@@ -507,6 +584,7 @@ paths:
       tags:
       - Images
       summary: List images
+      description: Returns the complete set in a stable order; this route is not paginated.
       operationId: listImages
       responses:
         '401':
@@ -614,6 +692,7 @@ paths:
       tags:
       - Image groups
       summary: List image groups
+      description: Returns the complete set in a stable order; this route is not paginated.
       operationId: listImageGroups
       responses:
         '401':
@@ -813,6 +892,7 @@ paths:
       tags:
       - Image groups
       summary: List an image group's grants
+      description: Returns the complete set in a stable order; this route is not paginated.
       operationId: listImageGroupGrants
       parameters:
       - in: path
@@ -999,14 +1079,42 @@ components:
       scheme: bearer
       description: 'A Treadmill user API token, presented as `Authorization: Bearer <token>`.'
   schemas:
+    AuditFeedQuery:
+      description: Query parameters for an audit feed (`GET /{entity}/{id}/events`).
+      type: object
+      properties:
+        cursor:
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
+          type:
+          - string
+          - 'null'
+        limit:
+          description: |-
+            Maximum number of events per page. Omitted or out-of-range values fall
+            back to the server's default and bounds.
+          type:
+          - integer
+          - 'null'
+          format: uint32
+          minimum: 0
     AuditFeedResponse:
-      description: A page of rendered audit events for one entity, newest first.
+      description: |-
+        A page of rendered audit events for one entity, newest first.
+
+        Paginated by keyset: when `next_cursor` is non-null, pass it back as the
+        `cursor` query parameter to fetch the next (older) page; a null `next_cursor`
+        means the last page.
       type: object
       properties:
         events:
           type: array
           items:
             $ref: '#/components/schemas/RenderedAuditRow'
+        next_cursor:
+          description: Opaque cursor for the next page, or null on the last page.
+          type:
+          - string
+          - 'null'
       required:
       - events
     CreateGenerationRequest:

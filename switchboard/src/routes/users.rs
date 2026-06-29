@@ -3,7 +3,7 @@
 
 use axum::Json;
 use axum::extract::Path;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use http::StatusCode;
 use uuid::Uuid;
 
@@ -13,7 +13,7 @@ use treadmill_rs::api::switchboard::users::{
 };
 
 use crate::audit;
-use crate::audit::feed::{AuditFeedResponse, fetch_events_for_entity};
+use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_entity};
 use crate::routes::params::{IdPath, TokenIdPath};
 use crate::serve::AppState;
 use crate::sql::api_token::{self, RevokeToken};
@@ -281,7 +281,8 @@ pub async fn list_tokens(
     let rows = sqlx::query!(
         r#"select token_id, created_at, expires_at, user_agent, comment, created_ip,
                   revoked as "revoked: crate::sql::api_token::Revocation"
-           from tml_switchboard.api_tokens where user_id = $1 order by created_at desc;"#,
+           from tml_switchboard.api_tokens where user_id = $1
+           order by created_at desc, token_id desc;"#,
         user_id,
     )
     .fetch_all(state.pool())
@@ -349,8 +350,9 @@ pub async fn list_events(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Path(IdPath { id: user_id }): Path<IdPath>,
+    Query(query): Query<AuditFeedQuery>,
 ) -> Result<Json<AuditFeedResponse>, StatusCode> {
-    fetch_events_for_entity(&state, &subject, "subject", user_id)
+    fetch_events_for_entity(&state, &subject, "subject", user_id, &query)
         .await
         .map(Json)
 }

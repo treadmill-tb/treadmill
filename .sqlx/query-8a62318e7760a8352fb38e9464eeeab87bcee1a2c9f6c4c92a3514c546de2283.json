@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select i.id, i.manifest_digest, i.artifact_type, i.owner_subject, i.label,\n                  i.attrs as \"attrs: serde_json::Value\", i.created_at\n           from tml_switchboard.images i\n           join tml_switchboard.principals($1) p on p.id = i.owner_subject\n           order by i.created_at",
+  "query": "select i.id, i.manifest_digest, i.artifact_type, i.owner_subject, i.label,\n                  i.attrs as \"attrs: serde_json::Value\", i.created_at\n           from tml_switchboard.images i\n           join tml_switchboard.principals($1) p on p.id = i.owner_subject\n           order by i.created_at, i.id",
   "describe": {
     "columns": [
       {
@@ -96,5 +96,5 @@
       false
     ]
   },
-  "hash": "2185269643f541cef1e3edc863e30cb72d4dcca5ee22d61daf5841ba12d2b613"
+  "hash": "8a62318e7760a8352fb38e9464eeeab87bcee1a2c9f6c4c92a3514c546de2283"
 }

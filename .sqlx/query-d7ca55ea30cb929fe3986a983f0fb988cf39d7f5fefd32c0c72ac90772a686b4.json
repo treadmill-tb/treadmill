@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select token_id, created_at, expires_at, user_agent, comment, created_ip,\n                  revoked as \"revoked: crate::sql::api_token::Revocation\"\n           from tml_switchboard.api_tokens where user_id = $1 order by created_at desc;",
+  "query": "select token_id, created_at, expires_at, user_agent, comment, created_ip,\n                  revoked as \"revoked: crate::sql::api_token::Revocation\"\n           from tml_switchboard.api_tokens where user_id = $1\n           order by created_at desc, token_id desc;",
   "describe": {
     "columns": [
       {
@@ -112,5 +112,5 @@
       true
     ]
   },
-  "hash": "eac2fb16103874458b09c5851faa36c5b8f77dfef5e53fa9a3648fb0466a60b5"
+  "hash": "d7ca55ea30cb929fe3986a983f0fb988cf39d7f5fefd32c0c72ac90772a686b4"
 }

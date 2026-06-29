@@ -15,7 +15,7 @@ use treadmill_rs::api::switchboard::jobs::{
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
 
-use crate::audit::feed::{AuditFeedResponse, fetch_events_for_entity};
+use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_entity};
 use crate::audit::model::{Job as AuditJob, Subject as AuditSubject};
 use crate::audit::{self, events};
 use crate::auth::engine::{self, ImageGroupPermission, JobPermission};
@@ -113,8 +113,9 @@ pub async fn list_events(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Path(IdPath { id: job_id }): Path<IdPath>,
+    Query(query): Query<AuditFeedQuery>,
 ) -> Result<Json<AuditFeedResponse>, StatusCode> {
-    fetch_events_for_entity(&state, &subject, "job", job_id)
+    fetch_events_for_entity(&state, &subject, "job", job_id, &query)
         .await
         .map(Json)
 }

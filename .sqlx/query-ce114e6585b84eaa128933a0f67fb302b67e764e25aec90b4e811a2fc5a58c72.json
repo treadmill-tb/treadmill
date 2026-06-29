@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        select e.event_id, e.event_type, e.payload, e.actor_id, e.correlation_id, e.created_at\n        from tml_switchboard.audit_events e\n        join tml_switchboard.audit_event_relations r on e.event_id = r.event_id\n        where r.entity_kind = $1::tml_switchboard.audit_entity_kind\n          and r.entity_id = $2\n          and ($3::boolean or r.view_policy = any($4::text[]))\n        order by e.created_at desc\n        limit 100\n        ",
+  "query": "\n        select e.event_id, e.event_type, e.payload, e.actor_id, e.correlation_id, e.created_at\n        from tml_switchboard.audit_events e\n        join tml_switchboard.audit_event_relations r on e.event_id = r.event_id\n        where r.entity_kind = $1::tml_switchboard.audit_entity_kind\n          and r.entity_id = $2\n          and ($3::boolean or r.view_policy = any($4::text[]))\n          and ($5::timestamptz is null or (e.created_at, e.event_id) < ($5, $6))\n        order by e.created_at desc, e.event_id desc\n        limit $7\n        ",
   "describe": {
     "columns": [
       {
@@ -86,7 +86,10 @@
         },
         "Uuid",
         "Bool",
-        "TextArray"
+        "TextArray",
+        "Timestamptz",
+        "Uuid",
+        "Int8"
       ]
     },
     "nullable": [
@@ -98,5 +101,5 @@
       false
     ]
   },
-  "hash": "fcbe5b465add1d48aa1d2512a8ac1c66ebb998ca927d10f759bd188494c44ef0"
+  "hash": "ce114e6585b84eaa128933a0f67fb302b67e764e25aec90b4e811a2fc5a58c72"
 }
