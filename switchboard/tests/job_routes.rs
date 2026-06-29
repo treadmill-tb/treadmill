@@ -401,7 +401,7 @@ async fn enqueue_and_cancel_emit_audit_events(pool: PgPool) {
         types.contains(&"job_enqueued.v1"),
         "expected a job_enqueued event, got {types:?}"
     );
-    assert!(!types.contains(&"job_canceled.v1"));
+    assert!(!types.contains(&"job_terminated.v1"));
 
     let cancel = client
         .delete(format!("http://{addr}/api/v1/jobs/{job_id}"))
@@ -411,7 +411,7 @@ async fn enqueue_and_cancel_emit_audit_events(pool: PgPool) {
         .unwrap();
     assert_eq!(cancel.status(), reqwest::StatusCode::ACCEPTED);
 
-    // The cancellation now shows up alongside the enqueue.
+    // The termination now shows up alongside the enqueue.
     let after_cancel: AuditFeedResponse = client
         .get(format!("http://{addr}/api/v1/jobs/{job_id}/events"))
         .bearer_auth(&token)
@@ -427,7 +427,7 @@ async fn enqueue_and_cancel_emit_audit_events(pool: PgPool) {
         .map(|e| e.event_type.as_str())
         .collect();
     assert!(types.contains(&"job_enqueued.v1"), "got {types:?}");
-    assert!(types.contains(&"job_canceled.v1"), "got {types:?}");
+    assert!(types.contains(&"job_terminated.v1"), "got {types:?}");
 }
 
 /// A minimal concrete-image [`JobRequest`] for enqueue tests.
@@ -660,14 +660,14 @@ async fn canceling_a_queued_job_finalizes_it(pool: PgPool) {
         .send()
         .await
         .unwrap();
-    // Queued: finalized synchronously, so a cancellation was initiated (202).
+    // Queued: finalized synchronously, so a termination was initiated (202).
     assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
 
     let (state, reason) = job_state_and_reason(&pool, job_id).await;
     assert_eq!(state, "finalized");
-    assert_eq!(reason.as_deref(), Some("user_canceled"));
+    assert_eq!(reason.as_deref(), Some("user_terminated"));
 
-    // Idempotent: a second cancellation of the now-finalized job is a no-op.
+    // Idempotent: a second termination of the now-finalized job is a no-op.
     let again = client
         .delete(format!("http://{addr}/api/v1/jobs/{job_id}"))
         .bearer_auth(&token)
