@@ -228,6 +228,215 @@ impl WorkerCtx {
     }
 }
 
+// ---------------------------------------------------------------------------
+// `reconcile` resolution cases
+//
+// Each function resolves one row-group of the convergence table documented on
+// [`SupervisorWSWorker::reconcile`] and returns the single command (if any) the
+// worker must send *after* the transaction commits. They run inside
+// `with_txn`'s closure, so they take the live `txn` and must not `.await` any
+// non-DB work (see `with_txn`'s contract). `reconcile` dispatches to exactly one
+// of them per pass.
+// ---------------------------------------------------------------------------
+
+/// No job is assigned to the host (`hosts.current_job` is NULL). Pure: aligned
+/// when the supervisor is idle, otherwise the reported job is an unassigned
+/// zombie to stop.
+fn resolve_unassigned(reported: ReportedSupervisorStatus) -> Option<SwitchboardToSupervisor> {
+    match reported {
+        ReportedSupervisorStatus::Idle => None,
+        ReportedSupervisorStatus::OngoingJob { job_id, .. } => {
+            Some(SwitchboardToSupervisor::StopJob(StopJobMessage { job_id }))
+        }
+    }
+}
+
+/// The assigned job is already `Finalized` ("sticky host"): it reached a
+/// terminal state out-of-band but the host pointer was never released. The row
+/// is terminal, so this never re-finalizes, adopts a running state, or applies
+/// the restart policy — it only drives the supervisor to drop the job and
+/// releases the pointer once the report confirms it gone. See the `finalized`
+/// rows of the convergence table.
+async fn resolve_finalized_sticky_host(
+    host_id: Uuid,
+    id: Uuid,
+    reported: ReportedSupervisorStatus,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<Option<SwitchboardToSupervisor>> {
+    Ok(match reported {
+        // The supervisor confirms it no longer holds the job: now (and only
+        // now) release the pointer.
+        ReportedSupervisorStatus::Idle => {
+            sql::host::release_job_assignment(host_id, id, txn).await?;
+            None
+        }
+
+        // The supervisor still reports *our* job — in any state, including a
+        // retained `Terminated` record. `StopJob`-ack to make it drop the
+        // record, but keep the assignment until it reports gone.
+        ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. } if j_sup == id => {
+            Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                job_id: id,
+            }))
+        }
+
+        // The supervisor reports a *different* job: ours is demonstrably gone
+        // from the host, so release our pointer; the reported one is an
+        // unassigned zombie.
+        ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. } => {
+            sql::host::release_job_assignment(host_id, id, txn).await?;
+            Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                job_id: j_sup,
+            }))
+        }
+    })
+}
+
+/// The assigned job must be stopped for a switchboard-side `reason` (execution
+/// timeout or user terminate), re-derived from the fresh row each pass. Finalize
+/// with the reason and converge the assignment/ack against the reported state.
+async fn resolve_switchboard_stop(
+    host_id: Uuid,
+    id: Uuid,
+    reason: sql::job::SqlTerminationReason,
+    reported: ReportedSupervisorStatus,
+    at: chrono::DateTime<chrono::Utc>,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<Option<SwitchboardToSupervisor>> {
+    Ok(match reported {
+        // The supervisor no longer runs it (already gone, or it never started):
+        // finalize with the reason and release the assignment (the supervisor
+        // confirms it is gone).
+        ReportedSupervisorStatus::Idle => {
+            sql::job::finalize_with_reason(id, reason, at, txn).await?;
+            sql::host::release_job_assignment(host_id, id, txn).await?;
+            None
+        }
+
+        // The supervisor still reports *this* job.
+        ReportedSupervisorStatus::OngoingJob {
+            job_id: j_sup,
+            job_state,
+        } if j_sup == id => match job_state {
+            // Already torn down, but the supervisor still retains the terminal
+            // record: finalize with the reason and ack with StopJob, but keep
+            // the assignment until it reports the job gone (the `finalized` rows
+            // release it then).
+            RunningJobState::Terminated => {
+                sql::job::finalize_with_reason(id, reason, at, txn).await?;
+                Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                    job_id: id,
+                }))
+            }
+            // Still running: track the reported state and (re)issue StopJob until
+            // it reports gone.
+            running => {
+                sql::job::apply_running_state(id, running, at, txn).await?;
+                Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                    job_id: id,
+                }))
+            }
+        },
+
+        // The supervisor runs a *different* job: ours is gone (finalize with the
+        // reason, release the assignment); the reported one is an unassigned
+        // zombie to stop.
+        ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. } => {
+            sql::job::finalize_with_reason(id, reason, at, txn).await?;
+            sql::host::release_job_assignment(host_id, id, txn).await?;
+            Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                job_id: j_sup,
+            }))
+        }
+    })
+}
+
+/// The ordinary convergence for an assigned job that is neither finalized nor
+/// switchboard-stopped: dispatch it, adopt the reported running state, or handle
+/// a lost/mismatched job per the restart policy.
+async fn resolve_assigned_or_running(
+    host_id: Uuid,
+    job: &sql::job::SqlJob,
+    id: Uuid,
+    reported: ReportedSupervisorStatus,
+    at: chrono::DateTime<chrono::Utc>,
+    txn: &mut Transaction<'_, Postgres>,
+    log_streaming_config: Option<&crate::config::LogStreamingConfig>,
+) -> Result<Option<SwitchboardToSupervisor>> {
+    use crate::sql::job::SqlJobState;
+
+    Ok(match (job.job_state(), reported) {
+        // Assigned + Idle: the supervisor hasn't picked it up yet — (re)dispatch
+        // it. No DB change; the next pass adopts the reported running state.
+        (SqlJobState::Assigned, ReportedSupervisorStatus::Idle) => {
+            let msg = sql::job::build_start_job_message(job, txn, log_streaming_config)
+                .await
+                .context("building StartJob message in reconcile")?;
+            Some(SwitchboardToSupervisor::StartJob(msg))
+        }
+
+        // Assigned + the supervisor reports *this* job: it picked it up — adopt
+        // the reported running state (assigned → initializing/ready/...).
+        (
+            SqlJobState::Assigned,
+            ReportedSupervisorStatus::OngoingJob {
+                job_id: j_sup,
+                job_state,
+            },
+        ) if j_sup == id => {
+            let terminated = sql::job::apply_running_state(id, job_state, at, txn).await?;
+            terminated.then_some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                job_id: id,
+            }))
+        }
+
+        // Assigned, but the supervisor is busy with some *other* job: that one is
+        // a zombie. Stop it and leave `id` assigned for the next pass to start.
+        (SqlJobState::Assigned, ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. }) => {
+            Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                job_id: j_sup,
+            }))
+        }
+
+        // Running (initializing/ready/terminating) + Idle: the job was lost —
+        // finalize (honoring the restart policy) and release the assignment (the
+        // supervisor confirms it is gone).
+        (_, ReportedSupervisorStatus::Idle) => {
+            sql::job::finalize_dropped_and_maybe_restart(id, at, txn).await?;
+            sql::host::release_job_assignment(host_id, id, txn).await?;
+            None
+        }
+
+        // Running + the supervisor reports *this* job: adopt the reported state;
+        // a `Terminated` finalizes and is acked with `StopJob` (the assignment is
+        // kept, then released by the `finalized` rows once the host reports the
+        // job gone).
+        (
+            _,
+            ReportedSupervisorStatus::OngoingJob {
+                job_id: j_sup,
+                job_state,
+            },
+        ) if j_sup == id => {
+            let terminated = sql::job::apply_running_state(id, job_state, at, txn).await?;
+            terminated.then_some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                job_id: id,
+            }))
+        }
+
+        // Running, but the supervisor reports a *different* job: the assigned one
+        // is lost (finalize + restart policy, release the assignment); the
+        // reported one is an unassigned zombie.
+        (_, ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. }) => {
+            sql::job::finalize_dropped_and_maybe_restart(id, at, txn).await?;
+            sql::host::release_job_assignment(host_id, id, txn).await?;
+            Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                job_id: j_sup,
+            }))
+        }
+    })
+}
+
 impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     #[tracing::instrument(skip(pool, socket, config, log_streaming))]
     pub async fn run(
@@ -441,206 +650,45 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
 
                 let command = match j_sb {
                     // Nothing assigned: aligned if idle, else a zombie to stop.
-                    None => match reported {
-                        ReportedSupervisorStatus::Idle => None,
-                        ReportedSupervisorStatus::OngoingJob { job_id, .. } => {
-                            Some(SwitchboardToSupervisor::StopJob(StopJobMessage { job_id }))
-                        }
-                    },
+                    None => resolve_unassigned(reported),
 
-                    // A job is assigned: its `job_state` decides what `Idle`
-                    // (and a same-id report) means.
+                    // A job is assigned: dispatch on its `job_state` and any
+                    // switchboard-side stop reason, each re-derived from the
+                    // freshly-fetched row.
                     Some(id) => {
                         let job = sql::job::fetch_by_job_id(id, &mut **txn).await?;
 
-                        // Finalized-but-still-assigned: the job reached a terminal
-                        // state out-of-band (e.g. finalized via a
+                        // Finalized-but-still-assigned ("sticky host"): the job
+                        // reached a terminal state out-of-band (finalized via a
                         // `SupervisorJobEvent::Error`, or a `Terminated` whose ack
                         // is still in flight) but the host pointer was never
-                        // released. The job row is already terminal, so we never
-                        // re-finalize, adopt a running state (which would
-                        // un-finalize it), or apply the restart policy: we only
-                        // drive the supervisor to drop the job and release the
-                        // pointer once the report confirms it is gone, keeping the
-                        // column a faithful mirror of the supervisor (see the
-                        // `finalized` rows in the convergence table above).
+                        // released. The row is already terminal, so this resolves
+                        // without any finalize/adopt/restart — and returns *early*
+                        // so the audit block below does not re-emit `JobFinalized`
+                        // for a job that finalized in an earlier pass.
                         if job.job_state() == SqlJobState::Finalized {
-                            return Ok(match reported {
-                                // The supervisor confirms it no longer holds the
-                                // job: now (and only now) release the pointer.
-                                ReportedSupervisorStatus::Idle => {
-                                    sql::host::release_job_assignment(host_id, id, txn).await?;
-                                    None
-                                }
-
-                                // The supervisor still reports *our* job — in any
-                                // state, including a retained `Terminated` record.
-                                // `StopJob`-ack to make it drop the record, but
-                                // keep the assignment until it reports gone.
-                                ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. }
-                                    if j_sup == id =>
-                                {
-                                    Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
-                                        job_id: id,
-                                    }))
-                                }
-
-                                // The supervisor reports a *different* job: ours is
-                                // demonstrably gone from the host, so release our
-                                // pointer; the reported one is an unassigned zombie.
-                                ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. } => {
-                                    sql::host::release_job_assignment(host_id, id, txn).await?;
-                                    Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
-                                        job_id: j_sup,
-                                    }))
-                                }
-                            });
+                            return resolve_finalized_sticky_host(host_id, id, reported, txn).await;
                         }
 
-                        // Stop pre-check: should this assigned job be stopped for
-                        // a switchboard-side reason (execution timeout or user
-                        // terminate)? Re-derived from the freshly-fetched row on
-                        // every pass, so an extended deadline (or a terminate signal
-                        // set since the last pass) is always honored against
-                        // current DB state — we never terminate on stale data.
+                        // Stop pre-check: a switchboard-side stop (execution
+                        // timeout or user terminate), re-derived from the fresh row
+                        // each pass so an extended deadline (or a terminate set
+                        // since the last pass) is always honored against current DB
+                        // state — we never terminate on stale data. Otherwise the
+                        // ordinary assigned/running convergence.
                         if let Some(reason) = job.switchboard_stop_reason(at) {
-                            match reported {
-                                // The supervisor no longer runs it (already gone,
-                                // or it never started): finalize with the reason
-                                // and release the assignment (the supervisor
-                                // confirms it is gone).
-                                ReportedSupervisorStatus::Idle => {
-                                    sql::job::finalize_with_reason(id, reason, at, txn).await?;
-                                    sql::host::release_job_assignment(host_id, id, txn).await?;
-                                    None
-                                }
-
-                                // The supervisor still reports *this* job.
-                                ReportedSupervisorStatus::OngoingJob {
-                                    job_id: j_sup,
-                                    job_state,
-                                } if j_sup == id => match job_state {
-                                    // Already torn down, but the supervisor still
-                                    // retains the terminal record: finalize with the
-                                    // reason and ack with StopJob, but keep the
-                                    // assignment until it reports the job gone (the
-                                    // `finalized` rows release it then).
-                                    RunningJobState::Terminated => {
-                                        sql::job::finalize_with_reason(id, reason, at, txn).await?;
-                                        Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
-                                            job_id: id,
-                                        }))
-                                    }
-                                    // Still running: track the reported state and
-                                    // (re)issue StopJob until it reports gone.
-                                    running => {
-                                        sql::job::apply_running_state(id, running, at, txn).await?;
-                                        Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
-                                            job_id: id,
-                                        }))
-                                    }
-                                },
-
-                                // The supervisor runs a *different* job: ours is
-                                // gone (finalize with the reason, release the
-                                // assignment); the reported one is an unassigned
-                                // zombie to stop.
-                                ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. } => {
-                                    sql::job::finalize_with_reason(id, reason, at, txn).await?;
-                                    sql::host::release_job_assignment(host_id, id, txn).await?;
-                                    Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
-                                        job_id: j_sup,
-                                    }))
-                                }
-                            }
+                            resolve_switchboard_stop(host_id, id, reason, reported, at, txn).await?
                         } else {
-                            match (job.job_state(), reported) {
-                                // Assigned + Idle: the supervisor hasn't picked it
-                                // up yet — (re)dispatch it. No DB change; the next
-                                // pass adopts the reported running state.
-                                (SqlJobState::Assigned, ReportedSupervisorStatus::Idle) => {
-                                    let msg = sql::job::build_start_job_message(
-                                        &job,
-                                        txn,
-                                        log_streaming_config.as_ref(),
-                                    )
-                                    .await
-                                    .context("building StartJob message in reconcile")?;
-                                    Some(SwitchboardToSupervisor::StartJob(msg))
-                                }
-
-                                // Assigned + the supervisor reports *this* job: it
-                                // picked it up — adopt the reported running state
-                                // (assigned → initializing/ready/...).
-                                (
-                                    SqlJobState::Assigned,
-                                    ReportedSupervisorStatus::OngoingJob {
-                                        job_id: j_sup,
-                                        job_state,
-                                    },
-                                ) if j_sup == id => {
-                                    let terminated =
-                                        sql::job::apply_running_state(id, job_state, at, txn)
-                                            .await?;
-                                    terminated.then_some(SwitchboardToSupervisor::StopJob(
-                                        StopJobMessage { job_id: id },
-                                    ))
-                                }
-
-                                // Assigned, but the supervisor is busy with some
-                                // *other* job: that one is a zombie. Stop it and
-                                // leave `id` assigned for the next pass to start.
-                                (
-                                    SqlJobState::Assigned,
-                                    ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. },
-                                ) => Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
-                                    job_id: j_sup,
-                                })),
-
-                                // Running (initializing/ready/terminating) + Idle:
-                                // the job was lost — finalize (honoring the restart
-                                // policy) and release the assignment (the supervisor
-                                // confirms it is gone).
-                                (_, ReportedSupervisorStatus::Idle) => {
-                                    sql::job::finalize_dropped_and_maybe_restart(id, at, txn)
-                                        .await?;
-                                    sql::host::release_job_assignment(host_id, id, txn).await?;
-                                    None
-                                }
-
-                                // Running + the supervisor reports *this* job: adopt
-                                // the reported state; a `Terminated` finalizes and is
-                                // acked with `StopJob` (the assignment is kept, then
-                                // released by the `finalized` rows once the host
-                                // reports the job gone).
-                                (
-                                    _,
-                                    ReportedSupervisorStatus::OngoingJob {
-                                        job_id: j_sup,
-                                        job_state,
-                                    },
-                                ) if j_sup == id => {
-                                    let terminated =
-                                        sql::job::apply_running_state(id, job_state, at, txn)
-                                            .await?;
-                                    terminated.then_some(SwitchboardToSupervisor::StopJob(
-                                        StopJobMessage { job_id: id },
-                                    ))
-                                }
-
-                                // Running, but the supervisor reports a *different*
-                                // job: the assigned one is lost (finalize + restart
-                                // policy, release the assignment); the reported one
-                                // is an unassigned zombie.
-                                (_, ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. }) => {
-                                    sql::job::finalize_dropped_and_maybe_restart(id, at, txn)
-                                        .await?;
-                                    sql::host::release_job_assignment(host_id, id, txn).await?;
-                                    Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
-                                        job_id: j_sup,
-                                    }))
-                                }
-                            }
+                            resolve_assigned_or_running(
+                                host_id,
+                                &job,
+                                id,
+                                reported,
+                                at,
+                                txn,
+                                log_streaming_config.as_ref(),
+                            )
+                            .await?
                         }
                     }
                 };
