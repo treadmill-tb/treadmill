@@ -415,15 +415,42 @@ CREATE FUNCTION tml_switchboard.eligible_hosts (
     p_job_id uuid,
     p_liveness_cutoff timestamp with time zone
 ) returns setof uuid language sql stable AS $$
+    with job as (
+        select owner_id, host_tag_requirements
+        from tml_switchboard.jobs
+        where job_id = p_job_id
+    ),
+    -- The job owner's transitive principals (owner + every group it reaches),
+    -- the set every host authorization check below is tested against. NULL owner
+    -- yields a single NULL principal, which matches nothing.
+    owner_principals (id) as (
+        select p.id
+        from job, tml_switchboard.principals(job.owner_id) p
+    )
     select h.host_id
     from tml_switchboard.hosts h
     where h.current_job is null
       and h.last_seen_at is not null
       and h.last_seen_at > p_liveness_cutoff
-      and h.tags @> (
-          select j.host_tag_requirements
-          from tml_switchboard.jobs j
-          where j.job_id = p_job_id
+      and h.tags @> (select host_tag_requirements from job)
+      and (
+          -- The owner (or a group it reaches) is a global admin.
+          exists (
+              select 1 from owner_principals
+              -- The seeded `admins` group; see `ADMINS_GROUP_ID` in engine.rs.
+              where id = '00000000-0000-0000-0000-000000000001'
+          )
+          -- The owner (via principals) owns the host.
+          or exists (
+              select 1 from owner_principals op where op.id = h.owner_id
+          )
+          -- The owner (via principals) holds a `start` grant on the host.
+          or exists (
+              select 1
+              from tml_switchboard.host_grants g
+              join owner_principals op on g.subject_id = op.id
+              where g.host_id = h.host_id and g.permission = 'start'
+          )
       )
     order by h.host_id;
 $$;

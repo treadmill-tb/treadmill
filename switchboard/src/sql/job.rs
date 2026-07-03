@@ -485,6 +485,11 @@ impl SqlJob {
     pub fn host_tag_requirements(&self) -> &[String] {
         &self.host_tag_requirements
     }
+    /// The owning subject, or `None` if the job is orphaned (its owner was
+    /// deleted; the FK is `on delete set null`).
+    pub fn owner_id(&self) -> Option<Uuid> {
+        self.owner_id
+    }
     pub fn timeout(&self) -> TimeDelta {
         assert_eq!(
             self.job_timeout.months, 0,

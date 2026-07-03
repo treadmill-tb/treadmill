@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 use crate::audit::model::{Host as AuditHost, Job as AuditJob, Subject as AuditSubject};
 use crate::audit::{self, SYSTEM_ACTOR_ID, events};
+use crate::auth::engine::{self, HostPermission};
 use crate::matcher::{self, TargetCandidate};
 use crate::sql;
 use crate::sql::job::{ImageResolveError, SqlJobState};
@@ -98,14 +99,12 @@ impl Scheduler {
         while let Some(row) = queued.try_next().await? {
             let job_id = row.job_id;
 
-            // The DB set-filter: idle + live + host-tag eligible. A host placed
-            // earlier in this same pass is already excluded here (it reads
+            // The DB set-filter: idle + live + host-tag eligible + the job
+            // owner is authorized to `start` on the host (ownership / `start`
+            // grant / admin, via `principals()` -- folded into `eligible_hosts`
+            // itself, so an unauthorized host never becomes a candidate). A host
+            // placed earlier in this same pass is already excluded here (it reads
             // committed `current_job`), so no in-memory host bookkeeping.
-            //
-            // TODO(authz): `eligible_hosts` does not yet restrict to hosts the
-            // job's enqueuing principal may use (ownership / `start` grant via
-            // `principals()`). Until that predicate is folded into the SQL
-            // function, a job can be placed on any tag-eligible host.
             let candidates = sqlx::query_scalar!(
                 r#"select eligible_hosts as "host_id!"
                    from tml_switchboard.eligible_hosts($1, $2)"#,
@@ -176,6 +175,21 @@ impl Scheduler {
             .iter()
             .all(|t| host_tags.contains(t))
         {
+            return Ok(AssignOutcome::HostRejected);
+        }
+
+        // Re-check that the job's owner may `start` on this host, under the same
+        // lock and mirroring `eligible_hosts`' authorization predicate. That
+        // function is the authoritative gate, but host ownership/grants can
+        // change between the candidate scan and here; re-validating closes that
+        // window. An orphaned job (owner_id NULL) is never authorized.
+        let authorized = match job.owner_id() {
+            Some(owner) => {
+                engine::can_access_host(&mut *txn, owner, host_id, HostPermission::Start).await?
+            }
+            None => false,
+        };
+        if !authorized {
             return Ok(AssignOutcome::HostRejected);
         }
 
@@ -329,6 +343,21 @@ mod tests {
         Ok(id)
     }
 
+    /// Insert a group subject (usable as a host owner or a grantee).
+    async fn insert_group(pool: &PgPool) -> anyhow::Result<Uuid> {
+        let id = Uuid::new_v4();
+        sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'group')")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        sqlx::query("insert into tml_switchboard.groups (subject_id, name) values ($1, $2)")
+            .bind(id)
+            .bind(format!("group-{id}"))
+            .execute(pool)
+            .await?;
+        Ok(id)
+    }
+
     async fn insert_token(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Uuid> {
         let id = Uuid::new_v4();
         sqlx::query(
@@ -344,10 +373,13 @@ mod tests {
         Ok(id)
     }
 
-    /// Insert a host with the given tags and liveness. `last_seen` of `None`
-    /// leaves the host not-live (no connected worker).
+    /// Insert a host owned by `owner`, with the given tags and liveness.
+    /// `last_seen` of `None` leaves the host not-live (no connected worker).
+    /// Ownership matters for scheduling: `eligible_hosts` only admits hosts the
+    /// job's owner may `start` on (owned, `start`-granted, or admin).
     async fn insert_host(
         pool: &PgPool,
+        owner: Uuid,
         host_tags: &[&str],
         last_seen: Option<DateTime<Utc>>,
     ) -> anyhow::Result<Uuid> {
@@ -358,22 +390,53 @@ mod tests {
         auth_token[..16].copy_from_slice(id.as_bytes());
         sqlx::query(
             "insert into tml_switchboard.hosts \
-             (host_id, name, auth_token, tags, ssh_endpoints, worker_instance_id, last_seen_at) \
-             values ($1, $2, $3, $4, '{}'::tml_switchboard.ssh_endpoint[], 0, $5)",
+             (host_id, name, auth_token, tags, ssh_endpoints, worker_instance_id, last_seen_at, owner_id) \
+             values ($1, $2, $3, $4, '{}'::tml_switchboard.ssh_endpoint[], 0, $5, $6)",
         )
         .bind(id)
         .bind(format!("host-{id}"))
         .bind(auth_token)
         .bind(tags(host_tags))
         .bind(last_seen)
+        .bind(owner)
         .execute(pool)
         .await?;
         Ok(id)
     }
 
-    /// A live host (heartbeat now).
-    async fn insert_live_host(pool: &PgPool, host_tags: &[&str]) -> anyhow::Result<Uuid> {
-        insert_host(pool, host_tags, Some(Utc::now())).await
+    /// A live host (heartbeat now) owned by `owner`.
+    async fn insert_live_host(
+        pool: &PgPool,
+        owner: Uuid,
+        host_tags: &[&str],
+    ) -> anyhow::Result<Uuid> {
+        insert_host(pool, owner, host_tags, Some(Utc::now())).await
+    }
+
+    /// Grant `subject` the `start` permission on `host` (revocable).
+    async fn grant_host_start(pool: &PgPool, host: Uuid, subject: Uuid) -> anyhow::Result<()> {
+        sqlx::query(
+            "insert into tml_switchboard.host_grants (host_id, subject_id, permission) \
+             values ($1, $2, 'start')",
+        )
+        .bind(host)
+        .bind(subject)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Add `member` to `group` (a manual `group_members` edge).
+    async fn add_group_member(pool: &PgPool, group: Uuid, member: Uuid) -> anyhow::Result<()> {
+        sqlx::query(
+            "insert into tml_switchboard.group_members (group_id, member_id, source) \
+             values ($1, $2, 'manual')",
+        )
+        .bind(group)
+        .bind(member)
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 
     async fn add_target(pool: &PgPool, host_id: Uuid, target_tags: &[&str]) -> anyhow::Result<()> {
@@ -484,12 +547,21 @@ mod tests {
             target_requirements: target_requirements.iter().map(|r| tags(r)).collect(),
             override_timeout: None,
         };
+        // Mirror the enqueue route: the job is owned by the enqueuing token's
+        // user. Host authorization (`eligible_hosts`) is evaluated against this
+        // owner.
+        let owner: Uuid = sqlx::query_scalar(
+            "select user_id from tml_switchboard.api_tokens where token_id = $1",
+        )
+        .bind(token)
+        .fetch_one(pool)
+        .await?;
         let mut tx = pool.begin().await?;
         sql::job::insert(
             req,
             job_id,
             token,
-            None,
+            Some(owner),
             PgInterval::try_from(Duration::hours(1)).unwrap(),
             queued_at,
             &mut tx,
@@ -614,16 +686,17 @@ mod tests {
         let token = insert_token(&pool, user).await?;
         let cutoff = Utc::now() - Duration::seconds(60);
 
-        let good = insert_live_host(&pool, &["arch=arm64", "rack=1"]).await?;
-        let _missing_tag = insert_live_host(&pool, &["arch=amd64"]).await?;
-        let _dead = insert_host(&pool, &["arch=arm64"], None).await?;
+        let good = insert_live_host(&pool, user, &["arch=arm64", "rack=1"]).await?;
+        let _missing_tag = insert_live_host(&pool, user, &["arch=amd64"]).await?;
+        let _dead = insert_host(&pool, user, &["arch=arm64"], None).await?;
         let _stale = insert_host(
             &pool,
+            user,
             &["arch=arm64"],
             Some(Utc::now() - Duration::seconds(120)),
         )
         .await?;
-        let busy = insert_live_host(&pool, &["arch=arm64"]).await?;
+        let busy = insert_live_host(&pool, user, &["arch=arm64"]).await?;
 
         let (img, _) = register_image(&pool, user, 1, true).await?;
         let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
@@ -648,8 +721,8 @@ mod tests {
         let user = insert_user(&pool).await?;
         let token = insert_token(&pool, user).await?;
         let cutoff = Utc::now() - Duration::seconds(60);
-        let a = insert_live_host(&pool, &["x"]).await?;
-        let b = insert_live_host(&pool, &[]).await?;
+        let a = insert_live_host(&pool, user, &["x"]).await?;
+        let b = insert_live_host(&pool, user, &[]).await?;
         let (img, _) = register_image(&pool, user, 1, true).await?;
         let job = enqueue_image(&pool, token, img, &[], &[]).await?;
         let mut got = eligible(&pool, job, cutoff).await?;
@@ -660,6 +733,145 @@ mod tests {
         Ok(())
     }
 
+    // -- host-start authorization ------------------------------------------
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn eligible_hosts_enforces_start_authorization(pool: PgPool) -> anyhow::Result<()> {
+        let owner = insert_user(&pool).await?;
+        let token = insert_token(&pool, owner).await?;
+        let other = insert_user(&pool).await?;
+        let cutoff = Utc::now() - Duration::seconds(60);
+
+        // All three hosts are idle, live, and tag-match; only authorization
+        // separates them.
+        let owned = insert_live_host(&pool, owner, &["arch=arm64"]).await?;
+        let foreign = insert_live_host(&pool, other, &["arch=arm64"]).await?;
+        let granted = insert_live_host(&pool, other, &["arch=arm64"]).await?;
+        grant_host_start(&pool, granted, owner).await?;
+
+        let (img, _) = register_image(&pool, owner, 1, true).await?;
+        let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+
+        let mut got = eligible(&pool, job, cutoff).await?;
+        assert!(
+            !got.contains(&foreign),
+            "the foreign host the owner may not start on is excluded"
+        );
+        got.sort();
+        let mut want = vec![owned, granted];
+        want.sort();
+        assert_eq!(
+            got, want,
+            "only the owner's own host and the start-granted host are eligible"
+        );
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn eligible_hosts_authorizes_via_owning_group(pool: PgPool) -> anyhow::Result<()> {
+        // A host owned by a group the job owner belongs to is eligible: host
+        // authorization is evaluated over the owner's transitive principals.
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let group = insert_group(&pool).await?;
+        add_group_member(&pool, group, user).await?;
+        let cutoff = Utc::now() - Duration::seconds(60);
+
+        let group_owned = insert_live_host(&pool, group, &["arch=arm64"]).await?;
+
+        let (img, _) = register_image(&pool, user, 1, true).await?;
+        let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+
+        assert_eq!(eligible(&pool, job, cutoff).await?, vec![group_owned]);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn eligible_hosts_admin_owner_matches_any_host(pool: PgPool) -> anyhow::Result<()> {
+        let owner = insert_user(&pool).await?;
+        let token = insert_token(&pool, owner).await?;
+        let other = insert_user(&pool).await?;
+        add_group_member(&pool, engine::ADMINS_GROUP_ID, owner).await?;
+        let cutoff = Utc::now() - Duration::seconds(60);
+
+        // Owned by someone else, no grant -- but the job owner is an admin.
+        let foreign = insert_live_host(&pool, other, &["arch=arm64"]).await?;
+
+        let (img, _) = register_image(&pool, owner, 1, true).await?;
+        let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+
+        assert_eq!(
+            eligible(&pool, job, cutoff).await?,
+            vec![foreign],
+            "an admin owner may start on any host"
+        );
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn does_not_schedule_onto_unauthorized_host(pool: PgPool) -> anyhow::Result<()> {
+        let owner = insert_user(&pool).await?;
+        let token = insert_token(&pool, owner).await?;
+        let other = insert_user(&pool).await?;
+        // The only live, tag-matching host belongs to another user; the job
+        // owner holds no grant on it.
+        let foreign = insert_live_host(&pool, other, &["arch=arm64"]).await?;
+        let (img, _) = register_image(&pool, owner, 1, true).await?;
+        let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+
+        scheduler(pool.clone()).tick().await?;
+
+        assert_eq!(host_current_job(&pool, foreign).await?, None);
+        assert_eq!(
+            job_state(&pool, job).await?,
+            "queued",
+            "a job with no authorized host stays queued (ages out via queue timeout)"
+        );
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn schedules_onto_start_granted_host(pool: PgPool) -> anyhow::Result<()> {
+        let owner = insert_user(&pool).await?;
+        let token = insert_token(&pool, owner).await?;
+        let other = insert_user(&pool).await?;
+        let host = insert_live_host(&pool, other, &["arch=arm64"]).await?;
+        grant_host_start(&pool, host, owner).await?;
+        let (img, _) = register_image(&pool, owner, 1, true).await?;
+        let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+
+        scheduler(pool.clone()).tick().await?;
+
+        assert_eq!(host_current_job(&pool, host).await?, Some(job));
+        assert_eq!(job_state(&pool, job).await?, "assigned");
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn try_assign_rejects_unauthorized_host(pool: PgPool) -> anyhow::Result<()> {
+        // The under-lock re-check in `try_assign` is a second gate independent of
+        // `eligible_hosts` (it covers a grant revoked between the candidate scan
+        // and the lock). Drive it directly with a host the owner may not use.
+        let owner = insert_user(&pool).await?;
+        let token = insert_token(&pool, owner).await?;
+        let other = insert_user(&pool).await?;
+        let foreign = insert_live_host(&pool, other, &["arch=arm64"]).await?;
+        let (img, _) = register_image(&pool, owner, 1, true).await?;
+        let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+
+        let outcome = scheduler(pool.clone()).try_assign(job, foreign).await?;
+        assert_eq!(outcome, AssignOutcome::HostRejected);
+        assert_eq!(job_state(&pool, job).await?, "queued");
+        assert_eq!(host_current_job(&pool, foreign).await?, None);
+        Ok(())
+    }
+
     // -- scheduler dispatch -------------------------------------------------
 
     #[sqlx::test(migrations = "./migrations")]
@@ -667,7 +879,7 @@ mod tests {
     async fn schedules_concrete_image_onto_eligible_host(pool: PgPool) -> anyhow::Result<()> {
         let user = insert_user(&pool).await?;
         let token = insert_token(&pool, user).await?;
-        let host = insert_live_host(&pool, &["arch=arm64", "rack=1"]).await?;
+        let host = insert_live_host(&pool, user, &["arch=arm64", "rack=1"]).await?;
         let (img, img_digest) = register_image(&pool, user, 1, true).await?;
         let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
 
@@ -697,7 +909,7 @@ mod tests {
     async fn image_group_resolves_most_specific_member(pool: PgPool) -> anyhow::Result<()> {
         let user = insert_user(&pool).await?;
         let token = insert_token(&pool, user).await?;
-        let host = insert_live_host(&pool, &["arch=arm64", "rpi4"]).await?;
+        let host = insert_live_host(&pool, user, &["arch=arm64", "rpi4"]).await?;
         // Member 0 is generic; member 1 is more specific and also admissible.
         let (group, members) = register_group(
             &pool,
@@ -736,8 +948,8 @@ mod tests {
         let user = insert_user(&pool).await?;
         let token = insert_token(&pool, user).await?;
         // Dead host (no heartbeat) and a live host missing the required tag.
-        let _dead = insert_host(&pool, &["arch=arm64"], None).await?;
-        let _wrong = insert_live_host(&pool, &["arch=amd64"]).await?;
+        let _dead = insert_host(&pool, user, &["arch=arm64"], None).await?;
+        let _wrong = insert_live_host(&pool, user, &["arch=amd64"]).await?;
         let (img, _) = register_image(&pool, user, 1, true).await?;
         let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
 
@@ -755,7 +967,7 @@ mod tests {
         let (img, _) = register_image(&pool, user, 1, true).await?;
 
         // Host has a single nRF DUT; a job needing one nRF schedules.
-        let host = insert_live_host(&pool, &["arch=arm64"]).await?;
+        let host = insert_live_host(&pool, user, &["arch=arm64"]).await?;
         add_target(&pool, host, &["board=nrf52840dk", "ble"]).await?;
         let ok =
             enqueue_image(&pool, token, img, &["arch=arm64"], &[&["board=nrf52840dk"]]).await?;
@@ -764,7 +976,7 @@ mod tests {
         assert_eq!(host_current_job(&pool, host).await?, Some(ok));
 
         // A second host with only ONE nRF DUT cannot satisfy a job needing TWO.
-        let host2 = insert_live_host(&pool, &["arch=arm64"]).await?;
+        let host2 = insert_live_host(&pool, user, &["arch=arm64"]).await?;
         add_target(&pool, host2, &["board=nrf52840dk"]).await?;
         let needs_two = enqueue_image(
             &pool,
@@ -794,7 +1006,7 @@ mod tests {
     async fn oldest_job_wins_the_single_host(pool: PgPool) -> anyhow::Result<()> {
         let user = insert_user(&pool).await?;
         let token = insert_token(&pool, user).await?;
-        let host = insert_live_host(&pool, &["arch=arm64"]).await?;
+        let host = insert_live_host(&pool, user, &["arch=arm64"]).await?;
         let (img, _) = register_image(&pool, user, 1, true).await?;
 
         let now = Utc::now();
@@ -834,7 +1046,7 @@ mod tests {
     async fn enqueue_rejects_an_unregistered_image(pool: PgPool) -> anyhow::Result<()> {
         let user = insert_user(&pool).await?;
         let token = insert_token(&pool, user).await?;
-        let _host = insert_live_host(&pool, &["arch=arm64"]).await?;
+        let _host = insert_live_host(&pool, user, &["arch=arm64"]).await?;
         // An image id that was never registered in the catalog. The
         // `jobs.image_id` foreign key rejects the enqueue outright, instead of
         // deferring to a dispatch-time image error as the old digest column did.
@@ -853,7 +1065,7 @@ mod tests {
     async fn image_without_location_finalizes_as_image_error(pool: PgPool) -> anyhow::Result<()> {
         let user = insert_user(&pool).await?;
         let token = insert_token(&pool, user).await?;
-        let _host = insert_live_host(&pool, &["arch=arm64"]).await?;
+        let _host = insert_live_host(&pool, user, &["arch=arm64"]).await?;
         // Registered, but with no registry location to pull from.
         let (img, _) = register_image(&pool, user, 1, false).await?;
         let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
@@ -878,7 +1090,7 @@ mod tests {
     async fn does_not_reassign_a_busy_host(pool: PgPool) -> anyhow::Result<()> {
         let user = insert_user(&pool).await?;
         let token = insert_token(&pool, user).await?;
-        let host = insert_live_host(&pool, &["arch=arm64"]).await?;
+        let host = insert_live_host(&pool, user, &["arch=arm64"]).await?;
         let (img, _) = register_image(&pool, user, 1, true).await?;
 
         // Host already running a job.

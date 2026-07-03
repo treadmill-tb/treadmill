@@ -830,34 +830,66 @@ CREATE INDEX jobs_queued_at_job_id_idx ON tml_switchboard.jobs (queued_at DESC, 
 
 -- Hosts a job may be dispatched onto, by the set-based criteria SQL expresses:
 -- the host is idle (no current job), live (its worker's heartbeat
--- `last_seen_at` is newer than the caller-supplied staleness cutoff), and
+-- `last_seen_at` is newer than the caller-supplied staleness cutoff),
 -- host-tag eligible (its opaque `tags` are a superset of the job's
--- `host_tag_requirements`). `tags @> '{}'` holds for every host, so a job with
--- no host-tag requirements matches all idle/live hosts.
+-- `host_tag_requirements`; `tags @> '{}'` holds for every host, so a job with
+-- no host-tag requirements matches all idle/live hosts), and -- crucially --
+-- one the job's owner is *authorized* to start on.
 --
--- This is only the cheap pre-filter: the scheduler additionally applies the
--- target/DUT bipartite match and the image resolution under a row lock in its
--- dispatch transaction.
+-- Authorization mirrors `can_access_host(owner, host, 'start')` in
+-- `src/auth/engine.rs`: the job's owner (evaluated over its transitive
+-- `principals()` set) is a global admin, owns the host, or holds a `start`
+-- grant on it. Folding it in here makes the candidate set itself the
+-- authoritative gate -- an unauthorized host never becomes a scheduling
+-- candidate -- so the enqueue route need not (and does not) pre-authorize a
+-- host at submit time. A job whose `owner_id` is NULL (orphaned, e.g. its owner
+-- was deleted while it sat queued) matches no host and so is never scheduled;
+-- like a tag-unschedulable job, it ages out via the queue timeout.
 --
--- TODO(authz): this does NOT yet restrict to hosts the job's enqueuing
--- principal is permitted to use. Authorization (host ownership, or a `start`
--- entry in `host_grants`, evaluated via `principals()`) should be folded in
--- here as an additional join/EXISTS predicate so unauthorized hosts never
--- become candidates. Until then the scheduler may place a job on any
--- tag-eligible host.
+-- This is still only the cheap pre-filter: the scheduler additionally applies
+-- the target/DUT bipartite match and the image resolution under a row lock in
+-- its dispatch transaction, and re-checks this authorization there (host
+-- ownership/grants can change between this scan and the lock).
 CREATE FUNCTION tml_switchboard.eligible_hosts (
     p_job_id uuid,
     p_liveness_cutoff timestamp with time zone
 ) returns setof uuid language sql stable AS $$
+    with job as (
+        select owner_id, host_tag_requirements
+        from tml_switchboard.jobs
+        where job_id = p_job_id
+    ),
+    -- The job owner's transitive principals (owner + every group it reaches),
+    -- the set every host authorization check below is tested against. NULL owner
+    -- yields a single NULL principal, which matches nothing.
+    owner_principals (id) as (
+        select p.id
+        from job, tml_switchboard.principals(job.owner_id) p
+    )
     select h.host_id
     from tml_switchboard.hosts h
     where h.current_job is null
       and h.last_seen_at is not null
       and h.last_seen_at > p_liveness_cutoff
-      and h.tags @> (
-          select j.host_tag_requirements
-          from tml_switchboard.jobs j
-          where j.job_id = p_job_id
+      and h.tags @> (select host_tag_requirements from job)
+      and (
+          -- The owner (or a group it reaches) is a global admin.
+          exists (
+              select 1 from owner_principals
+              -- The seeded `admins` group; see `ADMINS_GROUP_ID` in engine.rs.
+              where id = '00000000-0000-0000-0000-000000000001'
+          )
+          -- The owner (via principals) owns the host.
+          or exists (
+              select 1 from owner_principals op where op.id = h.owner_id
+          )
+          -- The owner (via principals) holds a `start` grant on the host.
+          or exists (
+              select 1
+              from tml_switchboard.host_grants g
+              join owner_principals op on g.subject_id = op.id
+              where g.host_id = h.host_id and g.permission = 'start'
+          )
       )
     order by h.host_id;
 $$;

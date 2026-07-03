@@ -136,8 +136,12 @@ pub async fn list_events(
 ///
 /// Concrete-image (`Image`) validity and host eligibility are **not** checked
 /// here: an unresolvable image finalizes the job as `image_error` at dispatch,
-/// and host eligibility is the scheduler's authoritative concern (see the
-/// `TODO(authz)` below).
+/// and host eligibility -- including the authorization to run on a host -- is
+/// the scheduler's authoritative concern. Its `eligible_hosts` filter admits
+/// only hosts the job owner may `start` on, so a job the caller cannot place
+/// anywhere simply never schedules and ages out via the queue timeout (as with
+/// a tag-unschedulable job); we deliberately do not pre-authorize a host here,
+/// to avoid leaking host existence and a submit-time TOCTOU.
 pub async fn enqueue(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
@@ -246,11 +250,10 @@ pub async fn enqueue(
         StatusCode::UNPROCESSABLE_ENTITY
     })?;
 
-    // TODO(authz): enqueue does not verify the caller may run on *any* host the
-    // job could match (ownership / `start` grant on eligible hosts). The
-    // scheduler is the authoritative gate; until its `eligible_hosts` predicate
-    // restricts by enqueuing principal, a job can be placed on any tag-eligible
-    // host regardless of who submitted it.
+    // Host authorization is enforced by the scheduler's `eligible_hosts` filter
+    // (only hosts the job owner may `start` on become candidates), not here --
+    // see this handler's doc comment for why we do not pre-authorize a host at
+    // submit time.
 
     // Time-ordered (v7) so the primary-key index inserts with good locality and
     // job ids sort by creation time (see also the `queued_at` listing order).
