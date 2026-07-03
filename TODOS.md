@@ -47,3 +47,17 @@ Currently, `manage` is the same as ownership: it allows to change ownership
 arbitrary. There should be a more granular permission that allows to change
 attributes of the resource (such as a host's label or tag set), without being
 able to change the ACLs or ownership attribute.
+
+## `switchboard-sqlx-prepare` app lacks a C compiler
+
+The `switchboard-sqlx-prepare` dev app (`nix/apps.nix`) fails: its
+`runtimeInputs` list the Rust toolchain, `postgresql`, `sqlx-cli`, `coreutils`,
+and `pkg-config`, but no C compiler. `cargo sqlx prepare` forces a full
+workspace recompile, which builds the transitive `aws-lc-sys` C dependency;
+its `build.rs` invokes `cc`, doesn't find it, and panics (`ToolNotFound:
+failed to find tool "cc"`). The `.#database` devshell works because it puts
+the stdenv `cc` on `PATH`. Fix: add a C toolchain (e.g. `stdenv.cc`, and
+likely `cmake`) to the app's `runtimeInputs`. Workaround until then: run the
+`sqlx migrate run` + `cargo clean -p treadmill-switchboard` +
+`cargo sqlx prepare --workspace -- --all-targets` steps by hand inside
+`nix develop .#database`.
