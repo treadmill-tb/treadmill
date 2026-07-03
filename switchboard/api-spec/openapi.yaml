@@ -1650,10 +1650,6 @@ components:
         job_id:
           type: string
           format: uuid
-        last_updated_at:
-          description: When the job row was last updated.
-          type: string
-          format: date-time
         owner_id:
           description: |-
             Owning subject (user or group); null if the owner was deleted
@@ -1743,7 +1739,6 @@ components:
       - parameters
       - timeout_secs
       - queued_at
-      - last_updated_at
     JobInitSpec:
       oneOf:
       - description: Resume a previously started job.

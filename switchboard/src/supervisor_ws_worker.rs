@@ -1467,7 +1467,7 @@ mod tests {
               image_group_generation, ssh_keys, \
               restart_policy, enqueued_by_token_id, host_tag_requirements, job_timeout, job_state, \
               initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
-              termination_reason, task_exit_status, exit_message, terminated_at, last_updated_at) \
+              termination_reason, task_exit_status, exit_message, terminated_at) \
              values \
              ($1, null, null, $2, null, null, '{}'::text[], row($3)::tml_switchboard.restart_policy, \
               $4, '{}'::text[], interval '1 hour', $5::tml_switchboard.job_state, null, \
@@ -1476,7 +1476,7 @@ mod tests {
                         in ('initializing', 'ready', 'terminating') \
                    then now() else null end, \
               $6, null, \
-              null, null, null, null, default)",
+              null, null, null, null)",
         )
         .bind(job_id)
         .bind(image_id)
@@ -1524,12 +1524,12 @@ mod tests {
               image_group_generation, ssh_keys, \
               restart_policy, enqueued_by_token_id, host_tag_requirements, job_timeout, job_state, \
               initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
-              termination_reason, task_exit_status, exit_message, terminated_at, last_updated_at) \
+              termination_reason, task_exit_status, exit_message, terminated_at) \
              values \
              ($1, null, null, $2, null, null, '{}'::text[], row(0)::tml_switchboard.restart_policy, \
               $3, '{}'::text[], interval '1 hour', 'finalized', null, \
               now(), null, null, null, \
-              'workload_exited', null, null, now(), default)",
+              'workload_exited', null, null, now())",
         )
         .bind(job_id)
         .bind(image_id)
@@ -2977,11 +2977,11 @@ mod tests {
               image_group_generation, ssh_keys, \
               restart_policy, enqueued_by_token_id, host_tag_requirements, job_timeout, job_state, \
               initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
-              termination_reason, task_exit_status, exit_message, terminated_at, last_updated_at) \
+              termination_reason, task_exit_status, exit_message, terminated_at) \
              values \
              ($1, $2, null, null, null, null, '{}'::text[], row(0)::tml_switchboard.restart_policy, \
               $3, '{}'::text[], interval '1 hour', 'queued', null, now(), null, null, null, \
-              null, null, null, null, default)",
+              null, null, null, null)",
         )
         .bind(resume_job)
         .bind(resume_target)

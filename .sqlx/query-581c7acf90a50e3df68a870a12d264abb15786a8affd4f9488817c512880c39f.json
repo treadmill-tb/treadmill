@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tml_switchboard.jobs\n               set job_state = 'assigned',\n                   dispatched_on_host_id = $2\n               where job_id = $1 and job_state = 'queued'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "581c7acf90a50e3df68a870a12d264abb15786a8affd4f9488817c512880c39f"
+}

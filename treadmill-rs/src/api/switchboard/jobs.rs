@@ -212,9 +212,6 @@ pub struct JobInfo {
     pub exit_message: Option<String>,
     /// When the job was finalized; null until then.
     pub terminated_at: Option<DateTime<Utc>>,
-
-    /// When the job row was last updated.
-    pub last_updated_at: DateTime<Utc>,
 }
 
 /// Response body of `POST /jobs`: the id assigned to the freshly enqueued job.

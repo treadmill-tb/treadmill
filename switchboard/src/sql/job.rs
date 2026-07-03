@@ -272,8 +272,7 @@ pub async fn insert(
           termination_reason,
           task_exit_status,
           exit_message,
-          terminated_at,
-          last_updated_at
+          terminated_at
         )
         values (
           $1,       -- job_id
@@ -297,8 +296,7 @@ pub async fn insert(
           null,	    -- termination_reason
           null,	    -- task_exit_status
           null,	    -- exit_message
-          null,	    -- terminated_at
-          default   -- last_updated_at
+          null	    -- terminated_at
         )
         "#,
         as_job_id,
@@ -408,9 +406,6 @@ pub struct SqlJob {
     exit_message: Option<String>,
     #[allow(dead_code)]
     terminated_at: Option<DateTime<Utc>>,
-
-    #[allow(dead_code)]
-    last_updated_at: DateTime<Utc>,
 }
 
 #[allow(dead_code)]
@@ -596,7 +591,6 @@ impl SqlJob {
             task_exit_status: self.task_exit_status.map(Into::into),
             exit_message: self.exit_message,
             terminated_at: self.terminated_at,
-            last_updated_at: self.last_updated_at,
         })
     }
 
@@ -643,8 +637,7 @@ pub async fn fetch_by_job_id(
         dispatched_on_host_id, ssh_endpoints as "ssh_endpoints: _",
         terminate_requested_at,
         termination_reason as "termination_reason: _",
-        task_exit_status as "task_exit_status: _", exit_message, terminated_at,
-        last_updated_at
+        task_exit_status as "task_exit_status: _", exit_message, terminated_at
         from tml_switchboard.jobs where job_id = $1;
         "#,
         job_id
@@ -879,7 +872,7 @@ pub async fn set_resolved_image(
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
         r#"update tml_switchboard.jobs
-           set resolved_image_id = $2, last_updated_at = default
+           set resolved_image_id = $2
            where job_id = $1"#,
         job_id,
         image_id,
@@ -1025,8 +1018,7 @@ pub async fn finalize_unscheduled_as_image_error(
            set job_state = 'finalized',
                termination_reason = 'image_error',
                task_exit_status = null,
-               terminated_at = $2,
-               last_updated_at = default
+               terminated_at = $2
            where job_id = $1 and job_state = 'queued'
            returning job_id"#,
         job_id,
@@ -1094,8 +1086,7 @@ pub async fn request_terminate(
                    set job_state = 'finalized',
                        termination_reason = 'user_terminated',
                        task_exit_status = null,
-                       terminated_at = $2,
-                       last_updated_at = default
+                       terminated_at = $2
                    where job_id = $1 and job_state = 'queued'"#,
                 job_id,
                 at,
@@ -1113,8 +1104,7 @@ pub async fn request_terminate(
             // already-set signal is preserved.
             sqlx::query!(
                 r#"update tml_switchboard.jobs
-                   set terminate_requested_at = coalesce(terminate_requested_at, $2),
-                       last_updated_at = default
+                   set terminate_requested_at = coalesce(terminate_requested_at, $2)
                    where job_id = $1"#,
                 job_id,
                 at,
@@ -1137,8 +1127,7 @@ pub async fn request_terminate(
 //         initializing_stage as "initializing_stage: _", started_at,
 //         dispatched_on_host_id, ssh_endpoints as "ssh_endpoints: _",
 //         termination_reason as "termination_reason: _",
-//         task_exit_status as "task_exit_status: _", exit_message, terminated_at,
-//         last_updated_at
+//         task_exit_status as "task_exit_status: _", exit_message, terminated_at
 //         from tml_switchboard.jobs where job_state = 'queued';
 //         "#
 //     )
@@ -1157,8 +1146,7 @@ pub async fn request_terminate(
 //         initializing_stage as "initializing_stage: _", started_at,
 //         dispatched_on_host_id, ssh_endpoints as "ssh_endpoints: _",
 //         termination_reason as "termination_reason: _",
-//         task_exit_status as "task_exit_status: _", exit_message, terminated_at,
-//         last_updated_at
+//         task_exit_status as "task_exit_status: _", exit_message, terminated_at
 //         from tml_switchboard.jobs
 //         where job_state in ('assigned', 'initializing', 'ready', 'terminating');
 //         "#
@@ -1216,8 +1204,7 @@ pub async fn set_running_state(
         update tml_switchboard.jobs
         set job_state = $2,
             initializing_stage = $3,
-            started_at = coalesce(started_at, $4),
-            last_updated_at = default
+            started_at = coalesce(started_at, $4)
         where job_id = $1
         "#,
         job_id,
@@ -1322,8 +1309,7 @@ pub async fn finalize_terminated(
             dispatched_on_host_id = null,
             started_at = null,
             initializing_stage = null,
-            terminated_at = $2,
-            last_updated_at = default
+            terminated_at = $2
         where job_id = $1 and job_state <> 'finalized'
         "#,
         job_id,
@@ -1371,8 +1357,7 @@ pub async fn finalize_with_reason(
             dispatched_on_host_id = null,
             started_at = null,
             initializing_stage = null,
-            terminated_at = $3,
-            last_updated_at = default
+            terminated_at = $3
         where job_id = $1 and job_state <> 'finalized'
         returning job_id
         "#,
@@ -1470,8 +1455,7 @@ pub async fn finalize_errored(
             dispatched_on_host_id = null,
             started_at = null,
             initializing_stage = null,
-            terminated_at = $4,
-            last_updated_at = default
+            terminated_at = $4
         where job_id = $1 and job_state <> 'finalized'
         returning job_id
         "#,
@@ -1514,8 +1498,7 @@ pub async fn set_task_outcome(
         r#"
         update tml_switchboard.jobs
         set task_exit_status = $3,
-            exit_message = $4,
-            last_updated_at = default
+            exit_message = $4
         where job_id = $1 and dispatched_on_host_id = $2
         returning job_id
         "#,
@@ -1564,8 +1547,7 @@ pub async fn finalize_dropped_and_maybe_restart(
             dispatched_on_host_id = null,
             started_at = null,
             initializing_stage = null,
-            terminated_at = $2,
-            last_updated_at = default
+            terminated_at = $2
         where job_id = $1 and job_state <> 'finalized'
         returning job_id
         "#,

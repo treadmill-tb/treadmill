@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tml_switchboard.jobs\n                   set job_state = 'finalized',\n                       termination_reason = 'user_terminated',\n                       task_exit_status = null,\n                       terminated_at = $2\n                   where job_id = $1 and job_state = 'queued'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e4028459b695dcc2fad9cdee9226085d94f9b96b6787008e57fbc92155fdcf98"
+}

@@ -219,8 +219,6 @@ fn details_card(job: &JobInfo, caller: Option<Uuid>) -> Markup {
                     dt { "Exit message" }
                     dd { (msg) }
                 }
-                dt { "Last updated" }
-                dd { (timestamp(job.last_updated_at)) }
             }
         }
     }

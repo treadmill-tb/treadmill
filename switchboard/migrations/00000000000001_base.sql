@@ -249,7 +249,6 @@ CREATE TABLE tml_switchboard.jobs (
     task_exit_status tml_switchboard.task_exit_status,
     exit_message text,
     terminated_at timestamp with time zone,
-    last_updated_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
     CONSTRAINT valid_init_spec CHECK (
         (
             resume_job_id IS NULL

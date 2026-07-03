@@ -263,8 +263,7 @@ impl Scheduler {
         sqlx::query!(
             r#"update tml_switchboard.jobs
                set job_state = 'assigned',
-                   dispatched_on_host_id = $2,
-                   last_updated_at = default
+                   dispatched_on_host_id = $2
                where job_id = $1 and job_state = 'queued'"#,
             job_id,
             host_id,

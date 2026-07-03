@@ -558,9 +558,6 @@ CREATE TABLE tml_switchboard.jobs (
     task_exit_status tml_switchboard.task_exit_status,
     exit_message text,
     terminated_at timestamp with time zone,
-    -- Bookkeeping; set via `last_updated_at = DEFAULT` on UPDATE, per
-    -- https://www.morling.dev/blog/last-updated-columns-with-postgres/.
-    last_updated_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
     ---->> INVARIANT CHECKING <<----
     -- Two allowed init states:
     --  (1) resume_job_id = null, restart_job_id = _, and exactly one of

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        select job_id, owner_id, resume_job_id, restart_job_id, image_id,\n        image_group_id, image_group_generation,\n        resolved_image_id, ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id,\n        host_tag_requirements, job_timeout,\n        queued_at, job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\", started_at,\n        dispatched_on_host_id, ssh_endpoints as \"ssh_endpoints: _\",\n        terminate_requested_at,\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\", exit_message, terminated_at,\n        last_updated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
+  "query": "\n        select job_id, owner_id, resume_job_id, restart_job_id, image_id,\n        image_group_id, image_group_generation,\n        resolved_image_id, ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id,\n        host_tag_requirements, job_timeout,\n        queued_at, job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\", started_at,\n        dispatched_on_host_id, ssh_endpoints as \"ssh_endpoints: _\",\n        terminate_requested_at,\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\", exit_message, terminated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
   "describe": {
     "columns": [
       {
@@ -380,17 +380,6 @@
             "name": "terminated_at"
           }
         }
-      },
-      {
-        "ordinal": 24,
-        "name": "last_updated_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "tml_switchboard.jobs",
-            "name": "last_updated_at"
-          }
-        }
       }
     ],
     "parameters": {
@@ -422,9 +411,8 @@
       true,
       true,
       true,
-      true,
-      false
+      true
     ]
   },
-  "hash": "81361d215ca4d8fee3fdfd7370d163959b13c52ea9211fac1172a87a0cc15130"
+  "hash": "9d23357a31556ed79c91f19eaafbf5f20d67ecad1747504fb2aab9151da3f93e"
 }

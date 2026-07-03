@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        update tml_switchboard.jobs\n        set job_state = 'finalized',\n            termination_reason = $2,\n            exit_message = $3,\n            dispatched_on_host_id = null,\n            started_at = null,\n            initializing_stage = null,\n            terminated_at = $4,\n            last_updated_at = default\n        where job_id = $1 and job_state <> 'finalized'\n        returning job_id\n        ",
+  "query": "\n        update tml_switchboard.jobs\n        set job_state = 'finalized',\n            termination_reason = $2,\n            exit_message = $3,\n            dispatched_on_host_id = null,\n            started_at = null,\n            initializing_stage = null,\n            terminated_at = $4\n        where job_id = $1 and job_state <> 'finalized'\n        returning job_id\n        ",
   "describe": {
     "columns": [
       {
@@ -47,5 +47,5 @@
       false
     ]
   },
-  "hash": "87bc44a4fb1f42ba0af795bb18fd4074190ea69ae8b5e2702d879a0479e775e1"
+  "hash": "a52a174c91696237a1394eec4875ddf6fd14e6de6f997a57cfa9713879ce20e7"
 }
