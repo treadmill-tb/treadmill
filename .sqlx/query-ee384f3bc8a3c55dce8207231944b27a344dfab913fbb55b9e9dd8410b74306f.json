@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        update tml_switchboard.jobs\n        set job_state = $2,\n            initializing_stage = $3,\n            started_at = coalesce(started_at, $4)\n        where job_id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tml_switchboard.job_state",
+            "kind": {
+              "Enum": [
+                "queued",
+                "assigned",
+                "initializing",
+                "ready",
+                "terminating",
+                "finalized"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "tml_switchboard.job_initializing_stage",
+            "kind": {
+              "Enum": [
+                "starting",
+                "fetching_image",
+                "allocating",
+                "provisioning",
+                "booting"
+              ]
+            }
+          }
+        },
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ee384f3bc8a3c55dce8207231944b27a344dfab913fbb55b9e9dd8410b74306f"
+}

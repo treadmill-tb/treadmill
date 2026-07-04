@@ -1,0 +1,52 @@
+[package]
+name = "treadmill-console"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+# The `tml-console` binary is autodiscovered from `src/bin/tml-console.rs`
+# (no explicit `[[bin]]`), matching the other crates. This keeps the Nix crane
+# build's workspace stubs valid: when another crate is built, console is stubbed
+# with only an empty `src/lib.rs`, and an explicit bin `path` would make cargo
+# demand a file the stub doesn't provide.
+
+[dependencies]
+# The typed switchboard client is the whole point: every page renders from the
+# shared `api::switchboard::*` types, so an API change is a compile error here.
+treadmill-rs = { workspace = true, features = ["client"] }
+
+# Server-side rendering. `maud` checks the HTML structure at compile time and
+# its `axum` feature makes `Markup` an `IntoResponse`.
+maud = { version = "0.27", features = ["axum"] }
+
+axum = { version = "0.8.9", features = ["tokio", "http2", "macros"] }
+# Stateless cookie session: we use the plain `CookieJar` (no signing/encryption
+# key) because the cookie only carries a switchboard bearer token that
+# switchboard re-validates on every request.
+axum-extra = { version = "0.12.6", features = ["cookie"] }
+tower-http = { version = "0.6", features = ["trace"] }
+
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+uuid = { workspace = true, features = ["serde", "v4"] }
+chrono = { workspace = true, features = ["serde"] }
+# Cookie expiry mirrors the token's `expires_at`; `time` is the cookie crate's
+# own date type, so there is no version skew.
+time = "0.3"
+# Validate/normalise the configured switchboard and public base URLs.
+url = "2"
+
+serde = { workspace = true }
+# Configuration overlays (TOML file + `TML_CONSOLE_` env), same approach as the
+# switchboard.
+figment = { version = "0.10.19", features = ["toml", "env"] }
+
+clap = { workspace = true, features = ["derive", "error-context", "env"] }
+
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+anyhow.workspace = true
+
+[lints]
+workspace = true

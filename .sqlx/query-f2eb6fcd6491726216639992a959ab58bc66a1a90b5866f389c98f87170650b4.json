@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select group_id, source_ref from tml_switchboard.group_members where member_id = $1 and source = 'github_org';",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "group_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.group_members",
+            "name": "group_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "source_ref",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.group_members",
+            "name": "source_ref"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "f2eb6fcd6491726216639992a959ab58bc66a1a90b5866f389c98f87170650b4"
+}

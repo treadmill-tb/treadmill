@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select host_id, name, tags\n           from tml_switchboard.host_targets\n           order by host_id, name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "host_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.host_targets",
+            "name": "host_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.host_targets",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "tags",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.host_targets",
+            "name": "tags"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d592ee838130cfee6bf450f5764fd6b2abe7a86fd5bcedae48a571f31201df2b"
+}

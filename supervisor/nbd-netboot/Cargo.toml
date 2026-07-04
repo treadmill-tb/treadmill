@@ -15,8 +15,6 @@ async-recursion = "1.1.1"
 async-trait = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-strfmt = "0.2.4"
 tokio = { workspace = true, features = [
   "rt-multi-thread",
   "process",

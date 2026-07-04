@@ -1,18 +1,19 @@
 #! /usr/bin/env bash
-#
-# Manage switchboard SQL migrations using Atlas.
-#
-# SCHEMA.sql is the hand-written source of truth. The migrations/ directory
-# holds the ordered, derived migration files (also applied at runtime by
-# sqlx::migrate!() in build.rs). Atlas keeps the two in sync:
-#
-#   ./migrate.sh -c <name>   author a new migration from the current diff
-#                            between cumulative migrations/ and SCHEMA.sql
-#   ./migrate.sh -v          verify migrations/ reproduces SCHEMA.sql
-#   ./migrate.sh -r          re-hash migrations/atlas.sum after a manual edit
-#
-# Run inside the .#database devshell, which provides Postgres + Atlas and an
-# ephemeral PGHOST/PGUSER.
+
+USAGE="Manage switchboard SQL migrations using Atlas.
+
+SCHEMA.sql is the hand-written source of truth. The migrations/ directory
+holds the ordered, derived migration files (also applied at runtime by
+sqlx::migrate!() in build.rs). Atlas keeps the two in sync:
+
+  ./migrate.sh -c <name>   author a new migration from the current diff
+                           between cumulative migrations/ and SCHEMA.sql
+  ./migrate.sh -v          verify migrations/ reproduces SCHEMA.sql
+  ./migrate.sh -r          re-hash migrations/atlas.sum after a manual edit
+
+Run inside the .#database devshell, which provides Postgres + Atlas and an
+ephemeral PGHOST/PGUSER.
+"
 
 set -euo pipefail
 
@@ -40,7 +41,7 @@ reset_dev_db() {
 trap 'dropdb -h "$PGHOST" -U "$PGUSER" --if-exists "$DEV_DB" >/dev/null 2>&1 || true' EXIT
 
 usage() {
-    sed -n '3,16p' "$0" >&2
+    printf "%s" "$USAGE" >&2
 }
 
 OPERATION=""

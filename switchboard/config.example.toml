@@ -6,23 +6,32 @@ user = "postgres"
 auth.password = ""
 
 [server]
-bind_address = "0.0.0.0:8080"
-
-# Uncomment this to enable a TLS support.
-# DO NOT USE THIS IN PRODUCTION.
-#[server.testing_only_tls_config]
-#cert = "config/tls/localhost-public.pem"
-#key = "config/tls/localhost.pem"
+bind_address = "0.0.0.0:8081"
 
 [service]
 default_token_timeout = "7d"
 default_job_timeout = "30m"
 default_queue_timeout = "30m"
 match_interval = "10s"
+host_liveness_timeout = "30s"
+supervisor_ping_interval = "2s"
+supervisor_pong_dead = "10s"
+supervisor_reconcile_interval = "5s"
 
-[service.socket.keepalive]
-ping_interval = "2s"
-keepalive = "10s"
-
-[log]
-use_tokio_console_subscriber = false
+# OAuth login providers. Optional; omit the whole section to disable interactive
+# login. Each provider is independently optional.
+#
+# [oauth.github]
+# client_id = "Iv1.0123456789abcdef"
+# client_secret = "0123456789abcdef0123456789abcdef01234567"
+# redirect_url = "https://switchboard.example/api/v1/auth/github/callback"
+# The endpoint URLs below default to GitHub's production endpoints and only need
+# to be set when pointing at a GitHub Enterprise instance or a test mock server.
+# auth_url = "https://github.com/login/oauth/authorize"
+# token_url = "https://github.com/login/oauth/access_token"
+# api_base_url = "https://api.github.com"
+# Where to send a browser after a successful login. Leave unset for
+# programmatic/CLI clients (the callback then returns the token as JSON). Set it
+# to the web console's landing URL to enable browser login: the callback will
+# 302 there with ?token=…&expires_at=… instead.
+# browser_success_redirect = "https://console.example/auth/landing"

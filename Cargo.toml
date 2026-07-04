@@ -2,17 +2,25 @@
 resolver = "2"
 members = [
   "cli",
+  "connector/local",
   "connector/ws",
+  "console",
+  "images/util",
   "control-socket/tcp/client",
   "control-socket/tcp/server",
   "puppet",
   "supervisor/lib",
-  "supervisor/mock",
   "supervisor/nbd-netboot",
   "supervisor/qemu",
   "switchboard",
   "treadmill-rs",
 ]
+
+# Test fixture built only by `nix/tiny-efi.nix` for a foreign target
+# (aarch64-unknown-uefi). It carries its own Cargo.lock and an empty
+# `[workspace]` table; excluding it here keeps cargo and crane from treating it
+# as a workspace member.
+exclude = ["nix/fixtures/tiny-efi"]
 
 [workspace.package]
 version = "0.1.0"
@@ -26,14 +34,17 @@ name = "treadmill"
 # Internal crates (declared here so members can use `workspace = true` and
 # don't have to repeat relative path strings).
 treadmill-rs = { path = "treadmill-rs", version = "0.3.0" }
+treadmill-console = { path = "console" }
 treadmill-supervisor-lib = { path = "supervisor/lib" }
 treadmill-tcp-control-socket-client = { path = "control-socket/tcp/client" }
 treadmill-tcp-control-socket-server = { path = "control-socket/tcp/server" }
+treadmill-local-connector = { path = "connector/local" }
 treadmill-ws-connector = { path = "connector/ws" }
 
 # Shared third-party dependencies. Versions here are floors; per-member
 # Cargo.toml selects features and may set `default-features = false`.
 anyhow = "1.0.76"
+async-nats = "0.49.1"
 async-trait = "0.1.81"
 base64 = "0.22.1"
 bytes = "1.11.1"
@@ -42,11 +53,26 @@ clap = "4.5.24"
 futures = { version = "0.3.30", default-features = false }
 futures-util = "0.3.30"
 http = "1.1.0"
+humantime = "2.1.0"
+humantime-serde = "1.1.1"
 log = "0.4.22"
+# NATS log streaming: client + JetStream (async-nats), and per-job bearer-JWT
+# minting (nats-jwt signs claims, nkeys provides the Ed25519 account keypair).
+nats-jwt = "0.3.0"
+nkeys = "0.4.5"
+oci-client = "0.17.0"
+# Pinned to match the oci-spec that oci-client depends on, so the workspace
+# resolves a single oci-spec version instead of two.
+oci-spec = { version = "0.9.0", default-features = false, features = ["image"] }
 rand = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+schemars = "1"
 serde = "1.0.204"
 serde_json = "1.0.120"
+serde_with = "3.8.1"
+sha2 = "0.10"
 subtle = "2.6.1"
+tempfile = "3"
 thiserror = "2"
 # tokio/tokio-util have no meaningful default features; declare false so
 # members that want a minimal feature set (the supervisors, control-socket)

@@ -2,11 +2,25 @@ name: treadmill-images
 env:
   TERM: xterm # Makes tput work in actions output
 
+# Producer-side image builds via the libguestfs pipeline
+# (doc/images-libguestfs-build-plan.md). Each image *family* builds on its own
+# hosted runner with a matched host architecture (KVM-accelerated libguestfs):
+# Ubuntu on x86_64, Raspberry Pi OS on aarch64. The dispatch checkboxes select
+# which families to actually build; the `prepare` job turns them into the build
+# matrix. Add new families to that step as their build-image.sh path lands.
 on:
   workflow_dispatch:
     inputs:
+      build_ubuntu_server_2604:
+        description: 'Build the Ubuntu Server 26.04 family'
+        type: boolean
+        default: true
+      build_raspberrypios_13:
+        description: 'Build the Raspberry Pi OS 13 family'
+        type: boolean
+        default: false
       push_to_ghcr:
-        description: 'Push the built image/group layouts to ghcr.io'
+        description: 'Push the built image layouts to ghcr.io'
         type: boolean
         default: false
 
@@ -21,10 +35,185 @@ permissions:
   packages: write
 
 jobs:
-  build-images:
+  # Resolve the dispatch checkboxes into a build matrix: one entry per selected
+  # family, carrying its runner architecture and the matching static puppet
+  # package. This is the single place that maps families -> (runner, puppet).
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Select image families
+        id: select
+        env:
+          BUILD_UBUNTU_SERVER_2604: ${{ inputs.build_ubuntu_server_2604 }}
+          BUILD_RASPBERRYPIOS_13: ${{ inputs.build_raspberrypios_13 }}
+        run: |
+          set -euo pipefail
+          include='[]'
+          add() { include="$(jq -c --argjson o "$1" '. + [$o]' <<<"$include")"; }
+
+          if [ "$BUILD_UBUNTU_SERVER_2604" = "true" ]; then
+            add '{"name":"ubuntu-server-2604","runs-on":"ubuntu-latest","puppet":"tml-puppet-static-x86_64","backend":"nspawn"}'
+          fi
+
+          # The aarch64 Raspberry Pi OS family builds on a matched-arch hosted
+          # runner (the libguestfs appliance has no cross-arch support).
+          if [ "$BUILD_RASPBERRYPIOS_13" = "true" ]; then
+            add '{"name":"raspberrypios-13","runs-on":"ubuntu-24.04-arm","puppet":"tml-puppet-static-aarch64","backend":"nspawn"}'
+          fi
+
+          if [ "$(jq 'length' <<<"$include")" -eq 0 ]; then
+            echo "::error::No image family selected; enable at least one." >&2
+            exit 1
+          fi
+          echo "Selected families: $include"
+          echo "matrix={\"include\":$include}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runs-on }}
+
+    # TODO: remove
+    environment: 'cachix-push'
 
     steps:
       - uses: actions/checkout@v4
 
-      # Stub to be able to run the workflow on another branch.
+      - uses: cachix/install-nix-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: treadmill-tb
+          # Read-only here; the explicit (temporary) push below caches just the
+          # two binaries. The image layouts are too large for Cachix (they go to
+          # ghcr instead).
+          skipPush: true
+
+      # build-image.sh consumes prebuilt binaries; build them once per runner
+      # (natively for the runner's architecture). Capture the store paths
+      # directly rather than `-o <link>`, whose symlink would collide with the
+      # in-tree `puppet/` crate directory.
+      - name: Build puppet + image-util
+        id: bins
+        run: |
+          set -euxo pipefail
+          puppet="$(nix build --print-build-logs --no-link --print-out-paths ".#${{ matrix.puppet }}")"
+          image_util="$(nix build --print-build-logs --no-link --print-out-paths '.#image-util')"
+          echo "puppet=$puppet" >> "$GITHUB_OUTPUT"
+          echo "image_util=$image_util" >> "$GITHUB_OUTPUT"
+
+      # TEMPORARY: push the freshly built binaries (and their closures) to Cachix
+      # so reruns substitute them instead of recompiling (~20 min). Placed before
+      # the image build, so the cache is populated even if that step later fails.
+      # Needs the CACHIX_AUTH_TOKEN secret; remove once the bins are stable.
+      - name: Push binaries to Cachix
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euxo pipefail
+          cachix push treadmill-tb \
+            "${{ steps.bins.outputs.puppet }}" "${{ steps.bins.outputs.image_util }}"
+
+      # The nspawn backend is fully VM-free: it provisions in a systemd-nspawn
+      # container and does all image surgery (root grow, SD extraction, fstrim)
+      # natively over a qemu-nbd-mapped device — no libguestfs appliance, so no
+      # /dev/kvm dependency (the aarch64 runner lacks it; the appliance would
+      # otherwise run under TCG) and no Nix `images` devshell (its prebuilt
+      # libguestfs appliance is x86-only, so it can't even evaluate on the arm
+      # runner). All tooling comes from apt; the puppet + image-util binaries are
+      # still built via `nix build` (the step above).
+      - name: Install image build toolchain (nspawn backend)
+        if: ${{ matrix.backend == 'nspawn' }}
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          # systemd-container: systemd-nspawn. qemu-utils: qemu-img + qemu-nbd.
+          # cloud-guest-utils: growpart. e2fsprogs: resize2fs/e2fsck. mtools: FAT
+          # edit. xz-utils: decompress the SD image. parted: partprobe.
+          sudo apt-get install -y \
+            systemd-container qemu-utils cloud-guest-utils e2fsprogs \
+            mtools xz-utils parted curl
+          sudo modprobe nbd max_part=16
+
+      # Fetch + verify the upstream base, provision a qcow2 overlay delta (via the
+      # selected backend, no guest boot), then assemble + validate the OCI layout.
+      # Build the base layout, then the gha-runner overlay in the SAME run so the
+      # overlay backs onto the byte-identical base delta (kept in out.build/ by
+      # build-image.sh) — yielding a 3-root-layer chain (layer0 + base delta +
+      # runner delta) whose lower two blobs dedupe with the base image. Each
+      # build-image.sh internally assembles + validates its layout (the base
+      # asserts 2 root layers, the runner asserts 3).
+      - name: Build image layouts (base + gha-runner)
+        run: |
+          set -euxo pipefail
+          puppet="${{ steps.bins.outputs.puppet }}/bin/tml-puppet"
+          image_util="${{ steps.bins.outputs.image_util }}/bin/image-util"
+          ./images/lib/build-image.sh "${{ matrix.name }}" \
+            --puppet "$puppet" --image-util "$image_util" \
+            --backend "${{ matrix.backend }}" \
+            -o out
+          # The overlay backs onto the base build's byte-identical delta; sd
+          # images (Raspberry Pi OS) additionally share its boot blob verbatim.
+          runner_args=(--variant gha-runner --base-delta out.build/delta.qcow2)
+          if [ -f out.build/boot.fat ]; then
+            runner_args+=(--boot-fat out.build/boot.fat)
+          fi
+          ./images/lib/build-image.sh "${{ matrix.name }}" \
+            --puppet "$puppet" --image-util "$image_util" \
+            --backend "${{ matrix.backend }}" \
+            "${runner_args[@]}" \
+            -o out-gha-runner
+
+      # One artifact carrying both OCI layouts (base + gha-runner overlay) as
+      # top-level out/ and out-gha-runner/ directories. The intermediate build
+      # blobs in out.build/ are deliberately excluded.
+      - name: Upload image layouts
+        uses: actions/upload-artifact@v4
+        with:
+          name: treadmill-image-${{ matrix.name }}
+          path: |
+            out/
+            out-gha-runner/
+          if-no-files-found: error
+
+      # --- ghcr push (conditioned on push_to_ghcr input) -----------
+
+      # Authenticate to ghcr; writes the credential to ~/.docker/config.json,
+      # which skopeo reads by default in the push step below.
+      - name: Log in to ghcr.io
+        if: ${{ inputs.push_to_ghcr }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `skopeo copy` the OCI layout to ghcr.io/<owner>/<name>:{<sha>,latest}.
+      # The custom `shell:` resolves skopeo once and puts it on PATH.
+      # Push both layouts: the base to ghcr.io/<owner>/<name> and the overlay to
+      # ghcr.io/<owner>/<name>-gha-runner, each tagged with the commit sha and
+      # latest. The shared lower layers (layer0 + base delta) dedupe across the
+      # two repositories by digest.
+      - name: Push image layouts to ghcr.io
+        if: ${{ inputs.push_to_ghcr }}
+        shell: nix shell nixpkgs#skopeo --command bash -euo pipefail {0}
+        run: |
+          # The runner ships a v1 /etc/containers/registries.conf, which this
+          # (newer) skopeo rejects ("must be in v2 format"). Point it at our own
+          # empty v2 config so it ignores the system file.
+          CONTAINERS_REGISTRIES_CONF="${RUNNER_TEMP}/registries.conf"
+          : > "$CONTAINERS_REGISTRIES_CONF"
+          export CONTAINERS_REGISTRIES_CONF
+
+          OWNER="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          push() { # <layout-dir> <repo>
+            for tag in "${GITHUB_SHA}" latest; do
+              echo "skopeo copy oci:$1 -> docker://$2:${tag}"
+              skopeo copy --all "oci:$1" "docker://$2:${tag}"
+            done
+          }
+          push out          "ghcr.io/${OWNER}/${{ matrix.name }}"
+          push out-gha-runner "ghcr.io/${OWNER}/${{ matrix.name }}-gha-runner"

@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            select\n                entity_kind::text as \"entity_kind!\",\n                entity_id,\n                role::text as \"role!\",\n                view_policy\n            from tml_switchboard.audit_event_relations\n            where event_id = $1\n            order by role\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "entity_kind!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "entity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.audit_event_relations",
+            "name": "entity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "role!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "view_policy",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.audit_event_relations",
+            "name": "view_policy"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "516133d43a3f3497fce6166f136c21838c05047d2e727b684793ca3ed3be8af4"
+}

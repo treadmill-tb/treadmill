@@ -5,7 +5,7 @@ edition.workspace = true
 
 authors.workspace = true
 categories = ["command-line-utilities", "development-tools::testing"]
-description = "CLI client for the Treadmill distributed hardware testbed"
+description = "CLI Client for the Treadmill Distributed Hardware Testbed"
 homepage = "https://treadmill.ci"
 keywords = ["ci", "testing", "testbed", "hardware", "embedded"]
 license = "MIT OR Apache-2.0"
@@ -16,29 +16,6 @@ name = "tml"
 path = "src/main.rs"
 
 [dependencies]
-# Explicit `version` + `path` (rather than `workspace = true`) so that `cargo
-# publish` for the cli on crates.io resolves treadmill-rs by its published
-# version while local builds still use the path-dependency.
-treadmill-rs = { version = "0.3.0", path = "../treadmill-rs" }
-
-anyhow = { workspace = true }
-base64 = { workspace = true }
-chrono = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
-env_logger = "0.11.5"
-hex = "0.4"
-log = { workspace = true }
-rand_core = { version = "0.6.4", features = ["getrandom"] }
-reqwest = { version = "0.13", features = ["json"] }
-rpassword = "7.3.1"
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-ssh-key = { version = "0.6.7", features = ["ed25519"] }
-ssh2 = "0.9.4"
-tokio = { workspace = true, features = ["full"] }
-toml = { workspace = true }
-uuid = { workspace = true, features = ["serde", "v4"] }
-xdg = "3.0.0"
 
 [lints]
 workspace = true

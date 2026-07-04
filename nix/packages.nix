@@ -15,36 +15,22 @@
       packages = rec {
         default = tml;
 
-        tml = cmn.mkBin {
-          group = cmn.groups.cli;
-          bin = "tml";
-        };
+        # Vendored OCI registry used by the image-migration store daemon and the
+        # registry-backed tests (see nix/pkgs/zot.nix).
+        inherit (cmn) zot;
 
-        swx = cmn.mkBin {
-          group = cmn.groups.switchboard;
-          bin = "swx";
-        };
+        tml = cmn.mkBin { bin = "tml"; };
 
-        treadmill-qemu-supervisor = cmn.mkBin {
-          group = cmn.groups.supervisors;
-          bin = "treadmill-qemu-supervisor";
-        };
+        swx = cmn.mkBin { bin = "swx"; };
 
-        treadmill-nbd-netboot-supervisor = cmn.mkBin {
-          group = cmn.groups.supervisors;
-          bin = "treadmill-nbd-netboot-supervisor";
-        };
+        tml-console = cmn.mkBin { bin = "tml-console"; };
 
-        treadmill-mock-supervisor = cmn.mkBin {
-          group = cmn.groups.supervisors;
-          bin = "treadmill-mock-supervisor";
-        };
+        treadmill-qemu-supervisor = cmn.mkBin { bin = "treadmill-qemu-supervisor"; };
+
+        treadmill-nbd-netboot-supervisor = cmn.mkBin { bin = "treadmill-nbd-netboot-supervisor"; };
       }
       // lib.optionalAttrs isLinux {
-        tml-puppet = cmn.mkBin {
-          group = cmn.groups.puppet;
-          bin = "tml-puppet";
-        };
+        tml-puppet = cmn.mkBin { bin = "tml-puppet"; };
       };
     };
 }

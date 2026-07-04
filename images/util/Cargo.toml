@@ -1,0 +1,22 @@
+[package]
+name = "treadmill-image-util"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Assemble and validate Treadmill OCI image layouts"
+
+[[bin]]
+name = "image-util"
+path = "src/main.rs"
+
+[dependencies]
+treadmill-rs = { workspace = true }
+oci-spec = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum JobErrorKind {
     /// The requested job is already running and thus cannot be started again.
@@ -46,7 +46,7 @@ pub enum JobErrorKind {
     InternalError,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct JobError {
     pub error_kind: JobErrorKind,
     pub description: String,
@@ -128,16 +128,6 @@ pub trait SupervisorConnector: std::fmt::Debug + Send + Sync + 'static {
         self.update_event(SupervisorEvent::JobEvent {
             job_id,
             event: SupervisorJobEvent::Error { error },
-        })
-        .await
-    }
-    // TODO: we'll likely want to remove this method from here, and instead have
-    // supervisors directly interact with log servers to push events. Or have
-    // connectors perform these interactions for them...
-    async fn send_job_console_log(&self, job_id: Uuid, console_bytes: Vec<u8>) {
-        self.update_event(SupervisorEvent::JobEvent {
-            job_id,
-            event: SupervisorJobEvent::ConsoleLog { console_bytes },
         })
         .await
     }

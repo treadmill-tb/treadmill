@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        update tml_switchboard.jobs\n        set job_state = 'finalized',\n            termination_reason = $2,\n            dispatched_on_host_id = null,\n            started_at = null,\n            initializing_stage = null,\n            terminated_at = $3\n        where job_id = $1 and job_state <> 'finalized'\n        returning job_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "job_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tml_switchboard.termination_reason",
+            "kind": {
+              "Enum": [
+                "workload_exited",
+                "workload_self_terminated",
+                "user_terminated",
+                "queue_timeout",
+                "execution_timeout",
+                "image_error",
+                "host_match_error",
+                "host_start_failure",
+                "host_dropped_job",
+                "host_unreachable",
+                "resume_failed",
+                "internal_error"
+              ]
+            }
+          }
+        },
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "baa57bdd509995315edc069d1dd232bdefb18f10f5746463afa2a922850bbdf5"
+}

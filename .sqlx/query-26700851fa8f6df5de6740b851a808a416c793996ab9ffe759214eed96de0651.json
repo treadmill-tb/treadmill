@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        update tml_switchboard.jobs\n        set task_exit_status = $3,\n            exit_message = $4\n        where job_id = $1 and dispatched_on_host_id = $2\n        returning job_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "job_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tml_switchboard.task_exit_status",
+            "kind": {
+              "Enum": [
+                "pending",
+                "success",
+                "failure"
+              ]
+            }
+          }
+        },
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "26700851fa8f6df5de6740b851a808a416c793996ab9ffe759214eed96de0651"
+}

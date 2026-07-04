@@ -1,0 +1,316 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SwitchboardToSupervisor",
+  "description": "A message sent **from the switchboard to a supervisor**.\n\nThe switchboard is the commanding side of the protocol: it instructs the\nsupervisor to start/stop jobs and polls its status. Modelling the direction\nin the type means an illegal direction (e.g. the switchboard \"reporting\" a\n[`SupervisorEvent`]) is unrepresentable rather than an `unimplemented!()`\narm at the dispatch site.\n\nWire format: internally tagged with `type`, payload under `message`. New\nvariants are an additive, minor-version change (see the module-level\nevolution policy); they must not be emitted below the negotiated minor.",
+  "oneOf": [
+    {
+      "description": "Start (or resume) the job identified by the message. Idempotent on\n`job_id`: a supervisor already running that job ignores a repeat; it\nrejects the command if it does not apply to the current job state. This\nmakes re-issuing `StartJob` during reconciliation safe.",
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/StartJobMessage"
+        },
+        "type": {
+          "type": "string",
+          "const": "start_job"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ]
+    },
+    {
+      "description": "Stop the job identified by the message. Idempotent: it applies regardless\nof state as long as the job exists, and is a no-op once the job is gone.",
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/StopJobMessage"
+        },
+        "type": {
+          "type": "string",
+          "const": "stop_job"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ]
+    },
+    {
+      "description": "Ask the supervisor for its current [`ReportedSupervisorStatus`]. The\ncorrelated reply is a [`SupervisorToSwitchboard::StatusResponse`]; see\n[`Request`] for the correlation contract. Reconciliation issues exactly\none of these per (re)connect.",
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/Request"
+        },
+        "type": {
+          "type": "string",
+          "const": "status_request"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ]
+    },
+    {
+      "description": "Diagnostic notice of a fatal protocol error; see [`ProtocolError`] for\nthe log → close → reconnect contract.",
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/ProtocolError"
+        },
+        "type": {
+          "type": "string",
+          "const": "protocol_error"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ]
+    }
+  ],
+  "$defs": {
+    "Digest": {
+      "description": "A content-addressable OCI digest over 32 bytes of SHA-256.\n\nFormats as the canonical OCI string `sha256:<64 lower-case hex>`.",
+      "type": "string"
+    },
+    "ImageLocation": {
+      "description": "One registry location an image can be pulled from.\n\nAn image's *identity* is its `manifest_digest`; a location is a\n`(registry, repository)` that serves those bytes. The supervisor protocol\ncarries an ordered list of locations so a supervisor can fail over across\nthem — every location serves the same digest, so any that succeeds is\ninterchangeable (see `doc/oci-image-migration-plan.md` §D12/§D16).",
+      "type": "object",
+      "properties": {
+        "registry": {
+          "description": "Registry authority (`host:port`) the bytes can be pulled from.",
+          "type": "string"
+        },
+        "repository": {
+          "description": "Repository path within the registry, e.g. `treadmill/ubuntu-22.04`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "registry",
+        "repository"
+      ]
+    },
+    "ImageSpecification": {
+      "oneOf": [
+        {
+          "description": "Whether to resume a previously started job.",
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "resume_job"
+            }
+          },
+          "required": [
+            "type",
+            "job_id"
+          ]
+        },
+        {
+          "description": "Which image to base this job off. If the image is not locally cached\nat the supervisor, it will be fetched (from one of `locations`) prior\nto executing the job.\n\nThe supervisor protocol is always **content-addressed**: an image is\nidentified by the OCI `manifest_digest` of its manifest, and\n`locations` is an ordered, failover list of the registry locations that\nserve it. Switchboard resolves human labels/groups to a concrete digest\n+ locations before dispatch (Phase 4).\n\nNote that if a job is being restarted, it will use this variant.",
+          "type": "object",
+          "properties": {
+            "locations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ImageLocation"
+              }
+            },
+            "manifest_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "type": {
+              "type": "string",
+              "const": "image"
+            }
+          },
+          "required": [
+            "type",
+            "manifest_digest",
+            "locations"
+          ]
+        }
+      ]
+    },
+    "LogStreamingDispatch": {
+      "description": "Per-job log-streaming destination handed to a supervisor in\n[`StartJobMessage`].\n\nThe supervisor publishes captured console output to the NATS server at\n`nats_url`, under subjects `<subject_prefix>.<channel>` (where\n`subject_prefix` is `logs.<job-id>` and `<channel>` is a [`LogChannel`]\ntoken), authenticating with `write_token`.\n\n`write_token` is a **bearer** user JWT the switchboard mints per dispatch,\nscoped to publish only this job's subjects; the supervisor connects with the\ntoken string alone (no nkey seed is ever shipped).",
+      "type": "object",
+      "properties": {
+        "nats_url": {
+          "description": "NATS client URL to connect to (e.g. `nats://nats.example:4222`).",
+          "type": "string"
+        },
+        "subject_prefix": {
+          "description": "Subject prefix for this job's streams: `logs.<job-id>`. A channel token\nis appended as `<subject_prefix>.<channel>` (see [`LogChannel`]).",
+          "type": "string"
+        },
+        "write_token": {
+          "description": "Bearer user JWT authorizing publish to this job's subjects.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "nats_url",
+        "subject_prefix",
+        "write_token"
+      ]
+    },
+    "ParameterValue": {
+      "type": "object",
+      "properties": {
+        "secret": {
+          "type": "boolean"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "secret"
+      ]
+    },
+    "ProtocolError": {
+      "description": "A fatal protocol-level error, carried in-band in **both** directions purely\nfor diagnostics (better logs on the receiving side).\n\n# Contract\n\nThere is no in-band *recovery* protocol. Critical state transitions are\nidempotent and a reconnect re-synchronises state, so error handling is\nsimply **log → close → reconnect**. On a fatal violation the offended side\nSHOULD:\n\n1. send this [`ProtocolError`] (so the peer can log a precise reason),\n2. send a WebSocket `Close` frame with the matching\n   [`ProtocolErrorCode::close_code`], then\n3. terminate the connection.\n\nThe peer reconnects and reconciliation re-establishes a consistent state.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ProtocolErrorCode"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "detail"
+      ]
+    },
+    "ProtocolErrorCode": {
+      "description": "Enumerated protocol error conditions. Each maps to a WebSocket close code in\nthe RFC 6455 private range (4000–4999) via [`ProtocolErrorCode::close_code`].",
+      "oneOf": [
+        {
+          "description": "A malformed or unexpected message was received (close code 4000).",
+          "type": "string",
+          "const": "protocol_violation"
+        },
+        {
+          "description": "No common protocol major/minor could be negotiated (close code 4001).",
+          "type": "string",
+          "const": "unsupported_version"
+        },
+        {
+          "description": "An unexpected failure occurred on the sending side (close code 4002).",
+          "type": "string",
+          "const": "internal_error"
+        },
+        {
+          "description": "The switchboard replaced this connection with a newer one (close code\n4003). Optional; emitted by the switchboard only.",
+          "type": "string",
+          "const": "superseded"
+        }
+      ]
+    },
+    "Request": {
+      "description": "A request carrying a unique `request_id` for correlation with its reply.\n\nThe reply is a [`Response`] whose `response_to_request_id` echoes this\n`request_id`. The requester matches replies by this id and may run several\nrequests concurrently. Reconciliation issues exactly one\n[`SwitchboardToSupervisor::StatusRequest`] on (re)connect and awaits the\ncorrelated [`SupervisorToSwitchboard::StatusResponse`]; a missing/timed-out\nreply is treated as a dead peer.",
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "null"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "request_id",
+        "message"
+      ]
+    },
+    "RestartPolicy": {
+      "type": "object",
+      "properties": {
+        "remaining_restart_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "remaining_restart_count"
+      ]
+    },
+    "StartJobMessage": {
+      "type": "object",
+      "properties": {
+        "image_spec": {
+          "$ref": "#/$defs/ImageSpecification"
+        },
+        "job_id": {
+          "description": "Unique identifier of the job to be started.\n\nResuming a previously started job is requested via\n[`ImageSpecification::ResumeJob`] in `image_spec` (not via this id):\nfor a resume, `image_spec` carries the original job's id. The\nsupervisor must refuse to start a job it cannot resume when a resume\nis requested.",
+          "type": "string",
+          "format": "uuid"
+        },
+        "log_streaming": {
+          "description": "Per-job log-streaming destination, or `None` when the deployment runs\nwith log streaming disabled. The supervisor captures console output and\npublishes it to the NATS server described here (see\n[`LogStreamingDispatch`]). Additive and optional: older supervisors that\ndo not understand this field simply ignore it and capture nothing.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LogStreamingDispatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "parameters": {
+          "description": "A hash map of parameters provided to this job execution. These\nparameters are provided to the puppet daemon.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ParameterValue"
+          }
+        },
+        "restart_policy": {
+          "$ref": "#/$defs/RestartPolicy"
+        },
+        "ssh_keys": {
+          "description": "The set of initial SSH keys to deploy onto the image.\n\nThe image's configuration of the Treadmill puppet daemon determines\nhow and whether these keys will be loaded.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "job_id",
+        "image_spec",
+        "ssh_keys",
+        "restart_policy",
+        "parameters"
+      ]
+    },
+    "StopJobMessage": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "description": "Unique identifier of the job to be stopped:",
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "job_id"
+      ]
+    }
+  }
+}
