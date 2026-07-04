@@ -28,6 +28,37 @@ pub struct SwitchboardConfig {
     pub log_streaming: Option<LogStreamingConfig>,
 }
 
+impl SwitchboardConfig {
+    /// Whether `url` is an allowed interactive-login `return_to` target: an
+    /// exact match against [`OAuthConfig::return_to_allowlist`], or the
+    /// embedded console's landing URL (that console lives in this very
+    /// process, so enabling it is already the trust decision).
+    ///
+    /// The staged pair the callback appends to `return_to` is a token-minting
+    /// capability; every `return_to` MUST pass this check, both when a flow is
+    /// initiated and again at the callback (the config may change mid-flow).
+    pub fn return_to_allowed(&self, url: &str) -> bool {
+        if self.oauth.return_to_allowlist.iter().any(|a| a == url) {
+            return true;
+        }
+        if let Some(console) = self.console.as_ref().filter(|c| c.enabled) {
+            let base = console
+                .public_base_url
+                .clone()
+                .unwrap_or_else(|| format!("http://127.0.0.1:{}", self.server.bind_address.port()));
+            let landing = format!(
+                "{}{}",
+                base.trim_end_matches('/'),
+                treadmill_console::routes::LANDING_PATH
+            );
+            if url == landing {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 /// Configuration for host/supervisor log streaming over NATS + JetStream.
 ///
 /// Supervisor console output is published to a per-job JetStream stream; the
@@ -84,31 +115,25 @@ pub struct OAuthConfig {
     pub github: Option<GitHubOAuthConfig>,
     /// Development-only mock login, if configured. See [`MockOAuthConfig`].
     pub mock: Option<MockOAuthConfig>,
-    /// Where to send a browser after a successful interactive login.
+    /// The exact URLs a browser frontend may declare as its `return_to` when
+    /// initiating a login (`GET /auth/{provider}/login?return_to=…`), e.g.
+    /// `https://console.example/auth/landing`. One entry per frontend; matched
+    /// by exact string comparison (no prefix or origin matching), so this list
+    /// carries no open-redirect surface.
     ///
-    /// The callback is built for programmatic clients: it returns the session
-    /// token as a JSON body. A browser frontend (the console) cannot consume
-    /// that without JS, so when this is set the callback instead `302`-redirects
-    /// the browser here with `?token=…&expires_at=…`; the frontend stores the
-    /// token and strips it from the URL. When unset, the callback returns JSON
-    /// as before. This is provider-independent (it is about the console, not the
-    /// provider). See `TODOS.md` for the planned hardening (the token currently
-    /// transits a URL query string).
+    /// The callback `302`-redirects a flow with a `return_to` there, carrying
+    /// the single-use `?staged_id=…&staged_secret=…` pair, which the frontend
+    /// exchanges server-to-server at `POST /auth/login/complete` for the
+    /// session token. The pair is a token-minting capability, so an
+    /// unvalidated `return_to` would hand account takeover to an
+    /// attacker-chosen URL — never bypass this list. Flows that declare no
+    /// `return_to` (programmatic clients) receive JSON instead; the two styles
+    /// coexist per-request on one deployment.
+    ///
+    /// The embedded console's landing URL (see [`EmbeddedConsoleConfig`]) is
+    /// implicitly allowed and need not be repeated here.
     #[serde(default)]
-    pub browser_success_redirect: Option<String>,
-    /// Where to send a browser that must finish the completion step (today:
-    /// accepting the Terms of Service) before its login completes. Sibling of
-    /// [`browser_success_redirect`](Self::browser_success_redirect): when set, a
-    /// login that has passed admission but still needs consent (a brand-new user,
-    /// or an existing user whose accepted ToS version is below the current one)
-    /// is `302`-redirected here with `?staged_id=…&staged_secret=…&tos_version=…`
-    /// appended, instead of receiving the `409` JSON marker. The frontend renders
-    /// the ToS (see `GET /auth/tos`) and `POST`s the staged pair back to
-    /// `/auth/login/complete` (JSON or a plain HTML form) to finish the login.
-    /// When unset, the callback returns the `409` `login_incomplete` JSON marker
-    /// for programmatic clients.
-    #[serde(default)]
-    pub browser_login_complete_redirect: Option<String>,
+    pub return_to_allowlist: Vec<String>,
 }
 
 /// Configuration for GitHub OAuth login.
@@ -280,4 +305,83 @@ pub fn load_configuration(path: Option<&Path>) -> anyhow::Result<SwitchboardConf
     f.merge(providers::Env::prefixed("TML_").split("__"))
         .extract()
         .context("Failed to extract switchboard configuration")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> SwitchboardConfig {
+        SwitchboardConfig {
+            database: DatabaseConfig {
+                host: "unused".to_string(),
+                port: None,
+                database: "unused".to_string(),
+                user: "unused".to_string(),
+                auth: None,
+            },
+            server: ServerConfig {
+                bind_address: "127.0.0.1:8081".parse().unwrap(),
+                trusted_proxy_headers: Vec::new(),
+            },
+            service: ServiceConfig {
+                current_tos_version: 1,
+                default_token_timeout: chrono::TimeDelta::hours(1),
+                default_job_timeout: chrono::TimeDelta::hours(1),
+                default_queue_timeout: chrono::TimeDelta::hours(1),
+                match_interval: chrono::TimeDelta::seconds(1),
+                host_liveness_timeout: chrono::TimeDelta::seconds(30),
+                supervisor_ping_interval: Duration::from_secs(30),
+                supervisor_pong_dead: Duration::from_secs(60),
+                supervisor_reconcile_interval: Duration::from_secs(30),
+            },
+            oauth: OAuthConfig::default(),
+            console: None,
+            log_streaming: None,
+        }
+    }
+
+    #[test]
+    fn return_to_matches_allowlist_exactly() {
+        let mut cfg = config();
+        cfg.oauth.return_to_allowlist = vec!["https://console.example/auth/landing".to_string()];
+
+        assert!(cfg.return_to_allowed("https://console.example/auth/landing"));
+        // Exact match only: no prefix, origin, sub-path, or scheme laxness.
+        assert!(!cfg.return_to_allowed("https://console.example/auth/landing/x"));
+        assert!(!cfg.return_to_allowed("https://console.example/"));
+        assert!(!cfg.return_to_allowed("http://console.example/auth/landing"));
+        assert!(!cfg.return_to_allowed("https://console.example.evil/auth/landing"));
+        assert!(!cfg.return_to_allowed(""));
+    }
+
+    #[test]
+    fn empty_allowlist_allows_nothing() {
+        let cfg = config();
+        assert!(!cfg.return_to_allowed("https://console.example/auth/landing"));
+    }
+
+    #[test]
+    fn embedded_console_landing_is_implicitly_allowed() {
+        let mut cfg = config();
+        cfg.console = Some(EmbeddedConsoleConfig {
+            enabled: true,
+            public_base_url: Some("https://tml.example".to_string()),
+            api_base_url: None,
+        });
+        assert!(cfg.return_to_allowed("https://tml.example/auth/landing"));
+        assert!(!cfg.return_to_allowed("https://tml.example/other"));
+
+        // Trailing slash on the configured base does not double up.
+        cfg.console.as_mut().unwrap().public_base_url = Some("https://tml.example/".to_string());
+        assert!(cfg.return_to_allowed("https://tml.example/auth/landing"));
+
+        // Default base: loopback on the configured bind port.
+        cfg.console.as_mut().unwrap().public_base_url = None;
+        assert!(cfg.return_to_allowed("http://127.0.0.1:8081/auth/landing"));
+
+        // A present-but-disabled console section allows nothing.
+        cfg.console.as_mut().unwrap().enabled = false;
+        assert!(!cfg.return_to_allowed("http://127.0.0.1:8081/auth/landing"));
+    }
 }

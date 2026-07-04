@@ -93,27 +93,27 @@ async fn run_login(client: &reqwest::Client, addr: SocketAddr, pool: &PgPool) ->
         .send()
         .await
         .unwrap();
-    match cb_resp.status() {
-        // Existing user with a current ToS: logged in directly.
-        reqwest::StatusCode::OK => cb_resp.json().await.unwrap(),
-        // New (or stale-ToS) user: complete the login (ToS accept) to finish.
-        reqwest::StatusCode::CONFLICT => {
-            let body: serde_json::Value = cb_resp.json().await.unwrap();
-            let complete = client
-                .post(format!("http://{addr}/api/v1/auth/login/complete"))
-                .json(&serde_json::json!({
-                    "staged_id": body["staged_id"],
-                    "staged_secret": body["staged_secret"],
-                    "tos_version": body["tos_version"],
-                }))
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(complete.status(), reqwest::StatusCode::OK);
-            complete.json().await.unwrap()
-        }
-        other => panic!("unexpected callback status {other}"),
-    }
+    assert_eq!(
+        cb_resp.status(),
+        reqwest::StatusCode::OK,
+        "callback should stage the login"
+    );
+    let body: serde_json::Value = cb_resp.json().await.unwrap();
+
+    // Claim the staged login, echoing the offered ToS version (null when no
+    // consent is required).
+    let complete = client
+        .post(format!("http://{addr}/api/v1/auth/login/complete"))
+        .json(&serde_json::json!({
+            "staged_id": body["staged_id"],
+            "staged_secret": body["staged_secret"],
+            "tos_version": body["tos_version"],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(complete.status(), reqwest::StatusCode::OK);
+    complete.json().await.unwrap()
 }
 
 /// Provision a user via login and return (server addr, bearer token, user_id).

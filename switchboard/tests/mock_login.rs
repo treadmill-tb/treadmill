@@ -4,7 +4,8 @@
 //! login route self-redirects to the callback with the chosen identity as the
 //! `code`. So this test needs no wiremock — just a real ephemeral Postgres (via
 //! `#[sqlx::test]`) and the real router. It exercises the full path: CSRF flow,
-//! callback, provisioning, token issuance, and the admin grant for `alice`.
+//! callback, provisioning, the staged-login claim that mints the token, and
+//! the admin grant for `alice`.
 //!
 //! Queries here use sqlx's runtime API (not the `query!` macros) so the test
 //! needs no entry in the offline `.sqlx` cache.
@@ -14,7 +15,7 @@ use std::net::SocketAddr;
 use reqwest::redirect::Policy;
 use sqlx::PgPool;
 use tokio::net::TcpListener;
-use treadmill_rs::api::switchboard::{LoginResponse, WhoAmIResponse};
+use treadmill_rs::api::switchboard::{LoginResponse, LoginStagedResponse, WhoAmIResponse};
 use treadmill_switchboard::routes::build_router;
 use treadmill_switchboard::serve::AppState;
 use uuid::Uuid;
@@ -42,8 +43,9 @@ async fn spawn_server(state: AppState) -> SocketAddr {
 }
 
 /// Drive a full mock login for `identity`: start the flow (which 302s to the
-/// callback), follow that redirect, and return the issued session plus the
-/// caller's identity as reported by `/auth/whoami`.
+/// callback), follow that redirect, claim the staged login the callback hands
+/// back, and return the issued session plus the caller's identity as reported
+/// by `/auth/whoami`.
 async fn run_mock_login(
     client: &reqwest::Client,
     addr: SocketAddr,
@@ -80,9 +82,32 @@ async fn run_mock_login(
     assert_eq!(
         cb.status(),
         reqwest::StatusCode::OK,
-        "callback should succeed"
+        "callback should stage the login"
     );
-    let session: LoginResponse = cb.json().await.unwrap();
+    let staged: LoginStagedResponse = cb.json().await.unwrap();
+    assert!(
+        staged.required.is_empty(),
+        "mock logins are exempt from completion steps, got {:?}",
+        staged.required
+    );
+
+    // Claim the staged login: the completion endpoint is what mints the token.
+    let complete = client
+        .post(format!("http://{addr}/api/v1/auth/login/complete"))
+        .json(&serde_json::json!({
+            "staged_id": staged.staged_id,
+            "staged_secret": staged.staged_secret,
+            "tos_version": staged.tos_version,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        complete.status(),
+        reqwest::StatusCode::OK,
+        "claiming the staged login should succeed"
+    );
+    let session: LoginResponse = complete.json().await.unwrap();
 
     let who: WhoAmIResponse = client
         .get(format!("http://{addr}/api/v1/auth/whoami"))

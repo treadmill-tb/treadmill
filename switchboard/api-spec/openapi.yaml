@@ -8,7 +8,7 @@ paths:
       tags:
       - Authentication
       summary: Start an OAuth login
-      description: 'Begins the authorization-code flow with the named provider: persists the CSRF state and redirects the browser to the provider''s consent screen. Unauthenticated.'
+      description: 'Begins the authorization-code flow with the named provider: persists the CSRF state and redirects the browser to the provider''s consent screen. A browser frontend may pass `?return_to=<its landing URL>` — validated against the server''s allowlist — to have the callback redirect the browser there with the single-use staged pair; without it the callback responds with JSON. Unauthenticated.'
       operationId: startLogin
       parameters:
       - in: path
@@ -20,6 +20,8 @@ paths:
           type: string
         style: simple
       responses:
+        '400':
+          description: The declared return_to is not allowlisted.
         '404':
           description: No such provider is configured/enabled.
   /auth/{provider}/callback:
@@ -27,7 +29,7 @@ paths:
       tags:
       - Authentication
       summary: 'OAuth callback: finish a login'
-      description: The provider's redirect target; not called directly. Verifies the CSRF state, exchanges the code, and resolves the identity. A completed login returns the session token (or redirects a browser to the configured success URL); a login that still needs the completion step returns the 409 marker (or redirects a browser to the configured completion page).
+      description: 'The provider''s redirect target; not called directly. Verifies the CSRF state, exchanges the code, resolves the identity, and stages the login. No token is issued here: the response hands back a single-use staged pair — as JSON listing what the completion still `required`s (possibly nothing), or, for a flow that declared a `return_to`, via a 302 to that URL with the pair in the query — which POST /auth/login/complete exchanges for the session token.'
       operationId: finishLogin
       parameters:
       - in: path
@@ -52,19 +54,13 @@ paths:
         style: form
       responses:
         '200':
-          description: The login completed; the response carries the session token.
+          description: The login is staged; complete it at POST /auth/login/complete (immediately if `required` is empty).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LoginResponse'
+                $ref: '#/components/schemas/LoginStagedResponse'
         '403':
           description: The identity was denied admission, or the account is locked.
-        '409':
-          description: The login needs the completion step (e.g. ToS consent) before a token is issued.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/LoginIncompleteResponse'
   /auth/providers:
     get:
       tags:
@@ -120,7 +116,7 @@ paths:
       tags:
       - Authentication
       summary: Complete a staged login
-      description: Finishes a login the callback staged behind the completion step, identified by the pending id together with its one-time secret; the echoed tos_version must be the one currently in force. Accepts the same fields form-encoded (for no-JS browser frontends). Unauthenticated.
+      description: Claims a staged login — the sole point a session token is minted — identified by the staged id together with its one-time secret. If the staging listed `tos` as required, the echoed tos_version must be the one currently in force. Accepts the same fields form-encoded (for no-JS browser frontends; a form completion of a flow that declared a `return_to` is answered with a 302 there, carrying a fresh ready-to-claim pair). Unauthenticated.
       operationId: completeLogin
       requestBody:
         description: |-
@@ -141,13 +137,13 @@ paths:
         '403':
           description: The account is locked.
         '409':
-          description: The echoed tos_version is not the one in force; a fresh marker is returned and nothing was consumed.
+          description: A required step is missing, or the echoed tos_version is not the one in force; the presented pair was consumed and the marker carries a fresh one to retry with.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LoginIncompleteResponse'
+                $ref: '#/components/schemas/LoginStagedResponse'
         '410':
-          description: Unknown pending id, wrong secret, or the staged login expired or was already used.
+          description: Unknown staged id, wrong secret, or the staged login expired or was already used.
   /jobs:
     get:
       tags:
@@ -2252,11 +2248,11 @@ components:
       type: object
       properties:
         staged_id:
-          description: The staged login, from [`LoginIncompleteResponse::staged_id`].
+          description: The staged login, from [`LoginStagedResponse::staged_id`].
           type: string
           format: uuid
         staged_secret:
-          description: Its one-time secret, from [`LoginIncompleteResponse::staged_secret`].
+          description: Its one-time secret, from [`LoginStagedResponse::staged_secret`].
           type: string
         tos_version:
           description: |-
@@ -2271,32 +2267,52 @@ components:
       required:
       - staged_id
       - staged_secret
-    LoginIncompleteResponse:
+    LoginResponse:
       description: |-
-        Response body for a login that has passed admission (e.g., OAuth token
-        exchanged) but cannot complete until the user finishes the completion step
-        (as indicated by `required`).
+        Response Body that [`login_handler`] emits.
 
-        The following is a non-exhaustive list of `required` steps:
-
-        - `tos`: the user must (re)accept the latest version of the ToS.
-
-        Returned as `409 Conflict` by the OAuth callback for programmatic clients
-        (browser frontends are instead `302`-redirected to the configured completion
-        page with the same values in the query).
-        The client gathers everything `required` lists and finishes the login by
-        `POST`ing the `(staged_id, staged_secret)` pair back to
-        `/auth/login/complete`. `staged_secret` must be kept secret and treated
-        equivalently to an auth token, as it can mint an auth token.
+        Indicates that the user successfully authenticated, and was issued `token`, which inherits the
+        user's credentials, and will expire at `expires_at`.
       type: object
       properties:
-        login_incomplete:
-          description: Always `true`; a stable discriminator so a client can branch on it.
-          type: boolean
+        expires_at:
+          type: string
+          format: date-time
+        token:
+          $ref: '#/components/schemas/AuthToken'
+      required:
+      - token
+      - expires_at
+    LoginStagedResponse:
+      description: |-
+        Response body for a staged login: the callback has verified the identity
+        (e.g., OAuth token exchanged, admission passed) and staged the login
+        server-side. Every interactive login is staged; the caller finishes it by
+        `POST`ing the `(staged_id, staged_secret)` pair to `/auth/login/complete`,
+        which is the sole point that mints the session token.
+
+        `required` lists what the completion must additionally provide. An empty
+        list means the login is ready to claim: complete immediately, no extra
+        fields needed. The following is a non-exhaustive list of `required` steps:
+
+        - `tos`: the user must (re)accept the latest version of the ToS, echoing
+          the `tos_version` actually shown.
+
+        Returned as `200` by the OAuth callback (a browser flow that declared a
+        `return_to` is instead `302`-redirected there with the pair in the query),
+        and as `409 Conflict` by `/auth/login/complete` when the presented
+        completion is still missing a required step (with a fresh pair — the
+        presented one is consumed).
+
+        `staged_secret` must be kept secret and treated equivalently to an auth
+        token, as it can mint an auth token.
+      type: object
+      properties:
         required:
           description: |-
-            What the completion step must provide. Currently always `["tos"]`;
-            future requirements (e.g. `"username"`) extend this list.
+            What the completion step must provide; empty means ready to claim.
+            Currently `["tos"]` or `[]`; future requirements (e.g. `"username"`)
+            extend this list.
           type: array
           items:
             type: string
@@ -2319,26 +2335,9 @@ components:
           - 'null'
           format: int32
       required:
-      - login_incomplete
       - required
       - staged_id
       - staged_secret
-    LoginResponse:
-      description: |-
-        Response Body that [`login_handler`] emits.
-
-        Indicates that the user successfully authenticated, and was issued `token`, which inherits the
-        user's credentials, and will expire at `expires_at`.
-      type: object
-      properties:
-        expires_at:
-          type: string
-          format: date-time
-        token:
-          $ref: '#/components/schemas/AuthToken'
-      required:
-      - token
-      - expires_at
     MockIdentityInfo:
       description: A built-in mock identity advertised by `/auth/providers` (development only).
       type: object

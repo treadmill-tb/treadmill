@@ -22,7 +22,7 @@ use treadmill_console::config::{
 use treadmill_console::serve::AppState as ConsoleAppState;
 use treadmill_rs::api::switchboard::images::{ImageGroupGenerationInfo, ImageGroupInfo, ImageInfo};
 use treadmill_rs::api::switchboard::jobs::EnqueueJobResponse;
-use treadmill_rs::api::switchboard::{LoginIncompleteResponse, LoginResponse};
+use treadmill_rs::api::switchboard::{LoginResponse, LoginStagedResponse};
 
 pub fn build_router(state: AppState) -> Router<()> {
     // Optionally serve the web console at `/`, on this same listener. Built
@@ -93,8 +93,15 @@ pub fn api_router() -> ApiRouter<AppState> {
                     .description(
                         "Begins the authorization-code flow with the named provider: \
                          persists the CSRF state and redirects the browser to the \
-                         provider's consent screen. Unauthenticated.",
+                         provider's consent screen. A browser frontend may pass \
+                         `?return_to=<its landing URL>` — validated against the \
+                         server's allowlist — to have the callback redirect the \
+                         browser there with the single-use staged pair; without it \
+                         the callback responds with JSON. Unauthenticated.",
                     )
+                    .response_with::<400, (), _>(|r| {
+                        r.description("The declared return_to is not allowlisted.")
+                    })
                     .response_with::<404, (), _>(|r| {
                         r.description("No such provider is configured/enabled.")
                     })
@@ -112,23 +119,22 @@ pub fn api_router() -> ApiRouter<AppState> {
                 )
                 .description(
                     "The provider's redirect target; not called directly. Verifies \
-                     the CSRF state, exchanges the code, and resolves the identity. \
-                     A completed login returns the session token (or redirects a \
-                     browser to the configured success URL); a login that still \
-                     needs the completion step returns the 409 marker (or redirects \
-                     a browser to the configured completion page).",
+                     the CSRF state, exchanges the code, resolves the identity, and \
+                     stages the login. No token is issued here: the response hands \
+                     back a single-use staged pair — as JSON listing what the \
+                     completion still `required`s (possibly nothing), or, for a flow \
+                     that declared a `return_to`, via a 302 to that URL with the \
+                     pair in the query — which POST /auth/login/complete exchanges \
+                     for the session token.",
                 )
-                .response_with::<200, Json<LoginResponse>, _>(|r| {
-                    r.description("The login completed; the response carries the session token.")
+                .response_with::<200, Json<LoginStagedResponse>, _>(|r| {
+                    r.description(
+                        "The login is staged; complete it at POST /auth/login/complete \
+                         (immediately if `required` is empty).",
+                    )
                 })
                 .response_with::<403, (), _>(|r| {
                     r.description("The identity was denied admission, or the account is locked.")
-                })
-                .response_with::<409, Json<LoginIncompleteResponse>, _>(|r| {
-                    r.description(
-                        "The login needs the completion step (e.g. ToS consent) \
-                         before a token is issued.",
-                    )
                 })
             }),
         )
@@ -181,25 +187,29 @@ pub fn api_router() -> ApiRouter<AppState> {
                     "Complete a staged login",
                 )
                 .description(
-                    "Finishes a login the callback staged behind the completion \
-                     step, identified by the pending id together with its one-time \
-                     secret; the echoed tos_version must be the one currently in \
-                     force. Accepts the same fields form-encoded (for no-JS \
-                     browser frontends). Unauthenticated.",
+                    "Claims a staged login — the sole point a session token is \
+                     minted — identified by the staged id together with its \
+                     one-time secret. If the staging listed `tos` as required, the \
+                     echoed tos_version must be the one currently in force. \
+                     Accepts the same fields form-encoded (for no-JS browser \
+                     frontends; a form completion of a flow that declared a \
+                     `return_to` is answered with a 302 there, carrying a fresh \
+                     ready-to-claim pair). Unauthenticated.",
                 )
                 .response_with::<200, Json<LoginResponse>, _>(|r| {
                     r.description("The login completed; the response carries the session token.")
                 })
                 .response_with::<403, (), _>(|r| r.description("The account is locked."))
-                .response_with::<409, Json<LoginIncompleteResponse>, _>(|r| {
+                .response_with::<409, Json<LoginStagedResponse>, _>(|r| {
                     r.description(
-                        "The echoed tos_version is not the one in force; a fresh \
-                         marker is returned and nothing was consumed.",
+                        "A required step is missing, or the echoed tos_version is \
+                         not the one in force; the presented pair was consumed and \
+                         the marker carries a fresh one to retry with.",
                     )
                 })
                 .response_with::<410, (), _>(|r| {
                     r.description(
-                        "Unknown pending id, wrong secret, or the staged login \
+                        "Unknown staged id, wrong secret, or the staged login \
                          expired or was already used.",
                     )
                 })

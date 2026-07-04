@@ -53,28 +53,31 @@ pub struct LoginResponse {
     pub expires_at: DateTime<Utc>,
 }
 
-/// Response body for a login that has passed admission (e.g., OAuth token
-/// exchanged) but cannot complete until the user finishes the completion step
-/// (as indicated by `required`).
+/// Response body for a staged login: the callback has verified the identity
+/// (e.g., OAuth token exchanged, admission passed) and staged the login
+/// server-side. Every interactive login is staged; the caller finishes it by
+/// `POST`ing the `(staged_id, staged_secret)` pair to `/auth/login/complete`,
+/// which is the sole point that mints the session token.
 ///
-/// The following is a non-exhaustive list of `required` steps:
+/// `required` lists what the completion must additionally provide. An empty
+/// list means the login is ready to claim: complete immediately, no extra
+/// fields needed. The following is a non-exhaustive list of `required` steps:
 ///
-/// - `tos`: the user must (re)accept the latest version of the ToS.
+/// - `tos`: the user must (re)accept the latest version of the ToS, echoing
+///   the `tos_version` actually shown.
 ///
-/// Returned as `409 Conflict` by the OAuth callback for programmatic clients
-/// (browser frontends are instead `302`-redirected to the configured completion
-/// page with the same values in the query).
-//
-/// The client gathers everything `required` lists and finishes the login by
-/// `POST`ing the `(staged_id, staged_secret)` pair back to
-/// `/auth/login/complete`. `staged_secret` must be kept secret and treated
-/// equivalently to an auth token, as it can mint an auth token.
+/// Returned as `200` by the OAuth callback (a browser flow that declared a
+/// `return_to` is instead `302`-redirected there with the pair in the query),
+/// and as `409 Conflict` by `/auth/login/complete` when the presented
+/// completion is still missing a required step (with a fresh pair — the
+/// presented one is consumed).
+///
+/// `staged_secret` must be kept secret and treated equivalently to an auth
+/// token, as it can mint an auth token.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct LoginIncompleteResponse {
-    /// Always `true`; a stable discriminator so a client can branch on it.
-    pub login_incomplete: bool,
-    /// What the completion step must provide. Currently always `["tos"]`;
-    /// future requirements (e.g. `"username"`) extend this list.
+pub struct LoginStagedResponse {
+    /// What the completion step must provide; empty means ready to claim
+    /// (recognized steps are documented on the type).
     pub required: Vec<String>,
     /// Identifies the staged login to `/auth/login/complete`.
     pub staged_id: Uuid,
@@ -101,9 +104,9 @@ pub struct TosInfoResponse {
 /// JSON by programmatic clients or form-encoded by the console's no-JS form.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct LoginCompleteRequest {
-    /// The staged login, from [`LoginIncompleteResponse::staged_id`].
+    /// The staged login, from [`LoginStagedResponse::staged_id`].
     pub staged_id: Uuid,
-    /// Its one-time secret, from [`LoginIncompleteResponse::staged_secret`].
+    /// Its one-time secret, from [`LoginStagedResponse::staged_secret`].
     pub staged_secret: String,
     /// The ToS version the user was shown and accepted (only mandatory if
     /// `required` contained `"tos"`). Must match the version currently in

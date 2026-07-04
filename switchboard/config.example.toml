@@ -33,15 +33,12 @@ supervisor_reconcile_interval = "5s"
 # auth_url = "https://github.com/login/oauth/authorize"
 # token_url = "https://github.com/login/oauth/access_token"
 # api_base_url = "https://api.github.com"
-# Where to send a browser after a successful login. Leave unset for
-# programmatic/CLI clients (the callback then returns the token as JSON). Set it
-# to the web console's landing URL to enable browser login: the callback will
-# 302 there with ?token=…&expires_at=… instead.
-# browser_success_redirect = "https://console.example/auth/landing"
-# Where to send a browser that must finish the login-completion step (today:
-# accepting the Terms of Service). When set, a login awaiting consent is 302'd
-# here with ?staged_id=…&staged_secret=…&tos_version=… appended (the frontend
-# renders GET /auth/tos and POSTs the staged pair back to /auth/login/complete);
-# when unset, programmatic clients receive a 409 login_incomplete JSON marker
-# instead.
-# browser_login_complete_redirect = "https://console.example/auth/complete"
+# The exact landing URLs browser frontends (web consoles) may declare as their
+# per-login ?return_to=… — one entry per console, matched exactly. The callback
+# 302s such flows there with a single-use staged pair the console exchanges
+# server-to-server for the session token; flows without a return_to
+# (programmatic/CLI clients) receive JSON instead. The embedded console's
+# landing URL is implicitly allowed and need not be listed.
+#
+# [oauth]
+# return_to_allowlist = ["https://console.example/auth/landing"]

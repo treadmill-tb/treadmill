@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.staged_logins (id, secret_hash, provider, identity, existing_user_id, org_ids, return_to, user_agent, created_ip, created_port, expires_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Uuid",
+        "TextArray",
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "47e15174773658f6bf924ac0dd252c1cf09e01c666bc9aacfc353ade74d99ce3"
+}

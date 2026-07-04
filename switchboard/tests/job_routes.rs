@@ -24,9 +24,7 @@ use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobImageRef, JobInfo, JobListResponse, NatsLogStreamCredentials,
 };
-use treadmill_rs::api::switchboard::{
-    JobInitSpec, JobRequest, JobState, LoginResponse, WhoAmIResponse,
-};
+use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, WhoAmIResponse};
 
 /// The built-in admins group subject (`engine::ADMINS_GROUP_ID`). `alice` is a
 /// member, so she may file a job under it.
@@ -38,7 +36,7 @@ use treadmill_switchboard::routes::build_router;
 use treadmill_switchboard::serve::AppState;
 
 mod common;
-use common::test_config_mock;
+use common::{mock_login_token, test_config_mock};
 
 /// A provisioner the read route never calls (it only mints tokens); present
 /// only to satisfy the `LogStreaming` struct.
@@ -87,42 +85,6 @@ async fn spawn_server(state: AppState) -> SocketAddr {
         .unwrap();
     });
     addr
-}
-
-/// Drive a full mock login for `identity` and return the issued bearer token
-/// (HTTP-encoded), ready for `bearer_auth`.
-async fn mock_login_token(client: &reqwest::Client, addr: SocketAddr, identity: &str) -> String {
-    let login = client
-        .get(format!(
-            "http://{addr}/api/v1/auth/mock/login?identity={identity}"
-        ))
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        login.status().is_redirection(),
-        "mock login should redirect"
-    );
-    let location = login
-        .headers()
-        .get(reqwest::header::LOCATION)
-        .expect("redirect must carry a Location")
-        .to_str()
-        .unwrap()
-        .to_string();
-
-    let cb = client
-        .get(format!("http://{addr}{location}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        cb.status(),
-        reqwest::StatusCode::OK,
-        "callback should succeed"
-    );
-    let session: LoginResponse = cb.json().await.unwrap();
-    session.token.encode_for_http()
 }
 
 /// The authenticated caller's own `user_id`, via `GET /auth/whoami`.

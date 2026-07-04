@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, secret_hash, provider, identity, existing_user_id, org_ids, expires_at from tml_switchboard.staged_logins where id = $1 for update;",
+  "query": "select id, secret_hash, provider, identity, existing_user_id, org_ids, return_to, user_agent, created_ip, created_port, expires_at from tml_switchboard.staged_logins where id = $1 for update;",
   "describe": {
     "columns": [
       {
@@ -71,6 +71,50 @@
       },
       {
         "ordinal": 6,
+        "name": "return_to",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.staged_logins",
+            "name": "return_to"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "user_agent",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.staged_logins",
+            "name": "user_agent"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "created_ip",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.staged_logins",
+            "name": "created_ip"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "created_port",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.staged_logins",
+            "name": "created_port"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
         "name": "expires_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -93,8 +137,12 @@
       true,
       true,
       false,
+      true,
+      true,
+      true,
+      true,
       false
     ]
   },
-  "hash": "ca0d2c16fe75a470195a5a4cd00839dbcb02ee8b1169bfbe5a2de68030e2a6d2"
+  "hash": "70aefa608d655dc8c5dc4bf7c516deb927ef8bdd5d3dbca6b7b1e66fc08d93c5"
 }

@@ -16,13 +16,18 @@ use tower_http::trace::TraceLayer;
 
 use crate::serve::AppState;
 
+/// Path of the login-landing route, mounted below. Public so the switchboard
+/// can derive the embedded console's implicitly-allowed `return_to` URL from
+/// the same definition the console routes by.
+pub const LANDING_PATH: &str = "/auth/landing";
+
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(me::index))
         // login flow
         .route("/login", get(auth::login))
         .route("/auth/complete", get(auth::complete))
-        .route("/auth/landing", get(auth::landing))
+        .route(LANDING_PATH, get(auth::landing))
         .route("/logout", get(auth::logout))
         // resource pages
         .route("/me", get(me::me))

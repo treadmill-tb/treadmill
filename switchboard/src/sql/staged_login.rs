@@ -1,6 +1,8 @@
-//! Persistence for a login that has passed admission (e.g., OAuth token
-//! exchanged), but requires additional login steps, such as supplying
-//! information or accepting a ToS.
+//! Persistence for a staged login: an interactive login whose identity the
+//! OAuth callback has verified (token exchanged, admission passed), awaiting
+//! its completion at `POST /auth/login/complete` — the sole point that mints a
+//! session token. A staged login may still require completion steps (ToS
+//! acceptance), or be immediately claimable.
 //!
 //! A `staged_logins` row is short-lived, consume-once staging in the same
 //! spirit as the CSRF `oauth_flows` row: it carries the derived identity (for a
@@ -19,24 +21,32 @@ use crate::auth::staged_secret;
 ///
 /// Exactly one of `identity` / `existing_user_id` is set (a DB CHECK enforces
 /// it): `identity` for a brand-new user awaiting first acceptance,
-/// `existing_user_id` for an existing user that requires some actions (e.g.,
-/// re-accepting a bumped ToS).
+/// `existing_user_id` for an existing user (one that requires some actions,
+/// e.g. re-accepting a bumped ToS, or one whose login is ready to claim).
 #[derive(Debug, Clone)]
 pub struct StagedLogin {
     pub id: Uuid,
     pub provider: String,
     /// The serialized [`ExternalIdentity`] (jsonb) for a brand-new
-    /// registration, or `None` for an existing-user re-acceptance.
+    /// registration, or `None` for an existing user.
     pub identity: Option<serde_json::Value>,
-    /// The existing user re-accepting, or `None` for a brand-new registration.
+    /// The existing user logging in, or `None` for a brand-new registration.
     pub existing_user_id: Option<Uuid>,
     pub org_ids: Vec<String>,
+    /// The initiating flow's declared (allowlist-validated) browser return
+    /// URL; `None` for a programmatic flow.
+    pub return_to: Option<String>,
+    /// Browser context captured at the OAuth callback, stamped onto the
+    /// session token minted at completion.
+    pub user_agent: Option<String>,
+    pub created_ip: Option<String>,
+    pub created_port: Option<i32>,
     pub expires_at: DateTime<Utc>,
 }
 
 impl StagedLogin {
     /// Deserialize the staged [`ExternalIdentity`], if this row stages a
-    /// brand-new registration. `None` for an existing-user re-acceptance.
+    /// brand-new registration. `None` for an existing user.
     pub fn parse_identity(&self) -> Option<Result<ExternalIdentity, serde_json::Error>> {
         self.identity
             .clone()
@@ -44,10 +54,29 @@ impl StagedLogin {
     }
 }
 
-/// Delete any expired staging rows. Called opportunistically on insert so an
-/// abandoned completion step (a user who never accepts) does not accumulate.
-/// The `expires_at` filter on [`consume_staged`] guarantees correctness
-/// regardless; this is purely housekeeping.
+/// The fields of a new staged login; see [`insert_staged`].
+#[derive(Debug, Clone, Copy)]
+pub struct StageLogin<'a> {
+    pub id: Uuid,
+    /// Salted hash of the one-time completion secret (never the secret itself).
+    pub secret_hash: &'a str,
+    pub provider: &'a str,
+    /// EITHER a brand-new user's identity ...
+    pub identity: Option<&'a ExternalIdentity>,
+    /// ... OR an existing user, never both -- the DB CHECK enforces this.
+    pub existing_user_id: Option<Uuid>,
+    pub org_ids: &'a [String],
+    pub return_to: Option<&'a str>,
+    pub user_agent: Option<&'a str>,
+    pub created_ip: Option<&'a str>,
+    pub created_port: Option<i32>,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Delete any expired staging rows. Called opportunistically when the callback
+/// stages a login, so an abandoned completion step (a user who never accepts)
+/// does not accumulate. The `expires_at` filter on [`consume_staged`]
+/// guarantees correctness regardless; this is purely housekeeping.
 pub async fn sweep_expired(conn: impl PgExecutor<'_>) -> Result<(), sqlx::Error> {
     sqlx::query!("delete from tml_switchboard.staged_logins where expires_at < now();")
         .execute(conn)
@@ -55,41 +84,36 @@ pub async fn sweep_expired(conn: impl PgExecutor<'_>) -> Result<(), sqlx::Error>
         .map(|_| ())
 }
 
-/// Stage a login awaiting ToS acceptance. Provide EITHER `identity` (a
-/// brand-new user) OR `existing_user_id` (a re-acceptance), never both -- the DB
-/// CHECK enforces this. `secret_hash` is the salted hash of the one-time
-/// completion secret (never the secret itself). Sweeps expired rows first.
-#[allow(clippy::too_many_arguments)]
+/// Stage a login. Takes any executor so a re-stage/successor row can join the
+/// completion transaction that consumes its predecessor; callers on the pool
+/// path pair this with [`sweep_expired`].
 pub async fn insert_staged(
-    pool: &sqlx::PgPool,
-    id: Uuid,
-    secret_hash: &str,
-    provider: &str,
-    identity: Option<&ExternalIdentity>,
-    existing_user_id: Option<Uuid>,
-    org_ids: &[String],
-    expires_at: DateTime<Utc>,
+    conn: impl PgExecutor<'_>,
+    staged: StageLogin<'_>,
 ) -> Result<(), sqlx::Error> {
-    sweep_expired(pool).await?;
-
-    let identity_json = match identity {
+    let identity_json = match staged.identity {
         Some(i) => Some(serde_json::to_value(i).map_err(|e| sqlx::Error::Encode(Box::new(e)))?),
         None => None,
     };
 
     sqlx::query!(
         "insert into tml_switchboard.staged_logins \
-         (id, secret_hash, provider, identity, existing_user_id, org_ids, expires_at) \
-         values ($1, $2, $3, $4, $5, $6, $7);",
-        id,
-        secret_hash,
-        provider,
+         (id, secret_hash, provider, identity, existing_user_id, org_ids, \
+          return_to, user_agent, created_ip, created_port, expires_at) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);",
+        staged.id,
+        staged.secret_hash,
+        staged.provider,
         identity_json,
-        existing_user_id,
-        org_ids,
-        expires_at,
+        staged.existing_user_id,
+        staged.org_ids,
+        staged.return_to,
+        staged.user_agent,
+        staged.created_ip,
+        staged.created_port,
+        staged.expires_at,
     )
-    .execute(pool)
+    .execute(conn)
     .await
     .map(|_| ())
 }
@@ -110,7 +134,8 @@ pub async fn consume_staged(
     secret: &str,
 ) -> Result<Option<StagedLogin>, sqlx::Error> {
     let Some(row) = sqlx::query!(
-        "select id, secret_hash, provider, identity, existing_user_id, org_ids, expires_at \
+        "select id, secret_hash, provider, identity, existing_user_id, org_ids, \
+                return_to, user_agent, created_ip, created_port, expires_at \
          from tml_switchboard.staged_logins where id = $1 for update;",
         id,
     )
@@ -139,6 +164,10 @@ pub async fn consume_staged(
         identity: row.identity,
         existing_user_id: row.existing_user_id,
         org_ids: row.org_ids,
+        return_to: row.return_to,
+        user_agent: row.user_agent,
+        created_ip: row.created_ip,
+        created_port: row.created_port,
         expires_at: row.expires_at,
     }))
 }

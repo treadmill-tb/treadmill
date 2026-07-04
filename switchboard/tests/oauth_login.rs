@@ -83,8 +83,9 @@ async fn spawn_server(state: AppState) -> SocketAddr {
 }
 
 /// Run one full login: start the flow (persisting the CSRF state), read that
-/// state back out of the database, then drive the callback and return the
-/// issued session.
+/// state back out of the database, drive the callback — which stages the
+/// login — and claim the staged pair at the completion endpoint to receive
+/// the session.
 async fn run_login(client: &reqwest::Client, addr: SocketAddr, pool: &PgPool) -> LoginResponse {
     let login_resp = client
         .get(format!("http://{addr}/api/v1/auth/github/login"))
@@ -109,32 +110,31 @@ async fn run_login(client: &reqwest::Client, addr: SocketAddr, pool: &PgPool) ->
         .send()
         .await
         .unwrap();
-    match cb_resp.status() {
-        // Existing user with a current ToS: the callback logs them in directly.
-        reqwest::StatusCode::OK => cb_resp.json().await.unwrap(),
-        // A new (or stale-ToS) user is bounced through the completion step;
-        // accept the ToS to complete the login and receive the session.
-        reqwest::StatusCode::CONFLICT => {
-            let body: serde_json::Value = cb_resp.json().await.unwrap();
-            let complete = client
-                .post(format!("http://{addr}/api/v1/auth/login/complete"))
-                .json(&serde_json::json!({
-                    "staged_id": body["staged_id"],
-                    "staged_secret": body["staged_secret"],
-                    "tos_version": body["tos_version"],
-                }))
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(
-                complete.status(),
-                reqwest::StatusCode::OK,
-                "completing the login (ToS accept) should succeed"
-            );
-            complete.json().await.unwrap()
-        }
-        other => panic!("unexpected callback status {other}"),
-    }
+    assert_eq!(
+        cb_resp.status(),
+        reqwest::StatusCode::OK,
+        "callback should stage the login"
+    );
+    let body: serde_json::Value = cb_resp.json().await.unwrap();
+
+    // Claim the staged login, echoing the offered ToS version (null when the
+    // staging requires no consent — an existing user with a current ToS).
+    let complete = client
+        .post(format!("http://{addr}/api/v1/auth/login/complete"))
+        .json(&serde_json::json!({
+            "staged_id": body["staged_id"],
+            "staged_secret": body["staged_secret"],
+            "tos_version": body["tos_version"],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        complete.status(),
+        reqwest::StatusCode::OK,
+        "completing the login should succeed"
+    );
+    complete.json().await.unwrap()
 }
 
 #[sqlx::test]

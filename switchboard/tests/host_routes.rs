@@ -15,14 +15,13 @@ use sqlx::PgPool;
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
-use treadmill_rs::api::switchboard::LoginResponse;
 use treadmill_rs::api::switchboard::hosts::HostInfo;
 use treadmill_switchboard::registry::OciRegistryClient;
 use treadmill_switchboard::routes::build_router;
 use treadmill_switchboard::serve::AppState;
 
 mod common;
-use common::test_config_mock;
+use common::{mock_login_token, test_config_mock};
 
 fn test_state(pool: PgPool) -> AppState {
     AppState::with_components(
@@ -46,31 +45,6 @@ async fn spawn_server(state: AppState) -> SocketAddr {
         .unwrap();
     });
     addr
-}
-
-/// Drive a full mock login for `identity` and return the issued bearer token.
-async fn mock_login_token(client: &reqwest::Client, addr: SocketAddr, identity: &str) -> String {
-    let login = client
-        .get(format!(
-            "http://{addr}/api/v1/auth/mock/login?identity={identity}"
-        ))
-        .send()
-        .await
-        .unwrap();
-    let location = login
-        .headers()
-        .get(reqwest::header::LOCATION)
-        .expect("redirect must carry a Location")
-        .to_str()
-        .unwrap()
-        .to_string();
-    let cb = client
-        .get(format!("http://{addr}{location}"))
-        .send()
-        .await
-        .unwrap();
-    let session: LoginResponse = cb.json().await.unwrap();
-    session.token.encode_for_http()
 }
 
 /// Insert a live host (heartbeat now) with `tags`, plus one target `dut0` with

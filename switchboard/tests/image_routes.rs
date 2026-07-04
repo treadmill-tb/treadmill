@@ -27,14 +27,14 @@ use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::images::{ImageGroupGenerationInfo, ImageGroupInfo, ImageInfo};
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, JobImageRef, JobInfo};
-use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, LoginResponse, WhoAmIResponse};
+use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, WhoAmIResponse};
 use treadmill_rs::image::Digest;
 use treadmill_switchboard::registry::{RegistryClient, RegistryError};
 use treadmill_switchboard::routes::build_router;
 use treadmill_switchboard::serve::AppState;
 
 mod common;
-use common::test_config_mock;
+use common::{mock_login_token, test_config_mock};
 
 // -- canned registry ------------------------------------------------------------
 
@@ -148,39 +148,6 @@ fn http_client() -> reqwest::Client {
         .redirect(Policy::none())
         .build()
         .unwrap()
-}
-
-/// Drive a full mock login for `identity` and return the issued bearer token.
-async fn mock_login_token(client: &reqwest::Client, addr: SocketAddr, identity: &str) -> String {
-    let login = client
-        .get(format!(
-            "http://{addr}/api/v1/auth/mock/login?identity={identity}"
-        ))
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        login.status().is_redirection(),
-        "mock login should redirect"
-    );
-    let location = login
-        .headers()
-        .get(reqwest::header::LOCATION)
-        .expect("redirect must carry a Location")
-        .to_str()
-        .unwrap()
-        .to_string();
-    let cb = client
-        .get(format!("http://{addr}{location}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(cb.status(), reqwest::StatusCode::OK);
-    cb.json::<LoginResponse>()
-        .await
-        .unwrap()
-        .token
-        .encode_for_http()
 }
 
 /// The authenticated caller's own `user_id`, via `GET /auth/whoami`.

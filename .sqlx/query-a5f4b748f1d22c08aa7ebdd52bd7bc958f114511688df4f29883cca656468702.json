@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select u.locked, u.username, i.provider_user_id, i.provider_login from tml_switchboard.users u left join tml_switchboard.user_identities i on i.user_id = u.subject_id and i.provider = $2 where u.subject_id = $1;",
+  "query": "select u.locked, u.tos_accepted_version, u.username, i.provider_user_id, i.provider_login from tml_switchboard.users u left join tml_switchboard.user_identities i on i.user_id = u.subject_id and i.provider = $2 where u.subject_id = $1;",
   "describe": {
     "columns": [
       {
@@ -16,6 +16,17 @@
       },
       {
         "ordinal": 1,
+        "name": "tos_accepted_version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.users",
+            "name": "tos_accepted_version"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
         "name": "username",
         "type_info": "Text",
         "origin": {
@@ -26,7 +37,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "provider_user_id",
         "type_info": "Text",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "provider_login",
         "type_info": "Text",
         "origin": {
@@ -56,10 +67,11 @@
     },
     "nullable": [
       false,
+      true,
       false,
       true,
       true
     ]
   },
-  "hash": "c853e79de5ba10ce0969dd5e60ac66604c51d13282718b0190f13a2a585f2787"
+  "hash": "a5f4b748f1d22c08aa7ebdd52bd7bc958f114511688df4f29883cca656468702"
 }

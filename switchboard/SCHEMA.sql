@@ -302,6 +302,11 @@ CREATE TABLE tml_switchboard.oauth_flows (
     state text NOT NULL PRIMARY KEY,
     provider text NOT NULL,
     pkce_verifier text,
+    -- Where the callback sends the browser (with the single-use staged pair in
+    -- the query) for a flow a browser frontend initiated. Validated against the
+    -- configured allowlist when the flow starts; NULL for programmatic flows,
+    -- which receive JSON from the callback instead.
+    return_to text,
     created_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
     expires_at timestamp with time zone NOT NULL
 );
@@ -329,18 +334,19 @@ CREATE TABLE tml_switchboard.login_allowlist (
 );
 
 
--- Short-lived server-side staging for a login that has passed admission (e.g.,
--- token exchanged with the OAuth provider), but needs more information (asks
--- user for preferred name, or requires ToS acceptance). A login can either
--- proceed immediately or be staged for both new registrations and existing
--- users.
+-- Short-lived server-side staging for a login whose identity the callback has
+-- verified (e.g., token exchanged with the OAuth provider). EVERY interactive
+-- login stages: `POST /auth/login/complete` is the sole point that mints a
+-- session token, by consuming this row. A login may still require completion
+-- steps (ToS acceptance) before it can be claimed, or be immediately claimable.
 --
 -- Consume-once: deleted in the same txn that provisions the user (new) or
 -- records login (existing). Holds the derived identity and org list--the OAuth
 -- access token is already discarded at this point and never written to the DB.
 --
 -- identity IS NOT NULL -> a brand-new user awaiting first acceptance
--- existing_user_id IS NOT NULL -> an existing user re-accepting a bumped ToS
+-- existing_user_id IS NOT NULL -> an existing user (re-accepting a bumped ToS,
+--                                 or ready to claim)
 --
 -- To exchange a staged login (with the required additional information such as
 -- ToS acceptance) to a proper auth token, the user has to present the `secret`
@@ -354,6 +360,16 @@ CREATE TABLE tml_switchboard.staged_logins (
     identity jsonb,
     existing_user_id uuid REFERENCES tml_switchboard.users (subject_id) ON DELETE CASCADE,
     org_ids TEXT[] NOT NULL DEFAULT '{}',
+    -- Inherited from the initiating flow (see oauth_flows.return_to): where a
+    -- browser-form completion sends the browser next. NULL for programmatic
+    -- flows.
+    return_to text,
+    -- The browser's context, captured at the OAuth callback, so the session
+    -- token minted later at completion is stamped with the logging-in client's
+    -- address/agent rather than the (server-side) completing caller's.
+    user_agent text,
+    created_ip text,
+    created_port integer,
     created_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
     expires_at timestamp with time zone NOT NULL,
     CONSTRAINT staged_kind CHECK ((identity IS NULL) <> (existing_user_id IS NULL))

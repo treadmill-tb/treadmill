@@ -1,4 +1,5 @@
-h1:S02eTg7FWo7c8Q0ZIG9Tv/j6kYqJFAoDuYXjP2e8334=
+h1:tOus4tFZYb7yWUJxzGkKAAlMWVVS8AxQitNu+BujpF8=
 00000000000001_base.sql h1:7OodY/qoessjRRoCAAX04fthKHTDNzzloQ4srKlxs+o=
 20260704040624_add_login_admission.sql h1:igsGQsFVnG44AEHOingbrzRj0Cf+xjVXm9pT1EwP7AU=
 20260704182005_staged_login_secret.sql h1:0uZZstOCxbfDbsn1/NeAoS6WLqGf1VCrkevmHlZ5ryA=
+20260704211548_login_return_to.sql h1:FlTlkMLOLCnO5DayIJv3zn/RdbA2xDLUj514OTA2vHw=

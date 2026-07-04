@@ -59,8 +59,7 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
                 ],
             }),
             mock: None,
-            browser_success_redirect: None,
-            browser_login_complete_redirect: None,
+            return_to_allowlist: Vec::new(),
         },
         console: None,
         log_streaming: None,
@@ -74,4 +73,60 @@ pub fn test_config_mock() -> SwitchboardConfig {
     cfg.oauth.github = None;
     cfg.oauth.mock = Some(MockOAuthConfig { enabled: true });
     cfg
+}
+
+/// Drive a full mock login for `identity` against a spawned switchboard and
+/// return the issued bearer token: follow the login route's self-redirect to
+/// the callback, then claim the staged pair the callback hands back at the
+/// completion endpoint (mock logins require no completion step). The `client`
+/// must not follow redirects.
+pub async fn mock_login_token(
+    client: &reqwest::Client,
+    addr: std::net::SocketAddr,
+    identity: &str,
+) -> String {
+    let login = client
+        .get(format!(
+            "http://{addr}/api/v1/auth/mock/login?identity={identity}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    let location = login
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .expect("redirect must carry a Location")
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let cb = client
+        .get(format!("http://{addr}{location}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        cb.status(),
+        reqwest::StatusCode::OK,
+        "callback should stage the login"
+    );
+    let staged: serde_json::Value = cb.json().await.unwrap();
+
+    let complete = client
+        .post(format!("http://{addr}/api/v1/auth/login/complete"))
+        .json(&serde_json::json!({
+            "staged_id": staged["staged_id"],
+            "staged_secret": staged["staged_secret"],
+            "tos_version": staged["tos_version"],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        complete.status(),
+        reqwest::StatusCode::OK,
+        "claiming the staged login should succeed"
+    );
+    let session: treadmill_rs::api::switchboard::LoginResponse = complete.json().await.unwrap();
+    session.token.encode_for_http()
 }
