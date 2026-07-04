@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tml_switchboard.audit_events set event_type = 'tampered' where event_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f265e5dba86222dd8d492671bfa8f39326e761f4355c99c648f1c664d1d57286"
+}

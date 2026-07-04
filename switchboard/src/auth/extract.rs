@@ -1,4 +1,4 @@
-use super::{AuthorizationSource, Subject, SubjectDetail, token::SecurityToken};
+use super::{Subject, SubjectDetail, token::SecurityToken};
 use crate::serve::AppState;
 use crate::sql::{self, api_token::TokenError};
 use axum::RequestPartsExt;
@@ -57,12 +57,20 @@ impl FromRequestParts<AppState> for Subject {
                 );
                 return Err(StatusCode::UNAUTHORIZED.into_response());
             }
-            if let Some(cancellation) = token_info.canceled {
+            if let Some(revocation) = token_info.revoked {
                 tracing::warn!(
-                    "failed to derive subject: canceled token ({}): {cancellation}",
+                    "failed to derive subject: revoked token ({}): {revocation}",
                     token_info.token_id,
                 );
                 return Err(StatusCode::UNAUTHORIZED.into_response());
+            }
+            if token_info.locked {
+                tracing::warn!(
+                    "failed to derive subject: owning user {} is locked (token {})",
+                    token_info.user_id,
+                    token_info.token_id,
+                );
+                return Err(StatusCode::FORBIDDEN.into_response());
             }
             Ok(Self(SubjectDetail {
                 token_info: Arc::new(token_info),
@@ -74,20 +82,44 @@ impl FromRequestParts<AppState> for Subject {
     }
 }
 
-/// `axum` extractor for authorization sources.
-/// Uses [`AuthorizationSource::from_state_with_subject`] internally.
-#[derive(Debug)]
-pub struct AuthSource<AS: AuthorizationSource>(pub AS);
+/// Every authenticated operation extracts a [`Subject`], so this impl is where
+/// the shared auth contract is documented: the operation requires the bearer
+/// [`SECURITY_SCHEME`](crate::auth::SECURITY_SCHEME), and the extractor itself
+/// can reject with `401` (missing/malformed/expired/revoked token) or `403`
+/// (the account is locked) before the handler runs.
+impl aide::OperationInput for Subject {
+    fn operation_input(
+        _ctx: &mut aide::generate::GenContext,
+        operation: &mut aide::openapi::Operation,
+    ) {
+        use aide::openapi::{ReferenceOr, Response, SecurityRequirement, StatusCode};
 
-impl<AS: AuthorizationSource> FromRequestParts<AppState> for AuthSource<AS> {
-    type Rejection = Response;
+        let mut requirement = SecurityRequirement::new();
+        requirement.insert(super::SECURITY_SCHEME.to_string(), Vec::new());
+        operation.security.push(requirement);
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        tracing::trace!("AuthSource::FromRequestParts");
-        let subject: Subject = Subject::from_request_parts(parts, state).await?;
-        Ok(AuthSource(AS::from_state_with_subject(state, subject)))
+        let responses = operation.responses.get_or_insert_with(Default::default);
+        responses
+            .responses
+            .entry(StatusCode::Code(401))
+            .or_insert_with(|| {
+                ReferenceOr::Item(Response {
+                    description: "Authentication failed: the bearer token is missing, \
+                              malformed, expired, or revoked."
+                        .to_string(),
+                    ..Default::default()
+                })
+            });
+        responses
+            .responses
+            .entry(StatusCode::Code(403))
+            .or_insert_with(|| {
+                ReferenceOr::Item(Response {
+                    description: "The authenticated account is locked, or lacks permission \
+                              for this resource."
+                        .to_string(),
+                    ..Default::default()
+                })
+            });
     }
 }

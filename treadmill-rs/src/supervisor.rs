@@ -7,6 +7,10 @@ use uuid::Uuid;
 pub enum SupervisorCoordConnector {
     RestSSEConnector,
     WsConnector,
+    /// Switchboard-less, one-shot local driver (see `treadmill-local-connector`):
+    /// the supervisor runs a single job from command-line inputs against its
+    /// local OCI store. Intended for local development/testing.
+    Local,
 }
 
 /// Base configuration object for every supervisor.

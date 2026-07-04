@@ -1,0 +1,2448 @@
+openapi: 3.1.0
+info:
+  title: Treadmill Switchboard API
+  version: 0.1.0
+paths:
+  /jobs:
+    get:
+      tags:
+      - Jobs
+      summary: List jobs
+      operationId: listJobs
+      parameters:
+      - in: query
+        name: cursor
+        description: Opaque keyset cursor from a previous response's `next_cursor`.
+        schema:
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
+          type: string
+        style: form
+      - in: query
+        name: limit
+        description: |-
+          Maximum number of jobs per page. Omitted or out-of-range values fall
+          back to the server's default and bounds.
+        schema:
+          description: |-
+            Maximum number of jobs per page. Omitted or out-of-range values fall
+            back to the server's default and bounds.
+          type: integer
+          format: uint32
+          minimum: 0
+        style: form
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: |-
+            Response body of `GET /jobs`: a page of jobs the caller can read, newest
+            first.
+
+            Pagination is **keyset** on `(queued_at, job_id)` descending: when
+            `next_cursor` is non-null, pass it back as the `cursor` query parameter to
+            fetch the next page; a null `next_cursor` means the last page. There is no
+            total count.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobListResponse'
+      security:
+      - token: []
+    post:
+      tags:
+      - Jobs
+      summary: Enqueue a job
+      operationId: enqueueJob
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '201':
+          description: The job was enqueued; the response carries its id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnqueueJobResponse'
+      security:
+      - token: []
+  /jobs/{id}/events:
+    get:
+      tags:
+      - Jobs
+      summary: List a job's audit events
+      operationId: listJobEvents
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      - in: query
+        name: cursor
+        description: Opaque keyset cursor from a previous response's `next_cursor`.
+        schema:
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
+          type: string
+        style: form
+      - in: query
+        name: limit
+        description: |-
+          Maximum number of events per page. Omitted or out-of-range values fall
+          back to the server's default and bounds.
+        schema:
+          description: |-
+            Maximum number of events per page. Omitted or out-of-range values fall
+            back to the server's default and bounds.
+          type: integer
+          format: uint32
+          minimum: 0
+        style: form
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: |-
+            A page of rendered audit events for one entity, newest first.
+
+            Paginated by keyset: when `next_cursor` is non-null, pass it back as the
+            `cursor` query parameter to fetch the next (older) page; a null `next_cursor`
+            means the last page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditFeedResponse'
+      security:
+      - token: []
+  /jobs/{id}/log-token:
+    post:
+      tags:
+      - Jobs
+      summary: Create a log-streaming token for a job
+      operationId: createJobLogToken
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: |-
+            Connection credentials for tailing/replaying a job's console logs over NATS,
+            returned by `POST /jobs/{id}/log-token`.
+
+            The token is a short-lived **bearer** user JWT scoped to *subscribe* to this
+            job's log subjects (`subject`); the client connects to `nats_url` with the
+            token string alone (no nkey seed). The token only needs to be valid at
+            connect time — an established NATS connection is not dropped when the JWT
+            expires — so a client re-requests credentials when it next reconnects, after
+            roughly `expires_in_secs`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogStreamCredentials'
+        '503':
+          description: Log streaming is not enabled on this deployment.
+      security:
+      - token: []
+  /jobs/{id}:
+    get:
+      tags:
+      - Jobs
+      summary: Get a job
+      operationId: getJob
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: |-
+            The full server-side view of a single job, returned by `GET /jobs/{id}`.
+
+            Covers the job's identity, ownership, lifecycle state, the spec it was
+            enqueued with, and — once it has run — its placement and terminal outcome.
+            Secret parameters are redacted (see [`JobParameterView`]).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobInfo'
+      security:
+      - token: []
+    delete:
+      tags:
+      - Jobs
+      summary: Terminate a job
+      operationId: terminateJob
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '202':
+          description: Termination was initiated.
+        '204':
+          description: The job was already finalized; nothing to do.
+      security:
+      - token: []
+  /hosts:
+    get:
+      tags:
+      - Hosts
+      summary: List hosts
+      description: Returns the complete set in a stable order; this route is not paginated.
+      operationId: listHosts
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HostInfo'
+      security:
+      - token: []
+  /hosts/{id}/events:
+    get:
+      tags:
+      - Hosts
+      summary: List a host's audit events
+      operationId: listHostEvents
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      - in: query
+        name: cursor
+        description: Opaque keyset cursor from a previous response's `next_cursor`.
+        schema:
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
+          type: string
+        style: form
+      - in: query
+        name: limit
+        description: |-
+          Maximum number of events per page. Omitted or out-of-range values fall
+          back to the server's default and bounds.
+        schema:
+          description: |-
+            Maximum number of events per page. Omitted or out-of-range values fall
+            back to the server's default and bounds.
+          type: integer
+          format: uint32
+          minimum: 0
+        style: form
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: |-
+            A page of rendered audit events for one entity, newest first.
+
+            Paginated by keyset: when `next_cursor` is non-null, pass it back as the
+            `cursor` query parameter to fetch the next (older) page; a null `next_cursor`
+            means the last page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditFeedResponse'
+      security:
+      - token: []
+  /hosts/{id}/connect:
+    get:
+      tags:
+      - Hosts
+      summary: Open a host's supervisor WebSocket
+      operationId: connectHost
+      parameters:
+      - in: header
+        name: authorization
+        required: true
+        schema:
+          type: string
+        style: simple
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '101':
+          description: websocket upgrade
+          headers:
+            connection:
+              style: simple
+              schema:
+                const: upgrade
+                enum:
+                - upgrade
+                type: string
+                example: upgrade
+            upgrade:
+              style: simple
+              schema:
+                const: websocket
+                enum:
+                - websocket
+                type: string
+                example: websocket
+            sec-websocket-key:
+              style: simple
+              schema:
+                type: string
+            sec-websocket-protocol:
+              style: simple
+              schema:
+                type: string
+  /users/me:
+    get:
+      tags:
+      - Users
+      summary: Get the current user's profile
+      operationId: getCurrentUser
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: |-
+            The owner's full view of their own profile: the public subset plus the
+            private additions only the account holder may see.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SelfUserProfile'
+      security:
+      - token: []
+    patch:
+      tags:
+      - Users
+      summary: Update the current user's profile
+      operationId: updateCurrentUser
+      requestBody:
+        description: |-
+          A patch to the caller's own profile. Omitting a field leaves it unchanged;
+          sending an explicit `null` clears it. `username` cannot be cleared, only
+          changed.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: |-
+            The owner's full view of their own profile: the public subset plus the
+            private additions only the account holder may see.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SelfUserProfile'
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '409':
+          description: The requested username is already taken.
+      security:
+      - token: []
+  /users/me/tokens:
+    get:
+      tags:
+      - Users
+      summary: List the current user's tokens
+      description: Returns the complete set in a stable order; this route is not paginated.
+      operationId: listCurrentUserTokens
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SessionInfo'
+      security:
+      - token: []
+  /users/me/tokens/{token_id}:
+    delete:
+      tags:
+      - Users
+      summary: Revoke one of the current user's tokens
+      operationId: revokeCurrentUserToken
+      parameters:
+      - in: path
+        name: token_id
+        description: The token's unique identifier.
+        required: true
+        schema:
+          description: The token's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '204':
+          description: The token was revoked.
+        '404':
+          description: No such token belonging to the caller.
+      security:
+      - token: []
+  /users/{id}:
+    get:
+      tags:
+      - Users
+      summary: Get a user's public profile
+      operationId: getUser
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: |-
+            The world-readable subset of a user profile: only data deemed safe to expose
+            to any authenticated caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicUserProfile'
+        '404':
+          description: No such user.
+      security:
+      - token: []
+  /users/{id}/events:
+    get:
+      tags:
+      - Users
+      summary: List a user's audit events
+      operationId: listUserEvents
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      - in: query
+        name: cursor
+        description: Opaque keyset cursor from a previous response's `next_cursor`.
+        schema:
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
+          type: string
+        style: form
+      - in: query
+        name: limit
+        description: |-
+          Maximum number of events per page. Omitted or out-of-range values fall
+          back to the server's default and bounds.
+        schema:
+          description: |-
+            Maximum number of events per page. Omitted or out-of-range values fall
+            back to the server's default and bounds.
+          type: integer
+          format: uint32
+          minimum: 0
+        style: form
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: |-
+            A page of rendered audit events for one entity, newest first.
+
+            Paginated by keyset: when `next_cursor` is non-null, pass it back as the
+            `cursor` query parameter to fetch the next (older) page; a null `next_cursor`
+            means the last page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditFeedResponse'
+      security:
+      - token: []
+  /images:
+    get:
+      tags:
+      - Images
+      summary: List images
+      description: Returns the complete set in a stable order; this route is not paginated.
+      operationId: listImages
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImageInfo'
+      security:
+      - token: []
+    post:
+      tags:
+      - Images
+      summary: Register an image
+      operationId: registerImage
+      requestBody:
+        description: |-
+          `POST /images`: register a concrete image by digest. The switchboard pulls
+          the manifest from `registry/repository@manifest_digest`, validates it is a
+          Treadmill image, and records the image plus its first location.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterImageRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '201':
+          description: The image was newly registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageInfo'
+        '200':
+          description: The image was already registered; this location was added.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageInfo'
+        '409':
+          description: This digest is already registered to another owner.
+        '502':
+          description: The image's registry could not be reached or returned an error.
+      security:
+      - token: []
+  /images/{digest}:
+    get:
+      tags:
+      - Images
+      summary: Get an image
+      operationId: getImage
+      parameters:
+      - in: path
+        name: digest
+        description: The image's OCI manifest digest (`sha256:<hex>`).
+        required: true
+        schema:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: A registered image, as returned by the catalog list/inspect routes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageInfo'
+        '404':
+          description: No such image, or it is not visible to the caller.
+      security:
+      - token: []
+  /image-groups:
+    get:
+      tags:
+      - Image groups
+      summary: List image groups
+      description: Returns the complete set in a stable order; this route is not paginated.
+      operationId: listImageGroups
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImageGroupInfo'
+      security:
+      - token: []
+    post:
+      tags:
+      - Image groups
+      summary: Create an image group
+      operationId: createImageGroup
+      requestBody:
+        description: |-
+          `POST /image-groups`: create an empty, named image group. The caller becomes
+          its owner; membership is added afterwards via per-generation snapshots (see
+          [`CreateGenerationRequest`]).
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateImageGroupRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '201':
+          description: The image group was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGroupInfo'
+        '409':
+          description: An image group with that name already exists.
+      security:
+      - token: []
+  /image-groups/{id}:
+    get:
+      tags:
+      - Image groups
+      summary: Get an image group
+      operationId: getImageGroup
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: A named, mutable image group, as returned by the catalog list/inspect routes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGroupInfo'
+        '404':
+          description: No such image group, or it is not visible to the caller.
+      security:
+      - token: []
+  /image-groups/{id}/events:
+    get:
+      tags:
+      - Image groups
+      summary: List an image group's audit events
+      operationId: listImageGroupEvents
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      - in: query
+        name: cursor
+        description: Opaque keyset cursor from a previous response's `next_cursor`.
+        schema:
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
+          type: string
+        style: form
+      - in: query
+        name: limit
+        description: |-
+          Maximum number of events per page. Omitted or out-of-range values fall
+          back to the server's default and bounds.
+        schema:
+          description: |-
+            Maximum number of events per page. Omitted or out-of-range values fall
+            back to the server's default and bounds.
+          type: integer
+          format: uint32
+          minimum: 0
+        style: form
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: |-
+            A page of rendered audit events for one entity, newest first.
+
+            Paginated by keyset: when `next_cursor` is non-null, pass it back as the
+            `cursor` query parameter to fetch the next (older) page; a null `next_cursor`
+            means the last page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditFeedResponse'
+        '404':
+          description: No such image group, or it is not visible to the caller.
+      security:
+      - token: []
+  /image-groups/{id}/generations:
+    post:
+      tags:
+      - Image groups
+      summary: Append a generation to an image group
+      operationId: createImageGroupGeneration
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        description: |-
+          `POST /image-groups/{id}/generations`: append a new, immutable
+          full-replacement generation of a group's membership.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGenerationRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '201':
+          description: The generation was appended.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGroupGenerationInfo'
+        '404':
+          description: No such image group, or it is not visible to the caller.
+      security:
+      - token: []
+  /image-groups/{id}/generations/{n}:
+    get:
+      tags:
+      - Image groups
+      summary: Get an image-group generation
+      operationId: getImageGroupGeneration
+      parameters:
+      - in: path
+        name: id
+        description: The image group's unique identifier.
+        required: true
+        schema:
+          description: The image group's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      - in: path
+        name: n
+        description: The generation number within the group.
+        required: true
+        schema:
+          description: The generation number within the group.
+          type: integer
+          format: uint32
+          minimum: 0
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: One immutable generation (membership snapshot) of an image group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGroupGenerationInfo'
+        '404':
+          description: No such image group or generation.
+      security:
+      - token: []
+  /image-groups/{id}/grants:
+    get:
+      tags:
+      - Image groups
+      summary: List an image group's grants
+      description: Returns the complete set in a stable order; this route is not paginated.
+      operationId: listImageGroupGrants
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImageGroupGrantInfo'
+      security:
+      - token: []
+    post:
+      tags:
+      - Image groups
+      summary: Grant a permission on an image group
+      operationId: createImageGroupGrant
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        description: '`POST /image-groups/{id}/grants`: grant `permission` on the group to a subject.'
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageGroupGrantRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '204':
+          description: The grant was recorded.
+        '404':
+          description: No such image group, or it is not visible to the caller.
+      security:
+      - token: []
+  /image-groups/{id}/grants/{subject_id}/{permission}:
+    delete:
+      tags:
+      - Image groups
+      summary: Revoke a grant on an image group
+      operationId: revokeImageGroupGrant
+      parameters:
+      - in: path
+        name: id
+        description: The image group's unique identifier.
+        required: true
+        schema:
+          description: The image group's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      - in: path
+        name: permission
+        description: The permission being revoked (`use` or `manage`).
+        required: true
+        schema:
+          description: The permission being revoked (`use` or `manage`).
+          type: string
+        style: simple
+      - in: path
+        name: subject_id
+        description: The subject (user or group) the grant applies to.
+        required: true
+        schema:
+          description: The subject (user or group) the grant applies to.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '204':
+          description: The grant was revoked.
+        '404':
+          description: No matching grant to revoke.
+      security:
+      - token: []
+  /image-groups/{id}/public:
+    put:
+      tags:
+      - Image groups
+      summary: Set an image group's public flag
+      operationId: setImageGroupPublic
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        description: |-
+          `PUT /image-groups/{id}/public`: declare a group public (or private again).
+          Requires `manage`.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetImageGroupPublicRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: A named, mutable image group, as returned by the catalog list/inspect routes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGroupInfo'
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: No such image group, or it is not visible to the caller.
+      security:
+      - token: []
+components:
+  securitySchemes:
+    token:
+      type: http
+      scheme: bearer
+      description: 'A Treadmill user API token, presented as `Authorization: Bearer <token>`.'
+  schemas:
+    AuditFeedQuery:
+      description: Query parameters for an audit feed (`GET /{entity}/{id}/events`).
+      type: object
+      properties:
+        cursor:
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
+          type:
+          - string
+          - 'null'
+        limit:
+          description: |-
+            Maximum number of events per page. Omitted or out-of-range values fall
+            back to the server's default and bounds.
+          type:
+          - integer
+          - 'null'
+          format: uint32
+          minimum: 0
+    AuditFeedResponse:
+      description: |-
+        A page of rendered audit events for one entity, newest first.
+
+        Paginated by keyset: when `next_cursor` is non-null, pass it back as the
+        `cursor` query parameter to fetch the next (older) page; a null `next_cursor`
+        means the last page.
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/RenderedAuditRow'
+        next_cursor:
+          description: Opaque cursor for the next page, or null on the last page.
+          type:
+          - string
+          - 'null'
+      required:
+      - events
+    CreateGenerationRequest:
+      description: |-
+        `POST /image-groups/{id}/generations`: append a new, immutable
+        full-replacement generation of a group's membership.
+      type: object
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/GenerationMemberSpec'
+      required:
+      - members
+    CreateImageGroupRequest:
+      description: |-
+        `POST /image-groups`: create an empty, named image group. The caller becomes
+        its owner; membership is added afterwards via per-generation snapshots (see
+        [`CreateGenerationRequest`]).
+      type: object
+      properties:
+        label:
+          description: Optional human-readable label.
+          type:
+          - string
+          - 'null'
+          default: null
+        name:
+          description: The stable, globally-unique moving-target handle a job references (by id).
+          type: string
+        public:
+          description: |-
+            When `true`, every subject implicitly holds `use` on the group (may run
+            jobs against it) without an explicit grant. Never confers `manage`.
+          type: boolean
+          default: false
+      required:
+      - name
+    Digest:
+      description: |-
+        A content-addressable OCI digest over 32 bytes of SHA-256.
+
+        Formats as the canonical OCI string `sha256:<64 lower-case hex>`.
+      type: string
+    DigestPath:
+      description: The `{digest}` segment of an image route.
+      type: object
+      properties:
+        digest:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+      required:
+      - digest
+    EnqueueJobResponse:
+      description: 'Response body of `POST /jobs`: the id assigned to the freshly enqueued job.'
+      type: object
+      properties:
+        job_id:
+          type: string
+          format: uuid
+      required:
+      - job_id
+    GenerationMemberInfo:
+      description: |-
+        One member of a generation, as returned by the inspect route. A member is
+        admissible for a host iff the host's tags are a superset of
+        `required_host_tags`.
+      type: object
+      properties:
+        image_id:
+          type: string
+          format: uuid
+        index:
+          type: integer
+          format: uint32
+          minimum: 0
+        manifest_digest:
+          $ref: '#/components/schemas/Digest'
+        required_host_tags:
+          type: array
+          items:
+            type: string
+      required:
+      - image_id
+      - manifest_digest
+      - required_host_tags
+      - index
+    GenerationMemberSpec:
+      description: |-
+        One member of a new generation; `index` is the member's array position in the
+        request, used as the deterministic tie-break among equally-specific members.
+      type: object
+      properties:
+        image_id:
+          description: Image to include; must already be registered via `POST /images`.
+          type: string
+          format: uuid
+        required_host_tags:
+          description: |-
+            Host tags a host must carry (as a superset) for this member to be
+            selectable on it.
+          type: array
+          default: []
+          items:
+            type: string
+      required:
+      - image_id
+    GenerationPath:
+      description: The `{id}/generations/{n}` segments of an image-group generation route.
+      type: object
+      properties:
+        id:
+          description: The image group's unique identifier.
+          type: string
+          format: uuid
+        n:
+          description: The generation number within the group.
+          type: integer
+          format: uint32
+          minimum: 0
+      required:
+      - id
+      - n
+    GrantPath:
+      description: The `{id}/grants/{subject_id}/{permission}` segments of a grant route.
+      type: object
+      properties:
+        id:
+          description: The image group's unique identifier.
+          type: string
+          format: uuid
+        permission:
+          description: The permission being revoked (`use` or `manage`).
+          type: string
+        subject_id:
+          description: The subject (user or group) the grant applies to.
+          type: string
+          format: uuid
+      required:
+      - id
+      - subject_id
+      - permission
+    GroupMembership:
+      description: |-
+        One group the user belongs to, including transitive memberships (e.g. via
+        nested groups or a linked GitHub org).
+      type: object
+      properties:
+        group_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        source:
+          description: How the membership arose (`direct`, `github_org`, ...).
+          type: string
+        source_ref:
+          description: |-
+            The external reference backing an auto-sourced membership (e.g. the
+            GitHub org id); empty for direct memberships.
+          type: string
+      required:
+      - group_id
+      - name
+      - source
+      - source_ref
+    HostInfo:
+      description: |-
+        A host in the `GET /hosts` listing: its identity, opaque tags, attached
+        targets, and liveness.
+      type: object
+      properties:
+        host_id:
+          type: string
+          format: uuid
+        last_seen_at:
+          description: |-
+            The host's last heartbeat, or null if it has never reported (or its
+            supervisor disconnected cleanly).
+          type:
+          - string
+          - 'null'
+          format: date-time
+        live:
+          description: |-
+            Whether the host's supervisor has heartbeat recently enough to be
+            considered schedulable, computed with the deployment's liveness window.
+          type: boolean
+        name:
+          type: string
+        tags:
+          description: |-
+            Opaque host tags; a job's `host_tag_requirements` match a host whose
+            `tags` are a superset.
+          type: array
+          items:
+            type: string
+        targets:
+          description: The targets (DUTs) wired to this host, in stable order.
+          type: array
+          items:
+            $ref: '#/components/schemas/HostTarget'
+      required:
+      - host_id
+      - name
+      - tags
+      - live
+      - targets
+    HostTarget:
+      description: One target (DUT) attached to a host, as exposed by `GET /hosts`.
+      type: object
+      properties:
+        name:
+          description: Stable per-host label for the DUT (e.g. `"dut0"`).
+          type: string
+        tags:
+          description: Opaque tag set (same convention as host tags).
+          type: array
+          items:
+            type: string
+      required:
+      - name
+      - tags
+    IdPath:
+      description: A single `{id}` UUID segment.
+      type: object
+      properties:
+        id:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+      required:
+      - id
+    ImageGroupGenerationInfo:
+      description: One immutable generation (membership snapshot) of an image group.
+      type: object
+      properties:
+        created_at:
+          type: string
+          format: date-time
+        created_by:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        generation:
+          type: integer
+          format: uint32
+          minimum: 0
+        group_id:
+          type: string
+          format: uuid
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/GenerationMemberInfo'
+      required:
+      - group_id
+      - generation
+      - created_at
+      - members
+    ImageGroupGrantInfo:
+      description: One grant on an image group, as returned by the list-grants route.
+      type: object
+      properties:
+        permission:
+          $ref: '#/components/schemas/ImageGroupPermission'
+        subject_id:
+          type: string
+          format: uuid
+      required:
+      - subject_id
+      - permission
+    ImageGroupGrantRequest:
+      description: '`POST /image-groups/{id}/grants`: grant `permission` on the group to a subject.'
+      type: object
+      properties:
+        permission:
+          $ref: '#/components/schemas/ImageGroupPermission'
+        subject_id:
+          type: string
+          format: uuid
+      required:
+      - subject_id
+      - permission
+    ImageGroupInfo:
+      description: A named, mutable image group, as returned by the catalog list/inspect routes.
+      type: object
+      properties:
+        created_at:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        label:
+          type:
+          - string
+          - 'null'
+        latest_generation:
+          description: The group's latest generation number, or null if it has none yet.
+          type:
+          - integer
+          - 'null'
+          format: uint32
+          minimum: 0
+        name:
+          type: string
+        owner_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        public:
+          description: When `true`, every subject implicitly holds `use` on the group.
+          type: boolean
+      required:
+      - id
+      - name
+      - public
+      - created_at
+    ImageGroupPermission:
+      description: A permission on an image group.
+      oneOf:
+      - description: May run a job referencing the group (and so its member images).
+        type: string
+        const: use
+      - description: May create generations and manage grants (owner holds this implicitly).
+        type: string
+        const: manage
+    ImageInfo:
+      description: A registered image, as returned by the catalog list/inspect routes.
+      type: object
+      properties:
+        artifact_type:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        label:
+          type:
+          - string
+          - 'null'
+        locations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageLocation'
+        manifest_digest:
+          $ref: '#/components/schemas/Digest'
+        owner_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+      required:
+      - id
+      - manifest_digest
+      - artifact_type
+      - created_at
+      - locations
+    ImageLocation:
+      description: One registry location of a registered image.
+      type: object
+      properties:
+        registry:
+          type: string
+        repository:
+          type: string
+        status:
+          description: '`external`, `canonical`, or `system`.'
+          type: string
+      required:
+      - registry
+      - repository
+      - status
+    JobImageRef:
+      description: |-
+        What a job is based off, as seen by `GET /jobs/{id}`: a concrete image, an
+        image group (with the frozen generation), or a resume/restart of an earlier
+        job. The concrete manifest digest actually dispatched is reported separately
+        as `resolved_image_digest`.
+      oneOf:
+      - description: Based off a concrete catalog image, addressed by its catalog id.
+        type: object
+        properties:
+          image_id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            const: image
+        required:
+        - type
+        - image_id
+      - description: |-
+          Based off a registered image *group*, addressed by its id plus the frozen
+          generation; the concrete member is chosen at dispatch.
+        type: object
+        properties:
+          generation:
+            type: integer
+            format: uint32
+            minimum: 0
+          group_id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            const: image_group
+        required:
+        - type
+        - group_id
+        - generation
+      - description: Resumes a previously started job.
+        type: object
+        properties:
+          job_id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            const: resume
+        required:
+        - type
+        - job_id
+      - description: Restarts a previously started job (inherits its image reference).
+        type: object
+        properties:
+          job_id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            const: restart
+        required:
+        - type
+        - job_id
+    JobInfo:
+      description: |-
+        The full server-side view of a single job, returned by `GET /jobs/{id}`.
+
+        Covers the job's identity, ownership, lifecycle state, the spec it was
+        enqueued with, and — once it has run — its placement and terminal outcome.
+        Secret parameters are redacted (see [`JobParameterView`]).
+      type: object
+      properties:
+        dispatched_on_host_id:
+          description: The host the job is (or was) dispatched on; null if unplaced.
+          type:
+          - string
+          - 'null'
+          format: uuid
+        exit_message:
+          description: A human-readable detail accompanying termination, if any.
+          type:
+          - string
+          - 'null'
+        host_tag_requirements:
+          description: |-
+            Host eligibility tags this job requires (superset match against a host's
+            tags).
+          type: array
+          items:
+            type: string
+        image:
+          description: What the job is based off.
+          allOf:
+          - $ref: '#/components/schemas/JobImageRef'
+        initializing_stage:
+          description: The sub-stage while `state` is `initializing`; null otherwise.
+          anyOf:
+          - $ref: '#/components/schemas/JobInitializingStage'
+          - type: 'null'
+        job_id:
+          type: string
+          format: uuid
+        owner_id:
+          description: |-
+            Owning subject (user or group); null if the owner was deleted
+            (orphaned).
+          type:
+          - string
+          - 'null'
+          format: uuid
+        parameters:
+          description: Job parameters, keyed by name; secret values are redacted.
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/JobParameterView'
+        queued_at:
+          description: When the job was enqueued.
+          type: string
+          format: date-time
+        resolved_image_digest:
+          description: |-
+            The concrete manifest digest actually dispatched, recorded at dispatch;
+            null until then.
+          anyOf:
+          - $ref: '#/components/schemas/Digest'
+          - type: 'null'
+        restart_policy:
+          $ref: '#/components/schemas/RestartPolicyState'
+        ssh_endpoints:
+          description: SSH endpoints the running job is reachable on; null until reported.
+          type:
+          - array
+          - 'null'
+          items:
+            $ref: '#/components/schemas/SshEndpoint'
+        ssh_keys:
+          type: array
+          items:
+            type: string
+        started_at:
+          description: When the job was dispatched onto a host; null if not yet started.
+          type:
+          - string
+          - 'null'
+          format: date-time
+        state:
+          description: Where the job is in its lifecycle.
+          allOf:
+          - $ref: '#/components/schemas/JobState'
+        target_requirements:
+          description: |-
+            Target (DUT) eligibility: one tag set per requested target, in submission
+            order.
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+        task_exit_status:
+          description: |-
+            The user workload's success/failure outcome, orthogonal to
+            `termination_reason`; null if never reported.
+          anyOf:
+          - $ref: '#/components/schemas/TaskExitStatus'
+          - type: 'null'
+        terminated_at:
+          description: When the job was finalized; null until then.
+          type:
+          - string
+          - 'null'
+          format: date-time
+        termination_reason:
+          description: Why the job terminated; null until finalized.
+          anyOf:
+          - $ref: '#/components/schemas/TerminationReason'
+          - type: 'null'
+        timeout_secs:
+          description: How long the job may run before it is killed, in seconds.
+          type: integer
+          format: int64
+      required:
+      - job_id
+      - state
+      - image
+      - ssh_keys
+      - restart_policy
+      - host_tag_requirements
+      - target_requirements
+      - parameters
+      - timeout_secs
+      - queued_at
+    JobInitSpec:
+      oneOf:
+      - description: Resume a previously started job.
+        type: object
+        properties:
+          job_id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            const: resume
+        required:
+        - type
+        - job_id
+      - description: Restart a previously started job (inherits its image reference).
+        type: object
+        properties:
+          job_id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            const: restart
+        required:
+        - type
+        - job_id
+      - description: |-
+          Base this job off a concrete image registered in the switchboard
+          catalog, addressed by its catalog id (`POST /images`). At dispatch the
+          switchboard resolves the image to its registry locations for the
+          supervisor.
+        type: object
+        properties:
+          image_id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            const: image
+        required:
+        - type
+        - image_id
+      - description: |-
+          Base this job off a registered image *group*, addressed by its stable id.
+          `generation` pins a specific membership snapshot; when omitted, the
+          group's latest generation is resolved and frozen onto the job at enqueue.
+          After a host is chosen, the switchboard matcher selects the generation's
+          member whose required host tags the chosen host satisfies and dispatches
+          that concrete member.
+        type: object
+        properties:
+          generation:
+            type:
+            - integer
+            - 'null'
+            format: uint32
+            default: null
+            minimum: 0
+          group_id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            const: image_group
+        required:
+        - type
+        - group_id
+    JobInitializingStage:
+      description: |-
+        The fine-grained stage of a job that is still coming up, exposed as
+        `initializing_stage` on [`JobInfo`] while its `state` is `initializing` (and
+        null in every other state). A job advances through these stages in order as
+        the host fetches its image, allocates resources, provisions the environment,
+        and boots, before it becomes `ready`.
+      oneOf:
+      - description: Generic starting stage, reported before any more specific stage applies.
+        type: string
+        const: starting
+      - description: Fetching the job's image.
+        type: string
+        const: fetching_image
+      - description: Acquiring resources (such as the root filesystem) for the environment.
+        type: string
+        const: allocating
+      - description: Applying the requested customizations to the base system.
+        type: string
+        const: provisioning
+      - description: The host is booting; the job becomes `ready` once it is up.
+        type: string
+        const: booting
+    JobListResponse:
+      description: |-
+        Response body of `GET /jobs`: a page of jobs the caller can read, newest
+        first.
+
+        Pagination is **keyset** on `(queued_at, job_id)` descending: when
+        `next_cursor` is non-null, pass it back as the `cursor` query parameter to
+        fetch the next page; a null `next_cursor` means the last page. There is no
+        total count.
+      type: object
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobSummary'
+        next_cursor:
+          description: Opaque cursor for the next page, or null on the last page.
+          type:
+          - string
+          - 'null'
+      required:
+      - jobs
+    JobParameter:
+      description: |-
+        One parameter supplied with a job at enqueue (`POST /jobs`), passed through
+        to the puppet daemon running the workload.
+
+        Flag a parameter `secret` to have its value withheld wherever the job is
+        later read back (it surfaces as a redacted [`JobParameterView`]); non-secret
+        parameters are returned verbatim.
+      type: object
+      properties:
+        secret:
+          description: |-
+            Whether to treat the value as secret (withheld when the job is read
+            back).
+          type: boolean
+        value:
+          description: The parameter's value.
+          type: string
+      required:
+      - value
+      - secret
+    JobParameterView:
+      description: |-
+        One job parameter as exposed by `GET /jobs/{id}`. A parameter flagged
+        `secret` is **redacted**: its `value` is null and only the key and the
+        `secret` flag are visible. Non-secret parameters carry their plaintext
+        `value`.
+      type: object
+      properties:
+        secret:
+          description: Whether this parameter was submitted as secret.
+          type: boolean
+        value:
+          description: The plaintext value, or null when the parameter is secret (withheld).
+          type:
+          - string
+          - 'null'
+      required:
+      - secret
+    JobRequest:
+      type: object
+      properties:
+        host_tag_requirements:
+          description: |-
+            Host eligibility: the set of tags the chosen host must carry (as a
+            superset) for this job to be assigned to it. Tags are opaque strings
+            (`key=value` pairs or bare flags, by convention only), matched by
+            containment against the host's tags.
+          type: array
+          default: []
+          items:
+            type: string
+        init_spec:
+          description: What kind of job this is.
+          allOf:
+          - $ref: '#/components/schemas/JobInitSpec'
+        override_timeout:
+          type:
+          - string
+          - 'null'
+        owner:
+          description: |-
+            The subject (user or group) to own the enqueued job. Must be the caller
+            itself or a group the caller is a member of; absent, ownership defaults
+            to the caller. Ownership decides who can later read, stop, and manage the
+            job.
+          type:
+          - string
+          - 'null'
+          format: uuid
+          default: null
+        parameters:
+          description: |-
+            A hash map of parameters provided to this job execution. These
+            parameters are provided to the puppet daemon.
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/JobParameter'
+        restart_policy:
+          $ref: '#/components/schemas/RestartPolicy'
+        ssh_keys:
+          description: |-
+            The set of initial SSH keys to deploy onto the image.
+
+            The image's configuration of the Treadmill puppet daemon determines
+            how and whether these keys will be loaded.
+          type: array
+          items:
+            type: string
+        target_requirements:
+          description: |-
+            Target (DUT) eligibility: an ordered array of requested targets, each a
+            set of tags an attached DUT must carry (as a superset). The scheduler
+            assigns each entry to a distinct attached target (DUT) on the chosen
+            host. Empty requests no DUTs. Target tags do not affect image selection.
+          type: array
+          default: []
+          items:
+            type: array
+            items:
+              type: string
+      required:
+      - init_spec
+      - ssh_keys
+      - restart_policy
+      - parameters
+    JobState:
+      description: |-
+        Where a job is in its execution lifecycle: queued → assigned → initializing
+        → ready → terminating → finalized.
+      oneOf:
+      - description: Enqueued, awaiting placement onto a host by the scheduler.
+        type: string
+        const: queued
+      - description: Placed on a host but not yet reported as executing.
+        type: string
+        const: assigned
+      - description: The host is bringing the job up (see `initializing_stage`).
+        type: string
+        const: initializing
+      - description: The job is running and ready.
+        type: string
+        const: ready
+      - description: The job is shutting down.
+        type: string
+        const: terminating
+      - description: 'Terminal: the job has ended (see `termination_reason`).'
+        type: string
+        const: finalized
+    JobSummary:
+      description: |-
+        A compact per-job row for the `GET /jobs` listing — identity, ownership,
+        lifecycle state, and the key timestamps/outcome, without the heavier
+        per-job detail (parameters, target requirements, ssh keys) that
+        [`JobInfo`] carries. Fetch the full view with `GET /jobs/{id}`.
+      type: object
+      properties:
+        dispatched_on_host_id:
+          description: The host the job is (or was) dispatched on; null if unplaced.
+          type:
+          - string
+          - 'null'
+          format: uuid
+        image:
+          $ref: '#/components/schemas/JobImageRef'
+        job_id:
+          type: string
+          format: uuid
+        owner_id:
+          description: Owning subject (user or group); null if orphaned.
+          type:
+          - string
+          - 'null'
+          format: uuid
+        queued_at:
+          type: string
+          format: date-time
+        started_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        state:
+          $ref: '#/components/schemas/JobState'
+        task_exit_status:
+          anyOf:
+          - $ref: '#/components/schemas/TaskExitStatus'
+          - type: 'null'
+        terminated_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        termination_reason:
+          anyOf:
+          - $ref: '#/components/schemas/TerminationReason'
+          - type: 'null'
+      required:
+      - job_id
+      - state
+      - image
+      - queued_at
+    LinkedGitHub:
+      description: A linked GitHub identity, reduced to the fields safe to expose publicly.
+      type: object
+      properties:
+        login:
+          description: The user's current GitHub login/handle.
+          type: string
+        profile_url:
+          description: Canonical URL of the GitHub profile (`https://github.com/<login>`).
+          type: string
+      required:
+      - login
+      - profile_url
+    ListQuery:
+      description: Query parameters for `GET /jobs`.
+      type: object
+      properties:
+        cursor:
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
+          type:
+          - string
+          - 'null'
+        limit:
+          description: |-
+            Maximum number of jobs per page. Omitted or out-of-range values fall
+            back to the server's default and bounds.
+          type:
+          - integer
+          - 'null'
+          format: uint32
+          minimum: 0
+    LogStreamCredentials:
+      description: |-
+        Connection credentials for tailing/replaying a job's console logs over NATS,
+        returned by `POST /jobs/{id}/log-token`.
+
+        The token is a short-lived **bearer** user JWT scoped to *subscribe* to this
+        job's log subjects (`subject`); the client connects to `nats_url` with the
+        token string alone (no nkey seed). The token only needs to be valid at
+        connect time — an established NATS connection is not dropped when the JWT
+        expires — so a client re-requests credentials when it next reconnects, after
+        roughly `expires_in_secs`.
+      type: object
+      properties:
+        expires_in_secs:
+          description: |-
+            Seconds until the token's `exp`; re-request credentials after this
+            elapses (only needed to open a *new* connection).
+          type: integer
+          format: uint64
+          minimum: 0
+        nats_url:
+          description: NATS client URL to connect to (e.g. `nats://nats.example:4222`).
+          type: string
+        subject:
+          description: |-
+            Subject wildcard covering all of this job's log channels:
+            `logs.<job-id>.>`.
+          type: string
+        token:
+          description: Bearer user JWT authorizing subscribe on `subject`.
+          type: string
+      required:
+      - nats_url
+      - subject
+      - token
+      - expires_in_secs
+    PublicUserProfile:
+      description: |-
+        The world-readable subset of a user profile: only data deemed safe to expose
+        to any authenticated caller.
+      type: object
+      properties:
+        avatar_url:
+          type:
+          - string
+          - 'null'
+        full_name:
+          type:
+          - string
+          - 'null'
+        github:
+          description: The linked GitHub account, if any.
+          anyOf:
+          - $ref: '#/components/schemas/LinkedGitHub'
+          - type: 'null'
+        user_id:
+          type: string
+          format: uuid
+        username:
+          type: string
+      required:
+      - user_id
+      - username
+    RegisterImageRequest:
+      description: |-
+        `POST /images`: register a concrete image by digest. The switchboard pulls
+        the manifest from `registry/repository@manifest_digest`, validates it is a
+        Treadmill image, and records the image plus its first location.
+      type: object
+      properties:
+        label:
+          description: Optional human-readable label.
+          type:
+          - string
+          - 'null'
+          default: null
+        manifest_digest:
+          description: The OCI manifest digest identifying the image.
+          allOf:
+          - $ref: '#/components/schemas/Digest'
+        registry:
+          description: Registry authority (`host:port`) the manifest can be pulled from.
+          type: string
+        repository:
+          description: Repository path within the registry.
+          type: string
+      required:
+      - registry
+      - repository
+      - manifest_digest
+    RenderedAuditRow:
+      description: |-
+        One audit event, already rendered to a human-readable `message` for the
+        requesting viewer (the switchboard resolves the per-event template and
+        applies the viewer's visibility before sending it).
+      type: object
+      properties:
+        actor_id:
+          type: string
+          format: uuid
+        correlation_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        event_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+        message:
+          type: string
+      required:
+      - event_id
+      - event_type
+      - created_at
+      - actor_id
+      - message
+    RestartPolicy:
+      description: |-
+        How many times a job may be **automatically restarted** after it is dropped
+        by its host, supplied with the job at enqueue (`POST /jobs`).
+
+        Each automatic restart enqueues a successor that inherits one fewer; the
+        count a running job still has left is reported back as [`RestartPolicyState`]
+        on [`JobInfo`]. A `max_restarts` of `0` disables automatic restarts.
+      type: object
+      properties:
+        max_restarts:
+          description: Maximum number of automatic restarts to grant this job.
+          type: integer
+          format: uint32
+          minimum: 0
+      required:
+      - max_restarts
+    RestartPolicyState:
+      description: |-
+        The automatic-restart budget a job still has left, exposed as
+        `restart_policy` on [`JobInfo`].
+
+        A job enqueued with a [`RestartPolicy`] starts at its `max_restarts`; each
+        automatic restart spends one, so this reports how many restarts the job (or
+        the successor currently standing in for it) still has remaining.
+      type: object
+      properties:
+        remaining_restarts:
+          description: How many automatic restarts this job still has remaining.
+          type: integer
+          format: uint32
+          minimum: 0
+      required:
+      - remaining_restarts
+    SelfUserProfile:
+      description: |-
+        The owner's full view of their own profile: the public subset plus the
+        private additions only the account holder may see.
+      type: object
+      properties:
+        avatar_url:
+          type:
+          - string
+          - 'null'
+        emails:
+          description: All verified email addresses on file for the account.
+          type: array
+          items:
+            type: string
+        full_name:
+          type:
+          - string
+          - 'null'
+        github:
+          description: The linked GitHub account, if any.
+          anyOf:
+          - $ref: '#/components/schemas/LinkedGitHub'
+          - type: 'null'
+        groups:
+          description: Every group the user belongs to, including transitive memberships.
+          type: array
+          items:
+            $ref: '#/components/schemas/GroupMembership'
+        locked:
+          description: Whether the account is locked (cannot log in or use existing sessions).
+          type: boolean
+        user_id:
+          type: string
+          format: uuid
+        username:
+          type: string
+      required:
+      - user_id
+      - username
+      - emails
+      - groups
+      - locked
+    SessionInfo:
+      description: |-
+        One of the caller's active or historical sessions/API tokens. Never carries
+        the secret token itself — only its metadata and provenance.
+      type: object
+      properties:
+        comment:
+          description: An optional human-supplied label for the token.
+          type:
+          - string
+          - 'null'
+        created_at:
+          type: string
+          format: date-time
+        created_ip:
+          description: The client IP the token was minted from, if recorded.
+          type:
+          - string
+          - 'null'
+        current:
+          description: True for the token used to authenticate the current request.
+          type: boolean
+        expires_at:
+          type: string
+          format: date-time
+        revoked:
+          description: Set if the token has been revoked.
+          anyOf:
+          - $ref: '#/components/schemas/TokenRevocation'
+          - type: 'null'
+        token_id:
+          type: string
+          format: uuid
+        user_agent:
+          description: The user agent that requested the token, if recorded.
+          type:
+          - string
+          - 'null'
+      required:
+      - token_id
+      - created_at
+      - expires_at
+      - current
+    SetImageGroupPublicRequest:
+      description: |-
+        `PUT /image-groups/{id}/public`: declare a group public (or private again).
+        Requires `manage`.
+      type: object
+      properties:
+        public:
+          type: boolean
+      required:
+      - public
+    SshEndpoint:
+      description: An SSH endpoint a running job can be reached on.
+      type: object
+      properties:
+        ssh_host:
+          type: string
+        ssh_port:
+          type: integer
+          format: uint16
+          maximum: 65535
+          minimum: 0
+      required:
+      - ssh_host
+      - ssh_port
+    TaskExitStatus:
+      description: |-
+        The user workload's success/failure outcome, exposed as `task_exit_status`
+        on [`JobInfo`]/[`JobSummary`].
+
+        It is orthogonal to *why* the job terminated (see [`TerminationReason`]): the
+        outcome reflects the workload's own result, reported by the host while the
+        job runs and revisable until it ends. `pending` means the workload was still
+        running when last reported; a null `task_exit_status` means no outcome was
+        ever reported.
+      oneOf:
+      - description: The workload is running; its result is not yet determined.
+        type: string
+        const: pending
+      - description: The workload completed successfully.
+        type: string
+        const: success
+      - description: The workload failed.
+        type: string
+        const: failure
+    TerminationReason:
+      description: |-
+        Why a job terminated.
+
+        This records *why* a job stopped and is orthogonal to the `task_exit_status`
+        (the success/failure of the user's workload) and to any `exit_message`.
+      oneOf:
+      - description: The job's workload terminated (e.g., QEMU VM shutdown).
+        type: string
+        const: workload_exited
+      - description: |-
+          The job requested its own termination (e.g., by requesting termination
+          through the puppet).
+        type: string
+        const: workload_self_terminated
+      - description: Externally terminated by a user.
+        type: string
+        const: user_terminated
+      - description: Timed out while still queued.
+        type: string
+        const: queue_timeout
+      - description: Timed out while dispatched/executing.
+        type: string
+        const: execution_timeout
+      - description: The job's image was bad or could not be fetched (user fault).
+        type: string
+        const: image_error
+      - description: No host matched the job's tag configuration.
+        type: string
+        const: host_match_error
+      - description: The host failed to start the job.
+        type: string
+        const: host_start_failure
+      - description: The host's supervisor dropped the job (lost on reconnect).
+        type: string
+        const: host_dropped_job
+      - description: The host was unreachable (its supervisor disconnected).
+        type: string
+        const: host_unreachable
+      - description: Resuming a previously started job failed.
+        type: string
+        const: resume_failed
+      - description: An unexpected internal failure.
+        type: string
+        const: internal_error
+    TokenIdPath:
+      description: The `{token_id}` segment of a token route.
+      type: object
+      properties:
+        token_id:
+          description: The token's unique identifier.
+          type: string
+          format: uuid
+      required:
+      - token_id
+    TokenRevocation:
+      description: When and why a token was revoked.
+      type: object
+      properties:
+        reason:
+          type: string
+        revoked_at:
+          type: string
+          format: date-time
+      required:
+      - revoked_at
+      - reason
+    UpdateProfileRequest:
+      description: |-
+        A patch to the caller's own profile. Omitting a field leaves it unchanged;
+        sending an explicit `null` clears it. `username` cannot be cleared, only
+        changed.
+      type: object
+      properties:
+        avatar_url:
+          type:
+          - string
+          - 'null'
+        full_name:
+          type:
+          - string
+          - 'null'
+        username:
+          type:
+          - string
+          - 'null'
+tags:
+- name: Jobs
+  description: Enqueue, inspect, and terminate jobs.
+- name: Hosts
+  description: Inspect hosts and their attached targets.
+- name: Images
+  description: Register and inspect catalog images.
+- name: Image groups
+  description: Manage image groups, their generations, and grants.
+- name: Users
+  description: Profiles, sessions, and audit feeds.

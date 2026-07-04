@@ -1,0 +1,31 @@
+# Standalone fixture crate — deliberately NOT a member of the Treadmill
+# workspace. It targets `aarch64-unknown-uefi` (no_std, no host), pulls in the
+# `uefi` crate, and is built only by `nix/tiny-efi.nix`. The empty `[workspace]`
+# table detaches it from the parent workspace so neither cargo nor crane treats
+# it as a member; it is also listed under the root `[workspace] exclude`.
+[package]
+name = "tiny-efi"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "tiny-efi"
+path = "src/main.rs"
+
+[dependencies]
+# `uefi`'s default features are minimal; opt into the global allocator, logger,
+# and the default `#[panic_handler]` that `helpers::init` + `println!` rely on.
+uefi = { version = "0.35", features = [
+  "alloc",
+  "global_allocator",
+  "logger",
+  "panic_handler",
+] }
+
+[profile.release]
+# Small, deterministic EFI binary; panics abort (UEFI has no unwinder).
+opt-level = "s"
+panic = "abort"
+
+[workspace]

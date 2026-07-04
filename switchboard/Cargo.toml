@@ -6,12 +6,20 @@ edition.workspace = true
 
 [dependencies]
 treadmill-rs = { workspace = true }
-
-# For debugging reasons
-console-subscriber = "0.5.0"
+# Optional embedded web console: when [console] enabled, switchboard mounts the
+# console's router on its own listener. Pulled in unconditionally (the console
+# crate is light); whether it is served is a runtime config decision.
+treadmill-console = { workspace = true }
 
 # Utility
-uuid = { workspace = true, features = ["serde", "fast-rng", "v4"] }
+uuid = { workspace = true, features = ["serde", "fast-rng", "v4", "v7"] }
+# Avatar-URL validation on profile updates (scheme/host checks).
+url = "2"
+# Link-time event-renderer registry. The `audit` module registers a render fn
+# per event type via `linkme::distributed_slice` so the read API doesn't need a
+# central `match event_type` -- adding a new event in `define_event!` makes it
+# renderable just by being linked in.
+linkme = "0.3"
 chrono = { workspace = true, features = ["serde"] }
 # because cookie-rs has an unavoidable hard dependency on time::Duration
 time = "0.3.47"
@@ -25,6 +33,7 @@ sqlx = { version = "0.9.0", features = [
   "macros",
   "chrono",
   "ipnetwork",
+  "json",
 ] }
 
 # Server
@@ -36,10 +45,18 @@ axum = { version = "0.8.9", features = [
   "ws",
   "macros",
 ] }
+aide = { version = "0.16.0-alpha.4", features = [
+  "axum",
+  "axum-json",
+  "axum-extra-headers",
+  "axum-ws",
+  "axum-query",
+  "axum-tokio",
+] }
+schemars = { workspace = true }
 axum-extra = { version = "0.12.6", features = ["typed-header"] }
 headers = "0.4.0"
 http = { workspace = true }
-axum-server = { version = "0.8.0", features = ["tls-rustls"] }
 tower-http = { version = "0.6", features = ["trace", "sensitive-headers"] }
 
 # Tokio
@@ -53,10 +70,19 @@ async-trait = { workspace = true }
 
 # Used for token comparison
 subtle = { workspace = true }
-# Used for password verification
-argon2 = "0.6.0-rc.8"
 # CSPRNG
 rand = { workspace = true }
+
+# OAuth2 login (GitHub). The `oauth2` crate drives the authorization-code flow;
+# `reqwest` is its async HTTP backend and is also used directly for the
+# provider's user/email API calls.
+oauth2 = "5"
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+  "charset",
+  "http2",
+] }
 
 # Logging facilities
 tracing = { workspace = true }
@@ -71,14 +97,33 @@ figment = { version = "0.10.19", features = ["toml", "env"] }
 # General serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_with = { workspace = true }
+humantime-serde = { workspace = true }
+# OpenAPI snapshot is emitted as YAML (api-spec/openapi.yaml); used by the
+# dump-openapi bin and the drift-guard test.
+serde_norway = "0.9"
 # Configuration deserialization
 toml = { workspace = true }
 
 # Error derives
 thiserror = { workspace = true }
-# TODO: Phase out
-miette = { version = "7.6", features = ["fancy"] }
 base64 = { workspace = true }
+anyhow.workspace = true
+
+# OCI image catalog: pull manifests/indexes by digest from a registry to
+# validate them at registration time, and project them onto the Treadmill view.
+oci-client = { workspace = true }
+oci-spec = { workspace = true }
+# Verify a pulled manifest hashes to the digest it was requested under.
+sha2 = { workspace = true }
+
+# Log streaming over NATS/JetStream: the JetStream client used to create the
+# per-job stream at dispatch, plus per-job bearer-JWT minting (`nats-jwt` encodes
+# and signs the user claims, `nkeys` derives the account keypair from the signing
+# seed). See `doc/log-streaming-plan.md`.
+async-nats = { workspace = true }
+nats-jwt = { workspace = true }
+nkeys = { workspace = true }
 
 [dev-dependencies]
 sqlx-cli = { version = "0.9.0", features = [
@@ -86,6 +131,13 @@ sqlx-cli = { version = "0.9.0", features = [
   "rustls",
   "completions",
 ] }
+# Activate the `macros` feature on tokio for tests only — `#[sqlx::test]`
+# expands to `#[tokio::test]`, which requires it. Non-test builds stay
+# slim.
+tokio = { workspace = true, features = ["macros"] }
+# In-process mock HTTP server for exercising the OAuth provider flow without a
+# real third-party service.
+wiremock = "0.6"
 
 [lints]
 workspace = true

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select termination_reason::text\n           from tml_switchboard.jobs\n           where job_id = $1 and job_state = 'finalized'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "termination_reason",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b0b2b257a6cc2aff18e0c3737868d9cd09118c36e1c1067687040b8902861230"
+}

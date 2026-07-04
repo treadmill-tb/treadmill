@@ -1,6 +1,6 @@
 use sqlx::PgExecutor;
 use std::collections::HashMap;
-use treadmill_rs::api::switchboard_supervisor::ParameterValue;
+use treadmill_rs::api::switchboard::jobs::JobParameter;
 use uuid::Uuid;
 
 pub struct SqlJobParam {
@@ -13,9 +13,9 @@ pub struct SqlJobParamValue {
     pub value: String,
     pub is_secret: bool,
 }
-impl From<SqlJobParamValue> for ParameterValue {
+impl From<SqlJobParamValue> for JobParameter {
     fn from(value: SqlJobParamValue) -> Self {
-        ParameterValue {
+        JobParameter {
             value: value.value,
             secret: value.is_secret,
         }
@@ -27,7 +27,7 @@ impl From<SqlJobParamValue> for ParameterValue {
 pub async fn fetch_by_job_id(
     job_id: Uuid,
     conn: impl PgExecutor<'_>,
-) -> Result<HashMap<String, ParameterValue>, sqlx::Error> {
+) -> Result<HashMap<String, JobParameter>, sqlx::Error> {
     let records = sqlx::query_as!(
         SqlJobParam,
         r#"select key, value as "value:_" from tml_switchboard.job_parameters where job_id = $1;"#,
@@ -40,7 +40,7 @@ pub async fn fetch_by_job_id(
         .map(|record| {
             (
                 record.key,
-                ParameterValue {
+                JobParameter {
                     value: record.value.value,
                     secret: record.value.is_secret,
                 },
@@ -55,13 +55,13 @@ pub async fn fetch_by_job_id(
 /// parameter.
 pub async fn insert(
     job_id: Uuid,
-    parameters: HashMap<String, ParameterValue>,
+    parameters: HashMap<String, JobParameter>,
     conn: impl PgExecutor<'_>,
 ) -> Result<(), sqlx::Error> {
-    let (keys, values): (Vec<String>, Vec<ParameterValue>) = parameters.into_iter().unzip();
+    let (keys, values): (Vec<String>, Vec<JobParameter>) = parameters.into_iter().unzip();
     let values: Vec<SqlJobParamValue> = values
         .into_iter()
-        .map(|ParameterValue { value, secret }| SqlJobParamValue {
+        .map(|JobParameter { value, secret }| SqlJobParamValue {
             value,
             is_secret: secret,
         })

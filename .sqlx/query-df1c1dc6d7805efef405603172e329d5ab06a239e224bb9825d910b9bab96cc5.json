@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.job_target_requirements\n                 (job_id, req_index, tags)\n               values ($1, $2, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "df1c1dc6d7805efef405603172e329d5ab06a239e224bb9825d910b9bab96cc5"
+}

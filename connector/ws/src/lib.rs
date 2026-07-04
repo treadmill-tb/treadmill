@@ -10,6 +10,7 @@ use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 use tokio::sync::{Mutex, mpsc};
+use tokio::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::{
     self,
     http::{Request, StatusCode, Uri},
@@ -17,10 +18,13 @@ use tokio_tungstenite::tungstenite::{
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::{instrument, warn};
 use treadmill_rs::api::switchboard::AuthToken;
-use treadmill_rs::api::switchboard_supervisor::websocket::TREADMILL_WEBSOCKET_CONFIG;
+use treadmill_rs::api::switchboard_supervisor::websocket::{
+    TREADMILL_PROTOCOL_MINOR_HEADER, TREADMILL_WEBSOCKET_CONFIG,
+};
 use treadmill_rs::api::switchboard_supervisor::{
-    self, JobUserExitStatus, ReportedSupervisorStatus, Response, SocketConfig, SupervisorEvent,
-    SupervisorJobEvent, websocket::TREADMILL_WEBSOCKET_PROTOCOL,
+    self, PROTOCOL_MINOR, ProtocolVersion, ReportedSupervisorStatus, Response, ServerHello,
+    SupervisorEvent, SupervisorJobEvent, SupervisorToSwitchboard, SwitchboardToSupervisor,
+    TaskExitStatus, websocket::TREADMILL_WEBSOCKET_PROTOCOL,
 };
 use treadmill_rs::connector::{self, JobError, RunningJobState};
 use uuid::Uuid;
@@ -37,6 +41,22 @@ pub struct WsConnectorConfig {
     #[serde(flatten)]
     token: WsConnectorConfigToken,
     switchboard_uri: String,
+    /// How often this connector sends a WebSocket PING to the switchboard.
+    /// Local to the supervisor side; deliberately not part of the protocol
+    /// handshake (each side runs its own keepalive). Defaults to 10s.
+    #[serde(with = "humantime_serde", default = "default_ping_interval")]
+    ping_interval: Duration,
+    /// How long this connector waits for a PONG before declaring the switchboard
+    /// dead and dropping the connection. Defaults to 60s.
+    #[serde(with = "humantime_serde", default = "default_pong_timeout")]
+    pong_timeout: Duration,
+}
+
+fn default_ping_interval() -> Duration {
+    Duration::from_secs(10)
+}
+fn default_pong_timeout() -> Duration {
+    Duration::from_secs(60)
 }
 
 #[derive(Debug, Error)]
@@ -83,9 +103,9 @@ struct Inner<S: connector::Supervisor> {
     /// To receive from an [`tokio::mpsc::UnboundedReceiver`], an `&mut` reference is necessary.
     /// This cannot be accomplished through the [`Arc`] around [`Inner`], so we use a [`Mutex`] for
     /// interior mutability.
-    update_rx: Mutex<mpsc::UnboundedReceiver<switchboard_supervisor::Message>>,
+    update_rx: Mutex<mpsc::UnboundedReceiver<SupervisorToSwitchboard>>,
     /// This acts as an interior conduit from the `update_*` methods to the `run()` method.
-    update_tx: mpsc::UnboundedSender<switchboard_supervisor::Message>,
+    update_tx: mpsc::UnboundedSender<SupervisorToSwitchboard>,
     /// The most recent status that was received from the supervisor.
     last_updated_status: Mutex<ReportedSupervisorStatus>,
 
@@ -136,19 +156,13 @@ impl<S: connector::Supervisor> connector::SupervisorConnector for WsConnector<S>
                     new_state,
                     status_message: _, /* TODO: handle */
                 } => self.inner.update_job_state(job_id, new_state).await,
-                SupervisorJobEvent::DeclareExitStatus {
-                    user_exit_status,
-                    host_output,
-                } => {
+                SupervisorJobEvent::DeclareExitStatus { outcome, message } => {
                     self.inner
-                        .declare_exit_status(job_id, user_exit_status, host_output)
+                        .declare_exit_status(job_id, outcome, message)
                         .await
                 }
                 SupervisorJobEvent::Error { error } => {
                     self.inner.report_job_error(job_id, error).await
-                }
-                SupervisorJobEvent::ConsoleLog { console_bytes } => {
-                    self.inner.send_job_console_log(job_id, console_bytes).await
                 }
             },
         }
@@ -174,7 +188,7 @@ impl<S: connector::Supervisor> Inner<S> {
     #[instrument(skip(self))]
     async fn connect(
         &self,
-    ) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, SocketConfig), WsConnectorError> {
+    ) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, ServerHello), WsConnectorError> {
         assure_crypto_provider()?;
 
         let token = match &self.config.token {
@@ -212,7 +226,7 @@ impl<S: connector::Supervisor> Inner<S> {
         let key_buf: [u8; 16] = rand::random();
         let base64_key = base64::prelude::BASE64_STANDARD.encode(key_buf);
         let uri = Uri::from_str(&format!(
-            "{}/api/v1/supervisors/{}/connect",
+            "{}/api/v1/hosts/{}/connect",
             self.config.switchboard_uri, self.supervisor_id,
         ))
         .map_err(|invalid_url| WsConnectorError::InvalidURL(invalid_url.to_string()))?;
@@ -232,6 +246,9 @@ impl<S: connector::Supervisor> Inner<S> {
             .header("sec-websocket-key", base64_key)
             .header("sec-websocket-protocol", TREADMILL_WEBSOCKET_PROTOCOL)
             .header("sec-websocket-version", "13")
+            // Advertise our protocol minor for handshake negotiation; the major
+            // rides the subprotocol token above.
+            .header(TREADMILL_PROTOCOL_MINOR_HEADER, PROTOCOL_MINOR)
             .header("authorization", format!("Bearer {token_ser_string}"))
             .body(())
             // It should not be possible to cause this to error by runtime misconfiguration. It
@@ -271,29 +288,51 @@ impl<S: connector::Supervisor> Inner<S> {
                 return Err(WsConnectorError::Authentication);
             }
         }
-        let socket_config_val =
-            resp.headers()
-                .get(TREADMILL_WEBSOCKET_CONFIG)
-                .ok_or_else(|| {
-                    tracing::error!("Response did not include tml-socket-config header");
-                    WsConnectorError::SocketConfig
-                })?;
-        let socket_config_str = socket_config_val.to_str().map_err(|e| {
+        let server_hello_val = resp
+            .headers()
+            .get(TREADMILL_WEBSOCKET_CONFIG)
+            .ok_or_else(|| {
+                tracing::error!("Response did not include tml-socket-config header");
+                WsConnectorError::SocketConfig
+            })?;
+        let server_hello_str = server_hello_val.to_str().map_err(|e| {
             tracing::error!("Failed to parse tml-socket-config header value: {e}");
             WsConnectorError::SocketConfig
         })?;
-        let socket_config: SocketConfig = serde_json::from_str(socket_config_str).map_err(|e| {
+        let server_hello: ServerHello = serde_json::from_str(server_hello_str).map_err(|e| {
             tracing::error!("Failed to deserialize tml-socket-config header value: {e}");
             WsConnectorError::SocketConfig
         })?;
 
-        Ok((ws, socket_config))
+        // Major must match (the subprotocol token should already have enforced
+        // this, but verify defensively); the effective minor is the lower of the
+        // two advertised minors.
+        if server_hello.protocol.major != ProtocolVersion::CURRENT.major {
+            tracing::error!(
+                client_major = ProtocolVersion::CURRENT.major,
+                server_major = server_hello.protocol.major,
+                "Switchboard speaks an incompatible protocol major; closing."
+            );
+            return Err(WsConnectorError::SocketConfig);
+        }
+        // `min` is a no-op while PROTOCOL_MINOR is 0, but it is the correct
+        // negotiation once minors diverge; keep it rather than hard-code 0.
+        #[allow(clippy::unnecessary_min_or_max)]
+        let effective_minor = PROTOCOL_MINOR.min(server_hello.protocol.minor);
+        tracing::info!(
+            client_minor = PROTOCOL_MINOR,
+            server_minor = server_hello.protocol.minor,
+            effective_minor,
+            "Negotiated protocol minor with switchboard."
+        );
+
+        Ok((ws, server_hello))
     }
 
     /// Handle a message received from the switchboard.
-    async fn handle(&self, message: switchboard_supervisor::Message) {
+    async fn handle(&self, message: SwitchboardToSupervisor) {
         match message {
-            switchboard_supervisor::Message::StartJob(start_job_request) => {
+            SwitchboardToSupervisor::StartJob(start_job_request) => {
                 let job_id = start_job_request.job_id;
                 if let Some(supervisor) = self.supervisor.upgrade() {
                     // TODO: timeout
@@ -304,8 +343,25 @@ impl<S: connector::Supervisor> Inner<S> {
                     }
                 }
             }
-            switchboard_supervisor::Message::StopJob(stop_job_request) => {
+            SwitchboardToSupervisor::StopJob(stop_job_request) => {
                 let job_id = stop_job_request.job_id;
+                // A `StopJob` for a job we are retaining as `Terminated` is the
+                // switchboard acknowledging the terminal outcome: drop the
+                // retained record (→ `Idle`) without bothering the supervisor,
+                // whose workload has already exited.
+                {
+                    let mut lus = self.last_updated_status.lock().await;
+                    if matches!(
+                        &*lus,
+                        ReportedSupervisorStatus::OngoingJob {
+                            job_id: retained,
+                            job_state: RunningJobState::Terminated,
+                        } if *retained == job_id
+                    ) {
+                        *lus = ReportedSupervisorStatus::Idle;
+                        return;
+                    }
+                }
                 // TODO: timeout
                 if let Some(supervisor) = self.supervisor.upgrade()
                     && let Err(error) =
@@ -314,25 +370,27 @@ impl<S: connector::Supervisor> Inner<S> {
                     self.report_job_error(job_id, error).await;
                 }
             }
-            switchboard_supervisor::Message::StatusRequest(switchboard_supervisor::Request {
+            SwitchboardToSupervisor::StatusRequest(switchboard_supervisor::Request {
                 request_id,
                 message: (),
             }) => {
                 let status = self.last_updated_status.lock().await.clone();
                 self.update_tx
-                    .send(switchboard_supervisor::Message::StatusResponse(Response {
+                    .send(SupervisorToSwitchboard::StatusResponse(Response {
                         response_to_request_id: request_id,
                         message: status,
                     }))
                     .unwrap();
             }
-            switchboard_supervisor::Message::SupervisorEvent(_) => {
-                // shouldn't happen
-                unimplemented!()
-            }
-            switchboard_supervisor::Message::StatusResponse(_) => {
-                // Shouldn't happen
-                unimplemented!()
+            SwitchboardToSupervisor::ProtocolError(err) => {
+                // Diagnostic only: the switchboard SHOULD follow this with a
+                // Close frame. We log and let the close path tear down the
+                // connection; reconnection re-synchronises state.
+                tracing::error!(
+                    code = ?err.code,
+                    detail = %err.detail,
+                    "Switchboard reported a protocol error; expecting connection close."
+                );
             }
         }
     }
@@ -344,7 +402,7 @@ impl<S: connector::Supervisor> Inner<S> {
     async fn run(self: &Arc<Self>) -> Result<(), ()> {
         use futures_util::FutureExt;
 
-        let (mut socket, socket_config) = match self.connect().await {
+        let (mut socket, server_hello) = match self.connect().await {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("Failed to connect: {e}");
@@ -358,13 +416,11 @@ impl<S: connector::Supervisor> Inner<S> {
         // supervisor's current job state is correct, which falls under the normal request handling
         // flow.
 
-        tracing::info!("Received switchboard socket configuration: {socket_config:?}");
+        tracing::info!("Received switchboard handshake: {server_hello:?}");
 
-        let keepalive = socket_config.keepalive.keepalive.to_std().inspect_err(|e| {
-            tracing::error!("Switchboard-specified keepalive couldn't be converted to Duration: {e}; falling back to default 10s keepalive");
-        }).unwrap_or(tokio::time::Duration::from_secs(10));
-        let mut interval = tokio::time::interval(keepalive);
-        let mut last_received_ping = tokio::time::Instant::now();
+        let mut ping_interval = tokio::time::interval(self.config.ping_interval);
+        let pong_timeout = tokio::time::sleep(self.config.pong_timeout);
+        tokio::pin!(pong_timeout);
 
         // Clone the shutdown channel for us to be able to mutably borrow it:
         let mut shutdown_rx = self.shutdown_rx.clone();
@@ -396,14 +452,22 @@ impl<S: connector::Supervisor> Inner<S> {
                     }
                 },
 
-                _ = interval.tick() =>  {
-                    tracing::trace!(target: "tml_ws_connector:ping", "keepalive tick");
-                    let elapsed = last_received_ping.elapsed();
-                    if elapsed > keepalive {
-                        tracing::error!("Haven't received a PING in {elapsed:?}, exiting socket control loop");
+                _ = ping_interval.tick() =>  {
+                    tracing::trace!(target: "tml_ws_connector:ping", "ping send tick");
+                    if let Err(e) = socket.send(tungstenite::Message::Ping((&[][..]).into())).await {
+                        tracing::error!("Failed to send PING message to switchboard, exiting socket control loop: {e:?}");
                         return Err(());
                     }
                 }
+
+                () = &mut pong_timeout => {
+                    tracing::error!(
+                        "Haven't received a PONG from switchboard in {:?}, exiting socket control loop",
+                        self.config.pong_timeout
+                    );
+                    return Err(());
+                }
+
                 msg = update_rx.recv() => {
                     let msg = msg.unwrap();
                     let stringified = serde_json::to_string(&msg).unwrap();
@@ -434,7 +498,7 @@ impl<S: connector::Supervisor> Inner<S> {
                     match websocket_message {
                         tungstenite::Message::Text(s) => {
                             tracing::debug!("Received text message from websocket: {s}");
-                            let msg = match serde_json::from_str::<switchboard_supervisor::Message>(&s) {
+                            let msg = match serde_json::from_str::<SwitchboardToSupervisor>(&s) {
                                 Ok(m) => m,
                                 Err(e) => {
                                     tracing::error!("Failed to deserialize message: {e}");
@@ -460,10 +524,12 @@ impl<S: connector::Supervisor> Inner<S> {
                         }
                         tungstenite::Message::Ping(_) => {
                             tracing::trace!(target: "tml_ws_connector:ping", "Received PING from switchboard");
-                            last_received_ping = tokio::time::Instant::now();
                         }
                         tungstenite::Message::Pong(_) => {
-                            tracing::error!("Received PONG from switchboard");
+                            pong_timeout
+                                .as_mut()
+                                .reset(Instant::now() + self.config.pong_timeout);
+                            tracing::trace!("Received PONG from switchboard");
                         }
                         tungstenite::Message::Close(cf) => {
                             if let Some(cf) = cf {
@@ -497,23 +563,22 @@ impl<S: connector::Supervisor> Inner<S> {
             job_id,
             job_state
         );
-        // First, update the supervisor status based on the job state.
+        // First, update the supervisor status based on the job state. A
+        // `Terminated` state is retained (not folded to `Idle`) so that, if the
+        // switchboard reconnects before acknowledging it, the supervisor still
+        // reports the terminal outcome instead of looking like a dropped job.
+        // The switchboard acks with `StopJob`, which drops it (see `handle`).
         {
             let mut lus_lg = self.last_updated_status.lock().await;
-            // Finished is an event, not a state.
-            if matches!(job_state, RunningJobState::Terminated) {
-                *lus_lg = ReportedSupervisorStatus::Idle;
-            } else {
-                *lus_lg = ReportedSupervisorStatus::OngoingJob {
-                    job_id,
-                    job_state: job_state.clone(),
-                };
-            }
+            *lus_lg = ReportedSupervisorStatus::OngoingJob {
+                job_id,
+                job_state: job_state.clone(),
+            };
         }
         // Send the update to the run() loop, which will forward it to the switchboard
         if let Err(e) = self
             .update_tx
-            .send(switchboard_supervisor::Message::SupervisorEvent(
+            .send(SupervisorToSwitchboard::SupervisorEvent(
                 SupervisorEvent::JobEvent {
                     job_id,
                     event: SupervisorJobEvent::StateTransition {
@@ -530,23 +595,20 @@ impl<S: connector::Supervisor> Inner<S> {
     async fn declare_exit_status(
         &self,
         job_id: Uuid,
-        user_exit_status: JobUserExitStatus,
-        host_output: Option<String>,
+        outcome: TaskExitStatus,
+        message: Option<String>,
     ) {
         tracing::info!(
             "Supervisor provides exit status: job {}, status {:#?}",
             job_id,
-            user_exit_status
+            outcome
         );
         if let Err(e) = self
             .update_tx
-            .send(switchboard_supervisor::Message::SupervisorEvent(
+            .send(SupervisorToSwitchboard::SupervisorEvent(
                 SupervisorEvent::JobEvent {
                     job_id,
-                    event: SupervisorJobEvent::DeclareExitStatus {
-                        user_exit_status,
-                        host_output,
-                    },
+                    event: SupervisorJobEvent::DeclareExitStatus { outcome, message },
                 },
             ))
         {
@@ -570,7 +632,7 @@ impl<S: connector::Supervisor> Inner<S> {
         // Send the error to the run() loop, which will forward it to the switchboard
         if let Err(e) = self
             .update_tx
-            .send(switchboard_supervisor::Message::SupervisorEvent(
+            .send(SupervisorToSwitchboard::SupervisorEvent(
                 SupervisorEvent::JobEvent {
                     job_id,
                     event: SupervisorJobEvent::Error { error },
@@ -578,28 +640,6 @@ impl<S: connector::Supervisor> Inner<S> {
             ))
         {
             tracing::error!("failed to report job error to runloop: {e}")
-        }
-    }
-
-    async fn send_job_console_log(&self, job_id: Uuid, console_bytes: Vec<u8>) {
-        tracing::debug!(
-            "Supervisor provides console log: job {}, length: {}, message: {:?}",
-            job_id,
-            console_bytes.len(),
-            String::from_utf8_lossy(&console_bytes)
-        );
-        // This is a bit of an anachronism. Truthfully, we shouldn't be doing this at all, but at
-        // least for now, we retain support.
-        if let Err(e) = self
-            .update_tx
-            .send(switchboard_supervisor::Message::SupervisorEvent(
-                SupervisorEvent::JobEvent {
-                    job_id,
-                    event: SupervisorJobEvent::ConsoleLog { console_bytes },
-                },
-            ))
-        {
-            tracing::error!("failed to send job console log to runloop: {e}")
         }
     }
 }

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select pg_advisory_xact_lock(hashtext('image_group_gen:' || $1::text))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pg_advisory_xact_lock",
+        "type_info": "Void",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3bff1d6c48977ca98c7db510a9f3e1f0e3e917eb6b5ef616dda883d6c32435a8"
+}

@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select registry, repository, status\n           from tml_switchboard.image_locations\n           where image_id = $1\n           order by case status\n                      when 'system' then 0\n                      when 'canonical' then 1\n                      else 2\n                    end,\n                    added_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "registry",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_locations",
+            "name": "registry"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "repository",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_locations",
+            "name": "repository"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_locations",
+            "name": "status"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8a0faca44f057c0645a1d1a79898a0703b04b69fdef71e184aee6d57afbc8b4f"
+}

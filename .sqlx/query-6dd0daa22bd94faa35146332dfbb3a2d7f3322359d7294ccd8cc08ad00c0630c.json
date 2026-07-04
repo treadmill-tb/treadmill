@@ -1,0 +1,92 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT t.token_id, t.user_id, t.revoked as \"revoked: _\",\n                  t.expires_at, u.locked\n            FROM tml_switchboard.api_tokens t\n            JOIN tml_switchboard.users u ON u.subject_id = t.user_id\n            WHERE t.token = $1\n            LIMIT 1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "token_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.api_tokens",
+            "name": "token_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.api_tokens",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "revoked: _",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.api_token_revocation",
+            "kind": {
+              "Composite": [
+                [
+                  "revoked_at",
+                  "Timestamptz"
+                ],
+                [
+                  "revocation_reason",
+                  "Text"
+                ]
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.api_tokens",
+            "name": "revoked"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.api_tokens",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "locked",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.users",
+            "name": "locked"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "6dd0daa22bd94faa35146332dfbb3a2d7f3322359d7294ccd8cc08ad00c0630c"
+}

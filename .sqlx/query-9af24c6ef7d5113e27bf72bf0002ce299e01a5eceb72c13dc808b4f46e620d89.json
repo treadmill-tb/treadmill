@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            auth_token\n        FROM\n            tml_switchboard.hosts\n        WHERE\n            host_id = $1\n        LIMIT 1;\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "auth_token",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.hosts",
+            "name": "auth_token"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9af24c6ef7d5113e27bf72bf0002ce299e01a5eceb72c13dc808b4f46e620d89"
+}

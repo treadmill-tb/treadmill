@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tml_switchboard.hosts\n               set current_job = $1\n               where host_id = $2 and current_job is null\n               returning host_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "host_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.hosts",
+            "name": "host_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4b28c43dfd7326131cab71441187a2bd39ee8b317e9336fffe1fd24f7a3698ac"
+}

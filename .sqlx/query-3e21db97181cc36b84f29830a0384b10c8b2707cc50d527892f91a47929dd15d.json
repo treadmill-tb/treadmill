@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select eligible_hosts as \"host_id!\"\n                   from tml_switchboard.eligible_hosts($1, $2)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "host_id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3e21db97181cc36b84f29830a0384b10c8b2707cc50d527892f91a47929dd15d"
+}
