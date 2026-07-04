@@ -15,6 +15,15 @@ use serde::Deserialize;
 type GithubOAuthClient =
     BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>;
 
+/// The GitHub OAuth scope that makes a user's *private* org memberships visible
+/// via `/user/memberships/orgs`. Without it that endpoint reports only orgs the
+/// user has made public, so org-based admission would silently fail for members
+/// with private membership. Requested unconditionally (see [`authorize`]),
+/// never left to operator-configured `scopes`.
+///
+/// [`authorize`]: OAuthProvider::authorize
+const REQUIRED_ORG_SCOPE: &str = "read:org";
+
 pub struct GithubProvider {
     client: GithubOAuthClient,
     http: reqwest::Client,
@@ -116,8 +125,17 @@ impl OAuthProvider for GithubProvider {
         _query: &std::collections::HashMap<String, String>,
     ) -> Result<(String, CsrfToken), OAuthError> {
         let mut req = self.client.authorize_url(CsrfToken::new_random);
-        for scope in &self.scopes {
-            req = req.add_scope(Scope::new(scope.clone()));
+        // Always request `read:org` alongside the configured scopes, deduped
+        // (see `REQUIRED_ORG_SCOPE`).
+        for scope in self
+            .scopes
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(REQUIRED_ORG_SCOPE))
+            .filter(|s| !s.is_empty())
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            req = req.add_scope(Scope::new(scope.to_string()));
         }
         let (url, csrf) = req.url();
         Ok((url.to_string(), csrf))
@@ -160,26 +178,129 @@ impl OAuthProvider for GithubProvider {
     }
 
     async fn fetch_org_ids(&self, token: &OAuthAccessToken) -> Result<Vec<String>, OAuthError> {
-        // Best-effort: requires the read:org scope; absent it, auto-groups simply
-        // do not apply for this login. Log a failure rather than swallow it, so a
-        // missing scope (a 403 here) is diagnosable instead of silent.
-        let memberships: Vec<GhMembership> = match self
+        // A failed fetch propagates as `Err`, never a silent `Ok(vec![])`: the
+        // new-user admission path relies on this to fail closed (see the trait doc).
+        let memberships: Vec<GhMembership> = self
             .get_json(token, "/user/memberships/orgs?state=active")
-            .await
-        {
-            Ok(memberships) => memberships,
-            Err(e) => {
-                tracing::warn!(
-                    "failed to fetch GitHub org memberships; auto-groups will not apply for \
-                     this login (commonly a missing `read:org` scope on the token): {e}"
-                );
-                Vec::new()
-            }
-        };
+            .await?;
         Ok(memberships
             .into_iter()
             .filter(|m| m.state == "active")
             .map(|m| m.organization.id.to_string())
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::GitHubOAuthConfig;
+    use url::Url;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn config(api_base_url: &str, scopes: Vec<String>) -> GitHubOAuthConfig {
+        GitHubOAuthConfig {
+            client_id: "test-client".to_string(),
+            client_secret: "test-secret".to_string(),
+            redirect_url: "http://localhost/api/v1/auth/github/callback".to_string(),
+            auth_url: "https://github.com/login/oauth/authorize".to_string(),
+            token_url: "https://github.com/login/oauth/access_token".to_string(),
+            api_base_url: api_base_url.to_string(),
+            scopes,
+        }
+    }
+
+    /// The space-separated `scope` values carried by an authorize URL.
+    fn scopes_in(url: &str) -> Vec<String> {
+        Url::parse(url)
+            .expect("valid authorize URL")
+            .query_pairs()
+            .find(|(k, _)| k == "scope")
+            .map(|(_, v)| v.split(' ').map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+
+    /// `read:org` is load-bearing for org-based admission and must be requested
+    /// even when the operator's `scopes` config omits it.
+    #[test]
+    fn authorize_url_always_requests_read_org_even_if_config_omits_it() {
+        let provider = GithubProvider::from_config(&config(
+            "https://api.github.com",
+            vec!["read:user".to_string(), "user:email".to_string()],
+        ))
+        .expect("provider builds");
+        let (url, _csrf) = provider
+            .authorize(&std::collections::HashMap::new())
+            .expect("authorize url");
+        let scopes = scopes_in(&url);
+        assert!(
+            scopes.iter().any(|s| s == REQUIRED_ORG_SCOPE),
+            "read:org must always be present; got {scopes:?}"
+        );
+    }
+
+    /// Requesting `read:org` unconditionally must not duplicate it when the
+    /// operator's config already lists it.
+    #[test]
+    fn authorize_url_does_not_duplicate_read_org() {
+        let provider = GithubProvider::from_config(&config(
+            "https://api.github.com",
+            vec![
+                "read:user".to_string(),
+                "user:email".to_string(),
+                "read:org".to_string(),
+            ],
+        ))
+        .expect("provider builds");
+        let (url, _csrf) = provider
+            .authorize(&std::collections::HashMap::new())
+            .expect("authorize url");
+        let scopes = scopes_in(&url);
+        assert_eq!(
+            scopes.iter().filter(|s| *s == REQUIRED_ORG_SCOPE).count(),
+            1,
+            "read:org must appear exactly once; got {scopes:?}"
+        );
+    }
+
+    /// A failed org fetch (here a 500) must surface as `Err`, not be swallowed to
+    /// `Ok(empty)` — the new-user admission path relies on this to fail closed.
+    #[tokio::test]
+    async fn fetch_org_ids_propagates_server_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/memberships/orgs"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let provider =
+            GithubProvider::from_config(&config(&server.uri(), vec![])).expect("provider builds");
+        let result = provider
+            .fetch_org_ids(&OAuthAccessToken("t".to_string()))
+            .await;
+        assert!(
+            matches!(result, Err(OAuthError::Api(_))),
+            "a 500 from the org endpoint must be Err, not Ok(empty); got {result:?}"
+        );
+    }
+
+    /// A *successful* call returning no active orgs stays `Ok(vec![])` — genuine
+    /// empty membership must be distinguishable from a failure.
+    #[tokio::test]
+    async fn fetch_org_ids_empty_membership_is_ok_empty() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/memberships/orgs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        let provider =
+            GithubProvider::from_config(&config(&server.uri(), vec![])).expect("provider builds");
+        let orgs = provider
+            .fetch_org_ids(&OAuthAccessToken("t".to_string()))
+            .await
+            .expect("a successful empty response is Ok");
+        assert!(orgs.is_empty(), "expected no orgs; got {orgs:?}");
     }
 }
