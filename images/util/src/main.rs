@@ -18,6 +18,7 @@ use std::str::FromStr;
 
 use anyhow::{Context, anyhow, ensure};
 use clap::{Parser, Subcommand};
+use digest_io::IoWrapper;
 use oci_spec::image::{
     Descriptor, ImageIndex, ImageIndexBuilder, ImageManifest, MediaType, SCHEMA_VERSION,
 };
@@ -211,9 +212,9 @@ fn build_index(manifest_digest: &Digest, manifest_size: u64) -> anyhow::Result<I
 /// recopied.
 fn store_file(path: &Path, blobs: &Path) -> anyhow::Result<(Digest, u64)> {
     let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut hasher = Sha256::new();
+    let mut hasher = IoWrapper(Sha256::new());
     let size = std::io::copy(&mut file, &mut hasher).context("hash file")?;
-    let digest = finalize(hasher);
+    let digest = finalize(hasher.0);
 
     let dest = blobs.join(digest.hex());
     if !dest.exists() {

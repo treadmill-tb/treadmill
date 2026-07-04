@@ -17,6 +17,7 @@ clap = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 anyhow = { workspace = true }
+digest-io = { workspace = true }
 
 [lints]
 workspace = true
