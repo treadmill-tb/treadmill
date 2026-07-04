@@ -63,7 +63,7 @@ fn provider_for(
     match name {
         "github" => {
             let cfg = state.config().oauth.github.as_ref().ok_or_else(|| {
-                tracing::warn!("GitHub login requested but no [oauth.github] is configured");
+                tracing::debug!("GitHub login requested but no [oauth.github] is configured");
                 StatusCode::NOT_FOUND
             })?;
             let provider =
@@ -79,13 +79,13 @@ fn provider_for(
                 .map(|m| m.enabled)
                 .unwrap_or(false);
             if !enabled {
-                tracing::warn!("mock login requested but [oauth.mock] is not enabled");
+                tracing::debug!("mock login requested but [oauth.mock] is not enabled");
                 return Err(StatusCode::NOT_FOUND);
             }
             Ok(Box::new(MockProvider))
         }
         other => {
-            tracing::warn!("login requested for unknown provider {other:?}");
+            tracing::debug!("login requested for unknown provider {other:?}");
             Err(StatusCode::NOT_FOUND)
         }
     }
