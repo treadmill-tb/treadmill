@@ -26,7 +26,7 @@ use crate::serve::AppState;
 use crate::sql;
 use crate::sql::api_token::IssueSessionToken;
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Form, FromRequest, Path, Query, Request, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{Duration, Utc};
 use http::StatusCode;
@@ -528,7 +528,12 @@ async fn stage_and_interstitial(
 /// Build the ToS interstitial response: a 302 to the configured browser ToS page
 /// when `oauth.browser_tos_redirect` is set (a browser frontend), else a `409`
 /// `tos_required` JSON marker (a programmatic client). Both carry the pending id
-/// in an `HttpOnly` cookie so the browser can `POST /auth/tos/accept` blind.
+/// in an `HttpOnly` cookie so the browser can `POST /auth/tos/accept` blind; the
+/// redirect additionally carries `?pending_id=…&tos_version=…` so a frontend on
+/// another origin (where that cookie never arrives) can embed the id in its
+/// accept form instead. The id is single-use and short-lived, so its transit
+/// through the URL is far less sensitive than the token handoff documented in
+/// TODOS.md.
 fn tos_interstitial(
     state: &AppState,
     pending_id: Uuid,
@@ -542,7 +547,14 @@ fn tos_interstitial(
     let tos_url = state.config().oauth.browser_tos_redirect.clone();
 
     let mut response = match &tos_url {
-        Some(target) => Redirect::to(target).into_response(),
+        Some(target) => {
+            let mut url = url::Url::parse(target)
+                .or_internal(&format!("parsing oauth.browser_tos_redirect {target:?}"))?;
+            url.query_pairs_mut()
+                .append_pair("pending_id", &pending_id.to_string())
+                .append_pair("tos_version", &tos_version.to_string());
+            Redirect::to(url.as_str()).into_response()
+        }
         None => (
             StatusCode::CONFLICT,
             Json(TosRequiredResponse {
@@ -568,24 +580,58 @@ pub async fn tos_info(State(state): State<AppState>) -> Json<TosInfoResponse> {
     })
 }
 
+/// The request body of `POST /auth/tos/accept`, in whichever encoding the
+/// client speaks: JSON for programmatic clients, `x-www-form-urlencoded` for
+/// the console's no-JS HTML form (forms cannot send JSON). Any other or absent
+/// body extracts as an empty request (the cookie then identifies the staged
+/// registration).
+pub struct TosAcceptBody(TosAcceptRequest);
+
+impl FromRequest<AppState> for TosAcceptBody {
+    type Rejection = StatusCode;
+
+    async fn from_request(req: Request, state: &AppState) -> Result<Self, StatusCode> {
+        let content_type = req
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if content_type.starts_with("application/json") {
+            let Json(body) = Json::<TosAcceptRequest>::from_request(req, state)
+                .await
+                .map_err(|_| StatusCode::BAD_REQUEST)?;
+            Ok(Self(body))
+        } else if content_type.starts_with("application/x-www-form-urlencoded") {
+            let Form(body) = Form::<TosAcceptRequest>::from_request(req, state)
+                .await
+                .map_err(|_| StatusCode::BAD_REQUEST)?;
+            Ok(Self(body))
+        } else {
+            Ok(Self(TosAcceptRequest::default()))
+        }
+    }
+}
+
 /// `POST /auth/tos/accept`: finish a login staged behind the ToS interstitial.
 ///
 /// Unauthenticated; the staged registration is identified by the pending id,
-/// taken from the JSON body or the `HttpOnly` cookie the callback set. In one
-/// transaction: consume the staging row (missing/expired → `410 Gone`), then
-/// either create the brand-new account (recording the accepted ToS version) or
-/// record an existing user's re-acceptance, and issue the session token. Returns
-/// the same success shape as the callback.
+/// taken from the body (JSON or form-encoded, see [`TosAcceptBody`]) or the
+/// `HttpOnly` cookie the callback set. In one transaction: consume the staging
+/// row (missing/expired → `410 Gone`), then either create the brand-new account
+/// (recording the accepted ToS version) or record an existing user's
+/// re-acceptance, and issue the session token. Returns the same success shape
+/// as the callback.
 #[tracing::instrument(skip(state, body))]
 pub async fn tos_accept(
     State(state): State<AppState>,
     parts: Parts,
-    body: Option<Json<TosAcceptRequest>>,
+    body: TosAcceptBody,
 ) -> Result<Response, StatusCode> {
-    // The pending id may arrive in the body (programmatic) or the cookie
-    // (browser). Prefer the body, fall back to the cookie.
+    // The pending id may arrive in the body (programmatic, or the console's
+    // form) or the cookie (browser). Prefer the body, fall back to the cookie.
     let pending_id = body
-        .and_then(|Json(b)| b.pending_id)
+        .0
+        .pending_id
         .or_else(|| cookie_value(&parts, PENDING_COOKIE).and_then(|v| Uuid::parse_str(v).ok()))
         .ok_or(StatusCode::BAD_REQUEST)?;
 

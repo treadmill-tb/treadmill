@@ -504,3 +504,80 @@ async fn existing_user_reaccepts_on_tos_version_bump(pool: PgPool) {
     assert_eq!(octocat_tos_version(&pool).await, Some(2));
     assert_eq!(pending_count(&pool).await, 0);
 }
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn browser_flow_completes_tos_via_form_post(pool: PgPool) {
+    let gh = MockServer::start().await;
+    mount_github(&gh, &[]).await;
+
+    // The browser (console) configuration: both redirects set.
+    let mut cfg = test_config(&gh.uri());
+    cfg.oauth.browser_tos_redirect = Some("https://console.example/auth/tos".to_string());
+    cfg.oauth.browser_success_redirect = Some("https://console.example/auth/landing".to_string());
+    let addr = spawn_server(AppState::new(pool.clone(), cfg)).await;
+
+    sqlx::query(
+        "insert into tml_switchboard.login_allowlist (provider, kind, external_id) \
+         values ('github', 'user', '12345')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let c = client();
+
+    // The callback redirects the browser to the console's ToS page, carrying
+    // the pending id in the query (the console is on another origin, so the
+    // HttpOnly pending cookie cannot serve it).
+    let login_resp = c
+        .get(format!("http://{addr}/api/v1/auth/github/login"))
+        .send()
+        .await
+        .unwrap();
+    assert!(login_resp.status().is_redirection());
+    let state: String = sqlx::query_scalar("select state from tml_switchboard.oauth_flows")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let cb = c
+        .get(format!(
+            "http://{addr}/api/v1/auth/github/callback?code=CANNED_CODE&state={state}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert!(cb.status().is_redirection(), "browser gets a ToS redirect");
+    let location = url::Url::parse(cb.headers()["location"].to_str().unwrap()).unwrap();
+    assert_eq!(location.host_str(), Some("console.example"));
+    assert_eq!(location.path(), "/auth/tos");
+    let query: std::collections::HashMap<_, _> = location.query_pairs().collect();
+    let pending_id = query["pending_id"].to_string();
+    assert_eq!(query["tos_version"], "1");
+    assert_eq!(octocat_user_count(&pool).await, 0, "no user yet");
+
+    // The console's no-JS accept form POSTs the pending id back form-encoded
+    // (no cookie involved); the login completes with a redirect to the
+    // console's landing page carrying the token.
+    let accept = c
+        .post(format!("http://{addr}/api/v1/auth/tos/accept"))
+        .form(&[("pending_id", pending_id.as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        accept.status().is_redirection(),
+        "accept redirects to the success landing, got {}",
+        accept.status()
+    );
+    let landing = url::Url::parse(accept.headers()["location"].to_str().unwrap()).unwrap();
+    assert_eq!(landing.host_str(), Some("console.example"));
+    assert_eq!(landing.path(), "/auth/landing");
+    let query: std::collections::HashMap<_, _> = landing.query_pairs().collect();
+    assert!(!query["token"].is_empty());
+    assert!(query.contains_key("expires_at"));
+
+    assert_eq!(octocat_user_count(&pool).await, 1, "user provisioned");
+    assert_eq!(octocat_tos_version(&pool).await, Some(1));
+    assert_eq!(pending_count(&pool).await, 0);
+}
