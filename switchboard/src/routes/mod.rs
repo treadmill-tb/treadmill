@@ -94,11 +94,12 @@ pub fn api_router() -> ApiRouter<AppState> {
         .route("/auth/providers", get(auth::providers))
         //  GET /auth/whoami
         .route("/auth/whoami", get(auth::whoami))
-        // ToS interstitial (plain routes, like the rest of the /auth group):
-        //  GET  /auth/tos        -- the current ToS text + version to render
-        //  POST /auth/tos/accept -- accept a staged registration, finishing login
+        // Login-completion step (plain routes, like the rest of the /auth group):
+        //  GET  /auth/tos            -- the current ToS text + version to render
+        //  POST /auth/login/complete -- finish a staged login (pending id +
+        //                               one-time secret; today: ToS acceptance)
         .route("/auth/tos", get(auth::tos_info))
-        .route("/auth/tos/accept", post(auth::tos_accept))
+        .route("/auth/login/complete", post(auth::login_complete))
         // job management group
         //  POST /jobs -- enqueue a new job
         //  GET  /jobs -- keyset-paginated listing of readable jobs

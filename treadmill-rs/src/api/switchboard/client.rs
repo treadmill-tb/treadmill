@@ -86,11 +86,11 @@ impl SwitchboardClient {
         self.get_json("/api/v1/auth/tos").await
     }
 
-    /// Absolute URL of `POST /auth/tos/accept`, for a browser frontend to use
-    /// as its consent form's `action` (the endpoint accepts the pending id
-    /// form-encoded, so a no-JS HTML form can finish the login directly).
-    pub fn tos_accept_url(&self) -> String {
-        format!("{}/api/v1/auth/tos/accept", self.base_url)
+    /// Absolute URL of `POST /auth/login/complete`, for a browser frontend to
+    /// use as its completion form's `action` (the endpoint accepts the pending
+    /// pair form-encoded, so a no-JS HTML form can finish the login directly).
+    pub fn login_complete_url(&self) -> String {
+        format!("{}/api/v1/auth/login/complete", self.base_url)
     }
 
     /// `GET /auth/whoami` — the identity behind the current token.

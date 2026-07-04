@@ -34,11 +34,12 @@ Net effect: the bearer token never touches the browser or any URL. This also
 generalizes the single `browser_success_redirect` value into a proper
 multi-origin `return_to` allowlist.
 
-Related, much lower severity: the ToS interstitial's `browser_tos_redirect`
-carries the staged registration's `pending_id` through the redirect URL the
-same way (so the console can embed it in its no-JS accept form). It is
-single-use, expires quickly, and accepting it only completes the login it
-belongs to — but the back-channel rework above should sweep it along.
+Related, much lower severity: the login-completion step's
+`browser_login_complete_redirect` carries the staged login's `pending_id` and
+one-time `pending_secret` through the redirect URL the same way (so the
+console can embed them in its no-JS completion form). The pair is single-use,
+expires quickly, and completing it only finishes the login it belongs to — but
+the back-channel rework above should sweep it along.
 
 ## Re-Sync Verified/Non-Verified Emails on Login
 

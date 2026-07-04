@@ -53,29 +53,40 @@ pub struct LoginResponse {
     pub expires_at: DateTime<Utc>,
 }
 
-/// Response body for a login that has passed admission but cannot complete until
-/// the user accepts the Terms of Service (the ToS interstitial).
+/// Response body for a login that has passed admission but cannot complete
+/// until the user finishes the completion step (today: accepting the Terms of
+/// Service; the `required` list leaves room for more, e.g. picking a username).
 ///
 /// Returned as `409 Conflict` by the OAuth callback for programmatic clients
-/// (browser frontends are instead `302`-redirected to the configured ToS page).
-/// The client renders/accepts the ToS (see `GET /auth/tos`) and finishes the
-/// login by `POST`ing `pending_id` to `/auth/tos/accept`.
+/// (browser frontends are instead `302`-redirected to the configured completion
+/// page with the same values in the query). The client gathers everything
+/// `required` lists (see `GET /auth/tos`) and finishes the login by `POST`ing
+/// the pending pair back to `/auth/login/complete`.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct TosRequiredResponse {
+pub struct LoginIncompleteResponse {
     /// Always `true`; a stable discriminator so a client can branch on it.
-    pub tos_required: bool,
-    /// Opaque, single-use id of the staged registration to pass to
-    /// `/auth/tos/accept`. Also set as an `HttpOnly` cookie on this response.
+    pub login_incomplete: bool,
+    /// What the completion step must provide. Currently always `["tos"]`;
+    /// future requirements (e.g. `"username"`) extend this list.
+    pub required: Vec<String>,
+    /// Identifies the staged login to `/auth/login/complete`. An id, not a
+    /// capability: it is useless without `pending_secret`.
     pub pending_id: Uuid,
-    /// The ToS version the user is being asked to accept.
+    /// Single-use secret proving the caller is the party that just
+    /// authenticated; must accompany `pending_id` on completion. The server
+    /// stores only a salted hash of it.
+    pub pending_secret: String,
+    /// The ToS version the user is being asked to accept, echoed back on
+    /// completion so consent is recorded against the text actually shown.
     pub tos_version: i32,
-    /// The configured browser ToS page URL, if any (mirrors the server's
-    /// `oauth.browser_tos_redirect`). Programmatic clients may ignore it.
-    pub tos_url: Option<String>,
+    /// The configured browser completion page URL, if any (mirrors the server's
+    /// `oauth.browser_login_complete_redirect`). Programmatic clients may
+    /// ignore it.
+    pub completion_url: Option<String>,
 }
 
 /// Response body for `GET /auth/tos`: the Terms of Service text a frontend
-/// renders on the interstitial, plus the version it corresponds to.
+/// renders on the login-completion page, plus the version it corresponds to.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct TosInfoResponse {
     /// The version this text corresponds to (the server's current ToS version).
@@ -84,15 +95,18 @@ pub struct TosInfoResponse {
     pub text: String,
 }
 
-/// Request body for `POST /auth/tos/accept`: which staged registration to
-/// finish. The id may instead ride in the `HttpOnly` cookie set by the callback;
-/// the body form lets programmatic clients that do not keep cookies pass it back.
-#[derive(schemars::JsonSchema, Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TosAcceptRequest {
-    /// The pending registration id from [`TosRequiredResponse::pending_id`].
-    /// Optional here because the id may instead be presented via the cookie.
-    #[serde(default)]
-    pub pending_id: Option<Uuid>,
+/// Request body for `POST /auth/login/complete`: finish a staged login. Sent as
+/// JSON by programmatic clients or form-encoded by the console's no-JS form.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct LoginCompleteRequest {
+    /// The staged login, from [`LoginIncompleteResponse::pending_id`].
+    pub pending_id: Uuid,
+    /// Its one-time secret, from [`LoginIncompleteResponse::pending_secret`].
+    pub pending_secret: String,
+    /// The ToS version the user was shown and accepted. Must match the version
+    /// currently in force, so a concurrent ToS bump cannot record consent to
+    /// text the user never saw.
+    pub tos_version: i32,
 }
 
 /// Response body for `/auth/whoami`: the identity of the authenticated subject.

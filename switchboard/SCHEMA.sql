@@ -337,6 +337,12 @@ CREATE TABLE tml_switchboard.login_allowlist (
 --   existing_user_id IS NOT NULL  -> an existing user re-accepting a bumped ToS
 CREATE TABLE tml_switchboard.pending_registrations (
     id uuid NOT NULL PRIMARY KEY,
+    -- Salted argon2id hash (PHC string) of the one-time completion secret that
+    -- accompanies the id across the browser round trip. The id alone is NOT a
+    -- capability: consuming the row requires presenting the secret, and only
+    -- its hash is stored, so database read access does not yield the ability
+    -- to complete a login.
+    secret_hash text NOT NULL,
     provider text NOT NULL,
     identity jsonb,
     existing_user_id uuid REFERENCES tml_switchboard.users (subject_id) ON DELETE CASCADE,

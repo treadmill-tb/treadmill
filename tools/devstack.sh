@@ -192,9 +192,10 @@ nats_url = "nats://127.0.0.1:$nats_port"
 [oauth]
 browser_success_redirect = "http://localhost:$console_port/auth/landing"
 # A login that still needs Terms-of-Service consent is 302'd to the
-# console's interstitial instead (with ?pending_id=...); its form then
-# POSTs back to the switchboard to finish the login.
-browser_tos_redirect = "http://localhost:$console_port/auth/tos"
+# console's completion page instead (with the one-time pending pair in
+# the query); its form then POSTs back to the switchboard to finish the
+# login.
+browser_login_complete_redirect = "http://localhost:$console_port/auth/complete"
 
 # The mock provider is a development-only, UNAUTHENTICATED login bypass
 # (built-in identities, no external service). Safe to enable here only

@@ -1,7 +1,7 @@
 //! HTTP routes for the console.
 //!
 //! The surface is deliberately tiny: an entry redirect, the login-flow
-//! endpoints (`/login` → switchboard, `/auth/tos` and `/auth/landing` ←
+//! endpoints (`/login` → switchboard, `/auth/complete` and `/auth/landing` ←
 //! switchboard, `/logout`), the per-resource pages, and the embedded
 //! stylesheet.
 
@@ -21,7 +21,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/", get(me::index))
         // login flow
         .route("/login", get(auth::login))
-        .route("/auth/tos", get(auth::tos))
+        .route("/auth/complete", get(auth::complete))
         .route("/auth/landing", get(auth::landing))
         .route("/logout", get(auth::logout))
         // resource pages

@@ -8,14 +8,14 @@
 //! `/auth/landing` moves that token into the session cookie and sends the user
 //! on to `/me`. `/logout` clears the cookie.
 //!
-//! When the login instead needs Terms of Service consent first (a brand-new
-//! user, or a ToS version bump), switchboard — configured with
-//! `browser_tos_redirect` pointing at `<console>/auth/tos` — redirects here
-//! with the staged registration's `pending_id` in the query. `/auth/tos`
-//! renders the ToS with a plain form that POSTs the id straight back to
-//! switchboard's `/auth/tos/accept`, which finishes the login and lands the
-//! browser on `/auth/landing` as usual. No JS, and no reliance on
-//! switchboard's pending cookie (which does not cross origins).
+//! When the login instead needs the completion step first (today: Terms of
+//! Service consent, for a brand-new user or on a ToS version bump),
+//! switchboard — configured with `browser_login_complete_redirect` pointing at
+//! `<console>/auth/complete` — redirects here with the staged login's
+//! `pending_id` and one-time `pending_secret` in the query. `/auth/complete`
+//! renders the ToS with a plain form that POSTs the pair straight back to
+//! switchboard's `/auth/login/complete`, which finishes the login and lands
+//! the browser on `/auth/landing` as usual. No JS involved.
 //!
 //! NOTE: carrying the token through a URL query is the prototype handoff; the
 //! hardened design (one-time code + back-channel exchange) is tracked in the
@@ -104,23 +104,27 @@ pub async fn landing(
     (jar.add(cookie), Redirect::to("/me"))
 }
 
-/// Query switchboard appends when redirecting a login to the ToS interstitial.
+/// Query switchboard appends when redirecting a login to the completion page.
 #[derive(Debug, Deserialize)]
-pub struct TosQuery {
-    /// The staged registration to finish; absent if someone opens the page
-    /// outside a login flow (we then render the ToS without an accept form).
+pub struct CompleteQuery {
+    /// The staged login to finish; absent if someone opens the page outside a
+    /// login flow (we then render the ToS without a completion form).
     pending_id: Option<Uuid>,
+    /// The one-time secret that must accompany `pending_id`; the id alone is
+    /// deliberately no capability.
+    pending_secret: Option<String>,
 }
 
-/// `GET /auth/tos` — the Terms of Service interstitial. Fetches the current ToS
-/// from switchboard and renders it with an accept form that POSTs the pending
-/// id directly to switchboard's `/auth/tos/accept`; on success switchboard
+/// `GET /auth/complete` — the login-completion page (today: ToS consent).
+/// Fetches the current ToS from switchboard and renders it with a form that
+/// POSTs the pending pair — plus the version of the text actually shown —
+/// directly to switchboard's `/auth/login/complete`; on success switchboard
 /// sends the browser back to `/auth/landing` with the token, completing the
-/// login. Declining is simply abandoning the page (the staged registration
-/// expires server-side).
-pub async fn tos(
+/// login. Declining is simply abandoning the page (the staged login expires
+/// server-side).
+pub async fn complete(
     State(state): State<AppState>,
-    Query(query): Query<TosQuery>,
+    Query(query): Query<CompleteQuery>,
 ) -> Result<Markup, PageError> {
     let client = state.switchboard(None);
     let tos = client.tos_info().await?;
@@ -135,10 +139,14 @@ pub async fn tos(
                 p { (tos.text) }
             }
             section.card {
-                @if let Some(pending_id) = query.pending_id {
+                @if let (Some(pending_id), Some(pending_secret)) =
+                    (query.pending_id, &query.pending_secret)
+                {
                     p { "To finish signing in, you must accept these terms." }
-                    form method="post" action=(client.tos_accept_url()) {
+                    form method="post" action=(client.login_complete_url()) {
                         input type="hidden" name="pending_id" value=(pending_id);
+                        input type="hidden" name="pending_secret" value=(pending_secret);
+                        input type="hidden" name="tos_version" value=(tos.version);
                         button.button type="submit" { "Accept and continue" }
                     }
                     p.muted {

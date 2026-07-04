@@ -60,7 +60,7 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
             }),
             mock: None,
             browser_success_redirect: None,
-            browser_tos_redirect: None,
+            browser_login_complete_redirect: None,
         },
         console: None,
         log_streaming: None,

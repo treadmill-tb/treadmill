@@ -20,6 +20,7 @@ use crate::auth::oauth::ExternalIdentity;
 use crate::auth::oauth::OAuthProvider;
 use crate::auth::oauth::github::GithubProvider;
 use crate::auth::oauth::mock::{MOCK_IDENTITIES, MockProvider};
+use crate::auth::pending_secret;
 use crate::client_addr::ClientAddr;
 use crate::http_error::OrInternal;
 use crate::serve::AppState;
@@ -31,12 +32,11 @@ use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{Duration, Utc};
 use http::StatusCode;
 use http::request::Parts;
-use http::{HeaderValue, header};
 use serde::Deserialize;
 use std::collections::HashMap;
 use treadmill_rs::api::switchboard::{
-    AuthProvidersResponse, AuthToken, LoginResponse, MockIdentityInfo, OAuthProviderInfo,
-    TosAcceptRequest, TosInfoResponse, TosRequiredResponse, WhoAmIResponse,
+    AuthProvidersResponse, AuthToken, LoginCompleteRequest, LoginIncompleteResponse, LoginResponse,
+    MockIdentityInfo, OAuthProviderInfo, TosInfoResponse, WhoAmIResponse,
 };
 use uuid::Uuid;
 
@@ -45,13 +45,8 @@ use uuid::Uuid;
 const FLOW_LIFETIME_MINUTES: i64 = 10;
 
 /// How long a staged, ToS-awaiting registration (`pending_registrations`) lives
-/// before it must be consumed by `POST /auth/tos/accept`.
+/// before it must be consumed by `POST /auth/login/complete`.
 const TOS_LIFETIME_MINUTES: i64 = 30;
-
-/// Name of the `HttpOnly` cookie carrying the pending-registration id across the
-/// ToS interstitial, so a browser can `POST /auth/tos/accept` without echoing
-/// the id itself.
-const PENDING_COOKIE: &str = "tml_pending_registration";
 
 /// The blanket Terms of Service text served by `GET /auth/tos`. A placeholder
 /// until a real ToS exists; its version is [`crate::config::ServiceConfig::current_tos_version`].
@@ -243,8 +238,9 @@ pub async fn callback(
     // Branches that log in immediately converge on `(tx, user_id, new_user)` and
     // run the shared locked-check / admin-grant / token / login-marker tail
     // below. Branches that still need ToS consent stage a `pending_registrations`
-    // row and return the interstitial (a 302 to the ToS page, or a 409 marker)
-    // WITHOUT issuing a token -- see `stage_and_interstitial`.
+    // row and return the login-incomplete response (a 302 to the completion
+    // page, or a 409 marker) WITHOUT issuing a token -- see
+    // `stage_login_completion`.
     let (mut tx, user_id, new_user) = match resolved {
         Some((user_id, kind)) => {
             // Existing user: proceed ungated. Org membership only narrows
@@ -280,11 +276,11 @@ pub async fn callback(
             let stale_tos = status.tos_accepted_version.is_none_or(|v| v < current_tos);
             if !status.locked && stale_tos {
                 // Commit the allowed profile/email/group refresh, then stage a
-                // re-acceptance and bounce the user through the interstitial.
+                // re-acceptance and bounce the user through the completion step.
                 tx.commit()
                     .await
                     .or_internal("committing the profile refresh")?;
-                return stage_and_interstitial(
+                return stage_login_completion(
                     &state,
                     provider.name(),
                     None,
@@ -358,8 +354,9 @@ pub async fn callback(
 
                 // Admitted, but no durable user record may exist before the user
                 // accepts the ToS. Stage the identity + org ids and return the
-                // interstitial; the account is created only in `tos_accept`.
-                return stage_and_interstitial(
+                // login-incomplete response; the account is created only in
+                // `login_complete`.
+                return stage_login_completion(
                     &state,
                     provider.name(),
                     Some(&identity),
@@ -371,8 +368,8 @@ pub async fn callback(
             }
 
             // Mock bypass: the dev-only provider is exempt from both the gate and
-            // the ToS interstitial, so it conjures the account immediately, with
-            // the ToS recorded as already accepted at the current version.
+            // the ToS completion step, so it conjures the account immediately,
+            // with the ToS recorded as already accepted at the current version.
             let mut tx = state
                 .pool()
                 .begin()
@@ -497,11 +494,13 @@ fn login_success_response(state: &AppState, login: LoginResponse) -> Result<Resp
 }
 
 /// Stage a `pending_registrations` row for a login awaiting ToS acceptance and
-/// return the interstitial response. Provide EITHER `identity` (a brand-new
+/// return the login-incomplete response. Provide EITHER `identity` (a brand-new
 /// admitted user) OR `existing_user_id` (a re-acceptance), never both. No token
 /// is issued and, for a new user, no durable record exists yet — the account is
-/// created only when `POST /auth/tos/accept` consumes this row.
-async fn stage_and_interstitial(
+/// created only when `POST /auth/login/complete` consumes this row, which
+/// requires the one-time secret generated here (the id alone is no capability;
+/// only the secret's salted hash is stored).
+async fn stage_login_completion(
     state: &AppState,
     provider: &str,
     identity: Option<&ExternalIdentity>,
@@ -510,10 +509,14 @@ async fn stage_and_interstitial(
     tos_version: i32,
 ) -> Result<Response, StatusCode> {
     let pending_id = Uuid::new_v4();
+    let pending_secret = pending_secret::generate();
+    let secret_hash =
+        pending_secret::hash(&pending_secret).or_internal("hashing the pending secret")?;
     let expires_at = Utc::now() + Duration::minutes(TOS_LIFETIME_MINUTES);
     sql::pending_registration::insert_pending(
         state.pool(),
         pending_id,
+        &secret_hash,
         provider,
         identity,
         existing_user_id,
@@ -522,56 +525,52 @@ async fn stage_and_interstitial(
     )
     .await
     .or_internal("staging the pending registration")?;
-    tos_interstitial(state, pending_id, tos_version)
+    login_incomplete_response(state, pending_id, pending_secret, tos_version)
 }
 
-/// Build the ToS interstitial response: a 302 to the configured browser ToS page
-/// when `oauth.browser_tos_redirect` is set (a browser frontend), else a `409`
-/// `tos_required` JSON marker (a programmatic client). Both carry the pending id
-/// in an `HttpOnly` cookie so the browser can `POST /auth/tos/accept` blind; the
-/// redirect additionally carries `?pending_id=…&tos_version=…` so a frontend on
-/// another origin (where that cookie never arrives) can embed the id in its
-/// accept form instead. The id is single-use and short-lived, so its transit
-/// through the URL is far less sensitive than the token handoff documented in
-/// TODOS.md.
-fn tos_interstitial(
+/// Build the login-incomplete response: a 302 to the configured browser
+/// completion page when `oauth.browser_login_complete_redirect` is set (a
+/// browser frontend), with `?pending_id=…&pending_secret=…&tos_version=…`
+/// appended for its form to echo back; else a `409` `login_incomplete` JSON
+/// marker (a programmatic client). The pending pair transits the redirect URL
+/// like the token handoff does — single-use and short-lived, and swept along by
+/// the back-channel hardening tracked in TODOS.md.
+fn login_incomplete_response(
     state: &AppState,
     pending_id: Uuid,
+    pending_secret: String,
     tos_version: i32,
 ) -> Result<Response, StatusCode> {
-    let cookie = format!(
-        "{PENDING_COOKIE}={pending_id}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}",
-        TOS_LIFETIME_MINUTES * 60,
-    );
-    let cookie = HeaderValue::from_str(&cookie).or_internal("building the pending cookie")?;
-    let tos_url = state.config().oauth.browser_tos_redirect.clone();
+    let completion_url = state.config().oauth.browser_login_complete_redirect.clone();
 
-    let mut response = match &tos_url {
+    Ok(match &completion_url {
         Some(target) => {
-            let mut url = url::Url::parse(target)
-                .or_internal(&format!("parsing oauth.browser_tos_redirect {target:?}"))?;
+            let mut url = url::Url::parse(target).or_internal(&format!(
+                "parsing oauth.browser_login_complete_redirect {target:?}"
+            ))?;
             url.query_pairs_mut()
                 .append_pair("pending_id", &pending_id.to_string())
+                .append_pair("pending_secret", &pending_secret)
                 .append_pair("tos_version", &tos_version.to_string());
             Redirect::to(url.as_str()).into_response()
         }
         None => (
             StatusCode::CONFLICT,
-            Json(TosRequiredResponse {
-                tos_required: true,
+            Json(LoginIncompleteResponse {
+                login_incomplete: true,
+                required: vec!["tos".to_string()],
                 pending_id,
+                pending_secret,
                 tos_version,
-                tos_url: tos_url.clone(),
+                completion_url: completion_url.clone(),
             }),
         )
             .into_response(),
-    };
-    response.headers_mut().insert(header::SET_COOKIE, cookie);
-    Ok(response)
+    })
 }
 
 /// `GET /auth/tos`: the current Terms of Service text + version for a frontend to
-/// render on the interstitial. Unauthenticated.
+/// render on the login-completion page. Unauthenticated.
 #[tracing::instrument(skip(state))]
 pub async fn tos_info(State(state): State<AppState>) -> Json<TosInfoResponse> {
     Json(TosInfoResponse {
@@ -580,14 +579,14 @@ pub async fn tos_info(State(state): State<AppState>) -> Json<TosInfoResponse> {
     })
 }
 
-/// The request body of `POST /auth/tos/accept`, in whichever encoding the
+/// The request body of `POST /auth/login/complete`, in whichever encoding the
 /// client speaks: JSON for programmatic clients, `x-www-form-urlencoded` for
-/// the console's no-JS HTML form (forms cannot send JSON). Any other or absent
-/// body extracts as an empty request (the cookie then identifies the staged
-/// registration).
-pub struct TosAcceptBody(TosAcceptRequest);
+/// the console's no-JS HTML form (forms cannot send JSON). The body is
+/// mandatory — it carries the pending pair — so any other content type is
+/// `415` and a malformed body is `400`.
+pub struct LoginCompleteBody(LoginCompleteRequest);
 
-impl FromRequest<AppState> for TosAcceptBody {
+impl FromRequest<AppState> for LoginCompleteBody {
     type Rejection = StatusCode;
 
     async fn from_request(req: Request, state: &AppState) -> Result<Self, StatusCode> {
@@ -597,43 +596,41 @@ impl FromRequest<AppState> for TosAcceptBody {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         if content_type.starts_with("application/json") {
-            let Json(body) = Json::<TosAcceptRequest>::from_request(req, state)
+            let Json(body) = Json::<LoginCompleteRequest>::from_request(req, state)
                 .await
                 .map_err(|_| StatusCode::BAD_REQUEST)?;
             Ok(Self(body))
         } else if content_type.starts_with("application/x-www-form-urlencoded") {
-            let Form(body) = Form::<TosAcceptRequest>::from_request(req, state)
+            let Form(body) = Form::<LoginCompleteRequest>::from_request(req, state)
                 .await
                 .map_err(|_| StatusCode::BAD_REQUEST)?;
             Ok(Self(body))
         } else {
-            Ok(Self(TosAcceptRequest::default()))
+            Err(StatusCode::UNSUPPORTED_MEDIA_TYPE)
         }
     }
 }
 
-/// `POST /auth/tos/accept`: finish a login staged behind the ToS interstitial.
+/// `POST /auth/login/complete`: finish a login staged behind the completion
+/// step (today: ToS acceptance).
 ///
-/// Unauthenticated; the staged registration is identified by the pending id,
-/// taken from the body (JSON or form-encoded, see [`TosAcceptBody`]) or the
-/// `HttpOnly` cookie the callback set. In one transaction: consume the staging
-/// row (missing/expired → `410 Gone`), then either create the brand-new account
-/// (recording the accepted ToS version) or record an existing user's
-/// re-acceptance, and issue the session token. Returns the same success shape
-/// as the callback.
+/// Unauthenticated; the caller authenticates by presenting the staged login's
+/// `pending_id` TOGETHER with its one-time `pending_secret` (JSON or
+/// form-encoded, see [`LoginCompleteBody`]). The echoed `tos_version` must be
+/// the one currently in force, else `409` with a fresh marker — a concurrent
+/// ToS bump must not record consent to text the user never saw. In one
+/// transaction: consume the staging row (unknown id, wrong secret, or expired →
+/// `410 Gone`, with a wrong secret leaving the row intact), re-check the lock
+/// state for an existing user, then either create the brand-new account
+/// (recording the accepted ToS version) or record the re-acceptance, and issue
+/// the session token. Returns the same success shape as the callback.
 #[tracing::instrument(skip(state, body))]
-pub async fn tos_accept(
+pub async fn login_complete(
     State(state): State<AppState>,
     parts: Parts,
-    body: TosAcceptBody,
+    body: LoginCompleteBody,
 ) -> Result<Response, StatusCode> {
-    // The pending id may arrive in the body (programmatic, or the console's
-    // form) or the cookie (browser). Prefer the body, fall back to the cookie.
-    let pending_id = body
-        .0
-        .pending_id
-        .or_else(|| cookie_value(&parts, PENDING_COOKIE).and_then(|v| Uuid::parse_str(v).ok()))
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let LoginCompleteBody(request) = body;
 
     let client = ClientAddr::resolve(&parts, &state.config().server);
     let client_ip = client.as_ref().map(ClientAddr::ip_string);
@@ -646,24 +643,79 @@ pub async fn tos_accept(
 
     let current_tos = state.config().service.current_tos_version;
 
+    // The user consented to the version their client rendered. If the in-force
+    // version moved on meanwhile, do not consume anything: re-issue the marker
+    // (same pending pair, current version) so the client can re-render and
+    // re-submit.
+    if request.tos_version != current_tos {
+        return login_incomplete_response(
+            &state,
+            request.pending_id,
+            request.pending_secret,
+            current_tos,
+        );
+    }
+
     let mut tx = state
         .pool()
         .begin()
         .await
-        .or_internal("opening the ToS-accept transaction")?;
+        .or_internal("opening the login-completion transaction")?;
 
-    // Consume-once: an unknown/expired/already-used id is a 410.
-    let Some(pending) = sql::pending_registration::consume_pending(&mut *tx, pending_id)
-        .await
-        .or_internal("consuming the pending registration")?
+    // Consume-once: an unknown id, a wrong secret, or an expired/already-used
+    // row is uniformly a 410 (no oracle distinguishing them).
+    let Some(pending) = sql::pending_registration::consume_pending(
+        &mut tx,
+        request.pending_id,
+        &request.pending_secret,
+    )
+    .await
+    .or_internal("consuming the pending registration")?
     else {
         return Err(StatusCode::GONE);
     };
 
     let user_id = if let Some(user_id) = pending.existing_user_id {
-        // Existing user re-accepting a bumped ToS: record acceptance, no new
-        // record, and (deliberately) no locked-check here — the callback already
-        // routed a locked account down the locked-login-denial path.
+        // Existing user re-accepting a bumped ToS. The callback only stages
+        // unlocked accounts, but the account may have been locked in the window
+        // since (the staging row lives for minutes): re-check under this
+        // transaction and refuse the token like the callback tail would,
+        // leaving the same audit trail. The consumed staging row stays consumed
+        // — once unlocked, the user simply logs in again.
+        let status = sqlx::query!(
+            "select u.locked, u.username, i.provider_user_id, i.provider_login \
+             from tml_switchboard.users u \
+             left join tml_switchboard.user_identities i \
+               on i.user_id = u.subject_id and i.provider = $2 \
+             where u.subject_id = $1;",
+            user_id,
+            pending.provider,
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .or_internal(&format!("reading lock status for {user_id}"))?;
+        if status.locked {
+            audit::emit(
+                &mut tx,
+                &events::LoginDeniedLocked {
+                    actor: AuditSubject(user_id),
+                    user: AuditSubject(user_id),
+                    provider: pending.provider.clone(),
+                    provider_user_id: status.provider_user_id.unwrap_or_default(),
+                    login: status.provider_login.unwrap_or(status.username),
+                    client_ip: client_ip.clone(),
+                    client_port,
+                },
+            )
+            .await
+            .or_internal("recording the locked-login denial")?;
+            tx.commit()
+                .await
+                .or_internal("committing the locked-login transaction")?;
+            tracing::warn!("user {user_id} login completion denied: account is locked");
+            return Err(StatusCode::FORBIDDEN);
+        }
+
         sqlx::query!(
             "update tml_switchboard.users \
              set tos_accepted_version = $2, tos_accepted_at = now() \
@@ -735,7 +787,7 @@ pub async fn tos_accept(
 
     tx.commit()
         .await
-        .or_internal("committing the ToS-accept transaction")?;
+        .or_internal("committing the login-completion transaction")?;
 
     tracing::info!("user {user_id} accepted ToS v{current_tos} and logged in");
     login_success_response(
@@ -745,19 +797,6 @@ pub async fn tos_accept(
             expires_at,
         },
     )
-}
-
-/// Read a named cookie's value out of the request's `Cookie` header, if present.
-fn cookie_value<'a>(parts: &'a Parts, name: &str) -> Option<&'a str> {
-    parts
-        .headers
-        .get(http::header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .filter_map(|kv| kv.split_once('='))
-        .find(|(k, _)| k.trim() == name)
-        .map(|(_, v)| v.trim())
 }
 
 /// Record an admission-gate denial as an operator-only audit event and commit

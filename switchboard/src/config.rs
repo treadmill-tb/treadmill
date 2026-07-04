@@ -96,19 +96,19 @@ pub struct OAuthConfig {
     /// transits a URL query string).
     #[serde(default)]
     pub browser_success_redirect: Option<String>,
-    /// Where to send a browser that must accept the Terms of Service before its
-    /// login completes (the ToS interstitial). Sibling of
+    /// Where to send a browser that must finish the completion step (today:
+    /// accepting the Terms of Service) before its login completes. Sibling of
     /// [`browser_success_redirect`](Self::browser_success_redirect): when set, a
     /// login that has passed admission but still needs consent (a brand-new user,
     /// or an existing user whose accepted ToS version is below the current one)
-    /// is `302`-redirected here with `?pending_id=…&tos_version=…` appended,
-    /// instead of receiving the `409` JSON marker. The frontend renders the ToS
-    /// (see `GET /auth/tos`) and, on acceptance, `POST`s the pending id back to
-    /// `/auth/tos/accept` (JSON or a plain HTML form) to finish the login. When
-    /// unset, the callback returns the `409` `tos_required` JSON marker for
-    /// programmatic clients.
+    /// is `302`-redirected here with `?pending_id=…&pending_secret=…&tos_version=…`
+    /// appended, instead of receiving the `409` JSON marker. The frontend renders
+    /// the ToS (see `GET /auth/tos`) and `POST`s the pending pair back to
+    /// `/auth/login/complete` (JSON or a plain HTML form) to finish the login.
+    /// When unset, the callback returns the `409` `login_incomplete` JSON marker
+    /// for programmatic clients.
     #[serde(default)]
-    pub browser_tos_redirect: Option<String>,
+    pub browser_login_complete_redirect: Option<String>,
 }
 
 /// Configuration for GitHub OAuth login.
