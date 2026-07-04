@@ -96,6 +96,17 @@ pub struct OAuthConfig {
     /// transits a URL query string).
     #[serde(default)]
     pub browser_success_redirect: Option<String>,
+    /// Where to send a browser that must accept the Terms of Service before its
+    /// login completes (the ToS interstitial). Sibling of
+    /// [`browser_success_redirect`](Self::browser_success_redirect): when set, a
+    /// login that has passed admission but still needs consent (a brand-new user,
+    /// or an existing user whose accepted ToS version is below the current one)
+    /// is `302`-redirected here instead of receiving the `409` JSON marker. The
+    /// frontend renders the ToS (see `GET /auth/tos`) and, on acceptance, `POST`s
+    /// to `/auth/tos/accept` to finish the login. When unset, the callback
+    /// returns the `409` `tos_required` JSON marker for programmatic clients.
+    #[serde(default)]
+    pub browser_tos_redirect: Option<String>,
 }
 
 /// Configuration for GitHub OAuth login.
@@ -147,6 +158,9 @@ pub struct MockOAuthConfig {
     pub enabled: bool,
 }
 
+fn default_current_tos_version() -> i32 {
+    1
+}
 fn default_github_auth_url() -> String {
     "https://github.com/login/oauth/authorize".to_string()
 }
@@ -202,6 +216,13 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServiceConfig {
+    /// The Terms of Service version currently in force. A user whose
+    /// `users.tos_accepted_version` is below this (or NULL) must (re-)accept the
+    /// ToS before a token is issued; a newly-registering user accepts at this
+    /// version. Bump it to force everyone through the interstitial again. The
+    /// served ToS text is [`crate::routes::auth::TOS_TEXT`].
+    #[serde(default = "default_current_tos_version")]
+    pub current_tos_version: i32,
     /// Default lifetime of a user session token.
     #[serde(with = "human_duration")]
     pub default_token_timeout: chrono::TimeDelta,

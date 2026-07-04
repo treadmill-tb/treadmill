@@ -93,8 +93,24 @@ async fn run_login(client: &reqwest::Client, addr: SocketAddr, pool: &PgPool) ->
         .send()
         .await
         .unwrap();
-    assert_eq!(cb_resp.status(), reqwest::StatusCode::OK);
-    cb_resp.json().await.unwrap()
+    match cb_resp.status() {
+        // Existing user with a current ToS: logged in directly.
+        reqwest::StatusCode::OK => cb_resp.json().await.unwrap(),
+        // New (or stale-ToS) user: accept the ToS interstitial to finish login.
+        reqwest::StatusCode::CONFLICT => {
+            let body: serde_json::Value = cb_resp.json().await.unwrap();
+            let pending_id = body["pending_id"].as_str().unwrap().to_string();
+            let accept = client
+                .post(format!("http://{addr}/api/v1/auth/tos/accept"))
+                .json(&serde_json::json!({ "pending_id": pending_id }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(accept.status(), reqwest::StatusCode::OK);
+            accept.json().await.unwrap()
+        }
+        other => panic!("unexpected callback status {other}"),
+    }
 }
 
 /// Provision a user via login and return (server addr, bearer token, user_id).

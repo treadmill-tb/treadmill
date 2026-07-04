@@ -3,6 +3,7 @@ pub mod host;
 pub mod image;
 pub(crate) mod job;
 pub mod oauth_flow;
+pub mod pending_registration;
 pub mod user;
 
 #[derive(Debug, Clone, Copy, sqlx::Type)]

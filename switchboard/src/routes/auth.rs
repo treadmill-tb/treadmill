@@ -31,16 +31,32 @@ use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{Duration, Utc};
 use http::StatusCode;
 use http::request::Parts;
+use http::{HeaderValue, header};
 use serde::Deserialize;
 use std::collections::HashMap;
 use treadmill_rs::api::switchboard::{
     AuthProvidersResponse, AuthToken, LoginResponse, MockIdentityInfo, OAuthProviderInfo,
-    WhoAmIResponse,
+    TosAcceptRequest, TosInfoResponse, TosRequiredResponse, WhoAmIResponse,
 };
+use uuid::Uuid;
 
 /// How long a started login flow's CSRF state remains valid before the callback
 /// must arrive.
 const FLOW_LIFETIME_MINUTES: i64 = 10;
+
+/// How long a staged, ToS-awaiting registration (`pending_registrations`) lives
+/// before it must be consumed by `POST /auth/tos/accept`.
+const TOS_LIFETIME_MINUTES: i64 = 30;
+
+/// Name of the `HttpOnly` cookie carrying the pending-registration id across the
+/// ToS interstitial, so a browser can `POST /auth/tos/accept` without echoing
+/// the id itself.
+const PENDING_COOKIE: &str = "tml_pending_registration";
+
+/// The blanket Terms of Service text served by `GET /auth/tos`. A placeholder
+/// until a real ToS exists; its version is [`crate::config::ServiceConfig::current_tos_version`].
+pub const TOS_TEXT: &str = "By using this Treadmill instance you agree to its terms of service. \
+     (Placeholder — no formal ToS is in effect yet.)";
 
 /// Resolve the configured [`OAuthProvider`] named by the `{provider}` path
 /// segment, or report why it is unavailable (`404` if not configured/enabled).
@@ -220,8 +236,15 @@ pub async fn callback(
         .or_internal("resolving the user")?;
     drop(conn);
 
-    // Both paths converge on `(tx, user_id, new_user)` and then run the shared
-    // locked-check / admin-grant / token / login-marker tail below.
+    // The Terms of Service version currently in force; a login cannot complete
+    // until the user has accepted at least this version.
+    let current_tos = state.config().service.current_tos_version;
+
+    // Branches that log in immediately converge on `(tx, user_id, new_user)` and
+    // run the shared locked-check / admin-grant / token / login-marker tail
+    // below. Branches that still need ToS consent stage a `pending_registrations`
+    // row and return the interstitial (a 302 to the ToS page, or a 409 marker)
+    // WITHOUT issuing a token -- see `stage_and_interstitial`.
     let (mut tx, user_id, new_user) = match resolved {
         Some((user_id, kind)) => {
             // Existing user: proceed ungated. Org membership only narrows
@@ -242,6 +265,36 @@ pub async fn callback(
             )
             .await
             .or_internal("refreshing the existing user")?;
+
+            // A ToS version bump forces re-acceptance before a token is issued,
+            // but only for an unlocked account -- a locked account is handled by
+            // the shared locked-login denial in the tail instead. Read both here.
+            let status = sqlx::query!(
+                "select locked, tos_accepted_version \
+                 from tml_switchboard.users where subject_id = $1;",
+                user_id,
+            )
+            .fetch_one(&mut *tx)
+            .await
+            .or_internal(&format!("reading login state for {user_id}"))?;
+            let stale_tos = status.tos_accepted_version.is_none_or(|v| v < current_tos);
+            if !status.locked && stale_tos {
+                // Commit the allowed profile/email/group refresh, then stage a
+                // re-acceptance and bounce the user through the interstitial.
+                tx.commit()
+                    .await
+                    .or_internal("committing the profile refresh")?;
+                return stage_and_interstitial(
+                    &state,
+                    provider.name(),
+                    None,
+                    Some(user_id),
+                    &org_ids,
+                    current_tos,
+                )
+                .await;
+            }
+
             (tx, user_id, false)
         }
         None => {
@@ -302,20 +355,38 @@ pub async fn callback(
                     );
                     return Err(StatusCode::FORBIDDEN);
                 }
+
+                // Admitted, but no durable user record may exist before the user
+                // accepts the ToS. Stage the identity + org ids and return the
+                // interstitial; the account is created only in `tos_accept`.
+                return stage_and_interstitial(
+                    &state,
+                    provider.name(),
+                    Some(&identity),
+                    None,
+                    &org_ids,
+                    current_tos,
+                )
+                .await;
             }
 
-            // Admitted (or a mock bypass): create the account and mint the token
-            // atomically -- a crash between the two must never leave a user
-            // without a token, or a token referencing a missing user.
+            // Mock bypass: the dev-only provider is exempt from both the gate and
+            // the ToS interstitial, so it conjures the account immediately, with
+            // the ToS recorded as already accepted at the current version.
             let mut tx = state
                 .pool()
                 .begin()
                 .await
                 .or_internal("opening a transaction")?;
-            let user_id =
-                sql::user::create_and_reconcile(&mut tx, provider.name(), &identity, &org_ids)
-                    .await
-                    .or_internal("provisioning the user")?;
+            let user_id = sql::user::create_and_reconcile(
+                &mut tx,
+                provider.name(),
+                &identity,
+                &org_ids,
+                current_tos,
+            )
+            .await
+            .or_internal("provisioning the user")?;
             (tx, user_id, true)
         }
     };
@@ -401,16 +472,17 @@ pub async fn callback(
         token: AuthToken::from(session_token),
         expires_at,
     };
+    login_success_response(&state, login)
+}
 
-    // Programmatic clients get the token as JSON. A browser frontend cannot
-    // consume that without JS, so when a browser-success redirect is configured
-    // we hand the token back via a 302 to the frontend instead, which stores it
-    // and strips it from the URL. See the config docs and TODOS.md (the token
-    // currently transits a URL query string — to be hardened to a back-channel
-    // exchange).
-    let browser_redirect = state.config().oauth.browser_success_redirect.as_deref();
-
-    match browser_redirect {
+/// Turn a successful login into its HTTP response. Programmatic clients get the
+/// token as JSON; when a browser-success redirect is configured we hand the
+/// token back via a 302 to the frontend instead, which stores it and strips it
+/// from the URL. See the config docs and TODOS.md (the token currently transits
+/// a URL query string — to be hardened to a back-channel exchange). Shared by
+/// the OAuth callback and the ToS-accept handler so the two cannot diverge.
+fn login_success_response(state: &AppState, login: LoginResponse) -> Result<Response, StatusCode> {
+    match state.config().oauth.browser_success_redirect.as_deref() {
         Some(target) => {
             let mut url = url::Url::parse(target).or_internal(&format!(
                 "parsing oauth.browser_success_redirect {target:?}"
@@ -422,6 +494,224 @@ pub async fn callback(
         }
         None => Ok(Json(login).into_response()),
     }
+}
+
+/// Stage a `pending_registrations` row for a login awaiting ToS acceptance and
+/// return the interstitial response. Provide EITHER `identity` (a brand-new
+/// admitted user) OR `existing_user_id` (a re-acceptance), never both. No token
+/// is issued and, for a new user, no durable record exists yet — the account is
+/// created only when `POST /auth/tos/accept` consumes this row.
+async fn stage_and_interstitial(
+    state: &AppState,
+    provider: &str,
+    identity: Option<&ExternalIdentity>,
+    existing_user_id: Option<Uuid>,
+    org_ids: &[String],
+    tos_version: i32,
+) -> Result<Response, StatusCode> {
+    let pending_id = Uuid::new_v4();
+    let expires_at = Utc::now() + Duration::minutes(TOS_LIFETIME_MINUTES);
+    sql::pending_registration::insert_pending(
+        state.pool(),
+        pending_id,
+        provider,
+        identity,
+        existing_user_id,
+        org_ids,
+        expires_at,
+    )
+    .await
+    .or_internal("staging the pending registration")?;
+    tos_interstitial(state, pending_id, tos_version)
+}
+
+/// Build the ToS interstitial response: a 302 to the configured browser ToS page
+/// when `oauth.browser_tos_redirect` is set (a browser frontend), else a `409`
+/// `tos_required` JSON marker (a programmatic client). Both carry the pending id
+/// in an `HttpOnly` cookie so the browser can `POST /auth/tos/accept` blind.
+fn tos_interstitial(
+    state: &AppState,
+    pending_id: Uuid,
+    tos_version: i32,
+) -> Result<Response, StatusCode> {
+    let cookie = format!(
+        "{PENDING_COOKIE}={pending_id}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}",
+        TOS_LIFETIME_MINUTES * 60,
+    );
+    let cookie = HeaderValue::from_str(&cookie).or_internal("building the pending cookie")?;
+    let tos_url = state.config().oauth.browser_tos_redirect.clone();
+
+    let mut response = match &tos_url {
+        Some(target) => Redirect::to(target).into_response(),
+        None => (
+            StatusCode::CONFLICT,
+            Json(TosRequiredResponse {
+                tos_required: true,
+                pending_id,
+                tos_version,
+                tos_url: tos_url.clone(),
+            }),
+        )
+            .into_response(),
+    };
+    response.headers_mut().insert(header::SET_COOKIE, cookie);
+    Ok(response)
+}
+
+/// `GET /auth/tos`: the current Terms of Service text + version for a frontend to
+/// render on the interstitial. Unauthenticated.
+#[tracing::instrument(skip(state))]
+pub async fn tos_info(State(state): State<AppState>) -> Json<TosInfoResponse> {
+    Json(TosInfoResponse {
+        version: state.config().service.current_tos_version,
+        text: TOS_TEXT.to_string(),
+    })
+}
+
+/// `POST /auth/tos/accept`: finish a login staged behind the ToS interstitial.
+///
+/// Unauthenticated; the staged registration is identified by the pending id,
+/// taken from the JSON body or the `HttpOnly` cookie the callback set. In one
+/// transaction: consume the staging row (missing/expired → `410 Gone`), then
+/// either create the brand-new account (recording the accepted ToS version) or
+/// record an existing user's re-acceptance, and issue the session token. Returns
+/// the same success shape as the callback.
+#[tracing::instrument(skip(state, body))]
+pub async fn tos_accept(
+    State(state): State<AppState>,
+    parts: Parts,
+    body: Option<Json<TosAcceptRequest>>,
+) -> Result<Response, StatusCode> {
+    // The pending id may arrive in the body (programmatic) or the cookie
+    // (browser). Prefer the body, fall back to the cookie.
+    let pending_id = body
+        .and_then(|Json(b)| b.pending_id)
+        .or_else(|| cookie_value(&parts, PENDING_COOKIE).and_then(|v| Uuid::parse_str(v).ok()))
+        .ok_or(StatusCode::BAD_REQUEST)?;
+
+    let client = ClientAddr::resolve(&parts, &state.config().server);
+    let client_ip = client.as_ref().map(ClientAddr::ip_string);
+    let client_port = client.and_then(|c| c.port).map(|p| p as i32);
+    let user_agent = parts
+        .headers
+        .get(http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let current_tos = state.config().service.current_tos_version;
+
+    let mut tx = state
+        .pool()
+        .begin()
+        .await
+        .or_internal("opening the ToS-accept transaction")?;
+
+    // Consume-once: an unknown/expired/already-used id is a 410.
+    let Some(pending) = sql::pending_registration::consume_pending(&mut *tx, pending_id)
+        .await
+        .or_internal("consuming the pending registration")?
+    else {
+        return Err(StatusCode::GONE);
+    };
+
+    let user_id = if let Some(user_id) = pending.existing_user_id {
+        // Existing user re-accepting a bumped ToS: record acceptance, no new
+        // record, and (deliberately) no locked-check here — the callback already
+        // routed a locked account down the locked-login-denial path.
+        sqlx::query!(
+            "update tml_switchboard.users \
+             set tos_accepted_version = $2, tos_accepted_at = now() \
+             where subject_id = $1;",
+            user_id,
+            current_tos,
+        )
+        .execute(&mut *tx)
+        .await
+        .or_internal("recording ToS re-acceptance")?;
+        audit::emit(
+            &mut tx,
+            &events::TosAccepted {
+                actor: AuditSubject(user_id),
+                user: AuditSubject(user_id),
+                version: current_tos,
+            },
+        )
+        .await
+        .or_internal("recording the ToS-acceptance event")?;
+        user_id
+    } else {
+        // Brand-new admitted user: create the account now, at the accepted
+        // version, then emit the login marker the callback's Admit path used to.
+        let identity = pending
+            .parse_identity()
+            .ok_or(StatusCode::GONE)?
+            .or_internal("decoding the staged identity")?;
+        let user_id = sql::user::create_and_reconcile(
+            &mut tx,
+            &pending.provider,
+            &identity,
+            &pending.org_ids,
+            current_tos,
+        )
+        .await
+        .or_internal("provisioning the user")?;
+        audit::emit(
+            &mut tx,
+            &events::UserLoggedIn {
+                actor: AuditSubject(user_id),
+                user: AuditSubject(user_id),
+                provider: pending.provider.clone(),
+                provider_user_id: identity.provider_user_id.clone(),
+                login: identity.login.clone(),
+                new_user: true,
+                client_ip: client_ip.clone(),
+                client_port,
+            },
+        )
+        .await
+        .or_internal("recording the login event")?;
+        user_id
+    };
+
+    let (session_token, expires_at) = audit::transition(
+        &mut tx,
+        IssueSessionToken {
+            user_id,
+            lifetime: state.config().service.default_token_timeout,
+            user_agent: user_agent.clone(),
+            comment: Some("interactive OAuth login (ToS accepted)".to_string()),
+            created_ip: client_ip.clone(),
+            created_port: client_port,
+        },
+    )
+    .await
+    .or_internal("issuing the session token")?;
+
+    tx.commit()
+        .await
+        .or_internal("committing the ToS-accept transaction")?;
+
+    tracing::info!("user {user_id} accepted ToS v{current_tos} and logged in");
+    login_success_response(
+        &state,
+        LoginResponse {
+            token: AuthToken::from(session_token),
+            expires_at,
+        },
+    )
+}
+
+/// Read a named cookie's value out of the request's `Cookie` header, if present.
+fn cookie_value<'a>(parts: &'a Parts, name: &str) -> Option<&'a str> {
+    parts
+        .headers
+        .get(http::header::COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .filter_map(|kv| kv.split_once('='))
+        .find(|(k, _)| k.trim() == name)
+        .map(|(_, v)| v.trim())
 }
 
 /// Record an admission-gate denial as an operator-only audit event and commit

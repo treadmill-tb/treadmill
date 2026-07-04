@@ -102,17 +102,29 @@ pub async fn resolve_user(
 /// profile, record its verified emails, and reconcile its auto-group
 /// memberships. Returns the new user's subject id.
 ///
-/// Only reached after the admission gate admits the identity; [`resolve_user`]
-/// must have returned `None` first. Runs on the caller's transaction so the
-/// whole provisioning is atomic with the session-token issuance and its audit
-/// events.
+/// `tos_version` is the Terms of Service version the user accepted to reach this
+/// point; it is stamped onto the new row (`tos_accepted_version`/
+/// `tos_accepted_at`) so the account starts out consented. Only reached after
+/// the admission gate admits the identity AND the ToS is accepted (the
+/// interstitial's accept handler); [`resolve_user`] must have returned `None`
+/// first. Runs on the caller's transaction so the whole provisioning is atomic
+/// with the session-token issuance and its audit events.
 pub async fn create_and_reconcile(
     tx: &mut Transaction<'_, Postgres>,
     provider: &str,
     identity: &ExternalIdentity,
     org_ids: &[String],
+    tos_version: i32,
 ) -> Result<Uuid, sqlx::Error> {
-    let user_id = audit::transition(tx, CreateUser { provider, identity }).await?;
+    let user_id = audit::transition(
+        tx,
+        CreateUser {
+            provider,
+            identity,
+            tos_version,
+        },
+    )
+    .await?;
     refresh_and_reconcile(tx, provider, identity, org_ids, user_id).await?;
     Ok(user_id)
 }
@@ -239,6 +251,9 @@ async fn refresh_and_reconcile(
 struct CreateUser<'a> {
     provider: &'a str,
     identity: &'a ExternalIdentity,
+    /// The ToS version the user accepted; stamped onto the new row so the
+    /// account is created already-consented.
+    tos_version: i32,
 }
 
 impl Transition for CreateUser<'_> {
@@ -261,12 +276,14 @@ impl Transition for CreateUser<'_> {
 
         let username = unique_username(&mut *conn, &self.identity.login).await?;
         sqlx::query!(
-            "insert into tml_switchboard.users (subject_id, username, full_name, avatar_url) \
-             values ($1, $2, $3, $4);",
+            "insert into tml_switchboard.users \
+             (subject_id, username, full_name, avatar_url, tos_accepted_version, tos_accepted_at) \
+             values ($1, $2, $3, $4, $5, now());",
             user_id,
             username,
             self.identity.full_name,
             self.identity.avatar_url,
+            self.tos_version,
         )
         .execute(&mut *conn)
         .await?;

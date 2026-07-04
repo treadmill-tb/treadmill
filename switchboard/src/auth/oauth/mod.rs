@@ -8,6 +8,7 @@ pub mod github;
 pub mod mock;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use thiserror::Error;
@@ -21,7 +22,7 @@ pub struct OAuthAccessToken(pub String);
 /// `verified` means that the OAuth provider promises to have verified that this
 /// email address belongs to the given user *AND* that we trust this information
 /// for the purposes of linking other OAuth handles to a given user.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Email<'a> {
     /// The email address.
     ///
@@ -33,7 +34,7 @@ pub struct Email<'a> {
 }
 
 /// Identity information fetched from a provider after a successful login.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalIdentity {
     /// The provider's STABLE numeric user id, as text. Never the login handle
     /// (handles are renameable/reusable and would mis-link accounts over time).

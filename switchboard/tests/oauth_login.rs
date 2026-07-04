@@ -109,12 +109,29 @@ async fn run_login(client: &reqwest::Client, addr: SocketAddr, pool: &PgPool) ->
         .send()
         .await
         .unwrap();
-    assert_eq!(
-        cb_resp.status(),
-        reqwest::StatusCode::OK,
-        "callback should succeed"
-    );
-    cb_resp.json().await.unwrap()
+    match cb_resp.status() {
+        // Existing user with a current ToS: the callback logs them in directly.
+        reqwest::StatusCode::OK => cb_resp.json().await.unwrap(),
+        // A new (or stale-ToS) user is bounced through the ToS interstitial;
+        // accept it to complete the login and receive the session.
+        reqwest::StatusCode::CONFLICT => {
+            let body: serde_json::Value = cb_resp.json().await.unwrap();
+            let pending_id = body["pending_id"].as_str().unwrap().to_string();
+            let accept = client
+                .post(format!("http://{addr}/api/v1/auth/tos/accept"))
+                .json(&serde_json::json!({ "pending_id": pending_id }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                accept.status(),
+                reqwest::StatusCode::OK,
+                "ToS accept should complete the login"
+            );
+            accept.json().await.unwrap()
+        }
+        other => panic!("unexpected callback status {other}"),
+    }
 }
 
 #[sqlx::test]
