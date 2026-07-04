@@ -1,4 +1,5 @@
 /target
+/.direnv
 **/*.rs.bk
 /bin
 /pkg
