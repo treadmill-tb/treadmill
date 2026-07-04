@@ -99,7 +99,7 @@ impl std::fmt::Debug for JobParameter {
 }
 
 /// Connection credentials for tailing/replaying a job's console logs over NATS,
-/// returned by `POST /jobs/{id}/log-token`.
+/// returned by `POST /jobs/{id}/nats-log-token`.
 ///
 /// The token is a short-lived **bearer** user JWT scoped to *subscribe* to this
 /// job's log subjects (`subject`); the client connects to `nats_url` with the
@@ -108,7 +108,7 @@ impl std::fmt::Debug for JobParameter {
 /// expires — so a client re-requests credentials when it next reconnects, after
 /// roughly `expires_in_secs`.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct LogStreamCredentials {
+pub struct NatsLogStreamCredentials {
     /// NATS client URL to connect to (e.g. `nats://nats.example:4222`).
     pub nats_url: String,
     /// Subject wildcard covering all of this job's log channels:

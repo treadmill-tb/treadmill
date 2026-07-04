@@ -1,4 +1,4 @@
-//! Route tests for `POST /jobs/{id}/log-token` (NATS read-token minting).
+//! Route tests for `POST /jobs/{id}/nats-log-token` (NATS read-token minting).
 //!
 //! Drives the real router over a loopback socket against ephemeral Postgres,
 //! using the development mock-OAuth provider to obtain an authenticated caller
@@ -22,7 +22,7 @@ use uuid::Uuid;
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{
-    EnqueueJobResponse, JobImageRef, JobInfo, JobListResponse, LogStreamCredentials,
+    EnqueueJobResponse, JobImageRef, JobInfo, JobListResponse, NatsLogStreamCredentials,
 };
 use treadmill_rs::api::switchboard::{
     JobInitSpec, JobRequest, JobState, LoginResponse, WhoAmIResponse,
@@ -864,14 +864,14 @@ async fn admin_gets_a_subscribe_token_for_any_job(pool: PgPool) {
     let job_id = Uuid::new_v4();
 
     let resp = client
-        .post(format!("http://{addr}/api/v1/jobs/{job_id}/log-token"))
+        .post(format!("http://{addr}/api/v1/jobs/{job_id}/nats-log-token"))
         .bearer_auth(&token)
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
 
-    let creds: LogStreamCredentials = resp.json().await.unwrap();
+    let creds: NatsLogStreamCredentials = resp.json().await.unwrap();
     assert_eq!(creds.nats_url, "nats://nats.example:4222");
     assert_eq!(creds.subject, format!("logs.{job_id}.>"));
     assert_eq!(creds.expires_in_secs, 300);
@@ -895,7 +895,7 @@ async fn non_reader_is_forbidden(pool: PgPool) {
     let job_id = Uuid::new_v4();
 
     let resp = client
-        .post(format!("http://{addr}/api/v1/jobs/{job_id}/log-token"))
+        .post(format!("http://{addr}/api/v1/jobs/{job_id}/nats-log-token"))
         .bearer_auth(&token)
         .send()
         .await
@@ -918,7 +918,7 @@ async fn streaming_disabled_yields_service_unavailable(pool: PgPool) {
     let job_id = Uuid::new_v4();
 
     let resp = client
-        .post(format!("http://{addr}/api/v1/jobs/{job_id}/log-token"))
+        .post(format!("http://{addr}/api/v1/jobs/{job_id}/nats-log-token"))
         .bearer_auth(&token)
         .send()
         .await

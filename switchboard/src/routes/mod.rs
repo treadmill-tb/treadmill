@@ -114,15 +114,15 @@ pub fn api_router() -> ApiRouter<AppState> {
                 doc(o, "listJobEvents", "Jobs", "List a job's audit events")
             }),
         )
-        //  POST /jobs/{id}/log-token -- mint a NATS read token for this job's logs
+        //  POST /jobs/{id}/nats-log-token -- mint a NATS read token for this job's logs
         .api_route(
-            "/jobs/{id}/log-token",
-            post_with(jobs::log_token, |o| {
+            "/jobs/{id}/nats-log-token",
+            post_with(jobs::nats_log_token, |o| {
                 doc(
                     o,
-                    "createJobLogToken",
+                    "createJobNatsLogToken",
                     "Jobs",
-                    "Create a log-streaming token for a job",
+                    "Create a NATS log-streaming token for a job",
                 )
                 .response_with::<503, (), _>(|r| {
                     r.description("Log streaming is not enabled on this deployment.")

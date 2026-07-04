@@ -146,12 +146,12 @@ paths:
                 $ref: '#/components/schemas/AuditFeedResponse'
       security:
       - token: []
-  /jobs/{id}/log-token:
+  /jobs/{id}/nats-log-token:
     post:
       tags:
       - Jobs
-      summary: Create a log-streaming token for a job
-      operationId: createJobLogToken
+      summary: Create a NATS log-streaming token for a job
+      operationId: createJobNatsLogToken
       parameters:
       - in: path
         name: id
@@ -170,7 +170,7 @@ paths:
         '200':
           description: |-
             Connection credentials for tailing/replaying a job's console logs over NATS,
-            returned by `POST /jobs/{id}/log-token`.
+            returned by `POST /jobs/{id}/nats-log-token`.
 
             The token is a short-lived **bearer** user JWT scoped to *subscribe* to this
             job's log subjects (`subject`); the client connects to `nats_url` with the
@@ -181,7 +181,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LogStreamCredentials'
+                $ref: '#/components/schemas/NatsLogStreamCredentials'
         '503':
           description: Log streaming is not enabled on this deployment.
       security:
@@ -2064,10 +2064,10 @@ components:
           - 'null'
           format: uint32
           minimum: 0
-    LogStreamCredentials:
+    NatsLogStreamCredentials:
       description: |-
         Connection credentials for tailing/replaying a job's console logs over NATS,
-        returned by `POST /jobs/{id}/log-token`.
+        returned by `POST /jobs/{id}/nats-log-token`.
 
         The token is a short-lived **bearer** user JWT scoped to *subscribe* to this
         job's log subjects (`subject`); the client connects to `nats_url` with the
