@@ -186,16 +186,12 @@ use_tokio_console_subscriber = false
 [log_streaming]
 nats_url = "nats://127.0.0.1:$nats_port"
 
-# browser_success_redirect is provider-independent: any OAuth callback
-# 302s the browser here with the freshly minted token, which the
-# console moves into its session cookie.
+# The console declares its landing URL as each login's return_to; the
+# allowlist (exact match) authorizes it. The callback 302s the browser
+# there with a single-use staged pair, which the console exchanges
+# server-to-server for the session token.
 [oauth]
-browser_success_redirect = "http://localhost:$console_port/auth/landing"
-# A login that still needs Terms-of-Service consent is 302'd to the
-# console's completion page instead (with the one-time pending pair in
-# the query); its form then POSTs back to the switchboard to finish the
-# login.
-browser_login_complete_redirect = "http://localhost:$console_port/auth/complete"
+return_to_allowlist = ["http://localhost:$console_port/auth/landing"]
 
 # The mock provider is a development-only, UNAUTHENTICATED login bypass
 # (built-in identities, no external service). Safe to enable here only

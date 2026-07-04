@@ -23,9 +23,10 @@ pub struct ServerConfig {
     /// Address the console binds its HTTP listener to.
     pub bind_address: SocketAddr,
     /// The console's own externally reachable origin, e.g.
-    /// `https://console.example`. Two uses: the switchboard's
-    /// `browser_success_redirect` should point at `<public_base_url>/auth/landing`,
-    /// and an `https://` origin makes the session cookie `Secure`.
+    /// `https://console.example`. Two uses: the console declares
+    /// `<public_base_url>/auth/landing` as its per-login `return_to` (which
+    /// must appear in the switchboard's `oauth.return_to_allowlist`), and an
+    /// `https://` origin makes the session cookie `Secure`.
     pub public_base_url: String,
 }
 

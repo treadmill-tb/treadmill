@@ -8,8 +8,9 @@
 [server]
 # Address the console binds its HTTP listener to.
 bind_address = "127.0.0.1:8080"
-# The console's own externally reachable origin. Point the switchboard's
-# `browser_success_redirect` at `<public_base_url>/auth/landing`. An https
+# The console's own externally reachable origin. The console declares
+# `<public_base_url>/auth/landing` as its per-login `return_to`, so that URL
+# must appear in the switchboard's `oauth.return_to_allowlist`. An https
 # origin makes the session cookie `Secure`.
 public_base_url = "http://localhost:8080"
 

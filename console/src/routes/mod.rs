@@ -1,9 +1,9 @@
 //! HTTP routes for the console.
 //!
 //! The surface is deliberately tiny: an entry redirect, the login-flow
-//! endpoints (`/login` → switchboard, `/auth/complete` and `/auth/landing` ←
-//! switchboard, `/logout`), the per-resource pages, and the embedded
-//! stylesheet.
+//! endpoints (`/login` → switchboard, `/auth/landing` ← switchboard — the
+//! declared `return_to` — plus the `/auth/complete` ToS display and
+//! `/logout`), the per-resource pages, and the embedded stylesheet.
 
 mod auth;
 mod jobs;
