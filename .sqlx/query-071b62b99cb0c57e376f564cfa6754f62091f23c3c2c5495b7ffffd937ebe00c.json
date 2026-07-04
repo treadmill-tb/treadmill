@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "insert into tml_switchboard.pending_registrations (id, secret_hash, provider, identity, existing_user_id, org_ids, expires_at) values ($1, $2, $3, $4, $5, $6, $7);",
+  "query": "insert into tml_switchboard.staged_logins (id, secret_hash, provider, identity, existing_user_id, org_ids, expires_at) values ($1, $2, $3, $4, $5, $6, $7);",
   "describe": {
     "columns": [],
     "parameters": {
@@ -16,5 +16,5 @@
     },
     "nullable": []
   },
-  "hash": "02eb0f20f5e10de951429fec3d84407b984b06d6257ab2f81f277f4ba1f3199a"
+  "hash": "071b62b99cb0c57e376f564cfa6754f62091f23c3c2c5495b7ffffd937ebe00c"
 }

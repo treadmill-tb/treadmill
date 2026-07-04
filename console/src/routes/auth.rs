@@ -12,7 +12,7 @@
 //! Service consent, for a brand-new user or on a ToS version bump),
 //! switchboard — configured with `browser_login_complete_redirect` pointing at
 //! `<console>/auth/complete` — redirects here with the staged login's
-//! `pending_id` and one-time `pending_secret` in the query. `/auth/complete`
+//! `staged_id` and one-time `staged_secret` in the query. `/auth/complete`
 //! renders the ToS with a plain form that POSTs the pair straight back to
 //! switchboard's `/auth/login/complete`, which finishes the login and lands
 //! the browser on `/auth/landing` as usual. No JS involved.
@@ -109,15 +109,15 @@ pub async fn landing(
 pub struct CompleteQuery {
     /// The staged login to finish; absent if someone opens the page outside a
     /// login flow (we then render the ToS without a completion form).
-    pending_id: Option<Uuid>,
-    /// The one-time secret that must accompany `pending_id`; the id alone is
+    staged_id: Option<Uuid>,
+    /// The one-time secret that must accompany `staged_id`; the id alone is
     /// deliberately no capability.
-    pending_secret: Option<String>,
+    staged_secret: Option<String>,
 }
 
 /// `GET /auth/complete` — the login-completion page (today: ToS consent).
 /// Fetches the current ToS from switchboard and renders it with a form that
-/// POSTs the pending pair — plus the version of the text actually shown —
+/// POSTs the staged pair — plus the version of the text actually shown —
 /// directly to switchboard's `/auth/login/complete`; on success switchboard
 /// sends the browser back to `/auth/landing` with the token, completing the
 /// login. Declining is simply abandoning the page (the staged login expires
@@ -139,13 +139,13 @@ pub async fn complete(
                 p { (tos.text) }
             }
             section.card {
-                @if let (Some(pending_id), Some(pending_secret)) =
-                    (query.pending_id, &query.pending_secret)
+                @if let (Some(staged_id), Some(staged_secret)) =
+                    (query.staged_id, &query.staged_secret)
                 {
                     p { "To finish signing in, you must accept these terms." }
                     form method="post" action=(client.login_complete_url()) {
-                        input type="hidden" name="pending_id" value=(pending_id);
-                        input type="hidden" name="pending_secret" value=(pending_secret);
+                        input type="hidden" name="staged_id" value=(staged_id);
+                        input type="hidden" name="staged_secret" value=(staged_secret);
                         input type="hidden" name="tos_version" value=(tos.version);
                         button.button type="submit" { "Accept and continue" }
                     }

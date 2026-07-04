@@ -53,15 +53,22 @@ pub struct LoginResponse {
     pub expires_at: DateTime<Utc>,
 }
 
-/// Response body for a login that has passed admission but cannot complete
-/// until the user finishes the completion step (today: accepting the Terms of
-/// Service; the `required` list leaves room for more, e.g. picking a username).
+/// Response body for a login that has passed admission (e.g., OAuth token
+/// exchanged) but cannot complete until the user finishes the completion step
+/// (as indicated by `required`).
+///
+/// The following is a non-exhaustive list of `required` steps:
+///
+/// - `tos`: the user must (re)accept the latest version of the ToS.
 ///
 /// Returned as `409 Conflict` by the OAuth callback for programmatic clients
 /// (browser frontends are instead `302`-redirected to the configured completion
-/// page with the same values in the query). The client gathers everything
-/// `required` lists (see `GET /auth/tos`) and finishes the login by `POST`ing
-/// the pending pair back to `/auth/login/complete`.
+/// page with the same values in the query).
+//
+/// The client gathers everything `required` lists and finishes the login by
+/// `POST`ing the `(staged_id, staged_secret)` pair back to
+/// `/auth/login/complete`. `staged_secret` must be kept secret and treated
+/// equivalently to an auth token, as it can mint an auth token.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct LoginIncompleteResponse {
     /// Always `true`; a stable discriminator so a client can branch on it.
@@ -69,16 +76,15 @@ pub struct LoginIncompleteResponse {
     /// What the completion step must provide. Currently always `["tos"]`;
     /// future requirements (e.g. `"username"`) extend this list.
     pub required: Vec<String>,
-    /// Identifies the staged login to `/auth/login/complete`. An id, not a
-    /// capability: it is useless without `pending_secret`.
-    pub pending_id: Uuid,
-    /// Single-use secret proving the caller is the party that just
-    /// authenticated; must accompany `pending_id` on completion. The server
-    /// stores only a salted hash of it.
-    pub pending_secret: String,
-    /// The ToS version the user is being asked to accept, echoed back on
-    /// completion so consent is recorded against the text actually shown.
-    pub tos_version: i32,
+    /// Identifies the staged login to `/auth/login/complete`.
+    pub staged_id: Uuid,
+    /// Single-use secret that `/auth/login/complete` exchanges for an auth
+    /// token.
+    pub staged_secret: String,
+    /// The ToS version the user is being asked to accept (if `required`
+    /// contains `"tos"`), echoed back on completion so consent is recorded
+    /// against the text actually shown.
+    pub tos_version: Option<i32>,
     /// The configured browser completion page URL, if any (mirrors the server's
     /// `oauth.browser_login_complete_redirect`). Programmatic clients may
     /// ignore it.
@@ -99,14 +105,15 @@ pub struct TosInfoResponse {
 /// JSON by programmatic clients or form-encoded by the console's no-JS form.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct LoginCompleteRequest {
-    /// The staged login, from [`LoginIncompleteResponse::pending_id`].
-    pub pending_id: Uuid,
-    /// Its one-time secret, from [`LoginIncompleteResponse::pending_secret`].
-    pub pending_secret: String,
-    /// The ToS version the user was shown and accepted. Must match the version
-    /// currently in force, so a concurrent ToS bump cannot record consent to
-    /// text the user never saw.
-    pub tos_version: i32,
+    /// The staged login, from [`LoginIncompleteResponse::staged_id`].
+    pub staged_id: Uuid,
+    /// Its one-time secret, from [`LoginIncompleteResponse::staged_secret`].
+    pub staged_secret: String,
+    /// The ToS version the user was shown and accepted (only mandatory if
+    /// `required` contained `"tos"`). Must match the version currently in
+    /// force, so a concurrent ToS bump cannot record consent to text the user
+    /// never saw.
+    pub tos_version: Option<i32>,
 }
 
 /// Response body for `/auth/whoami`: the identity of the authenticated subject.

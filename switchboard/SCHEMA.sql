@@ -329,19 +329,26 @@ CREATE TABLE tml_switchboard.login_allowlist (
 );
 
 
--- Short-lived server-side staging for a login that has passed admission but is
--- awaiting ToS acceptance. Consume-once: deleted in the same txn that provisions
--- the user (new) or records re-acceptance (existing). Holds the derived identity
--- and org list -- NEVER the OAuth access token. Mirrors oauth_flows in spirit.
---   identity IS NOT NULL          -> a brand-new user awaiting first acceptance
---   existing_user_id IS NOT NULL  -> an existing user re-accepting a bumped ToS
-CREATE TABLE tml_switchboard.pending_registrations (
+-- Short-lived server-side staging for a login that has passed admission (e.g.,
+-- token exchanged with the OAuth provider), but needs more information (asks
+-- user for preferred name, or requires ToS acceptance). A login can either
+-- proceed immediately or be staged for both new registrations and existing
+-- users.
+--
+-- Consume-once: deleted in the same txn that provisions the user (new) or
+-- records login (existing). Holds the derived identity and org list--the OAuth
+-- access token is already discarded at this point and never written to the DB.
+--
+-- identity IS NOT NULL -> a brand-new user awaiting first acceptance
+-- existing_user_id IS NOT NULL -> an existing user re-accepting a bumped ToS
+--
+-- To exchange a staged login (with the required additional information such as
+-- ToS acceptance) to a proper auth token, the user has to present the `secret`
+-- which hashes to `secret_hash`.
+CREATE TABLE tml_switchboard.staged_logins (
     id uuid NOT NULL PRIMARY KEY,
     -- Salted argon2id hash (PHC string) of the one-time completion secret that
-    -- accompanies the id across the browser round trip. The id alone is NOT a
-    -- capability: consuming the row requires presenting the secret, and only
-    -- its hash is stored, so database read access does not yield the ability
-    -- to complete a login.
+    -- accompanies the id across the browser round trip.
     secret_hash text NOT NULL,
     provider text NOT NULL,
     identity jsonb,
@@ -349,7 +356,7 @@ CREATE TABLE tml_switchboard.pending_registrations (
     org_ids TEXT[] NOT NULL DEFAULT '{}',
     created_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
     expires_at timestamp with time zone NOT NULL,
-    CONSTRAINT pending_kind CHECK ((identity IS NULL) <> (existing_user_id IS NULL))
+    CONSTRAINT staged_kind CHECK ((identity IS NULL) <> (existing_user_id IS NULL))
 );
 
 

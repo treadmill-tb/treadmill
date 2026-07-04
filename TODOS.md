@@ -35,8 +35,8 @@ generalizes the single `browser_success_redirect` value into a proper
 multi-origin `return_to` allowlist.
 
 Related, much lower severity: the login-completion step's
-`browser_login_complete_redirect` carries the staged login's `pending_id` and
-one-time `pending_secret` through the redirect URL the same way (so the
+`browser_login_complete_redirect` carries the staged login's `staged_id` and
+one-time `staged_secret` through the redirect URL the same way (so the
 console can embed them in its no-JS completion form). The pair is single-use,
 expires quickly, and completing it only finishes the login it belongs to — but
 the back-channel rework above should sweep it along.

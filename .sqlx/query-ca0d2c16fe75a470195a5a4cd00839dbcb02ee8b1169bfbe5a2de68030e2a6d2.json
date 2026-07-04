@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, secret_hash, provider, identity, existing_user_id, org_ids, expires_at from tml_switchboard.pending_registrations where id = $1 for update;",
+  "query": "select id, secret_hash, provider, identity, existing_user_id, org_ids, expires_at from tml_switchboard.staged_logins where id = $1 for update;",
   "describe": {
     "columns": [
       {
@@ -9,7 +9,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.pending_registrations",
+            "table": "tml_switchboard.staged_logins",
             "name": "id"
           }
         }
@@ -20,7 +20,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.pending_registrations",
+            "table": "tml_switchboard.staged_logins",
             "name": "secret_hash"
           }
         }
@@ -31,7 +31,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.pending_registrations",
+            "table": "tml_switchboard.staged_logins",
             "name": "provider"
           }
         }
@@ -42,7 +42,7 @@
         "type_info": "Jsonb",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.pending_registrations",
+            "table": "tml_switchboard.staged_logins",
             "name": "identity"
           }
         }
@@ -53,7 +53,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.pending_registrations",
+            "table": "tml_switchboard.staged_logins",
             "name": "existing_user_id"
           }
         }
@@ -64,7 +64,7 @@
         "type_info": "TextArray",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.pending_registrations",
+            "table": "tml_switchboard.staged_logins",
             "name": "org_ids"
           }
         }
@@ -75,7 +75,7 @@
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.pending_registrations",
+            "table": "tml_switchboard.staged_logins",
             "name": "expires_at"
           }
         }
@@ -96,5 +96,5 @@
       false
     ]
   },
-  "hash": "6488088f1f1e0d7f80355fe4c55553820fdbbd4a0f2481a826adbf8a729252fe"
+  "hash": "ca0d2c16fe75a470195a5a4cd00839dbcb02ee8b1169bfbe5a2de68030e2a6d2"
 }

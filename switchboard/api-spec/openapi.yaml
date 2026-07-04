@@ -2251,35 +2251,43 @@ components:
         JSON by programmatic clients or form-encoded by the console's no-JS form.
       type: object
       properties:
-        pending_id:
-          description: The staged login, from [`LoginIncompleteResponse::pending_id`].
+        staged_id:
+          description: The staged login, from [`LoginIncompleteResponse::staged_id`].
           type: string
           format: uuid
-        pending_secret:
-          description: Its one-time secret, from [`LoginIncompleteResponse::pending_secret`].
+        staged_secret:
+          description: Its one-time secret, from [`LoginIncompleteResponse::staged_secret`].
           type: string
         tos_version:
           description: |-
-            The ToS version the user was shown and accepted. Must match the version
-            currently in force, so a concurrent ToS bump cannot record consent to
-            text the user never saw.
-          type: integer
+            The ToS version the user was shown and accepted (only mandatory if
+            `required` contained `"tos"`). Must match the version currently in
+            force, so a concurrent ToS bump cannot record consent to text the user
+            never saw.
+          type:
+          - integer
+          - 'null'
           format: int32
       required:
-      - pending_id
-      - pending_secret
-      - tos_version
+      - staged_id
+      - staged_secret
     LoginIncompleteResponse:
       description: |-
-        Response body for a login that has passed admission but cannot complete
-        until the user finishes the completion step (today: accepting the Terms of
-        Service; the `required` list leaves room for more, e.g. picking a username).
+        Response body for a login that has passed admission (e.g., OAuth token
+        exchanged) but cannot complete until the user finishes the completion step
+        (as indicated by `required`).
+
+        The following is a non-exhaustive list of `required` steps:
+
+        - `tos`: the user must (re)accept the latest version of the ToS.
 
         Returned as `409 Conflict` by the OAuth callback for programmatic clients
         (browser frontends are instead `302`-redirected to the configured completion
-        page with the same values in the query). The client gathers everything
-        `required` lists (see `GET /auth/tos`) and finishes the login by `POST`ing
-        the pending pair back to `/auth/login/complete`.
+        page with the same values in the query).
+        The client gathers everything `required` lists and finishes the login by
+        `POST`ing the `(staged_id, staged_secret)` pair back to
+        `/auth/login/complete`. `staged_secret` must be kept secret and treated
+        equivalently to an auth token, as it can mint an auth token.
       type: object
       properties:
         completion_url:
@@ -2293,18 +2301,6 @@ components:
         login_incomplete:
           description: Always `true`; a stable discriminator so a client can branch on it.
           type: boolean
-        pending_id:
-          description: |-
-            Identifies the staged login to `/auth/login/complete`. An id, not a
-            capability: it is useless without `pending_secret`.
-          type: string
-          format: uuid
-        pending_secret:
-          description: |-
-            Single-use secret proving the caller is the party that just
-            authenticated; must accompany `pending_id` on completion. The server
-            stores only a salted hash of it.
-          type: string
         required:
           description: |-
             What the completion step must provide. Currently always `["tos"]`;
@@ -2312,18 +2308,29 @@ components:
           type: array
           items:
             type: string
+        staged_id:
+          description: Identifies the staged login to `/auth/login/complete`.
+          type: string
+          format: uuid
+        staged_secret:
+          description: |-
+            Single-use secret that `/auth/login/complete` exchanges for an auth
+            token.
+          type: string
         tos_version:
           description: |-
-            The ToS version the user is being asked to accept, echoed back on
-            completion so consent is recorded against the text actually shown.
-          type: integer
+            The ToS version the user is being asked to accept (if `required`
+            contains `"tos"`), echoed back on completion so consent is recorded
+            against the text actually shown.
+          type:
+          - integer
+          - 'null'
           format: int32
       required:
       - login_incomplete
       - required
-      - pending_id
-      - pending_secret
-      - tos_version
+      - staged_id
+      - staged_secret
     LoginResponse:
       description: |-
         Response Body that [`login_handler`] emits.

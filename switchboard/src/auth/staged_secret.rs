@@ -1,11 +1,11 @@
-//! The one-time secret that guards a staged login (`pending_registrations`).
+//! The one-time secret that guards a staged login (`staged_logins`).
 //!
 //! The staging row's id is deliberately NOT a capability (ids are never
 //! secrets): completing a login at `POST /auth/login/complete` requires
 //! presenting the id together with this secret, which is generated alongside
-//! the row and handed only to the just-authenticated party. The database
-//! stores a salted argon2id hash (a PHC string), so read access to the table
-//! does not yield the ability to complete anyone's login.
+//! the row and handed only to the just-authenticated party. The database stores
+//! a salted argon2id hash (a PHC string), so read access to the table does not
+//! yield the ability to complete anyone's login.
 
 use argon2::Argon2;
 use argon2::password_hash::rand_core::OsRng;

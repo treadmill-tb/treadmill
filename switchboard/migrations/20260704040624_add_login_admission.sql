@@ -16,18 +16,16 @@ CREATE TABLE "tml_switchboard"."login_allowlist" (
 );
 
 
--- Create "pending_registrations" table
-CREATE TABLE "tml_switchboard"."pending_registrations" (
-    "id" uuid NOT NULL,
-    "provider" text NOT NULL,
-    "identity" jsonb NULL,
-    "existing_user_id" uuid NULL,
-    "org_ids" TEXT[] NOT NULL DEFAULT '{}',
-    "created_at" timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "expires_at" timestamptz NOT NULL,
-    PRIMARY KEY ("id"),
-    CONSTRAINT "pending_registrations_existing_user_id_fkey" FOREIGN KEY ("existing_user_id") REFERENCES "tml_switchboard"."users" ("subject_id") ON UPDATE NO ACTION ON DELETE CASCADE,
-    CONSTRAINT "pending_kind" CHECK ((identity IS NULL) <> (existing_user_id IS NULL))
+-- Create "staged_logins" table
+CREATE TABLE tml_switchboard.staged_logins (
+    id uuid NOT NULL PRIMARY KEY,
+    provider text NOT NULL,
+    identity jsonb,
+    existing_user_id uuid REFERENCES tml_switchboard.users (subject_id) ON DELETE CASCADE,
+    org_ids TEXT[] NOT NULL DEFAULT '{}',
+    created_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
+    expires_at timestamp with time zone NOT NULL,
+    CONSTRAINT staged_kind CHECK ((identity IS NULL) <> (existing_user_id IS NULL))
 );
 
 

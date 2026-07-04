@@ -3,13 +3,15 @@
 //! The routes are provider-agnostic: the `{provider}` path segment selects one
 //! of the configured [`OAuthProvider`]s via [`provider_for`]. The flow is the
 //! standard authorization-code grant:
+//!
 //!   1. `GET /auth/{provider}/login` builds the provider authorization URL,
 //!      persists the CSRF `state`, and redirects the browser to the provider.
+//!
 //!   2. The provider redirects back to `GET /auth/{provider}/callback` with
 //!      `code` and `state`; we confirm the state, exchange the code, fetch the
 //!      identity, provision the local user, and issue a session token.
-//!   3. `GET /auth/whoami` reports the identity behind a bearer token.
 //!
+//!   3. `GET /auth/whoami` reports the identity behind a bearer token.
 
 use crate::audit::model::Subject as AuditSubject;
 use crate::audit::{self, events};
@@ -20,7 +22,7 @@ use crate::auth::oauth::ExternalIdentity;
 use crate::auth::oauth::OAuthProvider;
 use crate::auth::oauth::github::GithubProvider;
 use crate::auth::oauth::mock::{MOCK_IDENTITIES, MockProvider};
-use crate::auth::pending_secret;
+use crate::auth::staged_secret;
 use crate::client_addr::ClientAddr;
 use crate::http_error::OrInternal;
 use crate::routes::params::ProviderPath;
@@ -45,9 +47,9 @@ use uuid::Uuid;
 /// must arrive.
 const FLOW_LIFETIME_MINUTES: i64 = 10;
 
-/// How long a staged, ToS-awaiting registration (`pending_registrations`) lives
-/// before it must be consumed by `POST /auth/login/complete`.
-const TOS_LIFETIME_MINUTES: i64 = 30;
+/// How long a staged login lives before it must be consumed by `POST
+/// /auth/login/complete`.
+const STAGED_LOGIN_LIFETIME_MINUTES: i64 = 30;
 
 /// The blanket Terms of Service text served by `GET /auth/tos`. A placeholder
 /// until a real ToS exists; its version is [`crate::config::ServiceConfig::current_tos_version`].
@@ -239,12 +241,11 @@ pub async fn callback(
     // until the user has accepted at least this version.
     let current_tos = state.config().service.current_tos_version;
 
-    // Branches that log in immediately converge on `(tx, user_id, new_user)` and
-    // run the shared locked-check / admin-grant / token / login-marker tail
-    // below. Branches that still need ToS consent stage a `pending_registrations`
-    // row and return the login-incomplete response (a 302 to the completion
-    // page, or a 409 marker) WITHOUT issuing a token -- see
-    // `stage_login_completion`.
+    // Branches that log in immediately converge on `(tx, user_id, new_user)`
+    // and run the shared locked-check / admin-grant / token / login-marker tail
+    // below. Branches that still need ToS consent stage a `staged_logins` row
+    // and return the login-incomplete response (a 302 to the completion page,
+    // or a 409 marker) WITHOUT issuing a token -- see `stage_login_completion`.
     let (mut tx, user_id, new_user) = match resolved {
         Some((user_id, kind)) => {
             // Existing user: proceed ungated. Org membership only narrows
@@ -497,8 +498,8 @@ fn login_success_response(state: &AppState, login: LoginResponse) -> Result<Resp
     }
 }
 
-/// Stage a `pending_registrations` row for a login awaiting ToS acceptance and
-/// return the login-incomplete response. Provide EITHER `identity` (a brand-new
+/// Stage a `staged_logins` row for a login awaiting ToS acceptance and return
+/// the login-incomplete response. Provide EITHER `identity` (a brand-new
 /// admitted user) OR `existing_user_id` (a re-acceptance), never both. No token
 /// is issued and, for a new user, no durable record exists yet — the account is
 /// created only when `POST /auth/login/complete` consumes this row, which
@@ -512,14 +513,14 @@ async fn stage_login_completion(
     org_ids: &[String],
     tos_version: i32,
 ) -> Result<Response, StatusCode> {
-    let pending_id = Uuid::new_v4();
-    let pending_secret = pending_secret::generate();
+    let staged_id = Uuid::new_v4();
+    let staged_secret = staged_secret::generate();
     let secret_hash =
-        pending_secret::hash(&pending_secret).or_internal("hashing the pending secret")?;
-    let expires_at = Utc::now() + Duration::minutes(TOS_LIFETIME_MINUTES);
-    sql::pending_registration::insert_pending(
+        staged_secret::hash(&staged_secret).or_internal("hashing the staged secret")?;
+    let expires_at = Utc::now() + Duration::minutes(STAGED_LOGIN_LIFETIME_MINUTES);
+    sql::staged_login::insert_staged(
         state.pool(),
-        pending_id,
+        staged_id,
         &secret_hash,
         provider,
         identity,
@@ -528,21 +529,21 @@ async fn stage_login_completion(
         expires_at,
     )
     .await
-    .or_internal("staging the pending registration")?;
-    login_incomplete_response(state, pending_id, pending_secret, tos_version)
+    .or_internal("persisting the staged login")?;
+    login_incomplete_response(state, staged_id, staged_secret, tos_version)
 }
 
 /// Build the login-incomplete response: a 302 to the configured browser
 /// completion page when `oauth.browser_login_complete_redirect` is set (a
-/// browser frontend), with `?pending_id=…&pending_secret=…&tos_version=…`
+/// browser frontend), with `?staged_id=…&staged_secret=…&tos_version=…`
 /// appended for its form to echo back; else a `409` `login_incomplete` JSON
-/// marker (a programmatic client). The pending pair transits the redirect URL
+/// marker (a programmatic client). The staged pair transits the redirect URL
 /// like the token handoff does — single-use and short-lived, and swept along by
 /// the back-channel hardening tracked in TODOS.md.
 fn login_incomplete_response(
     state: &AppState,
-    pending_id: Uuid,
-    pending_secret: String,
+    staged_id: Uuid,
+    staged_secret: String,
     tos_version: i32,
 ) -> Result<Response, StatusCode> {
     let completion_url = state.config().oauth.browser_login_complete_redirect.clone();
@@ -553,8 +554,8 @@ fn login_incomplete_response(
                 "parsing oauth.browser_login_complete_redirect {target:?}"
             ))?;
             url.query_pairs_mut()
-                .append_pair("pending_id", &pending_id.to_string())
-                .append_pair("pending_secret", &pending_secret)
+                .append_pair("staged_id", &staged_id.to_string())
+                .append_pair("staged_secret", &staged_secret)
                 .append_pair("tos_version", &tos_version.to_string());
             Redirect::to(url.as_str()).into_response()
         }
@@ -563,9 +564,9 @@ fn login_incomplete_response(
             Json(LoginIncompleteResponse {
                 login_incomplete: true,
                 required: vec!["tos".to_string()],
-                pending_id,
-                pending_secret,
-                tos_version,
+                staged_id,
+                staged_secret,
+                tos_version: Some(tos_version),
                 completion_url: completion_url.clone(),
             }),
         )
@@ -586,7 +587,7 @@ pub async fn tos_info(State(state): State<AppState>) -> Json<TosInfoResponse> {
 /// The request body of `POST /auth/login/complete`, in whichever encoding the
 /// client speaks: JSON for programmatic clients, `x-www-form-urlencoded` for
 /// the console's no-JS HTML form (forms cannot send JSON). The body is
-/// mandatory — it carries the pending pair — so any other content type is
+/// mandatory — it carries the staged pair — so any other content type is
 /// `415` and a malformed body is `400`.
 pub struct LoginCompleteBody(LoginCompleteRequest);
 
@@ -630,7 +631,7 @@ impl FromRequest<AppState> for LoginCompleteBody {
 /// step (today: ToS acceptance).
 ///
 /// Unauthenticated; the caller authenticates by presenting the staged login's
-/// `pending_id` TOGETHER with its one-time `pending_secret` (JSON or
+/// `staged_id` TOGETHER with its one-time `staged_secret` (JSON or
 /// form-encoded, see [`LoginCompleteBody`]). The echoed `tos_version` must be
 /// the one currently in force, else `409` with a fresh marker — a concurrent
 /// ToS bump must not record consent to text the user never saw. In one
@@ -660,13 +661,13 @@ pub async fn login_complete(
 
     // The user consented to the version their client rendered. If the in-force
     // version moved on meanwhile, do not consume anything: re-issue the marker
-    // (same pending pair, current version) so the client can re-render and
+    // (same staged pair, current version) so the client can re-render and
     // re-submit.
-    if request.tos_version != current_tos {
+    if request.tos_version.is_none_or(|v| v != current_tos) {
         return login_incomplete_response(
             &state,
-            request.pending_id,
-            request.pending_secret,
+            request.staged_id,
+            request.staged_secret,
             current_tos,
         );
     }
@@ -679,18 +680,15 @@ pub async fn login_complete(
 
     // Consume-once: an unknown id, a wrong secret, or an expired/already-used
     // row is uniformly a 410 (no oracle distinguishing them).
-    let Some(pending) = sql::pending_registration::consume_pending(
-        &mut tx,
-        request.pending_id,
-        &request.pending_secret,
-    )
-    .await
-    .or_internal("consuming the pending registration")?
+    let Some(staged) =
+        sql::staged_login::consume_staged(&mut tx, request.staged_id, &request.staged_secret)
+            .await
+            .or_internal("consuming the staged registration")?
     else {
         return Err(StatusCode::GONE);
     };
 
-    let user_id = if let Some(user_id) = pending.existing_user_id {
+    let user_id = if let Some(user_id) = staged.existing_user_id {
         // Existing user re-accepting a bumped ToS. The callback only stages
         // unlocked accounts, but the account may have been locked in the window
         // since (the staging row lives for minutes): re-check under this
@@ -704,7 +702,7 @@ pub async fn login_complete(
                on i.user_id = u.subject_id and i.provider = $2 \
              where u.subject_id = $1;",
             user_id,
-            pending.provider,
+            staged.provider,
         )
         .fetch_one(&mut *tx)
         .await
@@ -715,7 +713,7 @@ pub async fn login_complete(
                 &events::LoginDeniedLocked {
                     actor: AuditSubject(user_id),
                     user: AuditSubject(user_id),
-                    provider: pending.provider.clone(),
+                    provider: staged.provider.clone(),
                     provider_user_id: status.provider_user_id.unwrap_or_default(),
                     login: status.provider_login.unwrap_or(status.username),
                     client_ip: client_ip.clone(),
@@ -755,15 +753,15 @@ pub async fn login_complete(
     } else {
         // Brand-new admitted user: create the account now, at the accepted
         // version, then emit the login marker the callback's Admit path used to.
-        let identity = pending
+        let identity = staged
             .parse_identity()
             .ok_or(StatusCode::GONE)?
             .or_internal("decoding the staged identity")?;
         let user_id = sql::user::create_and_reconcile(
             &mut tx,
-            &pending.provider,
+            &staged.provider,
             &identity,
-            &pending.org_ids,
+            &staged.org_ids,
             current_tos,
         )
         .await
@@ -773,7 +771,7 @@ pub async fn login_complete(
             &events::UserLoggedIn {
                 actor: AuditSubject(user_id),
                 user: AuditSubject(user_id),
-                provider: pending.provider.clone(),
+                provider: staged.provider.clone(),
                 provider_user_id: identity.provider_user_id.clone(),
                 login: identity.login.clone(),
                 new_user: true,

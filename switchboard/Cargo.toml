@@ -75,9 +75,8 @@ async-trait = { workspace = true }
 subtle = { workspace = true }
 # CSPRNG
 rand = { workspace = true }
-# Salted hash (argon2id, PHC string) for the one-time login-completion secret
-# staged in pending_registrations: only the hash is stored, so DB read access
-# cannot complete a login.
+# Salted hashes (argon2id, PHC string) for auth tokens and one-time
+# login-completion secrets.
 argon2 = "0.5"
 
 # OAuth2 login (GitHub). The `oauth2` crate drives the authorization-code flow;

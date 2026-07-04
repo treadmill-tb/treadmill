@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "delete from tml_switchboard.pending_registrations where id = $1;",
+  "query": "delete from tml_switchboard.staged_logins where id = $1;",
   "describe": {
     "columns": [],
     "parameters": {
@@ -10,5 +10,5 @@
     },
     "nullable": []
   },
-  "hash": "daf177cceafb1a689e423d5f87eb2e538826624dd95795ef0dc3f588c8181056"
+  "hash": "b22e02b4835f8eca113dba307fee3ef81fe789a1a2709070c7bf0f96fa8c9f5d"
 }

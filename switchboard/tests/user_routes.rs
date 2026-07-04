@@ -102,8 +102,8 @@ async fn run_login(client: &reqwest::Client, addr: SocketAddr, pool: &PgPool) ->
             let complete = client
                 .post(format!("http://{addr}/api/v1/auth/login/complete"))
                 .json(&serde_json::json!({
-                    "pending_id": body["pending_id"],
-                    "pending_secret": body["pending_secret"],
+                    "staged_id": body["staged_id"],
+                    "staged_secret": body["staged_secret"],
                     "tos_version": body["tos_version"],
                 }))
                 .send()

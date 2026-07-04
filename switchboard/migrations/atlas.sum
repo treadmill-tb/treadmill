@@ -1,4 +1,4 @@
-h1:WmXAiWsvqCd34CsUGmhn8vq99sIzRFfnEewHFH9MtQk=
+h1:S02eTg7FWo7c8Q0ZIG9Tv/j6kYqJFAoDuYXjP2e8334=
 00000000000001_base.sql h1:7OodY/qoessjRRoCAAX04fthKHTDNzzloQ4srKlxs+o=
-20260704040624_add_login_admission.sql h1:wPqPltTJb/lch8JfU22uYpNSR/h2xZsL9pl4s0MOaLo=
-20260704182005_pending_registration_secret.sql h1:Ddpt60raDzJHFlzEK2O37XBLdbyZU8Agodl+YvThMy0=
+20260704040624_add_login_admission.sql h1:igsGQsFVnG44AEHOingbrzRj0Cf+xjVXm9pT1EwP7AU=
+20260704182005_staged_login_secret.sql h1:0uZZstOCxbfDbsn1/NeAoS6WLqGf1VCrkevmHlZ5ryA=

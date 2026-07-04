@@ -101,9 +101,9 @@ pub struct OAuthConfig {
     /// [`browser_success_redirect`](Self::browser_success_redirect): when set, a
     /// login that has passed admission but still needs consent (a brand-new user,
     /// or an existing user whose accepted ToS version is below the current one)
-    /// is `302`-redirected here with `?pending_id=…&pending_secret=…&tos_version=…`
+    /// is `302`-redirected here with `?staged_id=…&staged_secret=…&tos_version=…`
     /// appended, instead of receiving the `409` JSON marker. The frontend renders
-    /// the ToS (see `GET /auth/tos`) and `POST`s the pending pair back to
+    /// the ToS (see `GET /auth/tos`) and `POST`s the staged pair back to
     /// `/auth/login/complete` (JSON or a plain HTML form) to finish the login.
     /// When unset, the callback returns the `409` `login_incomplete` JSON marker
     /// for programmatic clients.

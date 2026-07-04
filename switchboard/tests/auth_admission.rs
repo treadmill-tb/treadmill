@@ -127,7 +127,7 @@ async fn drive_to_callback(
         .unwrap()
 }
 
-/// POST the pending pair from a `409` marker `body` to `/auth/login/complete`,
+/// POST the staged pair from a `409` marker `body` to `/auth/login/complete`,
 /// echoing the offered ToS version, and return the response.
 async fn complete_login(
     client: &reqwest::Client,
@@ -137,8 +137,8 @@ async fn complete_login(
     client
         .post(format!("http://{addr}/api/v1/auth/login/complete"))
         .json(&serde_json::json!({
-            "pending_id": body["pending_id"],
-            "pending_secret": body["pending_secret"],
+            "staged_id": body["staged_id"],
+            "staged_secret": body["staged_secret"],
             "tos_version": body["tos_version"],
         }))
         .send()
@@ -164,9 +164,9 @@ async fn drive_full_login(
     complete_login(client, addr, &body).await.status()
 }
 
-/// Count staged (not-yet-accepted) registrations.
-async fn pending_count(pool: &PgPool) -> i64 {
-    sqlx::query_scalar("select count(*) from tml_switchboard.pending_registrations")
+/// Count staged (not-yet-accepted) logins.
+async fn staged_count(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("select count(*) from tml_switchboard.staged_logins")
         .fetch_one(pool)
         .await
         .unwrap()
@@ -361,8 +361,7 @@ async fn new_user_staged_then_provisioned_on_tos_accept(pool: PgPool) {
     let c = client();
 
     // Drive login + callback. Admitted, so the callback returns the 409
-    // login-incomplete marker and stages a pending registration -- but creates
-    // NO user.
+    // login-incomplete marker and stages a staged login -- but creates NO user.
     let cb = drive_to_callback(&c, addr, &pool).await;
     assert_eq!(cb.status(), reqwest::StatusCode::CONFLICT);
     let body: serde_json::Value = cb.json().await.unwrap();
@@ -370,7 +369,7 @@ async fn new_user_staged_then_provisioned_on_tos_accept(pool: PgPool) {
     assert_eq!(body["required"], serde_json::json!(["tos"]));
     assert_eq!(body["tos_version"], 1);
     assert!(
-        !body["pending_secret"].as_str().unwrap().is_empty(),
+        !body["staged_secret"].as_str().unwrap().is_empty(),
         "the marker carries the one-time completion secret"
     );
 
@@ -381,9 +380,9 @@ async fn new_user_staged_then_provisioned_on_tos_accept(pool: PgPool) {
         0,
         "no user record before ToS acceptance"
     );
-    assert_eq!(pending_count(&pool).await, 1, "one pending registration");
+    assert_eq!(staged_count(&pool).await, 1, "one staged login");
     let stored_hash: String =
-        sqlx::query_scalar("select secret_hash from tml_switchboard.pending_registrations")
+        sqlx::query_scalar("select secret_hash from tml_switchboard.staged_logins")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -391,7 +390,7 @@ async fn new_user_staged_then_provisioned_on_tos_accept(pool: PgPool) {
         stored_hash.starts_with("$argon2id$"),
         "secret stored as a salted argon2id PHC string, got {stored_hash:?}"
     );
-    assert!(!stored_hash.contains(body["pending_secret"].as_str().unwrap()));
+    assert!(!stored_hash.contains(body["staged_secret"].as_str().unwrap()));
 
     // Complete the login: the user is created at the accepted version, a token
     // is returned, and the staged row is consumed.
@@ -406,12 +405,12 @@ async fn new_user_staged_then_provisioned_on_tos_accept(pool: PgPool) {
     );
     assert_eq!(octocat_tos_version(&pool).await, Some(1));
     assert_eq!(
-        pending_count(&pool).await,
+        staged_count(&pool).await,
         0,
         "the staged registration was consumed"
     );
 
-    // The pending pair is single-use: a second completion is 410 Gone.
+    // The staged pair is single-use: a second completion is 410 Gone.
     let replay = complete_login(&c, addr, &body).await;
     assert_eq!(replay.status(), reqwest::StatusCode::GONE);
 }
@@ -473,7 +472,7 @@ async fn existing_user_reaccepts_on_tos_version_bump(pool: PgPool) {
         "still no duplicate record"
     );
     assert_eq!(octocat_tos_version(&pool).await, Some(2));
-    assert_eq!(pending_count(&pool).await, 0);
+    assert_eq!(staged_count(&pool).await, 0);
 }
 
 #[sqlx::test]
@@ -500,7 +499,7 @@ async fn browser_flow_completes_tos_via_form_post(pool: PgPool) {
     let c = client();
 
     // The callback redirects the browser to the console's completion page,
-    // carrying the pending pair in the query for its form to echo back.
+    // carrying the staged pair in the query for its form to echo back.
     let cb = drive_to_callback(&c, addr, &pool).await;
     assert!(
         cb.status().is_redirection(),
@@ -510,8 +509,8 @@ async fn browser_flow_completes_tos_via_form_post(pool: PgPool) {
     assert_eq!(location.host_str(), Some("console.example"));
     assert_eq!(location.path(), "/auth/complete");
     let query: std::collections::HashMap<_, _> = location.query_pairs().collect();
-    let pending_id = query["pending_id"].to_string();
-    let pending_secret = query["pending_secret"].to_string();
+    let staged_id = query["staged_id"].to_string();
+    let staged_secret = query["staged_secret"].to_string();
     assert_eq!(query["tos_version"], "1");
     assert_eq!(octocat_user_count(&pool).await, 0, "no user yet");
 
@@ -521,8 +520,8 @@ async fn browser_flow_completes_tos_via_form_post(pool: PgPool) {
     let complete = c
         .post(format!("http://{addr}/api/v1/auth/login/complete"))
         .form(&[
-            ("pending_id", pending_id.as_str()),
-            ("pending_secret", pending_secret.as_str()),
+            ("staged_id", staged_id.as_str()),
+            ("staged_secret", staged_secret.as_str()),
             ("tos_version", "1"),
         ])
         .send()
@@ -542,12 +541,12 @@ async fn browser_flow_completes_tos_via_form_post(pool: PgPool) {
 
     assert_eq!(octocat_user_count(&pool).await, 1, "user provisioned");
     assert_eq!(octocat_tos_version(&pool).await, Some(1));
-    assert_eq!(pending_count(&pool).await, 0);
+    assert_eq!(staged_count(&pool).await, 0);
 }
 
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-async fn wrong_pending_secret_neither_completes_nor_burns(pool: PgPool) {
+async fn wrong_staged_secret_neither_completes_nor_burns(pool: PgPool) {
     let gh = MockServer::start().await;
     mount_github(&gh, &[]).await;
     let addr = spawn_server(AppState::new(pool.clone(), test_config(&gh.uri()))).await;
@@ -565,14 +564,14 @@ async fn wrong_pending_secret_neither_completes_nor_burns(pool: PgPool) {
     assert_eq!(cb.status(), reqwest::StatusCode::CONFLICT);
     let body: serde_json::Value = cb.json().await.unwrap();
 
-    // The pending id alone is no capability: completing with the right id but
+    // The staged id alone is no capability: completing with the right id but
     // a wrong secret is 410, creates nothing, and -- crucially -- does NOT
     // consume the staged row (an id-only caller cannot burn the login).
     let forged = c
         .post(format!("http://{addr}/api/v1/auth/login/complete"))
         .json(&serde_json::json!({
-            "pending_id": body["pending_id"],
-            "pending_secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "staged_id": body["staged_id"],
+            "staged_secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             "tos_version": body["tos_version"],
         }))
         .send()
@@ -581,7 +580,7 @@ async fn wrong_pending_secret_neither_completes_nor_burns(pool: PgPool) {
     assert_eq!(forged.status(), reqwest::StatusCode::GONE);
     assert_eq!(octocat_user_count(&pool).await, 0, "no user provisioned");
     assert_eq!(
-        pending_count(&pool).await,
+        staged_count(&pool).await,
         1,
         "a wrong secret must not burn the staged login"
     );
@@ -590,7 +589,7 @@ async fn wrong_pending_secret_neither_completes_nor_burns(pool: PgPool) {
     let complete = complete_login(&c, addr, &body).await;
     assert_eq!(complete.status(), reqwest::StatusCode::OK);
     assert_eq!(octocat_user_count(&pool).await, 1);
-    assert_eq!(pending_count(&pool).await, 0);
+    assert_eq!(staged_count(&pool).await, 0);
 }
 
 #[sqlx::test]
@@ -619,8 +618,8 @@ async fn stale_tos_version_echo_is_not_recorded(pool: PgPool) {
     let stale = c
         .post(format!("http://{addr}/api/v1/auth/login/complete"))
         .json(&serde_json::json!({
-            "pending_id": body["pending_id"],
-            "pending_secret": body["pending_secret"],
+            "staged_id": body["staged_id"],
+            "staged_secret": body["staged_secret"],
             "tos_version": 999,
         }))
         .send()
@@ -634,7 +633,7 @@ async fn stale_tos_version_echo_is_not_recorded(pool: PgPool) {
         "marker re-offers the current version"
     );
     assert_eq!(octocat_user_count(&pool).await, 0, "no user provisioned");
-    assert_eq!(pending_count(&pool).await, 1, "staged login not consumed");
+    assert_eq!(staged_count(&pool).await, 1, "staged login not consumed");
 
     let complete = complete_login(&c, addr, &body).await;
     assert_eq!(complete.status(), reqwest::StatusCode::OK);
@@ -695,11 +694,7 @@ async fn account_locked_after_staging_is_refused_completion(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(denials, 1, "locked-login denial recorded");
-    assert_eq!(
-        pending_count(&pool).await,
-        0,
-        "the staged login is consumed"
-    );
+    assert_eq!(staged_count(&pool).await, 0, "the staged login is consumed");
 
     // Replaying the pair after the denial stays dead.
     let replay = complete_login(&c, addr_v2, &body).await;

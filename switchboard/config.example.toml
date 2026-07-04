@@ -40,8 +40,8 @@ supervisor_reconcile_interval = "5s"
 # browser_success_redirect = "https://console.example/auth/landing"
 # Where to send a browser that must finish the login-completion step (today:
 # accepting the Terms of Service). When set, a login awaiting consent is 302'd
-# here with ?pending_id=…&pending_secret=…&tos_version=… appended (the frontend
-# renders GET /auth/tos and POSTs the pending pair back to /auth/login/complete);
+# here with ?staged_id=…&staged_secret=…&tos_version=… appended (the frontend
+# renders GET /auth/tos and POSTs the staged pair back to /auth/login/complete);
 # when unset, programmatic clients receive a 409 login_incomplete JSON marker
 # instead.
 # browser_login_complete_redirect = "https://console.example/auth/complete"

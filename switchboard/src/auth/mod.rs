@@ -6,7 +6,7 @@ pub mod admission;
 pub mod engine;
 pub mod extract;
 pub mod oauth;
-pub mod pending_secret;
+pub mod staged_secret;
 pub mod token;
 
 /// Name under which the user bearer-token security scheme is registered in the
