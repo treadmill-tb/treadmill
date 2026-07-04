@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::api::switchboard::AuthProvidersResponse;
 use crate::api::switchboard::JobRequest;
+use crate::api::switchboard::TosInfoResponse;
 use crate::api::switchboard::WhoAmIResponse;
 use crate::api::switchboard::audit::AuditFeedResponse;
 use crate::api::switchboard::hosts::HostInfo;
@@ -77,6 +78,19 @@ impl SwitchboardClient {
     /// here; switchboard then carries the user through the flow.
     pub fn login_url(&self, login_path: &str) -> String {
         format!("{}{login_path}", self.base_url)
+    }
+
+    /// `GET /auth/tos` — the Terms of Service text + version a login must
+    /// accept before it completes (the ToS interstitial). Unauthenticated.
+    pub async fn tos_info(&self) -> Result<TosInfoResponse, ClientError> {
+        self.get_json("/api/v1/auth/tos").await
+    }
+
+    /// Absolute URL of `POST /auth/tos/accept`, for a browser frontend to use
+    /// as its consent form's `action` (the endpoint accepts the pending id
+    /// form-encoded, so a no-JS HTML form can finish the login directly).
+    pub fn tos_accept_url(&self) -> String {
+        format!("{}/api/v1/auth/tos/accept", self.base_url)
     }
 
     /// `GET /auth/whoami` — the identity behind the current token.
