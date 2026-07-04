@@ -212,6 +212,10 @@
           sqlx-cli
           coreutils
           pkg-config
+          # `cargo sqlx prepare` recompiles the whole workspace, including the
+          # transitive `aws-lc-sys` C sources; its build.rs needs a `cc` on
+          # PATH (the devshells get one implicitly via mkShell's stdenv).
+          stdenv.cc
         ];
         text = ''
           set -euo pipefail
