@@ -9,6 +9,9 @@ auth.password = ""
 bind_address = "0.0.0.0:8081"
 
 [service]
+# Terms of Service version currently in force. New users accept at this version;
+# bump it to force every user through the ToS interstitial again on next login.
+current_tos_version = 1
 default_token_timeout = "7d"
 default_job_timeout = "30m"
 default_queue_timeout = "30m"
@@ -35,3 +38,8 @@ supervisor_reconcile_interval = "5s"
 # to the web console's landing URL to enable browser login: the callback will
 # 302 there with ?token=…&expires_at=… instead.
 # browser_success_redirect = "https://console.example/auth/landing"
+# Where to send a browser that must accept the Terms of Service before its login
+# completes. When set, a login awaiting consent is 302'd here (the frontend
+# renders GET /auth/tos and POSTs /auth/tos/accept); when unset, programmatic
+# clients receive a 409 tos_required JSON marker instead.
+# browser_tos_redirect = "https://console.example/auth/tos"

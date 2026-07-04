@@ -141,6 +141,21 @@ define_event! {
 }
 
 define_event! {
+    /// A user accepted the Terms of Service at a given version, completing the
+    /// ToS interstitial before a token was issued. Emitted on the re-acceptance
+    /// path for an existing user whose accepted version had fallen behind (a
+    /// brand-new user's first acceptance is implicit in `user_provisioned`). The
+    /// affected user sees it via their own self-viewable relation.
+    TosAccepted v1 {
+        actor: Subject,
+        user: Subject @ view(SelfAccess),
+        version: i32,
+    }
+    event_type = "tos_accepted";
+    render = "accepted terms of service version {version}";
+}
+
+define_event! {
     /// A user changed their own username via the management API. Carries the
     /// immutable `user_id` plus the old and new handle.
     UserRenamed v1 {

@@ -13,7 +13,7 @@ use aide::transform::TransformOperation;
 use axum::Json;
 use axum::Router;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use http::StatusCode;
 use tower_http::trace::TraceLayer;
 use treadmill_console::config::{
@@ -94,6 +94,11 @@ pub fn api_router() -> ApiRouter<AppState> {
         .route("/auth/providers", get(auth::providers))
         //  GET /auth/whoami
         .route("/auth/whoami", get(auth::whoami))
+        // ToS interstitial (plain routes, like the rest of the /auth group):
+        //  GET  /auth/tos        -- the current ToS text + version to render
+        //  POST /auth/tos/accept -- accept a staged registration, finishing login
+        .route("/auth/tos", get(auth::tos_info))
+        .route("/auth/tos/accept", post(auth::tos_accept))
         // job management group
         //  POST /jobs -- enqueue a new job
         //  GET  /jobs -- keyset-paginated listing of readable jobs

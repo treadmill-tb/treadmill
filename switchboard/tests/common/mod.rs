@@ -34,6 +34,7 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
             trusted_proxy_headers: Vec::new(),
         },
         service: ServiceConfig {
+            current_tos_version: 1,
             default_token_timeout: chrono::Duration::hours(1),
             default_job_timeout: chrono::Duration::hours(1),
             default_queue_timeout: chrono::Duration::hours(1),
@@ -59,6 +60,7 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
             }),
             mock: None,
             browser_success_redirect: None,
+            browser_tos_redirect: None,
         },
         console: None,
         log_streaming: None,

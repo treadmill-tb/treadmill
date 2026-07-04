@@ -53,6 +53,48 @@ pub struct LoginResponse {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Response body for a login that has passed admission but cannot complete until
+/// the user accepts the Terms of Service (the ToS interstitial).
+///
+/// Returned as `409 Conflict` by the OAuth callback for programmatic clients
+/// (browser frontends are instead `302`-redirected to the configured ToS page).
+/// The client renders/accepts the ToS (see `GET /auth/tos`) and finishes the
+/// login by `POST`ing `pending_id` to `/auth/tos/accept`.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct TosRequiredResponse {
+    /// Always `true`; a stable discriminator so a client can branch on it.
+    pub tos_required: bool,
+    /// Opaque, single-use id of the staged registration to pass to
+    /// `/auth/tos/accept`. Also set as an `HttpOnly` cookie on this response.
+    pub pending_id: Uuid,
+    /// The ToS version the user is being asked to accept.
+    pub tos_version: i32,
+    /// The configured browser ToS page URL, if any (mirrors the server's
+    /// `oauth.browser_tos_redirect`). Programmatic clients may ignore it.
+    pub tos_url: Option<String>,
+}
+
+/// Response body for `GET /auth/tos`: the Terms of Service text a frontend
+/// renders on the interstitial, plus the version it corresponds to.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct TosInfoResponse {
+    /// The version this text corresponds to (the server's current ToS version).
+    pub version: i32,
+    /// The Terms of Service text to display.
+    pub text: String,
+}
+
+/// Request body for `POST /auth/tos/accept`: which staged registration to
+/// finish. The id may instead ride in the `HttpOnly` cookie set by the callback;
+/// the body form lets programmatic clients that do not keep cookies pass it back.
+#[derive(schemars::JsonSchema, Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TosAcceptRequest {
+    /// The pending registration id from [`TosRequiredResponse::pending_id`].
+    /// Optional here because the id may instead be presented via the cookie.
+    #[serde(default)]
+    pub pending_id: Option<Uuid>,
+}
+
 /// Response body for `/auth/whoami`: the identity of the authenticated subject.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct WhoAmIResponse {

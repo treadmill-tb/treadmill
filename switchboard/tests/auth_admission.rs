@@ -15,6 +15,7 @@ use std::net::SocketAddr;
 
 use sqlx::PgPool;
 use tokio::net::TcpListener;
+use treadmill_rs::api::switchboard::LoginResponse;
 use treadmill_switchboard::routes::build_router;
 use treadmill_switchboard::serve::AppState;
 use wiremock::matchers::{method, path};
@@ -117,6 +118,69 @@ async fn drive_callback(
         .status()
 }
 
+/// Drive a full interactive login, transparently completing the ToS
+/// interstitial when the callback returns it. Returns the final HTTP status: the
+/// callback's status when it did not require ToS (e.g. a `403` denial, or an
+/// existing user with a current ToS), otherwise the `/auth/tos/accept` status.
+async fn drive_full_login(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    pool: &PgPool,
+) -> reqwest::StatusCode {
+    let login_resp = client
+        .get(format!("http://{addr}/api/v1/auth/github/login"))
+        .send()
+        .await
+        .unwrap();
+    assert!(login_resp.status().is_redirection());
+
+    let state: String = sqlx::query_scalar("select state from tml_switchboard.oauth_flows")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+
+    let cb = client
+        .get(format!(
+            "http://{addr}/api/v1/auth/github/callback?code=CANNED_CODE&state={state}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    if cb.status() != reqwest::StatusCode::CONFLICT {
+        return cb.status();
+    }
+
+    let body: serde_json::Value = cb.json().await.unwrap();
+    let pending_id = body["pending_id"].as_str().unwrap().to_string();
+    client
+        .post(format!("http://{addr}/api/v1/auth/tos/accept"))
+        .json(&serde_json::json!({ "pending_id": pending_id }))
+        .send()
+        .await
+        .unwrap()
+        .status()
+}
+
+/// Count staged (not-yet-accepted) registrations.
+async fn pending_count(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("select count(*) from tml_switchboard.pending_registrations")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// The octocat user's currently-accepted ToS version, if the user exists.
+async fn octocat_tos_version(pool: &PgPool) -> Option<i32> {
+    sqlx::query_scalar(
+        "select u.tos_accepted_version from tml_switchboard.users u \
+         join tml_switchboard.user_identities i on i.user_id = u.subject_id \
+         where i.provider = 'github' and i.provider_user_id = '12345'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
 /// Count local user rows for the canned octocat identity.
 async fn octocat_user_count(pool: &PgPool) -> i64 {
     sqlx::query_scalar(
@@ -200,7 +264,9 @@ async fn allowlisted_user_is_provisioned(pool: PgPool) {
     .await
     .unwrap();
 
-    let status = drive_callback(&client(), addr, &pool).await;
+    // Admitted, but the user must clear the ToS interstitial before any record
+    // exists; `drive_full_login` accepts it and completes the login.
+    let status = drive_full_login(&client(), addr, &pool).await;
     assert_eq!(status, reqwest::StatusCode::OK);
     assert_eq!(
         octocat_user_count(&pool).await,
@@ -226,7 +292,7 @@ async fn org_member_is_provisioned(pool: PgPool) {
     .await
     .unwrap();
 
-    let status = drive_callback(&client(), addr, &pool).await;
+    let status = drive_full_login(&client(), addr, &pool).await;
     assert_eq!(status, reqwest::StatusCode::OK);
     assert_eq!(octocat_user_count(&pool).await, 1, "org member provisioned");
     assert_eq!(registration_denied_count(&pool).await, 0);
@@ -249,7 +315,7 @@ async fn existing_user_is_unaffected_by_gate(pool: PgPool) {
     .unwrap();
     let c = client();
     assert_eq!(
-        drive_callback(&c, addr, &pool).await,
+        drive_full_login(&c, addr, &pool).await,
         reqwest::StatusCode::OK
     );
     assert_eq!(octocat_user_count(&pool).await, 1);
@@ -259,10 +325,11 @@ async fn existing_user_is_unaffected_by_gate(pool: PgPool) {
         .await
         .unwrap();
 
-    // The now-existing user logs in again: the gate is not consulted, so the
-    // login still succeeds and no denial is recorded.
+    // The now-existing user logs in again: the gate is not consulted, and their
+    // ToS is already current, so the callback logs them in directly (no
+    // interstitial) and no denial is recorded.
     assert_eq!(
-        drive_callback(&c, addr, &pool).await,
+        drive_full_login(&c, addr, &pool).await,
         reqwest::StatusCode::OK
     );
     assert_eq!(
@@ -271,4 +338,169 @@ async fn existing_user_is_unaffected_by_gate(pool: PgPool) {
         "still exactly one identity"
     );
     assert_eq!(registration_denied_count(&pool).await, 0);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn new_user_staged_then_provisioned_on_tos_accept(pool: PgPool) {
+    let gh = MockServer::start().await;
+    mount_github(&gh, &[]).await;
+    let addr = spawn_server(AppState::new(pool.clone(), test_config(&gh.uri()))).await;
+
+    sqlx::query(
+        "insert into tml_switchboard.login_allowlist (provider, kind, external_id) \
+         values ('github', 'user', '12345')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let c = client();
+
+    // Drive login + callback. Admitted, so the callback returns the 409 ToS
+    // interstitial and stages a pending registration -- but creates NO user.
+    let login_resp = c
+        .get(format!("http://{addr}/api/v1/auth/github/login"))
+        .send()
+        .await
+        .unwrap();
+    assert!(login_resp.status().is_redirection());
+    let state: String = sqlx::query_scalar("select state from tml_switchboard.oauth_flows")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let cb = c
+        .get(format!(
+            "http://{addr}/api/v1/auth/github/callback?code=CANNED_CODE&state={state}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cb.status(), reqwest::StatusCode::CONFLICT);
+    let body: serde_json::Value = cb.json().await.unwrap();
+    assert_eq!(body["tos_required"], true);
+    assert_eq!(body["tos_version"], 1);
+    let pending_id = body["pending_id"].as_str().unwrap().to_string();
+
+    // Between callback and accept: no user yet, exactly one staged registration.
+    assert_eq!(
+        octocat_user_count(&pool).await,
+        0,
+        "no user record before ToS acceptance"
+    );
+    assert_eq!(pending_count(&pool).await, 1, "one pending registration");
+
+    // Accept the ToS: the user is created at the current version, a token is
+    // returned, and the staged row is consumed.
+    let accept = c
+        .post(format!("http://{addr}/api/v1/auth/tos/accept"))
+        .json(&serde_json::json!({ "pending_id": pending_id }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accept.status(), reqwest::StatusCode::OK);
+    let _session: LoginResponse = accept.json().await.unwrap();
+
+    assert_eq!(
+        octocat_user_count(&pool).await,
+        1,
+        "user created on ToS acceptance"
+    );
+    assert_eq!(octocat_tos_version(&pool).await, Some(1));
+    assert_eq!(
+        pending_count(&pool).await,
+        0,
+        "the staged registration was consumed"
+    );
+
+    // The pending id is single-use: a second accept is 410 Gone.
+    let replay = c
+        .post(format!("http://{addr}/api/v1/auth/tos/accept"))
+        .json(&serde_json::json!({ "pending_id": pending_id }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), reqwest::StatusCode::GONE);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn existing_user_reaccepts_on_tos_version_bump(pool: PgPool) {
+    let gh = MockServer::start().await;
+    mount_github(&gh, &[]).await;
+
+    sqlx::query(
+        "insert into tml_switchboard.login_allowlist (provider, kind, external_id) \
+         values ('github', 'user', '12345')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // First login on a server whose in-force ToS is v1: register + accept.
+    let addr_v1 = spawn_server(AppState::new(pool.clone(), test_config(&gh.uri()))).await;
+    let c = client();
+    assert_eq!(
+        drive_full_login(&c, addr_v1, &pool).await,
+        reqwest::StatusCode::OK
+    );
+    assert_eq!(octocat_user_count(&pool).await, 1);
+    assert_eq!(octocat_tos_version(&pool).await, Some(1));
+
+    // Bump the in-force ToS to v2 and stand up a fresh server on it.
+    let mut cfg = test_config(&gh.uri());
+    cfg.service.current_tos_version = 2;
+    let addr_v2 = spawn_server(AppState::new(pool.clone(), cfg)).await;
+
+    // The existing user logs in again: their accepted version (1) is stale, so
+    // they are bounced through the interstitial with the token withheld and NO
+    // duplicate record.
+    let login_resp = c
+        .get(format!("http://{addr_v2}/api/v1/auth/github/login"))
+        .send()
+        .await
+        .unwrap();
+    assert!(login_resp.status().is_redirection());
+    let state: String = sqlx::query_scalar("select state from tml_switchboard.oauth_flows")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let cb = c
+        .get(format!(
+            "http://{addr_v2}/api/v1/auth/github/callback?code=CANNED_CODE&state={state}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cb.status(), reqwest::StatusCode::CONFLICT);
+    let body: serde_json::Value = cb.json().await.unwrap();
+    assert_eq!(body["tos_version"], 2);
+    let pending_id = body["pending_id"].as_str().unwrap().to_string();
+
+    // Still exactly one user, still recorded at v1 (no token issued yet).
+    assert_eq!(
+        octocat_user_count(&pool).await,
+        1,
+        "no duplicate record for the re-accepting user"
+    );
+    assert_eq!(octocat_tos_version(&pool).await, Some(1));
+
+    // Accept v2: a token is issued, the accepted version advances, and the user
+    // is still a single record.
+    let accept = c
+        .post(format!("http://{addr_v2}/api/v1/auth/tos/accept"))
+        .json(&serde_json::json!({ "pending_id": pending_id }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accept.status(), reqwest::StatusCode::OK);
+    let _session: LoginResponse = accept.json().await.unwrap();
+
+    assert_eq!(
+        octocat_user_count(&pool).await,
+        1,
+        "still no duplicate record"
+    );
+    assert_eq!(octocat_tos_version(&pool).await, Some(2));
+    assert_eq!(pending_count(&pool).await, 0);
 }

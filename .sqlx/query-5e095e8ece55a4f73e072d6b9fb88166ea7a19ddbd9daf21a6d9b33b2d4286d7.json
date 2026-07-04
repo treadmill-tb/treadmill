@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.users (subject_id, username, full_name, avatar_url, tos_accepted_version, tos_accepted_at) values ($1, $2, $3, $4, $5, now());",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5e095e8ece55a4f73e072d6b9fb88166ea7a19ddbd9daf21a6d9b33b2d4286d7"
+}

@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select locked, tos_accepted_version from tml_switchboard.users where subject_id = $1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "locked",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.users",
+            "name": "locked"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "tos_accepted_version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.users",
+            "name": "tos_accepted_version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "1d1feb664d8ee428aa07ee4dd8bb60bd43e1d1ca1db10b5bacd6b813cbe71108"
+}
