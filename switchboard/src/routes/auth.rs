@@ -14,6 +14,9 @@
 use crate::audit::model::Subject as AuditSubject;
 use crate::audit::{self, events};
 use crate::auth::Subject;
+use crate::auth::admission::{Admission, AdmissionPolicy, DbAdmissionPolicy, DenyReason};
+use crate::auth::engine::ANONYMOUS_SUBJECT_ID;
+use crate::auth::oauth::ExternalIdentity;
 use crate::auth::oauth::OAuthProvider;
 use crate::auth::oauth::github::GithubProvider;
 use crate::auth::oauth::mock::{MOCK_IDENTITIES, MockProvider};
@@ -203,22 +206,120 @@ pub async fn callback(
         );
     }
 
-    // Best-effort: org membership only narrows auto-groups; a failure here must
-    // not block an otherwise valid login.
-    let org_ids = provider.fetch_org_ids(&token).await.unwrap_or_default();
-
-    // Provision the user and mint the session token atomically: a crash between
-    // the two must never leave a user without, or a token referencing a missing
-    // user.
-    let mut tx = state
+    // Resolve the existing local user, if any, WITHOUT writing. The admission
+    // gate is consulted only when this is a brand-new subject (a `None`
+    // resolution); existing users -- including a new identity linked to an
+    // existing account by a shared verified email -- are never gated.
+    let mut conn = state
         .pool()
-        .begin()
+        .acquire()
         .await
-        .or_internal("opening a transaction")?;
-    let (user_id, new_user) =
-        sql::user::provision_user(&mut tx, provider.name(), &identity, &org_ids)
+        .or_internal("acquiring a database connection")?;
+    let resolved = sql::user::resolve_user(&mut conn, provider.name(), &identity)
+        .await
+        .or_internal("resolving the user")?;
+    drop(conn);
+
+    // Both paths converge on `(tx, user_id, new_user)` and then run the shared
+    // locked-check / admin-grant / token / login-marker tail below.
+    let (mut tx, user_id, new_user) = match resolved {
+        Some((user_id, kind)) => {
+            // Existing user: proceed ungated. Org membership only narrows
+            // auto-groups, so a fetch failure here must not block the login.
+            let org_ids = provider.fetch_org_ids(&token).await.unwrap_or_default();
+            let mut tx = state
+                .pool()
+                .begin()
+                .await
+                .or_internal("opening a transaction")?;
+            sql::user::provision_existing_user(
+                &mut tx,
+                provider.name(),
+                &identity,
+                &org_ids,
+                user_id,
+                kind,
+            )
             .await
-            .or_internal("provisioning the user")?;
+            .or_internal("refreshing the existing user")?;
+            (tx, user_id, false)
+        }
+        None => {
+            // Brand-new subject. The development-only mock provider is an
+            // unauthenticated bypass whose whole purpose is to conjure users, so
+            // it is never subject to the admission gate; every real provider is.
+            let gated = provider.name() != "mock";
+
+            // Org membership is load-bearing for org-based admission at
+            // registration, so a fetch failure on the gated new-user path fails
+            // closed (a retryable deny) rather than silently admitting nobody.
+            let org_ids = if gated {
+                match provider.fetch_org_ids(&token).await {
+                    Ok(ids) => ids,
+                    Err(e) => {
+                        tracing::warn!(
+                            "org lookup failed during {} registration for {}: {e}",
+                            provider.name(),
+                            identity.login,
+                        );
+                        record_registration_denied(
+                            &state,
+                            provider.name(),
+                            &identity,
+                            DenyReason::OrgLookupFailed,
+                            client_ip.clone(),
+                            client_port,
+                        )
+                        .await?;
+                        return Err(StatusCode::FORBIDDEN);
+                    }
+                }
+            } else {
+                provider.fetch_org_ids(&token).await.unwrap_or_default()
+            };
+
+            if gated {
+                let policy = DbAdmissionPolicy::new(state.pool().clone());
+                let verdict = policy
+                    .admit(provider.name(), &identity, &org_ids)
+                    .await
+                    .or_internal("consulting the admission gate")?;
+                if let Admission::Deny(reason) = verdict {
+                    record_registration_denied(
+                        &state,
+                        provider.name(),
+                        &identity,
+                        reason,
+                        client_ip.clone(),
+                        client_port,
+                    )
+                    .await?;
+                    tracing::warn!(
+                        "registration denied for {} via {}: {}",
+                        identity.login,
+                        provider.name(),
+                        reason.as_str(),
+                    );
+                    return Err(StatusCode::FORBIDDEN);
+                }
+            }
+
+            // Admitted (or a mock bypass): create the account and mint the token
+            // atomically -- a crash between the two must never leave a user
+            // without a token, or a token referencing a missing user.
+            let mut tx = state
+                .pool()
+                .begin()
+                .await
+                .or_internal("opening a transaction")?;
+            let user_id =
+                sql::user::create_and_reconcile(&mut tx, provider.name(), &identity, &org_ids)
+                    .await
+                    .or_internal("provisioning the user")?;
+            (tx, user_id, true)
+        }
+    };
+
     // A locked account is still provisioned/refreshed (we keep its data and the
     // provisioning audit trail current), but is refused a token. Commit the
     // refusal — including its audit row — and stop.
@@ -321,6 +422,43 @@ pub async fn callback(
         }
         None => Ok(Json(login).into_response()),
     }
+}
+
+/// Record an admission-gate denial as an operator-only audit event and commit
+/// it, leaving NO user record. Attributed to the well-known anonymous subject
+/// (the denied party has no local subject of their own). The caller returns
+/// `403 Forbidden` after this succeeds.
+async fn record_registration_denied(
+    state: &AppState,
+    provider: &str,
+    identity: &ExternalIdentity,
+    reason: DenyReason,
+    client_ip: Option<String>,
+    client_port: Option<i32>,
+) -> Result<(), StatusCode> {
+    let mut tx = state
+        .pool()
+        .begin()
+        .await
+        .or_internal("opening the denial transaction")?;
+    audit::emit(
+        &mut tx,
+        &events::RegistrationDenied {
+            actor: AuditSubject(ANONYMOUS_SUBJECT_ID),
+            provider: provider.to_string(),
+            provider_user_id: identity.provider_user_id.clone(),
+            login: identity.login.clone(),
+            reason: reason.as_str().to_string(),
+            client_ip,
+            client_port,
+        },
+    )
+    .await
+    .or_internal("recording the registration denial")?;
+    tx.commit()
+        .await
+        .or_internal("committing the denial transaction")?;
+    Ok(())
 }
 
 /// `GET /auth/whoami`: report the identity behind the presented bearer token.

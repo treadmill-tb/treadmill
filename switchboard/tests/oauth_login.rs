@@ -123,6 +123,17 @@ async fn github_login_provisions_and_reconciles(pool: PgPool) {
     let gh = MockServer::start().await;
     mount_github(&gh, &[42]).await;
 
+    // The admission gate now guards new-user registration; allow-list the canned
+    // "octocat" identity so it can register through the normal flow. (Org 42 is
+    // an auto-group source below, a separate concern from admission.)
+    sqlx::query(
+        "insert into tml_switchboard.login_allowlist (provider, kind, external_id, comment) \
+         values ('github', 'user', '12345', 'test fixture')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
     // Seed a group with a GitHub-org auto-source for org id 42.
     let group_id = Uuid::new_v4();
     sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'group')")

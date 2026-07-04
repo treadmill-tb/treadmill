@@ -2,6 +2,7 @@ use crate::sql::api_token::SqlApiTokenMetadata;
 use std::sync::Arc;
 use uuid::Uuid;
 
+pub mod admission;
 pub mod engine;
 pub mod extract;
 pub mod oauth;

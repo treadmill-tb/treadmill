@@ -15,85 +15,149 @@ use crate::auth::oauth::ExternalIdentity;
 use sqlx::{PgConnection, Postgres, Transaction};
 use uuid::Uuid;
 
-/// Resolve (or create) the local user for an external identity, refresh its
-/// mutable profile, record its verified emails, and reconcile its auto-group
-/// memberships. Returns the user's subject id and whether the account was
-/// freshly created by this call.
+/// How [`resolve_user`] matched an external identity to an existing local user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolveKind {
+    /// The stable provider identity is already linked to a local user.
+    IdentityMatch,
+    /// No identity match, but exactly one existing user owns a verified email
+    /// this identity also reports; the identity links to that account.
+    EmailLink,
+}
+
+/// Resolve the local user for an external identity WITHOUT mutating anything.
 ///
-/// Runs entirely on the caller's transaction so the whole login provisioning is
-/// atomic with the session-token issuance and its audit events.
-pub async fn provision_user(
-    tx: &mut Transaction<'_, Postgres>,
+/// This is the read-only front half of login provisioning, split from the
+/// create/refresh half so the login callback can consult the admission gate on
+/// the truly-new-subject path (a `None` return) before any record exists. Two
+/// ways to match:
+///   1. the stable provider identity is already linked ([`ResolveKind::IdentityMatch`]), or
+///   2. exactly one existing user owns a verified email this identity also
+///      reports ([`ResolveKind::EmailLink`]) -- the identity will be linked to
+///      that account on the refresh path.
+///
+/// Zero matches -> `None` (brand new). More than one verified-email owner ->
+/// `None` too: ambiguous, and we never auto-merge two accounts that merely share
+/// an address, so the identity is treated as a new registration (and gated).
+pub async fn resolve_user(
+    conn: &mut PgConnection,
     provider: &str,
     identity: &ExternalIdentity,
-    org_ids: &[String],
-) -> Result<(Uuid, bool), sqlx::Error> {
-    // 1. Resolve by the stable provider identity (read only).
+) -> Result<Option<(Uuid, ResolveKind)>, sqlx::Error> {
+    // 1. Resolve by the stable provider identity.
     let by_identity = sqlx::query_scalar!(
         "select user_id from tml_switchboard.user_identities \
          where provider = $1 and provider_user_id = $2;",
         provider,
         identity.provider_user_id,
     )
-    .fetch_optional(&mut **tx)
+    .fetch_optional(&mut *conn)
     .await?;
+    if let Some(uid) = by_identity {
+        return Ok(Some((uid, ResolveKind::IdentityMatch)));
+    }
 
-    let (user_id, new_user) = match by_identity {
-        Some(uid) => (uid, false),
-        None => {
-            // 2. Otherwise, try to link by a shared verified email (read only).
-            let verified_emails: Vec<&str> = identity
-                .emails
-                .iter()
-                .filter_map(|e| {
-                    if e.verified {
-                        Some(e.address.as_ref())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let linked: Vec<Uuid> = if verified_emails.is_empty() {
-                Vec::new()
+    // 2. Otherwise, try to link by a shared verified email.
+    let verified_emails: Vec<&str> = identity
+        .emails
+        .iter()
+        .filter_map(|e| {
+            if e.verified {
+                Some(e.address.as_ref())
             } else {
-                sqlx::query_scalar!(
-                    "select distinct user_id from tml_switchboard.user_emails \
-                     where verified = true and email = any($1::text[]);",
-                    verified_emails as _,
-                )
-                .fetch_all(&mut **tx)
-                .await?
-            };
-
-            if linked.len() == 1 {
-                let uid = linked[0];
-                audit::transition(
-                    tx,
-                    LinkIdentity {
-                        user_id: uid,
-                        provider,
-                        identity,
-                    },
-                )
-                .await?;
-                (uid, false)
-            } else {
-                // Zero matches -> brand new user. More than one -> ambiguous; do
-                // NOT auto-merge two accounts that merely share an address.
-                if linked.len() > 1 {
-                    tracing::warn!(
-                        "verified emails for {provider} identity {} match {} existing users; \
-                         creating a fresh user instead of auto-merging",
-                        identity.provider_user_id,
-                        linked.len(),
-                    );
-                }
-                let uid = audit::transition(tx, CreateUser { provider, identity }).await?;
-                (uid, true)
+                None
             }
-        }
+        })
+        .collect();
+    let linked: Vec<Uuid> = if verified_emails.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_scalar!(
+            "select distinct user_id from tml_switchboard.user_emails \
+             where verified = true and email = any($1::text[]);",
+            verified_emails as _,
+        )
+        .fetch_all(&mut *conn)
+        .await?
     };
 
+    match linked.len() {
+        1 => Ok(Some((linked[0], ResolveKind::EmailLink))),
+        0 => Ok(None),
+        n => {
+            // Ambiguous: do NOT auto-merge two accounts that merely share an
+            // address. Treat as a brand-new registration (subject to the gate).
+            tracing::warn!(
+                "verified emails for {provider} identity {} match {} existing users; \
+                 treating as a new registration instead of auto-merging",
+                identity.provider_user_id,
+                n,
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Create a brand-new local account from an external identity, then refresh its
+/// profile, record its verified emails, and reconcile its auto-group
+/// memberships. Returns the new user's subject id.
+///
+/// Only reached after the admission gate admits the identity; [`resolve_user`]
+/// must have returned `None` first. Runs on the caller's transaction so the
+/// whole provisioning is atomic with the session-token issuance and its audit
+/// events.
+pub async fn create_and_reconcile(
+    tx: &mut Transaction<'_, Postgres>,
+    provider: &str,
+    identity: &ExternalIdentity,
+    org_ids: &[String],
+) -> Result<Uuid, sqlx::Error> {
+    let user_id = audit::transition(tx, CreateUser { provider, identity }).await?;
+    refresh_and_reconcile(tx, provider, identity, org_ids, user_id).await?;
+    Ok(user_id)
+}
+
+/// Refresh an already-resolved existing user on login: link a newly-seen
+/// identity (only for an [`ResolveKind::EmailLink`] resolution), refresh mutable
+/// profile fields, record any new verified emails, and reconcile auto-group
+/// memberships. This is the ungated path -- existing users are never subject to
+/// the admission gate.
+///
+/// Runs on the caller's transaction so the whole refresh is atomic with the
+/// session-token issuance and its audit events.
+pub async fn provision_existing_user(
+    tx: &mut Transaction<'_, Postgres>,
+    provider: &str,
+    identity: &ExternalIdentity,
+    org_ids: &[String],
+    user_id: Uuid,
+    kind: ResolveKind,
+) -> Result<(), sqlx::Error> {
+    if kind == ResolveKind::EmailLink {
+        audit::transition(
+            tx,
+            LinkIdentity {
+                user_id,
+                provider,
+                identity,
+            },
+        )
+        .await?;
+    }
+    refresh_and_reconcile(tx, provider, identity, org_ids, user_id).await
+}
+
+/// The shared create/refresh tail: refresh the mutable profile, record new
+/// verified emails, and reconcile auto-group memberships for `user_id`. The
+/// identity row for `(provider, identity.provider_user_id)` must already exist
+/// (created by [`CreateUser`] or [`LinkIdentity`]).
+async fn refresh_and_reconcile(
+    tx: &mut Transaction<'_, Postgres>,
+    provider: &str,
+    identity: &ExternalIdentity,
+    org_ids: &[String],
+    user_id: Uuid,
+) -> Result<(), sqlx::Error> {
     // 3. Refresh mutable profile fields, but only when something actually
     // changed, so a no-op re-login does not spam the audit log.
     let current = sqlx::query!(
@@ -167,7 +231,7 @@ pub async fn provision_user(
     // 5. Reconcile auto-group memberships from current org membership.
     reconcile_auto_groups(tx, user_id, provider, org_ids).await?;
 
-    Ok((user_id, new_user))
+    Ok(())
 }
 
 /// Create a fresh subject + user + identity. The username is suggested from the

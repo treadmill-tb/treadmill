@@ -127,6 +127,9 @@ macro_rules! define_event {
             }
 
             fn relations(&self) -> Vec<$crate::audit::model::Relation> {
+                // `mut` is unused for an actor-only event (no view'd relation
+                // fields to push); such events are valid (e.g. RegistrationDenied).
+                #[allow(unused_mut)]
                 let mut rels = vec![
                     $crate::audit::model::Relation {
                         entity: $crate::audit::model::EntityRef::Subject(self.actor.0),

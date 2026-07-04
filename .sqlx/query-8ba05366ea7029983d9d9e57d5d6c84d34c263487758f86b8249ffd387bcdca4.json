@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (\n                select 1 from tml_switchboard.login_allowlist\n                where provider = $1\n                  and ( (kind = 'user' and external_id = $2)\n                     or (kind = 'org' and external_id = any($3::text[])) )\n            ) as \"admitted!\";",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "admitted!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8ba05366ea7029983d9d9e57d5d6c84d34c263487758f86b8249ffd387bcdca4"
+}
