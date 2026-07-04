@@ -11,7 +11,7 @@ use sqlx::postgres::types::PgInterval;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::jobs::{
-    EnqueueJobResponse, JobInfo, JobListResponse, LogStreamCredentials,
+    EnqueueJobResponse, JobInfo, JobListResponse, NatsLogStreamCredentials,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
 
@@ -396,17 +396,17 @@ pub async fn terminate(
     })
 }
 
-/// Axum handler for `POST /jobs/{id}/log-token`.
+/// Axum handler for `POST /jobs/{id}/nats-log-token`.
 ///
 /// Mints a short-lived, subscribe-scoped NATS **bearer** token for tailing or
 /// replaying a job's console logs, gated on the caller's `read` permission for
 /// the job. Returns the NATS URL, the subject to subscribe to, the token, and
 /// its lifetime.
-pub async fn log_token(
+pub async fn nats_log_token(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Path(IdPath { id: job_id }): Path<IdPath>,
-) -> Result<Json<LogStreamCredentials>, StatusCode> {
+) -> Result<Json<NatsLogStreamCredentials>, StatusCode> {
     // Gate on the job's `read` permission (owner, an explicit read grant, or a
     // global admin). A job that does not exist yields `false` here, so the
     // caller gets 403 rather than a signal of the job's (non-)existence.
@@ -432,7 +432,7 @@ pub async fn log_token(
     )
     .or_internal("minting a log read token")?;
 
-    Ok(Json(LogStreamCredentials {
+    Ok(Json(NatsLogStreamCredentials {
         nats_url: log_streaming.config.nats_url.clone(),
         subject: log_streaming::subject_scope(job_id),
         token,
