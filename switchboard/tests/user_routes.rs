@@ -101,6 +101,15 @@ async fn run_login(client: &reqwest::Client, addr: SocketAddr, pool: &PgPool) ->
 async fn login_user(pool: &PgPool) -> (SocketAddr, String, Uuid, MockServer) {
     let gh = MockServer::start().await;
     mount_github(&gh).await;
+    // The admission gate now guards new-user registration; allow-list the canned
+    // "octocat" identity so this helper can still provision it via login.
+    sqlx::query(
+        "insert into tml_switchboard.login_allowlist (provider, kind, external_id, comment) \
+         values ('github', 'user', '12345', 'test fixture')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
     let addr = spawn_server(AppState::new(pool.clone(), test_config(&gh.uri()))).await;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
