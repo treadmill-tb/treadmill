@@ -90,8 +90,18 @@ pub trait OAuthProvider {
     ) -> Result<ExternalIdentity, OAuthError>;
 
     /// Fetch the provider org ids (as text) the user currently belongs to. Feeds
-    /// auto-group reconciliation. Best-effort: providers without an org concept
-    /// (or insufficient scope) return an empty list.
+    /// auto-group reconciliation and, at registration, org-based admission.
+    ///
+    /// A successful call returning no active orgs is `Ok(vec![])`; a genuine call
+    /// failure (network error, non-success status, insufficient scope) surfaces as
+    /// `Err`. Providers without an org concept return `Ok(vec![])`.
+    ///
+    /// This is **load-bearing for admission at registration**: on the truly-new-user
+    /// path the callback treats `Err` as a *retryable* deny (fail closed) rather
+    /// than admitting nobody or crashing. It is only consulted for admission at
+    /// first login, so a transient failure denies one retryable registration and
+    /// can never lock out an existing user — the existing-user path keeps it
+    /// best-effort (`.unwrap_or_default()`) for auto-group reconciliation.
     async fn fetch_org_ids(&self, token: &OAuthAccessToken) -> Result<Vec<String>, OAuthError>;
 
     /// Whether the just-authenticated identity should be granted membership in
