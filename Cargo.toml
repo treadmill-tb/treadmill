@@ -63,14 +63,14 @@ nkeys = "0.4.5"
 oci-client = "0.17.0"
 # Pinned to match the oci-spec that oci-client depends on, so the workspace
 # resolves a single oci-spec version instead of two.
-oci-spec = { version = "0.9.0", default-features = false, features = ["image"] }
+oci-spec = { version = "0.10.0", default-features = false, features = ["image"] }
 rand = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 schemars = "1"
 serde = "1.0.204"
 serde_json = "1.0.120"
 serde_with = "3.8.1"
-sha2 = "0.10"
+sha2 = "0.11"
 subtle = "2.6.1"
 tempfile = "3"
 thiserror = "2"

@@ -57,7 +57,7 @@ schemars = { workspace = true }
 axum-extra = { version = "0.12.6", features = ["typed-header"] }
 headers = "0.4.0"
 http = { workspace = true }
-tower-http = { version = "0.6", features = ["trace", "sensitive-headers"] }
+tower-http = { version = "0.7", features = ["trace", "sensitive-headers"] }
 
 # Tokio
 tokio = { workspace = true, features = ["rt-multi-thread"] }
