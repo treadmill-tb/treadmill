@@ -546,32 +546,36 @@ fn login_incomplete_response(
     staged_secret: String,
     tos_version: i32,
 ) -> Result<Response, StatusCode> {
-    let completion_url = state.config().oauth.browser_login_complete_redirect.clone();
-
-    Ok(match &completion_url {
-        Some(target) => {
-            let mut url = url::Url::parse(target).or_internal(&format!(
-                "parsing oauth.browser_login_complete_redirect {target:?}"
-            ))?;
-            url.query_pairs_mut()
-                .append_pair("staged_id", &staged_id.to_string())
-                .append_pair("staged_secret", &staged_secret)
-                .append_pair("tos_version", &tos_version.to_string());
-            Redirect::to(url.as_str()).into_response()
-        }
-        None => (
-            StatusCode::CONFLICT,
-            Json(LoginIncompleteResponse {
-                login_incomplete: true,
-                required: vec!["tos".to_string()],
-                staged_id,
-                staged_secret,
-                tos_version: Some(tos_version),
-                completion_url: completion_url.clone(),
-            }),
-        )
-            .into_response(),
-    })
+    Ok(
+        match state
+            .config()
+            .oauth
+            .browser_login_complete_redirect
+            .as_deref()
+        {
+            Some(target) => {
+                let mut url = url::Url::parse(target).or_internal(&format!(
+                    "parsing oauth.browser_login_complete_redirect {target:?}"
+                ))?;
+                url.query_pairs_mut()
+                    .append_pair("staged_id", &staged_id.to_string())
+                    .append_pair("staged_secret", &staged_secret)
+                    .append_pair("tos_version", &tos_version.to_string());
+                Redirect::to(url.as_str()).into_response()
+            }
+            None => (
+                StatusCode::CONFLICT,
+                Json(LoginIncompleteResponse {
+                    login_incomplete: true,
+                    required: vec!["tos".to_string()],
+                    staged_id,
+                    staged_secret,
+                    tos_version: Some(tos_version),
+                }),
+            )
+                .into_response(),
+        },
+    )
 }
 
 /// `GET /auth/tos`: the current Terms of Service text + version for a frontend to

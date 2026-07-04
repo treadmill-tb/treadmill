@@ -2290,14 +2290,6 @@ components:
         equivalently to an auth token, as it can mint an auth token.
       type: object
       properties:
-        completion_url:
-          description: |-
-            The configured browser completion page URL, if any (mirrors the server's
-            `oauth.browser_login_complete_redirect`). Programmatic clients may
-            ignore it.
-          type:
-          - string
-          - 'null'
         login_incomplete:
           description: Always `true`; a stable discriminator so a client can branch on it.
           type: boolean

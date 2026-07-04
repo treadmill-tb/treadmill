@@ -85,10 +85,6 @@ pub struct LoginIncompleteResponse {
     /// contains `"tos"`), echoed back on completion so consent is recorded
     /// against the text actually shown.
     pub tos_version: Option<i32>,
-    /// The configured browser completion page URL, if any (mirrors the server's
-    /// `oauth.browser_login_complete_redirect`). Programmatic clients may
-    /// ignore it.
-    pub completion_url: Option<String>,
 }
 
 /// Response body for `GET /auth/tos`: the Terms of Service text a frontend
