@@ -51,8 +51,7 @@ const TOS_LIFETIME_MINUTES: i64 = 30;
 
 /// The blanket Terms of Service text served by `GET /auth/tos`. A placeholder
 /// until a real ToS exists; its version is [`crate::config::ServiceConfig::current_tos_version`].
-pub const TOS_TEXT: &str = "By using this Treadmill instance you agree to its terms of service. \
-     (Placeholder — no formal ToS is in effect yet.)";
+pub const TOS_TEXT: &str = "TODO";
 
 /// Resolve the configured [`OAuthProvider`] named by the `{provider}` path
 /// segment, or report why it is unavailable (`404` if not configured/enabled).
