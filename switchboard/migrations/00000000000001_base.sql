@@ -206,8 +206,8 @@ CREATE TYPE tml_switchboard.job_initializing_stage AS enum(
 
 
 CREATE TYPE tml_switchboard.termination_reason AS enum(
-    'workload_exited',
-    'workload_self_terminated',
+    'workload_exited', -- e.g., QEMU process exits
+    'workload_self_terminated', -- e.g., termination requested with puppet
     'user_terminated',
     'queue_timeout',
     'execution_timeout',
@@ -419,9 +419,9 @@ CREATE FUNCTION tml_switchboard.eligible_hosts (
         from tml_switchboard.jobs
         where job_id = p_job_id
     ),
-    -- The job owner's transitive principals (owner + every group it reaches),
-    -- the set every host authorization check below is tested against. NULL owner
-    -- yields a single NULL principal, which matches nothing.
+
+
+
     owner_principals (id) as (
         select p.id
         from job, tml_switchboard.principals(job.owner_id) p
@@ -433,17 +433,17 @@ CREATE FUNCTION tml_switchboard.eligible_hosts (
       and h.last_seen_at > p_liveness_cutoff
       and h.tags @> (select host_tag_requirements from job)
       and (
-          -- The owner (or a group it reaches) is a global admin.
+
           exists (
               select 1 from owner_principals
-              -- The seeded `admins` group; see `ADMINS_GROUP_ID` in engine.rs.
+
               where id = '00000000-0000-0000-0000-000000000001'
           )
-          -- The owner (via principals) owns the host.
+
           or exists (
               select 1 from owner_principals op where op.id = h.owner_id
           )
-          -- The owner (via principals) holds a `start` grant on the host.
+
           or exists (
               select 1
               from tml_switchboard.host_grants g
@@ -560,7 +560,7 @@ CREATE TABLE tml_switchboard.audit_events (
 CREATE INDEX audit_events_created_at_idx ON tml_switchboard.audit_events (created_at);
 
 
-CREATE TYPE tml_switchboard.audit_entity_kind AS enum('job', 'host', 'subject');
+CREATE TYPE tml_switchboard.audit_entity_kind AS enum('job', 'host', 'subject', 'image_group');
 
 
 CREATE TYPE tml_switchboard.audit_role AS enum('actor', 'subject', 'context');
