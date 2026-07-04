@@ -18,6 +18,13 @@ pub(crate) struct IdPath {
     pub id: Uuid,
 }
 
+/// The `{provider}` segment of an OAuth login route.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub(crate) struct ProviderPath {
+    /// The login provider's name (e.g. `github`).
+    pub provider: String,
+}
+
 /// The `{digest}` segment of an image route.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub(crate) struct DigestPath {

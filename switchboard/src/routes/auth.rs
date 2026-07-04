@@ -23,6 +23,7 @@ use crate::auth::oauth::mock::{MOCK_IDENTITIES, MockProvider};
 use crate::auth::pending_secret;
 use crate::client_addr::ClientAddr;
 use crate::http_error::OrInternal;
+use crate::routes::params::ProviderPath;
 use crate::serve::AppState;
 use crate::sql;
 use crate::sql::api_token::IssueSessionToken;
@@ -133,7 +134,9 @@ pub async fn providers(State(state): State<AppState>) -> Json<AuthProvidersRespo
 #[tracing::instrument(skip(state, query))]
 pub async fn login(
     State(state): State<AppState>,
-    Path(provider_name): Path<String>,
+    Path(ProviderPath {
+        provider: provider_name,
+    }): Path<ProviderPath>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Redirect, StatusCode> {
     let provider = provider_for(&state, &provider_name)?;
@@ -150,7 +153,7 @@ pub async fn login(
 }
 
 /// Query parameters the provider appends to the callback redirect.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CallbackQuery {
     code: String,
     state: String,
@@ -160,7 +163,9 @@ pub struct CallbackQuery {
 #[tracing::instrument(skip(state, query))]
 pub async fn callback(
     State(state): State<AppState>,
-    Path(provider_name): Path<String>,
+    Path(ProviderPath {
+        provider: provider_name,
+    }): Path<ProviderPath>,
     parts: Parts,
     Query(query): Query<CallbackQuery>,
 ) -> Result<Response, StatusCode> {
@@ -585,6 +590,17 @@ pub async fn tos_info(State(state): State<AppState>) -> Json<TosInfoResponse> {
 /// mandatory — it carries the pending pair — so any other content type is
 /// `415` and a malformed body is `400`.
 pub struct LoginCompleteBody(LoginCompleteRequest);
+
+// Document the JSON variant of the body; the form-encoded variant carries the
+// same fields and exists only for the console's no-JS HTML form.
+impl aide::OperationInput for LoginCompleteBody {
+    fn operation_input(
+        ctx: &mut aide::generate::GenContext,
+        operation: &mut aide::openapi::Operation,
+    ) {
+        Json::<LoginCompleteRequest>::operation_input(ctx, operation);
+    }
+}
 
 impl FromRequest<AppState> for LoginCompleteBody {
     type Rejection = StatusCode;
