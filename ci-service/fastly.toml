@@ -10,13 +10,13 @@ name = "github-treadmill"
 service_id = ""
 
 [local_server.backends.githubapi]
-  url = "https://api.github.com/"
+url = "https://api.github.com/"
 [[local_server.secret_stores.github]]
-  key = "privatekey"
-  file = "privatekey.pem"
+key = "privatekey"
+file = "privatekey.pem"
 [local_server.config_stores.github]
-  format = "inline-toml"
+format = "inline-toml"
 [local_server.config_stores.github.contents]
-  "clientid" = "Iv23liUhkA1naCJ5ATCC"
+"clientid" = "Iv23liUhkA1naCJ5ATCC"
 [scripts]
-  build = "cargo build --profile release"
+build = "cargo build --profile release"

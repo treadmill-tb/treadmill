@@ -9,15 +9,21 @@
   };
 
   outputs =
-    { nixpkgs, nixpkgs-unstable, flake-utils, ... }:
+    {
+      nixpkgs,
+      nixpkgs-unstable,
+      flake-utils,
+      ...
+    }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
         unstable = nixpkgs-unstable.legacyPackages.${system};
       in
-        {
-          devShells.default = pkgs.mkShell { packages = [
+      {
+        devShells.default = pkgs.mkShell {
+          packages = [
             pkgs.bashInteractive
             pkgs.rustup
             pkgs.wasm-tools
@@ -25,7 +31,8 @@
             # Need unstabel channel for now because 15.1 won't start
             # `serve`
             unstable.fastly
-          ]; };
+          ];
+        };
       }
     );
 }
