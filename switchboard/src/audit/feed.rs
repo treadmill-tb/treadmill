@@ -128,16 +128,23 @@ pub(crate) async fn fetch_events_for_entity(
     };
 
     // Keyset on `(created_at, event_id)` descending; fetch one extra row to
-    // learn whether a further (older) page exists.
+    // learn whether a further (older) page exists. The relation filter is a
+    // semi-join: an event may carry several matching relation rows for the
+    // same entity (e.g. actor and subject both the viewer), and must still
+    // appear once.
     let fetch = i64::from(limit) + 1;
     let mut rows = sqlx::query!(
         r#"
         select e.event_id, e.event_type, e.payload, e.actor_id, e.correlation_id, e.created_at
         from tml_switchboard.audit_events e
-        join tml_switchboard.audit_event_relations r on e.event_id = r.event_id
-        where r.entity_kind = $1::tml_switchboard.audit_entity_kind
-          and r.entity_id = $2
-          and ($3::boolean or r.view_policy = any($4::text[]))
+        where exists (
+            select 1
+            from tml_switchboard.audit_event_relations r
+            where r.event_id = e.event_id
+              and r.entity_kind = $1::tml_switchboard.audit_entity_kind
+              and r.entity_id = $2
+              and ($3::boolean or r.view_policy = any($4::text[]))
+          )
           and ($5::timestamptz is null or (e.created_at, e.event_id) < ($5, $6))
         order by e.created_at desc, e.event_id desc
         limit $7

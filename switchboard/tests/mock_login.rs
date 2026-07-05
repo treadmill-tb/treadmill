@@ -147,7 +147,7 @@ async fn mock_login_provisions_alice_as_admin(pool: PgPool) {
         .build()
         .unwrap();
 
-    let (_session, who) = run_mock_login(&client, addr, "alice").await;
+    let (session, who) = run_mock_login(&client, addr, "alice").await;
     assert_eq!(who.username, "alice");
     assert!(
         is_global_admin(&pool, who.user_id).await,
@@ -168,6 +168,38 @@ async fn mock_login_provisions_alice_as_admin(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(memberships, 1, "admin membership must not be duplicated");
+
+    // The audit feed must list each event once. The login events relate alice
+    // twice (actor and subject), and an admin viewer bypasses the per-relation
+    // view-policy filter, so both relation rows match the feed query — a plain
+    // join here would repeat every such event.
+    let feed: serde_json::Value = client
+        .get(format!("http://{addr}/api/v1/users/{}/events", who.user_id))
+        .bearer_auth(session.token.encode_for_http())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let events = feed["events"].as_array().expect("events array");
+    let mut ids: Vec<&str> = events
+        .iter()
+        .map(|e| e["event_id"].as_str().expect("event_id string"))
+        .collect();
+    let total = ids.len();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(
+        ids.len(),
+        total,
+        "the feed must not repeat an event that carries multiple matching relations"
+    );
+    let logins = events
+        .iter()
+        .filter(|e| e["event_type"] == "user_logged_in.v1")
+        .count();
+    assert_eq!(logins, 2, "exactly one login event per completed login");
 }
 
 #[sqlx::test]
