@@ -20,7 +20,10 @@ fn main(_req: Request) -> Result<Response, Error> {
     let secret_store = SecretStore::open("github")?;
     let config_store = ConfigStore::open("github");
 
-    let private_key = secret_store.get("privatekey").expect("private key").plaintext();
+    let private_key = secret_store
+        .get("privatekey")
+        .expect("private key")
+        .plaintext();
     let client_id = config_store.get("clientid").expect("client_id");
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
@@ -48,5 +51,6 @@ fn main(_req: Request) -> Result<Response, Error> {
         name: String,
     }
     let app: GHAppResponse = serde_json::from_reader(resp.into_body())?;
-    Ok(Response::from_status(StatusCode::OK).with_body_text_html(&format!("<h1>Hi, my name is <em>{}</em></h1>", app.name)))
+    Ok(Response::from_status(StatusCode::OK)
+        .with_body_text_html(&format!("<h1>Hi, my name is <em>{}</em></h1>", app.name)))
 }
