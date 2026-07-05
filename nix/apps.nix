@@ -137,7 +137,7 @@
             set +e
             echo
             echo "=== smoke test: submitting a tiny-efi job ==="
-            job_body="{\"init_spec\":{\"type\":\"image\",\"image\":\"$tiny_efi_image_id\"},\"ssh_keys\":[],\"restart_policy\":{\"remaining_restart_count\":0},\"parameters\":{},\"host_tag_requirements\":[\"host:$host_id\"],\"override_timeout\":null}"
+            job_body="{\"init_spec\":{\"type\":\"image\",\"image_id\":\"$tiny_efi_image_id\"},\"ssh_keys\":[],\"restart_policy\":{\"max_restarts\":0},\"parameters\":{},\"host_tag_requirements\":[\"host:$host_id\"],\"override_timeout\":null}"
             echo "+ curl -X POST http://127.0.0.1:$sb_port/api/v1/jobs  (image=$tiny_efi_image_id, host:$host_id)"
             job_id="$(curl -fsS -X POST "http://127.0.0.1:$sb_port/api/v1/jobs" \
               -H "Authorization: Bearer $api_token_bearer" \
