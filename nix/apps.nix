@@ -71,35 +71,60 @@
       # environment (register a GitHub OAuth app whose callback is
       # `http://localhost:<sb-port>/api/v1/auth/github/callback`). Without them
       # the stack still runs; interactive login is just disabled.
-      devstack = pkgs.writeShellApplication {
-        name = "treadmill-devstack";
-        runtimeInputs = [
-          pkgs.postgresql
-          # NATS broker + nsc to bootstrap its decentralized-JWT auth hierarchy
-          # for log streaming.
-          pkgs.nats-server
-          pkgs.nsc
-          # Used by the readiness polls, the dev seed/registration, and the smoke
-          # stage on every platform.
-          pkgs.curl
-          pkgs.jq
-          self'.packages.swx
-          self'.packages.tml-console
-        ]
-        # The single dev zot + qemu-supervisor stack is Linux-only: it boots the
-        # aarch64 tiny-efi fixture, which is only built on Linux (nix/tiny-efi.nix).
-        ++ lib.optionals isLinux [
-          self'.packages.zot
-          self'.packages.treadmill-qemu-supervisor
-          pkgs.skopeo
-          pkgs.qemu
-        ];
-        text = ''
-          # Inject Nix-specific variables:
-          export TML_FIXTURE_LAYOUT="${lib.optionalString isLinux "${self'.packages.tiny-efi-image-layout}"}"
-          export TML_AAVMF_CODE="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-aarch64-code.fd"}"
-          export TML_AAVMF_VARS="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-arm-vars.fd"}"
+      #
+      # `preamble` is spliced in before dispatching to `tools/devstack.sh`; the
+      # e2e variant below uses it to inject the TML_DEVSTACK_RUNFN test hook.
+      mkDevstack =
+        {
+          name,
+          preamble ? "",
+        }:
+        pkgs.writeShellApplication {
+          inherit name;
+          runtimeInputs = [
+            pkgs.postgresql
+            # NATS broker + nsc to bootstrap its decentralized-JWT auth hierarchy
+            # for log streaming.
+            pkgs.nats-server
+            pkgs.nsc
+            # Used by the readiness polls, the dev seed/registration, and the smoke
+            # stage on every platform.
+            pkgs.curl
+            pkgs.jq
+            self'.packages.swx
+            self'.packages.tml-console
+          ]
+          # The single dev zot + qemu-supervisor stack is Linux-only: it boots the
+          # aarch64 tiny-efi fixture, which is only built on Linux (nix/tiny-efi.nix).
+          ++ lib.optionals isLinux [
+            self'.packages.zot
+            self'.packages.treadmill-qemu-supervisor
+            pkgs.skopeo
+            pkgs.qemu
+          ];
+          text = ''
+            # Inject Nix-specific variables:
+            export TML_FIXTURE_LAYOUT="${lib.optionalString isLinux "${self'.packages.tiny-efi-image-layout}"}"
+            export TML_AAVMF_CODE="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-aarch64-code.fd"}"
+            export TML_AAVMF_VARS="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-arm-vars.fd"}"
 
+            ${preamble}
+
+            # Dispatch to the external (shared with non-Nix users) devstack
+            # script:
+            exec ${../tools/devstack.sh}
+          '';
+        };
+
+      # Plain long-running stack: no test hook, runs until Ctrl-C.
+      devstack = mkDevstack { name = "treadmill-devstack"; };
+
+      # `nix run .#devstack-e2e` -- bring the stack up, run the smoke test
+      # below (devstack.sh invokes TML_DEVSTACK_RUNFN when defined instead of
+      # waiting on the components), then tear the stack down.
+      devstack-e2e = mkDevstack {
+        name = "treadmill-devstack-e2e";
+        preamble = ''
           # This function references variables that will be defined by `devstack.sh`:
           # shellcheck disable=SC2154
           function TML_DEVSTACK_RUNFN() {
@@ -157,10 +182,6 @@
             echo "=== smoke test done ==="
           }
           export -f TML_DEVSTACK_RUNFN
-
-          # Dispatch to the external (shared with non-Nix users) devstack
-          # script:
-          exec ${../tools/devstack.sh}
         '';
       };
 
@@ -294,6 +315,12 @@
         type = "app";
         program = "${devstack}/bin/treadmill-devstack";
         meta.description = "Run the local dev stack (switchboard + web console)";
+      };
+
+      apps.devstack-e2e = {
+        type = "app";
+        program = "${devstack-e2e}/bin/treadmill-devstack-e2e";
+        meta.description = "Run the local dev stack, execute the smoke test, and shut down";
       };
 
       apps.qemu-supervisor-local = {
