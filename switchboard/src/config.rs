@@ -71,6 +71,12 @@ pub struct LogStreamingConfig {
     /// `nats://nats.example:4222`). Handed to supervisors in `StartJobMessage`
     /// and returned to read clients alongside their token. Non-secret.
     pub nats_url: String,
+    /// NATS **WebSocket** URL (e.g. `wss://nats.example:443`), returned to
+    /// read clients instead of `nats_url` when set. Browsers cannot speak the
+    /// plain TCP client protocol, so any deployment serving the web console
+    /// must point this at the server's `websocket` listener. Non-secret.
+    #[serde(default)]
+    pub websocket_url: Option<String>,
     /// JetStream domain, if the server is configured with one. Usually unset.
     #[serde(default)]
     pub jetstream_domain: Option<String>,

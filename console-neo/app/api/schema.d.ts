@@ -1186,12 +1186,15 @@ export interface components {
          * @description Connection credentials for tailing/replaying a job's console logs over NATS,
          *     returned by `POST /jobs/{id}/nats-log-token`.
          *
-         *     The token is a short-lived **bearer** user JWT scoped to *subscribe* to this
-         *     job's log subjects (`subject`); the client connects to `nats_url` with the
-         *     token string alone (no nkey seed). The token only needs to be valid at
-         *     connect time — an established NATS connection is not dropped when the JWT
-         *     expires — so a client re-requests credentials when it next reconnects, after
-         *     roughly `expires_in_secs`.
+         *     The token is a short-lived **bearer** user JWT scoped to this job only: it
+         *     may *subscribe* to the job's log subjects (`subject`) and its own inboxes
+         *     (`inbox_prefix`), and *publish* to the slice of the JetStream API needed to
+         *     run an ordered consumer against the job's stream (`stream`) — enough to
+         *     replay stored history and then follow live. The client connects to
+         *     `nats_url` with the token string alone (no nkey seed). The token only needs
+         *     to be valid at connect time — an established NATS connection is not dropped
+         *     when the JWT expires — so a client re-requests credentials when it next
+         *     reconnects, after roughly `expires_in_secs`.
          */
         NatsLogStreamCredentials: {
             /**
@@ -1200,14 +1203,32 @@ export interface components {
              *     elapses (only needed to open a *new* connection).
              */
             expires_in_secs: number;
-            /** @description NATS client URL to connect to (e.g. `nats://nats.example:4222`). */
+            /**
+             * @description Inbox prefix the client **must** configure on its connection
+             *     (`_INBOX.logs-<job-id>`): the token's subscribe permission covers only
+             *     inboxes under this prefix, not the account-default `_INBOX.>`.
+             */
+            inbox_prefix: string;
+            /**
+             * @description The server's JetStream domain, when it is configured with one; the
+             *     client must address the JetStream API through it. Usually absent.
+             */
+            jetstream_domain?: string | null;
+            /**
+             * @description NATS URL to connect to. Deployments serving browser clients
+             *     configure this as a WebSocket listener URL (e.g.
+             *     `wss://nats.example:443`); it falls back to the plain client URL
+             *     (e.g. `nats://nats.example:4222`) otherwise.
+             */
             nats_url: string;
+            /** @description JetStream stream holding this job's logs: `logs-<job-id>`. */
+            stream: string;
             /**
              * @description Subject wildcard covering all of this job's log channels:
              *     `logs.<job-id>.>`.
              */
             subject: string;
-            /** @description Bearer user JWT authorizing subscribe on `subject`. */
+            /** @description Bearer user JWT authorizing the scope described above. */
             token: string;
         };
         /** @description A real OAuth provider advertised by `/auth/providers`. */
@@ -1819,12 +1840,15 @@ export interface operations {
              * @description Connection credentials for tailing/replaying a job's console logs over NATS,
              *     returned by `POST /jobs/{id}/nats-log-token`.
              *
-             *     The token is a short-lived **bearer** user JWT scoped to *subscribe* to this
-             *     job's log subjects (`subject`); the client connects to `nats_url` with the
-             *     token string alone (no nkey seed). The token only needs to be valid at
-             *     connect time — an established NATS connection is not dropped when the JWT
-             *     expires — so a client re-requests credentials when it next reconnects, after
-             *     roughly `expires_in_secs`.
+             *     The token is a short-lived **bearer** user JWT scoped to this job only: it
+             *     may *subscribe* to the job's log subjects (`subject`) and its own inboxes
+             *     (`inbox_prefix`), and *publish* to the slice of the JetStream API needed to
+             *     run an ordered consumer against the job's stream (`stream`) — enough to
+             *     replay stored history and then follow live. The client connects to
+             *     `nats_url` with the token string alone (no nkey seed). The token only needs
+             *     to be valid at connect time — an established NATS connection is not dropped
+             *     when the JWT expires — so a client re-requests credentials when it next
+             *     reconnects, after roughly `expires_in_secs`.
              */
             200: {
                 headers: {

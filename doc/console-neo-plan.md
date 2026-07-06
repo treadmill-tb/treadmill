@@ -30,25 +30,29 @@ calls, TanStack Query for caching. See AGENTS.md §2 for the dev loop.
   group / generation / grant, revoke grant, set group public/private, profile
   PATCH, token revoke. Destructive actions confirm via `window.confirm`.
 
-The one remaining `TODO(console-neo)` marker is the job console-log
-placeholder (Phase 4).
+- **Phase 4 — job console log viewer.** `JobLog`
+  (`app/components/job-log.tsx`) on the job detail page: `POST
+  /jobs/{id}/nats-log-token`, `@nats-io/nats-core` `wsconnect` with the bearer
+  JWT
+  (`reconnect: false` — the component's own loop re-requests credentials on
+  every reconnect), output piped into `@xterm/xterm` (+fit addon). A 503
+  (streaming disabled) hides the panel. **Replay-then-follow:** the read
+  token grants, beyond subscribe on `logs.<id>.>`, the job-scoped slice of
+  the JetStream API (consumer create/info/next/delete plus stream info on
+  `logs-<id>`, replies restricted to inboxes under the per-job
+  `inbox_prefix`), so `JobLog` runs a single `@nats-io/jetstream` ordered
+  consumer: it replays a bounded slice of stored history (default in
+  `job-log.tsx`; `?replay=` overrides, `?replay=0` = live-only) from a start
+  sequence estimated off `STREAM.INFO` byte/message counts, then keeps
+  following live, and resumes after the last seen sequence on reconnect.
+  Truncated replay starts on a message boundary and skips to the first
+  newline — deliberately *not* escape-sequence-safe; xterm resyncs. The
+  permission set is proven sufficient by the `nats_live_read_token_scope_…`
+  test in the `nats-log-streaming` Nix check.
 
 ## Remaining phases (hand-off prompts)
 
 Each block below is a self-contained prompt for a follow-up agent.
-
-### Phase 4 — job console log viewer
-
-> Implement doc/log-streaming-plan.md §4b in `console-neo/`: on the job detail
-> page, replace the "Console log" placeholder with a live viewer. `POST
-> /jobs/{id}/nats-log-token`, connect `nats.ws` to the returned `nats_url`
-> with the bearer JWT, subscribe the returned `subject` wildcard, and pipe
-> payloads into `@xterm/xterm`. Re-request credentials when reconnecting after
-> roughly `expires_in_secs` (an established connection survives JWT expiry).
-> A 503 from the token route means log streaming is disabled on the
-> deployment: hide the panel. Note the NATS server's websocket listener
-> validates `Origin` (`allowed_origins`) — the console origin must be
-> configured there.
 
 ### Phase 5 — legacy console removal
 
@@ -67,5 +71,9 @@ The SPA is static and hosted separately (e.g. Cloudflare/GitHub Pages) with
 `VITE_TML_API_URL` set to the switchboard origin at build time. The
 switchboard needs the console origin in `server.cors_allowed_origins`, and the
 exact URL `<console-origin>/login/callback` in `oauth.return_to_allowlist`.
+For the log viewer, `log_streaming.websocket_url` must point at the NATS
+server's `websocket` listener (`wss://` in production, with the console origin
+in the listener's `allowed_origins`); browsers cannot use the plain
+`nats_url`.
 The host serving the SPA must rewrite unknown paths to `index.html` (SPA
 fallback).

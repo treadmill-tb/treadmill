@@ -3026,6 +3026,7 @@ mod tests {
         let account = nats_jwt::KeyPair::new_account();
         let ls_config = crate::config::LogStreamingConfig {
             nats_url: "nats://nats.example:4222".to_string(),
+            websocket_url: None,
             jetstream_domain: None,
             account_seed: account.seed().expect("account seed"),
         };

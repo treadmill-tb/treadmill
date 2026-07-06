@@ -326,6 +326,14 @@ select:focus {
   align-items: center;
 }
 
+/* Job console log (xterm mount) */
+.job-log-term {
+  border: 1px solid var(--border-strong);
+  background: #000000;
+  padding: 0.25rem;
+  height: 24rem;
+}
+
 /* Login pages */
 .login-page {
   display: flex;

@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router";
 
 import { $api } from "../api/client";
 import {
@@ -10,6 +11,7 @@ import { AuditLog } from "../components/audit-log";
 import { Digest } from "../components/digest";
 import { EntityLink } from "../components/entity-link";
 import { ImageRef } from "../components/image-ref";
+import { JobLog, parseReplayBytes } from "../components/job-log";
 import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
 import { Tags } from "../components/tags";
@@ -17,6 +19,10 @@ import type { Route } from "./+types/job-detail";
 
 export default function JobDetail({ params }: Route.ComponentProps) {
   const queryClient = useQueryClient();
+  // Per-page-load override for how much log history to replay (a user
+  // settings page may subsume this later).
+  const [searchParams] = useSearchParams();
+  const replayBytes = parseReplayBytes(searchParams.get("replay"));
   const job = $api.useQuery("get", "/jobs/{id}", {
     params: { path: { id: params.id } },
   });
@@ -166,12 +172,7 @@ export default function JobDetail({ params }: Route.ComponentProps) {
             )}
           </section>
 
-          <section>
-            <h2>Console log</h2>
-            {/* TODO(console-neo): nats.ws + xterm.js live log viewer, see
-                doc/log-streaming-plan.md §4b */}
-            <p className="muted">Log streaming lands in a follow-up.</p>
-          </section>
+          <JobLog jobId={params.id} replayBytes={replayBytes} />
 
           <AuditLog entity="jobs" id={params.id} />
         </>

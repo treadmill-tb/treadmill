@@ -180,11 +180,14 @@ supervisor_reconcile_interval = "5s"
 [log]
 use_tokio_console_subscriber = false
 
-# Log streaming via NATS/JetStream. nats_url is non-secret and lives on
-# disk; the account signing seed is injected via the environment
-# (TML_LOGSTREAMING__ACCOUNT_SEED) at launch below, not written here.
+# Log streaming via NATS/JetStream. nats_url (supervisors, TCP) and
+# websocket_url (browser read clients, handed out by the log-token
+# endpoint) are non-secret and live on disk; the account signing seed is
+# injected via the environment (TML_LOGSTREAMING__ACCOUNT_SEED) at
+# launch below, not written here.
 [log_streaming]
 nats_url = "nats://127.0.0.1:$nats_port"
+websocket_url = "ws://127.0.0.1:$nats_ws_port"
 
 # The console declares its landing URL as each login's return_to; the
 # allowlist (exact match) authorizes it. The callback 302s the browser

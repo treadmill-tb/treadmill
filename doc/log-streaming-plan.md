@@ -311,13 +311,18 @@ In `treadmill-rs/src/api/switchboard_supervisor.rs`:
   `expires_in_secs` (5-min TTL) rather than an absolute `expires_at`, to dodge
   clock skew. OpenAPI snapshot regenerated; tests in
   `switchboard/tests/job_routes.rs`.
-- **4b — Web console (remaining work; the CLI is dropped).** The read client is
-  the **web console**, not a `tml log` CLI: `nats.ws` over `wss://`, the per-job
-  subject piped into xterm.js for ANSI rendering. The console calls
-  `POST /jobs/{id}/log-token` for credentials, then opens a JetStream consumer
-  (replay history, then follow live). Set the NATS `websocket` listener's
-  `allowed_origins` to the console's origin (no CORS headers needed — the
-  WebSocket handshake's `Origin` is validated server-side; there is no preflight).
+- **4b — Web console. ✅ DONE** (on `dev/console-rewrite`; the CLI is
+  dropped). The read client is the **web console**, not a `tml log` CLI:
+  `@nats-io/nats-core` + `@nats-io/jetstream` over the NATS `websocket`
+  listener (`nats.ws` is deprecated upstream), the per-job subjects piped
+  into xterm.js for ANSI rendering. The console calls
+  `POST /jobs/{id}/nats-log-token` (the route was renamed from `log-token`)
+  for credentials, then runs a JetStream **ordered consumer** — bounded
+  history replay, then follow live; see doc/console-neo-plan.md Phase 4 for
+  the client details and the widened, job-scoped read-token grants. Set the
+  NATS `websocket` listener's `allowed_origins` to the console's origin (no
+  CORS headers needed — the WebSocket handshake's `Origin` is validated
+  server-side; there is no preflight).
   When the console's typed switchboard client (`treadmill_rs::api::switchboard::client`)
   grows a `log_token` method, also register it there to keep route/payload parity.
 

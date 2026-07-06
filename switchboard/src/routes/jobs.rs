@@ -427,14 +427,25 @@ pub async fn nats_log_token(
     let token = log_streaming::mint_token(
         &log_streaming.config,
         job_id,
-        TokenScope::Subscribe,
+        TokenScope::Read,
         Some(READ_TOKEN_TTL),
     )
     .or_internal("minting a log read token")?;
 
+    // Read clients of this endpoint are browsers, which can only reach the
+    // server's WebSocket listener; prefer the dedicated URL when configured.
+    let nats_url = log_streaming
+        .config
+        .websocket_url
+        .clone()
+        .unwrap_or_else(|| log_streaming.config.nats_url.clone());
+
     Ok(Json(NatsLogStreamCredentials {
-        nats_url: log_streaming.config.nats_url.clone(),
+        nats_url,
         subject: log_streaming::subject_scope(job_id),
+        stream: log_streaming::stream_name(job_id),
+        inbox_prefix: log_streaming::inbox_prefix(job_id),
+        jetstream_domain: log_streaming.config.jetstream_domain.clone(),
         token,
         expires_in_secs: READ_TOKEN_TTL.as_secs(),
     }))
