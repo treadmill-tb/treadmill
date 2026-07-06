@@ -252,6 +252,30 @@ button.danger {
   margin: 0.75rem 0;
 }
 
+.avatar {
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.copy-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--fg-faint);
+}
+
+.copy-btn:hover {
+  color: var(--accent);
+  background: none;
+}
+
+.toolbar h1,
+.toolbar h2 {
+  margin: 0;
+}
+
 /* Login pages */
 .login-page {
   display: flex;

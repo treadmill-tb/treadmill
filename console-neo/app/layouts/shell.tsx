@@ -1,4 +1,4 @@
-import { Link, Navigate, Outlet, useNavigate } from "react-router";
+import { Link, Navigate, NavLink, Outlet, useNavigate } from "react-router";
 
 import { $api, clearToken, getToken } from "../api/client";
 
@@ -20,8 +20,16 @@ function AuthedShell() {
           <Link to="/" className="brand">
             treadmill
           </Link>
+          <nav>
+            <NavLink to="/jobs">Jobs</NavLink>
+            <NavLink to="/hosts">Hosts</NavLink>
+            <NavLink to="/images">Images</NavLink>
+            <NavLink to="/image-groups">Image groups</NavLink>
+          </nav>
           <span className="spacer" />
-          <span className="muted">{whoami.data?.username}</span>
+          <Link to="/settings" className="muted">
+            {whoami.data?.username ?? "…"}
+          </Link>
           <button
             onClick={() => {
               clearToken();
