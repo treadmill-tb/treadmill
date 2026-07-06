@@ -228,6 +228,18 @@ pub struct ServerConfig {
     /// known to set them, or a client could spoof its recorded address.
     #[serde(default)]
     pub trusted_proxy_headers: Vec<String>,
+    /// Origins allowed to call the API cross-origin from a browser (e.g. a
+    /// separately-hosted web console): exact `scheme://host[:port]` matches,
+    /// or the single entry `"*"` to allow any origin. Empty (the default)
+    /// emits no CORS headers at all, so browsers only permit same-origin use.
+    ///
+    /// The API is pure bearer-token (no cookies), so a wide-open `"*"` leaks
+    /// no ambient credentials today; the allowlist exists as posture against
+    /// anything cookie- or session-shaped appearing later. An origin listed
+    /// here is NOT thereby a valid login `return_to` target — that is
+    /// [`OAuthConfig::return_to_allowlist`], which matches full URLs.
+    #[serde(default)]
+    pub cors_allowed_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -291,9 +303,26 @@ pub fn load_configuration(path: Option<&Path>) -> anyhow::Result<SwitchboardConf
         f
     };
 
-    f.merge(providers::Env::prefixed("TML_").split("__"))
+    let config: SwitchboardConfig = f
+        .merge(providers::Env::prefixed("TML_").split("__"))
         .extract()
-        .context("Failed to extract switchboard configuration")
+        .context("Failed to extract switchboard configuration")?;
+
+    // Reject unusable CORS origins at startup rather than when the router
+    // builds the header allowlist.
+    for origin in &config.server.cors_allowed_origins {
+        if origin != "*" {
+            origin
+                .parse::<http::HeaderValue>()
+                .ok()
+                .filter(|_| origin.parse::<http::Uri>().is_ok())
+                .with_context(|| {
+                    format!("invalid entry in server.cors_allowed_origins: {origin:?}")
+                })?;
+        }
+    }
+
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -312,6 +341,7 @@ mod tests {
             server: ServerConfig {
                 bind_address: "127.0.0.1:8081".parse().unwrap(),
                 trusted_proxy_headers: Vec::new(),
+                cors_allowed_origins: Vec::new(),
             },
             service: ServiceConfig {
                 current_tos_version: 1,

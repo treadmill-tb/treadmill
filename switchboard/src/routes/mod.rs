@@ -5,7 +5,7 @@ mod jobs;
 mod params;
 mod users;
 
-use crate::config::EmbeddedConsoleConfig;
+use crate::config::{EmbeddedConsoleConfig, ServerConfig};
 use crate::serve::AppState;
 use aide::axum::ApiRouter;
 use aide::axum::routing::{delete_with, get_with, post_with, put_with};
@@ -13,7 +13,9 @@ use aide::transform::TransformOperation;
 use axum::Json;
 use axum::Router;
 use axum::response::IntoResponse;
-use http::StatusCode;
+use http::{HeaderValue, Method, StatusCode, header};
+use std::time::Duration;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use treadmill_console::config::{
     ConsoleConfig, ServerConfig as ConsoleServerConfig,
@@ -34,9 +36,17 @@ pub fn build_router(state: AppState) -> Router<()> {
         .filter(|c| c.enabled)
         .map(|c| embedded_console_router(&state, c));
 
+    // CORS applies to the API only: the embedded console is a same-origin
+    // browser frontend and must not become callable cross-origin as a side
+    // effect of opening up the API.
+    let mut api = api_router().with_state(state.clone());
+    if let Some(cors) = cors_layer(&state.config().server) {
+        api = api.layer(cors);
+    }
+
     let mut router: Router<()> = ApiRouter::new()
         // -- INSERT ROUTES HERE --
-        .nest_api_service("/api/v1", api_router().with_state(state.clone()))
+        .nest_api_service("/api/v1", api)
         // utility
         .fallback(not_found)
         .with_state(state)
@@ -50,6 +60,39 @@ pub fn build_router(state: AppState) -> Router<()> {
         router = router.merge(console);
     }
     router
+}
+
+/// CORS layer for the API, or `None` (no CORS headers) when no origin is
+/// configured. The entries were validated at config load; `"*"` allows any
+/// origin. The layer also answers preflight `OPTIONS` requests itself.
+fn cors_layer(server: &ServerConfig) -> Option<CorsLayer> {
+    let origins = &server.cors_allowed_origins;
+    if origins.is_empty() {
+        return None;
+    }
+
+    let allow_origin = if origins.iter().any(|o| o == "*") {
+        AllowOrigin::any()
+    } else {
+        AllowOrigin::list(origins.iter().map(|o| {
+            o.parse::<HeaderValue>()
+                .unwrap_or_else(|_| panic!("unvalidated CORS origin: {o:?}"))
+        }))
+    };
+
+    Some(
+        CorsLayer::new()
+            .allow_origin(allow_origin)
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PATCH,
+                Method::PUT,
+                Method::DELETE,
+            ])
+            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+            .max_age(Duration::from_secs(3600)),
+    )
 }
 
 /// Build the embedded console's router, pointed back at this switchboard.
