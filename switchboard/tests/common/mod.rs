@@ -52,11 +52,6 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
                 auth_url: "http://localhost/login/oauth/authorize".to_string(),
                 token_url: format!("{gh_uri}/login/oauth/access_token"),
                 api_base_url: gh_uri.to_string(),
-                scopes: vec![
-                    "read:user".to_string(),
-                    "user:email".to_string(),
-                    "read:org".to_string(),
-                ],
             }),
             mock: None,
             return_to_allowlist: Vec::new(),

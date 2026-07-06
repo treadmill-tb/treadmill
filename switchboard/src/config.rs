@@ -160,10 +160,6 @@ pub struct GitHubOAuthConfig {
     /// verified emails). A trailing slash, if present, is ignored.
     #[serde(default = "default_github_api_base_url")]
     pub api_base_url: String,
-    /// OAuth scopes to request. Defaults cover profile, verified emails, and org
-    /// membership (the latter feeds GitHub-org auto-groups).
-    #[serde(default = "default_github_scopes")]
-    pub scopes: Vec<String>,
 }
 
 /// Configuration for the **development-only** mock OAuth provider.
@@ -196,13 +192,6 @@ fn default_github_token_url() -> String {
 }
 fn default_github_api_base_url() -> String {
     "https://api.github.com".to_string()
-}
-fn default_github_scopes() -> Vec<String> {
-    vec![
-        "read:user".to_string(),
-        "user:email".to_string(),
-        "read:org".to_string(),
-    ]
 }
 
 #[derive(Debug, Clone, Deserialize)]
