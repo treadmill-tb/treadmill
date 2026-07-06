@@ -19,7 +19,7 @@
 //!      JSON. No token is issued here.
 //!
 //!   3. `POST /auth/login/complete` consumes the staged pair and mints the
-//!      session token, once everything the staging marked `required` (today:
+//!      session token, once everything the staging marked `required` (e.g.,
 //!      ToS consent) is provided.
 //!
 //!   4. `GET /auth/whoami` reports the identity behind a bearer token.

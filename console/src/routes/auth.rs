@@ -3,22 +3,23 @@
 //! `/login` renders a sign-in page listing the methods switchboard advertises
 //! via `/auth/providers` (GitHub, plus any development-only mock identities).
 //! Each button links to switchboard's login route with this console's landing
-//! URL declared as the flow's `return_to` (switchboard validates it against
-//! its allowlist). Switchboard runs the OAuth dance, stages the login, and
+//! URL declared as the flow's `return_to` (switchboard validates it against its
+//! allowlist). Switchboard runs the OAuth dance, stages the login, and
 //! redirects the browser back to `/auth/landing` with the staged login's
-//! single-use `staged_id` + `staged_secret` pair in the query — never the
-//! session token.
+//! single-use `staged_id` + `staged_secret` pair in the query. This token is
+//! short lived and invalidated on use, so it's OK if this is persisted in the
+//! user's browser history.
 //!
-//! `/auth/landing` exchanges that pair server-to-server at switchboard's
-//! `POST /auth/login/complete`; one code path handles every outcome. A
-//! completed login yields the token, which moves into the session cookie
-//! before a redirect to `/me` strips the (already-consumed) pair from the
-//! URL. A login still requiring ToS consent yields a fresh pair, rendered
-//! into a plain consent form — the pair rides hidden fields, not a URL — that
-//! POSTs straight back to switchboard, which answers with another redirect to
-//! `/auth/landing` carrying a ready-to-claim pair: the completed branch
-//! above. No JS involved, and nothing but single-use staged pairs ever
-//! transits a URL.
+//! `/auth/landing` exchanges that pair server-to-server at switchboard's `POST
+//! /auth/login/complete`. A completed login yields the token, which moves into
+//! the session cookie before a redirect to `/me` strips the (already-consumed)
+//! `(staged_id, staged_secret)` pair from the URL. A login still requiring
+//! additional information (like a ToS consent) yields a fresh `(staged_id,
+//! staged_secret)` pair, rendered into a plain consent form — the pair rides
+//! hidden fields, not a URL — that POSTs straight back to switchboard, which
+//! answers with another redirect to `/auth/landing` carrying a ready-to-claim
+//! pair: the completed branch above. No JS involved, and nothing but single-use
+//! staged pairs ever transits a URL.
 //!
 //! `/logout` clears the cookie.
 
