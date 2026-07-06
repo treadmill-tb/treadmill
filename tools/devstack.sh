@@ -239,6 +239,8 @@ insert into tml_switchboard.user_emails (email, user_id, provider, verified)
   values ('alice@example.test', '$dev_user_id', 'mock', true) on conflict do nothing;
 insert into tml_switchboard.group_members (group_id, member_id, source, source_ref)
   values ('$admins_group_id', '$dev_user_id', 'manual', '') on conflict do nothing;
+insert into tml_switchboard.login_allowlist (provider, kind, external_id)
+  values ('mock', 'user', 'bob'), ('mock', 'user', 'carol');
 insert into tml_switchboard.hosts
   (host_id, name, auth_token, tags, owner_id, ssh_endpoints, current_job)
   values (

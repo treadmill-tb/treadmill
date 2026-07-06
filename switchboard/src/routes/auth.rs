@@ -397,103 +397,69 @@ pub async fn callback(
             (user_id, org_ids, stale_tos)
         }
         None => {
-            // Brand-new subject. The development-only mock provider is an
-            // unauthenticated bypass whose whole purpose is to conjure users, so
-            // it is never subject to the admission gate; every real provider is.
-            let gated = provider.name() != "mock";
-
             // Org membership is load-bearing for org-based admission at
             // registration, so a fetch failure on the gated new-user path fails
             // closed (a retryable deny) rather than silently admitting nobody.
-            let org_ids = if gated {
-                match provider.fetch_org_ids(&token).await {
-                    Ok(ids) => ids,
-                    Err(e) => {
-                        tracing::warn!(
-                            "org lookup failed during {} registration for {}: {e}",
-                            provider.name(),
-                            identity.login,
-                        );
-                        record_registration_denied(
-                            &state,
-                            provider.name(),
-                            &identity,
-                            DenyReason::OrgLookupFailed,
-                            client_ip.clone(),
-                            client_port,
-                        )
-                        .await?;
-                        return Err(StatusCode::FORBIDDEN);
-                    }
-                }
-            } else {
-                provider.fetch_org_ids(&token).await.unwrap_or_default()
-            };
-
-            if gated {
-                let policy = DbAdmissionPolicy::new(state.pool().clone());
-                let verdict = policy
-                    .admit(provider.name(), &identity, &org_ids)
-                    .await
-                    .or_internal("consulting the admission gate")?;
-                if let Admission::Deny(reason) = verdict {
+            let org_ids = match provider.fetch_org_ids(&token).await {
+                Ok(ids) => ids,
+                Err(e) => {
+                    tracing::warn!(
+                        "org lookup failed during {} registration for {}: {e}",
+                        provider.name(),
+                        identity.login,
+                    );
                     record_registration_denied(
                         &state,
                         provider.name(),
                         &identity,
-                        reason,
+                        DenyReason::OrgLookupFailed,
                         client_ip.clone(),
                         client_port,
                     )
                     .await?;
-                    tracing::warn!(
-                        "registration denied for {} via {}: {}",
-                        identity.login,
-                        provider.name(),
-                        reason.as_str(),
-                    );
                     return Err(StatusCode::FORBIDDEN);
                 }
+            };
 
-                // Admitted, but no durable user record may exist before the user
-                // accepts the ToS. Stage the identity + org ids; the account is
-                // created only when `login_complete` consumes the row.
-                return stage_and_respond(
+            let policy = DbAdmissionPolicy::new(state.pool().clone());
+            let verdict = policy
+                .admit(provider.name(), &identity, &org_ids)
+                .await
+                .or_internal("consulting the admission gate")?;
+            if let Admission::Deny(reason) = verdict {
+                record_registration_denied(
                     &state,
                     provider.name(),
-                    Some(&identity),
-                    None,
-                    &org_ids,
-                    return_to,
-                    &ctx,
-                    true,
-                    current_tos,
+                    &identity,
+                    reason,
+                    client_ip.clone(),
+                    client_port,
                 )
-                .await;
+                .await?;
+                tracing::warn!(
+                    "registration denied for {} via {}: {}",
+                    identity.login,
+                    provider.name(),
+                    reason.as_str(),
+                );
+                return Err(StatusCode::FORBIDDEN);
             }
 
-            // Mock bypass: the dev-only provider is exempt from both the gate and
-            // the ToS completion step, so it conjures the account immediately,
-            // with the ToS recorded as already accepted at the current version.
-            let mut tx = state
-                .pool()
-                .begin()
-                .await
-                .or_internal("opening a transaction")?;
-            let user_id = sql::user::create_and_reconcile(
-                &mut tx,
+            // Admitted, but no durable user record may exist before the user
+            // accepts the ToS. Stage the identity + org ids; the account is
+            // created only when `login_complete` consumes the row.
+            return stage_and_respond(
+                &state,
                 provider.name(),
-                &identity,
+                Some(&identity),
+                None,
                 &org_ids,
+                return_to,
+                &ctx,
+                true,
                 current_tos,
             )
-            .await
-            .or_internal("provisioning the user")?;
-
-            tx.commit()
-                .await
-                .or_internal("committing the login transaction")?;
-            (user_id, org_ids, false)
+            .await;
         }
     };
 

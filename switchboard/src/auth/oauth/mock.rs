@@ -37,7 +37,8 @@ pub struct MockIdentity {
     pub admin: bool,
 }
 
-/// The fixed roster. `alice` is the admin; `bob` and `carol` are plain users.
+/// The fixed roster. `alice` is the admin; `bob` and `carol` are plain users,
+/// `trudy` is the "intruder" who shouldn't be allowed to complete OAuth login.
 pub const MOCK_IDENTITIES: &[MockIdentity] = &[
     MockIdentity {
         key: "alice",
@@ -71,6 +72,16 @@ pub const MOCK_IDENTITIES: &[MockIdentity] = &[
         full_name: "Carol Example",
         emails: &[Email {
             address: Cow::Borrowed("carol@example.test"),
+            verified: false,
+        }],
+        admin: false,
+    },
+    MockIdentity {
+        key: "trudy",
+        login: "trudy",
+        full_name: "Trudy Example",
+        emails: &[Email {
+            address: Cow::Borrowed("trudy@example.test"),
             verified: false,
         }],
         admin: false,
