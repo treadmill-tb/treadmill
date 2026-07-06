@@ -18,6 +18,8 @@ image-based, reproducible way to run workloads on them.
 | **Control Sockets**                   | `control-socket/*` | Protocol between supervisors and puppet.      |
 | **CLI**                               | `cli/`             | `tml` user-facing command-line client.        |
 | **Shared Library**                    | `treadmill-rs/`    | Common types & infrastructure.                |
+| **Web Console (SPA)**                 | `console-neo/`     | Browser frontend for the switchboard API.     |
+| **Web Console (legacy)**              | `console/`         | Server-side-rendered console; being replaced. |
 
 ## 2. Toolchain & Development Environment (Nix)
 
@@ -84,6 +86,27 @@ The Nix flake provides multiple convenience dev apps:
 
   The `switchboard-migrations-consistency` flake check enforces that the SCHEMA
   and migrations are consistent.
+
+### Web console (`console-neo/`)
+
+The SPA console is an npm package (React + React Router v7 in SPA mode,
+`ssr: false`), not a Cargo crate. Its API client types are **generated** from
+`switchboard/api-spec/openapi.yaml` into the committed
+`console-neo/app/api/schema.d.ts`; after any switchboard API change, regenerate
+and commit the diff:
+
+```bash
+cd console-neo && npm ci && npm run codegen
+```
+
+The `console-neo` Nix package (`nix build .#console-neo`, auto-promoted to a
+flake check) is the frontend CI gate: it fails on schema drift, then runs
+`npm run lint`, `npm run typecheck` (strict tsc), and the vite build. Dev loop:
+`npm run dev` (in the default dev shell, which carries node) proxies `/api` to
+a local switchboard at `127.0.0.1:8081` (override with `TML_DEV_PROXY`). The
+build reads `VITE_TML_API_URL` for the switchboard origin; empty means
+same-origin. `doc/console-neo-plan.md` tracks the remaining build-out. The
+legacy `console/` crate is untouched until the SPA reaches parity.
 
 ## 3. Building, Testing, and the Nix Checks
 
