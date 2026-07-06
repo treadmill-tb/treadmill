@@ -11,6 +11,7 @@ export default [
   layout("layouts/shell.tsx", [
     index("routes/home.tsx"),
     route("jobs", "routes/jobs.tsx"),
+    route("jobs/new", "routes/job-new.tsx"),
     route("jobs/:id", "routes/job-detail.tsx"),
     route("hosts", "routes/hosts.tsx"),
     route("hosts/:id", "routes/host-detail.tsx"),

@@ -1,3 +1,5 @@
+import { useQueryClient } from "@tanstack/react-query";
+
 import { $api } from "../api/client";
 import {
   JobStateBadge,
@@ -8,13 +10,26 @@ import { AuditLog } from "../components/audit-log";
 import { Digest } from "../components/digest";
 import { EntityLink } from "../components/entity-link";
 import { ImageRef } from "../components/image-ref";
+import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
 import { Tags } from "../components/tags";
 import type { Route } from "./+types/job-detail";
 
 export default function JobDetail({ params }: Route.ComponentProps) {
+  const queryClient = useQueryClient();
   const job = $api.useQuery("get", "/jobs/{id}", {
     params: { path: { id: params.id } },
+  });
+  const terminate = $api.useMutation("delete", "/jobs/{id}", {
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["get", "/jobs/{id}"] }),
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["audit", "jobs", params.id],
+        }),
+      ]);
+    },
   });
 
   return (
@@ -31,11 +46,19 @@ export default function JobDetail({ params }: Route.ComponentProps) {
               state={job.data.state}
               stage={job.data.initializing_stage}
             />
-            {/* TODO(console-neo): wire DELETE /jobs/{id} */}
-            <button className="danger" disabled title="Not implemented yet">
-              Terminate
+            <button
+              className="danger"
+              disabled={job.data.state === "finalized" || terminate.isPending}
+              onClick={() => {
+                if (window.confirm(`Terminate job ${params.id}?`)) {
+                  terminate.mutate({ params: { path: { id: params.id } } });
+                }
+              }}
+            >
+              {terminate.isPending ? "Terminating…" : "Terminate"}
             </button>
           </div>
+          <MutationError error={terminate.error} />
 
           <dl className="props">
             <dt>Image</dt>

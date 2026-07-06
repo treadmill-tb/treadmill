@@ -23,27 +23,19 @@ calls, TanStack Query for caching. See AGENTS.md §2 for the dev loop.
   Reusable pieces: `AuditLog` (one component, all four event feeds),
   exhaustive-switch badges over generated unions, entity links, relative
   times, tag chips, digests.
+- **Phase 3 — mutations.** The full write surface via `$api.useMutation` with
+  query-key invalidation: enqueue-job form at `/jobs/new` (all JobInitSpec
+  variants, ssh keys, host/target tag requirements, parameters incl. secret,
+  restart policy, owner picker), terminate job, register image, create image
+  group / generation / grant, revoke grant, set group public/private, profile
+  PATCH, token revoke. Destructive actions confirm via `window.confirm`.
 
-Mutation affordances exist but render disabled, marked `TODO(console-neo)` at
-each site.
+The one remaining `TODO(console-neo)` marker is the job console-log
+placeholder (Phase 4).
 
 ## Remaining phases (hand-off prompts)
 
 Each block below is a self-contained prompt for a follow-up agent.
-
-### Phase 3 — mutations
-
-> In `console-neo/`, implement the write surface against the generated `$api`
-> client (`app/api/client.ts`): enqueue-job form (`POST /jobs` — JobInitSpec
-> variants image/image_group/resume/restart, ssh_keys, host/target tag
-> requirements, parameters incl. the `secret` flag, restart policy, owner
-> picker from the `/users/me` groups), terminate job, register image, create
-> image group / generation / grant, revoke grant, set group public/private,
-> profile PATCH, token revoke. Replace the disabled affordances marked
-> `TODO(console-neo)`. Use TanStack Query mutations ($api.useMutation) with
-> invalidation of the affected query keys; no optimistic updates. Confirmation
-> dialog for destructive actions (terminate, revoke). Keep runtime checks out:
-> derive all types from `app/api/schema.d.ts`.
 
 ### Phase 4 — job console log viewer
 

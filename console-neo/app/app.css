@@ -276,6 +276,56 @@ button.danger {
   margin: 0;
 }
 
+/* Forms */
+input,
+textarea,
+select {
+  font: inherit;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--fg);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: 1px solid var(--accent);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 40rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.field > span {
+  color: var(--fg-muted);
+}
+
+.field-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.field-row input {
+  flex: 1;
+}
+
+.check {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
 /* Login pages */
 .login-page {
   display: flex;

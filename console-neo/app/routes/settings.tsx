@@ -1,10 +1,102 @@
+import { useQueryClient } from "@tanstack/react-query";
+import { useState, type FormEvent } from "react";
+
 import { $api } from "../api/client";
+import type { components } from "../api/schema";
 import { EntityLink } from "../components/entity-link";
+import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
 
+type SelfUserProfile = components["schemas"]["SelfUserProfile"];
+
+function ProfileForm({
+  me,
+  onDone,
+}: {
+  me: SelfUserProfile;
+  onDone: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const update = $api.useMutation("patch", "/users/me", {
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["get", "/users/me"] }),
+        queryClient.invalidateQueries({ queryKey: ["get", "/auth/whoami"] }),
+      ]);
+      onDone();
+    },
+  });
+
+  function onSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    const str = (k: string): string => {
+      const v = f.get(k);
+      return typeof v === "string" ? v.trim() : "";
+    };
+
+    // PATCH semantics: omitted = unchanged, explicit null = cleared. Username
+    // can only change, never clear.
+    const body: components["schemas"]["UpdateProfileRequest"] = {};
+    const username = str("username");
+    if (username !== "" && username !== me.username) {
+      body.username = username;
+    }
+    const fullName = str("full_name");
+    if (fullName !== (me.full_name ?? "")) {
+      body.full_name = fullName === "" ? null : fullName;
+    }
+    const avatarUrl = str("avatar_url");
+    if (avatarUrl !== (me.avatar_url ?? "")) {
+      body.avatar_url = avatarUrl === "" ? null : avatarUrl;
+    }
+    update.mutate({ body });
+  }
+
+  return (
+    <form className="form card" onSubmit={onSubmit}>
+      <label className="field">
+        <span>Username</span>
+        <input name="username" defaultValue={me.username} className="mono" />
+      </label>
+      <label className="field">
+        <span>Full name (empty clears)</span>
+        <input name="full_name" defaultValue={me.full_name ?? ""} />
+      </label>
+      <label className="field">
+        <span>Avatar URL (empty clears)</span>
+        <input
+          name="avatar_url"
+          defaultValue={me.avatar_url ?? ""}
+          className="mono"
+        />
+      </label>
+      <MutationError error={update.error} />
+      <div className="toolbar">
+        <button type="submit" disabled={update.isPending}>
+          {update.isPending ? "Saving…" : "Save"}
+        </button>
+        <button type="button" onClick={onDone}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
 export default function Settings() {
+  const queryClient = useQueryClient();
   const me = $api.useQuery("get", "/users/me");
   const tokens = $api.useQuery("get", "/users/me/tokens");
+  const [editing, setEditing] = useState(false);
+
+  const revoke = $api.useMutation("delete", "/users/me/tokens/{token_id}", {
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["get", "/users/me/tokens"],
+      });
+    },
+  });
 
   return (
     <>
@@ -17,43 +109,44 @@ export default function Settings() {
             <div className="toolbar">
               <h2>Profile</h2>
               <span className="spacer" />
-              {/* TODO(console-neo): wire PATCH /users/me */}
-              <button disabled title="Not implemented yet">
-                Edit
-              </button>
+              <button onClick={() => setEditing(!editing)}>Edit</button>
             </div>
-            <dl className="props">
-              <dt>Username</dt>
-              <dd>
-                <EntityLink
-                  kind="user"
-                  id={me.data.user_id}
-                  label={me.data.username}
-                />
-              </dd>
-              <dt>Full name</dt>
-              <dd>{me.data.full_name ?? <span className="muted">—</span>}</dd>
-              <dt>Emails</dt>
-              <dd>
-                {me.data.emails.map((e) => (
-                  <div key={e} className="mono">
-                    {e}
-                  </div>
-                ))}
-              </dd>
-              <dt>GitHub</dt>
-              <dd>
-                {me.data.github ? (
-                  <a href={me.data.github.profile_url}>
-                    {me.data.github.login}
-                  </a>
-                ) : (
-                  <span className="muted">—</span>
-                )}
-              </dd>
-              <dt>Locked</dt>
-              <dd>{me.data.locked ? "yes" : "no"}</dd>
-            </dl>
+            {editing ? (
+              <ProfileForm me={me.data} onDone={() => setEditing(false)} />
+            ) : (
+              <dl className="props">
+                <dt>Username</dt>
+                <dd>
+                  <EntityLink
+                    kind="user"
+                    id={me.data.user_id}
+                    label={me.data.username}
+                  />
+                </dd>
+                <dt>Full name</dt>
+                <dd>{me.data.full_name ?? <span className="muted">—</span>}</dd>
+                <dt>Emails</dt>
+                <dd>
+                  {me.data.emails.map((e) => (
+                    <div key={e} className="mono">
+                      {e}
+                    </div>
+                  ))}
+                </dd>
+                <dt>GitHub</dt>
+                <dd>
+                  {me.data.github ? (
+                    <a href={me.data.github.profile_url}>
+                      {me.data.github.login}
+                    </a>
+                  ) : (
+                    <span className="muted">—</span>
+                  )}
+                </dd>
+                <dt>Locked</dt>
+                <dd>{me.data.locked ? "yes" : "no"}</dd>
+              </dl>
+            )}
           </section>
 
           <section>
@@ -89,6 +182,7 @@ export default function Settings() {
 
       <section>
         <h2>Sessions &amp; API tokens</h2>
+        <MutationError error={revoke.error} />
         {tokens.isPending && <p className="muted">Loading…</p>}
         {tokens.isError && <p className="error">Failed to load tokens.</p>}
         {tokens.data && (
@@ -131,14 +225,24 @@ export default function Settings() {
                     )}
                   </td>
                   <td>
-                    {/* TODO(console-neo): wire DELETE /users/me/tokens/{token_id} */}
-                    <button
-                      className="danger"
-                      disabled
-                      title="Not implemented yet"
-                    >
-                      Revoke
-                    </button>
+                    {t.revoked == null && (
+                      <button
+                        className="danger"
+                        disabled={revoke.isPending}
+                        onClick={() => {
+                          const q = t.current
+                            ? "Revoke the token of THIS session? You will be logged out."
+                            : "Revoke this token?";
+                          if (window.confirm(q)) {
+                            revoke.mutate({
+                              params: { path: { token_id: t.token_id } },
+                            });
+                          }
+                        }}
+                      >
+                        Revoke
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

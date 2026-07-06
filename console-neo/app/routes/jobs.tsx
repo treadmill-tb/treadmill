@@ -1,4 +1,5 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
+import { Link } from "react-router";
 
 import { client } from "../api/client";
 import type { components } from "../api/schema";
@@ -33,7 +34,13 @@ export default function Jobs() {
 
   return (
     <>
-      <h1>Jobs</h1>
+      <div className="toolbar">
+        <h1>Jobs</h1>
+        <span className="spacer" />
+        <Link to="/jobs/new" className="btn">
+          Enqueue job
+        </Link>
+      </div>
       {jobs.isPending && <p className="muted">Loading…</p>}
       {jobs.isError && <p className="error">{jobs.error.message}</p>}
       {jobs.data && (

@@ -1,14 +1,191 @@
+import { useQueryClient } from "@tanstack/react-query";
+import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 
 import { $api } from "../api/client";
 import { AuditLog } from "../components/audit-log";
 import { Digest } from "../components/digest";
 import { EntityLink } from "../components/entity-link";
+import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
 import { Tags } from "../components/tags";
 import type { Route } from "./+types/image-group-detail";
 
+type MemberRow = { image_id: string; tags: string };
+
+function NewGenerationForm({
+  groupId,
+  seed,
+  onDone,
+}: {
+  groupId: string;
+  seed: MemberRow[];
+  onDone: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [rows, setRows] = useState<MemberRow[]>(seed);
+  const create = $api.useMutation("post", "/image-groups/{id}/generations", {
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["get", "/image-groups/{id}"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["get", "/image-groups/{id}/generations/{n}"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["audit", "image-groups", groupId],
+        }),
+      ]);
+      onDone();
+    },
+  });
+
+  function onSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    create.mutate({
+      params: { path: { id: groupId } },
+      body: {
+        members: rows
+          .filter((r) => r.image_id.trim() !== "")
+          .map((r) => ({
+            image_id: r.image_id.trim(),
+            required_host_tags: r.tags.split(/[\s,]+/).filter((t) => t !== ""),
+          })),
+      },
+    });
+  }
+
+  return (
+    <form className="form card" onSubmit={onSubmit}>
+      <span className="muted">
+        A generation replaces the group's whole membership; earlier members are
+        pre-filled. Order is the tie-break among equally-specific members.
+      </span>
+      {rows.map((row, i) => (
+        <div className="field-row" key={i}>
+          <input
+            placeholder="image id (catalog UUID)"
+            className="mono"
+            value={row.image_id}
+            onChange={(e) =>
+              setRows(
+                rows.map((r, j) =>
+                  j === i ? { ...r, image_id: e.target.value } : r,
+                ),
+              )
+            }
+          />
+          <input
+            placeholder="required host tags"
+            className="mono"
+            value={row.tags}
+            onChange={(e) =>
+              setRows(
+                rows.map((r, j) =>
+                  j === i ? { ...r, tags: e.target.value } : r,
+                ),
+              )
+            }
+          />
+          <button
+            type="button"
+            onClick={() => setRows(rows.filter((_, j) => j !== i))}
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+      <div>
+        <button
+          type="button"
+          onClick={() => setRows([...rows, { image_id: "", tags: "" }])}
+        >
+          Add member
+        </button>
+      </div>
+      <MutationError error={create.error} />
+      <div className="toolbar">
+        <button type="submit" disabled={create.isPending}>
+          {create.isPending ? "Appending…" : "Append generation"}
+        </button>
+        <button type="button" onClick={onDone}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function GrantForm({
+  groupId,
+  onDone,
+}: {
+  groupId: string;
+  onDone: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const grant = $api.useMutation("post", "/image-groups/{id}/grants", {
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["get", "/image-groups/{id}/grants"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["audit", "image-groups", groupId],
+        }),
+      ]);
+      onDone();
+    },
+  });
+
+  function onSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    const subject = f.get("subject_id");
+    const permission = f.get("permission");
+    if (typeof subject !== "string" || typeof permission !== "string") {
+      return;
+    }
+    grant.mutate({
+      params: { path: { id: groupId } },
+      body: {
+        subject_id: subject.trim(),
+        permission: permission === "manage" ? "manage" : "use",
+      },
+    });
+  }
+
+  return (
+    <form className="form card" onSubmit={onSubmit}>
+      <label className="field">
+        <span>Subject id (user or group UUID)</span>
+        <input name="subject_id" required className="mono" />
+      </label>
+      <label className="field">
+        <span>Permission</span>
+        <select name="permission" defaultValue="use">
+          <option value="use">use — may run jobs against the group</option>
+          <option value="manage">
+            manage — may create generations and manage grants
+          </option>
+        </select>
+      </label>
+      <MutationError error={grant.error} />
+      <div className="toolbar">
+        <button type="submit" disabled={grant.isPending}>
+          {grant.isPending ? "Granting…" : "Grant"}
+        </button>
+        <button type="button" onClick={onDone}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
 export default function ImageGroupDetail({ params }: Route.ComponentProps) {
+  const queryClient = useQueryClient();
   const group = $api.useQuery("get", "/image-groups/{id}", {
     params: { path: { id: params.id } },
   });
@@ -24,6 +201,39 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
     { enabled: latest != null },
   );
 
+  const [showGenerationForm, setShowGenerationForm] = useState(false);
+  const [showGrantForm, setShowGrantForm] = useState(false);
+
+  const setPublic = $api.useMutation("put", "/image-groups/{id}/public", {
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["get", "/image-groups/{id}"],
+        }),
+        queryClient.invalidateQueries({ queryKey: ["get", "/image-groups"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["audit", "image-groups", params.id],
+        }),
+      ]);
+    },
+  });
+  const revoke = $api.useMutation(
+    "delete",
+    "/image-groups/{id}/grants/{subject_id}/{permission}",
+    {
+      onSuccess: async () => {
+        await Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: ["get", "/image-groups/{id}/grants"],
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ["audit", "image-groups", params.id],
+          }),
+        ]);
+      },
+    },
+  );
+
   return (
     <>
       {group.isPending && <p className="muted">Loading…</p>}
@@ -33,15 +243,40 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
           <div className="toolbar">
             <h1>Group {group.data.name}</h1>
             <span className="spacer" />
-            {/* TODO(console-neo): wire PUT /image-groups/{id}/public and
-                POST /image-groups/{id}/generations */}
-            <button disabled title="Not implemented yet">
+            <button
+              disabled={setPublic.isPending}
+              onClick={() => {
+                const wanted = !group.data.public;
+                const q = wanted
+                  ? "Make this group public? Every subject may then run jobs against it."
+                  : "Make this group private again? Only explicit grants keep access.";
+                if (window.confirm(q)) {
+                  setPublic.mutate({
+                    params: { path: { id: params.id } },
+                    body: { public: wanted },
+                  });
+                }
+              }}
+            >
               {group.data.public ? "Make private" : "Make public"}
             </button>
-            <button disabled title="Not implemented yet">
+            <button onClick={() => setShowGenerationForm(!showGenerationForm)}>
               New generation
             </button>
           </div>
+          <MutationError error={setPublic.error} />
+          {showGenerationForm && (
+            <NewGenerationForm
+              groupId={params.id}
+              seed={
+                generation.data?.members.map((m) => ({
+                  image_id: m.image_id,
+                  tags: m.required_host_tags.join(" "),
+                })) ?? []
+              }
+              onDone={() => setShowGenerationForm(false)}
+            />
+          )}
 
           <dl className="props">
             <dt>Id</dt>
@@ -95,12 +330,17 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
             <div className="toolbar">
               <h2>Grants</h2>
               <span className="spacer" />
-              {/* TODO(console-neo): wire POST /image-groups/{id}/grants and
-                  DELETE /image-groups/{id}/grants/{subject_id}/{permission} */}
-              <button disabled title="Not implemented yet">
+              <button onClick={() => setShowGrantForm(!showGrantForm)}>
                 Grant
               </button>
             </div>
+            {showGrantForm && (
+              <GrantForm
+                groupId={params.id}
+                onDone={() => setShowGrantForm(false)}
+              />
+            )}
+            <MutationError error={revoke.error} />
             {grants.isPending && <p className="muted">Loading…</p>}
             {grants.isError && (
               <p className="error">Failed to load the grants.</p>
@@ -114,6 +354,7 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
                     <tr>
                       <th>Subject</th>
                       <th>Permission</th>
+                      <th></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -124,6 +365,31 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
                         </td>
                         <td>
                           <span className="badge">{grant.permission}</span>
+                        </td>
+                        <td>
+                          <button
+                            className="danger"
+                            disabled={revoke.isPending}
+                            onClick={() => {
+                              if (
+                                window.confirm(
+                                  `Revoke ${grant.permission} from ${grant.subject_id}?`,
+                                )
+                              ) {
+                                revoke.mutate({
+                                  params: {
+                                    path: {
+                                      id: params.id,
+                                      subject_id: grant.subject_id,
+                                      permission: grant.permission,
+                                    },
+                                  },
+                                });
+                              }
+                            }}
+                          >
+                            Revoke
+                          </button>
                         </td>
                       </tr>
                     ))}
