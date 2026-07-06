@@ -16,13 +16,23 @@ CREATE TABLE "tml_switchboard"."login_allowlist" (
 );
 
 
+-- Modify "oauth_flows" table
+ALTER TABLE "tml_switchboard"."oauth_flows"
+ADD COLUMN "return_to" text NULL;
+
+
 -- Create "staged_logins" table
 CREATE TABLE tml_switchboard.staged_logins (
     id uuid NOT NULL PRIMARY KEY,
+    secret_hash text NOT NULL,
     provider text NOT NULL,
     identity jsonb,
     existing_user_id uuid REFERENCES tml_switchboard.users (subject_id) ON DELETE CASCADE,
     org_ids TEXT[] NOT NULL DEFAULT '{}',
+    return_to text,
+    user_agent text,
+    created_ip text,
+    created_port integer,
     created_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
     expires_at timestamp with time zone NOT NULL,
     CONSTRAINT staged_kind CHECK ((identity IS NULL) <> (existing_user_id IS NULL))
