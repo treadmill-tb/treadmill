@@ -141,10 +141,4 @@ impl OAuthProvider for MockProvider {
         // `grants_global_admin`, not through org-driven auto-groups.
         Ok(Vec::new())
     }
-
-    fn grants_global_admin(&self, identity: &ExternalIdentity) -> bool {
-        lookup(&identity.provider_user_id)
-            .map(|i| i.admin)
-            .unwrap_or(false)
-    }
 }

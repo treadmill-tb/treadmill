@@ -102,12 +102,4 @@ pub trait OAuthProvider {
     /// admitting nobody. The existing-user path keeps it best-effort
     /// (`.unwrap_or_default()`), for auto-group reconciliation only.
     async fn fetch_org_ids(&self, token: &OAuthAccessToken) -> Result<Vec<String>, OAuthError>;
-
-    /// Whether the just-authenticated identity should be granted membership in
-    /// the global `admins` group. Real providers never do this (they return the
-    /// default `false`); only the development-only mock provider uses it, to make
-    /// one of its built-in identities an admin for local testing.
-    fn grants_global_admin(&self, _identity: &ExternalIdentity) -> bool {
-        false
-    }
 }

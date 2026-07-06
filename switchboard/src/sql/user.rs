@@ -10,7 +10,6 @@ use std::borrow::Cow;
 
 use crate::audit::model::Subject as AuditSubject;
 use crate::audit::{self, Transition, WriteToken, events};
-use crate::auth::engine::ADMINS_GROUP_ID;
 use crate::auth::oauth::ExternalIdentity;
 use sqlx::{PgConnection, Postgres, Transaction};
 use uuid::Uuid;
@@ -691,65 +690,4 @@ async fn reconcile_auto_groups(
     }
 
     Ok(())
-}
-
-/// Idempotently make `user_id` a member of the global `admins` group via a
-/// `manual`-source membership. Used ONLY by the development-only mock provider's
-/// admin identity (see [`crate::auth::oauth::mock`]); checks current membership
-/// as a plain read first so a no-op re-login does not spam the audit log.
-pub async fn ensure_global_admin(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: Uuid,
-) -> Result<(), sqlx::Error> {
-    let already = sqlx::query_scalar!(
-        "select exists(\
-           select 1 from tml_switchboard.group_members \
-           where group_id = $1 and member_id = $2\
-         ) as \"exists!\";",
-        ADMINS_GROUP_ID,
-        user_id,
-    )
-    .fetch_one(&mut **tx)
-    .await?;
-
-    if !already {
-        audit::transition(tx, GrantGlobalAdmin { user_id }).await?;
-    }
-    Ok(())
-}
-
-/// Add `user_id` to the global `admins` group as a `manual` membership. Emits
-/// [`events::GroupMembershipChanged`] with `added = true`. `on conflict do
-/// nothing` keeps it safe under a concurrent login racing to insert the same row.
-struct GrantGlobalAdmin {
-    user_id: Uuid,
-}
-
-impl Transition for GrantGlobalAdmin {
-    type Output = ();
-    type Event = events::GroupMembershipChanged;
-
-    async fn apply(
-        self,
-        conn: &mut PgConnection,
-        _w: &WriteToken,
-    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
-        sqlx::query!(
-            "insert into tml_switchboard.group_members (group_id, member_id, source, source_ref) \
-             values ($1, $2, 'manual', '') on conflict do nothing;",
-            ADMINS_GROUP_ID,
-            self.user_id,
-        )
-        .execute(&mut *conn)
-        .await?;
-
-        let event = events::GroupMembershipChanged {
-            actor: AuditSubject(self.user_id),
-            user: AuditSubject(self.user_id),
-            group: AuditSubject(ADMINS_GROUP_ID),
-            source_ref: String::new(),
-            added: true,
-        };
-        Ok(((), event))
-    }
 }

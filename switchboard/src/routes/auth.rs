@@ -387,15 +387,6 @@ pub async fn callback(
                 return Err(StatusCode::FORBIDDEN);
             }
 
-            // The mock provider may designate an identity as a global admin
-            // (alice). Real providers never do; `grants_global_admin` returns
-            // false for them.
-            if provider.grants_global_admin(&identity) {
-                sql::user::ensure_global_admin(&mut tx, user_id)
-                    .await
-                    .or_internal(&format!("granting global admin to {user_id}"))?;
-            }
-
             tx.commit()
                 .await
                 .or_internal("committing the profile refresh")?;
@@ -498,14 +489,6 @@ pub async fn callback(
             )
             .await
             .or_internal("provisioning the user")?;
-
-            // The mock provider may designate an identity as a global admin
-            // (alice).
-            if provider.grants_global_admin(&identity) {
-                sql::user::ensure_global_admin(&mut tx, user_id)
-                    .await
-                    .or_internal(&format!("granting global admin to {user_id}"))?;
-            }
 
             tx.commit()
                 .await
