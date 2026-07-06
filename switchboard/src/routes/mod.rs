@@ -90,15 +90,10 @@ pub fn api_router() -> ApiRouter<AppState> {
             "/auth/{provider}/login",
             get_with(auth::login, |o| {
                 doc(o, "startLogin", "Authentication", "Start an OAuth login")
-                    .description(
-                        "Begins the authorization-code flow with the named provider: \
-                         persists the CSRF state and redirects the browser to the \
-                         provider's consent screen. A browser frontend may pass \
-                         `?return_to=<its landing URL>` — validated against the \
-                         server's allowlist — to have the callback redirect the \
-                         browser there with the single-use staged pair; without it \
-                         the callback responds with JSON. Unauthenticated.",
-                    )
+                    .description(auth::AUTH_LOGIN_ENDPOINT_DOC)
+                    .response_with::<302, (), _>(|r| {
+                        r.description("A redirect to the authentication provider's consent screen.")
+                    })
                     .response_with::<400, (), _>(|r| {
                         r.description("The declared return_to is not allowlisted.")
                     })
@@ -117,20 +112,13 @@ pub fn api_router() -> ApiRouter<AppState> {
                     "Authentication",
                     "OAuth callback: finish a login",
                 )
-                .description(
-                    "The provider's redirect target; not called directly. Verifies \
-                     the CSRF state, exchanges the code, resolves the identity, and \
-                     stages the login. No token is issued here: the response hands \
-                     back a single-use staged pair — as JSON listing what the \
-                     completion still `required`s (possibly nothing), or, for a flow \
-                     that declared a `return_to`, via a 302 to that URL with the \
-                     pair in the query — which POST /auth/login/complete exchanges \
-                     for the session token.",
-                )
+                .description(auth::AUTH_PROVIDER_CALLBACK_ENDPOINT_DOC)
                 .response_with::<200, Json<LoginStagedResponse>, _>(|r| {
+                    r.description("The login is staged; complete it at POST /auth/login/complete.")
+                })
+                .response_with::<302, (), _>(|r| {
                     r.description(
-                        "The login is staged; complete it at POST /auth/login/complete \
-                         (immediately if `required` is empty).",
+                        "The login is staged; redirect to the original `redirect_to` target.",
                     )
                 })
                 .response_with::<403, (), _>(|r| {
@@ -186,16 +174,7 @@ pub fn api_router() -> ApiRouter<AppState> {
                     "Authentication",
                     "Complete a staged login",
                 )
-                .description(
-                    "Claims a staged login — the sole point a session token is \
-                     minted — identified by the staged id together with its \
-                     one-time secret. If the staging listed `tos` as required, the \
-                     echoed tos_version must be the one currently in force. \
-                     Accepts the same fields form-encoded (for no-JS browser \
-                     frontends; a form completion of a flow that declared a \
-                     `return_to` is answered with a 302 there, carrying a fresh \
-                     ready-to-claim pair). Unauthenticated.",
-                )
+                .description(auth::AUTH_LOGIN_COMPLETE_ENDPOINT_DOC)
                 .response_with::<200, Json<LoginResponse>, _>(|r| {
                     r.description("The login completed; the response carries the session token.")
                 })

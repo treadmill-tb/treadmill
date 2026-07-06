@@ -8,7 +8,16 @@ paths:
       tags:
       - Authentication
       summary: Start an OAuth login
-      description: 'Begins the authorization-code flow with the named provider: persists the CSRF state and redirects the browser to the provider''s consent screen. A browser frontend may pass `?return_to=<its landing URL>` — validated against the server''s allowlist — to have the callback redirect the browser there with the single-use staged pair; without it the callback responds with JSON. Unauthenticated.'
+      description: |
+        Begin an authorization-code flow with the given provider.
+
+        This endpoint emits a 303 "See Other" redirect to the authentication
+        provider's consent screen. A client may pass `?return_to=<URL>` (validated
+        against a server-side allowlist) to have the callback redirect the browser
+        following a successful token-exchange with the authenthenication provider.
+        On redirect, the `(staged_id, staged_secret)` pair will be placed in request
+        parameters of the `return_to` URL; without it the callback responds with
+        JSON.
       operationId: startLogin
       parameters:
       - in: path
@@ -20,6 +29,8 @@ paths:
           type: string
         style: simple
       responses:
+        '302':
+          description: A redirect to the authentication provider's consent screen.
         '400':
           description: The declared return_to is not allowlisted.
         '404':
@@ -29,7 +40,19 @@ paths:
       tags:
       - Authentication
       summary: 'OAuth callback: finish a login'
-      description: 'The provider''s redirect target; not called directly. Verifies the CSRF state, exchanges the code, resolves the identity, and stages the login. No token is issued here: the response hands back a single-use staged pair — as JSON listing what the completion still `required`s (possibly nothing), or, for a flow that declared a `return_to`, via a 302 to that URL with the pair in the query — which POST /auth/login/complete exchanges for the session token.'
+      description: |
+        The authentication provider's redirect target; not called directly.
+
+        Performs a token-exchange with the authentication provider, and stages a new
+        login. This endpoint does not mint a token directly; instead a client must
+        complete the login with an additional request to `/auth/login/complete` by
+        supplying the returned `(staged_id, staged_secret)` tuple. This tuple is
+        either returned as JSON or, for a flow that declared a `return_to`
+        parameter, via a 302 "See Other" redirect to an URL with those added as
+        query parameters.
+
+        A login may require additional information by the user (such as an explicit
+        ToS accept). See the `/auth/login/complete` endpoint docs.
       operationId: finishLogin
       parameters:
       - in: path
@@ -54,11 +77,13 @@ paths:
         style: form
       responses:
         '200':
-          description: The login is staged; complete it at POST /auth/login/complete (immediately if `required` is empty).
+          description: The login is staged; complete it at POST /auth/login/complete.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/LoginStagedResponse'
+        '302':
+          description: The login is staged; redirect to the original `redirect_to` target.
         '403':
           description: The identity was denied admission, or the account is locked.
   /auth/providers:
@@ -116,12 +141,20 @@ paths:
       tags:
       - Authentication
       summary: Complete a staged login
-      description: Claims a staged login — the sole point a session token is minted — identified by the staged id together with its one-time secret. If the staging listed `tos` as required, the echoed tos_version must be the one currently in force. Accepts the same fields form-encoded (for no-JS browser frontends; a form completion of a flow that declared a `return_to` is answered with a 302 there, carrying a fresh ready-to-claim pair). Unauthenticated.
+      description: |
+        Claim a staged login by providing the `(staged_id, staged_secret)` tuple
+        provided by the callback response or redirect.
+
+        Completing the login may require supplying additional values. If `required`
+        includes `"tos"`, the `"tos_version"` field must be the current ToS
+        version.
+
+        Accepts the same fields form-encoded (for no-JS browser frontends).
       operationId: completeLogin
       requestBody:
         description: |-
           Request body for `POST /auth/login/complete`: finish a staged login. Sent as
-          JSON by programmatic clients or form-encoded by the console's no-JS form.
+          JSON or form-encoded data.
         content:
           application/json:
             schema:
@@ -2244,7 +2277,7 @@ components:
     LoginCompleteRequest:
       description: |-
         Request body for `POST /auth/login/complete`: finish a staged login. Sent as
-        JSON by programmatic clients or form-encoded by the console's no-JS form.
+        JSON or form-encoded data.
       type: object
       properties:
         staged_id:
@@ -2310,9 +2343,8 @@ components:
       properties:
         required:
           description: |-
-            What the completion step must provide; empty means ready to claim.
-            Currently `["tos"]` or `[]`; future requirements (e.g. `"username"`)
-            extend this list.
+            What the completion step must provide; empty means ready to claim
+            (recognized steps are documented on the type).
           type: array
           items:
             type: string

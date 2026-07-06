@@ -101,7 +101,7 @@ pub struct TosInfoResponse {
 }
 
 /// Request body for `POST /auth/login/complete`: finish a staged login. Sent as
-/// JSON by programmatic clients or form-encoded by the console's no-JS form.
+/// JSON or form-encoded data.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct LoginCompleteRequest {
     /// The staged login, from [`LoginStagedResponse::staged_id`].

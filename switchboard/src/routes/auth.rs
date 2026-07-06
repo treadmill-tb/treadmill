@@ -48,6 +48,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{Duration, Utc};
 use http::StatusCode;
 use http::request::Parts;
+use indoc::indoc;
 use serde::Deserialize;
 use sqlx::PgExecutor;
 use std::collections::HashMap;
@@ -151,6 +152,18 @@ pub async fn providers(State(state): State<AppState>) -> Json<AuthProvidersRespo
     })
 }
 
+pub const AUTH_LOGIN_ENDPOINT_DOC: &str = indoc! {"
+    Begin an authorization-code flow with the given provider.
+
+    This endpoint emits a 303 \"See Other\" redirect to the authentication
+    provider's consent screen. A client may pass `?return_to=<URL>` (validated
+    against a server-side allowlist) to have the callback redirect the browser
+    following a successful token-exchange with the authenthenication provider.
+    On redirect, the `(staged_id, staged_secret)` pair will be placed in request
+    parameters of the `return_to` URL; without it the callback responds with
+    JSON.
+"};
+
 /// `GET /auth/{provider}/login`: start the flow and redirect the browser to the
 /// provider's authorization endpoint.
 ///
@@ -199,6 +212,21 @@ pub async fn login(
 
     Ok(Redirect::to(&url))
 }
+
+pub const AUTH_PROVIDER_CALLBACK_ENDPOINT_DOC: &str = indoc! {"
+    The authentication provider's redirect target; not called directly.
+
+    Performs a token-exchange with the authentication provider, and stages a new
+    login. This endpoint does not mint a token directly; instead a client must
+    complete the login with an additional request to `/auth/login/complete` by
+    supplying the returned `(staged_id, staged_secret)` tuple. This tuple is
+    either returned as JSON or, for a flow that declared a `return_to`
+    parameter, via a 302 \"See Other\" redirect to an URL with those added as
+    query parameters.
+
+    A login may require additional information by the user (such as an explicit
+    ToS accept). See the `/auth/login/complete` endpoint docs.
+"};
 
 /// Query parameters the provider appends to the callback redirect.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -682,6 +710,17 @@ pub async fn tos_info(State(state): State<AppState>) -> Json<TosInfoResponse> {
         text: TOS_TEXT.to_string(),
     })
 }
+
+pub const AUTH_LOGIN_COMPLETE_ENDPOINT_DOC: &str = indoc! {"
+    Claim a staged login by providing the `(staged_id, staged_secret)` tuple
+    provided by the callback response or redirect.
+
+    Completing the login may require supplying additional values. If `required`
+    includes `\"tos\"`, the `\"tos_version\"` field must be the current ToS
+    version.
+
+    Accepts the same fields form-encoded (for no-JS browser frontends).
+"};
 
 /// The request body of `POST /auth/login/complete`, in whichever encoding the
 /// client speaks: JSON for programmatic clients, `x-www-form-urlencoded` for

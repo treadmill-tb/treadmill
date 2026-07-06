@@ -130,6 +130,7 @@ sha2 = { workspace = true }
 async-nats = { workspace = true }
 nats-jwt = { workspace = true }
 nkeys = { workspace = true }
+indoc = "2.0.7"
 
 [dev-dependencies]
 sqlx-cli = { version = "0.9.0", features = [
