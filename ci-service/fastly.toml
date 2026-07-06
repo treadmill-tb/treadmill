@@ -1,0 +1,22 @@
+# This file describes a Fastly Compute package. To learn more visit:
+# https://www.fastly.com/documentation/reference/compute/fastly-toml
+
+authors = [""]
+cloned_from = "https://github.com/fastly/compute-starter-kit-rust-empty"
+description = ""
+language = "rust"
+manifest_version = 3
+name = "github-treadmill"
+service_id = ""
+
+[local_server.backends.githubapi]
+url = "https://api.github.com/"
+[[local_server.secret_stores.github]]
+key = "privatekey"
+file = "privatekey.pem"
+[local_server.config_stores.github]
+format = "inline-toml"
+[local_server.config_stores.github.contents]
+"clientid" = "Iv23liUhkA1naCJ5ATCC"
+[scripts]
+build = "cargo build --profile release"

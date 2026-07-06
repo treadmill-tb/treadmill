@@ -1,0 +1,7 @@
+/target
+/.direnv
+**/*.rs.bk
+/bin
+/pkg
+/privatekey.pem
+
