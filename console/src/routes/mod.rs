@@ -1,8 +1,9 @@
 //! HTTP routes for the console.
 //!
-//! The surface is deliberately tiny: an entry redirect, the three login-flow
-//! endpoints (`/login` → switchboard, `/auth/landing` ← switchboard, `/logout`),
-//! the per-resource pages, and the embedded stylesheet.
+//! The surface is deliberately tiny: an entry redirect, the login-flow
+//! endpoints (`/login` → switchboard, `/auth/landing` ← switchboard — the
+//! declared `return_to` — plus the `/auth/complete` ToS display and
+//! `/logout`), the per-resource pages, and the embedded stylesheet.
 
 mod auth;
 mod jobs;
@@ -15,12 +16,18 @@ use tower_http::trace::TraceLayer;
 
 use crate::serve::AppState;
 
+/// Path of the login-landing route, mounted below. Public so the switchboard
+/// can derive the embedded console's implicitly-allowed `return_to` URL from
+/// the same definition the console routes by.
+pub const LANDING_PATH: &str = "/auth/landing";
+
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(me::index))
         // login flow
         .route("/login", get(auth::login))
-        .route("/auth/landing", get(auth::landing))
+        .route("/auth/complete", get(auth::complete))
+        .route(LANDING_PATH, get(auth::landing))
         .route("/logout", get(auth::logout))
         // resource pages
         .route("/me", get(me::me))

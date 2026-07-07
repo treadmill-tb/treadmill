@@ -3,6 +3,180 @@ info:
   title: Treadmill Switchboard API
   version: 0.1.0
 paths:
+  /auth/{provider}/login:
+    get:
+      tags:
+      - Authentication
+      summary: Start an OAuth login
+      description: |
+        Begin an authorization-code flow with the given provider.
+
+        This endpoint emits a 303 "See Other" redirect to the authentication
+        provider's consent screen. A client may pass `?return_to=<URL>` (validated
+        against a server-side allowlist) to have the callback redirect the browser
+        following a successful token-exchange with the authenthenication provider.
+        On redirect, the `(staged_id, staged_secret)` pair will be placed in request
+        parameters of the `return_to` URL; without it the callback responds with
+        JSON.
+      operationId: startLogin
+      parameters:
+      - in: path
+        name: provider
+        description: The login provider's name (e.g. `github`).
+        required: true
+        schema:
+          description: The login provider's name (e.g. `github`).
+          type: string
+        style: simple
+      responses:
+        '302':
+          description: A redirect to the authentication provider's consent screen.
+        '400':
+          description: The declared return_to is not allowlisted.
+        '404':
+          description: No such provider is configured/enabled.
+  /auth/{provider}/callback:
+    get:
+      tags:
+      - Authentication
+      summary: 'OAuth callback: finish a login'
+      description: |
+        The authentication provider's redirect target; not called directly.
+
+        Performs a token-exchange with the authentication provider, and stages a new
+        login. This endpoint does not mint a token directly; instead a client must
+        complete the login with an additional request to `/auth/login/complete` by
+        supplying the returned `(staged_id, staged_secret)` tuple. This tuple is
+        either returned as JSON or, for a flow that declared a `return_to`
+        parameter, via a 302 "See Other" redirect to an URL with those added as
+        query parameters.
+
+        A login may require additional information by the user (such as an explicit
+        ToS accept). See the `/auth/login/complete` endpoint docs.
+      operationId: finishLogin
+      parameters:
+      - in: path
+        name: provider
+        description: The login provider's name (e.g. `github`).
+        required: true
+        schema:
+          description: The login provider's name (e.g. `github`).
+          type: string
+        style: simple
+      - in: query
+        name: code
+        required: true
+        schema:
+          type: string
+        style: form
+      - in: query
+        name: state
+        required: true
+        schema:
+          type: string
+        style: form
+      responses:
+        '200':
+          description: The login is staged; complete it at POST /auth/login/complete.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginStagedResponse'
+        '302':
+          description: The login is staged; redirect to the original `redirect_to` target.
+        '403':
+          description: The identity was denied admission, or the account is locked.
+  /auth/providers:
+    get:
+      tags:
+      - Authentication
+      summary: List the enabled login methods
+      operationId: listAuthProviders
+      responses:
+        '200':
+          description: |-
+            Response body for the unauthenticated `/auth/providers` endpoint: which login
+            methods a switchboard offers, so a frontend can render the right buttons
+            without hardcoding provider knowledge.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthProvidersResponse'
+  /auth/whoami:
+    get:
+      tags:
+      - Authentication
+      summary: Get the identity behind the presented token
+      operationId: whoAmI
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: 'Response body for `/auth/whoami`: the identity of the authenticated subject.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhoAmIResponse'
+      security:
+      - token: []
+  /auth/tos:
+    get:
+      tags:
+      - Authentication
+      summary: Get the current Terms of Service
+      operationId: getTermsOfService
+      responses:
+        '200':
+          description: |-
+            Response body for `GET /auth/tos`: the Terms of Service text a frontend
+            renders on the login-completion page, plus the version it corresponds to.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TosInfoResponse'
+  /auth/login/complete:
+    post:
+      tags:
+      - Authentication
+      summary: Complete a staged login
+      description: |
+        Claim a staged login by providing the `(staged_id, staged_secret)` tuple
+        provided by the callback response or redirect.
+
+        Completing the login may require supplying additional values. If `required`
+        includes `"tos"`, the `"tos_version"` field must be the current ToS
+        version.
+
+        Accepts the same fields form-encoded (for no-JS browser frontends).
+      operationId: completeLogin
+      requestBody:
+        description: |-
+          Request body for `POST /auth/login/complete`: finish a staged login. Sent as
+          JSON or form-encoded data.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginCompleteRequest'
+        required: true
+      responses:
+        '200':
+          description: The login completed; the response carries the session token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '403':
+          description: The account is locked.
+        '409':
+          description: A required step is missing, or the echoed tos_version is not the one in force; the presented pair was consumed and the marker carries a fresh one to retry with.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginStagedResponse'
+        '410':
+          description: Unknown staged id, wrong secret, or the staged login expired or was already used.
   /jobs:
     get:
       tags:
@@ -1173,6 +1347,42 @@ components:
           - 'null'
       required:
       - events
+    AuthProvidersResponse:
+      description: |-
+        Response body for the unauthenticated `/auth/providers` endpoint: which login
+        methods a switchboard offers, so a frontend can render the right buttons
+        without hardcoding provider knowledge.
+      type: object
+      properties:
+        mock_identities:
+          description: |-
+            Built-in mock sign-in identities. Non-empty ONLY when the
+            development-only mock provider is enabled; each is an unauthenticated,
+            canned identity. A frontend MUST surface these as development-only.
+          type: array
+          items:
+            $ref: '#/components/schemas/MockIdentityInfo'
+        oauth:
+          description: Real OAuth providers (e.g. GitHub) the user can start a login flow with.
+          type: array
+          items:
+            $ref: '#/components/schemas/OAuthProviderInfo'
+      required:
+      - oauth
+      - mock_identities
+    AuthToken:
+      type: string
+    CallbackQuery:
+      description: Query parameters the provider appends to the callback redirect.
+      type: object
+      properties:
+        code:
+          type: string
+        state:
+          type: string
+      required:
+      - code
+      - state
     CreateGenerationRequest:
       description: |-
         `POST /image-groups/{id}/generations`: append a new, immutable
@@ -2064,6 +2274,121 @@ components:
           - 'null'
           format: uint32
           minimum: 0
+    LoginCompleteRequest:
+      description: |-
+        Request body for `POST /auth/login/complete`: finish a staged login. Sent as
+        JSON or form-encoded data.
+      type: object
+      properties:
+        staged_id:
+          description: The staged login, from [`LoginStagedResponse::staged_id`].
+          type: string
+          format: uuid
+        staged_secret:
+          description: Its one-time secret, from [`LoginStagedResponse::staged_secret`].
+          type: string
+        tos_version:
+          description: |-
+            The ToS version the user was shown and accepted (only mandatory if
+            `required` contained `"tos"`). Must match the version currently in
+            force, so a concurrent ToS bump cannot record consent to text the user
+            never saw.
+          type:
+          - integer
+          - 'null'
+          format: int32
+      required:
+      - staged_id
+      - staged_secret
+    LoginResponse:
+      description: |-
+        Response Body that [`login_handler`] emits.
+
+        Indicates that the user successfully authenticated, and was issued `token`, which inherits the
+        user's credentials, and will expire at `expires_at`.
+      type: object
+      properties:
+        expires_at:
+          type: string
+          format: date-time
+        token:
+          $ref: '#/components/schemas/AuthToken'
+      required:
+      - token
+      - expires_at
+    LoginStagedResponse:
+      description: |-
+        Response body for a staged login: the callback has verified the identity
+        (e.g., OAuth token exchanged, admission passed) and staged the login
+        server-side. Every interactive login is staged; the caller finishes it by
+        `POST`ing the `(staged_id, staged_secret)` pair to `/auth/login/complete`,
+        which is the sole point that mints the session token.
+
+        `required` lists what the completion must additionally provide. An empty
+        list means the login is ready to claim: complete immediately, no extra
+        fields needed. The following is a non-exhaustive list of `required` steps:
+
+        - `tos`: the user must (re)accept the latest version of the ToS, echoing
+          the `tos_version` actually shown.
+
+        Returned as `200` by the OAuth callback (a browser flow that declared a
+        `return_to` is instead `302`-redirected there with the pair in the query),
+        and as `409 Conflict` by `/auth/login/complete` when the presented
+        completion is still missing a required step (with a fresh pair — the
+        presented one is consumed).
+
+        `staged_secret` must be kept secret and treated equivalently to an auth
+        token, as it can mint an auth token.
+      type: object
+      properties:
+        required:
+          description: |-
+            What the completion step must provide; empty means ready to claim
+            (recognized steps are documented on the type).
+          type: array
+          items:
+            type: string
+        staged_id:
+          description: Identifies the staged login to `/auth/login/complete`.
+          type: string
+          format: uuid
+        staged_secret:
+          description: |-
+            Single-use secret that `/auth/login/complete` exchanges for an auth
+            token.
+          type: string
+        tos_version:
+          description: |-
+            The ToS version the user is being asked to accept (if `required`
+            contains `"tos"`), echoed back on completion so consent is recorded
+            against the text actually shown.
+          type:
+          - integer
+          - 'null'
+          format: int32
+      required:
+      - required
+      - staged_id
+      - staged_secret
+    MockIdentityInfo:
+      description: A built-in mock identity advertised by `/auth/providers` (development only).
+      type: object
+      properties:
+        key:
+          description: Identity selector passed back to the mock login endpoint.
+          type: string
+        label:
+          description: Human-readable label, e.g. `"alice (admin)"`.
+          type: string
+        login_path:
+          description: |-
+            Path, relative to the switchboard origin, that starts this identity's
+            login, e.g. `"/api/v1/auth/mock/login?identity=alice"`.
+          type: string
+      required:
+      - key
+      - label
+      - login_path
     NatsLogStreamCredentials:
       description: |-
         Connection credentials for tailing/replaying a job's console logs over NATS,
@@ -2100,6 +2425,34 @@ components:
       - subject
       - token
       - expires_in_secs
+    OAuthProviderInfo:
+      description: A real OAuth provider advertised by `/auth/providers`.
+      type: object
+      properties:
+        display_name:
+          description: Human-readable label for a button, e.g. `"GitHub"`.
+          type: string
+        login_path:
+          description: |-
+            Path, relative to the switchboard origin, that starts the login flow,
+            e.g. `"/api/v1/auth/github/login"`.
+          type: string
+        name:
+          description: Stable provider key, e.g. `"github"`.
+          type: string
+      required:
+      - name
+      - display_name
+      - login_path
+    ProviderPath:
+      description: The `{provider}` segment of an OAuth login route.
+      type: object
+      properties:
+        provider:
+          description: The login provider's name (e.g. `github`).
+          type: string
+      required:
+      - provider
     PublicUserProfile:
       description: |-
         The world-readable subset of a user profile: only data deemed safe to expose
@@ -2416,6 +2769,22 @@ components:
       required:
       - revoked_at
       - reason
+    TosInfoResponse:
+      description: |-
+        Response body for `GET /auth/tos`: the Terms of Service text a frontend
+        renders on the login-completion page, plus the version it corresponds to.
+      type: object
+      properties:
+        text:
+          description: The Terms of Service text to display.
+          type: string
+        version:
+          description: The version this text corresponds to (the server's current ToS version).
+          type: integer
+          format: int32
+      required:
+      - version
+      - text
     UpdateProfileRequest:
       description: |-
         A patch to the caller's own profile. Omitting a field leaves it unchanged;
@@ -2435,7 +2804,25 @@ components:
           type:
           - string
           - 'null'
+    WhoAmIResponse:
+      description: 'Response body for `/auth/whoami`: the identity of the authenticated subject.'
+      type: object
+      properties:
+        full_name:
+          type:
+          - string
+          - 'null'
+        user_id:
+          type: string
+          format: uuid
+        username:
+          type: string
+      required:
+      - user_id
+      - username
 tags:
+- name: Authentication
+  description: Interactive OAuth login, the login-completion step, and token introspection.
 - name: Jobs
   description: Enqueue, inspect, and terminate jobs.
 - name: Hosts

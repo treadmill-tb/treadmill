@@ -41,6 +41,9 @@ axum = { version = "0.8.9", features = [
   "tokio",
   "http2",
   "json",
+  # The ToS-accept endpoint takes the console's no-JS HTML form submission
+  # (application/x-www-form-urlencoded) alongside JSON.
+  "form",
   "tracing",
   "ws",
   "macros",
@@ -72,6 +75,9 @@ async-trait = { workspace = true }
 subtle = { workspace = true }
 # CSPRNG
 rand = { workspace = true }
+# Salted hashes (argon2id, PHC string) for auth tokens and one-time
+# login-completion secrets.
+argon2 = "0.5"
 
 # OAuth2 login (GitHub). The `oauth2` crate drives the authorization-code flow;
 # `reqwest` is its async HTTP backend and is also used directly for the
@@ -124,6 +130,7 @@ sha2 = { workspace = true }
 async-nats = { workspace = true }
 nats-jwt = { workspace = true }
 nkeys = { workspace = true }
+indoc = "2.0.7"
 
 [dev-dependencies]
 sqlx-cli = { version = "0.9.0", features = [

@@ -53,6 +53,68 @@ pub struct LoginResponse {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Response body for a staged login: the callback has verified the identity
+/// (e.g., OAuth token exchanged, admission passed) and staged the login
+/// server-side. Every interactive login is staged; the caller finishes it by
+/// `POST`ing the `(staged_id, staged_secret)` pair to `/auth/login/complete`,
+/// which is the sole point that mints the session token.
+///
+/// `required` lists what the completion must additionally provide. An empty
+/// list means the login is ready to claim: complete immediately, no extra
+/// fields needed. The following is a non-exhaustive list of `required` steps:
+///
+/// - `tos`: the user must (re)accept the latest version of the ToS, echoing
+///   the `tos_version` actually shown.
+///
+/// Returned as `200` by the OAuth callback (a browser flow that declared a
+/// `return_to` is instead `302`-redirected there with the pair in the query),
+/// and as `409 Conflict` by `/auth/login/complete` when the presented
+/// completion is still missing a required step (with a fresh pair — the
+/// presented one is consumed).
+///
+/// `staged_secret` must be kept secret and treated equivalently to an auth
+/// token, as it can mint an auth token.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct LoginStagedResponse {
+    /// What the completion step must provide; empty means ready to claim
+    /// (recognized steps are documented on the type).
+    pub required: Vec<String>,
+    /// Identifies the staged login to `/auth/login/complete`.
+    pub staged_id: Uuid,
+    /// Single-use secret that `/auth/login/complete` exchanges for an auth
+    /// token.
+    pub staged_secret: String,
+    /// The ToS version the user is being asked to accept (if `required`
+    /// contains `"tos"`), echoed back on completion so consent is recorded
+    /// against the text actually shown.
+    pub tos_version: Option<i32>,
+}
+
+/// Response body for `GET /auth/tos`: the Terms of Service text a frontend
+/// renders on the login-completion page, plus the version it corresponds to.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct TosInfoResponse {
+    /// The version this text corresponds to (the server's current ToS version).
+    pub version: i32,
+    /// The Terms of Service text to display.
+    pub text: String,
+}
+
+/// Request body for `POST /auth/login/complete`: finish a staged login. Sent as
+/// JSON or form-encoded data.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct LoginCompleteRequest {
+    /// The staged login, from [`LoginStagedResponse::staged_id`].
+    pub staged_id: Uuid,
+    /// Its one-time secret, from [`LoginStagedResponse::staged_secret`].
+    pub staged_secret: String,
+    /// The ToS version the user was shown and accepted (only mandatory if
+    /// `required` contained `"tos"`). Must match the version currently in
+    /// force, so a concurrent ToS bump cannot record consent to text the user
+    /// never saw.
+    pub tos_version: Option<i32>,
+}
+
 /// Response body for `/auth/whoami`: the identity of the authenticated subject.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct WhoAmIResponse {

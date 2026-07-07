@@ -1,0 +1,148 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, secret_hash, provider, identity, existing_user_id, org_ids, return_to, user_agent, created_ip, created_port, expires_at from tml_switchboard.staged_logins where id = $1 for update;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.staged_logins",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "secret_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.staged_logins",
+            "name": "secret_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "provider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.staged_logins",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "identity",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.staged_logins",
+            "name": "identity"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "existing_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.staged_logins",
+            "name": "existing_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "org_ids",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.staged_logins",
+            "name": "org_ids"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "return_to",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.staged_logins",
+            "name": "return_to"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "user_agent",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.staged_logins",
+            "name": "user_agent"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "created_ip",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.staged_logins",
+            "name": "created_ip"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "created_port",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.staged_logins",
+            "name": "created_port"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.staged_logins",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "70aefa608d655dc8c5dc4bf7c516deb927ef8bdd5d3dbca6b7b1e66fc08d93c5"
+}

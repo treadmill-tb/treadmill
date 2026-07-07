@@ -8,6 +8,7 @@ pub mod github;
 pub mod mock;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use thiserror::Error;
@@ -21,7 +22,7 @@ pub struct OAuthAccessToken(pub String);
 /// `verified` means that the OAuth provider promises to have verified that this
 /// email address belongs to the given user *AND* that we trust this information
 /// for the purposes of linking other OAuth handles to a given user.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Email<'a> {
     /// The email address.
     ///
@@ -33,7 +34,7 @@ pub struct Email<'a> {
 }
 
 /// Identity information fetched from a provider after a successful login.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalIdentity {
     /// The provider's STABLE numeric user id, as text. Never the login handle
     /// (handles are renameable/reusable and would mis-link accounts over time).
@@ -90,15 +91,15 @@ pub trait OAuthProvider {
     ) -> Result<ExternalIdentity, OAuthError>;
 
     /// Fetch the provider org ids (as text) the user currently belongs to. Feeds
-    /// auto-group reconciliation. Best-effort: providers without an org concept
-    /// (or insufficient scope) return an empty list.
+    /// auto-group reconciliation and, at registration, org-based admission.
+    ///
+    /// A successful call returning no active orgs is `Ok(vec![])`; a genuine call
+    /// failure (network error, non-success status, insufficient scope) surfaces as
+    /// `Err`. Providers without an org concept return `Ok(vec![])`.
+    ///
+    /// The Ok/Err distinction is load-bearing for admission: on the new-user path
+    /// the callback treats `Err` as a fail-closed (retryable) deny rather than
+    /// admitting nobody. The existing-user path keeps it best-effort
+    /// (`.unwrap_or_default()`), for auto-group reconciliation only.
     async fn fetch_org_ids(&self, token: &OAuthAccessToken) -> Result<Vec<String>, OAuthError>;
-
-    /// Whether the just-authenticated identity should be granted membership in
-    /// the global `admins` group. Real providers never do this (they return the
-    /// default `false`); only the development-only mock provider uses it, to make
-    /// one of its built-in identities an admin for local testing.
-    fn grants_global_admin(&self, _identity: &ExternalIdentity) -> bool {
-        false
-    }
 }

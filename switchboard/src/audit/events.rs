@@ -122,6 +122,40 @@ define_event! {
 }
 
 define_event! {
+    /// An interactive login was refused by the admission gate before any user
+    /// record was created. Operator-only: the denied party has no local account,
+    /// so this is an operational signal rather than user-facing history. The
+    /// actor is the well-known anonymous subject and there is no `user` relation
+    /// (no user exists); the provider details and reason ride in the payload.
+    RegistrationDenied v1 {
+        actor: Subject,
+        provider: String,
+        provider_user_id: String,
+        login: String,
+        reason: String,
+        client_ip: Option<String>,
+        client_port: Option<i32>,
+    }
+    event_type = "registration_denied";
+    render = "registration denied for {login} via {provider}: {reason}";
+}
+
+define_event! {
+    /// A user accepted the Terms of Service at a given version, completing the
+    /// ToS interstitial before a token was issued. Emitted on the re-acceptance
+    /// path for an existing user whose accepted version had fallen behind (a
+    /// brand-new user's first acceptance is implicit in `user_provisioned`). The
+    /// affected user sees it via their own self-viewable relation.
+    TosAccepted v1 {
+        actor: Subject,
+        user: Subject @ view(SelfAccess),
+        version: i32,
+    }
+    event_type = "tos_accepted";
+    render = "accepted terms of service version {version}";
+}
+
+define_event! {
     /// A user changed their own username via the management API. Carries the
     /// immutable `user_id` plus the old and new handle.
     UserRenamed v1 {

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "delete from tml_switchboard.oauth_flows where state = $1 returning provider, expires_at;",
+  "query": "delete from tml_switchboard.oauth_flows where state = $1 returning provider, return_to, expires_at;",
   "describe": {
     "columns": [
       {
@@ -16,6 +16,17 @@
       },
       {
         "ordinal": 1,
+        "name": "return_to",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.oauth_flows",
+            "name": "return_to"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
         "name": "expires_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -33,8 +44,9 @@
     },
     "nullable": [
       false,
+      true,
       false
     ]
   },
-  "hash": "db00ca45547399c9211a84391a28944caaf27a3995c1356abf28f04a78dce847"
+  "hash": "686cfdbd6bad5b31c9d500e74a96c17790a4b4a90912411b9547c3bcea1bae06"
 }

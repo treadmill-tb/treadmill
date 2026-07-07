@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tml_switchboard.users set tos_accepted_version = $2, tos_accepted_at = now() where subject_id = $1;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7270c621bf4a1a8f706b87f3048514526276ac9c182633af5ed740c415b3a7c5"
+}

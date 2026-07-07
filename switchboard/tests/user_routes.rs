@@ -93,14 +93,42 @@ async fn run_login(client: &reqwest::Client, addr: SocketAddr, pool: &PgPool) ->
         .send()
         .await
         .unwrap();
-    assert_eq!(cb_resp.status(), reqwest::StatusCode::OK);
-    cb_resp.json().await.unwrap()
+    assert_eq!(
+        cb_resp.status(),
+        reqwest::StatusCode::OK,
+        "callback should stage the login"
+    );
+    let body: serde_json::Value = cb_resp.json().await.unwrap();
+
+    // Claim the staged login, echoing the offered ToS version (null when no
+    // consent is required).
+    let complete = client
+        .post(format!("http://{addr}/api/v1/auth/login/complete"))
+        .json(&serde_json::json!({
+            "staged_id": body["staged_id"],
+            "staged_secret": body["staged_secret"],
+            "tos_version": body["tos_version"],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(complete.status(), reqwest::StatusCode::OK);
+    complete.json().await.unwrap()
 }
 
 /// Provision a user via login and return (server addr, bearer token, user_id).
 async fn login_user(pool: &PgPool) -> (SocketAddr, String, Uuid, MockServer) {
     let gh = MockServer::start().await;
     mount_github(&gh).await;
+    // The admission gate now guards new-user registration; allow-list the canned
+    // "octocat" identity so this helper can still provision it via login.
+    sqlx::query(
+        "insert into tml_switchboard.login_allowlist (provider, kind, external_id, comment) \
+         values ('github', 'user', '12345', 'test fixture')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
     let addr = spawn_server(AppState::new(pool.clone(), test_config(&gh.uri()))).await;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())

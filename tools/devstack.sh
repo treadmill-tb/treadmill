@@ -186,11 +186,12 @@ use_tokio_console_subscriber = false
 [log_streaming]
 nats_url = "nats://127.0.0.1:$nats_port"
 
-# browser_success_redirect is provider-independent: any OAuth callback
-# 302s the browser here with the freshly minted token, which the
-# console moves into its session cookie.
+# The console declares its landing URL as each login's return_to; the
+# allowlist (exact match) authorizes it. The callback 302s the browser
+# there with a single-use staged pair, which the console exchanges
+# server-to-server for the session token.
 [oauth]
-browser_success_redirect = "http://localhost:$console_port/auth/landing"
+return_to_allowlist = ["http://localhost:$console_port/auth/landing"]
 
 # The mock provider is a development-only, UNAUTHENTICATED login bypass
 # (built-in identities, no external service). Safe to enable here only
@@ -238,6 +239,8 @@ insert into tml_switchboard.user_emails (email, user_id, provider, verified)
   values ('alice@example.test', '$dev_user_id', 'mock', true) on conflict do nothing;
 insert into tml_switchboard.group_members (group_id, member_id, source, source_ref)
   values ('$admins_group_id', '$dev_user_id', 'manual', '') on conflict do nothing;
+insert into tml_switchboard.login_allowlist (provider, kind, external_id)
+  values ('mock', 'user', 'bob'), ('mock', 'user', 'carol');
 insert into tml_switchboard.hosts
   (host_id, name, auth_token, tags, owner_id, ssh_endpoints, current_job)
   values (

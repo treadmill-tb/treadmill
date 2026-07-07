@@ -21,6 +21,12 @@ use uuid::Uuid;
 /// The seeded group whose members wield global authority (see `SCHEMA.sql`).
 pub const ADMINS_GROUP_ID: Uuid = Uuid::from_u128(1);
 
+/// The seeded `anonymous` `system` subject (see `SCHEMA.sql`). Used as the audit
+/// `actor_id` for events raised about an unauthenticated external party who has
+/// no local subject -- e.g. a login denied by the admission gate before any user
+/// record exists. It never logs in and owns nothing.
+pub const ANONYMOUS_SUBJECT_ID: Uuid = Uuid::from_u128(3);
+
 /// A permission on a host; mirrors `tml_switchboard.host_permission`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostPermission {

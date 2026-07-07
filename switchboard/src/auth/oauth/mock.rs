@@ -32,12 +32,14 @@ pub struct MockIdentity {
     pub full_name: &'static str,
     /// User emails, can be verified or unverified.
     pub emails: &'static [Email<'static>],
-    /// Whether logging in as this identity grants global admin (see
-    /// [`OAuthProvider::grants_global_admin`]).
+    /// Whether the providers listing labels this identity as the admin. Purely
+    /// cosmetic: admin group membership is always provisioned directly via SQL.
     pub admin: bool,
 }
 
-/// The fixed roster. `alice` is the admin; `bob` and `carol` are plain users.
+/// The fixed roster. `alice` is designated to be an admin, but is given this
+/// group membership explicitly; `bob` and `carol` are plain users, `trudy` is
+/// the "intruder" who shouldn't be allowed to complete OAuth login.
 pub const MOCK_IDENTITIES: &[MockIdentity] = &[
     MockIdentity {
         key: "alice",
@@ -71,6 +73,16 @@ pub const MOCK_IDENTITIES: &[MockIdentity] = &[
         full_name: "Carol Example",
         emails: &[Email {
             address: Cow::Borrowed("carol@example.test"),
+            verified: false,
+        }],
+        admin: false,
+    },
+    MockIdentity {
+        key: "trudy",
+        login: "trudy",
+        full_name: "Trudy Example",
+        emails: &[Email {
+            address: Cow::Borrowed("trudy@example.test"),
             verified: false,
         }],
         admin: false,
@@ -137,14 +149,7 @@ impl OAuthProvider for MockProvider {
     }
 
     async fn fetch_org_ids(&self, _token: &OAuthAccessToken) -> Result<Vec<String>, OAuthError> {
-        // The mock provider has no org concept; admin is granted directly via
-        // `grants_global_admin`, not through org-driven auto-groups.
+        // The mock provider has no org concept, so no org-driven auto-groups.
         Ok(Vec::new())
-    }
-
-    fn grants_global_admin(&self, identity: &ExternalIdentity) -> bool {
-        lookup(&identity.provider_user_id)
-            .map(|i| i.admin)
-            .unwrap_or(false)
     }
 }

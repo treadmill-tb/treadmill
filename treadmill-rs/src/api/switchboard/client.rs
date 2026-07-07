@@ -13,12 +13,14 @@ use uuid::Uuid;
 
 use crate::api::switchboard::AuthProvidersResponse;
 use crate::api::switchboard::JobRequest;
+use crate::api::switchboard::TosInfoResponse;
 use crate::api::switchboard::WhoAmIResponse;
 use crate::api::switchboard::audit::AuditFeedResponse;
 use crate::api::switchboard::hosts::HostInfo;
 use crate::api::switchboard::images::ImageGroupInfo;
 use crate::api::switchboard::jobs::{EnqueueJobResponse, JobInfo, JobListResponse};
 use crate::api::switchboard::users::{PublicUserProfile, SelfUserProfile, SessionInfo};
+use crate::api::switchboard::{LoginCompleteRequest, LoginResponse, LoginStagedResponse};
 
 /// All the ways a switchboard API call can fail, from the caller's point of
 /// view. `Unauthorized` is split out from other error statuses because callers
@@ -36,6 +38,15 @@ pub enum ClientError {
     /// Any other non-success status, with the response body for context.
     #[error("switchboard returned HTTP {status}: {body}")]
     Status { status: u16, body: String },
+}
+
+/// The two live outcomes of [`SwitchboardClient::login_complete`]: the login
+/// finished and yielded the session, or a step is still required and the
+/// response carries a fresh staged pair (the presented one was consumed).
+#[derive(Debug, Clone)]
+pub enum LoginCompleteOutcome {
+    Complete(LoginResponse),
+    Staged(LoginStagedResponse),
 }
 
 /// A handle to one switchboard instance, optionally carrying a bearer token for
@@ -77,6 +88,54 @@ impl SwitchboardClient {
     /// here; switchboard then carries the user through the flow.
     pub fn login_url(&self, login_path: &str) -> String {
         format!("{}{login_path}", self.base_url)
+    }
+
+    /// `GET /auth/tos` — the Terms of Service text + version a login must
+    /// accept before it completes (the ToS interstitial). Unauthenticated.
+    pub async fn tos_info(&self) -> Result<TosInfoResponse, ClientError> {
+        self.get_json("/api/v1/auth/tos").await
+    }
+
+    /// Absolute URL of `POST /auth/login/complete`, for a browser frontend to
+    /// use as its completion form's `action` (the endpoint accepts the staged
+    /// pair form-encoded, so a no-JS HTML form can finish the login directly).
+    pub fn login_complete_url(&self) -> String {
+        format!("{}/api/v1/auth/login/complete", self.base_url)
+    }
+
+    /// `POST /auth/login/complete` — claim a staged login by presenting its
+    /// single-use pair, JSON and server-to-server. Unauthenticated (the pair
+    /// is the capability). A `200` yields the session
+    /// ([`LoginCompleteOutcome::Complete`]); a `409` means a step is still
+    /// required and carries a fresh pair to retry with
+    /// ([`LoginCompleteOutcome::Staged`]); anything else (notably the `410`
+    /// for an unknown/expired/used pair) maps to [`ClientError`].
+    pub async fn login_complete(
+        &self,
+        request: &LoginCompleteRequest,
+    ) -> Result<LoginCompleteOutcome, ClientError> {
+        let resp = self
+            .http
+            .post(format!("{}/api/v1/auth/login/complete", self.base_url))
+            .json(request)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(LoginCompleteOutcome::Complete(resp.json().await?));
+        }
+        if status == reqwest::StatusCode::CONFLICT {
+            return Ok(LoginCompleteOutcome::Staged(resp.json().await?));
+        }
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(ClientError::Unauthorized);
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(ClientError::Status {
+            status: status.as_u16(),
+            body,
+        })
     }
 
     /// `GET /auth/whoami` — the identity behind the current token.

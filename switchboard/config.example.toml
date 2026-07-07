@@ -9,6 +9,9 @@ auth.password = ""
 bind_address = "0.0.0.0:8081"
 
 [service]
+# Terms of Service version currently in force. New users accept at this version;
+# bump it to force every user through the ToS interstitial again on next login.
+current_tos_version = 1
 default_token_timeout = "7d"
 default_job_timeout = "30m"
 default_queue_timeout = "30m"
@@ -30,8 +33,12 @@ supervisor_reconcile_interval = "5s"
 # auth_url = "https://github.com/login/oauth/authorize"
 # token_url = "https://github.com/login/oauth/access_token"
 # api_base_url = "https://api.github.com"
-# Where to send a browser after a successful login. Leave unset for
-# programmatic/CLI clients (the callback then returns the token as JSON). Set it
-# to the web console's landing URL to enable browser login: the callback will
-# 302 there with ?token=…&expires_at=… instead.
-# browser_success_redirect = "https://console.example/auth/landing"
+# The exact landing URLs browser frontends (web consoles) may declare as their
+# per-login ?return_to=… — one entry per console, matched exactly. The callback
+# 302s such flows there with a single-use staged pair the console exchanges
+# server-to-server for the session token; flows without a return_to
+# (programmatic/CLI clients) receive JSON instead. The embedded console's
+# landing URL is implicitly allowed and need not be listed.
+#
+# [oauth]
+# return_to_allowlist = ["https://console.example/auth/landing"]

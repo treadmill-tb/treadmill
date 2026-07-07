@@ -16,7 +16,6 @@ use std::sync::Arc;
 
 use reqwest::redirect::Policy;
 use sqlx::PgPool;
-use tokio::net::TcpListener;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
@@ -24,9 +23,7 @@ use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobImageRef, JobInfo, JobListResponse, NatsLogStreamCredentials,
 };
-use treadmill_rs::api::switchboard::{
-    JobInitSpec, JobRequest, JobState, LoginResponse, WhoAmIResponse,
-};
+use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, WhoAmIResponse};
 
 /// The built-in admins group subject (`engine::ADMINS_GROUP_ID`). `alice` is a
 /// member, so she may file a job under it.
@@ -34,11 +31,10 @@ const ADMINS_GROUP_ID: Uuid = Uuid::from_u128(1);
 use treadmill_switchboard::config::LogStreamingConfig;
 use treadmill_switchboard::log_streaming::{LogStreamProvisioner, LogStreaming, ProvisionError};
 use treadmill_switchboard::registry::OciRegistryClient;
-use treadmill_switchboard::routes::build_router;
 use treadmill_switchboard::serve::AppState;
 
 mod common;
-use common::test_config_mock;
+use common::{mock_login_token, spawn_server, test_config_mock};
 
 /// A provisioner the read route never calls (it only mints tokens); present
 /// only to satisfy the `LogStreaming` struct.
@@ -72,57 +68,6 @@ fn streaming_enabled_state(pool: PgPool) -> AppState {
         Arc::new(OciRegistryClient::new()),
         Some(test_log_streaming()),
     )
-}
-
-async fn spawn_server(state: AppState) -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let router = build_router(state);
-    tokio::spawn(async move {
-        axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        .unwrap();
-    });
-    addr
-}
-
-/// Drive a full mock login for `identity` and return the issued bearer token
-/// (HTTP-encoded), ready for `bearer_auth`.
-async fn mock_login_token(client: &reqwest::Client, addr: SocketAddr, identity: &str) -> String {
-    let login = client
-        .get(format!(
-            "http://{addr}/api/v1/auth/mock/login?identity={identity}"
-        ))
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        login.status().is_redirection(),
-        "mock login should redirect"
-    );
-    let location = login
-        .headers()
-        .get(reqwest::header::LOCATION)
-        .expect("redirect must carry a Location")
-        .to_str()
-        .unwrap()
-        .to_string();
-
-    let cb = client
-        .get(format!("http://{addr}{location}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        cb.status(),
-        reqwest::StatusCode::OK,
-        "callback should succeed"
-    );
-    let session: LoginResponse = cb.json().await.unwrap();
-    session.token.encode_for_http()
 }
 
 /// The authenticated caller's own `user_id`, via `GET /auth/whoami`.
@@ -248,7 +193,7 @@ async fn list_paginates_readable_jobs_newest_first(pool: PgPool) {
         .build()
         .unwrap();
 
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let bob = whoami(&client, addr, &token).await;
     let token_id = latest_token_id(&pool, bob).await;
 
@@ -297,12 +242,12 @@ async fn list_scopes_to_readable_jobs(pool: PgPool) {
         .unwrap();
 
     // One job each for alice and bob.
-    let alice_token = mock_login_token(&client, addr, "alice").await;
+    let alice_token = mock_login_token(&pool, &client, addr, "alice", true).await;
     let alice = whoami(&client, addr, &alice_token).await;
     let alice_tok = latest_token_id(&pool, alice).await;
     let alice_job = seed_job(&pool, alice, alice_tok, &[]).await;
 
-    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let bob = whoami(&client, addr, &bob_token).await;
     let bob_tok = latest_token_id(&pool, bob).await;
     let bob_job = seed_job(&pool, bob, bob_tok, &[]).await;
@@ -344,7 +289,7 @@ async fn list_rejects_a_malformed_cursor(pool: PgPool) {
         .build()
         .unwrap();
 
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let resp = client
         .get(format!(
             "http://{addr}/api/v1/jobs?cursor=not-a-valid-cursor"
@@ -365,7 +310,7 @@ async fn enqueue_and_cancel_emit_audit_events(pool: PgPool) {
         .build()
         .unwrap();
 
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
 
     // Enqueue a job, then cancel it (still queued, so it finalizes immediately).
     let image = register_image(&pool).await;
@@ -457,7 +402,7 @@ async fn enqueue_creates_a_queued_job_owned_by_caller(pool: PgPool) {
         .build()
         .unwrap();
 
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let bob = whoami(&client, addr, &token).await;
     let image = register_image(&pool).await;
     let req = image_job_request(None, JobInitSpec::Image { image_id: image }, None);
@@ -498,7 +443,7 @@ async fn enqueue_under_a_group_the_caller_belongs_to(pool: PgPool) {
         .unwrap();
 
     // `alice` is a member of the admins group, so she may own the job under it.
-    let token = mock_login_token(&client, addr, "alice").await;
+    let token = mock_login_token(&pool, &client, addr, "alice", true).await;
     let image = register_image(&pool).await;
     let req = image_job_request(
         Some(ADMINS_GROUP_ID),
@@ -539,7 +484,7 @@ async fn enqueue_with_unrelated_owner_is_forbidden(pool: PgPool) {
 
     // `bob` is not a member of any group, and certainly not of a random subject,
     // so he cannot file a job under it.
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     // The unrelated-owner check rejects this (403) before the image is ever
     // looked up, so an unregistered image id is fine here.
     let req = image_job_request(
@@ -570,12 +515,12 @@ async fn restarting_a_job_without_manage_is_forbidden(pool: PgPool) {
         .unwrap();
 
     // A job owned by `alice`; `bob` holds no permission on it.
-    let alice_token = mock_login_token(&client, addr, "alice").await;
+    let alice_token = mock_login_token(&pool, &client, addr, "alice", true).await;
     let alice = whoami(&client, addr, &alice_token).await;
     let alice_tok = latest_token_id(&pool, alice).await;
     let existing = seed_job(&pool, alice, alice_tok, &[]).await;
 
-    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let req = image_job_request(None, JobInitSpec::Restart { job_id: existing }, None);
 
     let resp = client
@@ -597,7 +542,7 @@ async fn enqueue_honors_an_override_timeout(pool: PgPool) {
         .build()
         .unwrap();
 
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let image = register_image(&pool).await;
     let req = image_job_request(
         None,
@@ -649,7 +594,7 @@ async fn canceling_a_queued_job_finalizes_it(pool: PgPool) {
         .unwrap();
 
     // `bob` owns (and so may stop) a queued job.
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let bob = whoami(&client, addr, &token).await;
     let token_id = latest_token_id(&pool, bob).await;
     let job_id = seed_job(&pool, bob, token_id, &[]).await;
@@ -687,12 +632,12 @@ async fn canceling_without_stop_permission_is_forbidden(pool: PgPool) {
         .unwrap();
 
     // `bob` owns the job; `carol` holds no permission on it.
-    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let bob = whoami(&client, addr, &bob_token).await;
     let token_id = latest_token_id(&pool, bob).await;
     let job_id = seed_job(&pool, bob, token_id, &[]).await;
 
-    let carol_token = mock_login_token(&client, addr, "carol").await;
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
     let resp = client
         .delete(format!("http://{addr}/api/v1/jobs/{job_id}"))
         .bearer_auth(&carol_token)
@@ -715,7 +660,7 @@ async fn canceling_a_nonexistent_job_is_forbidden(pool: PgPool) {
         .build()
         .unwrap();
 
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let resp = client
         .delete(format!("http://{addr}/api/v1/jobs/{}", Uuid::new_v4()))
         .bearer_auth(&token)
@@ -735,7 +680,7 @@ async fn owner_reads_own_job_with_secret_redacted(pool: PgPool) {
         .unwrap();
 
     // `bob` owns the job; his login also mints the token it is enqueued under.
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let bob = whoami(&client, addr, &token).await;
     let token_id = latest_token_id(&pool, bob).await;
     let job_id = seed_job(
@@ -787,12 +732,12 @@ async fn admin_reads_any_job(pool: PgPool) {
         .unwrap();
 
     // `bob` owns the job; `alice` (a global admin) reads it.
-    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let bob = whoami(&client, addr, &bob_token).await;
     let token_id = latest_token_id(&pool, bob).await;
     let job_id = seed_job(&pool, bob, token_id, &[]).await;
 
-    let alice_token = mock_login_token(&client, addr, "alice").await;
+    let alice_token = mock_login_token(&pool, &client, addr, "alice", true).await;
     let resp = client
         .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
         .bearer_auth(&alice_token)
@@ -813,12 +758,12 @@ async fn stranger_is_forbidden_from_reading_a_job(pool: PgPool) {
         .unwrap();
 
     // `bob` owns the job; `carol` (a plain user with no grant) is refused.
-    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let bob = whoami(&client, addr, &bob_token).await;
     let token_id = latest_token_id(&pool, bob).await;
     let job_id = seed_job(&pool, bob, token_id, &[]).await;
 
-    let carol_token = mock_login_token(&client, addr, "carol").await;
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
     let resp = client
         .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
         .bearer_auth(&carol_token)
@@ -839,7 +784,7 @@ async fn reading_a_nonexistent_job_is_forbidden(pool: PgPool) {
 
     // A plain user gets 403 (not 404) for a job that does not exist: existence
     // is not leaked.
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let resp = client
         .get(format!("http://{addr}/api/v1/jobs/{}", Uuid::new_v4()))
         .bearer_auth(&token)
@@ -860,7 +805,7 @@ async fn admin_gets_a_subscribe_token_for_any_job(pool: PgPool) {
 
     // `alice` is a global admin, so she can read any job — including one that
     // does not exist as a row, which is fine: the token is job-scoped by id.
-    let token = mock_login_token(&client, addr, "alice").await;
+    let token = mock_login_token(&pool, &client, addr, "alice", true).await;
     let job_id = Uuid::new_v4();
 
     let resp = client
@@ -891,7 +836,7 @@ async fn non_reader_is_forbidden(pool: PgPool) {
         .unwrap();
 
     // `bob` is a plain user with no grant on (and no ownership of) the job.
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let job_id = Uuid::new_v4();
 
     let resp = client
@@ -914,7 +859,7 @@ async fn streaming_disabled_yields_service_unavailable(pool: PgPool) {
         .unwrap();
 
     // Use the admin so authorization passes and we reach the streaming check.
-    let token = mock_login_token(&client, addr, "alice").await;
+    let token = mock_login_token(&pool, &client, addr, "alice", true).await;
     let job_id = Uuid::new_v4();
 
     let resp = client

@@ -13,7 +13,6 @@ use aide::transform::TransformOperation;
 use axum::Json;
 use axum::Router;
 use axum::response::IntoResponse;
-use axum::routing::get;
 use http::StatusCode;
 use tower_http::trace::TraceLayer;
 use treadmill_console::config::{
@@ -23,6 +22,7 @@ use treadmill_console::config::{
 use treadmill_console::serve::AppState as ConsoleAppState;
 use treadmill_rs::api::switchboard::images::{ImageGroupGenerationInfo, ImageGroupInfo, ImageInfo};
 use treadmill_rs::api::switchboard::jobs::EnqueueJobResponse;
+use treadmill_rs::api::switchboard::{LoginResponse, LoginStagedResponse};
 
 pub fn build_router(state: AppState) -> Router<()> {
     // Optionally serve the web console at `/`, on this same listener. Built
@@ -83,17 +83,117 @@ fn embedded_console_router(state: &AppState, cfg: &EmbeddedConsoleConfig) -> Rou
 
 pub fn api_router() -> ApiRouter<AppState> {
     ApiRouter::new()
-        // OAuth login group (plain routes: browser redirects and the callback are
-        // not part of the documented JSON API surface). The {provider} segment
-        // selects a configured provider (e.g. `github`).
-        //  GET /auth/{provider}/login
-        .route("/auth/{provider}/login", get(auth::login))
-        //  GET /auth/{provider}/callback
-        .route("/auth/{provider}/callback", get(auth::callback))
+        // OAuth login group. The {provider} segment selects a configured
+        // provider (e.g. `github`).
+        //  GET /auth/{provider}/login -- start the flow (redirects to provider)
+        .api_route(
+            "/auth/{provider}/login",
+            get_with(auth::login, |o| {
+                doc(o, "startLogin", "Authentication", "Start an OAuth login")
+                    .description(auth::AUTH_LOGIN_ENDPOINT_DOC)
+                    .response_with::<302, (), _>(|r| {
+                        r.description("A redirect to the authentication provider's consent screen.")
+                    })
+                    .response_with::<400, (), _>(|r| {
+                        r.description("The declared return_to is not allowlisted.")
+                    })
+                    .response_with::<404, (), _>(|r| {
+                        r.description("No such provider is configured/enabled.")
+                    })
+            }),
+        )
+        //  GET /auth/{provider}/callback -- provider redirect target
+        .api_route(
+            "/auth/{provider}/callback",
+            get_with(auth::callback, |o| {
+                doc(
+                    o,
+                    "finishLogin",
+                    "Authentication",
+                    "OAuth callback: finish a login",
+                )
+                .description(auth::AUTH_PROVIDER_CALLBACK_ENDPOINT_DOC)
+                .response_with::<200, Json<LoginStagedResponse>, _>(|r| {
+                    r.description("The login is staged; complete it at POST /auth/login/complete.")
+                })
+                .response_with::<302, (), _>(|r| {
+                    r.description(
+                        "The login is staged; redirect to the original `redirect_to` target.",
+                    )
+                })
+                .response_with::<403, (), _>(|r| {
+                    r.description("The identity was denied admission, or the account is locked.")
+                })
+            }),
+        )
         //  GET /auth/providers
-        .route("/auth/providers", get(auth::providers))
+        .api_route(
+            "/auth/providers",
+            get_with(auth::providers, |o| {
+                doc(
+                    o,
+                    "listAuthProviders",
+                    "Authentication",
+                    "List the enabled login methods",
+                )
+            }),
+        )
         //  GET /auth/whoami
-        .route("/auth/whoami", get(auth::whoami))
+        .api_route(
+            "/auth/whoami",
+            get_with(auth::whoami, |o| {
+                doc(
+                    o,
+                    "whoAmI",
+                    "Authentication",
+                    "Get the identity behind the presented token",
+                )
+            }),
+        )
+        // Login-completion step:
+        //  GET  /auth/tos            -- the current ToS text + version to render
+        //  POST /auth/login/complete -- finish a staged login (pending id +
+        //                               one-time secret; today: ToS acceptance)
+        .api_route(
+            "/auth/tos",
+            get_with(auth::tos_info, |o| {
+                doc(
+                    o,
+                    "getTermsOfService",
+                    "Authentication",
+                    "Get the current Terms of Service",
+                )
+            }),
+        )
+        .api_route(
+            "/auth/login/complete",
+            post_with(auth::login_complete, |o| {
+                doc(
+                    o,
+                    "completeLogin",
+                    "Authentication",
+                    "Complete a staged login",
+                )
+                .description(auth::AUTH_LOGIN_COMPLETE_ENDPOINT_DOC)
+                .response_with::<200, Json<LoginResponse>, _>(|r| {
+                    r.description("The login completed; the response carries the session token.")
+                })
+                .response_with::<403, (), _>(|r| r.description("The account is locked."))
+                .response_with::<409, Json<LoginStagedResponse>, _>(|r| {
+                    r.description(
+                        "A required step is missing, or the echoed tos_version is \
+                         not the one in force; the presented pair was consumed and \
+                         the marker carries a fresh one to retry with.",
+                    )
+                })
+                .response_with::<410, (), _>(|r| {
+                    r.description(
+                        "Unknown staged id, wrong secret, or the staged login \
+                         expired or was already used.",
+                    )
+                })
+            }),
+        )
         // job management group
         //  POST /jobs -- enqueue a new job
         //  GET  /jobs -- keyset-paginated listing of readable jobs
@@ -469,6 +569,10 @@ pub fn openapi_spec() -> aide::openapi::OpenApi {
             ..Default::default()
         },
         tags: vec![
+            tag(
+                "Authentication",
+                "Interactive OAuth login, the login-completion step, and token introspection.",
+            ),
             tag("Jobs", "Enqueue, inspect, and terminate jobs."),
             tag("Hosts", "Inspect hosts and their attached targets."),
             tag("Images", "Register and inspect catalog images."),

@@ -20,21 +20,19 @@ use async_trait::async_trait;
 use reqwest::redirect::Policy;
 use sha2::{Digest as _, Sha256};
 use sqlx::PgPool;
-use tokio::net::TcpListener;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::images::{ImageGroupGenerationInfo, ImageGroupInfo, ImageInfo};
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, JobImageRef, JobInfo};
-use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, LoginResponse, WhoAmIResponse};
+use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, WhoAmIResponse};
 use treadmill_rs::image::Digest;
 use treadmill_switchboard::registry::{RegistryClient, RegistryError};
-use treadmill_switchboard::routes::build_router;
 use treadmill_switchboard::serve::AppState;
 
 mod common;
-use common::test_config_mock;
+use common::{mock_login_token, spawn_server, test_config_mock};
 
 // -- canned registry ------------------------------------------------------------
 
@@ -120,21 +118,6 @@ fn image_manifest_bytes(title: &str) -> Vec<u8> {
 const REGISTRY: &str = "registry.example.com:5000";
 const REPO: &str = "u/octocat/ubuntu";
 
-async fn spawn_server(state: AppState) -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let router = build_router(state);
-    tokio::spawn(async move {
-        axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        .unwrap();
-    });
-    addr
-}
-
 /// Spawn the router backed by `registry` and the mock-OAuth config.
 async fn spawn_with_registry(pool: &PgPool, registry: Arc<dyn RegistryClient>) -> SocketAddr {
     let state = AppState::with_registry(pool.clone(), test_config_mock(), registry);
@@ -148,39 +131,6 @@ fn http_client() -> reqwest::Client {
         .redirect(Policy::none())
         .build()
         .unwrap()
-}
-
-/// Drive a full mock login for `identity` and return the issued bearer token.
-async fn mock_login_token(client: &reqwest::Client, addr: SocketAddr, identity: &str) -> String {
-    let login = client
-        .get(format!(
-            "http://{addr}/api/v1/auth/mock/login?identity={identity}"
-        ))
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        login.status().is_redirection(),
-        "mock login should redirect"
-    );
-    let location = login
-        .headers()
-        .get(reqwest::header::LOCATION)
-        .expect("redirect must carry a Location")
-        .to_str()
-        .unwrap()
-        .to_string();
-    let cb = client
-        .get(format!("http://{addr}{location}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(cb.status(), reqwest::StatusCode::OK);
-    cb.json::<LoginResponse>()
-        .await
-        .unwrap()
-        .token
-        .encode_for_http()
 }
 
 /// The authenticated caller's own `user_id`, via `GET /auth/whoami`.
@@ -296,7 +246,7 @@ async fn register_list_and_inspect_image(pool: PgPool) {
     let digest = reg.put(REGISTRY, REPO, image_manifest_bytes("Ubuntu test"));
     let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
     let client = http_client();
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let base = format!("http://{addr}/api/v1");
 
     // POST /images registers the image and reports its single external location.
@@ -364,7 +314,7 @@ async fn rejects_unknown_and_malformed_manifests(pool: PgPool) {
     // An empty registry: nothing staged, so the pull fails (502).
     let addr = spawn_with_registry(&pool, Arc::new(StubRegistry::default())).await;
     let client = http_client();
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let base = format!("http://{addr}/api/v1");
 
     let unknown = Digest::from_sha256([7u8; 32]);
@@ -383,7 +333,7 @@ async fn rejects_unknown_and_malformed_manifests(pool: PgPool) {
     let mut reg = StubRegistry::default();
     let bogus = reg.put(REGISTRY, REPO, br#"{"schemaVersion":2,"mediaType":"x","config":{"mediaType":"y","digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","size":0},"layers":[]}"#.to_vec());
     let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", false).await;
     let base = format!("http://{addr}/api/v1");
     let resp = client
         .post(format!("{base}/images"))
@@ -408,7 +358,7 @@ async fn create_group_append_generations_and_inspect(pool: PgPool) {
     let m1 = reg.put(REGISTRY, REPO, image_manifest_bytes("member 1"));
     let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
     let client = http_client();
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let base = format!("http://{addr}/api/v1");
 
     let img0 = register_image(&client, &base, &token, &m0).await;
@@ -505,7 +455,7 @@ async fn create_group_append_generations_and_inspect(pool: PgPool) {
 async fn create_generation_rejects_an_unregistered_image(pool: PgPool) {
     let addr = spawn_with_registry(&pool, Arc::new(StubRegistry::default())).await;
     let client = http_client();
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let base = format!("http://{addr}/api/v1");
 
     let group: ImageGroupInfo = client
@@ -537,7 +487,7 @@ async fn create_generation_rejects_an_unregistered_image(pool: PgPool) {
 async fn image_group_permissions_are_enforced(pool: PgPool) {
     let addr = spawn_with_registry(&pool, Arc::new(StubRegistry::default())).await;
     let client = http_client();
-    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let base = format!("http://{addr}/api/v1");
 
     // `bob` owns a group; `carol` initially has no access to it.
@@ -552,7 +502,7 @@ async fn image_group_permissions_are_enforced(pool: PgPool) {
         .await
         .unwrap();
 
-    let carol_token = mock_login_token(&client, addr, "carol").await;
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
     let carol = whoami(&client, addr, &carol_token).await;
 
     // Carol cannot even see the group (404, not 403 — existence is not leaked).
@@ -620,7 +570,7 @@ async fn image_group_events_feed_records_acl_and_catalog_changes(pool: PgPool) {
     let m = reg.put(REGISTRY, REPO, image_manifest_bytes("member"));
     let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
     let client = http_client();
-    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let base = format!("http://{addr}/api/v1");
 
     // Exercise the whole catalog/ACL surface on one group.
@@ -628,7 +578,7 @@ async fn image_group_events_feed_records_acl_and_catalog_changes(pool: PgPool) {
     let group = create_group(&client, &base, &bob_token, "audited", false).await;
     add_generation(&client, &base, &bob_token, group.id, img.id).await;
 
-    let carol_token = mock_login_token(&client, addr, "carol").await;
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
     let carol = whoami(&client, addr, &carol_token).await;
 
     let grant = client
@@ -702,7 +652,7 @@ async fn enqueue_image_group_checks_use_and_freezes_generation(pool: PgPool) {
     let m = reg.put(REGISTRY, REPO, image_manifest_bytes("member"));
     let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
     let client = http_client();
-    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let base = format!("http://{addr}/api/v1");
 
     let img = register_image(&client, &base, &bob_token, &m).await;
@@ -740,7 +690,7 @@ async fn enqueue_image_group_checks_use_and_freezes_generation(pool: PgPool) {
 
     // `carol`, with no access to the private group, cannot enqueue against it
     // (403, existence not leaked).
-    let carol_token = mock_login_token(&client, addr, "carol").await;
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
     let resp = enqueue_group(&client, &base, &carol_token, group.id, None).await;
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 }
@@ -752,7 +702,7 @@ async fn public_grants_use_to_everyone(pool: PgPool) {
     let m = reg.put(REGISTRY, REPO, image_manifest_bytes("member"));
     let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
     let client = http_client();
-    let bob_token = mock_login_token(&client, addr, "bob").await;
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let base = format!("http://{addr}/api/v1");
 
     let img = register_image(&client, &base, &bob_token, &m).await;
@@ -762,7 +712,7 @@ async fn public_grants_use_to_everyone(pool: PgPool) {
     add_generation(&client, &base, &bob_token, group.id, img.id).await;
 
     // `carol` holds no grant, yet a public group is visible and usable to her.
-    let carol_token = mock_login_token(&client, addr, "carol").await;
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
     let resp = client
         .get(format!("{base}/image-groups/{}", group.id))
         .bearer_auth(&carol_token)

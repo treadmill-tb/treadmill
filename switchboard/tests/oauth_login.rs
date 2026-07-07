@@ -83,8 +83,9 @@ async fn spawn_server(state: AppState) -> SocketAddr {
 }
 
 /// Run one full login: start the flow (persisting the CSRF state), read that
-/// state back out of the database, then drive the callback and return the
-/// issued session.
+/// state back out of the database, drive the callback — which stages the
+/// login — and claim the staged pair at the completion endpoint to receive
+/// the session.
 async fn run_login(client: &reqwest::Client, addr: SocketAddr, pool: &PgPool) -> LoginResponse {
     let login_resp = client
         .get(format!("http://{addr}/api/v1/auth/github/login"))
@@ -112,9 +113,28 @@ async fn run_login(client: &reqwest::Client, addr: SocketAddr, pool: &PgPool) ->
     assert_eq!(
         cb_resp.status(),
         reqwest::StatusCode::OK,
-        "callback should succeed"
+        "callback should stage the login"
     );
-    cb_resp.json().await.unwrap()
+    let body: serde_json::Value = cb_resp.json().await.unwrap();
+
+    // Claim the staged login, echoing the offered ToS version (null when the
+    // staging requires no consent — an existing user with a current ToS).
+    let complete = client
+        .post(format!("http://{addr}/api/v1/auth/login/complete"))
+        .json(&serde_json::json!({
+            "staged_id": body["staged_id"],
+            "staged_secret": body["staged_secret"],
+            "tos_version": body["tos_version"],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        complete.status(),
+        reqwest::StatusCode::OK,
+        "completing the login should succeed"
+    );
+    complete.json().await.unwrap()
 }
 
 #[sqlx::test]
@@ -122,6 +142,17 @@ async fn run_login(client: &reqwest::Client, addr: SocketAddr, pool: &PgPool) ->
 async fn github_login_provisions_and_reconciles(pool: PgPool) {
     let gh = MockServer::start().await;
     mount_github(&gh, &[42]).await;
+
+    // The admission gate now guards new-user registration; allow-list the canned
+    // "octocat" identity so it can register through the normal flow. (Org 42 is
+    // an auto-group source below, a separate concern from admission.)
+    sqlx::query(
+        "insert into tml_switchboard.login_allowlist (provider, kind, external_id, comment) \
+         values ('github', 'user', '12345', 'test fixture')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Seed a group with a GitHub-org auto-source for org id 42.
     let group_id = Uuid::new_v4();

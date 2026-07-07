@@ -44,7 +44,12 @@ CREATE TABLE tml_switchboard.users (
     username text NOT NULL UNIQUE,
     full_name text,
     avatar_url text,
-    locked bool NOT NULL DEFAULT FALSE
+    locked bool NOT NULL DEFAULT FALSE,
+    -- ToS acceptance. NULL version = never accepted. A user whose accepted
+    -- version is below the configured current version must re-accept before a
+    -- token is issued (their account is not otherwise gated).
+    tos_accepted_version integer,
+    tos_accepted_at timestamp with time zone
 );
 
 
@@ -121,6 +126,18 @@ INSERT INTO
     tml_switchboard.subjects (subject_id, kind)
 VALUES
     ('00000000-0000-0000-0000-000000000002', 'system');
+
+
+-- The anonymous actor.
+--
+-- A `system` subject used as the audit `actor_id` for events raised about an
+-- UNauthenticated external party who has no local subject -- e.g. a login
+-- denied by the admission gate before any user record exists. Never logs in,
+-- owns nothing.
+INSERT INTO
+    tml_switchboard.subjects (subject_id, kind)
+VALUES
+    ('00000000-0000-0000-0000-000000000003', 'system');
 
 
 -- =============================================================================
@@ -285,8 +302,77 @@ CREATE TABLE tml_switchboard.oauth_flows (
     state text NOT NULL PRIMARY KEY,
     provider text NOT NULL,
     pkce_verifier text,
+    -- Where the callback sends the browser (with the single-use staged pair in
+    -- the query) for a flow a browser frontend initiated. Validated against the
+    -- configured allowlist when the flow starts; NULL for programmatic flows,
+    -- which receive JSON from the callback instead.
+    return_to text,
     created_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
     expires_at timestamp with time zone NOT NULL
+);
+
+
+-- =============================================================================
+-- LOGIN ADMISSION
+-- =============================================================================
+--
+-- The admission allow-list: who may create a new local account via interactive
+-- OAuth login. Consulted ONLY on the new-user path (see routes/auth.rs); existing
+-- users are never gated. Hand-managed by operators via SQL; the switchboard only
+-- ever reads it. Two entry kinds in one table:
+--   kind='user' -> external_id is a provider_user_id (a specific identity)
+--   kind='org'  -> external_id is a provider org id (any current member admitted)
+-- Orthogonal to group_auto_sources (grouping/grants); this governs admission only.
+CREATE TABLE tml_switchboard.login_allowlist (
+    provider text NOT NULL,
+    kind text NOT NULL,
+    external_id text NOT NULL,
+    comment text,
+    added_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (provider, kind, external_id),
+    CONSTRAINT valid_allowlist_kind CHECK (kind IN ('user', 'org'))
+);
+
+
+-- Short-lived server-side staging for a login whose identity the callback has
+-- verified (e.g., token exchanged with the OAuth provider). EVERY interactive
+-- login stages: `POST /auth/login/complete` is the sole point that mints a
+-- session token, by consuming this row. A login may still require completion
+-- steps (ToS acceptance) before it can be claimed, or be immediately claimable.
+--
+-- Consume-once: deleted in the same txn that provisions the user (new) or
+-- records login (existing). Holds the derived identity and org list--the OAuth
+-- access token is already discarded at this point and never written to the DB.
+--
+-- identity IS NOT NULL -> a brand-new user awaiting first acceptance
+-- existing_user_id IS NOT NULL -> an existing user (re-accepting a bumped ToS,
+--                                 or ready to claim)
+--
+-- To exchange a staged login (with the required additional information such as
+-- ToS acceptance) to a proper auth token, the user has to present the `secret`
+-- which hashes to `secret_hash`.
+CREATE TABLE tml_switchboard.staged_logins (
+    id uuid NOT NULL PRIMARY KEY,
+    -- Salted argon2id hash (PHC string) of the one-time completion secret that
+    -- accompanies the id across the browser round trip.
+    secret_hash text NOT NULL,
+    provider text NOT NULL,
+    identity jsonb,
+    existing_user_id uuid REFERENCES tml_switchboard.users (subject_id) ON DELETE CASCADE,
+    org_ids TEXT[] NOT NULL DEFAULT '{}',
+    -- Inherited from the initiating flow (see oauth_flows.return_to): where a
+    -- browser-form completion sends the browser next. NULL for programmatic
+    -- flows.
+    return_to text,
+    -- The browser's context, captured at the OAuth callback, so the session
+    -- token minted later at completion is stamped with the logging-in client's
+    -- address/agent rather than the (server-side) completing caller's.
+    user_agent text,
+    created_ip text,
+    created_port integer,
+    created_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
+    expires_at timestamp with time zone NOT NULL,
+    CONSTRAINT staged_kind CHECK ((identity IS NULL) <> (existing_user_id IS NULL))
 );
 
 
