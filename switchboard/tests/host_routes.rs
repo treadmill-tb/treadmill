@@ -8,20 +8,17 @@
 //! Queries here use sqlx's runtime API (not the `query!` macros), so the test
 //! needs no entry in the offline `.sqlx` cache.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use sqlx::PgPool;
-use tokio::net::TcpListener;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::hosts::HostInfo;
 use treadmill_switchboard::registry::OciRegistryClient;
-use treadmill_switchboard::routes::build_router;
 use treadmill_switchboard::serve::AppState;
 
 mod common;
-use common::{mock_login_token, test_config_mock};
+use common::{mock_login_token, spawn_server, test_config_mock};
 
 fn test_state(pool: PgPool) -> AppState {
     AppState::with_components(
@@ -30,21 +27,6 @@ fn test_state(pool: PgPool) -> AppState {
         Arc::new(OciRegistryClient::new()),
         None,
     )
-}
-
-async fn spawn_server(state: AppState) -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let router = build_router(state);
-    tokio::spawn(async move {
-        axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        .unwrap();
-    });
-    addr
 }
 
 /// Insert a live host (heartbeat now) with `tags`, plus one target `dut0` with
@@ -97,13 +79,13 @@ async fn lists_hosts_with_tags_targets_and_liveness(pool: PgPool) {
     )
     .await;
 
-    let addr = spawn_server(test_state(pool)).await;
+    let addr = spawn_server(test_state(pool.clone())).await;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
     // Any authenticated user may list; `bob` is a plain (non-admin) user.
-    let token = mock_login_token(&client, addr, "bob").await;
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
 
     let resp = client
         .get(format!("http://{addr}/api/v1/hosts"))
