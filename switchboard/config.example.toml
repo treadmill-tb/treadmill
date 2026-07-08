@@ -7,6 +7,10 @@ auth.password = ""
 
 [server]
 bind_address = "0.0.0.0:8081"
+# Browser origins allowed to call the API cross-origin (a separately-hosted
+# web console). Exact scheme://host[:port] matches, or a single "*" entry.
+# Empty/absent emits no CORS headers.
+# cors_allowed_origins = ["https://console.example"]
 
 [service]
 # Terms of Service version currently in force. New users accept at this version;

@@ -42,6 +42,7 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
         server: ServerConfig {
             bind_address: "127.0.0.1:0".parse().unwrap(),
             trusted_proxy_headers: Vec::new(),
+            cors_allowed_origins: Vec::new(),
         },
         service: ServiceConfig {
             current_tos_version: 1,
@@ -66,7 +67,6 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
             mock: None,
             return_to_allowlist: Vec::new(),
         },
-        console: None,
         log_streaming: None,
     }
 }

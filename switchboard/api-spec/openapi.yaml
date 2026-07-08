@@ -346,12 +346,17 @@ paths:
             Connection credentials for tailing/replaying a job's console logs over NATS,
             returned by `POST /jobs/{id}/nats-log-token`.
 
-            The token is a short-lived **bearer** user JWT scoped to *subscribe* to this
-            job's log subjects (`subject`); the client connects to `nats_url` with the
-            token string alone (no nkey seed). The token only needs to be valid at
-            connect time — an established NATS connection is not dropped when the JWT
-            expires — so a client re-requests credentials when it next reconnects, after
-            roughly `expires_in_secs`.
+            The token is a short-lived **bearer** user JWT scoped to this job only: it
+            may *subscribe* to the job's log subjects (`subject`) and its own inboxes
+            (`inbox_prefix`), and *publish* to the slice of the JetStream API needed to
+            run an ordered consumer against the job's stream (`stream`) — enough to
+            replay stored history and then follow live. The client connects with the
+            token string alone (no nkey seed) to whichever endpoint suits its transport:
+            `websocket_url` for browsers, `nats_url` for native TCP clients. The same
+            token authorizes either. The token only needs to be valid at connect time —
+            an established NATS connection is not dropped when the JWT expires — so a
+            client re-requests credentials when it next reconnects, after roughly
+            `expires_in_secs`.
           content:
             application/json:
               schema:
@@ -2394,12 +2399,17 @@ components:
         Connection credentials for tailing/replaying a job's console logs over NATS,
         returned by `POST /jobs/{id}/nats-log-token`.
 
-        The token is a short-lived **bearer** user JWT scoped to *subscribe* to this
-        job's log subjects (`subject`); the client connects to `nats_url` with the
-        token string alone (no nkey seed). The token only needs to be valid at
-        connect time — an established NATS connection is not dropped when the JWT
-        expires — so a client re-requests credentials when it next reconnects, after
-        roughly `expires_in_secs`.
+        The token is a short-lived **bearer** user JWT scoped to this job only: it
+        may *subscribe* to the job's log subjects (`subject`) and its own inboxes
+        (`inbox_prefix`), and *publish* to the slice of the JetStream API needed to
+        run an ordered consumer against the job's stream (`stream`) — enough to
+        replay stored history and then follow live. The client connects with the
+        token string alone (no nkey seed) to whichever endpoint suits its transport:
+        `websocket_url` for browsers, `nats_url` for native TCP clients. The same
+        token authorizes either. The token only needs to be valid at connect time —
+        an established NATS connection is not dropped when the JWT expires — so a
+        client re-requests credentials when it next reconnects, after roughly
+        `expires_in_secs`.
       type: object
       properties:
         expires_in_secs:
@@ -2409,8 +2419,31 @@ components:
           type: integer
           format: uint64
           minimum: 0
+        inbox_prefix:
+          description: |-
+            Inbox prefix the client **must** configure on its connection
+            (`_INBOX.logs-<job-id>`): the token's subscribe permission covers only
+            inboxes under this prefix, not the account-default `_INBOX.>`.
+          type: string
+        jetstream_domain:
+          description: |-
+            The server's JetStream domain, when it is configured with one; the
+            client must address the JetStream API through it. Usually absent.
+          type:
+          - string
+          - 'null'
         nats_url:
-          description: NATS client URL to connect to (e.g. `nats://nats.example:4222`).
+          description: |-
+            Plain-TCP NATS client URL (e.g. `nats://nats.example:4222`), for native
+            clients that speak the binary protocol. Nullable: a deployment may
+            choose to expose only the WebSocket endpoint publicly, in which case
+            only `websocket_url` is returned. Browsers cannot use this — they must
+            use `websocket_url`.
+          type:
+          - string
+          - 'null'
+        stream:
+          description: 'JetStream stream holding this job''s logs: `logs-<job-id>`.'
           type: string
         subject:
           description: |-
@@ -2418,11 +2451,21 @@ components:
             `logs.<job-id>.>`.
           type: string
         token:
-          description: Bearer user JWT authorizing subscribe on `subject`.
+          description: Bearer user JWT authorizing the scope described above.
           type: string
+        websocket_url:
+          description: |-
+            NATS **WebSocket** URL (e.g. `wss://nats.example:443`), for browser
+            clients, which cannot speak the plain TCP protocol. Absent when the
+            deployment does not expose a WebSocket listener; a browser client cannot
+            stream logs against such a deployment.
+          type:
+          - string
+          - 'null'
       required:
-      - nats_url
       - subject
+      - stream
+      - inbox_prefix
       - token
       - expires_in_secs
     OAuthProviderInfo:

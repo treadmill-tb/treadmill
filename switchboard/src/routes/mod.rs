@@ -5,7 +5,7 @@ mod jobs;
 mod params;
 mod users;
 
-use crate::config::EmbeddedConsoleConfig;
+use crate::config::ServerConfig;
 use crate::serve::AppState;
 use aide::axum::ApiRouter;
 use aide::axum::routing::{delete_with, get_with, post_with, put_with};
@@ -13,72 +13,63 @@ use aide::transform::TransformOperation;
 use axum::Json;
 use axum::Router;
 use axum::response::IntoResponse;
-use http::StatusCode;
+use http::{HeaderValue, Method, StatusCode, header};
+use std::time::Duration;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
-use treadmill_console::config::{
-    ConsoleConfig, ServerConfig as ConsoleServerConfig,
-    SwitchboardConfig as ConsoleSwitchboardConfig,
-};
-use treadmill_console::serve::AppState as ConsoleAppState;
 use treadmill_rs::api::switchboard::images::{ImageGroupGenerationInfo, ImageGroupInfo, ImageInfo};
 use treadmill_rs::api::switchboard::jobs::EnqueueJobResponse;
 use treadmill_rs::api::switchboard::{LoginResponse, LoginStagedResponse};
 
 pub fn build_router(state: AppState) -> Router<()> {
-    // Optionally serve the web console at `/`, on this same listener. Built
-    // before `state` is moved into the API router below.
-    let console = state
-        .config()
-        .console
-        .as_ref()
-        .filter(|c| c.enabled)
-        .map(|c| embedded_console_router(&state, c));
+    // CORS lets the separately-hosted web console (a browser SPA on another
+    // origin) call the API; entries come from `server.cors_allowed_origins`.
+    let mut api = api_router().with_state(state.clone());
+    if let Some(cors) = cors_layer(&state.config().server) {
+        api = api.layer(cors);
+    }
 
-    let mut router: Router<()> = ApiRouter::new()
+    ApiRouter::new()
         // -- INSERT ROUTES HERE --
-        .nest_api_service("/api/v1", api_router().with_state(state.clone()))
+        .nest_api_service("/api/v1", api)
         // utility
         .fallback(not_found)
         .with_state(state)
         .layer(TraceLayer::new_for_http())
-        .into();
-
-    // Mount the console at the root, next to `/api/v1`. The API was built with a
-    // custom `not_found` fallback, which is preserved across the merge; the
-    // console brings only routes (its default 404 yields to ours).
-    if let Some(console) = console {
-        router = router.merge(console);
-    }
-    router
+        .into()
 }
 
-/// Build the embedded console's router, pointed back at this switchboard.
-///
-/// The console is an HTTP client of the switchboard API even when embedded;
-/// `api_base_url` therefore defaults to a loopback URL for this very process, so
-/// the only real difference from running the console separately is that it
-/// shares this listener.
-fn embedded_console_router(state: &AppState, cfg: &EmbeddedConsoleConfig) -> Router {
-    let bind_address = state.config().server.bind_address;
-    let loopback = format!("http://127.0.0.1:{}", bind_address.port());
+/// CORS layer for the API, or `None` (no CORS headers) when no origin is
+/// configured. The entries were validated at config load; `"*"` allows any
+/// origin. The layer also answers preflight `OPTIONS` requests itself.
+fn cors_layer(server: &ServerConfig) -> Option<CorsLayer> {
+    let origins = &server.cors_allowed_origins;
+    if origins.is_empty() {
+        return None;
+    }
 
-    let console_config = ConsoleConfig {
-        server: ConsoleServerConfig {
-            // The console does not bind its own listener when embedded (this
-            // process owns it); the value is inert, kept only because the type
-            // requires it. The public URL's scheme drives the cookie Secure flag.
-            bind_address,
-            public_base_url: cfg
-                .public_base_url
-                .clone()
-                .unwrap_or_else(|| loopback.clone()),
-        },
-        switchboard: ConsoleSwitchboardConfig {
-            base_url: cfg.api_base_url.clone().unwrap_or(loopback),
-        },
+    let allow_origin = if origins.iter().any(|o| o == "*") {
+        AllowOrigin::any()
+    } else {
+        AllowOrigin::list(origins.iter().map(|o| {
+            o.parse::<HeaderValue>()
+                .unwrap_or_else(|_| panic!("unvalidated CORS origin: {o:?}"))
+        }))
     };
 
-    treadmill_console::routes::build_router(ConsoleAppState::new(console_config))
+    Some(
+        CorsLayer::new()
+            .allow_origin(allow_origin)
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PATCH,
+                Method::PUT,
+                Method::DELETE,
+            ])
+            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+            .max_age(Duration::from_secs(3600)),
+    )
 }
 
 pub fn api_router() -> ApiRouter<AppState> {

@@ -54,6 +54,7 @@ fn test_log_streaming() -> LogStreaming {
     LogStreaming {
         config: LogStreamingConfig {
             nats_url: "nats://nats.example:4222".to_string(),
+            websocket_url: Some("wss://nats.example:443".to_string()),
             jetstream_domain: None,
             account_seed: account.seed().expect("account seed"),
         },
@@ -796,7 +797,7 @@ async fn reading_a_nonexistent_job_is_forbidden(pool: PgPool) {
 
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-async fn admin_gets_a_subscribe_token_for_any_job(pool: PgPool) {
+async fn admin_gets_a_read_token_for_any_job(pool: PgPool) {
     let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
     let client = reqwest::Client::builder()
         .redirect(Policy::none())
@@ -817,8 +818,17 @@ async fn admin_gets_a_subscribe_token_for_any_job(pool: PgPool) {
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
 
     let creds: NatsLogStreamCredentials = resp.json().await.unwrap();
-    assert_eq!(creds.nats_url, "nats://nats.example:4222");
+    // Both endpoints pass through straight from config — no fallback, so the
+    // client picks by transport. The token authorizes either.
+    assert_eq!(creds.nats_url.as_deref(), Some("nats://nats.example:4222"));
+    assert_eq!(
+        creds.websocket_url.as_deref(),
+        Some("wss://nats.example:443")
+    );
     assert_eq!(creds.subject, format!("logs.{job_id}.>"));
+    assert_eq!(creds.stream, format!("logs-{job_id}"));
+    assert_eq!(creds.inbox_prefix, format!("_INBOX.logs-{job_id}"));
+    assert_eq!(creds.jetstream_domain, None);
     assert_eq!(creds.expires_in_secs, 300);
     assert!(!creds.token.is_empty(), "a token must be issued");
     // Sanity: a JWT has three dot-separated segments. (The token's scope/shape

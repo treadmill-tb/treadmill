@@ -101,20 +101,46 @@ impl std::fmt::Debug for JobParameter {
 /// Connection credentials for tailing/replaying a job's console logs over NATS,
 /// returned by `POST /jobs/{id}/nats-log-token`.
 ///
-/// The token is a short-lived **bearer** user JWT scoped to *subscribe* to this
-/// job's log subjects (`subject`); the client connects to `nats_url` with the
-/// token string alone (no nkey seed). The token only needs to be valid at
-/// connect time — an established NATS connection is not dropped when the JWT
-/// expires — so a client re-requests credentials when it next reconnects, after
-/// roughly `expires_in_secs`.
+/// The token is a short-lived **bearer** user JWT scoped to this job only: it
+/// may *subscribe* to the job's log subjects (`subject`) and its own inboxes
+/// (`inbox_prefix`), and *publish* to the slice of the JetStream API needed to
+/// run an ordered consumer against the job's stream (`stream`) — enough to
+/// replay stored history and then follow live. The client connects with the
+/// token string alone (no nkey seed) to whichever endpoint suits its transport:
+/// `websocket_url` for browsers, `nats_url` for native TCP clients. The same
+/// token authorizes either. The token only needs to be valid at connect time —
+/// an established NATS connection is not dropped when the JWT expires — so a
+/// client re-requests credentials when it next reconnects, after roughly
+/// `expires_in_secs`.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct NatsLogStreamCredentials {
-    /// NATS client URL to connect to (e.g. `nats://nats.example:4222`).
-    pub nats_url: String,
+    /// Plain-TCP NATS client URL (e.g. `nats://nats.example:4222`), for native
+    /// clients that speak the binary protocol. Nullable: a deployment may
+    /// choose to expose only the WebSocket endpoint publicly, in which case
+    /// only `websocket_url` is returned. Browsers cannot use this — they must
+    /// use `websocket_url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nats_url: Option<String>,
+    /// NATS **WebSocket** URL (e.g. `wss://nats.example:443`), for browser
+    /// clients, which cannot speak the plain TCP protocol. Absent when the
+    /// deployment does not expose a WebSocket listener; a browser client cannot
+    /// stream logs against such a deployment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub websocket_url: Option<String>,
     /// Subject wildcard covering all of this job's log channels:
     /// `logs.<job-id>.>`.
     pub subject: String,
-    /// Bearer user JWT authorizing subscribe on `subject`.
+    /// JetStream stream holding this job's logs: `logs-<job-id>`.
+    pub stream: String,
+    /// Inbox prefix the client **must** configure on its connection
+    /// (`_INBOX.logs-<job-id>`): the token's subscribe permission covers only
+    /// inboxes under this prefix, not the account-default `_INBOX.>`.
+    pub inbox_prefix: String,
+    /// The server's JetStream domain, when it is configured with one; the
+    /// client must address the JetStream API through it. Usually absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jetstream_domain: Option<String>,
+    /// Bearer user JWT authorizing the scope described above.
     pub token: String,
     /// Seconds until the token's `exp`; re-request credentials after this
     /// elapses (only needed to open a *new* connection).

@@ -172,20 +172,13 @@ let
         "cli"
         "treadmill-rs"
       ];
-      # `swx` can embed the web console, so its compile touches the console
-      # crate too (and treadmill-rs, which both share).
       swx = {
         members = [
           "switchboard"
           "treadmill-rs"
-          "console"
         ];
         extra = [ switchboardData ];
       };
-      tml-console.members = [
-        "console"
-        "treadmill-rs"
-      ];
       # Producer-side OCI layout assemble + validate tool.
       image-util.members = [
         "images/util"

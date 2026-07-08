@@ -64,18 +64,41 @@ pub fn subject_scope(job_id: Uuid) -> String {
 ///
 /// Stream names may not contain spaces, tabs, or `.` characters, so the dotted
 /// subject prefix cannot be reused verbatim; we use `logs-<job-id>` (the UUID's
-/// hyphens are permitted).
-fn stream_name(job_id: Uuid) -> String {
+/// hyphens are permitted). Returned to read clients so the naming convention
+/// stays server-owned.
+pub fn stream_name(job_id: Uuid) -> String {
     format!("logs-{job_id}")
 }
 
-/// Which direction a minted token authorizes on a job's subjects.
+/// The inbox prefix a read client must use for its request/reply inboxes:
+/// `_INBOX.logs-<job-id>`.
+///
+/// Read tokens may not subscribe to the account-wide `_INBOX.>` — other users'
+/// JetStream API replies carry other jobs' log data — so each token is granted
+/// only this per-job prefix, and the client sets it as its connection's inbox
+/// prefix. Returned to read clients alongside the token.
+pub fn inbox_prefix(job_id: Uuid) -> String {
+    format!("_INBOX.logs-{job_id}")
+}
+
+/// The JetStream API subject prefix: `$JS.API`, or `$JS.<domain>.API` when the
+/// server is configured with a JetStream domain.
+fn jetstream_api_prefix(config: &LogStreamingConfig) -> String {
+    match &config.jetstream_domain {
+        Some(domain) => format!("$JS.{domain}.API"),
+        None => "$JS.API".to_string(),
+    }
+}
+
+/// What a minted token authorizes on a job's subjects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenScope {
     /// Publish only — the supervisor writing this job's console output.
     Publish,
-    /// Subscribe only — a read client tailing/replaying this job's logs.
-    Subscribe,
+    /// Read — a client tailing and replaying this job's logs: subscribe on the
+    /// log subjects plus the job-scoped slice of the JetStream API needed to
+    /// run an ordered consumer against the job's stream (replay-then-follow).
+    Read,
 }
 
 impl TokenScope {
@@ -83,7 +106,7 @@ impl TokenScope {
     fn label(self) -> &'static str {
         match self {
             TokenScope::Publish => "pub",
-            TokenScope::Subscribe => "sub",
+            TokenScope::Read => "read",
         }
     }
 }
@@ -129,7 +152,28 @@ pub fn mint_token(
 
     token = match scope {
         TokenScope::Publish => token.allow_publish(scope_subject),
-        TokenScope::Subscribe => token.allow_subscribe(scope_subject),
+        TokenScope::Read => {
+            // Subscribe on the job's log subjects, plus the job-scoped slice
+            // of the JetStream API a client needs to run an ordered consumer
+            // against the job's stream: STREAM.INFO (byte/sequence counts for
+            // computing a bounded replay start), CONSUMER.CREATE (both the
+            // bare legacy form and the named form with consumer-name/filter
+            // suffix), and INFO / MSG.NEXT (ordered consumers are pull-based)
+            // / DELETE for the created consumer. API replies arrive on the
+            // client's inboxes, restricted to the per-job prefix — never the
+            // account-wide `_INBOX.>`.
+            let api = jetstream_api_prefix(config);
+            let stream = stream_name(job_id);
+            token
+                .allow_subscribe(scope_subject)
+                .allow_subscribe(format!("{}.>", inbox_prefix(job_id)))
+                .allow_publish(format!("{api}.STREAM.INFO.{stream}"))
+                .allow_publish(format!("{api}.CONSUMER.CREATE.{stream}"))
+                .allow_publish(format!("{api}.CONSUMER.CREATE.{stream}.>"))
+                .allow_publish(format!("{api}.CONSUMER.INFO.{stream}.>"))
+                .allow_publish(format!("{api}.CONSUMER.MSG.NEXT.{stream}.>"))
+                .allow_publish(format!("{api}.CONSUMER.DELETE.{stream}.>"))
+        }
     };
 
     if let Some(ttl) = expires_in {
@@ -305,6 +349,7 @@ mod tests {
         let account = KeyPair::new_account();
         LogStreamingConfig {
             nats_url: "nats://nats.example:4222".to_string(),
+            websocket_url: None,
             jetstream_domain: None,
             account_seed: account.seed().expect("account seed"),
         }
@@ -380,23 +425,68 @@ mod tests {
     }
 
     #[test]
-    fn read_token_is_sub_scoped_and_expiring() {
+    fn read_token_is_job_scoped_and_expiring() {
         let config = test_config();
         let job_id = Uuid::new_v4();
 
         let jwt = mint_token(
             &config,
             job_id,
-            TokenScope::Subscribe,
+            TokenScope::Read,
             Some(Duration::from_secs(300)),
         )
         .expect("mint");
         let claims = decode_claims(&jwt);
 
         assert_eq!(claims["nats"]["bearer_token"], true);
-        assert_eq!(allow(&claims, "sub"), vec![subject_scope(job_id)]);
-        assert!(allow(&claims, "pub").is_empty());
+
+        // Subscribe: the job's log subjects plus the job's own inbox prefix —
+        // never the account-wide `_INBOX.>` (other users' API replies carry
+        // other jobs' log data).
+        assert_eq!(
+            allow(&claims, "sub"),
+            vec![subject_scope(job_id), format!("{}.>", inbox_prefix(job_id))]
+        );
+
+        // Publish: exactly the job-scoped JetStream API slice an ordered
+        // consumer needs, rooted in this job's stream name.
+        let stream = stream_name(job_id);
+        assert_eq!(
+            allow(&claims, "pub"),
+            vec![
+                format!("$JS.API.STREAM.INFO.{stream}"),
+                format!("$JS.API.CONSUMER.CREATE.{stream}"),
+                format!("$JS.API.CONSUMER.CREATE.{stream}.>"),
+                format!("$JS.API.CONSUMER.INFO.{stream}.>"),
+                format!("$JS.API.CONSUMER.MSG.NEXT.{stream}.>"),
+                format!("$JS.API.CONSUMER.DELETE.{stream}.>"),
+            ]
+        );
+
         assert!(claims.get("exp").is_some(), "read token must expire");
+    }
+
+    #[test]
+    fn read_token_addresses_the_configured_jetstream_domain() {
+        let config = LogStreamingConfig {
+            jetstream_domain: Some("hub".to_string()),
+            ..test_config()
+        };
+        let job_id = Uuid::new_v4();
+
+        let jwt = mint_token(&config, job_id, TokenScope::Read, None).expect("mint");
+        let claims = decode_claims(&jwt);
+
+        // With a domain, every JetStream API grant goes through
+        // `$JS.<domain>.API` instead of `$JS.API`.
+        let pub_allow = allow(&claims, "pub");
+        assert!(!pub_allow.is_empty());
+        for subject in &pub_allow {
+            assert!(
+                subject.starts_with("$JS.hub.API."),
+                "expected domain-prefixed API subject, got {subject}"
+            );
+        }
     }
 
     #[test]
@@ -429,6 +519,7 @@ mod tests {
     fn a_bad_seed_is_rejected() {
         let config = LogStreamingConfig {
             nats_url: "nats://nats.example:4222".to_string(),
+            websocket_url: None,
             jetstream_domain: None,
             account_seed: "not-a-real-seed".to_string(),
         };
@@ -504,6 +595,39 @@ mod tests {
             }
             panic!("nats-server did not become ready");
         }
+
+        /// Like [`NatsServer::start`], but from a rendered config file
+        /// (`render(port, store_dir)`), for servers with auth. Readiness is
+        /// polled with `ready_connect` since anonymous connects are rejected
+        /// once accounts are configured.
+        async fn start_with_config(
+            bin: &std::path::Path,
+            render: impl FnOnce(u16, &str) -> String,
+            ready_connect: async_nats::ConnectOptions,
+        ) -> Self {
+            let store =
+                std::env::temp_dir().join(format!("tml-switchboard-nats-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&store).expect("create store dir");
+            let port = free_port();
+            let conf_path = store.join("server.conf");
+            std::fs::write(&conf_path, render(port, store.to_str().unwrap()))
+                .expect("write server config");
+            let child = std::process::Command::new(bin)
+                .arg("-c")
+                .arg(&conf_path)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn nats-server");
+            let server = NatsServer { child, port, store };
+            for _ in 0..100 {
+                if ready_connect.clone().connect(server.url()).await.is_ok() {
+                    return server;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("nats-server did not become ready");
+        }
     }
 
     #[tokio::test]
@@ -538,5 +662,161 @@ mod tests {
         let config = &stream.cached_info().config;
         assert_eq!(config.subjects, vec![subject_scope(job_id)]);
         assert_eq!(config.max_age, Duration::ZERO);
+    }
+
+    /// The read token's granted subject set must be *sufficient* for the web
+    /// console's bounded replay-then-follow: STREAM.INFO for the start-seq
+    /// computation, an ordered consumer over the job's stream, and the live
+    /// tail — all through inboxes under the per-job prefix.
+    ///
+    /// The server enforces the token's **decoded allow lists** on a
+    /// config-file `reader` user: password auth stands in for the bearer-JWT
+    /// transport (a full operator/account hierarchy is beyond `nats-jwt`),
+    /// while the permission set under test is exactly the minted one. The JS
+    /// browser client drives the same `$JS.API` subjects as async-nats here.
+    #[tokio::test]
+    async fn nats_live_read_token_scope_suffices_for_bounded_replay() {
+        let Some(bin) = nats_server_bin() else {
+            eprintln!("TML_TEST_NATS_SERVER unset; skipping live NATS read-scope test");
+            return;
+        };
+
+        let config = test_config();
+        let job_id = Uuid::new_v4();
+
+        let claims =
+            decode_claims(&mint_token(&config, job_id, TokenScope::Read, None).expect("mint"));
+        let quote = |subjects: Vec<String>| {
+            subjects
+                .iter()
+                .map(|s| format!("\"{s}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let pub_allow = quote(allow(&claims, "pub"));
+        let sub_allow = quote(allow(&claims, "sub"));
+
+        let mgmt_opts = || {
+            async_nats::ConnectOptions::new()
+                .user_and_password("mgmt".to_string(), "mgmt".to_string())
+        };
+        let server = NatsServer::start_with_config(
+            &bin,
+            |port, store| {
+                format!(
+                    r#"
+listen: "127.0.0.1:{port}"
+jetstream {{ store_dir: "{store}" }}
+accounts {{
+  TEST {{
+    jetstream: enabled
+    users: [
+      {{ user: "mgmt", password: "mgmt" }},
+      {{ user: "reader", password: "reader", permissions: {{
+        publish: {{ allow: [{pub_allow}] }},
+        subscribe: {{ allow: [{sub_allow}] }},
+      }} }}
+    ]
+  }}
+}}
+"#
+                )
+            },
+            mgmt_opts(),
+        )
+        .await;
+
+        // Management side: create the job's stream and store frames of a
+        // known payload size, awaiting the durable ack for each.
+        let mgmt = mgmt_opts()
+            .connect(server.url())
+            .await
+            .expect("mgmt connect");
+        let jetstream = async_nats::jetstream::new(mgmt);
+        let provisioner = NatsLogStreamProvisioner {
+            jetstream: jetstream.clone(),
+        };
+        provisioner.ensure_job_stream(job_id).await.expect("create");
+
+        let subject = format!("{}.serial", subject_prefix(job_id));
+        const STORED: u64 = 10;
+        for i in 0..STORED {
+            let payload = vec![b'0' + i as u8; 100];
+            jetstream
+                .publish(subject.clone(), payload.into())
+                .await
+                .expect("publish")
+                .await
+                .expect("ack");
+        }
+
+        // Read side, connecting exactly as the browser does: the restricted
+        // user, inboxes under the per-job prefix only.
+        let reader = async_nats::ConnectOptions::new()
+            .user_and_password("reader".to_string(), "reader".to_string())
+            .custom_inbox_prefix(inbox_prefix(job_id))
+            .connect(server.url())
+            .await
+            .expect("reader connect");
+        let reader_js = async_nats::jetstream::new(reader);
+
+        // STREAM.INFO, and the client's bounded-replay start computation: a
+        // cap below the stored total must land the start past the first
+        // message (truncated replay).
+        let stream = reader_js
+            .get_stream(stream_name(job_id))
+            .await
+            .expect("STREAM.INFO is granted");
+        let state = &stream.cached_info().state;
+        assert_eq!(state.messages, STORED);
+        const CAP_BYTES: u64 = 350;
+        assert!(state.bytes > CAP_BYTES, "test premise: stream exceeds cap");
+        let avg = state.bytes / state.messages;
+        let start = state
+            .first_sequence
+            .max(state.last_sequence - CAP_BYTES.div_ceil(avg) + 1);
+        assert!(start > state.first_sequence, "replay must be truncated");
+
+        // Ordered consumer from the computed start: CONSUMER.CREATE /
+        // CONSUMER.INFO / CONSUMER.MSG.NEXT are granted.
+        let consumer = stream
+            .create_consumer(async_nats::jetstream::consumer::pull::OrderedConfig {
+                deliver_policy: async_nats::jetstream::consumer::DeliverPolicy::ByStartSequence {
+                    start_sequence: start,
+                },
+                ..Default::default()
+            })
+            .await
+            .expect("ordered consumer creation is granted");
+        let mut messages = consumer.messages().await.expect("consume");
+
+        use futures_util::StreamExt as _;
+        macro_rules! next {
+            () => {
+                tokio::time::timeout(Duration::from_secs(30), messages.next())
+                    .await
+                    .expect("message within timeout")
+                    .expect("stream not exhausted")
+                    .expect("message delivered")
+            };
+        }
+
+        // The backlog replays exactly from the computed start...
+        for seq in start..=state.last_sequence {
+            let msg = next!();
+            assert_eq!(msg.info().expect("info").stream_sequence, seq);
+            assert_eq!(msg.payload[0], b'0' + (seq - 1) as u8);
+        }
+
+        // ...and the same consumer keeps following live publishes.
+        jetstream
+            .publish(subject.clone(), "live".into())
+            .await
+            .expect("publish")
+            .await
+            .expect("ack");
+        let msg = next!();
+        assert_eq!(msg.info().expect("info").stream_sequence, STORED + 1);
+        assert_eq!(msg.payload.as_ref(), b"live");
     }
 }

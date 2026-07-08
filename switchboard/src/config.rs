@@ -17,10 +17,6 @@ pub struct SwitchboardConfig {
     /// configured simply cannot issue interactive logins.
     #[serde(default)]
     pub oauth: OAuthConfig,
-    /// Optionally serve the web console from this same process/port. Absent (the
-    /// default) means the console is not embedded; run it as its own service.
-    #[serde(default)]
-    pub console: Option<EmbeddedConsoleConfig>,
     /// Log streaming via NATS/JetStream. Absent (the default) disables the
     /// feature: jobs dispatch without a log-streaming destination and the
     /// read-token API is unavailable.
@@ -30,32 +26,13 @@ pub struct SwitchboardConfig {
 
 impl SwitchboardConfig {
     /// Whether `url` is an allowed interactive-login `return_to` target: an
-    /// exact match against [`OAuthConfig::return_to_allowlist`], or the
-    /// embedded console's landing URL (that console lives in this very
-    /// process, so enabling it is already the trust decision).
+    /// exact match against [`OAuthConfig::return_to_allowlist`].
     ///
     /// The staged pair the callback appends to `return_to` is a token-minting
     /// capability; every `return_to` MUST pass this check, both when a flow is
     /// initiated and again at the callback (the config may change mid-flow).
     pub fn return_to_allowed(&self, url: &str) -> bool {
-        if self.oauth.return_to_allowlist.iter().any(|a| a == url) {
-            return true;
-        }
-        if let Some(console) = self.console.as_ref().filter(|c| c.enabled) {
-            let base = console
-                .public_base_url
-                .clone()
-                .unwrap_or_else(|| format!("http://127.0.0.1:{}", self.server.bind_address.port()));
-            let landing = format!(
-                "{}{}",
-                base.trim_end_matches('/'),
-                treadmill_console::routes::LANDING_PATH
-            );
-            if url == landing {
-                return true;
-            }
-        }
-        false
+        self.oauth.return_to_allowlist.iter().any(|a| a == url)
     }
 }
 
@@ -71,6 +48,12 @@ pub struct LogStreamingConfig {
     /// `nats://nats.example:4222`). Handed to supervisors in `StartJobMessage`
     /// and returned to read clients alongside their token. Non-secret.
     pub nats_url: String,
+    /// NATS **WebSocket** URL (e.g. `wss://nats.example:443`), returned to
+    /// read clients instead of `nats_url` when set. Browsers cannot speak the
+    /// plain TCP client protocol, so any deployment serving the web console
+    /// must point this at the server's `websocket` listener. Non-secret.
+    #[serde(default)]
+    pub websocket_url: Option<String>,
     /// JetStream domain, if the server is configured with one. Usually unset.
     #[serde(default)]
     pub jetstream_domain: Option<String>,
@@ -82,30 +65,6 @@ pub struct LogStreamingConfig {
     /// config (project convention). Unrelated to the opaque API token in
     /// `auth/token.rs`.
     pub account_seed: String,
-}
-
-/// Configuration for serving the web console embedded in the switchboard.
-///
-/// When enabled, the console's routes are mounted at `/` on the switchboard's
-/// own listener, alongside the API at `/api/v1` — so a single port serves both.
-/// The console is itself an HTTP client of the switchboard API; embedded, it
-/// calls back over loopback by default.
-#[derive(Debug, Clone, Deserialize)]
-pub struct EmbeddedConsoleConfig {
-    /// Whether to mount the console. Off unless `true`, so merely having the
-    /// section present is not sufficient.
-    #[serde(default)]
-    pub enabled: bool,
-    /// External origin the console is reached at (e.g. `https://tml.example`).
-    /// Only its scheme matters here: an `https://` value makes the session
-    /// cookie `Secure`. Defaults to `http://127.0.0.1:<server port>`.
-    #[serde(default)]
-    pub public_base_url: Option<String>,
-    /// Base URL the embedded console uses to call the switchboard API. Defaults
-    /// to a loopback URL for this process (`http://127.0.0.1:<server port>`),
-    /// which is correct unless TLS or a non-loopback bind requires otherwise.
-    #[serde(default)]
-    pub api_base_url: Option<String>,
 }
 
 /// OAuth login provider configuration. Each provider is independently optional.
@@ -129,9 +88,6 @@ pub struct OAuthConfig {
     /// attacker-chosen URL — never bypass this list. Flows that declare no
     /// `return_to` (programmatic clients) receive JSON instead; the two styles
     /// coexist per-request on one deployment.
-    ///
-    /// The embedded console's landing URL (see [`EmbeddedConsoleConfig`]) is
-    /// implicitly allowed and need not be repeated here.
     #[serde(default)]
     pub return_to_allowlist: Vec<String>,
 }
@@ -228,6 +184,18 @@ pub struct ServerConfig {
     /// known to set them, or a client could spoof its recorded address.
     #[serde(default)]
     pub trusted_proxy_headers: Vec<String>,
+    /// Origins allowed to call the API cross-origin from a browser (e.g. a
+    /// separately-hosted web console): exact `scheme://host[:port]` matches,
+    /// or the single entry `"*"` to allow any origin. Empty (the default)
+    /// emits no CORS headers at all, so browsers only permit same-origin use.
+    ///
+    /// The API is pure bearer-token (no cookies), so a wide-open `"*"` leaks
+    /// no ambient credentials today; the allowlist exists as posture against
+    /// anything cookie- or session-shaped appearing later. An origin listed
+    /// here is NOT thereby a valid login `return_to` target — that is
+    /// [`OAuthConfig::return_to_allowlist`], which matches full URLs.
+    #[serde(default)]
+    pub cors_allowed_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -291,9 +259,26 @@ pub fn load_configuration(path: Option<&Path>) -> anyhow::Result<SwitchboardConf
         f
     };
 
-    f.merge(providers::Env::prefixed("TML_").split("__"))
+    let config: SwitchboardConfig = f
+        .merge(providers::Env::prefixed("TML_").split("__"))
         .extract()
-        .context("Failed to extract switchboard configuration")
+        .context("Failed to extract switchboard configuration")?;
+
+    // Reject unusable CORS origins at startup rather than when the router
+    // builds the header allowlist.
+    for origin in &config.server.cors_allowed_origins {
+        if origin != "*" {
+            origin
+                .parse::<http::HeaderValue>()
+                .ok()
+                .filter(|_| origin.parse::<http::Uri>().is_ok())
+                .with_context(|| {
+                    format!("invalid entry in server.cors_allowed_origins: {origin:?}")
+                })?;
+        }
+    }
+
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -312,6 +297,7 @@ mod tests {
             server: ServerConfig {
                 bind_address: "127.0.0.1:8081".parse().unwrap(),
                 trusted_proxy_headers: Vec::new(),
+                cors_allowed_origins: Vec::new(),
             },
             service: ServiceConfig {
                 current_tos_version: 1,
@@ -325,7 +311,6 @@ mod tests {
                 supervisor_reconcile_interval: Duration::from_secs(30),
             },
             oauth: OAuthConfig::default(),
-            console: None,
             log_streaming: None,
         }
     }
@@ -348,29 +333,5 @@ mod tests {
     fn empty_allowlist_allows_nothing() {
         let cfg = config();
         assert!(!cfg.return_to_allowed("https://console.example/auth/landing"));
-    }
-
-    #[test]
-    fn embedded_console_landing_is_implicitly_allowed() {
-        let mut cfg = config();
-        cfg.console = Some(EmbeddedConsoleConfig {
-            enabled: true,
-            public_base_url: Some("https://tml.example".to_string()),
-            api_base_url: None,
-        });
-        assert!(cfg.return_to_allowed("https://tml.example/auth/landing"));
-        assert!(!cfg.return_to_allowed("https://tml.example/other"));
-
-        // Trailing slash on the configured base does not double up.
-        cfg.console.as_mut().unwrap().public_base_url = Some("https://tml.example/".to_string());
-        assert!(cfg.return_to_allowed("https://tml.example/auth/landing"));
-
-        // Default base: loopback on the configured bind port.
-        cfg.console.as_mut().unwrap().public_base_url = None;
-        assert!(cfg.return_to_allowed("http://127.0.0.1:8081/auth/landing"));
-
-        // A present-but-disabled console section allows nothing.
-        cfg.console.as_mut().unwrap().enabled = false;
-        assert!(!cfg.return_to_allowed("http://127.0.0.1:8081/auth/landing"));
     }
 }

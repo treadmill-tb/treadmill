@@ -18,6 +18,7 @@ image-based, reproducible way to run workloads on them.
 | **Control Sockets**                   | `control-socket/*` | Protocol between supervisors and puppet.      |
 | **CLI**                               | `cli/`             | `tml` user-facing command-line client.        |
 | **Shared Library**                    | `treadmill-rs/`    | Common types & infrastructure.                |
+| **Web Console (SPA)**                 | `console/`         | Browser frontend for the switchboard API.     |
 
 ## 2. Toolchain & Development Environment (Nix)
 
@@ -84,6 +85,37 @@ The Nix flake provides multiple convenience dev apps:
 
   The `switchboard-migrations-consistency` flake check enforces that the SCHEMA
   and migrations are consistent.
+
+### Web console (`console/`)
+
+The SPA console is an npm package (React + React Router v7 in SPA mode,
+`ssr: false`), not a Cargo crate. Its API client types are **generated** from
+`switchboard/api-spec/openapi.yaml` into the committed
+`console/app/api/schema.d.ts`; after any switchboard API change, regenerate
+and commit the diff:
+
+```bash
+cd console && npm ci && npm run codegen
+```
+
+The `console` Nix package (`nix build .#console`, auto-promoted to a
+flake check) is the frontend CI gate: it fails on schema drift, then runs
+`npm run lint`, `npm run typecheck` (strict tsc), and the vite build. Dev loop:
+`npm run dev` (in the default dev shell, which carries node) proxies `/api` to
+a local switchboard at `127.0.0.1:8081` (override with `TML_DEV_PROXY`). The
+build reads `VITE_TML_API_URL` for the switchboard origin; empty means
+same-origin.
+
+**Deployment.** The SPA is static and hosted separately (e.g.
+Cloudflare/GitHub Pages) with `VITE_TML_API_URL` set to the switchboard
+origin at build time; the host serving it must rewrite unknown paths to
+`index.html` (SPA fallback). The switchboard needs the console origin in
+`server.cors_allowed_origins`, and the exact URL
+`<console-origin>/login/callback` in `oauth.return_to_allowlist`. For the log
+viewer, `log_streaming.websocket_url` must point at the NATS server's
+`websocket` listener (`wss://` in production, with the console origin in that
+listener's `allowed_origins`); browsers cannot use the plain `nats_url`. `nix
+run .#devstack` wires all of this up locally (see `tools/devstack.sh`).
 
 ## 3. Building, Testing, and the Nix Checks
 

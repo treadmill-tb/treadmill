@@ -44,6 +44,9 @@
           nats-server
           nsc
           natscli
+
+          # Web console (console/): npm-driven Vite/React toolchain.
+          nodejs_22
         ];
 
         shellHook = ''

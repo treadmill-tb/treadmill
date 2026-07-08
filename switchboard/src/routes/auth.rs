@@ -437,8 +437,10 @@ pub async fn callback(
                 )
                 .await?;
                 tracing::warn!(
-                    "registration denied for {} via {}: {}",
+                    "registration denied for {} ({}, groups: {:?}) via {}: {}",
                     identity.login,
+                    identity.provider_user_id,
+                    org_ids,
                     provider.name(),
                     reason.as_str(),
                 );
@@ -672,22 +674,22 @@ pub const AUTH_LOGIN_COMPLETE_ENDPOINT_DOC: &str = indoc! {"
 "};
 
 /// The request body of `POST /auth/login/complete`, in whichever encoding the
-/// client speaks: JSON for programmatic clients, `x-www-form-urlencoded` for
-/// the console's no-JS HTML form (forms cannot send JSON). The body is
-/// mandatory — it carries the staged pair — so any other content type is
-/// `415` and a malformed body is `400`.
+/// client speaks: JSON for programmatic clients, `x-www-form-urlencoded` for a
+/// no-JS browser HTML form (forms cannot send JSON). The body is mandatory — it
+/// carries the staged pair — so any other content type is `415` and a malformed
+/// body is `400`.
 pub struct LoginCompleteBody {
     request: LoginCompleteRequest,
     /// Whether the body arrived form-encoded — i.e. from a browser's HTML form
-    /// (the console's ToS consent form), which cannot consume a JSON response.
-    /// The handler answers such requests through the flow's `return_to`
-    /// redirect; JSON callers always get JSON, so a frontend's server-to-server
-    /// exchange of a browser flow's pair is never redirected.
+    /// (a no-JS ToS consent form), which cannot consume a JSON response. The
+    /// handler answers such requests through the flow's `return_to` redirect;
+    /// JSON callers always get JSON, so a frontend's server-to-server exchange
+    /// of a browser flow's pair is never redirected.
     from_form: bool,
 }
 
 // Document the JSON variant of the body; the form-encoded variant carries the
-// same fields and exists only for the console's no-JS HTML form.
+// same fields and exists only for a no-JS browser HTML form.
 impl aide::OperationInput for LoginCompleteBody {
     fn operation_input(
         ctx: &mut aide::generate::GenContext,

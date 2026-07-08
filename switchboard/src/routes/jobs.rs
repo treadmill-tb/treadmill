@@ -427,14 +427,23 @@ pub async fn nats_log_token(
     let token = log_streaming::mint_token(
         &log_streaming.config,
         job_id,
-        TokenScope::Subscribe,
+        TokenScope::Read,
         Some(READ_TOKEN_TTL),
     )
     .or_internal("minting a log read token")?;
 
+    // Return both endpoints and let the client pick by transport: browsers use
+    // `websocket_url`, native clients use the plain-TCP `nats_url`. The minted
+    // token authorizes either, so we never conflate "no WebSocket configured"
+    // with a TCP URL a browser can't speak. `websocket_url` is absent unless the
+    // deployment configures a listener.
     Ok(Json(NatsLogStreamCredentials {
-        nats_url: log_streaming.config.nats_url.clone(),
+        nats_url: Some(log_streaming.config.nats_url.clone()),
+        websocket_url: log_streaming.config.websocket_url.clone(),
         subject: log_streaming::subject_scope(job_id),
+        stream: log_streaming::stream_name(job_id),
+        inbox_prefix: log_streaming::inbox_prefix(job_id),
+        jetstream_domain: log_streaming.config.jetstream_domain.clone(),
         token,
         expires_in_secs: READ_TOKEN_TTL.as_secs(),
     }))

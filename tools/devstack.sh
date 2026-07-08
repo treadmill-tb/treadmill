@@ -28,6 +28,29 @@ else
     enable_supervisor=0
 fi
 
+# The SPA web console, injected from Nix as a pre-built static site
+# (build/client). It is served as a SEPARATE ORIGIN from the switchboard, so
+# it talks to the API cross-origin; the API origin it targets is baked into
+# the build at compile time (VITE_TML_API_URL) and handed over here so we can
+# keep the switchboard's CORS allowlist and return_to allowlist in sync.
+# Empty when not injected (e.g. a non-Nix invocation): console serving is then
+# skipped, mirroring the supervisor stack.
+console_dist="${TML_CONSOLE_DIST:-}"
+console_api_origin="${TML_CONSOLE_API_ORIGIN:-http://localhost:$sb_port}"
+if [ -n "$console_dist" ]; then
+    enable_console=1
+    # The baked API origin can't follow a TML_SB_PORT override; warn rather
+    # than serve a console that silently points at the wrong switchboard.
+    if [ "$console_api_origin" != "http://localhost:$sb_port" ]; then
+        echo "WARNING: injected console targets $console_api_origin but the" >&2
+        echo "         switchboard is on port $sb_port; the console's API calls" >&2
+        echo "         will fail. Rebuild the console or leave TML_SB_PORT at its" >&2
+        echo "         default (the baked origin is $console_api_origin)." >&2
+    fi
+else
+    enable_console=0
+fi
+
 # Stable dev identities. The host auth_token bearer matches the supervisor
 # ws_connector token; the API token bearer drives the smoke stage. 'alice' is
 # the built-in mock admin identity.
@@ -154,6 +177,17 @@ websocket {
 NATSCONF
 
 # --- Generate component configs (regenerated every run) ---------------
+# CORS + return_to entries authorizing the separately-hosted SPA console
+# (empty lists when no console is served, which switchboard treats as
+# "no CORS" / "nothing allowlisted").
+if [ "$enable_console" = 1 ]; then
+  cors_origins_toml="[\"http://localhost:$console_port\"]"
+  return_to_toml="[\"http://localhost:$console_port/login/callback\"]"
+else
+  cors_origins_toml="[]"
+  return_to_toml="[]"
+fi
+
 sb_cfg="$cfg_dir/switchboard.toml"
 {
   cat <<TOML
@@ -166,6 +200,9 @@ auth.password = ""
 
 [server]
 bind_address = "127.0.0.1:$sb_port"
+# The SPA console runs on its own origin (port $console_port) and calls the
+# API cross-origin, so its origin must be allowed here.
+cors_allowed_origins = $cors_origins_toml
 
 [service]
 default_token_timeout = "7d"
@@ -180,18 +217,21 @@ supervisor_reconcile_interval = "5s"
 [log]
 use_tokio_console_subscriber = false
 
-# Log streaming via NATS/JetStream. nats_url is non-secret and lives on
-# disk; the account signing seed is injected via the environment
-# (TML_LOGSTREAMING__ACCOUNT_SEED) at launch below, not written here.
+# Log streaming via NATS/JetStream. nats_url (supervisors, TCP) and
+# websocket_url (browser read clients, handed out by the log-token
+# endpoint) are non-secret and live on disk; the account signing seed is
+# injected via the environment (TML_LOGSTREAMING__ACCOUNT_SEED) at
+# launch below, not written here.
 [log_streaming]
 nats_url = "nats://127.0.0.1:$nats_port"
+websocket_url = "ws://127.0.0.1:$nats_ws_port"
 
-# The console declares its landing URL as each login's return_to; the
-# allowlist (exact match) authorizes it. The callback 302s the browser
-# there with a single-use staged pair, which the console exchanges
-# server-to-server for the session token.
+# The SPA console declares <its origin>/login/callback as each login's
+# return_to; the allowlist (exact match) authorizes the callback's 302 to
+# that URL carrying the single-use staged pair, which the console exchanges
+# for the session token.
 [oauth]
-return_to_allowlist = ["http://localhost:$console_port/auth/landing"]
+return_to_allowlist = $return_to_toml
 
 # The mock provider is a development-only, UNAUTHENTICATED login bypass
 # (built-in identities, no external service). Safe to enable here only
@@ -209,16 +249,6 @@ redirect_url = "http://localhost:$sb_port/api/v1/auth/github/callback"
 TOML
   fi
 } > "$sb_cfg"
-
-console_cfg="$cfg_dir/console.toml"
-cat > "$console_cfg" <<TOML
-[server]
-bind_address = "127.0.0.1:$console_port"
-public_base_url = "http://localhost:$console_port"
-
-[switchboard]
-base_url = "http://localhost:$sb_port"
-TOML
 
 # --- Dev DB seed (applied once at run time, after migrations) ---------
 # One admin user 'alice', linked to the built-in mock 'alice' identity
@@ -447,14 +477,25 @@ if [ "$enable_supervisor" = 1 ]; then
   pids+=("$!")
 fi
 
-tml-console serve -c "$console_cfg" &
-pids+=("$!")
+# Serve the SPA console as a static site with history-API fallback (unknown
+# paths -> index.html, so client-side routes survive deep links and reloads).
+# It is a separate origin from the switchboard; the API origin is baked into
+# the build and the CORS + return_to allowlist entries above authorize it.
+if [ "$enable_console" = 1 ]; then
+  echo "Starting web console (static SPA on http://localhost:$console_port)"
+  static-web-server \
+    --host 127.0.0.1 --port "$console_port" \
+    --root "$console_dist" \
+    --page-fallback "$console_dist/index.html" \
+    --log-level error \
+    >"$log_dir/console.log" 2>&1 &
+  pids+=("$!")
+fi
 
 cat <<EOF
 
 ============================================================
   treadmill dev stack is up
-    web console     : http://localhost:$console_port   <- open this
     switchboard API : http://localhost:$sb_port
     NATS broker     : nats://127.0.0.1:$nats_port (ws on $nats_ws_port)
     postgresql      : UNIX socket at $sock_dir
@@ -462,6 +503,11 @@ cat <<EOF
     state directory : $state_dir
     mock login      : ENABLED (alice=admin, bob/carol=user)
 EOF
+if [ "$enable_console" = 1 ]; then
+  echo "    web console     : http://localhost:$console_port   <- open this"
+else
+  echo "    web console     : DISABLED (no static build injected; set TML_CONSOLE_DIST)"
+fi
 if [ "$enable_supervisor" = 1 ]; then
   cat <<EOF
     zot registry    : http://127.0.0.1:$zot_port (repo treadmill/tiny-efi)
