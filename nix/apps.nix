@@ -72,6 +72,19 @@
       # `http://localhost:<sb-port>/api/v1/auth/github/callback`). Without them
       # the stack still runs; interactive login is just disabled.
       #
+      # The dev stack serves the SPA console (`self'.packages.console`) as a
+      # static site on its own origin, so the browser calls the switchboard
+      # cross-origin. The API origin the SPA targets is baked into the build at
+      # compile time (`VITE_TML_API_URL`), so we rebuild the console with it
+      # pinned to the devstack's DEFAULT switchboard port; `devstack.sh` warns if
+      # TML_SB_PORT is overridden away from it (a baked origin can't follow a
+      # runtime port change). Defined as a plain override rather than a
+      # `packages.*` attr so it does not become a second (redundant) flake check.
+      devstackConsoleApiOrigin = "http://localhost:8000";
+      devstackConsole = self'.packages.console.overrideAttrs (_: {
+        VITE_TML_API_URL = devstackConsoleApiOrigin;
+      });
+
       # `preamble` is spliced in before dispatching to `tools/devstack.sh`; the
       # e2e variant below uses it to inject the TML_DEVSTACK_RUNFN test hook.
       mkDevstack =
@@ -92,6 +105,8 @@
             pkgs.curl
             pkgs.jq
             self'.packages.swx
+            # Static file server (with SPA history-API fallback) for the console.
+            pkgs.static-web-server
           ]
           # The single dev zot + qemu-supervisor stack is Linux-only: it boots the
           # aarch64 tiny-efi fixture, which is only built on Linux (nix/tiny-efi.nix).
@@ -106,6 +121,10 @@
             export TML_FIXTURE_LAYOUT="${lib.optionalString isLinux "${self'.packages.tiny-efi-image-layout}"}"
             export TML_AAVMF_CODE="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-aarch64-code.fd"}"
             export TML_AAVMF_VARS="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-arm-vars.fd"}"
+
+            # The pre-built static SPA console and the API origin baked into it.
+            export TML_CONSOLE_DIST="${devstackConsole}"
+            export TML_CONSOLE_API_ORIGIN="${devstackConsoleApiOrigin}"
 
             ${preamble}
 

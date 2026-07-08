@@ -1,4 +1,4 @@
-# SPA Web Console (`console-neo/`) — Roadmap
+# SPA Web Console (`console/`) — Roadmap
 
 Status of the SPA console bootstrap and the remaining build-out. The
 architecture decisions and their rationale live in the bootstrap commit
@@ -7,7 +7,7 @@ messages; the short version: React 19 + React Router v7 in framework mode with
 `ssr: true` plus per-route loaders/actions on a serverless runtime), an API
 client generated from `switchboard/api-spec/openapi.yaml`
 (openapi-typescript → committed `app/api/schema.d.ts`, drift-checked by the
-`console-neo` Nix package), openapi-fetch + openapi-react-query for typed
+`console` Nix package), openapi-fetch + openapi-react-query for typed
 calls, TanStack Query for caching. See AGENTS.md §2 for the dev loop.
 
 ## Done
@@ -50,20 +50,19 @@ calls, TanStack Query for caching. See AGENTS.md §2 for the dev loop.
   permission set is proven sufficient by the `nats_live_read_token_scope_…`
   test in the `nats-log-streaming` Nix check.
 
-## Remaining phases (hand-off prompts)
-
-Each block below is a self-contained prompt for a follow-up agent.
-
-### Phase 5 — legacy console removal
-
-> Remove the `console/` crate: drop it from the Cargo workspace and from
-> `switchboard` (the `treadmill-console` dependency, the `[console]`
-> embedded-console config section, `embedded_console_router`, and the
-> embedded-console implicit `return_to` allowance in
-> `switchboard/src/config.rs`), keeping the reqwest helpers in `treadmill-rs`
-> for the future CLI. Then `git mv console-neo console` and adjust
-> `nix/console.nix` (paths, package name), `nix/treefmt.nix` excludes/includes,
-> AGENTS.md, and this document.
+- **Phase 5 — legacy console removal.** Dropped the server-side-rendered
+  `console/` crate: out of the Cargo workspace and off `switchboard` (the
+  `treadmill-console` dependency, the `[console]` embedded-console config
+  section + `EmbeddedConsoleConfig`, `embedded_console_router`, and the
+  implicit `return_to` allowance for its landing URL), keeping the
+  `treadmill-rs` `client` reqwest helpers for the future CLI. Renamed
+  `console-neo/` → `console/` and repointed `nix/console.nix`,
+  `nix/treefmt.nix`, `nix/devshells.nix`, AGENTS.md, and this document. The
+  dev stack (`tools/devstack.sh`, wrapped by `nix/apps.nix`) now serves the
+  SPA as a **separate-origin static site** (`static-web-server` with
+  history-API fallback), rebuilt with `VITE_TML_API_URL` pinned to the
+  devstack switchboard and the switchboard's `cors_allowed_origins` +
+  `oauth.return_to_allowlist` pointed back at the console origin.
 
 ## Deployment notes
 
