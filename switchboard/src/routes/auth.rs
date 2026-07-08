@@ -437,8 +437,10 @@ pub async fn callback(
                 )
                 .await?;
                 tracing::warn!(
-                    "registration denied for {} via {}: {}",
+                    "registration denied for {} ({}, groups: {:?}) via {}: {}",
                     identity.login,
+                    identity.provider_user_id,
+                    org_ids,
                     provider.name(),
                     reason.as_str(),
                 );
