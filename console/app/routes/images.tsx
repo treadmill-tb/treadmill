@@ -4,7 +4,6 @@ import { Link } from "react-router";
 
 import { $api } from "../api/client";
 import { Digest } from "../components/digest";
-import { EntityLink } from "../components/entity-link";
 import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
 
@@ -90,8 +89,7 @@ export default function Images() {
                 <th>Label</th>
                 <th>Digest</th>
                 <th>Artifact type</th>
-                <th>Owner</th>
-                <th>Locations</th>
+                <th>Sources</th>
                 <th>Registered</th>
               </tr>
             </thead>
@@ -107,10 +105,7 @@ export default function Images() {
                     <Digest digest={img.manifest_digest} />
                   </td>
                   <td className="mono">{img.artifact_type}</td>
-                  <td>
-                    <EntityLink kind="user" id={img.owner_id} />
-                  </td>
-                  <td>{img.locations.length}</td>
+                  <td>{img.sources.length}</td>
                   <td>
                     <RelTime iso={img.created_at} />
                   </td>

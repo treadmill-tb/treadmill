@@ -358,10 +358,9 @@ pub fn api_router() -> ApiRouter<AppState> {
                         r.description("The image was newly registered.")
                     })
                     .response_with::<200, Json<ImageInfo>, _>(|r| {
-                        r.description("The image was already registered; this location was added.")
-                    })
-                    .response_with::<409, (), _>(|r| {
-                        r.description("This digest is already registered to another owner.")
+                        r.description(
+                            "The image was already registered; a caller-owned source was added.",
+                        )
                     })
                     .response_with::<502, (), _>(|r| {
                         r.description(
@@ -380,6 +379,69 @@ pub fn api_router() -> ApiRouter<AppState> {
                 doc(o, "getImage", "Images", "Get an image").response_with::<404, (), _>(|r| {
                     r.description("No such image, or it is not visible to the caller.")
                 })
+            }),
+        )
+        //  POST /images/{digest}/sources -- add a registry source (caller-owned)
+        .api_route(
+            "/images/{digest}/sources",
+            post_with(images::add_image_source, |o| {
+                doc(o, "addImageSource", "Images", "Add a source to an image")
+                    .response_with::<201, Json<ImageInfo>, _>(|r| {
+                        r.description("The source was added; the caller owns it.")
+                    })
+                    .response_with::<404, (), _>(|r| r.description("No such registered image."))
+                    .response_with::<502, (), _>(|r| {
+                        r.description(
+                            "The source could not be reached or does not serve the image.",
+                        )
+                    })
+            }),
+        )
+        //  DELETE /images/{digest}/sources/{source_id} -- delete a source
+        .api_route(
+            "/images/{digest}/sources/{source_id}",
+            delete_with(images::delete_image_source, |o| {
+                doc(o, "deleteImageSource", "Images", "Delete an image source")
+                    .response_with::<204, (), _>(|r| r.description("The source was deleted."))
+                    .response_with::<404, (), _>(|r| r.description("No such image or source."))
+            }),
+        )
+        //  POST /images/{digest}/sources/{source_id}/grants -- grant use/manage
+        //  GET  /images/{digest}/sources/{source_id}/grants -- list grants
+        .api_route(
+            "/images/{digest}/sources/{source_id}/grants",
+            post_with(images::grant_image_source, |o| {
+                doc(
+                    o,
+                    "createImageSourceGrant",
+                    "Images",
+                    "Grant a permission on an image source",
+                )
+                .response_with::<204, (), _>(|r| r.description("The grant was recorded."))
+                .response_with::<404, (), _>(|r| r.description("No such image or source."))
+            })
+            .get_with(images::list_image_source_grants, |o| {
+                doc(
+                    o,
+                    "listImageSourceGrants",
+                    "Images",
+                    "List an image source's grants",
+                )
+                .description(NOT_PAGINATED)
+            }),
+        )
+        //  DELETE /images/{digest}/sources/{source_id}/grants/{subject_id}/{permission}
+        .api_route(
+            "/images/{digest}/sources/{source_id}/grants/{subject_id}/{permission}",
+            delete_with(images::revoke_image_source_grant, |o| {
+                doc(
+                    o,
+                    "revokeImageSourceGrant",
+                    "Images",
+                    "Revoke a grant on an image source",
+                )
+                .response_with::<204, (), _>(|r| r.description("The grant was revoked."))
+                .response_with::<404, (), _>(|r| r.description("No matching grant to revoke."))
             }),
         )
         //  POST /image-groups        -- create an empty, named image group

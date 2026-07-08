@@ -3,6 +3,16 @@
 Deferred work and known shortcuts, captured so they aren't lost. Not a roadmap —
 just things we consciously punted on.
 
+## Image-Source Audit Surface
+
+There is no audit surface for image
+sources: no `image_source` value in `audit_entity_kind`, and no
+`ImageSourceAdded` / `ImageSourceRemoved` / `ImageSourceGrant{Created,Revoked}`
+events. Source add/delete and
+grant/revoke therefore produce no audit rows; `ImageRegistered` still fires for a
+new digest. When added, mirror the `image_group` grant events (`view(Manage)` on
+the source) and add the entity-kind enum value in the same migration.
+
 ## Re-Sync Verified/Non-Verified Emails on Login
 
 Currently, the auth code does not properly re-sync emails on login. Previously

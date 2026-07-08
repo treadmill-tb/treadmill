@@ -441,7 +441,8 @@ impl SqlJob {
             let rec = image::fetch_by_id(&mut *conn, image_id)
                 .await?
                 .ok_or_else(|| ImageResolveError::NotRegistered(image_id.to_string()))?;
-            let spec = concrete_image_spec(rec.id, &rec.manifest_digest, conn).await?;
+            let spec =
+                concrete_image_spec(rec.id, &rec.manifest_digest, self.owner_id, conn).await?;
             return Ok((spec, Some(rec.id)));
         }
 
@@ -460,7 +461,7 @@ impl SqlJob {
             let chosen =
                 select_member(&candidates, host_tags).ok_or(ImageResolveError::NoMatchingMember)?;
             let (image_id, manifest_digest) = &chosen.handle;
-            let spec = concrete_image_spec(*image_id, manifest_digest, conn).await?;
+            let spec = concrete_image_spec(*image_id, manifest_digest, self.owner_id, conn).await?;
             return Ok((spec, Some(*image_id)));
         }
 
@@ -837,14 +838,21 @@ pub async fn list_visible(
 }
 
 /// Build a concrete [`ImageSpecification::Image`] from an image's id + digest,
-/// reading its catalog locations (canonical/system preferred).
+/// reading the catalog sources the job `owner` may `use` (canonical/system
+/// preferred). Sources can be deleted or restricted between enqueue and dispatch,
+/// so this per-owner filter is load-bearing: if none remain (or the job is
+/// orphaned, `owner = None`), the image is unfetchable for this owner and the
+/// caller finalizes the job `image_error` (via [`ImageResolveError::NoLocations`],
+/// the plan's judgment-call default).
 async fn concrete_image_spec(
     image_id: Uuid,
     manifest_digest: &str,
+    owner: Option<Uuid>,
     conn: &mut sqlx::PgConnection,
 ) -> Result<ImageSpecification, ImageResolveError> {
-    let locations = image::locations_for_image(conn, image_id).await?;
-    if locations.is_empty() {
+    let owner = owner.ok_or_else(|| ImageResolveError::NoLocations(manifest_digest.to_string()))?;
+    let sources = image::usable_sources_for_image(conn, image_id, owner).await?;
+    if sources.is_empty() {
         return Err(ImageResolveError::NoLocations(manifest_digest.to_string()));
     }
     let digest = manifest_digest
@@ -852,11 +860,11 @@ async fn concrete_image_spec(
         .map_err(|_| ImageResolveError::NotRegistered(manifest_digest.to_string()))?;
     Ok(ImageSpecification::Image {
         manifest_digest: digest,
-        locations: locations
+        locations: sources
             .into_iter()
-            .map(|l| ImageLocation {
-                registry: l.registry,
-                repository: l.repository,
+            .map(|s| ImageLocation {
+                registry: s.registry,
+                repository: s.repository,
             })
             .collect(),
     })
@@ -962,7 +970,7 @@ pub async fn build_start_job_message(
         let rec = image::fetch_by_id(&mut *conn, image_id)
             .await?
             .ok_or_else(|| ImageResolveError::NotRegistered(image_id.to_string()))?;
-        concrete_image_spec(rec.id, &rec.manifest_digest, conn).await?
+        concrete_image_spec(rec.id, &rec.manifest_digest, job.owner_id, conn).await?
     };
 
     // Parameters are stored in the client-facing [`JobParameter`] shape; the

@@ -2,8 +2,9 @@
 //!
 //! These mirror the switchboard's `images` / `image-groups` routes (see
 //! `doc/oci-image-migration-plan.md` §8.1). The catalog stores only references:
-//! a content-addressed digest plus the `{registry, repository}` locations that
-//! serve it — never image bytes.
+//! a content-addressed digest plus the `{registry, repository}` sources that
+//! serve it — never image bytes. An image is a non-owned manifest identity; the
+//! *sources* behind it are the ownable, grantable entity.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -27,25 +28,68 @@ pub struct RegisterImageRequest {
     pub label: Option<String>,
 }
 
-/// One registry location of a registered image.
+/// A permission on an image source. A "public" (unauthenticated) source is one
+/// that grants the well-known `everyone` subject `use`.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageSourcePermission {
+    /// May pull the image from this source (run jobs that resolve to it).
+    Use,
+    /// May manage the source's grants and delete it (owner holds this implicitly).
+    Manage,
+}
+
+/// One registry source of a registered image — the ownable, grantable catalog
+/// entity — as returned by the inspect routes. `permissions` is the *viewer's*
+/// permissions on this source (like host/job permission surfacing).
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct ImageLocation {
+pub struct ImageSourceInfo {
+    pub id: Uuid,
     pub registry: String,
     pub repository: String,
     /// `external`, `canonical`, or `system`.
     pub status: String,
+    /// The source's owner, or null if orphaned.
+    pub owner_id: Option<Uuid>,
+    /// The viewer's permissions on this source.
+    pub permissions: Vec<ImageSourcePermission>,
 }
 
-/// A registered image, as returned by the catalog list/inspect routes.
+/// A registered image, as returned by the catalog list/inspect routes. An image
+/// is non-owned; ownership lives on its `sources`.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct ImageInfo {
     pub id: Uuid,
     pub manifest_digest: Digest,
     pub artifact_type: String,
-    pub owner_id: Option<Uuid>,
     pub label: Option<String>,
     pub created_at: DateTime<Utc>,
-    pub locations: Vec<ImageLocation>,
+    pub sources: Vec<ImageSourceInfo>,
+}
+
+/// `POST /images/{digest}/sources`: add a registry source to a registered image.
+/// The caller owns the source it adds.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct AddImageSourceRequest {
+    /// Registry authority (`host:port`) the image can be pulled from.
+    pub registry: String,
+    /// Repository path within the registry.
+    pub repository: String,
+}
+
+/// `POST /images/{digest}/sources/{source_id}/grants`: grant `permission` on a
+/// source to a subject.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct ImageSourceGrantRequest {
+    pub subject_id: Uuid,
+    pub permission: ImageSourcePermission,
+}
+
+/// One grant on an image source, as returned by the list-grants route.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct ImageSourceGrantInfo {
+    pub subject_id: Uuid,
+    pub permission: ImageSourcePermission,
 }
 
 /// `POST /image-groups`: create an empty, named image group. The caller becomes
@@ -100,6 +144,16 @@ pub struct GenerationMemberInfo {
     pub manifest_digest: Digest,
     pub required_host_tags: Vec<String>,
     pub index: u32,
+    /// Whether the viewer may use some source of this member image. A group grant
+    /// is necessary but not sufficient: `false` means the member has no source the
+    /// viewer can reach (so a job would not resolve it for this viewer).
+    pub usable: bool,
+    /// Whether *every* subject holding a `use` grant on the group can source this
+    /// member (for a public group, that set includes the `everyone` subject). This
+    /// is the owner-facing health signal: `false` flags a member some grantee
+    /// cannot reach, so the group's `use` grant is unusable for them in practice.
+    /// Vacuously `true` for a group with no `use` grants.
+    pub usable_by_grantees: bool,
 }
 
 /// One immutable generation (membership snapshot) of an image group.

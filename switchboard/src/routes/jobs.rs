@@ -237,6 +237,42 @@ pub async fn enqueue(
         };
     }
 
+    // Source-availability gate (plan decisions #1/#2): every referenced image
+    // must have a source the *job owner* may `use`, else 422. Keyed on the owner
+    // (not the enqueuer): the enqueuer already inherits the owner's permissions,
+    // so this can only narrow the eligible image set. A 422 (not 403) — the owner
+    // simply cannot source the image; existence is not a leak. This also closes
+    // the previously-unchecked concrete-image path. Evaluated after the group
+    // freeze above, so an image-group job carries a concrete `Some(generation)`.
+    match req.init_spec {
+        JobInitSpec::Image { image_id } => {
+            let usable = image::image_source_usable(state.pool(), owner, image_id)
+                .await
+                .or_internal(&format!(
+                    "checking source availability for image {image_id}"
+                ))?;
+            if !usable {
+                return Err(StatusCode::UNPROCESSABLE_ENTITY);
+            }
+        }
+        JobInitSpec::ImageGroup {
+            group_id,
+            generation: Some(g),
+        } => {
+            let usable = image::generation_usable(state.pool(), owner, group_id, g)
+                .await
+                .or_internal(&format!(
+                    "checking source availability for group {group_id} generation {g}"
+                ))?;
+            if !usable {
+                return Err(StatusCode::UNPROCESSABLE_ENTITY);
+            }
+        }
+        // Resume/Restart carry no image reference of their own (they inherit the
+        // predecessor's, already source-gated at its own enqueue).
+        _ => {}
+    }
+
     // Resolve the timeout (explicit override, else the deployment default) and
     // reject a non-positive one.
     let timeout = req

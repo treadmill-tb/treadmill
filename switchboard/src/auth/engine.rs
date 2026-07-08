@@ -269,6 +269,138 @@ pub async fn can_access_image_group(
     .await
 }
 
+/// A permission on an image source; mirrors `tml_switchboard.image_source_permission`
+/// and the API's [`ApiImageSourcePermission`].
+///
+/// [`ApiImageSourcePermission`]:
+///     treadmill_rs::api::switchboard::images::ImageSourcePermission
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageSourcePermission {
+    Use,
+    Manage,
+}
+impl ImageSourcePermission {
+    pub const ALL: &'static [ImageSourcePermission] =
+        &[ImageSourcePermission::Use, ImageSourcePermission::Manage];
+
+    /// The textual value as stored in the `image_source_permission` enum.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ImageSourcePermission::Use => "use",
+            ImageSourcePermission::Manage => "manage",
+        }
+    }
+
+    /// Parse the textual value as stored in the `image_source_permission` enum;
+    /// the inverse of [`as_str`](Self::as_str). `None` for an unrecognized string.
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "use" => Some(ImageSourcePermission::Use),
+            "manage" => Some(ImageSourcePermission::Manage),
+            _ => None,
+        }
+    }
+}
+impl From<treadmill_rs::api::switchboard::images::ImageSourcePermission> for ImageSourcePermission {
+    fn from(p: treadmill_rs::api::switchboard::images::ImageSourcePermission) -> Self {
+        use treadmill_rs::api::switchboard::images::ImageSourcePermission as Api;
+        match p {
+            Api::Use => ImageSourcePermission::Use,
+            Api::Manage => ImageSourcePermission::Manage,
+        }
+    }
+}
+
+/// Whether `subject_id` may exercise `permission` on the image source.
+///
+/// Authorized iff the subject is a global admin, owns the source (directly or via
+/// a group it transitively joins), or holds a matching grant — the standard
+/// ownership ∨ grant disjunction over `principals()`. A "public" source is simply
+/// one that grants the `everyone` subject `use`; since `principals()` folds
+/// `everyone` in, that case needs no special handling here. The owner implicitly
+/// holds every permission. Mirrors [`can_access_image_group`].
+pub async fn can_access_image_source(
+    conn: impl PgExecutor<'_>,
+    subject_id: Uuid,
+    source_id: Uuid,
+    permission: ImageSourcePermission,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        "with principals(id) as ( \
+             select id from tml_switchboard.principals($1::uuid) \
+         ) \
+         select ( \
+             exists (select 1 from principals where id = $4::uuid) \
+             or exists ( \
+                 select 1 from tml_switchboard.image_sources s \
+                 join principals p on s.owner_subject = p.id \
+                 where s.id = $2::uuid \
+             ) \
+             or exists ( \
+                 select 1 from tml_switchboard.image_source_grants gr \
+                 join principals p on gr.subject_id = p.id \
+                 where gr.source_id = $2::uuid and gr.permission::text = $3 \
+             ) \
+         ) as \"authorized!\"",
+        subject_id,
+        source_id,
+        permission.as_str(),
+        ADMINS_GROUP_ID,
+    )
+    .fetch_one(conn)
+    .await
+}
+
+/// Returns the complete set of permissions `subject_id` holds on `source_id`.
+/// Owner or global admin yields all permissions; a grant to the `everyone`
+/// subject (folded in via `principals()`) confers "public" permissions on all.
+/// Mirrors [`can_access_image_source`] but enumerates rather than testing one
+/// permission (for surfacing the viewer's per-source permissions).
+pub async fn image_source_permissions(
+    conn: impl PgExecutor<'_>,
+    subject_id: Uuid,
+    source_id: Uuid,
+) -> Result<Vec<ImageSourcePermission>, sqlx::Error> {
+    let rows = sqlx::query_scalar!(
+        r#"
+        with principals(id) as (
+             select id from tml_switchboard.principals($1::uuid)
+         ),
+         is_global_or_owner as (
+             select (
+                 exists (select 1 from principals where id = $3::uuid)
+                 or exists (
+                     select 1 from tml_switchboard.image_sources s
+                     join principals p on s.owner_subject = p.id
+                     where s.id = $2::uuid
+                 )
+             ) as is_auth
+         )
+         select '*' as "perm!" from is_global_or_owner where is_auth
+         union
+         select g.permission::text as "perm!"
+         from tml_switchboard.image_source_grants g
+         join principals p on g.subject_id = p.id
+         where g.source_id = $2::uuid
+           and not (select is_auth from is_global_or_owner)
+        "#,
+        subject_id,
+        source_id,
+        ADMINS_GROUP_ID,
+    )
+    .fetch_all(conn)
+    .await?;
+
+    if rows.iter().any(|s| s == "*") {
+        Ok(ImageSourcePermission::ALL.to_vec())
+    } else {
+        Ok(rows
+            .into_iter()
+            .filter_map(|s: String| ImageSourcePermission::from_db_str(&s))
+            .collect())
+    }
+}
+
 /// Returns the complete set of permissions `subject_id` holds on `host_id`.
 /// If the subject is an owner or global admin, this returns all permissions.
 pub async fn host_permissions(

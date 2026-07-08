@@ -96,21 +96,43 @@ async fn latest_token_id(pool: &PgPool, user_id: Uuid) -> Uuid {
     .unwrap()
 }
 
-/// Register a throwaway concrete image (unique digest, no location) and return
-/// its catalog id. A job's `image_id` is an FK into `images`, so the seed/enqueue
-/// helpers need a real row to reference. Uses the runtime query API, so no
-/// `.sqlx` entry is needed.
+/// Register a throwaway concrete image (unique digest) and return its catalog
+/// id. A job's `image_id` is an FK into `images`, so the seed/enqueue helpers
+/// need a real row to reference. The image gets one source granted `everyone`
+/// `use`, so the enqueue source-availability gate admits any job owner (these
+/// tests exercise job authorization, not source availability — see
+/// `image_routes.rs` for that). Uses the runtime query API, so no `.sqlx` entry
+/// is needed.
 async fn register_image(pool: &PgPool) -> Uuid {
     let id = Uuid::new_v4();
     let id_hex = id.simple().to_string();
     let digest = format!("sha256:{id_hex:0>64}");
     sqlx::query(
         "insert into tml_switchboard.images \
-           (id, manifest_digest, artifact_type, owner_subject, attrs) \
-         values ($1, $2, 'application/vnd.treadmill.image.v1+json', null, '{}'::jsonb)",
+           (id, manifest_digest, artifact_type, attrs) \
+         values ($1, $2, 'application/vnd.treadmill.image.v1+json', '{}'::jsonb)",
     )
     .bind(id)
     .bind(digest)
+    .execute(pool)
+    .await
+    .unwrap();
+    let source_id = Uuid::new_v4();
+    sqlx::query(
+        "insert into tml_switchboard.image_sources \
+           (id, image_id, registry, repository, status, owner_subject) \
+         values ($1, $2, 'reg.example:5000', 'repo', 'external', null)",
+    )
+    .bind(source_id)
+    .bind(id)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into tml_switchboard.image_source_grants (source_id, subject_id, permission) \
+         values ($1, '00000000-0000-0000-0000-000000000004', 'use')",
+    )
+    .bind(source_id)
     .execute(pool)
     .await
     .unwrap();

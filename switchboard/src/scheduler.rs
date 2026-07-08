@@ -468,14 +468,22 @@ mod tests {
             id,
             &d.encoded(),
             media_types::IMAGE_ARTIFACT_TYPE,
-            owner,
             None,
             &serde_json::json!({}),
         )
         .await?;
         if with_location {
-            sql::image::upsert_location(&mut *tx, id, "reg.example:5000", "repo", "external")
-                .await?;
+            // Source owned by the job owner so the dispatch source gate passes.
+            sql::image::insert_source(
+                &mut *tx,
+                Uuid::new_v4(),
+                id,
+                "reg.example:5000",
+                "repo",
+                "external",
+                Some(owner),
+            )
+            .await?;
         }
         tx.commit().await?;
         Ok((id, d))
@@ -503,13 +511,20 @@ mod tests {
                 img_id,
                 &md.encoded(),
                 media_types::IMAGE_ARTIFACT_TYPE,
-                owner,
                 None,
                 &serde_json::json!({}),
             )
             .await?;
-            sql::image::upsert_location(&mut *tx, img_id, "reg.example:5000", "repo", "external")
-                .await?;
+            sql::image::insert_source(
+                &mut *tx,
+                Uuid::new_v4(),
+                img_id,
+                "reg.example:5000",
+                "repo",
+                "external",
+                Some(owner),
+            )
+            .await?;
             member_rows.push((img_id, tags(req_tags), index as i32));
             member_digests.push(md);
         }
@@ -1072,6 +1087,42 @@ mod tests {
         assert!(
             types.contains(&"job_finalized.v1".to_string()),
             "expected a job_finalized event, got {types:?}"
+        );
+        Ok(())
+    }
+
+    /// Sources can be deleted or restricted between enqueue and dispatch, so the
+    /// dispatch-time re-check is load-bearing: a source that still *exists* but
+    /// is no longer usable by the job owner must finalize the job `image_error`,
+    /// exactly like a missing one.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn source_lost_after_enqueue_finalizes_as_image_error(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let _host = insert_live_host(&pool, user, &["arch=arm64"]).await?;
+        let (img, _) = register_image(&pool, user, 1, true).await?;
+        let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+
+        // The owner loses the source before the scheduler runs: it now belongs
+        // to an unrelated user and carries no grants.
+        let stranger = insert_user(&pool).await?;
+        sqlx::query(
+            "update tml_switchboard.image_sources set owner_subject = $1 where image_id = $2",
+        )
+        .bind(stranger)
+        .bind(img)
+        .execute(&pool)
+        .await?;
+
+        scheduler(pool.clone()).tick().await?;
+
+        assert_eq!(job_state(&pool, job).await?, "finalized");
+        assert_eq!(
+            job_termination(&pool, job).await?.as_deref(),
+            Some("image_error")
         );
         Ok(())
     }

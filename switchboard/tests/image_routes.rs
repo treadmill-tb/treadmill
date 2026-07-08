@@ -23,7 +23,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
-use treadmill_rs::api::switchboard::images::{ImageGroupGenerationInfo, ImageGroupInfo, ImageInfo};
+use treadmill_rs::api::switchboard::images::{
+    ImageGroupGenerationInfo, ImageGroupInfo, ImageInfo, ImageSourceGrantInfo,
+    ImageSourcePermission,
+};
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, JobImageRef, JobInfo};
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, WhoAmIResponse};
@@ -270,6 +273,58 @@ async fn enqueue_group(
         .unwrap()
 }
 
+/// Grant `permission` on an image source to `subject` via
+/// `POST /images/{digest}/sources/{source_id}/grants`. Returns the response so
+/// the caller can assert on the authorization outcome. Granting the `everyone`
+/// subject `use` makes the source public.
+async fn grant_source(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    digest: &Digest,
+    source_id: Uuid,
+    subject: Uuid,
+    permission: &str,
+) -> reqwest::Response {
+    client
+        .post(format!(
+            "{base}/images/{}/sources/{source_id}/grants",
+            digest.encoded()
+        ))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "subject_id": subject, "permission": permission }))
+        .send()
+        .await
+        .unwrap()
+}
+
+/// `POST /jobs` referencing a concrete image; returns the raw response so the
+/// caller can assert on the status (the source-availability gate is under test).
+async fn enqueue_image_job(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    image: Uuid,
+) -> reqwest::Response {
+    let req = JobRequest {
+        init_spec: JobInitSpec::Image { image_id: image },
+        owner: None,
+        ssh_keys: vec![],
+        restart_policy: RestartPolicy { max_restarts: 0 },
+        parameters: HashMap::new(),
+        host_tag_requirements: vec![],
+        target_requirements: vec![],
+        override_timeout: None,
+    };
+    client
+        .post(format!("{base}/jobs"))
+        .bearer_auth(token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap()
+}
+
 // -- image registration ---------------------------------------------------------
 
 #[sqlx::test]
@@ -282,7 +337,7 @@ async fn register_list_and_inspect_image(pool: PgPool) {
     let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let base = format!("http://{addr}/api/v1");
 
-    // POST /images registers the image and reports its single external location.
+    // POST /images registers the image and reports its single external source.
     let resp = client
         .post(format!("{base}/images"))
         .bearer_auth(&token)
@@ -299,9 +354,10 @@ async fn register_list_and_inspect_image(pool: PgPool) {
     let info: ImageInfo = resp.json().await.unwrap();
     assert_eq!(info.manifest_digest, digest);
     assert_eq!(info.label.as_deref(), Some("my ubuntu"));
-    assert_eq!(info.locations.len(), 1);
-    assert_eq!(info.locations[0].registry, REGISTRY);
-    assert_eq!(info.locations[0].status, "external");
+    assert_eq!(info.sources.len(), 1);
+    assert_eq!(info.sources[0].registry, REGISTRY);
+    assert_eq!(info.sources[0].repository, REPO);
+    assert_eq!(info.sources[0].status, "external");
 
     // Re-registering the same digest is idempotent (200, not a duplicate).
     let resp = client
@@ -741,7 +797,7 @@ async fn public_grants_use_to_everyone(pool: PgPool) {
     assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
     add_generation(&client, &base, &bob_token, group.id, img.id).await;
 
-    // `carol` holds no grant, yet a public group is visible and usable to her.
+    // `carol` holds no grant, yet a public group is visible to her.
     let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
     let resp = client
         .get(format!("{base}/image-groups/{}", group.id))
@@ -750,6 +806,24 @@ async fn public_grants_use_to_everyone(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    // The group grant is necessary but not sufficient to enqueue: the member's
+    // only source is bob's private one, so carol cannot source the image (422).
+    let resp = enqueue_group(&client, &base, &carol_token, group.id, None).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Bob makes the member's source public too; now carol can enqueue.
+    let resp = grant_source(
+        &client,
+        &base,
+        &bob_token,
+        &m,
+        img.sources[0].id,
+        EVERYONE_SUBJECT,
+        "use",
+    )
+    .await;
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
     let resp = enqueue_group(&client, &base, &carol_token, group.id, None).await;
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
 
@@ -780,4 +854,184 @@ async fn public_grants_use_to_everyone(pool: PgPool) {
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
     let resp = enqueue_group(&client, &base, &carol_token, group.id, None).await;
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+// -- image sources ----------------------------------------------------------------
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn image_source_grants_gate_visibility_and_use(pool: PgPool) {
+    let mut reg = StubRegistry::default();
+    let m = reg.put(REGISTRY, REPO, image_manifest_bytes("source acl"));
+    let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
+    let client = http_client();
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &bob_token).await;
+    let base = format!("http://{addr}/api/v1");
+
+    // Bob registers the image: he owns its only source, holding both permissions
+    // on it implicitly.
+    let info = register_image(&client, &base, &bob_token, &m).await;
+    assert_eq!(info.sources.len(), 1);
+    let source_id = info.sources[0].id;
+    assert_eq!(info.sources[0].owner_id, Some(bob));
+    for p in [ImageSourcePermission::Use, ImageSourcePermission::Manage] {
+        assert!(
+            info.sources[0].permissions.contains(&p),
+            "owner must hold {p:?} implicitly"
+        );
+    }
+
+    // Carol has no usable source, so the image does not exist for her: 404 on
+    // inspect (existence not leaked) and absent from her list.
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let carol = whoami(&client, addr, &carol_token).await;
+    let resp = client
+        .get(format!("{base}/images/{}", m.encoded()))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+    let list: Vec<ImageInfo> = client
+        .get(format!("{base}/images"))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(list.is_empty(), "no usable source: nothing to list");
+
+    // Bob grants carol `use`: the image becomes visible to her, and her surfaced
+    // permissions on the source are exactly `use`.
+    let resp = grant_source(&client, &base, &bob_token, &m, source_id, carol, "use").await;
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    let one: ImageInfo = client
+        .get(format!("{base}/images/{}", m.encoded()))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(one.sources[0].permissions, vec![ImageSourcePermission::Use]);
+
+    // `use` does not confer management: granting, listing grants, and deleting
+    // the source are all 403 for carol.
+    let resp = grant_source(&client, &base, &carol_token, &m, source_id, carol, "manage").await;
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    let resp = client
+        .get(format!(
+            "{base}/images/{}/sources/{source_id}/grants",
+            m.encoded()
+        ))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    let resp = client
+        .delete(format!("{base}/images/{}/sources/{source_id}", m.encoded()))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // Bob (manage) sees the grant listed; revoking it hides the image from carol
+    // again.
+    let grants: Vec<ImageSourceGrantInfo> = client
+        .get(format!(
+            "{base}/images/{}/sources/{source_id}/grants",
+            m.encoded()
+        ))
+        .bearer_auth(&bob_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        grants
+            .iter()
+            .any(|g| g.subject_id == carol && g.permission == ImageSourcePermission::Use),
+        "the grant to carol must be listed, got {grants:?}"
+    );
+    let resp = client
+        .delete(format!(
+            "{base}/images/{}/sources/{source_id}/grants/{carol}/use",
+            m.encoded()
+        ))
+        .bearer_auth(&bob_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    let resp = client
+        .get(format!("{base}/images/{}", m.encoded()))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+    // The owner deletes his source: the image keeps existing as a manifest
+    // identity, but with no sources left nobody — bob included — has a usable
+    // source, so even his inspect is now a 404.
+    let resp = client
+        .delete(format!("{base}/images/{}/sources/{source_id}", m.encoded()))
+        .bearer_auth(&bob_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    let resp = client
+        .get(format!("{base}/images/{}", m.encoded()))
+        .bearer_auth(&bob_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn enqueue_concrete_image_requires_usable_source(pool: PgPool) {
+    let mut reg = StubRegistry::default();
+    let m = reg.put(REGISTRY, REPO, image_manifest_bytes("concrete gate"));
+    let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
+    let client = http_client();
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let base = format!("http://{addr}/api/v1");
+    let img = register_image(&client, &base, &bob_token, &m).await;
+
+    // The source's owner can enqueue against the image.
+    let resp = enqueue_image_job(&client, &base, &bob_token, img.id).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+
+    // Carol cannot source it: 422 (the concrete-image path has no group-style
+    // pre-check, so this gate is the only thing standing between her and a job
+    // that would only image_error at dispatch).
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let resp = enqueue_image_job(&client, &base, &carol_token, img.id).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A public source (`everyone` granted `use`) unblocks her.
+    let resp = grant_source(
+        &client,
+        &base,
+        &bob_token,
+        &m,
+        img.sources[0].id,
+        EVERYONE_SUBJECT,
+        "use",
+    )
+    .await;
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    let resp = enqueue_image_job(&client, &base, &carol_token, img.id).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
 }

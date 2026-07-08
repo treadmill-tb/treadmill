@@ -58,3 +58,26 @@ pub(crate) struct GrantPath {
     /// The permission being revoked (`use` or `manage`).
     pub permission: String,
 }
+
+/// The `{digest}/sources/{source_id}` segments of an image-source route.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub(crate) struct SourcePath {
+    /// The image's OCI manifest digest (`sha256:<hex>`).
+    pub digest: String,
+    /// The source's unique identifier.
+    pub source_id: Uuid,
+}
+
+/// The `{digest}/sources/{source_id}/grants/{subject_id}/{permission}` segments
+/// of an image-source grant route.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub(crate) struct SourceGrantPath {
+    /// The image's OCI manifest digest (`sha256:<hex>`).
+    pub digest: String,
+    /// The source's unique identifier.
+    pub source_id: Uuid,
+    /// The subject (user or group) the grant applies to.
+    pub subject_id: Uuid,
+    /// The permission being revoked (`use` or `manage`).
+    pub permission: String,
+}

@@ -1,0 +1,90 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with principals(id) as (\n               select id from tml_switchboard.principals($2)\n           )\n           select s.id, s.image_id, s.registry, s.repository, s.status, s.owner_subject\n           from tml_switchboard.image_sources s\n           where s.image_id = $1\n             and (\n                 exists (select 1 from principals where id = $3::uuid)\n                 or exists (select 1 from principals p where p.id = s.owner_subject)\n                 or exists (\n                     select 1 from tml_switchboard.image_source_grants g\n                     join principals p on g.subject_id = p.id\n                     where g.source_id = s.id and g.permission = 'use'\n                 )\n             )\n           order by case s.status\n                      when 'system' then 0\n                      when 'canonical' then 1\n                      else 2\n                    end,\n                    s.added_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_sources",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "image_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_sources",
+            "name": "image_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "registry",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_sources",
+            "name": "registry"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "repository",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_sources",
+            "name": "repository"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_sources",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "owner_subject",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_sources",
+            "name": "owner_subject"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "29887f206bbc7e97c78c73509f5ff82f5960ce765dd1594aad6adf8a2292e02a"
+}

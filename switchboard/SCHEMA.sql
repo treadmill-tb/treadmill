@@ -1021,47 +1021,108 @@ $$;
 -- The switchboard maintains catalog of Treadmill OCI images.
 --
 -- An image's *identity* is its OCI manifest digest; the same digest may be
--- served from several locations, so locations are a separate table. A job
--- referencing an image by id is resolved, at dispatch, to its digest plus its
--- ordered locations and handed to the supervisor.
+-- served from several sources, so sources are a separate table. A job
+-- referencing an image by id is resolved, at dispatch, to its digest plus the
+-- ordered sources its owner may use, and handed to the supervisor.
 --
 -- Image *groups* are mutable, named, generationed entities.
 --
--- A registered Treadmill image, identified by its OCI manifest digest. `attrs`
--- is free-form metadata projected off the validated manifest at registration
--- time; `artifact_type` records the manifest's `artifactType` for display.
+-- A registered Treadmill image is a non-owned manifest identity: a content hash
+-- with no owner and no ACL. `manifest_digest` is globally UNIQUE (the same bytes
+-- are the same row for everyone). `label`/`attrs` are cached projections of the
+-- validated manifest, NOT user-writeable metadata; `artifact_type` records the
+-- manifest's `artifactType` for display. Ownership and grantability live on the
+-- image *sources* below, not here.
 CREATE TABLE tml_switchboard.images (
     id uuid NOT NULL PRIMARY KEY,
     manifest_digest text NOT NULL UNIQUE,
     artifact_type text NOT NULL,
-    -- Owning subject (user or group). NULL means orphaned (cf. hosts/jobs): the
-    -- resource survives its owner's deletion but is then admin-only.
-    owner_subject uuid REFERENCES tml_switchboard.subjects (subject_id) ON DELETE SET NULL,
     label text,
     attrs jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamp with time zone NOT NULL DEFAULT current_timestamp
 );
 
 
--- The registry locations a given image's bytes can be pulled from. `status`
--- distinguishes the user's original `external` registry from
--- `canonical`/`system` mirrors added by promotion (the digest never changes;
--- promotion is an INSERT).
+-- The registry sources a given image's bytes can be pulled from -- the ownable,
+-- grantable, deletable entity of the image catalog (an image itself is not
+-- owned; see above). `status` distinguishes the user's original `external`
+-- registry from `canonical`/`system` mirrors added by promotion (the digest
+-- never changes; promotion is an INSERT).
 --
 -- We use `canonical` / `system` to track the expected reliability/longevity of
 -- the image and/or mirror. A `system` mirror is assumed to be under the control
 -- of the Treadmill system administrators and always available. Certain images
 -- may be said to live in `canonical` mirrors, which are assumed to be highly
 -- available as well, although outside of the system's control.
-CREATE TABLE tml_switchboard.image_locations (
+--
+-- `owner_subject` owns the source (add/delete/manage rights); NULL means
+-- orphaned (cf. hosts/jobs): the source survives its owner's deletion but is
+-- then admin-only. Whether a subject may *use* a source is the standard
+-- ownership ∨ grant disjunction over `principals()` (see `image_source_grants`
+-- and `image_source_usable()`). A public, unauthenticated source is one that
+-- grants the `everyone` subject `use`.
+--
+-- A source may LATER carry credentials for a private registry (stored in an
+-- external secret system or encrypted at rest), restricting `use` to grantees.
+-- That is out of scope now: every source is public/unauthenticated.
+CREATE TABLE tml_switchboard.image_sources (
+    id uuid NOT NULL PRIMARY KEY,
     image_id uuid NOT NULL REFERENCES tml_switchboard.images (id) ON DELETE CASCADE,
     registry text NOT NULL,
     repository text NOT NULL,
     status text NOT NULL,
+    owner_subject uuid REFERENCES tml_switchboard.subjects (subject_id) ON DELETE SET NULL,
     added_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
-    PRIMARY KEY (image_id, registry, repository),
+    UNIQUE (image_id, registry, repository),
     CONSTRAINT valid_location_status CHECK (status IN ('external', 'canonical', 'system'))
 );
+
+
+-- Image-source permissions.
+CREATE TYPE tml_switchboard.image_source_permission AS enum('use', 'manage');
+
+
+CREATE TABLE tml_switchboard.image_source_grants (
+    source_id uuid NOT NULL REFERENCES tml_switchboard.image_sources (id) ON DELETE CASCADE,
+    subject_id uuid NOT NULL REFERENCES tml_switchboard.subjects (subject_id) ON DELETE CASCADE,
+    permission tml_switchboard.image_source_permission NOT NULL,
+    granted_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (source_id, subject_id, permission)
+);
+
+
+-- Whether `p_subject` may `use` at least one source of image `p_image`: the
+-- standard ownership ∨ grant disjunction, evaluated per source over
+-- `principals()`. Because `principals()` folds the `everyone` subject in, a
+-- source that grants `everyone` `use` (a public source) satisfies every subject.
+CREATE FUNCTION tml_switchboard.image_source_usable (p_subject uuid, p_image uuid) returns boolean language sql stable AS $$
+    select exists (
+        select 1
+        from tml_switchboard.image_sources s
+        where s.image_id = p_image
+          and (
+              -- A principal of the subject is a global admin.
+              exists (
+                  select 1 from tml_switchboard.principals(p_subject) pr
+                  -- The seeded `admins` group; see `ADMINS_GROUP_ID` in engine.rs.
+                  where pr.id = '00000000-0000-0000-0000-000000000001'::uuid
+              )
+              -- A principal owns the source.
+              or exists (
+                  select 1 from tml_switchboard.principals(p_subject) pr
+                  where pr.id = s.owner_subject
+              )
+              -- A principal holds a `use` grant on the source (`everyone` folded
+              -- into principals(), so a public source matches every subject).
+              or exists (
+                  select 1
+                  from tml_switchboard.image_source_grants g
+                  join tml_switchboard.principals(p_subject) pr on g.subject_id = pr.id
+                  where g.source_id = s.id and g.permission = 'use'
+              )
+          )
+    );
+$$;
 
 
 -- A named, mutable image group.
@@ -1072,10 +1133,6 @@ CREATE TABLE tml_switchboard.image_locations (
 -- Image membership lives in immutable per-generation snapshots
 -- (`image_group_generations` / `image_group_members`). Groups are never deleted
 -- (metadata is immortal), so a job that pinned a generation always resolves.
---
--- A group is made "public" by granting the well-known `everyone` subject the
--- `use` permission in `image_group_grants` (see that table and the `everyone`
--- subject above); there is no dedicated `public` column.
 CREATE TABLE tml_switchboard.image_groups (
     id uuid NOT NULL PRIMARY KEY,
     name text NOT NULL UNIQUE,

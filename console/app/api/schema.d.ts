@@ -392,6 +392,78 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/images/{digest}/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add a source to an image */
+        post: operations["addImageSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/images/{digest}/sources/{source_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete an image source */
+        delete: operations["deleteImageSource"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/images/{digest}/sources/{source_id}/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List an image source's grants
+         * @description Returns the complete set in a stable order; this route is not paginated.
+         */
+        get: operations["listImageSourceGrants"];
+        put?: never;
+        /** Grant a permission on an image source */
+        post: operations["createImageSourceGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/images/{digest}/sources/{source_id}/grants/{subject_id}/{permission}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke a grant on an image source */
+        delete: operations["revokeImageSourceGrant"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/image-groups": {
         parameters: {
             query?: never;
@@ -523,6 +595,16 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description `POST /images/{digest}/sources`: add a registry source to a registered image.
+         *     The caller owns the source it adds.
+         */
+        AddImageSourceRequest: {
+            /** @description Registry authority (`host:port`) the image can be pulled from. */
+            registry: string;
+            /** @description Repository path within the registry. */
+            repository: string;
+        };
         /** @description Query parameters for an audit feed (`GET /{entity}/{id}/events`). */
         AuditFeedQuery: {
             /** @description Opaque keyset cursor from a previous response's `next_cursor`. */
@@ -616,6 +698,20 @@ export interface components {
             index: number;
             manifest_digest: components["schemas"]["Digest"];
             required_host_tags: string[];
+            /**
+             * @description Whether the viewer may use some source of this member image. A group grant
+             *     is necessary but not sufficient: `false` means the member has no source the
+             *     viewer can reach (so a job would not resolve it for this viewer).
+             */
+            usable: boolean;
+            /**
+             * @description Whether *every* subject holding a `use` grant on the group can source this
+             *     member (for a public group, that set includes the `everyone` subject). This
+             *     is the owner-facing health signal: `false` flags a member some grantee
+             *     cannot reach, so the group's `use` grant is unusable for them in practice.
+             *     Vacuously `true` for a group with no `use` grants.
+             */
+            usable_by_grantees: boolean;
         };
         /**
          * @description One member of a new generation; `index` is the member's array position in the
@@ -762,7 +858,10 @@ export interface components {
         };
         /** @description A permission on an image group. */
         ImageGroupPermission: "use" | "manage";
-        /** @description A registered image, as returned by the catalog list/inspect routes. */
+        /**
+         * @description A registered image, as returned by the catalog list/inspect routes. An image
+         *     is non-owned; ownership lives on its `sources`.
+         */
         ImageInfo: {
             artifact_type: string;
             /** Format: date-time */
@@ -770,18 +869,49 @@ export interface components {
             /** Format: uuid */
             id: string;
             label?: string | null;
-            locations: components["schemas"]["ImageLocation"][];
             manifest_digest: components["schemas"]["Digest"];
-            /** Format: uuid */
-            owner_id?: string | null;
+            sources: components["schemas"]["ImageSourceInfo"][];
         };
-        /** @description One registry location of a registered image. */
-        ImageLocation: {
+        /** @description One grant on an image source, as returned by the list-grants route. */
+        ImageSourceGrantInfo: {
+            permission: components["schemas"]["ImageSourcePermission"];
+            /** Format: uuid */
+            subject_id: string;
+        };
+        /**
+         * @description `POST /images/{digest}/sources/{source_id}/grants`: grant `permission` on a
+         *     source to a subject.
+         */
+        ImageSourceGrantRequest: {
+            permission: components["schemas"]["ImageSourcePermission"];
+            /** Format: uuid */
+            subject_id: string;
+        };
+        /**
+         * @description One registry source of a registered image — the ownable, grantable catalog
+         *     entity — as returned by the inspect routes. `permissions` is the *viewer's*
+         *     permissions on this source (like host/job permission surfacing).
+         */
+        ImageSourceInfo: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: uuid
+             * @description The source's owner, or null if orphaned.
+             */
+            owner_id?: string | null;
+            /** @description The viewer's permissions on this source. */
+            permissions: components["schemas"]["ImageSourcePermission"][];
             registry: string;
             repository: string;
             /** @description `external`, `canonical`, or `system`. */
             status: string;
         };
+        /**
+         * @description A permission on an image source. A "public" (unauthenticated) source is one
+         *     that grants the well-known `everyone` subject `use`.
+         */
+        ImageSourcePermission: "use" | "manage";
         /**
          * @description What a job is based off, as seen by `GET /jobs/{id}`: a concrete image, an
          *     image group (with the frozen generation), or a resume/restart of an earlier
@@ -1351,6 +1481,36 @@ export interface components {
             token_id: string;
             /** @description The user agent that requested the token, if recorded. */
             user_agent?: string | null;
+        };
+        /**
+         * @description The `{digest}/sources/{source_id}/grants/{subject_id}/{permission}` segments
+         *     of an image-source grant route.
+         */
+        SourceGrantPath: {
+            /** @description The image's OCI manifest digest (`sha256:<hex>`). */
+            digest: string;
+            /** @description The permission being revoked (`use` or `manage`). */
+            permission: string;
+            /**
+             * Format: uuid
+             * @description The source's unique identifier.
+             */
+            source_id: string;
+            /**
+             * Format: uuid
+             * @description The subject (user or group) the grant applies to.
+             */
+            subject_id: string;
+        };
+        /** @description The `{digest}/sources/{source_id}` segments of an image-source route. */
+        SourcePath: {
+            /** @description The image's OCI manifest digest (`sha256:<hex>`). */
+            digest: string;
+            /**
+             * Format: uuid
+             * @description The source's unique identifier.
+             */
+            source_id: string;
         };
         /** @description An SSH endpoint a running job can be reached on. */
         SshEndpoint: {
@@ -2398,7 +2558,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The image was already registered; this location was added. */
+            /** @description The image was already registered; a caller-owned source was added. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2434,13 +2594,6 @@ export interface operations {
             };
             /** @description The authenticated account is locked, or lacks permission for this resource. */
             403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description This digest is already registered to another owner. */
-            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2485,7 +2638,10 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A registered image, as returned by the catalog list/inspect routes. */
+            /**
+             * @description A registered image, as returned by the catalog list/inspect routes. An image
+             *     is non-owned; ownership lives on its `sources`.
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2509,6 +2665,301 @@ export interface operations {
                 content?: never;
             };
             /** @description No such image, or it is not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    addImageSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The image's OCI manifest digest (`sha256:<hex>`). */
+                digest: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * @description `POST /images/{digest}/sources`: add a registry source to a registered image.
+         *     The caller owns the source it adds.
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddImageSourceRequest"];
+            };
+        };
+        responses: {
+            /** @description The source was added; the caller owns it. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageInfo"];
+                };
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such registered image. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Failed to deserialize the JSON body into the target type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The source could not be reached or does not serve the image. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteImageSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The image's OCI manifest digest (`sha256:<hex>`). */
+                digest: string;
+                /** @description The source's unique identifier. */
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The source was deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such image or source. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listImageSourceGrants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The image's OCI manifest digest (`sha256:<hex>`). */
+                digest: string;
+                /** @description The source's unique identifier. */
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageSourceGrantInfo"][];
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createImageSourceGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The image's OCI manifest digest (`sha256:<hex>`). */
+                digest: string;
+                /** @description The source's unique identifier. */
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * @description `POST /images/{digest}/sources/{source_id}/grants`: grant `permission` on a
+         *     source to a subject.
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImageSourceGrantRequest"];
+            };
+        };
+        responses: {
+            /** @description The grant was recorded. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such image or source. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Failed to deserialize the JSON body into the target type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    revokeImageSourceGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The image's OCI manifest digest (`sha256:<hex>`). */
+                digest: string;
+                /** @description The permission being revoked (`use` or `manage`). */
+                permission: string;
+                /** @description The source's unique identifier. */
+                source_id: string;
+                /** @description The subject (user or group) the grant applies to. */
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The grant was revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No matching grant to revoke. */
             404: {
                 headers: {
                     [name: string]: unknown;

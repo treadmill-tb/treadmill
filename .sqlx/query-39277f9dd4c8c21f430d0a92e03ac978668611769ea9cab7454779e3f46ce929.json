@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.image_source_grants\n             (source_id, subject_id, permission)\n           values ($1, $2, $3::text::tml_switchboard.image_source_permission)\n           on conflict (source_id, subject_id, permission) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "39277f9dd4c8c21f430d0a92e03ac978668611769ea9cab7454779e3f46ce929"
+}

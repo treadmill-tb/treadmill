@@ -1,36 +1,58 @@
-//! Data access for the image catalog (`images`, `image_locations`,
-//! `image_groups`, `image_group_generations`, `image_group_members`,
-//! `image_group_grants`).
+//! Data access for the image catalog (`images`, `image_sources`,
+//! `image_source_grants`, `image_groups`, `image_group_generations`,
+//! `image_group_members`, `image_group_grants`).
 //!
 //! The catalog stores only references for concrete images — a content-addressed
-//! digest and the `{registry, repository}` locations that serve it — never image
-//! bytes (see `doc/oci-image-migration-plan.md` §5.3/§8). Image *groups* are
-//! mutable, named, generationed entities. These helpers back the
-//! registration/list routes ([`crate::routes::images`]) and the dispatch-time
-//! image resolver ([`crate::sql::job`]).
+//! digest and the `{registry, repository}` sources that serve it — never image
+//! bytes (see `doc/oci-image-migration-plan.md` §5.3/§8). An image is a non-owned
+//! manifest identity; the *sources* behind it are the ownable, grantable entity.
+//! Image *groups* are mutable, named, generationed entities. These helpers back
+//! the registration/list routes ([`crate::routes::images`]) and the
+//! dispatch-time image resolver ([`crate::sql::job`]).
 
 use chrono::{DateTime, Utc};
 use sqlx::PgExecutor;
 use uuid::Uuid;
 
-/// A registered image, identified by its OCI manifest digest.
+/// A registered image: a non-owned manifest identity (see `SCHEMA.sql`). Owner
+/// and ACL live on its [`SourceRecord`]s, not here.
 #[derive(Debug, Clone)]
 pub struct ImageRecord {
     pub id: Uuid,
     pub manifest_digest: String,
     pub artifact_type: String,
-    pub owner_subject: Option<Uuid>,
     pub label: Option<String>,
     pub attrs: serde_json::Value,
     pub created_at: DateTime<Utc>,
 }
 
-/// One registry location an image's bytes can be pulled from.
+/// One registry source an image's bytes can be pulled from — the ownable,
+/// grantable, deletable catalog entity. `owner_subject` is NULL when orphaned.
 #[derive(Debug, Clone)]
-pub struct LocationRecord {
+pub struct SourceRecord {
+    pub id: Uuid,
+    pub image_id: Uuid,
     pub registry: String,
     pub repository: String,
     pub status: String,
+    pub owner_subject: Option<Uuid>,
+}
+
+/// One grant on an image source.
+#[derive(Debug, Clone)]
+pub struct SourceGrantRecord {
+    pub subject_id: Uuid,
+    pub permission: String,
+}
+
+/// Per-member usability of a generation: whether the viewer may use some source
+/// of the member image, and whether *every* subject holding a `use` grant on the
+/// group can (the owner-facing health signal). See [`generation_member_usability`].
+#[derive(Debug, Clone)]
+pub struct MemberUsability {
+    pub image_id: Uuid,
+    pub usable: bool,
+    pub usable_by_grantees: bool,
 }
 
 /// A named, mutable image group.
@@ -81,7 +103,7 @@ pub async fn fetch_by_digest(
 ) -> Result<Option<ImageRecord>, sqlx::Error> {
     sqlx::query_as!(
         ImageRecord,
-        r#"select id, manifest_digest, artifact_type, owner_subject, label,
+        r#"select id, manifest_digest, artifact_type, label,
                   attrs as "attrs: serde_json::Value", created_at
            from tml_switchboard.images where manifest_digest = $1"#,
         manifest_digest,
@@ -97,7 +119,7 @@ pub async fn fetch_by_id(
 ) -> Result<Option<ImageRecord>, sqlx::Error> {
     sqlx::query_as!(
         ImageRecord,
-        r#"select id, manifest_digest, artifact_type, owner_subject, label,
+        r#"select id, manifest_digest, artifact_type, label,
                   attrs as "attrs: serde_json::Value", created_at
            from tml_switchboard.images where id = $1"#,
         id,
@@ -106,25 +128,22 @@ pub async fn fetch_by_id(
     .await
 }
 
-/// Insert a new image row.
-#[allow(clippy::too_many_arguments)]
+/// Insert a new (non-owned) image row.
 pub async fn insert(
     conn: impl PgExecutor<'_>,
     id: Uuid,
     manifest_digest: &str,
     artifact_type: &str,
-    owner_subject: Uuid,
     label: Option<&str>,
     attrs: &serde_json::Value,
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
         r#"insert into tml_switchboard.images
-             (id, manifest_digest, artifact_type, owner_subject, label, attrs)
-           values ($1, $2, $3, $4, $5, $6)"#,
+             (id, manifest_digest, artifact_type, label, attrs)
+           values ($1, $2, $3, $4, $5)"#,
         id,
         manifest_digest,
         artifact_type,
-        owner_subject,
         label,
         attrs,
     )
@@ -133,38 +152,77 @@ pub async fn insert(
     .map(|_| ())
 }
 
-/// Add a location for an image, ignoring a duplicate `(registry, repository)`.
-pub async fn upsert_location(
+// -- image sources --------------------------------------------------------------
+
+/// Add a source for an image owned by `owner`, ignoring a duplicate
+/// `(registry, repository)` (idempotent re-registration).
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_source(
     conn: impl PgExecutor<'_>,
+    id: Uuid,
     image_id: Uuid,
     registry: &str,
     repository: &str,
     status: &str,
+    owner: Option<Uuid>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
-        r#"insert into tml_switchboard.image_locations
-             (image_id, registry, repository, status)
-           values ($1, $2, $3, $4)
+        r#"insert into tml_switchboard.image_sources
+             (id, image_id, registry, repository, status, owner_subject)
+           values ($1, $2, $3, $4, $5, $6)
            on conflict (image_id, registry, repository) do nothing"#,
+        id,
         image_id,
         registry,
         repository,
         status,
+        owner,
     )
     .execute(conn)
     .await
     .map(|_| ())
 }
 
-/// All locations for an image, canonical/system preferred over external.
-pub async fn locations_for_image(
+/// Look a source up by its surrogate id.
+pub async fn fetch_source(
+    conn: impl PgExecutor<'_>,
+    source_id: Uuid,
+) -> Result<Option<SourceRecord>, sqlx::Error> {
+    sqlx::query_as!(
+        SourceRecord,
+        r#"select id, image_id, registry, repository, status, owner_subject
+           from tml_switchboard.image_sources where id = $1"#,
+        source_id,
+    )
+    .fetch_optional(conn)
+    .await
+}
+
+/// Delete a source by id. Sources are always deletable by owner/admins, even
+/// when referenced by a generation. Returns whether a row was removed.
+pub async fn delete_source(
+    conn: impl PgExecutor<'_>,
+    source_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"delete from tml_switchboard.image_sources
+           where id = $1 returning id"#,
+        source_id,
+    )
+    .fetch_optional(conn)
+    .await?;
+    Ok(row.is_some())
+}
+
+/// All sources for an image, canonical/system preferred over external.
+pub async fn sources_for_image(
     conn: impl PgExecutor<'_>,
     image_id: Uuid,
-) -> Result<Vec<LocationRecord>, sqlx::Error> {
+) -> Result<Vec<SourceRecord>, sqlx::Error> {
     sqlx::query_as!(
-        LocationRecord,
-        r#"select registry, repository, status
-           from tml_switchboard.image_locations
+        SourceRecord,
+        r#"select id, image_id, registry, repository, status, owner_subject
+           from tml_switchboard.image_sources
            where image_id = $1
            order by case status
                       when 'system' then 0
@@ -178,17 +236,138 @@ pub async fn locations_for_image(
     .await
 }
 
-/// Images visible to `subject` (owned by it or a group it transitively joins).
-pub async fn list_owned(
+/// The sources of an image that `owner` may `use`, canonical/system preferred.
+/// The dispatch gate: only sources the job owner may reach are handed to the
+/// supervisor (a source can be deleted or restricted between enqueue and
+/// dispatch). Mirrors [`crate::auth::engine::can_access_image_source`]'s `use`
+/// disjunction over `principals()` (with `everyone` folded in).
+pub async fn usable_sources_for_image(
+    conn: impl PgExecutor<'_>,
+    image_id: Uuid,
+    owner: Uuid,
+) -> Result<Vec<SourceRecord>, sqlx::Error> {
+    sqlx::query_as!(
+        SourceRecord,
+        r#"with principals(id) as (
+               select id from tml_switchboard.principals($2)
+           )
+           select s.id, s.image_id, s.registry, s.repository, s.status, s.owner_subject
+           from tml_switchboard.image_sources s
+           where s.image_id = $1
+             and (
+                 exists (select 1 from principals where id = $3::uuid)
+                 or exists (select 1 from principals p where p.id = s.owner_subject)
+                 or exists (
+                     select 1 from tml_switchboard.image_source_grants g
+                     join principals p on g.subject_id = p.id
+                     where g.source_id = s.id and g.permission = 'use'
+                 )
+             )
+           order by case s.status
+                      when 'system' then 0
+                      when 'canonical' then 1
+                      else 2
+                    end,
+                    s.added_at"#,
+        image_id,
+        owner,
+        crate::auth::engine::ADMINS_GROUP_ID,
+    )
+    .fetch_all(conn)
+    .await
+}
+
+/// Whether `subject` may `use` at least one source of `image_id`
+/// (`tml_switchboard.image_source_usable`).
+pub async fn image_source_usable(
+    conn: impl PgExecutor<'_>,
+    subject: Uuid,
+    image_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"select tml_switchboard.image_source_usable($1, $2) as "usable!""#,
+        subject,
+        image_id,
+    )
+    .fetch_one(conn)
+    .await
+}
+
+// -- image-source grants --------------------------------------------------------
+
+/// Grant `permission` ("use" / "manage") on a source to a subject; idempotent.
+pub async fn grant_image_source(
+    conn: impl PgExecutor<'_>,
+    source_id: Uuid,
+    subject_id: Uuid,
+    permission: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"insert into tml_switchboard.image_source_grants
+             (source_id, subject_id, permission)
+           values ($1, $2, $3::text::tml_switchboard.image_source_permission)
+           on conflict (source_id, subject_id, permission) do nothing"#,
+        source_id,
+        subject_id,
+        permission,
+    )
+    .execute(conn)
+    .await
+    .map(|_| ())
+}
+
+/// Revoke a single `(subject, permission)` grant on a source. Returns whether a
+/// row was removed.
+pub async fn revoke_image_source(
+    conn: impl PgExecutor<'_>,
+    source_id: Uuid,
+    subject_id: Uuid,
+    permission: &str,
+) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"delete from tml_switchboard.image_source_grants
+           where source_id = $1 and subject_id = $2
+             and permission = $3::text::tml_switchboard.image_source_permission
+           returning source_id"#,
+        source_id,
+        subject_id,
+        permission,
+    )
+    .fetch_optional(conn)
+    .await?;
+    Ok(row.is_some())
+}
+
+/// All grants on a source.
+pub async fn list_image_source_grants(
+    conn: impl PgExecutor<'_>,
+    source_id: Uuid,
+) -> Result<Vec<SourceGrantRecord>, sqlx::Error> {
+    sqlx::query_as!(
+        SourceGrantRecord,
+        r#"select subject_id, permission::text as "permission!"
+           from tml_switchboard.image_source_grants
+           where source_id = $1
+           order by granted_at, subject_id, permission"#,
+        source_id,
+    )
+    .fetch_all(conn)
+    .await
+}
+
+/// Images the `subject` may use: those with at least one source it may `use`
+/// (owned, `use`-granted, or public via the `everyone` grant), plus admin sees
+/// all. Replaces the old ownership-based listing.
+pub async fn list_usable_images(
     conn: impl PgExecutor<'_>,
     subject: Uuid,
 ) -> Result<Vec<ImageRecord>, sqlx::Error> {
     sqlx::query_as!(
         ImageRecord,
-        r#"select i.id, i.manifest_digest, i.artifact_type, i.owner_subject, i.label,
+        r#"select i.id, i.manifest_digest, i.artifact_type, i.label,
                   i.attrs as "attrs: serde_json::Value", i.created_at
            from tml_switchboard.images i
-           join tml_switchboard.principals($1) p on p.id = i.owner_subject
+           where tml_switchboard.image_source_usable($1, i.id)
            order by i.created_at, i.id"#,
         subject,
     )
@@ -386,6 +565,62 @@ pub async fn members_for_generation(
            join tml_switchboard.images i on i.id = m.image_id
            where m.group_id = $1 and m.generation = $2
            order by m."index""#,
+        group_id,
+        generation as i32,
+    )
+    .fetch_all(conn)
+    .await
+}
+
+/// Whether `subject` may use *every* member of the generation: no member lacks a
+/// source the subject may `use`. The enqueue/dispatch group gate (decision #1: a
+/// partially-inhabited generation is rejected). An empty generation is vacuously
+/// usable (it simply matches no host at dispatch).
+pub async fn generation_usable(
+    conn: impl PgExecutor<'_>,
+    subject: Uuid,
+    group_id: Uuid,
+    generation: u32,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"select not exists (
+               select 1 from tml_switchboard.image_group_members m
+               where m.group_id = $2 and m.generation = $3
+                 and not tml_switchboard.image_source_usable($1, m.image_id)
+           ) as "usable!""#,
+        subject,
+        group_id,
+        generation as i32,
+    )
+    .fetch_one(conn)
+    .await
+}
+
+/// Per-member usability of a generation for `viewer`, in member (`index`) order:
+/// whether the viewer may use some source of each member, and whether *every*
+/// subject holding a `use` grant on the group can (for a public group that set
+/// includes the `everyone` subject, folding the public case in). Feeds the API's
+/// per-member "no source you can use" / "unusable by some grantee" indicators.
+pub async fn generation_member_usability(
+    conn: impl PgExecutor<'_>,
+    viewer: Uuid,
+    group_id: Uuid,
+    generation: u32,
+) -> Result<Vec<MemberUsability>, sqlx::Error> {
+    sqlx::query_as!(
+        MemberUsability,
+        r#"select m.image_id,
+                  tml_switchboard.image_source_usable($1, m.image_id) as "usable!",
+                  not exists (
+                      select 1
+                      from tml_switchboard.image_group_grants ggr
+                      where ggr.group_id = $2 and ggr.permission = 'use'
+                        and not tml_switchboard.image_source_usable(ggr.subject_id, m.image_id)
+                  ) as "usable_by_grantees!"
+           from tml_switchboard.image_group_members m
+           where m.group_id = $2 and m.generation = $3
+           order by m."index""#,
+        viewer,
         group_id,
         generation as i32,
     )

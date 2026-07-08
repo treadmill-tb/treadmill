@@ -14,8 +14,9 @@ import type { Route } from "./+types/image-group-detail";
 type MemberRow = { image_id: string; tags: string };
 
 /// The well-known `everyone` subject (see switchboard `SCHEMA.sql`). Granting it
-/// `use` on a group makes the group public; there is no dedicated public flag.
-const EVERYONE_SUBJECT = "00000000-0000-0000-0000-000000000004";
+/// `use` on a group or image source makes the entity public; there is no
+/// dedicated public flag.
+export const EVERYONE_SUBJECT = "00000000-0000-0000-0000-000000000004";
 
 function NewGenerationForm({
   groupId,
@@ -444,39 +445,71 @@ export function GenerationMembers({
     image_id: string;
     manifest_digest: string;
     required_host_tags: string[];
+    usable: boolean;
+    usable_by_grantees: boolean;
   }[];
 }) {
   if (members.length === 0) {
     return <p className="muted">No members.</p>;
   }
   return (
-    <table>
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Image</th>
-          <th>Digest</th>
-          <th>Required host tags</th>
-        </tr>
-      </thead>
-      <tbody>
-        {members.map((m) => (
-          <tr key={m.index}>
-            <td>{m.index}</td>
-            <td>
-              <Link to={`/images/${m.manifest_digest}`} className="mono">
-                {m.image_id.slice(0, 8)}
-              </Link>
-            </td>
-            <td>
-              <Digest digest={m.manifest_digest} />
-            </td>
-            <td>
-              <Tags tags={m.required_host_tags} />
-            </td>
+    <>
+      {members.some((m) => !m.usable_by_grantees) && (
+        <p className="error">
+          Some members have no source usable by every holder of a `use` grant on
+          this group: for those subjects, jobs against this generation will not
+          resolve. Grant `use` on a source of the flagged members (e.g. to
+          `everyone`) to fix this.
+        </p>
+      )}
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Image</th>
+            <th>Digest</th>
+            <th>Required host tags</th>
+            <th>Usability</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {members.map((m) => (
+            <tr key={m.index}>
+              <td>{m.index}</td>
+              <td>
+                <Link to={`/images/${m.manifest_digest}`} className="mono">
+                  {m.image_id.slice(0, 8)}
+                </Link>
+              </td>
+              <td>
+                <Digest digest={m.manifest_digest} />
+              </td>
+              <td>
+                <Tags tags={m.required_host_tags} />
+              </td>
+              <td>
+                {!m.usable ? (
+                  <span
+                    className="badge danger"
+                    title="No source of this image is usable by you; a job would not resolve it."
+                  >
+                    no usable source
+                  </span>
+                ) : m.usable_by_grantees ? (
+                  <span className="badge ok">usable</span>
+                ) : (
+                  <span
+                    className="badge warn"
+                    title="Some subject holding a `use` grant on this group cannot use any source of this image."
+                  >
+                    not grantee-usable
+                  </span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
   );
 }

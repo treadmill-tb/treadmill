@@ -19,9 +19,10 @@ use uuid::Uuid;
 
 use oci_spec::image::ImageManifest;
 use treadmill_rs::api::switchboard::images::{
-    CreateGenerationRequest, CreateImageGroupRequest, GenerationMemberInfo,
+    AddImageSourceRequest, CreateGenerationRequest, CreateImageGroupRequest, GenerationMemberInfo,
     ImageGroupGenerationInfo, ImageGroupGrantInfo, ImageGroupGrantRequest, ImageGroupInfo,
-    ImageGroupPermission, ImageInfo, ImageLocation, RegisterImageRequest,
+    ImageGroupPermission, ImageInfo, ImageSourceGrantInfo, ImageSourceGrantRequest,
+    ImageSourceInfo, ImageSourcePermission, RegisterImageRequest,
 };
 use treadmill_rs::image::parse::{self, ParseError};
 use treadmill_rs::image::{Digest, media_types};
@@ -29,10 +30,14 @@ use treadmill_rs::image::{Digest, media_types};
 use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_entity};
 use crate::audit::model::{ImageGroup as AuditImageGroup, Subject as AuditSubject};
 use crate::audit::{self, events};
-use crate::auth::engine::{self, ImageGroupPermission as Perm};
+use crate::auth::engine::{
+    self, ImageGroupPermission as Perm, ImageSourcePermission as SourcePerm,
+};
 use crate::http_error::internal;
 use crate::registry::RegistryError;
-use crate::routes::params::{DigestPath, GenerationPath, GrantPath, IdPath};
+use crate::routes::params::{
+    DigestPath, GenerationPath, GrantPath, IdPath, SourceGrantPath, SourcePath,
+};
 use crate::serve::AppState;
 use crate::sql::image;
 
@@ -47,25 +52,6 @@ fn pull_failed(e: RegistryError) -> StatusCode {
 fn invalid(e: ParseError) -> StatusCode {
     tracing::warn!("image registration validation failed: {e}");
     StatusCode::UNPROCESSABLE_ENTITY
-}
-
-/// Whether `subject` can reach `target` (is it, or transitively contains it).
-async fn subject_reaches(
-    state: &AppState,
-    subject: Uuid,
-    target: Option<Uuid>,
-) -> Result<bool, StatusCode> {
-    let Some(target) = target else {
-        return Ok(false);
-    };
-    sqlx::query_scalar!(
-        "select exists(select 1 from tml_switchboard.principals($1) p where p.id = $2) as \"ok!\"",
-        subject,
-        target,
-    )
-    .fetch_one(state.pool())
-    .await
-    .map_err(internal)
 }
 
 /// Pull a manifest/index document by digest and verify it hashes to that digest.
@@ -91,30 +77,55 @@ async fn pull_verified(
     Ok(bytes)
 }
 
-/// Assemble the API view of an image from its record plus its locations.
-async fn image_info(state: &AppState, rec: image::ImageRecord) -> Result<ImageInfo, StatusCode> {
-    let locations = image::locations_for_image(state.pool(), rec.id)
+/// Assemble the API view of an image from its record plus its sources, surfacing
+/// `viewer`'s permissions on each source.
+async fn image_info(
+    state: &AppState,
+    rec: image::ImageRecord,
+    viewer: Uuid,
+) -> Result<ImageInfo, StatusCode> {
+    let source_recs = image::sources_for_image(state.pool(), rec.id)
         .await
-        .map_err(internal)?
-        .into_iter()
-        .map(|l| ImageLocation {
-            registry: l.registry,
-            repository: l.repository,
-            status: l.status,
-        })
-        .collect();
+        .map_err(internal)?;
+    let mut sources = Vec::with_capacity(source_recs.len());
+    for s in source_recs {
+        let permissions = engine::image_source_permissions(state.pool(), viewer, s.id)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .map(source_perm_to_api)
+            .collect();
+        sources.push(ImageSourceInfo {
+            id: s.id,
+            registry: s.registry,
+            repository: s.repository,
+            status: s.status,
+            owner_id: s.owner_subject,
+            permissions,
+        });
+    }
     Ok(ImageInfo {
         id: rec.id,
         manifest_digest: rec.manifest_digest.parse().map_err(internal)?,
         artifact_type: rec.artifact_type,
-        owner_id: rec.owner_subject,
         label: rec.label,
         created_at: rec.created_at,
-        locations,
+        sources,
     })
 }
 
-/// `POST /images`: register a concrete image by digest.
+/// Map the engine's source permission to the API enum.
+fn source_perm_to_api(p: SourcePerm) -> ImageSourcePermission {
+    match p {
+        SourcePerm::Use => ImageSourcePermission::Use,
+        SourcePerm::Manage => ImageSourcePermission::Manage,
+    }
+}
+
+/// `POST /images`: register a concrete image by digest. An image is a non-owned
+/// manifest identity; the caller owns the *source* it registers. A known digest
+/// idempotently gains a caller-owned source (e.g. a new mirror); a new digest
+/// inserts the image plus its first source.
 pub async fn register_image(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
@@ -135,26 +146,27 @@ pub async fn register_image(
 
     let digest_str = req.manifest_digest.encoded();
 
-    // A digest is owned by its first registrant (manifest_digest is unique).
+    // A known digest is a shared, non-owned identity: any caller may add a source
+    // it owns (idempotent on `(image_id, registry, repository)`).
     if let Some(existing) = image::fetch_by_digest(state.pool(), &digest_str)
         .await
         .map_err(internal)?
     {
-        if !subject_reaches(&state, owner, existing.owner_subject).await? {
-            return Err(StatusCode::CONFLICT);
-        }
-        // Re-registration by the owner: idempotently add the location (e.g. a
-        // new mirror), leaving the digest and existing references unchanged.
-        image::upsert_location(
+        image::insert_source(
             state.pool(),
+            Uuid::now_v7(),
             existing.id,
             &req.registry,
             &req.repository,
             "external",
+            Some(owner),
         )
         .await
         .map_err(internal)?;
-        return Ok((StatusCode::OK, Json(image_info(&state, existing).await?)));
+        return Ok((
+            StatusCode::OK,
+            Json(image_info(&state, existing, owner).await?),
+        ));
     }
 
     let attrs = serde_json::json!({
@@ -170,15 +182,22 @@ pub async fn register_image(
         id,
         &digest_str,
         media_types::IMAGE_ARTIFACT_TYPE,
-        owner,
         req.label.as_deref(),
         &attrs,
     )
     .await
     .map_err(internal)?;
-    image::upsert_location(&mut *tx, id, &req.registry, &req.repository, "external")
-        .await
-        .map_err(internal)?;
+    image::insert_source(
+        &mut *tx,
+        Uuid::now_v7(),
+        id,
+        &req.registry,
+        &req.repository,
+        "external",
+        Some(owner),
+    )
+    .await
+    .map_err(internal)?;
     audit::emit(
         &mut tx,
         &events::ImageRegistered {
@@ -196,39 +215,48 @@ pub async fn register_image(
         .await
         .map_err(internal)?
         .ok_or_else(|| internal("image vanished immediately after insert"))?;
-    Ok((StatusCode::CREATED, Json(image_info(&state, rec).await?)))
+    Ok((
+        StatusCode::CREATED,
+        Json(image_info(&state, rec, owner).await?),
+    ))
 }
 
-/// `GET /images`: list images the caller owns (directly or via a group).
+/// `GET /images`: list images the caller may use (has a reachable source).
 pub async fn list_images(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
 ) -> Result<Json<Vec<ImageInfo>>, StatusCode> {
-    let records = image::list_owned(state.pool(), subject.user_id())
+    let viewer = subject.user_id();
+    let records = image::list_usable_images(state.pool(), viewer)
         .await
         .map_err(internal)?;
     let mut out = Vec::with_capacity(records.len());
     for rec in records {
-        out.push(image_info(&state, rec).await?);
+        out.push(image_info(&state, rec, viewer).await?);
     }
     Ok(Json(out))
 }
 
-/// `GET /images/{digest}`: inspect one image the caller can reach.
+/// `GET /images/{digest}`: inspect one image the caller can reach (has a source
+/// it may use). 404 if none, so existence is not leaked.
 pub async fn get_image(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Path(DigestPath { digest }): Path<DigestPath>,
 ) -> Result<Json<ImageInfo>, StatusCode> {
+    let viewer = subject.user_id();
     let rec = image::fetch_by_digest(state.pool(), &digest)
         .await
         .map_err(internal)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    // Don't leak existence of images the caller cannot reach.
-    if !subject_reaches(&state, subject.user_id(), rec.owner_subject).await? {
+    // Don't leak existence of images the caller has no usable source for.
+    let usable = image::image_source_usable(state.pool(), viewer, rec.id)
+        .await
+        .map_err(internal)?;
+    if !usable {
         return Err(StatusCode::NOT_FOUND);
     }
-    Ok(Json(image_info(&state, rec).await?))
+    Ok(Json(image_info(&state, rec, viewer).await?))
 }
 
 /// Assemble the API view of a group from its record, reading the latest
@@ -358,6 +386,7 @@ pub async fn get_image_group(
 /// order.
 async fn generation_info(
     state: &AppState,
+    viewer: Uuid,
     group_id: Uuid,
     generation: u32,
 ) -> Result<ImageGroupGenerationInfo, StatusCode> {
@@ -365,16 +394,32 @@ async fn generation_info(
         .await
         .map_err(internal)?
         .ok_or(StatusCode::NOT_FOUND)?;
+    // Per-member usability (viewer + all group `use`-grantees), keyed by image id.
+    // A member's group grant is necessary but not sufficient: it may still lack a
+    // source the viewer (or some grantee) can reach.
+    let usability: std::collections::HashMap<Uuid, image::MemberUsability> =
+        image::generation_member_usability(state.pool(), viewer, group_id, generation)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .map(|u| (u.image_id, u))
+            .collect();
     let members = image::members_for_generation(state.pool(), group_id, generation)
         .await
         .map_err(internal)?
         .into_iter()
         .map(|m| {
+            let (usable, usable_by_grantees) = usability
+                .get(&m.image_id)
+                .map(|u| (u.usable, u.usable_by_grantees))
+                .unwrap_or((false, false));
             Ok(GenerationMemberInfo {
                 image_id: m.image_id,
                 manifest_digest: m.manifest_digest.parse().map_err(internal)?,
                 required_host_tags: m.required_host_tags,
                 index: m.index as u32,
+                usable,
+                usable_by_grantees,
             })
         })
         .collect::<Result<Vec<_>, StatusCode>>()?;
@@ -433,7 +478,7 @@ pub async fn create_generation(
     .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
 
-    let info = generation_info(&state, group_id, generation).await?;
+    let info = generation_info(&state, subject.user_id(), group_id, generation).await?;
     Ok((StatusCode::CREATED, Json(info)))
 }
 
@@ -447,7 +492,9 @@ pub async fn get_generation(
     }): Path<GenerationPath>,
 ) -> Result<Json<ImageGroupGenerationInfo>, StatusCode> {
     visible_group(&state, subject.user_id(), group_id).await?;
-    Ok(Json(generation_info(&state, group_id, generation).await?))
+    Ok(Json(
+        generation_info(&state, subject.user_id(), group_id, generation).await?,
+    ))
 }
 
 /// `POST /image-groups/{id}/grants`: grant `use`/`manage` to a subject. Requires
@@ -567,4 +614,169 @@ pub async fn list_events(
     fetch_events_for_entity(&state, &subject, "image_group", group_id, &query)
         .await
         .map(Json)
+}
+
+// -- image sources --------------------------------------------------------------
+
+/// `POST /images/{digest}/sources`: add a registry source to a registered image.
+/// Any authenticated caller may add a source (owning it, per the image/source
+/// model); the image must already be registered and the source must actually
+/// serve the digest (pulled + verified, as at registration).
+pub async fn add_image_source(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(DigestPath { digest }): Path<DigestPath>,
+    Json(req): Json<AddImageSourceRequest>,
+) -> Result<(StatusCode, Json<ImageInfo>), StatusCode> {
+    let owner = subject.user_id();
+    let rec = image::fetch_by_digest(state.pool(), &digest)
+        .await
+        .map_err(internal)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Verify the source genuinely serves this image before recording it, so a
+    // dispatch never picks an unusable source.
+    let parsed_digest: Digest = rec.manifest_digest.parse().map_err(internal)?;
+    pull_verified(&state, &req.registry, &req.repository, &parsed_digest).await?;
+
+    image::insert_source(
+        state.pool(),
+        Uuid::now_v7(),
+        rec.id,
+        &req.registry,
+        &req.repository,
+        "external",
+        Some(owner),
+    )
+    .await
+    .map_err(internal)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(image_info(&state, rec, owner).await?),
+    ))
+}
+
+/// Load a source that belongs to the image identified by `digest`, requiring the
+/// caller hold `manage` on it (owner or admin implicitly). 404 if the image or
+/// source is unknown or the source belongs to a different image; 403 if the
+/// caller may not manage it.
+async fn require_source_manage(
+    state: &AppState,
+    subject: Uuid,
+    digest: &str,
+    source_id: Uuid,
+) -> Result<image::SourceRecord, StatusCode> {
+    let img = image::fetch_by_digest(state.pool(), digest)
+        .await
+        .map_err(internal)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let source = image::fetch_source(state.pool(), source_id)
+        .await
+        .map_err(internal)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    if source.image_id != img.id {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let manage =
+        engine::can_access_image_source(state.pool(), subject, source_id, SourcePerm::Manage)
+            .await
+            .map_err(internal)?;
+    if !manage {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(source)
+}
+
+/// `DELETE /images/{digest}/sources/{source_id}`: delete a source. Requires
+/// `manage`. Sources are always deletable by their owner/admins, even when a
+/// generation references the image.
+pub async fn delete_image_source(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(SourcePath { digest, source_id }): Path<SourcePath>,
+) -> Result<StatusCode, StatusCode> {
+    require_source_manage(&state, subject.user_id(), &digest, source_id).await?;
+    let removed = image::delete_source(state.pool(), source_id)
+        .await
+        .map_err(internal)?;
+    Ok(if removed {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    })
+}
+
+/// `POST /images/{digest}/sources/{source_id}/grants`: grant `use`/`manage` on a
+/// source to a subject. Requires `manage`. Granting the `everyone` subject `use`
+/// makes the source public.
+pub async fn grant_image_source(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(SourcePath { digest, source_id }): Path<SourcePath>,
+    Json(req): Json<ImageSourceGrantRequest>,
+) -> Result<StatusCode, StatusCode> {
+    require_source_manage(&state, subject.user_id(), &digest, source_id).await?;
+    let permission = SourcePerm::from(req.permission);
+    image::grant_image_source(state.pool(), source_id, req.subject_id, permission.as_str())
+        .await
+        .map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /images/{digest}/sources/{source_id}/grants`: list a source's grants.
+/// Requires `manage`.
+pub async fn list_image_source_grants(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(SourcePath { digest, source_id }): Path<SourcePath>,
+) -> Result<Json<Vec<ImageSourceGrantInfo>>, StatusCode> {
+    require_source_manage(&state, subject.user_id(), &digest, source_id).await?;
+    let grants = image::list_image_source_grants(state.pool(), source_id)
+        .await
+        .map_err(internal)?
+        .into_iter()
+        .map(|g| {
+            let permission = match g.permission.as_str() {
+                "use" => ImageSourcePermission::Use,
+                "manage" => ImageSourcePermission::Manage,
+                other => {
+                    return Err(internal(format!(
+                        "unknown image-source permission {other:?}"
+                    )));
+                }
+            };
+            Ok(ImageSourceGrantInfo {
+                subject_id: g.subject_id,
+                permission,
+            })
+        })
+        .collect::<Result<Vec<_>, StatusCode>>()?;
+    Ok(Json(grants))
+}
+
+/// `DELETE /images/{digest}/sources/{source_id}/grants/{subject_id}/{permission}`:
+/// revoke a grant. Requires `manage`.
+pub async fn revoke_image_source_grant(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(SourceGrantPath {
+        digest,
+        source_id,
+        subject_id: target,
+        permission,
+    }): Path<SourceGrantPath>,
+) -> Result<StatusCode, StatusCode> {
+    require_source_manage(&state, subject.user_id(), &digest, source_id).await?;
+    // Reject an unknown permission word with a 400 rather than silently no-op.
+    if permission != "use" && permission != "manage" {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let removed = image::revoke_image_source(state.pool(), source_id, target, &permission)
+        .await
+        .map_err(internal)?;
+    Ok(if removed {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    })
 }

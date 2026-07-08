@@ -825,13 +825,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ImageInfo'
         '200':
-          description: The image was already registered; this location was added.
+          description: The image was already registered; a caller-owned source was added.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ImageInfo'
-        '409':
-          description: This digest is already registered to another owner.
         '502':
           description: The image's registry could not be reached or returned an error.
       security:
@@ -857,13 +855,262 @@ paths:
         '403':
           description: The authenticated account is locked, or lacks permission for this resource.
         '200':
-          description: A registered image, as returned by the catalog list/inspect routes.
+          description: |-
+            A registered image, as returned by the catalog list/inspect routes. An image
+            is non-owned; ownership lives on its `sources`.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ImageInfo'
         '404':
           description: No such image, or it is not visible to the caller.
+      security:
+      - token: []
+  /images/{digest}/sources:
+    post:
+      tags:
+      - Images
+      summary: Add a source to an image
+      operationId: addImageSource
+      parameters:
+      - in: path
+        name: digest
+        description: The image's OCI manifest digest (`sha256:<hex>`).
+        required: true
+        schema:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        style: simple
+      requestBody:
+        description: |-
+          `POST /images/{digest}/sources`: add a registry source to a registered image.
+          The caller owns the source it adds.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddImageSourceRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '201':
+          description: The source was added; the caller owns it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageInfo'
+        '404':
+          description: No such registered image.
+        '502':
+          description: The source could not be reached or does not serve the image.
+      security:
+      - token: []
+  /images/{digest}/sources/{source_id}:
+    delete:
+      tags:
+      - Images
+      summary: Delete an image source
+      operationId: deleteImageSource
+      parameters:
+      - in: path
+        name: digest
+        description: The image's OCI manifest digest (`sha256:<hex>`).
+        required: true
+        schema:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        style: simple
+      - in: path
+        name: source_id
+        description: The source's unique identifier.
+        required: true
+        schema:
+          description: The source's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '204':
+          description: The source was deleted.
+        '404':
+          description: No such image or source.
+      security:
+      - token: []
+  /images/{digest}/sources/{source_id}/grants:
+    get:
+      tags:
+      - Images
+      summary: List an image source's grants
+      description: Returns the complete set in a stable order; this route is not paginated.
+      operationId: listImageSourceGrants
+      parameters:
+      - in: path
+        name: digest
+        description: The image's OCI manifest digest (`sha256:<hex>`).
+        required: true
+        schema:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        style: simple
+      - in: path
+        name: source_id
+        description: The source's unique identifier.
+        required: true
+        schema:
+          description: The source's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImageSourceGrantInfo'
+      security:
+      - token: []
+    post:
+      tags:
+      - Images
+      summary: Grant a permission on an image source
+      operationId: createImageSourceGrant
+      parameters:
+      - in: path
+        name: digest
+        description: The image's OCI manifest digest (`sha256:<hex>`).
+        required: true
+        schema:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        style: simple
+      - in: path
+        name: source_id
+        description: The source's unique identifier.
+        required: true
+        schema:
+          description: The source's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        description: |-
+          `POST /images/{digest}/sources/{source_id}/grants`: grant `permission` on a
+          source to a subject.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageSourceGrantRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '204':
+          description: The grant was recorded.
+        '404':
+          description: No such image or source.
+      security:
+      - token: []
+  /images/{digest}/sources/{source_id}/grants/{subject_id}/{permission}:
+    delete:
+      tags:
+      - Images
+      summary: Revoke a grant on an image source
+      operationId: revokeImageSourceGrant
+      parameters:
+      - in: path
+        name: digest
+        description: The image's OCI manifest digest (`sha256:<hex>`).
+        required: true
+        schema:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        style: simple
+      - in: path
+        name: permission
+        description: The permission being revoked (`use` or `manage`).
+        required: true
+        schema:
+          description: The permission being revoked (`use` or `manage`).
+          type: string
+        style: simple
+      - in: path
+        name: source_id
+        description: The source's unique identifier.
+        required: true
+        schema:
+          description: The source's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      - in: path
+        name: subject_id
+        description: The subject (user or group) the grant applies to.
+        required: true
+        schema:
+          description: The subject (user or group) the grant applies to.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '204':
+          description: The grant was revoked.
+        '404':
+          description: No matching grant to revoke.
       security:
       - token: []
   /image-groups:
@@ -1256,6 +1503,21 @@ components:
       scheme: bearer
       description: 'A Treadmill user API token, presented as `Authorization: Bearer <token>`.'
   schemas:
+    AddImageSourceRequest:
+      description: |-
+        `POST /images/{digest}/sources`: add a registry source to a registered image.
+        The caller owns the source it adds.
+      type: object
+      properties:
+        registry:
+          description: Registry authority (`host:port`) the image can be pulled from.
+          type: string
+        repository:
+          description: Repository path within the registry.
+          type: string
+      required:
+      - registry
+      - repository
     AuditFeedQuery:
       description: Query parameters for an audit feed (`GET /{entity}/{id}/events`).
       type: object
@@ -1404,11 +1666,27 @@ components:
           type: array
           items:
             type: string
+        usable:
+          description: |-
+            Whether the viewer may use some source of this member image. A group grant
+            is necessary but not sufficient: `false` means the member has no source the
+            viewer can reach (so a job would not resolve it for this viewer).
+          type: boolean
+        usable_by_grantees:
+          description: |-
+            Whether *every* subject holding a `use` grant on the group can source this
+            member (for a public group, that set includes the `everyone` subject). This
+            is the owner-facing health signal: `false` flags a member some grantee
+            cannot reach, so the group's `use` grant is unusable for them in practice.
+            Vacuously `true` for a group with no `use` grants.
+          type: boolean
       required:
       - image_id
       - manifest_digest
       - required_host_tags
       - index
+      - usable
+      - usable_by_grantees
     GenerationMemberSpec:
       description: |-
         One member of a new generation; `index` is the member's array position in the
@@ -1649,7 +1927,9 @@ components:
         type: string
         const: manage
     ImageInfo:
-      description: A registered image, as returned by the catalog list/inspect routes.
+      description: |-
+        A registered image, as returned by the catalog list/inspect routes. An image
+        is non-owned; ownership lives on its `sources`.
       type: object
       properties:
         artifact_type:
@@ -1664,27 +1944,65 @@ components:
           type:
           - string
           - 'null'
-        locations:
-          type: array
-          items:
-            $ref: '#/components/schemas/ImageLocation'
         manifest_digest:
           $ref: '#/components/schemas/Digest'
-        owner_id:
-          type:
-          - string
-          - 'null'
-          format: uuid
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageSourceInfo'
       required:
       - id
       - manifest_digest
       - artifact_type
       - created_at
-      - locations
-    ImageLocation:
-      description: One registry location of a registered image.
+      - sources
+    ImageSourceGrantInfo:
+      description: One grant on an image source, as returned by the list-grants route.
       type: object
       properties:
+        permission:
+          $ref: '#/components/schemas/ImageSourcePermission'
+        subject_id:
+          type: string
+          format: uuid
+      required:
+      - subject_id
+      - permission
+    ImageSourceGrantRequest:
+      description: |-
+        `POST /images/{digest}/sources/{source_id}/grants`: grant `permission` on a
+        source to a subject.
+      type: object
+      properties:
+        permission:
+          $ref: '#/components/schemas/ImageSourcePermission'
+        subject_id:
+          type: string
+          format: uuid
+      required:
+      - subject_id
+      - permission
+    ImageSourceInfo:
+      description: |-
+        One registry source of a registered image — the ownable, grantable catalog
+        entity — as returned by the inspect routes. `permissions` is the *viewer's*
+        permissions on this source (like host/job permission surfacing).
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        owner_id:
+          description: The source's owner, or null if orphaned.
+          type:
+          - string
+          - 'null'
+          format: uuid
+        permissions:
+          description: The viewer's permissions on this source.
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageSourcePermission'
         registry:
           type: string
         repository:
@@ -1693,9 +2011,22 @@ components:
           description: '`external`, `canonical`, or `system`.'
           type: string
       required:
+      - id
       - registry
       - repository
       - status
+      - permissions
+    ImageSourcePermission:
+      description: |-
+        A permission on an image source. A "public" (unauthenticated) source is one
+        that grants the well-known `everyone` subject `use`.
+      oneOf:
+      - description: May pull the image from this source (run jobs that resolve to it).
+        type: string
+        const: use
+      - description: May manage the source's grants and delete it (owner holds this implicitly).
+        type: string
+        const: manage
     JobImageRef:
       description: |-
         What a job is based off, as seen by `GET /jobs/{id}`: a concrete image, an
@@ -2633,6 +2964,45 @@ components:
       - created_at
       - expires_at
       - current
+    SourceGrantPath:
+      description: |-
+        The `{digest}/sources/{source_id}/grants/{subject_id}/{permission}` segments
+        of an image-source grant route.
+      type: object
+      properties:
+        digest:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        permission:
+          description: The permission being revoked (`use` or `manage`).
+          type: string
+        source_id:
+          description: The source's unique identifier.
+          type: string
+          format: uuid
+        subject_id:
+          description: The subject (user or group) the grant applies to.
+          type: string
+          format: uuid
+      required:
+      - digest
+      - source_id
+      - subject_id
+      - permission
+    SourcePath:
+      description: The `{digest}/sources/{source_id}` segments of an image-source route.
+      type: object
+      properties:
+        digest:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        source_id:
+          description: The source's unique identifier.
+          type: string
+          format: uuid
+      required:
+      - digest
+      - source_id
     SshEndpoint:
       description: An SSH endpoint a running job can be reached on.
       type: object
