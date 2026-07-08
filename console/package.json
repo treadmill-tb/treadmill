@@ -13,7 +13,7 @@
   "dependencies": {
     "@nats-io/jetstream": "^3.4.0",
     "@nats-io/nats-core": "^3.4.0",
-    "@react-router/node": "^7.9.4",
+    "@react-router/node": "^8.1.0",
     "@tanstack/react-query": "^5.90.2",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
@@ -22,10 +22,10 @@
     "openapi-react-query": "^0.5.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-router": "^7.9.4"
+    "react-router": "^8.1.0"
   },
   "devDependencies": {
-    "@react-router/dev": "^7.9.4",
+    "@react-router/dev": "^8.1.0",
     "@types/node": "^22",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
