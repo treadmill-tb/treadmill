@@ -318,8 +318,9 @@ In `treadmill-rs/src/api/switchboard_supervisor.rs`:
   into xterm.js for ANSI rendering. The console calls
   `POST /jobs/{id}/nats-log-token` (the route was renamed from `log-token`)
   for credentials, then runs a JetStream **ordered consumer** — bounded
-  history replay, then follow live; see doc/console-neo-plan.md Phase 4 for
-  the client details and the widened, job-scoped read-token grants. Set the
+  history replay, then follow live; see the console's
+  `app/components/job-log.tsx` for the client details and the widened,
+  job-scoped read-token grants. Set the
   NATS `websocket` listener's `allowed_origins` to the console's origin (no
   CORS headers needed — the WebSocket handshake's `Origin` is validated
   server-side; there is no preflight).

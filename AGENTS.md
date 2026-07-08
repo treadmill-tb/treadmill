@@ -104,7 +104,18 @@ flake check) is the frontend CI gate: it fails on schema drift, then runs
 `npm run dev` (in the default dev shell, which carries node) proxies `/api` to
 a local switchboard at `127.0.0.1:8081` (override with `TML_DEV_PROXY`). The
 build reads `VITE_TML_API_URL` for the switchboard origin; empty means
-same-origin. `doc/console-neo-plan.md` tracks the remaining build-out.
+same-origin.
+
+**Deployment.** The SPA is static and hosted separately (e.g.
+Cloudflare/GitHub Pages) with `VITE_TML_API_URL` set to the switchboard
+origin at build time; the host serving it must rewrite unknown paths to
+`index.html` (SPA fallback). The switchboard needs the console origin in
+`server.cors_allowed_origins`, and the exact URL
+`<console-origin>/login/callback` in `oauth.return_to_allowlist`. For the log
+viewer, `log_streaming.websocket_url` must point at the NATS server's
+`websocket` listener (`wss://` in production, with the console origin in that
+listener's `allowed_origins`); browsers cannot use the plain `nats_url`. `nix
+run .#devstack` wires all of this up locally (see `tools/devstack.sh`).
 
 ## 3. Building, Testing, and the Nix Checks
 
