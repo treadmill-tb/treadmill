@@ -67,7 +67,6 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
             mock: None,
             return_to_allowlist: Vec::new(),
         },
-        console: None,
         log_streaming: None,
     }
 }

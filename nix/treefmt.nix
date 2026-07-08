@@ -32,21 +32,21 @@ _: {
           "switchboard/sql-formatter.json"
           # Generated (openapi-typescript); kept as raw codegen output so the
           # drift check in nix/console.nix is a byte-for-byte diff.
-          "console-neo/app/api/schema.d.ts"
-          "console-neo/node_modules/**"
-          "console-neo/build/**"
-          "console-neo/.react-router/**"
+          "console/app/api/schema.d.ts"
+          "console/node_modules/**"
+          "console/build/**"
+          "console/.react-router/**"
         ];
 
         # Scope prettier to the web console: its default include list would also
         # claim YAMLs like the generated switchboard/api-spec/openapi.yaml, which
         # must stay byte-identical to what the drift test emits.
         settings.formatter.prettier.includes = lib.mkForce [
-          "console-neo/**/*.ts"
-          "console-neo/**/*.tsx"
-          "console-neo/**/*.js"
-          "console-neo/**/*.css"
-          "console-neo/**/*.html"
+          "console/**/*.ts"
+          "console/**/*.tsx"
+          "console/**/*.js"
+          "console/**/*.css"
+          "console/**/*.html"
         ];
 
         settings.formatter.sql-formatter =

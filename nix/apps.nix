@@ -92,7 +92,6 @@
             pkgs.curl
             pkgs.jq
             self'.packages.swx
-            self'.packages.tml-console
           ]
           # The single dev zot + qemu-supervisor stack is Linux-only: it boots the
           # aarch64 tiny-efi fixture, which is only built on Linux (nix/tiny-efi.nix).

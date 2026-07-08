@@ -6,22 +6,22 @@ _: {
       # the committed OpenAPI-generated types are drift-checked against
       # switchboard/api-spec/openapi.yaml, then lint + typecheck + vite build
       # run in order. Promoted to a flake check by nix/checks.nix.
-      packages.console-neo = pkgs.buildNpmPackage {
-        pname = "treadmill-console-neo";
+      packages.console = pkgs.buildNpmPackage {
+        pname = "treadmill-console";
         version = "0.1.0";
 
         src = pkgs.lib.fileset.toSource {
           root = ../.;
           fileset = pkgs.lib.fileset.unions [
-            ../console-neo
+            ../console
             # The codegen input, addressed as `../switchboard/...` by the
             # `codegen` npm script.
             ../switchboard/api-spec/openapi.yaml
           ];
         };
-        sourceRoot = "source/console-neo";
+        sourceRoot = "source/console";
 
-        npmDeps = pkgs.importNpmLock { npmRoot = ../console-neo; };
+        npmDeps = pkgs.importNpmLock { npmRoot = ../console; };
         inherit (pkgs.importNpmLock) npmConfigHook;
 
         nodejs = pkgs.nodejs_22;
@@ -34,9 +34,9 @@ _: {
           cp app/api/schema.d.ts schema.committed.d.ts
           npm run codegen
           if ! diff -u schema.committed.d.ts app/api/schema.d.ts; then
-            echo 'console-neo/app/api/schema.d.ts is out of date with' >&2
+            echo 'console/app/api/schema.d.ts is out of date with' >&2
             echo 'switchboard/api-spec/openapi.yaml; regenerate it with' >&2
-            echo '`npm run codegen` in console-neo/ and commit the diff.' >&2
+            echo '`npm run codegen` in console/ and commit the diff.' >&2
             exit 1
           fi
           rm schema.committed.d.ts

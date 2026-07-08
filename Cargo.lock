@@ -412,7 +412,6 @@ dependencies = [
  "axum",
  "axum-core",
  "bytes",
- "cookie",
  "futures-core",
  "futures-util",
  "headers",
@@ -764,17 +763,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-xid",
-]
-
-[[package]]
-name = "cookie"
-version = "0.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ddef33a339a91ea89fb53151bd0a4689cfce27055c291dfa69945475d22c747"
-dependencies = [
- "percent-encoding",
- "time",
- "version_check",
 ]
 
 [[package]]
@@ -2190,30 +2178,6 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
-
-[[package]]
-name = "maud"
-version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8156733e27020ea5c684db5beac5d1d611e1272ab17901a49466294b84fc217e"
-dependencies = [
- "axum-core",
- "http",
- "itoa",
- "maud_macros",
-]
-
-[[package]]
-name = "maud_macros"
-version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7261b00f3952f617899bc012e3dbd56e4f0110a038175929fa5d18e5a19913ca"
-dependencies = [
- "proc-macro2",
- "proc-macro2-diagnostics",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "md-5"
@@ -4350,28 +4314,6 @@ name = "treadmill-cli"
 version = "0.3.1"
 
 [[package]]
-name = "treadmill-console"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "axum-extra",
- "chrono",
- "clap",
- "figment",
- "maud",
- "serde",
- "time",
- "tokio",
- "tower-http 0.7.0",
- "tracing",
- "tracing-subscriber",
- "treadmill-rs",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "treadmill-image-util"
 version = "0.1.0"
 dependencies = [
@@ -4546,7 +4488,6 @@ dependencies = [
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
- "treadmill-console",
  "treadmill-rs",
  "url",
  "uuid",

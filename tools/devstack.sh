@@ -8,7 +8,6 @@ umask 077
 # Config variables and sensible defaults:
 state_dir="${TML_DEVSTACK_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/treadmill-devstack}"
 sb_port="${TML_SB_PORT:-8000}"
-console_port="${TML_CONSOLE_PORT:-8080}"
 pg_port="${TML_PG_PORT:-5432}"
 nats_port="${TML_NATS_PORT:-4222}"
 nats_ws_port="${TML_NATS_WS_PORT:-4223}"
@@ -18,7 +17,7 @@ user="$(id -un)"
 # Linux-only registry/supervisor bootstrap inputs, injected from Nix.
 # Empty on non-Linux (the tiny-efi fixture isn't built there): the zot +
 # qemu-supervisor stack is then skipped and `.#dev` is just the
-# switchboard/console/NATS stack, as before.
+# switchboard/NATS stack, as before.
 fixture_layout="${TML_FIXTURE_LAYOUT:-}"
 aavmf_code="${TML_AAVMF_CODE:-}"
 aavmf_vars="${TML_AAVMF_VARS:-}"
@@ -189,13 +188,6 @@ use_tokio_console_subscriber = false
 nats_url = "nats://127.0.0.1:$nats_port"
 websocket_url = "ws://127.0.0.1:$nats_ws_port"
 
-# The console declares its landing URL as each login's return_to; the
-# allowlist (exact match) authorizes it. The callback 302s the browser
-# there with a single-use staged pair, which the console exchanges
-# server-to-server for the session token.
-[oauth]
-return_to_allowlist = ["http://localhost:$console_port/auth/landing"]
-
 # The mock provider is a development-only, UNAUTHENTICATED login bypass
 # (built-in identities, no external service). Safe to enable here only
 # because this stack is strictly for local development.
@@ -212,16 +204,6 @@ redirect_url = "http://localhost:$sb_port/api/v1/auth/github/callback"
 TOML
   fi
 } > "$sb_cfg"
-
-console_cfg="$cfg_dir/console.toml"
-cat > "$console_cfg" <<TOML
-[server]
-bind_address = "127.0.0.1:$console_port"
-public_base_url = "http://localhost:$console_port"
-
-[switchboard]
-base_url = "http://localhost:$sb_port"
-TOML
 
 # --- Dev DB seed (applied once at run time, after migrations) ---------
 # One admin user 'alice', linked to the built-in mock 'alice' identity
@@ -326,7 +308,7 @@ qemu_args = [
 TOML
 fi
 
-# --- Run switchboard + console; tear everything down on exit ----------
+# --- Run switchboard; tear everything down on exit --------------------
 pids=()
 cleanup() {
   trap - EXIT INT TERM
@@ -450,14 +432,10 @@ if [ "$enable_supervisor" = 1 ]; then
   pids+=("$!")
 fi
 
-tml-console serve -c "$console_cfg" &
-pids+=("$!")
-
 cat <<EOF
 
 ============================================================
   treadmill dev stack is up
-    web console     : http://localhost:$console_port   <- open this
     switchboard API : http://localhost:$sb_port
     NATS broker     : nats://127.0.0.1:$nats_port (ws on $nats_ws_port)
     postgresql      : UNIX socket at $sock_dir

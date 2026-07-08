@@ -23,8 +23,6 @@
 
         swx = cmn.mkBin { bin = "swx"; };
 
-        tml-console = cmn.mkBin { bin = "tml-console"; };
-
         treadmill-qemu-supervisor = cmn.mkBin { bin = "treadmill-qemu-supervisor"; };
 
         treadmill-nbd-netboot-supervisor = cmn.mkBin { bin = "treadmill-nbd-netboot-supervisor"; };

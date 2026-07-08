@@ -45,7 +45,7 @@
           nsc
           natscli
 
-          # Web console (console-neo/): npm-driven Vite/React toolchain.
+          # Web console (console/): npm-driven Vite/React toolchain.
           nodejs_22
         ];
 
