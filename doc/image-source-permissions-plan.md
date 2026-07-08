@@ -250,3 +250,163 @@ rewrites "public" as a grant everywhere it appears.
 - **Migration/`principals()` function body** isn't diffed by Atlas community;
   hand-carry it and run `-v` + `-r` so `atlas.sum` stays consistent
   (`flake check` gate).
+
+## 6. Commit B — execution spec (unambiguous)
+
+Commit A is **done and merged** on `dev/switchboard-fixes` (the `everyone`
+subject exists and is folded into `principals()`; use `EVERYONE_SUBJECT_ID =
+Uuid::from_u128(4)` / `00000000-0000-0000-0000-000000000004`). This section
+resolves every open detail from §3B so B can be executed without further design
+input. Follow the repo conventions in `AGENTS.md` (dev shells, `#[sqlx::test]`
+must be `#[ignore]`, regenerate `.sqlx`/OpenAPI/console schema, `nix fmt`, then
+re-hash+verify the migration with `nix run '.#switchboard-migrate' -- -r` /
+`-v`). One commit; it must compile and the checks must pass on its own.
+
+### B1. Schema (`switchboard/SCHEMA.sql`)
+
+- `images`: **drop `owner_subject`**. Keep `id, manifest_digest (UNIQUE),
+  artifact_type, label, attrs, created_at`. Reword the comment: images are
+  non-owned manifest identities; `label`/`attrs` are cached manifest
+  projections, not user metadata.
+- Rename `image_locations` → **`image_sources`**:
+  `id uuid PRIMARY KEY` (surrogate), `image_id uuid NOT NULL REFERENCES images(id)
+  ON DELETE CASCADE`, `registry text NOT NULL`, `repository text NOT NULL`,
+  `status text NOT NULL` (keep the existing `valid_location_status` CHECK:
+  external/canonical/system), `owner_subject uuid REFERENCES subjects
+  ON DELETE SET NULL`, `added_at`. Keep `UNIQUE(image_id, registry, repository)`.
+  Add a 2–3 sentence comment noting a source may **later** carry credentials
+  (stored in an external system or encrypted); out of scope now.
+- `image_source_permission` enum (`use`, `manage`) + `image_source_grants`
+  table `(source_id, subject_id, permission, granted_at)` PK
+  `(source_id, subject_id, permission)`, FKs cascade. No irrevocable trigger
+  (mirror `image_group_grants`).
+- Usability SQL function (hand-carried in the migration; Atlas won't diff it):
+  ```sql
+  -- exists a source of p_image that p_subject may `use` (owner ∨ admin ∨ grant,
+  -- over principals(); `everyone` is folded in, so a source granting `everyone`
+  -- `use` -- a public source -- satisfies every subject).
+  create function tml_switchboard.image_source_usable(p_subject uuid, p_image uuid)
+    returns boolean language sql stable as $$ ... $$;
+  ```
+  Use it for the API per-member fields (viewer usability = call with the viewer;
+  public = call with `EVERYONE_SUBJECT_ID`) and for the enqueue/dispatch gates.
+  A group-generation gate is just: no member lacks a usable source, i.e.
+  `not exists (member m where not image_source_usable(p_subject, m.image_id))`.
+
+### B2. Migration (`nix run '.#switchboard-migrate' -- -c image_sources`, then hand-edit)
+
+Order matters: create `image_sources`/grants + the function; **copy** rows from
+`image_locations` into `image_sources` (mint `id` with `gen_random_uuid()`; set
+`owner_subject` from the old `images.owner_subject` of that `image_id`); grant
+`everyone` `use` on every migrated source (preserves today's "any image usable
+by anyone" — see decision note below); then drop `image_locations` and
+`images.owner_subject`.
+
+### B3. Auth engine (`switchboard/src/auth/engine.rs`)
+
+Add `ImageSourcePermission { Use, Manage }` with `as_str`/`from_db_str`/`ALL`,
+`can_access_image_source(subject, source_id, perm)` and
+`image_source_permissions(subject, source_id)` — copy the image-group helpers
+verbatim, swapping table/column names (`image_sources.owner_subject`,
+`image_source_grants`). No `public` special-case needed (folded into
+`principals()`).
+
+### B4. SQL layer (`switchboard/src/sql/image.rs`)
+
+- `ImageRecord`: drop `owner_subject`. Fix `fetch_by_digest`/`fetch_by_id`/
+  `insert` (no owner arg).
+- Rename `LocationRecord`→`SourceRecord` (+ `id: Uuid`, `owner_subject`).
+  `locations_for_image`→`sources_for_image` (same ordering).
+- New: `insert_source(id, image_id, registry, repository, status, owner)`,
+  `delete_source(source_id)`, `fetch_source(source_id)`, source grant CRUD +
+  list (mirror the group-grant fns).
+- `list_owned`→`list_usable_images(viewer)`: images where
+  `image_source_usable(viewer, i.id)`.
+- Add `generation_usable(subject, group, gen)` and a per-member usability query
+  returning, per member, `usable` (viewer) and `public_source`
+  (`image_source_usable(EVERYONE, image)`).
+
+### B5. Shared API types (`treadmill-rs/src/api/switchboard/images.rs`)
+
+- `ImageInfo`: drop `owner_id`; replace `locations: Vec<ImageLocation>` with
+  `sources: Vec<ImageSourceInfo>`.
+- `ImageSourceInfo { id: Uuid, registry, repository, status: String,
+  owner_id: Option<Uuid>, permissions: Vec<ImageSourcePermission> }` (viewer's
+  permissions on the source, like host/job permission surfacing). Remove
+  `ImageLocation`.
+- `ImageSourcePermission { Use, Manage }` (snake_case). `AddImageSourceRequest
+  { registry, repository }`. `ImageSourceGrantRequest`/`ImageSourceGrantInfo`
+  `{ subject_id, permission }`.
+- Extend `GenerationMemberInfo` with `usable: bool` (viewer) and
+  `public_source: bool`.
+
+### B6. Routes (`switchboard/src/routes/images.rs`, `mod.rs`)
+
+- `register_image`: **drop** the digest-owner CONFLICT branch (no image owner).
+  On a known digest, add a source owned by the caller (idempotent on
+  `(image_id, registry, repository)`); on a new digest, insert image + first
+  source (owner = caller). Emit `ImageSourceAdded` (see B8).
+- `image_info`: return `sources` with the viewer's per-source `permissions`.
+- `get_image`/`list_images`: visibility = `image_source_usable(viewer, id)`
+  (404 if none; don't leak).
+- New routes (nested under the image digest, gated on source `manage`):
+  `POST /images/{digest}/sources`, `DELETE /images/{digest}/sources/{source_id}`,
+  `GET|POST /images/{digest}/sources/{source_id}/grants`,
+  `DELETE /images/{digest}/sources/{source_id}/grants/{subject_id}/{permission}`.
+  Wire in `mod.rs` with `doc(...)`.
+- `generation_info`: populate the new per-member usability fields.
+
+### B7. Enqueue + dispatch gates
+
+- **Enqueue** (`routes/jobs.rs`): keep the existing caller-side
+  `can_access_image_group(caller, group, Use)` check. **Add**, after the owner
+  is resolved and the generation frozen: group job ⇒ `generation_usable(owner,
+  group, gen)`; concrete-image job (`JobInitSpec::Image { image_id }`) ⇒
+  `image_source_usable(owner, image_id)`. On failure return **422
+  UNPROCESSABLE_ENTITY** (the owner cannot source the image; not a visibility
+  leak). This also closes the currently-unchecked concrete-image path
+  (`routes/jobs.rs:137`).
+- **Dispatch** (`sql/job.rs`): `resolve_image_spec` (called at
+  `scheduler.rs:215`) resolves the concrete member for the host; the locations
+  handed to the supervisor are assembled in `build_start_job_message`
+  (`sources_for_image`). Filter those to sources the **job owner** may `use`; if
+  none remain, finalize the job `image_error` (see decision note). Sources can
+  be deleted between enqueue and dispatch, so this re-check is load-bearing.
+- Update the DB test helper at `supervisor_ws_worker.rs:1440` (inserts images
+  with `owner_subject`) and `register_resolved_image` (~:2807) to the new shape:
+  insert an image with no owner + an `image_sources` row granted `everyone`
+  `use` (or owned by the job owner) so the dispatch gate passes.
+
+### B8. Audit
+
+Add an `image_source` value to `audit_entity_kind` (migration + `audit/model.rs`)
+and events `ImageSourceAdded` / `ImageSourceRemoved` / `ImageSourceGrant{Created,
+Revoked}` (mirror the image-group grant events, `view(Manage)` on the source).
+Keep `ImageRegistered`. If this balloons scope, it is acceptable to **defer** the
+source audit surface to `TODOS.md` and ship B without it — but then do not add
+the entity-kind enum value either.
+
+### B9. Console
+
+- `image-detail.tsx`/`images.tsx`: drop image `owner_id`; render `sources`
+  (registry/repository/status/owner) with add-source + delete-source forms and a
+  per-source grant UI (mirror `image-group-detail.tsx`'s grant form + the
+  `EVERYONE_SUBJECT` "public source" toggle).
+- `image-group-detail.tsx`/`generation-detail.tsx`: per-member badges from
+  `usable` / `public_source` ("no source you can use" / "no public source"), and
+  an owner-facing "this generation is not publicly usable" banner when some
+  member lacks a `public_source`.
+- Regenerate `app/api/schema.d.ts`.
+
+### Two judgment calls (defaults chosen; override before/at launch if desired)
+
+1. **Dispatch termination reason for "no usable source":** reuse the existing
+   `image_error` (least churn — no enum/wire-schema change; an image with no
+   owner-usable source is unfetchable for this owner). Alternative: add a
+   distinct `image_source_unavailable` reason (touches the `termination_reason`
+   enum + protocol schema snapshot). Default: **reuse `image_error`.**
+2. **Migration makes every existing image public** (grants `everyone` `use` on
+   all migrated sources) to preserve today's "any image usable by anyone".
+   Acceptable on this pre-production branch; the alternative (migrate as
+   owner-private) would render existing group generations unusable until sources
+   are re-granted. Default: **grant `everyone`.**
