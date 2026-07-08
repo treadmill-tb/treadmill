@@ -22,7 +22,6 @@ use treadmill_rs::api::switchboard::images::{
     CreateGenerationRequest, CreateImageGroupRequest, GenerationMemberInfo,
     ImageGroupGenerationInfo, ImageGroupGrantInfo, ImageGroupGrantRequest, ImageGroupInfo,
     ImageGroupPermission, ImageInfo, ImageLocation, RegisterImageRequest,
-    SetImageGroupPublicRequest,
 };
 use treadmill_rs::image::parse::{self, ParseError};
 use treadmill_rs::image::{Digest, media_types};
@@ -246,7 +245,6 @@ async fn group_info(
         name: group.name,
         label: group.label,
         owner_id: group.owner_subject,
-        public: group.public,
         created_at: group.created_at,
         latest_generation,
     })
@@ -271,16 +269,9 @@ pub async fn create_image_group(
 
     let id = Uuid::now_v7();
     let mut tx = state.pool().begin().await.map_err(internal)?;
-    image::create_group(
-        &mut *tx,
-        id,
-        &req.name,
-        owner,
-        req.label.as_deref(),
-        req.public,
-    )
-    .await
-    .map_err(internal)?;
+    image::create_group(&mut *tx, id, &req.name, owner, req.label.as_deref())
+        .await
+        .map_err(internal)?;
     audit::emit(
         &mut tx,
         &events::ImageGroupCreated {
@@ -560,45 +551,12 @@ pub async fn revoke_image_group_grant(
     })
 }
 
-/// `PUT /image-groups/{id}/public`: declare a group public (or private again).
-/// This is part of the authorization surface — `public` is an implicit `use`
-/// grant to *every* subject — so it sits alongside the per-subject grant routes
-/// and is gated on `manage` like them, not treated as descriptive metadata.
-pub async fn set_image_group_public(
-    State(state): State<AppState>,
-    subject: crate::auth::Subject,
-    Path(IdPath { id: group_id }): Path<IdPath>,
-    Json(req): Json<SetImageGroupPublicRequest>,
-) -> Result<Json<ImageGroupInfo>, StatusCode> {
-    require_manage(&state, subject.user_id(), group_id).await?;
-    let mut tx = state.pool().begin().await.map_err(internal)?;
-    image::set_group_public(&mut *tx, group_id, req.public)
-        .await
-        .map_err(internal)?;
-    audit::emit(
-        &mut tx,
-        &events::ImageGroupPublicSet {
-            actor: AuditSubject(subject.user_id()),
-            group: AuditImageGroup(group_id),
-            public: req.public,
-        },
-    )
-    .await
-    .map_err(internal)?;
-    tx.commit().await.map_err(internal)?;
-
-    let group = image::fetch_group_by_id(state.pool(), group_id)
-        .await
-        .map_err(internal)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(group_info(&state, group).await?))
-}
-
 /// `GET /image-groups/{id}/events`: the group's audit feed (grants, generations,
-/// public-flag changes, creation). Gated on `manage` — the events carry the
-/// `manage` view policy, so a viewer who only holds `use` would see an empty
-/// feed; requiring `manage` makes that explicit (404 if the group is not even
-/// visible, 403 if visible but unmanaged).
+/// creation). Gated on `manage` — the events carry the `manage` view policy, so
+/// a viewer who only holds `use` would see an empty feed; requiring `manage`
+/// makes that explicit (404 if the group is not even visible, 403 if visible but
+/// unmanaged). "Public" is a grant to the `everyone` subject, so making a group
+/// public/private appears here as an ordinary grant/revoke event.
 pub async fn list_events(
     State(state): State<AppState>,
     subject: crate::auth::Subject,

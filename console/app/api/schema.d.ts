@@ -519,23 +519,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/image-groups/{id}/public": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** Set an image group's public flag */
-        put: operations["setImageGroupPublic"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -604,12 +587,6 @@ export interface components {
             label: string | null;
             /** @description The stable, globally-unique moving-target handle a job references (by id). */
             name: string;
-            /**
-             * @description When `true`, every subject implicitly holds `use` on the group (may run
-             *     jobs against it) without an explicit grant. Never confers `manage`.
-             * @default false
-             */
-            public: boolean;
         };
         /**
          * @description A content-addressable OCI digest over 32 bytes of SHA-256.
@@ -782,8 +759,6 @@ export interface components {
             name: string;
             /** Format: uuid */
             owner_id?: string | null;
-            /** @description When `true`, every subject implicitly holds `use` on the group. */
-            public: boolean;
         };
         /** @description A permission on an image group. */
         ImageGroupPermission: "use" | "manage";
@@ -1376,13 +1351,6 @@ export interface components {
             token_id: string;
             /** @description The user agent that requested the token, if recorded. */
             user_agent?: string | null;
-        };
-        /**
-         * @description `PUT /image-groups/{id}/public`: declare a group public (or private again).
-         *     Requires `manage`.
-         */
-        SetImageGroupPublicRequest: {
-            public: boolean;
         };
         /** @description An SSH endpoint a running job can be reached on. */
         SshEndpoint: {
@@ -3039,85 +3007,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-        };
-    };
-    setImageGroupPublic: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The resource's unique identifier. */
-                id: string;
-            };
-            cookie?: never;
-        };
-        /**
-         * @description `PUT /image-groups/{id}/public`: declare a group public (or private again).
-         *     Requires `manage`.
-         */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SetImageGroupPublicRequest"];
-            };
-        };
-        responses: {
-            /** @description A named, mutable image group, as returned by the catalog list/inspect routes. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ImageGroupInfo"];
-                };
-            };
-            /** @description Failed to parse the request body as JSON */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
-            };
-            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The authenticated account is locked, or lacks permission for this resource. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No such image group, or it is not visible to the caller. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Expected request with `Content-Type: application/json` */
-            415: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
-            };
-            /** @description Failed to deserialize the JSON body into the target type */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
             };
         };
     };

@@ -13,6 +13,10 @@ import type { Route } from "./+types/image-group-detail";
 
 type MemberRow = { image_id: string; tags: string };
 
+/// The well-known `everyone` subject (see switchboard `SCHEMA.sql`). Granting it
+/// `use` on a group makes the group public; there is no dedicated public flag.
+const EVERYONE_SUBJECT = "00000000-0000-0000-0000-000000000004";
+
 function NewGenerationForm({
   groupId,
   seed,
@@ -204,13 +208,18 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
   const [showGenerationForm, setShowGenerationForm] = useState(false);
   const [showGrantForm, setShowGrantForm] = useState(false);
 
-  const setPublic = $api.useMutation("put", "/image-groups/{id}/public", {
+  // "Public" is not a flag on the group: it is a `use` grant to the well-known
+  // `everyone` subject. Deriving it needs the grant list, which is manage-gated,
+  // so the toggle is only meaningful to a manager (who can read grants).
+  const isPublic = grants.data?.some(
+    (g) => g.subject_id === EVERYONE_SUBJECT && g.permission === "use",
+  );
+  const setPublic = $api.useMutation("post", "/image-groups/{id}/grants", {
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ["get", "/image-groups/{id}"],
+          queryKey: ["get", "/image-groups/{id}/grants"],
         }),
-        queryClient.invalidateQueries({ queryKey: ["get", "/image-groups"] }),
         queryClient.invalidateQueries({
           queryKey: ["audit", "image-groups", params.id],
         }),
@@ -243,23 +252,41 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
           <div className="toolbar">
             <h1>Group {group.data.name}</h1>
             <span className="spacer" />
-            <button
-              disabled={setPublic.isPending}
-              onClick={() => {
-                const wanted = !group.data.public;
-                const q = wanted
-                  ? "Make this group public? Every subject may then run jobs against it."
-                  : "Make this group private again? Only explicit grants keep access.";
-                if (window.confirm(q)) {
-                  setPublic.mutate({
-                    params: { path: { id: params.id } },
-                    body: { public: wanted },
-                  });
-                }
-              }}
-            >
-              {group.data.public ? "Make private" : "Make public"}
-            </button>
+            {grants.data && (
+              <button
+                disabled={setPublic.isPending || revoke.isPending}
+                onClick={() => {
+                  if (isPublic) {
+                    if (
+                      window.confirm(
+                        "Make this group private again? Revokes the `everyone` grant; only explicit grants keep access.",
+                      )
+                    ) {
+                      revoke.mutate({
+                        params: {
+                          path: {
+                            id: params.id,
+                            subject_id: EVERYONE_SUBJECT,
+                            permission: "use",
+                          },
+                        },
+                      });
+                    }
+                  } else if (
+                    window.confirm(
+                      "Make this group public? Grants `everyone` `use`, so every subject may run jobs against it.",
+                    )
+                  ) {
+                    setPublic.mutate({
+                      params: { path: { id: params.id } },
+                      body: { subject_id: EVERYONE_SUBJECT, permission: "use" },
+                    });
+                  }
+                }}
+              >
+                {isPublic ? "Make private" : "Make public"}
+              </button>
+            )}
             <button onClick={() => setShowGenerationForm(!showGenerationForm)}>
               New generation
             </button>
@@ -285,9 +312,13 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
             <dd>{group.data.label ?? <span className="muted">—</span>}</dd>
             <dt>Visibility</dt>
             <dd>
-              <span className={`badge ${group.data.public ? "warn" : ""}`}>
-                {group.data.public ? "public" : "private"}
-              </span>
+              {isPublic == null ? (
+                <span className="muted">—</span>
+              ) : (
+                <span className={`badge ${isPublic ? "warn" : ""}`}>
+                  {isPublic ? "public" : "private"}
+                </span>
+              )}
             </dd>
             <dt>Owner</dt>
             <dd>

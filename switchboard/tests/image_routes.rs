@@ -173,17 +173,50 @@ async fn create_group(
     base: &str,
     token: &str,
     name: &str,
-    public: bool,
 ) -> ImageGroupInfo {
     let resp = client
         .post(format!("{base}/image-groups"))
         .bearer_auth(token)
-        .json(&serde_json::json!({ "name": name, "public": public }))
+        .json(&serde_json::json!({ "name": name }))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
     resp.json().await.unwrap()
+}
+
+/// The well-known `everyone` subject (see `SCHEMA.sql`): granting it `use` makes
+/// a group public.
+const EVERYONE_SUBJECT: Uuid = Uuid::from_u128(4);
+
+/// Make a group public (or private again) by granting/revoking the `everyone`
+/// subject `use` — the uniform replacement for a dedicated public flag. Returns
+/// the response so the caller can assert on the authorization outcome.
+async fn set_public(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    group: Uuid,
+    public: bool,
+) -> reqwest::Response {
+    if public {
+        client
+            .post(format!("{base}/image-groups/{group}/grants"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "subject_id": EVERYONE_SUBJECT, "permission": "use" }))
+            .send()
+            .await
+            .unwrap()
+    } else {
+        client
+            .delete(format!(
+                "{base}/image-groups/{group}/grants/{EVERYONE_SUBJECT}/use"
+            ))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+    }
 }
 
 /// Append a one-member generation referencing `image_id`.
@@ -575,7 +608,7 @@ async fn image_group_events_feed_records_acl_and_catalog_changes(pool: PgPool) {
 
     // Exercise the whole catalog/ACL surface on one group.
     let img = register_image(&client, &base, &bob_token, &m).await;
-    let group = create_group(&client, &base, &bob_token, "audited", false).await;
+    let group = create_group(&client, &base, &bob_token, "audited").await;
     add_generation(&client, &base, &bob_token, group.id, img.id).await;
 
     let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
@@ -590,14 +623,9 @@ async fn image_group_events_feed_records_acl_and_catalog_changes(pool: PgPool) {
         .unwrap();
     assert_eq!(grant.status(), reqwest::StatusCode::NO_CONTENT);
 
-    let public = client
-        .put(format!("{base}/image-groups/{}/public", group.id))
-        .bearer_auth(&bob_token)
-        .json(&serde_json::json!({ "public": true }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(public.status(), reqwest::StatusCode::OK);
+    // Making the group public is a grant to the `everyone` subject.
+    let public = set_public(&client, &base, &bob_token, group.id, true).await;
+    assert_eq!(public.status(), reqwest::StatusCode::NO_CONTENT);
 
     let revoke = client
         .delete(format!(
@@ -611,6 +639,8 @@ async fn image_group_events_feed_records_acl_and_catalog_changes(pool: PgPool) {
     assert_eq!(revoke.status(), reqwest::StatusCode::NO_CONTENT);
 
     // The owner (a manager) sees the full group feed: one row per change above.
+    // "Public" is an ordinary grant to the `everyone` subject, so it shows up as
+    // a grant event, not a dedicated public-flag event.
     let feed: AuditFeedResponse = client
         .get(format!("{base}/image-groups/{}/events", group.id))
         .bearer_auth(&bob_token)
@@ -625,7 +655,6 @@ async fn image_group_events_feed_records_acl_and_catalog_changes(pool: PgPool) {
         "image_group_created.v1",
         "image_group_generation_created.v1",
         "image_group_grant_created.v1",
-        "image_group_public_set.v1",
         "image_group_grant_revoked.v1",
     ] {
         assert!(
@@ -656,7 +685,7 @@ async fn enqueue_image_group_checks_use_and_freezes_generation(pool: PgPool) {
     let base = format!("http://{addr}/api/v1");
 
     let img = register_image(&client, &base, &bob_token, &m).await;
-    let group = create_group(&client, &base, &bob_token, "ubuntu", false).await;
+    let group = create_group(&client, &base, &bob_token, "ubuntu").await;
 
     // A group with no generation has nothing to freeze: enqueue is a 400.
     let resp = enqueue_group(&client, &base, &bob_token, group.id, None).await;
@@ -706,9 +735,10 @@ async fn public_grants_use_to_everyone(pool: PgPool) {
     let base = format!("http://{addr}/api/v1");
 
     let img = register_image(&client, &base, &bob_token, &m).await;
-    // Created public at the start.
-    let group = create_group(&client, &base, &bob_token, "public-ubuntu", true).await;
-    assert!(group.public);
+    // Made public by granting the `everyone` subject `use`.
+    let group = create_group(&client, &base, &bob_token, "public-ubuntu").await;
+    let resp = set_public(&client, &base, &bob_token, group.id, true).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
     add_generation(&client, &base, &bob_token, group.id, img.id).await;
 
     // `carol` holds no grant, yet a public group is visible and usable to her.
@@ -723,8 +753,8 @@ async fn public_grants_use_to_everyone(pool: PgPool) {
     let resp = enqueue_group(&client, &base, &carol_token, group.id, None).await;
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
 
-    // But `public` confers only `use`, never `manage`: carol cannot append a
-    // generation, nor toggle the flag.
+    // But the `everyone` grant confers only `use`, never `manage`: carol cannot
+    // append a generation, nor change the group's grants (make it private).
     let resp = client
         .post(format!("{base}/image-groups/{}/generations", group.id))
         .bearer_auth(&carol_token)
@@ -733,26 +763,13 @@ async fn public_grants_use_to_everyone(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
-    let resp = client
-        .put(format!("{base}/image-groups/{}/public", group.id))
-        .bearer_auth(&carol_token)
-        .json(&serde_json::json!({ "public": false }))
-        .send()
-        .await
-        .unwrap();
+    let resp = set_public(&client, &base, &carol_token, group.id, false).await;
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 
-    // The owner toggles the group back to private; carol loses `use` again
-    // (404 on inspect, 403 on enqueue).
-    let resp = client
-        .put(format!("{base}/image-groups/{}/public", group.id))
-        .bearer_auth(&bob_token)
-        .json(&serde_json::json!({ "public": false }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), reqwest::StatusCode::OK);
-    assert!(!resp.json::<ImageGroupInfo>().await.unwrap().public);
+    // The owner revokes the `everyone` grant; carol loses `use` again (404 on
+    // inspect, 403 on enqueue).
+    let resp = set_public(&client, &base, &bob_token, group.id, false).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
 
     let resp = client
         .get(format!("{base}/image-groups/{}", group.id))

@@ -21,6 +21,12 @@ use uuid::Uuid;
 /// The seeded group whose members wield global authority (see `SCHEMA.sql`).
 pub const ADMINS_GROUP_ID: Uuid = Uuid::from_u128(1);
 
+/// The seeded `everyone` subject (see `SCHEMA.sql`): the public. Every subject is
+/// implicitly a member of it (`principals()` always unions it in), so granting it
+/// a permission on a resource makes that permission public. It is the uniform
+/// replacement for per-entity `public` boolean columns.
+pub const EVERYONE_SUBJECT_ID: Uuid = Uuid::from_u128(4);
+
 /// The seeded `anonymous` `system` subject (see `SCHEMA.sql`). Used as the audit
 /// `actor_id` for events raised about an unauthenticated external party who has
 /// no local subject -- e.g. a login denied by the admission gate before any user
@@ -225,11 +231,12 @@ impl From<treadmill_rs::api::switchboard::images::ImageGroupPermission> for Imag
 /// Whether `subject_id` may exercise `permission` on the image group.
 ///
 /// Authorized iff the subject is a global admin, owns the group (directly or via
-/// a group it transitively joins), holds a matching grant — the standard
-/// ownership ∨ grant disjunction over `principals()` — or, for `use` only, the
-/// group is marked `public`. The owner implicitly holds every permission, so a
-/// `manage` query passes for the owner even with no grant; `public` never
-/// confers `manage`.
+/// a group it transitively joins), or holds a matching grant — the standard
+/// ownership ∨ grant disjunction over `principals()`. A "public" group is simply
+/// one that grants the `everyone` subject `use`; since `principals()` folds
+/// `everyone` in, that case needs no special handling here. The owner implicitly
+/// holds every permission, so a `manage` query passes for the owner even with no
+/// grant.
 pub async fn can_access_image_group(
     conn: impl PgExecutor<'_>,
     subject_id: Uuid,
@@ -251,13 +258,6 @@ pub async fn can_access_image_group(
                  select 1 from tml_switchboard.image_group_grants gr \
                  join principals p on gr.subject_id = p.id \
                  where gr.group_id = $2::uuid and gr.permission::text = $3 \
-             ) \
-             or ( \
-                 $3 = 'use' \
-                 and exists ( \
-                     select 1 from tml_switchboard.image_groups g \
-                     where g.id = $2::uuid and g.public \
-                 ) \
              ) \
          ) as \"authorized!\"",
         subject_id,
@@ -364,9 +364,10 @@ pub async fn job_permissions(
 }
 
 /// Returns the complete set of permissions `subject_id` holds on `group_id`.
-/// Owner or global admin yields all permissions; a `public` group confers
-/// `use` on everyone. Mirrors [`can_access_image_group`] but enumerates rather
-/// than testing one permission, for the audit feed's policy match.
+/// Owner or global admin yields all permissions; a grant to the `everyone`
+/// subject (folded in via `principals()`) confers "public" permissions on all.
+/// Mirrors [`can_access_image_group`] but enumerates rather than testing one
+/// permission, for the audit feed's policy match.
 pub async fn image_group_permissions(
     conn: impl PgExecutor<'_>,
     subject_id: Uuid,
@@ -393,11 +394,6 @@ pub async fn image_group_permissions(
          from tml_switchboard.image_group_grants g
          join principals p on g.subject_id = p.id
          where g.group_id = $2::uuid
-           and not (select is_auth from is_global_or_owner)
-         union
-         select 'use' as "perm!"
-         from tml_switchboard.image_groups g
-         where g.id = $2::uuid and g.public
            and not (select is_auth from is_global_or_owner)
         "#,
         subject_id,

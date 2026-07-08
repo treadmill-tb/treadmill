@@ -31,7 +31,6 @@ function CreateGroupForm({ onDone }: { onDone: () => void }) {
       body: {
         name: str("name"),
         label: label === "" ? null : label,
-        public: f.get("public") === "on",
       },
     });
   }
@@ -45,10 +44,6 @@ function CreateGroupForm({ onDone }: { onDone: () => void }) {
       <label className="field">
         <span>Label (optional)</span>
         <input name="label" />
-      </label>
-      <label className="check">
-        <input type="checkbox" name="public" />
-        Public: every subject may run jobs against this group
       </label>
       <MutationError error={create.error} />
       <div className="toolbar">
@@ -86,7 +81,6 @@ export default function ImageGroups() {
               <tr>
                 <th>Name</th>
                 <th>Label</th>
-                <th>Visibility</th>
                 <th>Latest generation</th>
                 <th>Owner</th>
                 <th>Created</th>
@@ -99,11 +93,6 @@ export default function ImageGroups() {
                     <EntityLink kind="imageGroup" id={g.id} label={g.name} />
                   </td>
                   <td>{g.label ?? <span className="muted">—</span>}</td>
-                  <td>
-                    <span className={`badge ${g.public ? "warn" : ""}`}>
-                      {g.public ? "public" : "private"}
-                    </span>
-                  </td>
                   <td>
                     {g.latest_generation ?? <span className="muted">—</span>}
                   </td>

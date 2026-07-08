@@ -140,6 +140,32 @@ VALUES
     ('00000000-0000-0000-0000-000000000003', 'system');
 
 
+-- The `everyone` subject: the public.
+--
+-- A `group` subject with a hard-coded well-known UUID that EVERY subject is
+-- implicitly a member of -- `principals()` (below) always unions it in. Granting
+-- it a permission on any resource therefore makes that permission public: it is
+-- the single, uniform mechanism for "public" across every resource kind (hosts,
+-- jobs, image groups, image sources), replacing the per-entity `public` boolean
+-- columns. It owns nothing and never logs in; it exists only to be a grantee.
+--
+-- Because membership is implicit (not materialized in `group_members`), the
+-- acyclicity trigger and manual membership management never see it.
+INSERT INTO
+    tml_switchboard.subjects (subject_id, kind)
+VALUES
+    ('00000000-0000-0000-0000-000000000004', 'group');
+
+
+INSERT INTO
+    tml_switchboard.groups (subject_id, name)
+VALUES
+    (
+        '00000000-0000-0000-0000-000000000004',
+        'everyone'
+    );
+
+
 -- =============================================================================
 -- GROUP MEMBERSHIP: a many-to-many DAG with provenance
 -- =============================================================================
@@ -765,12 +791,19 @@ CREATE INDEX host_targets_tags_gin ON tml_switchboard.host_targets USING gin (ta
 -- -- the set of a subject's transitive group memberships -- is the `principals`
 -- function below, so the application query stays free of the recursive CTE.
 --
--- `principals(arg_subject)` returns the subject itself plus every group it
--- reaches by following `member_id -> group_id` edges. It is a parameterized
+-- `principals(arg_subject)` returns the subject itself, every group it reaches
+-- by following `member_id -> group_id` edges, and the well-known `everyone`
+-- subject that every subject implicitly belongs to. It is a parameterized
 -- function rather than a view so it is seeded with a single subject and walks
 -- only that subject's memberships via `group_members_member_id_idx`, instead of
 -- materializing the closure for every subject. Ownership and grant checks are
 -- tested against this whole set (see `src/auth/engine.rs`).
+--
+-- Folding `everyone` in here is what makes a grant to the `everyone` subject
+-- behave as "public": every access check runs against `principals()`, so a
+-- resource that grants `everyone` a permission grants it to all. Ownership joins
+-- compare against a resource's `owner_id`, which is never the `everyone`
+-- subject, so this does not make anyone an implicit owner -- only grants widen.
 CREATE OR REPLACE FUNCTION tml_switchboard.principals (arg_subject uuid) returns TABLE (id uuid) language sql stable AS $$
     with recursive reached(id) as (
         select arg_subject
@@ -779,7 +812,10 @@ CREATE OR REPLACE FUNCTION tml_switchboard.principals (arg_subject uuid) returns
         from tml_switchboard.group_members gm
         join reached r on gm.member_id = r.id
     )
-    select id from reached;
+    select id from reached
+    union
+    -- The `everyone` subject: implicit membership for every principal.
+    select '00000000-0000-0000-0000-000000000004'::uuid;
 $$;
 
 
@@ -1036,14 +1072,15 @@ CREATE TABLE tml_switchboard.image_locations (
 -- Image membership lives in immutable per-generation snapshots
 -- (`image_group_generations` / `image_group_members`). Groups are never deleted
 -- (metadata is immortal), so a job that pinned a generation always resolves.
--- `public` grants every subject the `use` permission (run jobs against the
--- group) without an explicit grant.
+--
+-- A group is made "public" by granting the well-known `everyone` subject the
+-- `use` permission in `image_group_grants` (see that table and the `everyone`
+-- subject above); there is no dedicated `public` column.
 CREATE TABLE tml_switchboard.image_groups (
     id uuid NOT NULL PRIMARY KEY,
     name text NOT NULL UNIQUE,
     owner_subject uuid REFERENCES tml_switchboard.subjects (subject_id) ON DELETE SET NULL,
     label text,
-    public boolean NOT NULL DEFAULT FALSE,
     created_at timestamp with time zone NOT NULL DEFAULT current_timestamp
 );
 

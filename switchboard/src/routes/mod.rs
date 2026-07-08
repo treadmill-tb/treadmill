@@ -8,7 +8,7 @@ mod users;
 use crate::config::ServerConfig;
 use crate::serve::AppState;
 use aide::axum::ApiRouter;
-use aide::axum::routing::{delete_with, get_with, post_with, put_with};
+use aide::axum::routing::{delete_with, get_with, post_with};
 use aide::transform::TransformOperation;
 use axum::Json;
 use axum::Router;
@@ -503,23 +503,8 @@ pub fn api_router() -> ApiRouter<AppState> {
                 .response_with::<404, (), _>(|r| r.description("No matching grant to revoke."))
             }),
         )
-        //  PUT /image-groups/{id}/public -- toggle the group's implicit `use`
-        //  grant to everyone (part of the authorization surface, alongside the
-        //  per-subject grants above; not descriptive metadata)
-        .api_route(
-            "/image-groups/{id}/public",
-            put_with(images::set_image_group_public, |o| {
-                doc(
-                    o,
-                    "setImageGroupPublic",
-                    "Image groups",
-                    "Set an image group's public flag",
-                )
-                .response_with::<404, (), _>(|r| {
-                    r.description("No such image group, or it is not visible to the caller.")
-                })
-            }),
-        )
+    // "Public" is not a dedicated route: a group is made public by granting the
+    // well-known `everyone` subject `use` via the grant routes above.
 }
 
 /// Operation description for the list routes that return their whole result

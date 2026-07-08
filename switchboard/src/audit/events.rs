@@ -353,17 +353,3 @@ define_event! {
     event_type = "image_group_grant_revoked";
     render = "revoked {permission} on the image group";
 }
-
-define_event! {
-    /// An image group's `public` flag was set or cleared
-    /// (`PUT /image-groups/{id}/public`). `public` is an implicit `use` grant to
-    /// every subject, so it is part of the authorization surface; visible to the
-    /// group's managers.
-    ImageGroupPublicSet v1 {
-        actor: Subject,
-        group: ImageGroup @ view(Manage),
-        public: bool,
-    }
-    event_type = "image_group_public_set";
-    render = "set image group public = {public}";
-}
