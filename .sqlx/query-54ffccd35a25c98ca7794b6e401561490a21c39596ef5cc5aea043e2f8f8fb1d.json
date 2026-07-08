@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select pg_advisory_xact_lock(hashtext('image_group_gen:' || $1::text))",
+  "query": "select pg_advisory_xact_lock(hashtext('image_set_gen:' || $1::text))",
   "describe": {
     "columns": [
       {
@@ -19,5 +19,5 @@
       null
     ]
   },
-  "hash": "3bff1d6c48977ca98c7db510a9f3e1f0e3e917eb6b5ef616dda883d6c32435a8"
+  "hash": "54ffccd35a25c98ca7794b6e401561490a21c39596ef5cc5aea043e2f8f8fb1d"
 }

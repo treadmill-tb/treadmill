@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select m.image_id, i.manifest_digest,\n                  m.required_host_tags, m.\"index\"\n           from tml_switchboard.image_group_members m\n           join tml_switchboard.images i on i.id = m.image_id\n           where m.group_id = $1 and m.generation = $2\n           order by m.\"index\"",
+  "query": "select m.image_id, i.manifest_digest,\n                  m.required_host_tags, m.\"index\"\n           from tml_switchboard.image_set_members m\n           join tml_switchboard.images i on i.id = m.image_id\n           where m.set_id = $1 and m.generation = $2\n           order by m.\"index\"",
   "describe": {
     "columns": [
       {
@@ -9,7 +9,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.image_group_members",
+            "table": "tml_switchboard.image_set_members",
             "name": "image_id"
           }
         }
@@ -31,7 +31,7 @@
         "type_info": "TextArray",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.image_group_members",
+            "table": "tml_switchboard.image_set_members",
             "name": "required_host_tags"
           }
         }
@@ -42,7 +42,7 @@
         "type_info": "Int4",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.image_group_members",
+            "table": "tml_switchboard.image_set_members",
             "name": "index"
           }
         }
@@ -61,5 +61,5 @@
       false
     ]
   },
-  "hash": "8ddab334ad756d2a0efc98632c5dc32d3ae5a8efdf0bf9ea7a5710e479047ecc"
+  "hash": "001eabbf876fcac8a8c14a05d252582e42a845905f275f223ff52484a32541d3"
 }

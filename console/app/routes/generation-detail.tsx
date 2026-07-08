@@ -1,14 +1,14 @@
 import { $api } from "../api/client";
 import { EntityLink } from "../components/entity-link";
 import { RelTime } from "../components/rel-time";
-import { GenerationMembers } from "./image-group-detail";
+import { GenerationMembers } from "./image-set-detail";
 import type { Route } from "./+types/generation-detail";
 
 export default function GenerationDetail({ params }: Route.ComponentProps) {
   const n = Number(params.n);
   const generation = $api.useQuery(
     "get",
-    "/image-groups/{id}/generations/{n}",
+    "/image-sets/{id}/generations/{n}",
     { params: { path: { id: params.id, n } } },
     { enabled: Number.isInteger(n) && n >= 0 },
   );
@@ -16,7 +16,7 @@ export default function GenerationDetail({ params }: Route.ComponentProps) {
   return (
     <>
       <h1>
-        Generation <EntityLink kind="imageGroup" id={params.id} />
+        Generation <EntityLink kind="imageSet" id={params.id} />
         <span className="mono">#{params.n}</span>
       </h1>
       {!Number.isInteger(n) || n < 0 ? (

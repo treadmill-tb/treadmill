@@ -24,7 +24,7 @@ function AuthedShell() {
             <NavLink to="/jobs">Jobs</NavLink>
             <NavLink to="/hosts">Hosts</NavLink>
             <NavLink to="/images">Images</NavLink>
-            <NavLink to="/image-groups">Image groups</NavLink>
+            <NavLink to="/image-sets">Image sets</NavLink>
           </nav>
           <span className="spacer" />
           <Link to="/settings" className="muted">

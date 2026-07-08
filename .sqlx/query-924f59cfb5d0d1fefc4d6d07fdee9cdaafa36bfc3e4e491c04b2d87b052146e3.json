@@ -80,7 +80,7 @@
                 "job",
                 "host",
                 "subject",
-                "image_group"
+                "image_set"
               ]
             }
           }

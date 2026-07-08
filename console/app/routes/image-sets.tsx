@@ -10,12 +10,12 @@ import { RelTime } from "../components/rel-time";
 function CreateGroupForm({ onDone }: { onDone: () => void }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const create = $api.useMutation("post", "/image-groups", {
+  const create = $api.useMutation("post", "/image-sets", {
     onSuccess: async (data) => {
       await queryClient.invalidateQueries({
-        queryKey: ["get", "/image-groups"],
+        queryKey: ["get", "/image-sets"],
       });
-      await navigate(`/image-groups/${data.id}`);
+      await navigate(`/image-sets/${data.id}`);
     },
   });
 
@@ -58,23 +58,23 @@ function CreateGroupForm({ onDone }: { onDone: () => void }) {
   );
 }
 
-export default function ImageGroups() {
-  const groups = $api.useQuery("get", "/image-groups");
+export default function ImageSets() {
+  const sets = $api.useQuery("get", "/image-sets");
   const [showForm, setShowForm] = useState(false);
 
   return (
     <>
       <div className="toolbar">
-        <h1>Image groups</h1>
+        <h1>Image sets</h1>
         <span className="spacer" />
-        <button onClick={() => setShowForm(!showForm)}>Create group</button>
+        <button onClick={() => setShowForm(!showForm)}>Create set</button>
       </div>
       {showForm && <CreateGroupForm onDone={() => setShowForm(false)} />}
-      {groups.isPending && <p className="muted">Loading…</p>}
-      {groups.isError && <p className="error">Failed to load image groups.</p>}
-      {groups.data &&
-        (groups.data.length === 0 ? (
-          <p className="muted">No image groups visible to this account.</p>
+      {sets.isPending && <p className="muted">Loading…</p>}
+      {sets.isError && <p className="error">Failed to load image sets.</p>}
+      {sets.data &&
+        (sets.data.length === 0 ? (
+          <p className="muted">No image sets visible to this account.</p>
         ) : (
           <table>
             <thead>
@@ -87,10 +87,10 @@ export default function ImageGroups() {
               </tr>
             </thead>
             <tbody>
-              {groups.data.map((g) => (
+              {sets.data.map((g) => (
                 <tr key={g.id}>
                   <td>
-                    <EntityLink kind="imageGroup" id={g.id} label={g.name} />
+                    <EntityLink kind="imageSet" id={g.id} label={g.name} />
                   </td>
                   <td>{g.label ?? <span className="muted">—</span>}</td>
                   <td>

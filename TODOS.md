@@ -10,7 +10,7 @@ sources: no `image_source` value in `audit_entity_kind`, and no
 `ImageSourceAdded` / `ImageSourceRemoved` / `ImageSourceGrant{Created,Revoked}`
 events. Source add/delete and
 grant/revoke therefore produce no audit rows; `ImageRegistered` still fires for a
-new digest. When added, mirror the `image_group` grant events (`view(Manage)` on
+new digest. When added, mirror the `image_set` grant events (`view(Manage)` on
 the source) and add the entity-kind enum value in the same migration.
 
 ## Re-Sync Verified/Non-Verified Emails on Login
@@ -30,7 +30,7 @@ able to change the ACLs or ownership attribute.
 ## User-Provided Job Label
 
 Jobs should carry an optional, user-provided `label` (naming it `label` to match
-images/image-groups, not `name`). ASCII-printable, max 256 chars, non-unique,
+images/image-sets, not `name`). ASCII-printable, max 256 chars, non-unique,
 mutable after enqueue. Needs the DB column + CHECK, Rust validation, the
 enqueue/patch API surface, and the console (job list + detail + new-job form).
 

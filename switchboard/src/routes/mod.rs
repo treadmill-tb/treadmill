@@ -17,7 +17,7 @@ use http::{HeaderValue, Method, StatusCode, header};
 use std::time::Duration;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
-use treadmill_rs::api::switchboard::images::{ImageGroupGenerationInfo, ImageGroupInfo, ImageInfo};
+use treadmill_rs::api::switchboard::images::{ImageInfo, ImageSetGenerationInfo, ImageSetInfo};
 use treadmill_rs::api::switchboard::jobs::EnqueueJobResponse;
 use treadmill_rs::api::switchboard::{LoginResponse, LoginStagedResponse};
 
@@ -444,128 +444,119 @@ pub fn api_router() -> ApiRouter<AppState> {
                 .response_with::<404, (), _>(|r| r.description("No matching grant to revoke."))
             }),
         )
-        //  POST /image-groups        -- create an empty, named image group
-        //  GET  /image-groups        -- list owned image groups
+        //  POST /image-sets        -- create an empty, named image set
+        //  GET  /image-sets        -- list owned image sets
         .api_route(
-            "/image-groups",
-            post_with(images::create_image_group, |o| {
-                doc(
-                    o,
-                    "createImageGroup",
-                    "Image groups",
-                    "Create an image group",
-                )
-                .response_with::<201, Json<ImageGroupInfo>, _>(|r| {
-                    r.description("The image group was created.")
-                })
-                .response_with::<409, (), _>(|r| {
-                    r.description("An image group with that name already exists.")
-                })
-            })
-            .get_with(images::list_image_groups, |o| {
-                doc(o, "listImageGroups", "Image groups", "List image groups")
-                    .description(NOT_PAGINATED)
-            }),
-        )
-        //  GET /image-groups/{id}    -- inspect one image group
-        .api_route(
-            "/image-groups/{id}",
-            get_with(images::get_image_group, |o| {
-                doc(o, "getImageGroup", "Image groups", "Get an image group")
-                    .response_with::<404, (), _>(|r| {
-                        r.description("No such image group, or it is not visible to the caller.")
+            "/image-sets",
+            post_with(images::create_image_set, |o| {
+                doc(o, "createImageSet", "Image sets", "Create an image set")
+                    .response_with::<201, Json<ImageSetInfo>, _>(|r| {
+                        r.description("The image set was created.")
                     })
+                    .response_with::<409, (), _>(|r| {
+                        r.description("An image set with that name already exists.")
+                    })
+            })
+            .get_with(images::list_image_sets, |o| {
+                doc(o, "listImageSets", "Image sets", "List image sets").description(NOT_PAGINATED)
             }),
         )
-        //  GET /image-groups/{id}/events -- the group's audit feed (manage-gated)
+        //  GET /image-sets/{id}    -- inspect one image set
         .api_route(
-            "/image-groups/{id}/events",
+            "/image-sets/{id}",
+            get_with(images::get_image_set, |o| {
+                doc(o, "getImageSet", "Image sets", "Get an image set").response_with::<404, (), _>(
+                    |r| r.description("No such image set, or it is not visible to the caller."),
+                )
+            }),
+        )
+        //  GET /image-sets/{id}/events -- the set's audit feed (manage-gated)
+        .api_route(
+            "/image-sets/{id}/events",
             get_with(images::list_events, |o| {
                 doc(
                     o,
-                    "listImageGroupEvents",
-                    "Image groups",
-                    "List an image group's audit events",
+                    "listImageSetEvents",
+                    "Image sets",
+                    "List an image set's audit events",
                 )
                 .response_with::<404, (), _>(|r| {
-                    r.description("No such image group, or it is not visible to the caller.")
+                    r.description("No such image set, or it is not visible to the caller.")
                 })
             }),
         )
-        //  POST /image-groups/{id}/generations -- append a full-replacement generation
+        //  POST /image-sets/{id}/generations -- append a full-replacement generation
         .api_route(
-            "/image-groups/{id}/generations",
+            "/image-sets/{id}/generations",
             post_with(images::create_generation, |o| {
                 doc(
                     o,
-                    "createImageGroupGeneration",
-                    "Image groups",
-                    "Append a generation to an image group",
+                    "createImageSetGeneration",
+                    "Image sets",
+                    "Append a generation to an image set",
                 )
-                .response_with::<201, Json<ImageGroupGenerationInfo>, _>(|r| {
+                .response_with::<201, Json<ImageSetGenerationInfo>, _>(|r| {
                     r.description("The generation was appended.")
                 })
                 .response_with::<404, (), _>(|r| {
-                    r.description("No such image group, or it is not visible to the caller.")
+                    r.description("No such image set, or it is not visible to the caller.")
                 })
             }),
         )
-        //  GET /image-groups/{id}/generations/{n} -- inspect one generation
+        //  GET /image-sets/{id}/generations/{n} -- inspect one generation
         .api_route(
-            "/image-groups/{id}/generations/{n}",
+            "/image-sets/{id}/generations/{n}",
             get_with(images::get_generation, |o| {
                 doc(
                     o,
-                    "getImageGroupGeneration",
-                    "Image groups",
-                    "Get an image-group generation",
+                    "getImageSetGeneration",
+                    "Image sets",
+                    "Get an image-set generation",
                 )
-                .response_with::<404, (), _>(|r| {
-                    r.description("No such image group or generation.")
-                })
+                .response_with::<404, (), _>(|r| r.description("No such image set or generation."))
             }),
         )
-        //  POST /image-groups/{id}/grants -- grant use/manage to a subject
-        //  GET  /image-groups/{id}/grants -- list grants
+        //  POST /image-sets/{id}/grants -- grant use/manage to a subject
+        //  GET  /image-sets/{id}/grants -- list grants
         .api_route(
-            "/image-groups/{id}/grants",
-            post_with(images::grant_image_group, |o| {
+            "/image-sets/{id}/grants",
+            post_with(images::grant_image_set, |o| {
                 doc(
                     o,
-                    "createImageGroupGrant",
-                    "Image groups",
-                    "Grant a permission on an image group",
+                    "createImageSetGrant",
+                    "Image sets",
+                    "Grant a permission on an image set",
                 )
                 .response_with::<204, (), _>(|r| r.description("The grant was recorded."))
                 .response_with::<404, (), _>(|r| {
-                    r.description("No such image group, or it is not visible to the caller.")
+                    r.description("No such image set, or it is not visible to the caller.")
                 })
             })
-            .get_with(images::list_image_group_grants, |o| {
+            .get_with(images::list_image_set_grants, |o| {
                 doc(
                     o,
-                    "listImageGroupGrants",
-                    "Image groups",
-                    "List an image group's grants",
+                    "listImageSetGrants",
+                    "Image sets",
+                    "List an image set's grants",
                 )
                 .description(NOT_PAGINATED)
             }),
         )
-        //  DELETE /image-groups/{id}/grants/{subject_id}/{permission} -- revoke a grant
+        //  DELETE /image-sets/{id}/grants/{subject_id}/{permission} -- revoke a grant
         .api_route(
-            "/image-groups/{id}/grants/{subject_id}/{permission}",
-            delete_with(images::revoke_image_group_grant, |o| {
+            "/image-sets/{id}/grants/{subject_id}/{permission}",
+            delete_with(images::revoke_image_set_grant, |o| {
                 doc(
                     o,
-                    "revokeImageGroupGrant",
-                    "Image groups",
-                    "Revoke a grant on an image group",
+                    "revokeImageSetGrant",
+                    "Image sets",
+                    "Revoke a grant on an image set",
                 )
                 .response_with::<204, (), _>(|r| r.description("The grant was revoked."))
                 .response_with::<404, (), _>(|r| r.description("No matching grant to revoke."))
             }),
         )
-    // "Public" is not a dedicated route: a group is made public by granting the
+    // "Public" is not a dedicated route: a set is made public by granting the
     // well-known `everyone` subject `use` via the grant routes above.
 }
 
@@ -615,8 +606,8 @@ pub fn openapi_spec() -> aide::openapi::OpenApi {
             tag("Hosts", "Inspect hosts and their attached targets."),
             tag("Images", "Register and inspect catalog images."),
             tag(
-                "Image groups",
-                "Manage image groups, their generations, and grants.",
+                "Image sets",
+                "Manage image sets, their generations, and grants.",
             ),
             tag("Users", "Profiles, sessions, and audit feeds."),
         ],

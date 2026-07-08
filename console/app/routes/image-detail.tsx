@@ -7,7 +7,7 @@ import { Digest } from "../components/digest";
 import { EntityLink } from "../components/entity-link";
 import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
-import { EVERYONE_SUBJECT } from "./image-group-detail";
+import { EVERYONE_SUBJECT } from "./image-set-detail";
 import type { Route } from "./+types/image-detail";
 
 type ImageSourceInfo = components["schemas"]["ImageSourceInfo"];
@@ -146,7 +146,7 @@ function SourceGrantForm({
 
 /// The manage-gated grants panel for one source: the grant list with revoke
 /// buttons, a grant form, and the public toggle (a `use` grant to the
-/// well-known `everyone` subject, like image groups).
+/// well-known `everyone` subject, like image sets).
 function SourceGrants({
   digest,
   source,

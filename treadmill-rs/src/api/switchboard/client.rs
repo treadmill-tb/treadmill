@@ -17,7 +17,7 @@ use crate::api::switchboard::TosInfoResponse;
 use crate::api::switchboard::WhoAmIResponse;
 use crate::api::switchboard::audit::AuditFeedResponse;
 use crate::api::switchboard::hosts::HostInfo;
-use crate::api::switchboard::images::ImageGroupInfo;
+use crate::api::switchboard::images::ImageSetInfo;
 use crate::api::switchboard::jobs::{EnqueueJobResponse, JobInfo, JobListResponse};
 use crate::api::switchboard::users::{PublicUserProfile, SelfUserProfile, SessionInfo};
 use crate::api::switchboard::{LoginCompleteRequest, LoginResponse, LoginStagedResponse};
@@ -218,10 +218,10 @@ impl SwitchboardClient {
         self.get_json("/api/v1/hosts").await
     }
 
-    /// `GET /image-groups` — the image groups the caller owns, e.g. to populate
+    /// `GET /image-sets` — the image sets the caller owns, e.g. to populate
     /// a job's image selector.
-    pub async fn list_image_groups(&self) -> Result<Vec<ImageGroupInfo>, ClientError> {
-        self.get_json("/api/v1/image-groups").await
+    pub async fn list_image_sets(&self) -> Result<Vec<ImageSetInfo>, ClientError> {
+        self.get_json("/api/v1/image-sets").await
     }
 
     /// Issue an authenticated `GET` for `path` and deserialize the JSON body,

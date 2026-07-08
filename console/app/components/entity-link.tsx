@@ -8,7 +8,7 @@ const ROUTES = {
   job: "/jobs",
   host: "/hosts",
   user: "/users",
-  imageGroup: "/image-groups",
+  imageSet: "/image-sets",
 } as const;
 
 export function EntityLink({

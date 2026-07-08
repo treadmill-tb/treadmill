@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        select job_id, owner_id, resume_job_id, restart_job_id, image_id,\n        image_group_id, image_group_generation,\n        resolved_image_id, ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id,\n        host_tag_requirements, job_timeout,\n        queued_at, job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\", started_at,\n        dispatched_on_host_id, ssh_endpoints as \"ssh_endpoints: _\",\n        terminate_requested_at,\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\", exit_message, terminated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
+  "query": "\n        select job_id, owner_id, resume_job_id, restart_job_id, image_id,\n        image_set_id, image_set_generation,\n        resolved_image_id, ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id,\n        host_tag_requirements, job_timeout,\n        queued_at, job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\", started_at,\n        dispatched_on_host_id, ssh_endpoints as \"ssh_endpoints: _\",\n        terminate_requested_at,\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\", exit_message, terminated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
   "describe": {
     "columns": [
       {
@@ -60,23 +60,23 @@
       },
       {
         "ordinal": 5,
-        "name": "image_group_id",
+        "name": "image_set_id",
         "type_info": "Uuid",
         "origin": {
           "Table": {
             "table": "tml_switchboard.jobs",
-            "name": "image_group_id"
+            "name": "image_set_id"
           }
         }
       },
       {
         "ordinal": 6,
-        "name": "image_group_generation",
+        "name": "image_set_generation",
         "type_info": "Int4",
         "origin": {
           "Table": {
             "table": "tml_switchboard.jobs",
-            "name": "image_group_generation"
+            "name": "image_set_generation"
           }
         }
       },
@@ -414,5 +414,5 @@
       true
     ]
   },
-  "hash": "9d23357a31556ed79c91f19eaafbf5f20d67ecad1747504fb2aab9151da3f93e"
+  "hash": "ada051add7391f5c6a1a11cffe3c31d4e4a6a753adda73dbd613b5527435c337"
 }

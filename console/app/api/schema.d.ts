@@ -464,7 +464,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/image-groups": {
+    "/image-sets": {
         parameters: {
             query?: never;
             header?: never;
@@ -472,28 +472,28 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List image groups
+         * List image sets
          * @description Returns the complete set in a stable order; this route is not paginated.
          */
-        get: operations["listImageGroups"];
+        get: operations["listImageSets"];
         put?: never;
-        /** Create an image group */
-        post: operations["createImageGroup"];
+        /** Create an image set */
+        post: operations["createImageSet"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/image-groups/{id}": {
+    "/image-sets/{id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get an image group */
-        get: operations["getImageGroup"];
+        /** Get an image set */
+        get: operations["getImageSet"];
         put?: never;
         post?: never;
         delete?: never;
@@ -502,15 +502,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/image-groups/{id}/events": {
+    "/image-sets/{id}/events": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List an image group's audit events */
-        get: operations["listImageGroupEvents"];
+        /** List an image set's audit events */
+        get: operations["listImageSetEvents"];
         put?: never;
         post?: never;
         delete?: never;
@@ -519,7 +519,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/image-groups/{id}/generations": {
+    "/image-sets/{id}/generations": {
         parameters: {
             query?: never;
             header?: never;
@@ -528,23 +528,23 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Append a generation to an image group */
-        post: operations["createImageGroupGeneration"];
+        /** Append a generation to an image set */
+        post: operations["createImageSetGeneration"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/image-groups/{id}/generations/{n}": {
+    "/image-sets/{id}/generations/{n}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get an image-group generation */
-        get: operations["getImageGroupGeneration"];
+        /** Get an image-set generation */
+        get: operations["getImageSetGeneration"];
         put?: never;
         post?: never;
         delete?: never;
@@ -553,7 +553,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/image-groups/{id}/grants": {
+    "/image-sets/{id}/grants": {
         parameters: {
             query?: never;
             header?: never;
@@ -561,20 +561,20 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List an image group's grants
+         * List an image set's grants
          * @description Returns the complete set in a stable order; this route is not paginated.
          */
-        get: operations["listImageGroupGrants"];
+        get: operations["listImageSetGrants"];
         put?: never;
-        /** Grant a permission on an image group */
-        post: operations["createImageGroupGrant"];
+        /** Grant a permission on an image set */
+        post: operations["createImageSetGrant"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/image-groups/{id}/grants/{subject_id}/{permission}": {
+    "/image-sets/{id}/grants/{subject_id}/{permission}": {
         parameters: {
             query?: never;
             header?: never;
@@ -584,8 +584,8 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Revoke a grant on an image group */
-        delete: operations["revokeImageGroupGrant"];
+        /** Revoke a grant on an image set */
+        delete: operations["revokeImageSetGrant"];
         options?: never;
         head?: never;
         patch?: never;
@@ -650,18 +650,18 @@ export interface components {
             state: string;
         };
         /**
-         * @description `POST /image-groups/{id}/generations`: append a new, immutable
-         *     full-replacement generation of a group's membership.
+         * @description `POST /image-sets/{id}/generations`: append a new, immutable
+         *     full-replacement generation of a set's membership.
          */
         CreateGenerationRequest: {
             members: components["schemas"]["GenerationMemberSpec"][];
         };
         /**
-         * @description `POST /image-groups`: create an empty, named image group. The caller becomes
+         * @description `POST /image-sets`: create an empty, named image set. The caller becomes
          *     its owner; membership is added afterwards via per-generation snapshots (see
          *     [`CreateGenerationRequest`]).
          */
-        CreateImageGroupRequest: {
+        CreateImageSetRequest: {
             /**
              * @description Optional human-readable label.
              * @default null
@@ -699,17 +699,17 @@ export interface components {
             manifest_digest: components["schemas"]["Digest"];
             required_host_tags: string[];
             /**
-             * @description Whether the viewer may use some source of this member image. A group grant
+             * @description Whether the viewer may use some source of this member image. A set grant
              *     is necessary but not sufficient: `false` means the member has no source the
              *     viewer can reach (so a job would not resolve it for this viewer).
              */
             usable: boolean;
             /**
-             * @description Whether *every* subject holding a `use` grant on the group can source this
-             *     member (for a public group, that set includes the `everyone` subject). This
-             *     is the owner-facing health signal: `false` flags a member some grantee
-             *     cannot reach, so the group's `use` grant is unusable for them in practice.
-             *     Vacuously `true` for a group with no `use` grants.
+             * @description Whether *every* subject holding a `use` grant on the set can source this
+             *     member (for a public set, the grantees include the `everyone` subject).
+             *     This is the owner-facing health signal: `false` flags a member some grantee
+             *     cannot reach, so the set's `use` grant is unusable for them in practice.
+             *     Vacuously `true` for a set with no `use` grants.
              */
             usable_by_grantees: boolean;
         };
@@ -730,16 +730,16 @@ export interface components {
              */
             required_host_tags: string[];
         };
-        /** @description The `{id}/generations/{n}` segments of an image-group generation route. */
+        /** @description The `{id}/generations/{n}` segments of an image-set generation route. */
         GenerationPath: {
             /**
              * Format: uuid
-             * @description The image group's unique identifier.
+             * @description The image set's unique identifier.
              */
             id: string;
             /**
              * Format: uint32
-             * @description The generation number within the group.
+             * @description The generation number within the set.
              */
             n: number;
         };
@@ -747,7 +747,7 @@ export interface components {
         GrantPath: {
             /**
              * Format: uuid
-             * @description The image group's unique identifier.
+             * @description The image set's unique identifier.
              */
             id: string;
             /** @description The permission being revoked (`use` or `manage`). */
@@ -816,48 +816,6 @@ export interface components {
              */
             id: string;
         };
-        /** @description One immutable generation (membership snapshot) of an image group. */
-        ImageGroupGenerationInfo: {
-            /** Format: date-time */
-            created_at: string;
-            /** Format: uuid */
-            created_by?: string | null;
-            /** Format: uint32 */
-            generation: number;
-            /** Format: uuid */
-            group_id: string;
-            members: components["schemas"]["GenerationMemberInfo"][];
-        };
-        /** @description One grant on an image group, as returned by the list-grants route. */
-        ImageGroupGrantInfo: {
-            permission: components["schemas"]["ImageGroupPermission"];
-            /** Format: uuid */
-            subject_id: string;
-        };
-        /** @description `POST /image-groups/{id}/grants`: grant `permission` on the group to a subject. */
-        ImageGroupGrantRequest: {
-            permission: components["schemas"]["ImageGroupPermission"];
-            /** Format: uuid */
-            subject_id: string;
-        };
-        /** @description A named, mutable image group, as returned by the catalog list/inspect routes. */
-        ImageGroupInfo: {
-            /** Format: date-time */
-            created_at: string;
-            /** Format: uuid */
-            id: string;
-            label?: string | null;
-            /**
-             * Format: uint32
-             * @description The group's latest generation number, or null if it has none yet.
-             */
-            latest_generation?: number | null;
-            name: string;
-            /** Format: uuid */
-            owner_id?: string | null;
-        };
-        /** @description A permission on an image group. */
-        ImageGroupPermission: "use" | "manage";
         /**
          * @description A registered image, as returned by the catalog list/inspect routes. An image
          *     is non-owned; ownership lives on its `sources`.
@@ -872,6 +830,48 @@ export interface components {
             manifest_digest: components["schemas"]["Digest"];
             sources: components["schemas"]["ImageSourceInfo"][];
         };
+        /** @description One immutable generation (membership snapshot) of an image set. */
+        ImageSetGenerationInfo: {
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            created_by?: string | null;
+            /** Format: uint32 */
+            generation: number;
+            members: components["schemas"]["GenerationMemberInfo"][];
+            /** Format: uuid */
+            set_id: string;
+        };
+        /** @description One grant on an image set, as returned by the list-grants route. */
+        ImageSetGrantInfo: {
+            permission: components["schemas"]["ImageSetPermission"];
+            /** Format: uuid */
+            subject_id: string;
+        };
+        /** @description `POST /image-sets/{id}/grants`: grant `permission` on the set to a subject. */
+        ImageSetGrantRequest: {
+            permission: components["schemas"]["ImageSetPermission"];
+            /** Format: uuid */
+            subject_id: string;
+        };
+        /** @description A named, mutable image set, as returned by the catalog list/inspect routes. */
+        ImageSetInfo: {
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            id: string;
+            label?: string | null;
+            /**
+             * Format: uint32
+             * @description The set's latest generation number, or null if it has none yet.
+             */
+            latest_generation?: number | null;
+            name: string;
+            /** Format: uuid */
+            owner_id?: string | null;
+        };
+        /** @description A permission on an image set. */
+        ImageSetPermission: "use" | "manage";
         /** @description One grant on an image source, as returned by the list-grants route. */
         ImageSourceGrantInfo: {
             permission: components["schemas"]["ImageSourcePermission"];
@@ -914,7 +914,7 @@ export interface components {
         ImageSourcePermission: "use" | "manage";
         /**
          * @description What a job is based off, as seen by `GET /jobs/{id}`: a concrete image, an
-         *     image group (with the frozen generation), or a resume/restart of an earlier
+         *     image set (with the frozen generation), or a resume/restart of an earlier
          *     job. The concrete manifest digest actually dispatched is reported separately
          *     as `resolved_image_digest`.
          */
@@ -927,9 +927,9 @@ export interface components {
             /** Format: uint32 */
             generation: number;
             /** Format: uuid */
-            group_id: string;
+            set_id: string;
             /** @constant */
-            type: "image_group";
+            type: "image_set";
         } | {
             /** Format: uuid */
             job_id: string;
@@ -1043,9 +1043,9 @@ export interface components {
              */
             generation: number | null;
             /** Format: uuid */
-            group_id: string;
+            set_id: string;
             /** @constant */
-            type: "image_group";
+            type: "image_set";
         };
         /**
          * @description The fine-grained stage of a job that is still coming up, exposed as
@@ -2968,7 +2968,7 @@ export interface operations {
             };
         };
     };
-    listImageGroups: {
+    listImageSets: {
         parameters: {
             query?: never;
             header?: never;
@@ -2982,7 +2982,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImageGroupInfo"][];
+                    "application/json": components["schemas"]["ImageSetInfo"][];
                 };
             };
             /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
@@ -3001,7 +3001,7 @@ export interface operations {
             };
         };
     };
-    createImageGroup: {
+    createImageSet: {
         parameters: {
             query?: never;
             header?: never;
@@ -3009,23 +3009,23 @@ export interface operations {
             cookie?: never;
         };
         /**
-         * @description `POST /image-groups`: create an empty, named image group. The caller becomes
+         * @description `POST /image-sets`: create an empty, named image set. The caller becomes
          *     its owner; membership is added afterwards via per-generation snapshots (see
          *     [`CreateGenerationRequest`]).
          */
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateImageGroupRequest"];
+                "application/json": components["schemas"]["CreateImageSetRequest"];
             };
         };
         responses: {
-            /** @description The image group was created. */
+            /** @description The image set was created. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImageGroupInfo"];
+                    "application/json": components["schemas"]["ImageSetInfo"];
                 };
             };
             /** @description Failed to parse the request body as JSON */
@@ -3051,7 +3051,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description An image group with that name already exists. */
+            /** @description An image set with that name already exists. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3078,7 +3078,7 @@ export interface operations {
             };
         };
     };
-    getImageGroup: {
+    getImageSet: {
         parameters: {
             query?: never;
             header?: never;
@@ -3090,13 +3090,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A named, mutable image group, as returned by the catalog list/inspect routes. */
+            /** @description A named, mutable image set, as returned by the catalog list/inspect routes. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImageGroupInfo"];
+                    "application/json": components["schemas"]["ImageSetInfo"];
                 };
             };
             /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
@@ -3113,7 +3113,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No such image group, or it is not visible to the caller. */
+            /** @description No such image set, or it is not visible to the caller. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -3122,7 +3122,7 @@ export interface operations {
             };
         };
     };
-    listImageGroupEvents: {
+    listImageSetEvents: {
         parameters: {
             query?: {
                 /** @description Opaque keyset cursor from a previous response's `next_cursor`. */
@@ -3171,7 +3171,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No such image group, or it is not visible to the caller. */
+            /** @description No such image set, or it is not visible to the caller. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -3180,7 +3180,7 @@ export interface operations {
             };
         };
     };
-    createImageGroupGeneration: {
+    createImageSetGeneration: {
         parameters: {
             query?: never;
             header?: never;
@@ -3191,8 +3191,8 @@ export interface operations {
             cookie?: never;
         };
         /**
-         * @description `POST /image-groups/{id}/generations`: append a new, immutable
-         *     full-replacement generation of a group's membership.
+         * @description `POST /image-sets/{id}/generations`: append a new, immutable
+         *     full-replacement generation of a set's membership.
          */
         requestBody: {
             content: {
@@ -3206,7 +3206,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImageGroupGenerationInfo"];
+                    "application/json": components["schemas"]["ImageSetGenerationInfo"];
                 };
             };
             /** @description Failed to parse the request body as JSON */
@@ -3232,7 +3232,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No such image group, or it is not visible to the caller. */
+            /** @description No such image set, or it is not visible to the caller. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -3259,27 +3259,27 @@ export interface operations {
             };
         };
     };
-    getImageGroupGeneration: {
+    getImageSetGeneration: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description The image group's unique identifier. */
+                /** @description The image set's unique identifier. */
                 id: string;
-                /** @description The generation number within the group. */
+                /** @description The generation number within the set. */
                 n: number;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description One immutable generation (membership snapshot) of an image group. */
+            /** @description One immutable generation (membership snapshot) of an image set. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImageGroupGenerationInfo"];
+                    "application/json": components["schemas"]["ImageSetGenerationInfo"];
                 };
             };
             /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
@@ -3296,7 +3296,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No such image group or generation. */
+            /** @description No such image set or generation. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -3305,7 +3305,7 @@ export interface operations {
             };
         };
     };
-    listImageGroupGrants: {
+    listImageSetGrants: {
         parameters: {
             query?: never;
             header?: never;
@@ -3322,7 +3322,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImageGroupGrantInfo"][];
+                    "application/json": components["schemas"]["ImageSetGrantInfo"][];
                 };
             };
             /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
@@ -3341,7 +3341,7 @@ export interface operations {
             };
         };
     };
-    createImageGroupGrant: {
+    createImageSetGrant: {
         parameters: {
             query?: never;
             header?: never;
@@ -3351,10 +3351,10 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description `POST /image-groups/{id}/grants`: grant `permission` on the group to a subject. */
+        /** @description `POST /image-sets/{id}/grants`: grant `permission` on the set to a subject. */
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ImageGroupGrantRequest"];
+                "application/json": components["schemas"]["ImageSetGrantRequest"];
             };
         };
         responses: {
@@ -3388,7 +3388,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No such image group, or it is not visible to the caller. */
+            /** @description No such image set, or it is not visible to the caller. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -3415,12 +3415,12 @@ export interface operations {
             };
         };
     };
-    revokeImageGroupGrant: {
+    revokeImageSetGrant: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description The image group's unique identifier. */
+                /** @description The image set's unique identifier. */
                 id: string;
                 /** @description The permission being revoked (`use` or `manage`). */
                 permission: string;

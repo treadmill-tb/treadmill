@@ -15,16 +15,16 @@ export function ImageRef({ image }: { image: JobImageRef }) {
           image <span className="mono">{shortId(image.image_id)}</span>
         </span>
       );
-    case "image_group":
+    case "image_set":
       return (
         <span>
-          group{" "}
+          set{" "}
           <Link
-            to={`/image-groups/${image.group_id}/generations/${image.generation}`}
+            to={`/image-sets/${image.set_id}/generations/${image.generation}`}
             className="mono"
-            title={image.group_id}
+            title={image.set_id}
           >
-            {shortId(image.group_id)}#{image.generation}
+            {shortId(image.set_id)}#{image.generation}
           </Link>
         </span>
       );

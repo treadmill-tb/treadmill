@@ -1113,13 +1113,13 @@ paths:
           description: No matching grant to revoke.
       security:
       - token: []
-  /image-groups:
+  /image-sets:
     get:
       tags:
-      - Image groups
-      summary: List image groups
+      - Image sets
+      summary: List image sets
       description: Returns the complete set in a stable order; this route is not paginated.
-      operationId: listImageGroups
+      operationId: listImageSets
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -1132,23 +1132,23 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/ImageGroupInfo'
+                  $ref: '#/components/schemas/ImageSetInfo'
       security:
       - token: []
     post:
       tags:
-      - Image groups
-      summary: Create an image group
-      operationId: createImageGroup
+      - Image sets
+      summary: Create an image set
+      operationId: createImageSet
       requestBody:
         description: |-
-          `POST /image-groups`: create an empty, named image group. The caller becomes
+          `POST /image-sets`: create an empty, named image set. The caller becomes
           its owner; membership is added afterwards via per-generation snapshots (see
           [`CreateGenerationRequest`]).
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateImageGroupRequest'
+              $ref: '#/components/schemas/CreateImageSetRequest'
         required: true
       responses:
         '401':
@@ -1174,21 +1174,21 @@ paths:
               schema:
                 type: string
         '201':
-          description: The image group was created.
+          description: The image set was created.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ImageGroupInfo'
+                $ref: '#/components/schemas/ImageSetInfo'
         '409':
-          description: An image group with that name already exists.
+          description: An image set with that name already exists.
       security:
       - token: []
-  /image-groups/{id}:
+  /image-sets/{id}:
     get:
       tags:
-      - Image groups
-      summary: Get an image group
-      operationId: getImageGroup
+      - Image sets
+      summary: Get an image set
+      operationId: getImageSet
       parameters:
       - in: path
         name: id
@@ -1205,21 +1205,21 @@ paths:
         '403':
           description: The authenticated account is locked, or lacks permission for this resource.
         '200':
-          description: A named, mutable image group, as returned by the catalog list/inspect routes.
+          description: A named, mutable image set, as returned by the catalog list/inspect routes.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ImageGroupInfo'
+                $ref: '#/components/schemas/ImageSetInfo'
         '404':
-          description: No such image group, or it is not visible to the caller.
+          description: No such image set, or it is not visible to the caller.
       security:
       - token: []
-  /image-groups/{id}/events:
+  /image-sets/{id}/events:
     get:
       tags:
-      - Image groups
-      summary: List an image group's audit events
-      operationId: listImageGroupEvents
+      - Image sets
+      summary: List an image set's audit events
+      operationId: listImageSetEvents
       parameters:
       - in: path
         name: id
@@ -1267,15 +1267,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuditFeedResponse'
         '404':
-          description: No such image group, or it is not visible to the caller.
+          description: No such image set, or it is not visible to the caller.
       security:
       - token: []
-  /image-groups/{id}/generations:
+  /image-sets/{id}/generations:
     post:
       tags:
-      - Image groups
-      summary: Append a generation to an image group
-      operationId: createImageGroupGeneration
+      - Image sets
+      summary: Append a generation to an image set
+      operationId: createImageSetGeneration
       parameters:
       - in: path
         name: id
@@ -1288,8 +1288,8 @@ paths:
         style: simple
       requestBody:
         description: |-
-          `POST /image-groups/{id}/generations`: append a new, immutable
-          full-replacement generation of a group's membership.
+          `POST /image-sets/{id}/generations`: append a new, immutable
+          full-replacement generation of a set's membership.
         content:
           application/json:
             schema:
@@ -1323,33 +1323,33 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ImageGroupGenerationInfo'
+                $ref: '#/components/schemas/ImageSetGenerationInfo'
         '404':
-          description: No such image group, or it is not visible to the caller.
+          description: No such image set, or it is not visible to the caller.
       security:
       - token: []
-  /image-groups/{id}/generations/{n}:
+  /image-sets/{id}/generations/{n}:
     get:
       tags:
-      - Image groups
-      summary: Get an image-group generation
-      operationId: getImageGroupGeneration
+      - Image sets
+      summary: Get an image-set generation
+      operationId: getImageSetGeneration
       parameters:
       - in: path
         name: id
-        description: The image group's unique identifier.
+        description: The image set's unique identifier.
         required: true
         schema:
-          description: The image group's unique identifier.
+          description: The image set's unique identifier.
           type: string
           format: uuid
         style: simple
       - in: path
         name: n
-        description: The generation number within the group.
+        description: The generation number within the set.
         required: true
         schema:
-          description: The generation number within the group.
+          description: The generation number within the set.
           type: integer
           format: uint32
           minimum: 0
@@ -1360,22 +1360,22 @@ paths:
         '403':
           description: The authenticated account is locked, or lacks permission for this resource.
         '200':
-          description: One immutable generation (membership snapshot) of an image group.
+          description: One immutable generation (membership snapshot) of an image set.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ImageGroupGenerationInfo'
+                $ref: '#/components/schemas/ImageSetGenerationInfo'
         '404':
-          description: No such image group or generation.
+          description: No such image set or generation.
       security:
       - token: []
-  /image-groups/{id}/grants:
+  /image-sets/{id}/grants:
     get:
       tags:
-      - Image groups
-      summary: List an image group's grants
+      - Image sets
+      summary: List an image set's grants
       description: Returns the complete set in a stable order; this route is not paginated.
-      operationId: listImageGroupGrants
+      operationId: listImageSetGrants
       parameters:
       - in: path
         name: id
@@ -1398,14 +1398,14 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/ImageGroupGrantInfo'
+                  $ref: '#/components/schemas/ImageSetGrantInfo'
       security:
       - token: []
     post:
       tags:
-      - Image groups
-      summary: Grant a permission on an image group
-      operationId: createImageGroupGrant
+      - Image sets
+      summary: Grant a permission on an image set
+      operationId: createImageSetGrant
       parameters:
       - in: path
         name: id
@@ -1417,11 +1417,11 @@ paths:
           format: uuid
         style: simple
       requestBody:
-        description: '`POST /image-groups/{id}/grants`: grant `permission` on the group to a subject.'
+        description: '`POST /image-sets/{id}/grants`: grant `permission` on the set to a subject.'
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ImageGroupGrantRequest'
+              $ref: '#/components/schemas/ImageSetGrantRequest'
         required: true
       responses:
         '401':
@@ -1449,22 +1449,22 @@ paths:
         '204':
           description: The grant was recorded.
         '404':
-          description: No such image group, or it is not visible to the caller.
+          description: No such image set, or it is not visible to the caller.
       security:
       - token: []
-  /image-groups/{id}/grants/{subject_id}/{permission}:
+  /image-sets/{id}/grants/{subject_id}/{permission}:
     delete:
       tags:
-      - Image groups
-      summary: Revoke a grant on an image group
-      operationId: revokeImageGroupGrant
+      - Image sets
+      summary: Revoke a grant on an image set
+      operationId: revokeImageSetGrant
       parameters:
       - in: path
         name: id
-        description: The image group's unique identifier.
+        description: The image set's unique identifier.
         required: true
         schema:
-          description: The image group's unique identifier.
+          description: The image set's unique identifier.
           type: string
           format: uuid
         style: simple
@@ -1594,8 +1594,8 @@ components:
       - state
     CreateGenerationRequest:
       description: |-
-        `POST /image-groups/{id}/generations`: append a new, immutable
-        full-replacement generation of a group's membership.
+        `POST /image-sets/{id}/generations`: append a new, immutable
+        full-replacement generation of a set's membership.
       type: object
       properties:
         members:
@@ -1604,9 +1604,9 @@ components:
             $ref: '#/components/schemas/GenerationMemberSpec'
       required:
       - members
-    CreateImageGroupRequest:
+    CreateImageSetRequest:
       description: |-
-        `POST /image-groups`: create an empty, named image group. The caller becomes
+        `POST /image-sets`: create an empty, named image set. The caller becomes
         its owner; membership is added afterwards via per-generation snapshots (see
         [`CreateGenerationRequest`]).
       type: object
@@ -1668,17 +1668,17 @@ components:
             type: string
         usable:
           description: |-
-            Whether the viewer may use some source of this member image. A group grant
+            Whether the viewer may use some source of this member image. A set grant
             is necessary but not sufficient: `false` means the member has no source the
             viewer can reach (so a job would not resolve it for this viewer).
           type: boolean
         usable_by_grantees:
           description: |-
-            Whether *every* subject holding a `use` grant on the group can source this
-            member (for a public group, that set includes the `everyone` subject). This
-            is the owner-facing health signal: `false` flags a member some grantee
-            cannot reach, so the group's `use` grant is unusable for them in practice.
-            Vacuously `true` for a group with no `use` grants.
+            Whether *every* subject holding a `use` grant on the set can source this
+            member (for a public set, the grantees include the `everyone` subject).
+            This is the owner-facing health signal: `false` flags a member some grantee
+            cannot reach, so the set's `use` grant is unusable for them in practice.
+            Vacuously `true` for a set with no `use` grants.
           type: boolean
       required:
       - image_id
@@ -1708,15 +1708,15 @@ components:
       required:
       - image_id
     GenerationPath:
-      description: The `{id}/generations/{n}` segments of an image-group generation route.
+      description: The `{id}/generations/{n}` segments of an image-set generation route.
       type: object
       properties:
         id:
-          description: The image group's unique identifier.
+          description: The image set's unique identifier.
           type: string
           format: uuid
         n:
-          description: The generation number within the group.
+          description: The generation number within the set.
           type: integer
           format: uint32
           minimum: 0
@@ -1728,7 +1728,7 @@ components:
       type: object
       properties:
         id:
-          description: The image group's unique identifier.
+          description: The image set's unique identifier.
           type: string
           format: uuid
         permission:
@@ -1833,99 +1833,6 @@ components:
           format: uuid
       required:
       - id
-    ImageGroupGenerationInfo:
-      description: One immutable generation (membership snapshot) of an image group.
-      type: object
-      properties:
-        created_at:
-          type: string
-          format: date-time
-        created_by:
-          type:
-          - string
-          - 'null'
-          format: uuid
-        generation:
-          type: integer
-          format: uint32
-          minimum: 0
-        group_id:
-          type: string
-          format: uuid
-        members:
-          type: array
-          items:
-            $ref: '#/components/schemas/GenerationMemberInfo'
-      required:
-      - group_id
-      - generation
-      - created_at
-      - members
-    ImageGroupGrantInfo:
-      description: One grant on an image group, as returned by the list-grants route.
-      type: object
-      properties:
-        permission:
-          $ref: '#/components/schemas/ImageGroupPermission'
-        subject_id:
-          type: string
-          format: uuid
-      required:
-      - subject_id
-      - permission
-    ImageGroupGrantRequest:
-      description: '`POST /image-groups/{id}/grants`: grant `permission` on the group to a subject.'
-      type: object
-      properties:
-        permission:
-          $ref: '#/components/schemas/ImageGroupPermission'
-        subject_id:
-          type: string
-          format: uuid
-      required:
-      - subject_id
-      - permission
-    ImageGroupInfo:
-      description: A named, mutable image group, as returned by the catalog list/inspect routes.
-      type: object
-      properties:
-        created_at:
-          type: string
-          format: date-time
-        id:
-          type: string
-          format: uuid
-        label:
-          type:
-          - string
-          - 'null'
-        latest_generation:
-          description: The group's latest generation number, or null if it has none yet.
-          type:
-          - integer
-          - 'null'
-          format: uint32
-          minimum: 0
-        name:
-          type: string
-        owner_id:
-          type:
-          - string
-          - 'null'
-          format: uuid
-      required:
-      - id
-      - name
-      - created_at
-    ImageGroupPermission:
-      description: A permission on an image group.
-      oneOf:
-      - description: May run a job referencing the group (and so its member images).
-        type: string
-        const: use
-      - description: May create generations and manage grants (owner holds this implicitly).
-        type: string
-        const: manage
     ImageInfo:
       description: |-
         A registered image, as returned by the catalog list/inspect routes. An image
@@ -1956,6 +1863,99 @@ components:
       - artifact_type
       - created_at
       - sources
+    ImageSetGenerationInfo:
+      description: One immutable generation (membership snapshot) of an image set.
+      type: object
+      properties:
+        created_at:
+          type: string
+          format: date-time
+        created_by:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        generation:
+          type: integer
+          format: uint32
+          minimum: 0
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/GenerationMemberInfo'
+        set_id:
+          type: string
+          format: uuid
+      required:
+      - set_id
+      - generation
+      - created_at
+      - members
+    ImageSetGrantInfo:
+      description: One grant on an image set, as returned by the list-grants route.
+      type: object
+      properties:
+        permission:
+          $ref: '#/components/schemas/ImageSetPermission'
+        subject_id:
+          type: string
+          format: uuid
+      required:
+      - subject_id
+      - permission
+    ImageSetGrantRequest:
+      description: '`POST /image-sets/{id}/grants`: grant `permission` on the set to a subject.'
+      type: object
+      properties:
+        permission:
+          $ref: '#/components/schemas/ImageSetPermission'
+        subject_id:
+          type: string
+          format: uuid
+      required:
+      - subject_id
+      - permission
+    ImageSetInfo:
+      description: A named, mutable image set, as returned by the catalog list/inspect routes.
+      type: object
+      properties:
+        created_at:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        label:
+          type:
+          - string
+          - 'null'
+        latest_generation:
+          description: The set's latest generation number, or null if it has none yet.
+          type:
+          - integer
+          - 'null'
+          format: uint32
+          minimum: 0
+        name:
+          type: string
+        owner_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+      required:
+      - id
+      - name
+      - created_at
+    ImageSetPermission:
+      description: A permission on an image set.
+      oneOf:
+      - description: May run a job referencing the set (and so its member images).
+        type: string
+        const: use
+      - description: May create generations and manage grants (owner holds this implicitly).
+        type: string
+        const: manage
     ImageSourceGrantInfo:
       description: One grant on an image source, as returned by the list-grants route.
       type: object
@@ -2030,7 +2030,7 @@ components:
     JobImageRef:
       description: |-
         What a job is based off, as seen by `GET /jobs/{id}`: a concrete image, an
-        image group (with the frozen generation), or a resume/restart of an earlier
+        image set (with the frozen generation), or a resume/restart of an earlier
         job. The concrete manifest digest actually dispatched is reported separately
         as `resolved_image_digest`.
       oneOf:
@@ -2047,7 +2047,7 @@ components:
         - type
         - image_id
       - description: |-
-          Based off a registered image *group*, addressed by its id plus the frozen
+          Based off a registered image *set*, addressed by its id plus the frozen
           generation; the concrete member is chosen at dispatch.
         type: object
         properties:
@@ -2055,15 +2055,15 @@ components:
             type: integer
             format: uint32
             minimum: 0
-          group_id:
+          set_id:
             type: string
             format: uuid
           type:
             type: string
-            const: image_group
+            const: image_set
         required:
         - type
-        - group_id
+        - set_id
         - generation
       - description: Resumes a previously started job.
         type: object
@@ -2260,9 +2260,9 @@ components:
         - type
         - image_id
       - description: |-
-          Base this job off a registered image *group*, addressed by its stable id.
+          Base this job off a registered image *set*, addressed by its stable id.
           `generation` pins a specific membership snapshot; when omitted, the
-          group's latest generation is resolved and frozen onto the job at enqueue.
+          set's latest generation is resolved and frozen onto the job at enqueue.
           After a host is chosen, the switchboard matcher selects the generation's
           member whose required host tags the chosen host satisfies and dispatches
           that concrete member.
@@ -2275,15 +2275,15 @@ components:
             format: uint32
             default: null
             minimum: 0
-          group_id:
+          set_id:
             type: string
             format: uuid
           type:
             type: string
-            const: image_group
+            const: image_set
         required:
         - type
-        - group_id
+        - set_id
     JobInitializingStage:
       description: |-
         The fine-grained stage of a job that is still coming up, exposed as
@@ -3164,7 +3164,7 @@ tags:
   description: Inspect hosts and their attached targets.
 - name: Images
   description: Register and inspect catalog images.
-- name: Image groups
-  description: Manage image groups, their generations, and grants.
+- name: Image sets
+  description: Manage image sets, their generations, and grants.
 - name: Users
   description: Profiles, sessions, and audit feeds.

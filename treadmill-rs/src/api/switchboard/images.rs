@@ -1,6 +1,6 @@
 //! Shared request/response types for the image-catalog REST API.
 //!
-//! These mirror the switchboard's `images` / `image-groups` routes (see
+//! These mirror the switchboard's `images` / `image-sets` routes (see
 //! `doc/oci-image-migration-plan.md` §8.1). The catalog stores only references:
 //! a content-addressed digest plus the `{registry, repository}` sources that
 //! serve it — never image bytes. An image is a non-owned manifest identity; the
@@ -92,11 +92,11 @@ pub struct ImageSourceGrantInfo {
     pub permission: ImageSourcePermission,
 }
 
-/// `POST /image-groups`: create an empty, named image group. The caller becomes
+/// `POST /image-sets`: create an empty, named image set. The caller becomes
 /// its owner; membership is added afterwards via per-generation snapshots (see
 /// [`CreateGenerationRequest`]).
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct CreateImageGroupRequest {
+pub struct CreateImageSetRequest {
     /// The stable, globally-unique moving-target handle a job references (by id).
     pub name: String,
     /// Optional human-readable label.
@@ -116,22 +116,22 @@ pub struct GenerationMemberSpec {
     pub required_host_tags: Vec<String>,
 }
 
-/// `POST /image-groups/{id}/generations`: append a new, immutable
-/// full-replacement generation of a group's membership.
+/// `POST /image-sets/{id}/generations`: append a new, immutable
+/// full-replacement generation of a set's membership.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct CreateGenerationRequest {
     pub members: Vec<GenerationMemberSpec>,
 }
 
-/// A named, mutable image group, as returned by the catalog list/inspect routes.
+/// A named, mutable image set, as returned by the catalog list/inspect routes.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct ImageGroupInfo {
+pub struct ImageSetInfo {
     pub id: Uuid,
     pub name: String,
     pub label: Option<String>,
     pub owner_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
-    /// The group's latest generation number, or null if it has none yet.
+    /// The set's latest generation number, or null if it has none yet.
     pub latest_generation: Option<u32>,
 }
 
@@ -144,48 +144,48 @@ pub struct GenerationMemberInfo {
     pub manifest_digest: Digest,
     pub required_host_tags: Vec<String>,
     pub index: u32,
-    /// Whether the viewer may use some source of this member image. A group grant
+    /// Whether the viewer may use some source of this member image. A set grant
     /// is necessary but not sufficient: `false` means the member has no source the
     /// viewer can reach (so a job would not resolve it for this viewer).
     pub usable: bool,
-    /// Whether *every* subject holding a `use` grant on the group can source this
-    /// member (for a public group, that set includes the `everyone` subject). This
-    /// is the owner-facing health signal: `false` flags a member some grantee
-    /// cannot reach, so the group's `use` grant is unusable for them in practice.
-    /// Vacuously `true` for a group with no `use` grants.
+    /// Whether *every* subject holding a `use` grant on the set can source this
+    /// member (for a public set, the grantees include the `everyone` subject).
+    /// This is the owner-facing health signal: `false` flags a member some grantee
+    /// cannot reach, so the set's `use` grant is unusable for them in practice.
+    /// Vacuously `true` for a set with no `use` grants.
     pub usable_by_grantees: bool,
 }
 
-/// One immutable generation (membership snapshot) of an image group.
+/// One immutable generation (membership snapshot) of an image set.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct ImageGroupGenerationInfo {
-    pub group_id: Uuid,
+pub struct ImageSetGenerationInfo {
+    pub set_id: Uuid,
     pub generation: u32,
     pub created_at: DateTime<Utc>,
     pub created_by: Option<Uuid>,
     pub members: Vec<GenerationMemberInfo>,
 }
 
-/// A permission on an image group.
+/// A permission on an image set.
 #[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ImageGroupPermission {
-    /// May run a job referencing the group (and so its member images).
+pub enum ImageSetPermission {
+    /// May run a job referencing the set (and so its member images).
     Use,
     /// May create generations and manage grants (owner holds this implicitly).
     Manage,
 }
 
-/// `POST /image-groups/{id}/grants`: grant `permission` on the group to a subject.
+/// `POST /image-sets/{id}/grants`: grant `permission` on the set to a subject.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct ImageGroupGrantRequest {
+pub struct ImageSetGrantRequest {
     pub subject_id: Uuid,
-    pub permission: ImageGroupPermission,
+    pub permission: ImageSetPermission,
 }
 
-/// One grant on an image group, as returned by the list-grants route.
+/// One grant on an image set, as returned by the list-grants route.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct ImageGroupGrantInfo {
+pub struct ImageSetGrantInfo {
     pub subject_id: Uuid,
-    pub permission: ImageGroupPermission,
+    pub permission: ImageSetPermission,
 }

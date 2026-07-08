@@ -2,7 +2,7 @@
 //!
 //! The switchboard catalog (see `doc/oci-image-migration-plan.md` §8.1) records
 //! only *references* to images — it never stores image bytes. To register an
-//! image or image group it must, however, pull the manifest/index **by digest**
+//! image or image set it must, however, pull the manifest/index **by digest**
 //! from the user's registry to validate that it is a well-formed Treadmill
 //! artifact before recording a row.
 //!

@@ -5,7 +5,7 @@
 //! [`treadmill_rs::image::parse`], and records reference rows — never bytes
 //! (`doc/oci-image-migration-plan.md` §8.1).
 //!
-//! Image *groups* are mutable, named, generationed switchboard entities: a group
+//! Image *sets* are mutable, named, generationed switchboard entities: a set
 //! is created empty, and its membership is replaced wholesale by appending
 //! immutable generations whose members are pre-registered images referenced by id.
 //! No registry pull is involved.
@@ -19,20 +19,18 @@ use uuid::Uuid;
 
 use oci_spec::image::ImageManifest;
 use treadmill_rs::api::switchboard::images::{
-    AddImageSourceRequest, CreateGenerationRequest, CreateImageGroupRequest, GenerationMemberInfo,
-    ImageGroupGenerationInfo, ImageGroupGrantInfo, ImageGroupGrantRequest, ImageGroupInfo,
-    ImageGroupPermission, ImageInfo, ImageSourceGrantInfo, ImageSourceGrantRequest,
-    ImageSourceInfo, ImageSourcePermission, RegisterImageRequest,
+    AddImageSourceRequest, CreateGenerationRequest, CreateImageSetRequest, GenerationMemberInfo,
+    ImageInfo, ImageSetGenerationInfo, ImageSetGrantInfo, ImageSetGrantRequest, ImageSetInfo,
+    ImageSetPermission, ImageSourceGrantInfo, ImageSourceGrantRequest, ImageSourceInfo,
+    ImageSourcePermission, RegisterImageRequest,
 };
 use treadmill_rs::image::parse::{self, ParseError};
 use treadmill_rs::image::{Digest, media_types};
 
 use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_entity};
-use crate::audit::model::{ImageGroup as AuditImageGroup, Subject as AuditSubject};
+use crate::audit::model::{ImageSet as AuditImageSet, Subject as AuditSubject};
 use crate::audit::{self, events};
-use crate::auth::engine::{
-    self, ImageGroupPermission as Perm, ImageSourcePermission as SourcePerm,
-};
+use crate::auth::engine::{self, ImageSetPermission as Perm, ImageSourcePermission as SourcePerm};
 use crate::http_error::internal;
 use crate::registry::RegistryError;
 use crate::routes::params::{
@@ -259,35 +257,32 @@ pub async fn get_image(
     Ok(Json(image_info(&state, rec, viewer).await?))
 }
 
-/// Assemble the API view of a group from its record, reading the latest
+/// Assemble the API view of a set from its record, reading the latest
 /// generation number.
-async fn group_info(
-    state: &AppState,
-    group: image::GroupRecord,
-) -> Result<ImageGroupInfo, StatusCode> {
-    let latest_generation = image::latest_generation(state.pool(), group.id)
+async fn set_info(state: &AppState, set: image::SetRecord) -> Result<ImageSetInfo, StatusCode> {
+    let latest_generation = image::latest_generation(state.pool(), set.id)
         .await
         .map_err(internal)?;
-    Ok(ImageGroupInfo {
-        id: group.id,
-        name: group.name,
-        label: group.label,
-        owner_id: group.owner_subject,
-        created_at: group.created_at,
+    Ok(ImageSetInfo {
+        id: set.id,
+        name: set.name,
+        label: set.label,
+        owner_id: set.owner_subject,
+        created_at: set.created_at,
         latest_generation,
     })
 }
 
-/// `POST /image-groups`: create an empty, named image group. The caller owns it.
-pub async fn create_image_group(
+/// `POST /image-sets`: create an empty, named image set. The caller owns it.
+pub async fn create_image_set(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Json(req): Json<CreateImageGroupRequest>,
-) -> Result<(StatusCode, Json<ImageGroupInfo>), StatusCode> {
+    Json(req): Json<CreateImageSetRequest>,
+) -> Result<(StatusCode, Json<ImageSetInfo>), StatusCode> {
     let owner = subject.user_id();
 
     // Names are globally unique; surface a clash as a 409 rather than a 500.
-    if image::fetch_group_by_name(state.pool(), &req.name)
+    if image::fetch_set_by_name(state.pool(), &req.name)
         .await
         .map_err(internal)?
         .is_some()
@@ -297,15 +292,15 @@ pub async fn create_image_group(
 
     let id = Uuid::now_v7();
     let mut tx = state.pool().begin().await.map_err(internal)?;
-    image::create_group(&mut *tx, id, &req.name, owner, req.label.as_deref())
+    image::create_set(&mut *tx, id, &req.name, owner, req.label.as_deref())
         .await
         .map_err(internal)?;
     audit::emit(
         &mut tx,
-        &events::ImageGroupCreated {
+        &events::ImageSetCreated {
             actor: AuditSubject(owner),
             owner: AuditSubject(owner),
-            group: AuditImageGroup(id),
+            set: AuditImageSet(id),
             name: req.name.clone(),
         },
     )
@@ -313,73 +308,73 @@ pub async fn create_image_group(
     .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
 
-    let group = image::fetch_group_by_id(state.pool(), id)
+    let set = image::fetch_set_by_id(state.pool(), id)
         .await
         .map_err(internal)?
-        .ok_or_else(|| internal("group vanished immediately after insert"))?;
-    Ok((StatusCode::CREATED, Json(group_info(&state, group).await?)))
+        .ok_or_else(|| internal("set vanished immediately after insert"))?;
+    Ok((StatusCode::CREATED, Json(set_info(&state, set).await?)))
 }
 
-/// `GET /image-groups`: list groups the caller owns (directly or via a group).
-pub async fn list_image_groups(
+/// `GET /image-sets`: list sets the caller owns (directly or via a group).
+pub async fn list_image_sets(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-) -> Result<Json<Vec<ImageGroupInfo>>, StatusCode> {
-    let groups = image::list_owned_groups(state.pool(), subject.user_id())
+) -> Result<Json<Vec<ImageSetInfo>>, StatusCode> {
+    let sets = image::list_owned_sets(state.pool(), subject.user_id())
         .await
         .map_err(internal)?;
-    let mut out = Vec::with_capacity(groups.len());
-    for g in groups {
-        out.push(group_info(&state, g).await?);
+    let mut out = Vec::with_capacity(sets.len());
+    for g in sets {
+        out.push(set_info(&state, g).await?);
     }
     Ok(Json(out))
 }
 
-/// Load a group, returning 404 unless the caller may at least `use` it (owner,
+/// Load a set, returning 404 unless the caller may at least `use` it (owner,
 /// `use`/`manage` grant, or admin). Don't leak existence to others.
-async fn visible_group(
+async fn visible_set(
     state: &AppState,
     subject: Uuid,
-    group_id: Uuid,
-) -> Result<image::GroupRecord, StatusCode> {
-    let group = image::fetch_group_by_id(state.pool(), group_id)
+    set_id: Uuid,
+) -> Result<image::SetRecord, StatusCode> {
+    let set = image::fetch_set_by_id(state.pool(), set_id)
         .await
         .map_err(internal)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    let visible = engine::can_access_image_group(state.pool(), subject, group_id, Perm::Use)
+    let visible = engine::can_access_image_set(state.pool(), subject, set_id, Perm::Use)
         .await
         .map_err(internal)?;
     if !visible {
         return Err(StatusCode::NOT_FOUND);
     }
-    Ok(group)
+    Ok(set)
 }
 
-/// Require `manage` on a group (owner or admin implicitly), 404 if the caller
+/// Require `manage` on a set (owner or admin implicitly), 404 if the caller
 /// cannot even see it, 403 if they can see it but lack `manage`.
 async fn require_manage(
     state: &AppState,
     subject: Uuid,
-    group_id: Uuid,
-) -> Result<image::GroupRecord, StatusCode> {
-    let group = visible_group(state, subject, group_id).await?;
-    let manage = engine::can_access_image_group(state.pool(), subject, group_id, Perm::Manage)
+    set_id: Uuid,
+) -> Result<image::SetRecord, StatusCode> {
+    let set = visible_set(state, subject, set_id).await?;
+    let manage = engine::can_access_image_set(state.pool(), subject, set_id, Perm::Manage)
         .await
         .map_err(internal)?;
     if !manage {
         return Err(StatusCode::FORBIDDEN);
     }
-    Ok(group)
+    Ok(set)
 }
 
-/// `GET /image-groups/{id}`: inspect one group the caller can reach.
-pub async fn get_image_group(
+/// `GET /image-sets/{id}`: inspect one set the caller can reach.
+pub async fn get_image_set(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(IdPath { id: group_id }): Path<IdPath>,
-) -> Result<Json<ImageGroupInfo>, StatusCode> {
-    let group = visible_group(&state, subject.user_id(), group_id).await?;
-    Ok(Json(group_info(&state, group).await?))
+    Path(IdPath { id: set_id }): Path<IdPath>,
+) -> Result<Json<ImageSetInfo>, StatusCode> {
+    let set = visible_set(&state, subject.user_id(), set_id).await?;
+    Ok(Json(set_info(&state, set).await?))
 }
 
 /// Assemble the API view of a generation, reading back its members in `index`
@@ -387,24 +382,24 @@ pub async fn get_image_group(
 async fn generation_info(
     state: &AppState,
     viewer: Uuid,
-    group_id: Uuid,
+    set_id: Uuid,
     generation: u32,
-) -> Result<ImageGroupGenerationInfo, StatusCode> {
-    let gen_row = image::fetch_generation(state.pool(), group_id, generation)
+) -> Result<ImageSetGenerationInfo, StatusCode> {
+    let gen_row = image::fetch_generation(state.pool(), set_id, generation)
         .await
         .map_err(internal)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    // Per-member usability (viewer + all group `use`-grantees), keyed by image id.
-    // A member's group grant is necessary but not sufficient: it may still lack a
+    // Per-member usability (viewer + all set `use`-grantees), keyed by image id.
+    // A member's set grant is necessary but not sufficient: it may still lack a
     // source the viewer (or some grantee) can reach.
     let usability: std::collections::HashMap<Uuid, image::MemberUsability> =
-        image::generation_member_usability(state.pool(), viewer, group_id, generation)
+        image::generation_member_usability(state.pool(), viewer, set_id, generation)
             .await
             .map_err(internal)?
             .into_iter()
             .map(|u| (u.image_id, u))
             .collect();
-    let members = image::members_for_generation(state.pool(), group_id, generation)
+    let members = image::members_for_generation(state.pool(), set_id, generation)
         .await
         .map_err(internal)?
         .into_iter()
@@ -423,8 +418,8 @@ async fn generation_info(
             })
         })
         .collect::<Result<Vec<_>, StatusCode>>()?;
-    Ok(ImageGroupGenerationInfo {
-        group_id,
+    Ok(ImageSetGenerationInfo {
+        set_id,
         generation,
         created_at: gen_row.created_at,
         created_by: gen_row.created_by,
@@ -432,16 +427,16 @@ async fn generation_info(
     })
 }
 
-/// `POST /image-groups/{id}/generations`: append a full-replacement generation.
+/// `POST /image-sets/{id}/generations`: append a full-replacement generation.
 /// Requires `manage`. Every `image_id` must already be registered (the FK also
 /// enforces); `required_host_tags` come from the payload, `index` from order.
 pub async fn create_generation(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(IdPath { id: group_id }): Path<IdPath>,
+    Path(IdPath { id: set_id }): Path<IdPath>,
     Json(req): Json<CreateGenerationRequest>,
-) -> Result<(StatusCode, Json<ImageGroupGenerationInfo>), StatusCode> {
-    require_manage(&state, subject.user_id(), group_id).await?;
+) -> Result<(StatusCode, Json<ImageSetGenerationInfo>), StatusCode> {
+    require_manage(&state, subject.user_id(), set_id).await?;
 
     // Validate every member image exists up front (clearer than relying on the
     // FK violation), and build the `(image_id, tags, index)` rows in array order.
@@ -462,14 +457,14 @@ pub async fn create_generation(
     }
 
     let mut tx = state.pool().begin().await.map_err(internal)?;
-    let generation = image::create_generation(&mut tx, group_id, subject.user_id(), &members)
+    let generation = image::create_generation(&mut tx, set_id, subject.user_id(), &members)
         .await
         .map_err(internal)?;
     audit::emit(
         &mut tx,
-        &events::ImageGroupGenerationCreated {
+        &events::ImageSetGenerationCreated {
             actor: AuditSubject(subject.user_id()),
-            group: AuditImageGroup(group_id),
+            set: AuditImageSet(set_id),
             generation: i64::from(generation),
             member_count: members.len() as i64,
         },
@@ -478,44 +473,44 @@ pub async fn create_generation(
     .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
 
-    let info = generation_info(&state, subject.user_id(), group_id, generation).await?;
+    let info = generation_info(&state, subject.user_id(), set_id, generation).await?;
     Ok((StatusCode::CREATED, Json(info)))
 }
 
-/// `GET /image-groups/{id}/generations/{n}`: inspect one generation.
+/// `GET /image-sets/{id}/generations/{n}`: inspect one generation.
 pub async fn get_generation(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Path(GenerationPath {
-        id: group_id,
+        id: set_id,
         n: generation,
     }): Path<GenerationPath>,
-) -> Result<Json<ImageGroupGenerationInfo>, StatusCode> {
-    visible_group(&state, subject.user_id(), group_id).await?;
+) -> Result<Json<ImageSetGenerationInfo>, StatusCode> {
+    visible_set(&state, subject.user_id(), set_id).await?;
     Ok(Json(
-        generation_info(&state, subject.user_id(), group_id, generation).await?,
+        generation_info(&state, subject.user_id(), set_id, generation).await?,
     ))
 }
 
-/// `POST /image-groups/{id}/grants`: grant `use`/`manage` to a subject. Requires
+/// `POST /image-sets/{id}/grants`: grant `use`/`manage` to a subject. Requires
 /// `manage`.
-pub async fn grant_image_group(
+pub async fn grant_image_set(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(IdPath { id: group_id }): Path<IdPath>,
-    Json(req): Json<ImageGroupGrantRequest>,
+    Path(IdPath { id: set_id }): Path<IdPath>,
+    Json(req): Json<ImageSetGrantRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    require_manage(&state, subject.user_id(), group_id).await?;
+    require_manage(&state, subject.user_id(), set_id).await?;
     let permission = Perm::from(req.permission);
     let mut tx = state.pool().begin().await.map_err(internal)?;
-    image::grant_image_group(&mut *tx, group_id, req.subject_id, permission.as_str())
+    image::grant_image_set(&mut *tx, set_id, req.subject_id, permission.as_str())
         .await
         .map_err(internal)?;
     audit::emit(
         &mut tx,
-        &events::ImageGroupGrantCreated {
+        &events::ImageSetGrantCreated {
             actor: AuditSubject(subject.user_id()),
-            group: AuditImageGroup(group_id),
+            set: AuditImageSet(set_id),
             grantee: AuditSubject(req.subject_id),
             permission: permission.as_str().to_string(),
         },
@@ -526,28 +521,26 @@ pub async fn grant_image_group(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `GET /image-groups/{id}/grants`: list a group's grants. Requires `manage`.
-pub async fn list_image_group_grants(
+/// `GET /image-sets/{id}/grants`: list a set's grants. Requires `manage`.
+pub async fn list_image_set_grants(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(IdPath { id: group_id }): Path<IdPath>,
-) -> Result<Json<Vec<ImageGroupGrantInfo>>, StatusCode> {
-    require_manage(&state, subject.user_id(), group_id).await?;
-    let grants = image::list_image_group_grants(state.pool(), group_id)
+    Path(IdPath { id: set_id }): Path<IdPath>,
+) -> Result<Json<Vec<ImageSetGrantInfo>>, StatusCode> {
+    require_manage(&state, subject.user_id(), set_id).await?;
+    let grants = image::list_image_set_grants(state.pool(), set_id)
         .await
         .map_err(internal)?
         .into_iter()
         .map(|g| {
             let permission = match g.permission.as_str() {
-                "use" => ImageGroupPermission::Use,
-                "manage" => ImageGroupPermission::Manage,
+                "use" => ImageSetPermission::Use,
+                "manage" => ImageSetPermission::Manage,
                 other => {
-                    return Err(internal(format!(
-                        "unknown image-group permission {other:?}"
-                    )));
+                    return Err(internal(format!("unknown image-set permission {other:?}")));
                 }
             };
-            Ok(ImageGroupGrantInfo {
+            Ok(ImageSetGrantInfo {
                 subject_id: g.subject_id,
                 permission,
             })
@@ -556,33 +549,33 @@ pub async fn list_image_group_grants(
     Ok(Json(grants))
 }
 
-/// `DELETE /image-groups/{id}/grants/{subject_id}/{permission}`: revoke a grant.
+/// `DELETE /image-sets/{id}/grants/{subject_id}/{permission}`: revoke a grant.
 /// Requires `manage`.
-pub async fn revoke_image_group_grant(
+pub async fn revoke_image_set_grant(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Path(GrantPath {
-        id: group_id,
+        id: set_id,
         subject_id: target,
         permission,
     }): Path<GrantPath>,
 ) -> Result<StatusCode, StatusCode> {
-    require_manage(&state, subject.user_id(), group_id).await?;
+    require_manage(&state, subject.user_id(), set_id).await?;
     // Reject an unknown permission word with a 400 rather than silently no-op.
     if permission != "use" && permission != "manage" {
         return Err(StatusCode::BAD_REQUEST);
     }
     let mut tx = state.pool().begin().await.map_err(internal)?;
-    let removed = image::revoke_image_group(&mut *tx, group_id, target, &permission)
+    let removed = image::revoke_image_set(&mut *tx, set_id, target, &permission)
         .await
         .map_err(internal)?;
     // Only a grant that actually existed is an auditable change.
     if removed {
         audit::emit(
             &mut tx,
-            &events::ImageGroupGrantRevoked {
+            &events::ImageSetGrantRevoked {
                 actor: AuditSubject(subject.user_id()),
-                group: AuditImageGroup(group_id),
+                set: AuditImageSet(set_id),
                 grantee: AuditSubject(target),
                 permission: permission.clone(),
             },
@@ -598,20 +591,20 @@ pub async fn revoke_image_group_grant(
     })
 }
 
-/// `GET /image-groups/{id}/events`: the group's audit feed (grants, generations,
+/// `GET /image-sets/{id}/events`: the set's audit feed (grants, generations,
 /// creation). Gated on `manage` — the events carry the `manage` view policy, so
 /// a viewer who only holds `use` would see an empty feed; requiring `manage`
-/// makes that explicit (404 if the group is not even visible, 403 if visible but
-/// unmanaged). "Public" is a grant to the `everyone` subject, so making a group
+/// makes that explicit (404 if the set is not even visible, 403 if visible but
+/// unmanaged). "Public" is a grant to the `everyone` subject, so making a set
 /// public/private appears here as an ordinary grant/revoke event.
 pub async fn list_events(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Path(IdPath { id: group_id }): Path<IdPath>,
+    Path(IdPath { id: set_id }): Path<IdPath>,
     Query(query): Query<AuditFeedQuery>,
 ) -> Result<Json<AuditFeedResponse>, StatusCode> {
-    require_manage(&state, subject.user_id(), group_id).await?;
-    fetch_events_for_entity(&state, &subject, "image_group", group_id, &query)
+    require_manage(&state, subject.user_id(), set_id).await?;
+    fetch_events_for_entity(&state, &subject, "image_set", set_id, &query)
         .await
         .map(Json)
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select subject_id, permission::text as \"permission!\"\n           from tml_switchboard.image_group_grants\n           where group_id = $1\n           order by granted_at, subject_id, permission",
+  "query": "select subject_id, permission::text as \"permission!\"\n           from tml_switchboard.image_set_grants\n           where set_id = $1\n           order by granted_at, subject_id, permission",
   "describe": {
     "columns": [
       {
@@ -9,7 +9,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.image_group_grants",
+            "table": "tml_switchboard.image_set_grants",
             "name": "subject_id"
           }
         }
@@ -31,5 +31,5 @@
       null
     ]
   },
-  "hash": "818a39166145fe194e111d654990c6ed19ddd8e437f140445217f4ac0a46b332"
+  "hash": "5c1fd275b4ae7b1addf106b00e5f61aa50f531407993df8de18a0530676e3e5d"
 }

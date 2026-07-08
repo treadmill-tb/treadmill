@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.image_set_members\n                 (set_id, generation, image_id, required_host_tags, \"index\")\n               values ($1, $2, $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Uuid",
+        "TextArray",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a3a9da8d342066607f288320e25d15e396e208dbf72a03cd950d140d84fe67a7"
+}

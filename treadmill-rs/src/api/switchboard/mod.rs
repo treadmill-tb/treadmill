@@ -176,14 +176,14 @@ pub enum JobInitSpec {
     /// supervisor.
     Image { image_id: Uuid },
 
-    /// Base this job off a registered image *group*, addressed by its stable id.
+    /// Base this job off a registered image *set*, addressed by its stable id.
     /// `generation` pins a specific membership snapshot; when omitted, the
-    /// group's latest generation is resolved and frozen onto the job at enqueue.
+    /// set's latest generation is resolved and frozen onto the job at enqueue.
     /// After a host is chosen, the switchboard matcher selects the generation's
     /// member whose required host tags the chosen host satisfies and dispatches
     /// that concrete member.
-    ImageGroup {
-        group_id: Uuid,
+    ImageSet {
+        set_id: Uuid,
         #[serde(default)]
         generation: Option<u32>,
     },

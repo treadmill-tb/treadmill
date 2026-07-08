@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with principals(id) as ( select id from tml_switchboard.principals($1::uuid) ) select ( exists (select 1 from principals where id = $4::uuid) or exists ( select 1 from tml_switchboard.image_sets g join principals p on g.owner_subject = p.id where g.id = $2::uuid ) or exists ( select 1 from tml_switchboard.image_set_grants gr join principals p on gr.subject_id = p.id where gr.set_id = $2::uuid and gr.permission::text = $3 ) ) as \"authorized!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "authorized!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "be2066c94f06c7dde5256d4155aeb5a9c31f49978454ab638a5a4c8cff0a2915"
+}

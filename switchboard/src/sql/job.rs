@@ -197,7 +197,7 @@ pub async fn insert(
     queued_at: DateTime<Utc>,
     conn: &mut Transaction<'_, Postgres>,
 ) -> Result<(), sqlx::Error> {
-    let (resume_job_id, restart_job_id, image_id, image_group_id, image_group_generation): (
+    let (resume_job_id, restart_job_id, image_id, image_set_id, image_set_generation): (
         Option<Uuid>,
         Option<Uuid>,
         Option<Uuid>,
@@ -209,7 +209,7 @@ pub async fn insert(
             let predecessor = sqlx::query!(
                 r#"
                     select resume_job_id, restart_job_id, image_id,
-                           image_group_id, image_group_generation
+                           image_set_id, image_set_generation
                     from tml_switchboard.jobs
                     where job_id = $1
                     "#,
@@ -221,29 +221,26 @@ pub async fn insert(
                 predecessor.resume_job_id,
                 Some(job_id),
                 predecessor.image_id,
-                predecessor.image_group_id,
-                predecessor.image_group_generation,
+                predecessor.image_set_id,
+                predecessor.image_set_generation,
             )
         }
         JobInitSpec::Image { image_id } => (None, None, Some(image_id), None, None),
-        JobInitSpec::ImageGroup {
-            group_id,
-            generation,
-        } => {
+        JobInitSpec::ImageSet { set_id, generation } => {
             // Freeze the candidate set: pin an explicit generation, else the
-            // group's latest. The enqueue route rejects a group with no
+            // set's latest. The enqueue route rejects a set with no
             // generation before reaching here, so the fallback is defensive.
             let generation = match generation {
                 Some(g) => g,
-                None => image::latest_generation(conn.as_mut(), group_id)
+                None => image::latest_generation(conn.as_mut(), set_id)
                     .await?
                     .ok_or_else(|| {
                         sqlx::Error::Protocol(format!(
-                            "image group {group_id} has no generation to freeze"
+                            "image set {set_id} has no generation to freeze"
                         ))
                     })?,
             };
-            (None, None, None, Some(group_id), Some(generation as i32))
+            (None, None, None, Some(set_id), Some(generation as i32))
         }
     };
 
@@ -256,8 +253,8 @@ pub async fn insert(
           resume_job_id,
           restart_job_id,
           image_id,
-          image_group_id,
-          image_group_generation,
+          image_set_id,
+          image_set_generation,
           ssh_keys,
           restart_policy,
           enqueued_by_token_id,
@@ -280,8 +277,8 @@ pub async fn insert(
           $2,	    -- resume_job_id
           $3,	    -- restart_job_id
           $4,	    -- image_id
-          $5,	    -- image_group_id
-          $6,	    -- image_group_generation
+          $5,	    -- image_set_id
+          $6,	    -- image_set_generation
           $7,	    -- ssh_keys
           $8,	    -- restart_policy
           $9,	    -- enqueued_by_token_id
@@ -303,8 +300,8 @@ pub async fn insert(
         resume_job_id,
         restart_job_id,
         image_id,
-        image_group_id,
-        image_group_generation,
+        image_set_id,
+        image_set_generation,
         job_request.ssh_keys.as_slice(),
         SqlRestartPolicy {
             remaining_restart_count: i32::try_from(job_request.restart_policy.max_restarts)
@@ -362,13 +359,13 @@ pub struct SqlJob {
     resume_job_id: Option<Uuid>,
     #[allow(dead_code)]
     restart_job_id: Option<Uuid>,
-    // The job's image reference: a concrete image id, or an image group id plus
+    // The job's image reference: a concrete image id, or an image set id plus
     // the frozen generation (resolved to a concrete member at dispatch). Exactly
-    // one of image_id / image_group_id is set for a non-resume job; all null for
-    // a resume. image_group_generation is set iff image_group_id is.
+    // one of image_id / image_set_id is set for a non-resume job; all null for
+    // a resume. image_set_generation is set iff image_set_id is.
     image_id: Option<Uuid>,
-    image_group_id: Option<Uuid>,
-    image_group_generation: Option<i32>,
+    image_set_id: Option<Uuid>,
+    image_set_generation: Option<i32>,
     // The concrete image id actually dispatched, recorded at dispatch.
     #[allow(dead_code)]
     resolved_image_id: Option<Uuid>,
@@ -420,9 +417,9 @@ impl SqlJob {
     ///
     /// For a resume job this is simply [`ImageSpecification::ResumeJob`]. For a
     /// concrete image, the manifest digest is paired with its catalog locations.
-    /// For an image *group*, the chosen host's `host_tags` select the concrete
+    /// For an image *set*, the chosen host's `host_tags` select the concrete
     /// member of the frozen generation (the matcher) whose digest + locations are
-    /// then dispatched. `host_tags` is ignored for the non-group variants.
+    /// then dispatched. `host_tags` is ignored for the non-set variants.
     pub async fn resolve_image_spec(
         &self,
         host_tags: &BTreeSet<String>,
@@ -446,11 +443,9 @@ impl SqlJob {
             return Ok((spec, Some(rec.id)));
         }
 
-        if let (Some(group_id), Some(generation)) =
-            (self.image_group_id, self.image_group_generation)
-        {
+        if let (Some(set_id), Some(generation)) = (self.image_set_id, self.image_set_generation) {
             let members =
-                image::members_for_generation(&mut *conn, group_id, generation as u32).await?;
+                image::members_for_generation(&mut *conn, set_id, generation as u32).await?;
             let candidates: Vec<GroupMember<(Uuid, String)>> = members
                 .into_iter()
                 .map(|m| GroupMember {
@@ -516,7 +511,7 @@ impl SqlJob {
     /// Reads the job's ordered target requirements and parameters (the latter
     /// **redacted**: secret values are withheld, see [`JobParameterView`]) and
     /// folds the four mutually-exclusive image columns into a single
-    /// [`JobImageRef`] (resume → restart → concrete image → image group, matching
+    /// [`JobImageRef`] (resume → restart → concrete image → image set, matching
     /// the row invariants in `SCHEMA.sql`). Stored digests are re-parsed; a
     /// malformed one is a data-integrity fault surfaced as
     /// [`JobInfoError::Digest`].
@@ -543,8 +538,8 @@ impl SqlJob {
             self.resume_job_id,
             self.restart_job_id,
             self.image_id,
-            self.image_group_id,
-            self.image_group_generation,
+            self.image_set_id,
+            self.image_set_generation,
             self.job_id,
         )?;
 
@@ -629,7 +624,7 @@ pub async fn fetch_by_job_id(
         SqlJob,
         r#"
         select job_id, owner_id, resume_job_id, restart_job_id, image_id,
-        image_group_id, image_group_generation,
+        image_set_id, image_set_generation,
         resolved_image_id, ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id,
         host_tag_requirements, job_timeout,
@@ -652,15 +647,15 @@ pub async fn fetch_by_job_id(
 pub enum ImageResolveError {
     /// An underlying database error.
     Db(sqlx::Error),
-    /// The referenced image/group digest is not in the catalog (e.g. it was
+    /// The referenced image/set digest is not in the catalog (e.g. it was
     /// deregistered after the job was queued).
     NotRegistered(String),
     /// The image is registered but has no location to pull it from (D16: a
     /// user's only external registry became unavailable).
     NoLocations(String),
-    /// No group member matched the chosen host's attributes (§8.3).
+    /// No set member matched the chosen host's attributes (§8.3).
     NoMatchingMember,
-    /// The job row violated `valid_init_spec` (neither image nor group set on a
+    /// The job row violated `valid_init_spec` (neither image nor set pinned on a
     /// non-resume job). Should be impossible given the DB constraint.
     MalformedJob(Uuid),
 }
@@ -676,16 +671,16 @@ impl std::fmt::Display for ImageResolveError {
         match self {
             ImageResolveError::Db(e) => write!(f, "database error resolving image: {e}"),
             ImageResolveError::NotRegistered(d) => {
-                write!(f, "image/group {d} is not registered in the catalog")
+                write!(f, "image/set {d} is not registered in the catalog")
             }
             ImageResolveError::NoLocations(d) => {
                 write!(f, "image {d} has no registry locations")
             }
             ImageResolveError::NoMatchingMember => {
-                write!(f, "no group member matched the host's attributes")
+                write!(f, "no set member matched the host's attributes")
             }
             ImageResolveError::MalformedJob(j) => {
-                write!(f, "job {j} has neither an image nor a group digest")
+                write!(f, "job {j} has neither an image nor a set digest")
             }
         }
     }
@@ -700,7 +695,7 @@ pub enum JobInfoError {
     Db(sqlx::Error),
     /// A digest stored on the row did not parse (data-integrity fault).
     Digest(String),
-    /// The row set neither an image, a group, nor a resume/restart reference,
+    /// The row set neither an image, a set, nor a resume/restart reference,
     /// violating the `valid_init_spec` CHECK. Should be impossible.
     Malformed(Uuid),
 }
@@ -715,10 +710,7 @@ impl std::fmt::Display for JobInfoError {
             JobInfoError::Db(e) => write!(f, "database error building JobInfo: {e}"),
             JobInfoError::Digest(d) => write!(f, "job row holds an unparseable digest {d}"),
             JobInfoError::Malformed(j) => {
-                write!(
-                    f,
-                    "job {j} has no image, group, or resume/restart reference"
-                )
+                write!(f, "job {j} has no image, set, or resume/restart reference")
             }
         }
     }
@@ -727,14 +719,14 @@ impl std::error::Error for JobInfoError {}
 
 /// Fold a job row's mutually-exclusive image columns into a single
 /// [`JobImageRef`], following the row invariants in `SCHEMA.sql` (resume →
-/// restart → concrete image → image group). A row that sets none of them
+/// restart → concrete image → image set). A row that sets none of them
 /// violates `valid_init_spec` ([`JobInfoError::Malformed`]).
 fn job_image_ref(
     resume_job_id: Option<Uuid>,
     restart_job_id: Option<Uuid>,
     image_id: Option<Uuid>,
-    image_group_id: Option<Uuid>,
-    image_group_generation: Option<i32>,
+    image_set_id: Option<Uuid>,
+    image_set_generation: Option<i32>,
     job_id: Uuid,
 ) -> Result<JobImageRef, JobInfoError> {
     if let Some(job_id) = resume_job_id {
@@ -743,9 +735,9 @@ fn job_image_ref(
         Ok(JobImageRef::Restart { job_id })
     } else if let Some(image_id) = image_id {
         Ok(JobImageRef::Image { image_id })
-    } else if let (Some(group_id), Some(generation)) = (image_group_id, image_group_generation) {
-        Ok(JobImageRef::ImageGroup {
-            group_id,
+    } else if let (Some(set_id), Some(generation)) = (image_set_id, image_set_generation) {
+        Ok(JobImageRef::ImageSet {
+            set_id,
             generation: generation as u32,
         })
     } else {
@@ -781,8 +773,8 @@ pub async fn list_visible(
           j.resume_job_id,
           j.restart_job_id,
           j.image_id,
-          j.image_group_id,
-          j.image_group_generation,
+          j.image_set_id,
+          j.image_set_generation,
           j.queued_at,
           j.started_at,
           j.terminated_at,
@@ -822,8 +814,8 @@ pub async fn list_visible(
                     r.resume_job_id,
                     r.restart_job_id,
                     r.image_id,
-                    r.image_group_id,
-                    r.image_group_generation,
+                    r.image_set_id,
+                    r.image_set_generation,
                     r.job_id,
                 )?,
                 queued_at: r.queued_at,
@@ -941,7 +933,7 @@ impl std::error::Error for BuildStartJobError {}
 /// The image spec honors the scheduler's already-recorded choice rather than
 /// re-resolving: a resume becomes [`ImageSpecification::ResumeJob`]; otherwise
 /// the concrete `resolved_image_id` the scheduler pinned at assignment is
-/// paired with that image's catalog locations (a group is *not* re-selected — the
+/// paired with that image's catalog locations (a set is *not* re-selected — the
 /// scheduler's chosen member stands). The remaining fields are read straight off
 /// the job row and the `job_parameters` table.
 ///
@@ -1128,7 +1120,7 @@ pub async fn request_terminate(
 //     sqlx::query_as!(
 //         SqlJob,
 //         r#"
-//         select job_id, resume_job_id, restart_job_id, image_digest, image_group_digest,
+//         select job_id, resume_job_id, restart_job_id, image_digest, image_set_digest,
 //         resolved_image_digest, ssh_keys,
 //         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
 //         queued_at, job_state as "job_state: _",
@@ -1147,7 +1139,7 @@ pub async fn request_terminate(
 //     sqlx::query_as!(
 //         SqlJob,
 //         r#"
-//         select job_id, resume_job_id, restart_job_id, image_digest, image_group_digest,
+//         select job_id, resume_job_id, restart_job_id, image_digest, image_set_digest,
 //         resolved_image_digest, ssh_keys,
 //         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
 //         queued_at, job_state as "job_state: _",

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.image_sets\n             (id, name, owner_subject, label)\n           values ($1, $2, $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "148759d139b3b1745a5875b1ee7b02acf004faaccf1b938a3ca7589165622f6a"
+}

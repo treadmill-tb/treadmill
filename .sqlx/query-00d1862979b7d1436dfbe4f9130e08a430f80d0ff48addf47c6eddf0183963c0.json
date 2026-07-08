@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select generation, created_by, created_at\n           from tml_switchboard.image_group_generations\n           where group_id = $1 and generation = $2",
+  "query": "select generation, created_by, created_at\n           from tml_switchboard.image_set_generations\n           where set_id = $1 and generation = $2",
   "describe": {
     "columns": [
       {
@@ -9,7 +9,7 @@
         "type_info": "Int4",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.image_group_generations",
+            "table": "tml_switchboard.image_set_generations",
             "name": "generation"
           }
         }
@@ -20,7 +20,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.image_group_generations",
+            "table": "tml_switchboard.image_set_generations",
             "name": "created_by"
           }
         }
@@ -31,7 +31,7 @@
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.image_group_generations",
+            "table": "tml_switchboard.image_set_generations",
             "name": "created_at"
           }
         }
@@ -49,5 +49,5 @@
       false
     ]
   },
-  "hash": "6def0f305c57b7ba5423ab4c80b2c73509d30544b03212adef873ca0349e6e58"
+  "hash": "00d1862979b7d1436dfbe4f9130e08a430f80d0ff48addf47c6eddf0183963c0"
 }

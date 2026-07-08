@@ -24,7 +24,7 @@
    `source` extension.
 2. **Switchboard holds no image bytes.** It becomes a *catalog* (pinned digests
    + registry refs), a *registry token issuer*, and an *attribute matcher*.
-3. **Image groups**: one logical image (e.g. "Ubuntu 22.04") resolves to the
+3. **Image sets**: one logical image (e.g. "Ubuntu 22.04") resolves to the
    right concrete image for the host it lands on (QEMU x86-64 / QEMU aarch64 /
    RPi aarch64 NBD), via the standard OCI **image index** with Treadmill
    selection annotations.
@@ -50,7 +50,7 @@
 | Manifest / index shapes consumed | OCI image-spec 1.1 (vendored types or `oci-spec` crate) | upstream spec |
 | Job ↔ image wire types | Rust types in `treadmill-rs/src/api/` | committed `*.schema.json` snapshot + diff test |
 | Backing-chain construction rules | Rustdoc on supervisor image setup | review |
-| Catalog / group model | switchboard DB migrations + Rustdoc | sqlx compile-time checks |
+| Catalog / set model | switchboard DB migrations + Rustdoc | sqlx compile-time checks |
 
 ---
 
@@ -58,9 +58,9 @@
 
 ```
             ┌──────────────── switchboard ────────────────┐
-            │ catalog DB (digest, ref, group, owner, attrs)│
+            │ catalog DB (digest, ref, set, owner, attrs)│
  job ──────▶│ token/authz server (scoped push/pull)        │
-            │ group→manifest matcher (host attributes)     │
+            │ set→manifest matcher (host attributes)     │
             └───────┬───────────────────────┬──────────────┘
             pin {ref,digest}          mints tokens / verifies
        ┌────────────▼─────────┐      ┌───────▼────────────────┐
@@ -90,8 +90,8 @@ Each row is a decision we are committing to unless flagged **(revisit)**.
 | D1 | Manifest format | OCI image manifest (`application/vnd.oci.image.manifest.v1+json`), JSON. Pure-artifact form: empty config (`application/vnd.oci.empty.v1+json`), `artifactType = application/vnd.treadmill.image.v1+json`. |
 | D2 | Per-blob role/type | Custom media types: `application/vnd.treadmill.disk.qcow2`, `application/vnd.treadmill.boot.fat.v1`. Role echoed in `ci.treadmill.role` annotation (`root` / `boot`). |
 | D3 | Backing chain (`head`/`lower`/`virtual-size`) | Expressed as **OCI layer order** + per-layer annotations `ci.treadmill.qcow2.virtual-size` and `ci.treadmill.qcow2.lower` (digest of the lower layer). The manifest-level `ci.treadmill.qcow2.head` annotation names the top layer's digest. **Backing paths are never baked into the shared qcow2 blobs**; the chain is supplied at runtime (D9). |
-| D4 | Image groups | OCI **image index** (`application/vnd.oci.image.index.v1+json`), `artifactType = application/vnd.treadmill.image-group.v1+json`. Each member descriptor carries `platform` (arch/os/variant) plus `ci.treadmill.target` (`qemu`/`nbd-netboot`) and optional `ci.treadmill.board`. |
-| D5 | Image identity in API/DB | An image is identified by its **manifest digest** plus a resolvable **registry ref**. New type `treadmill_rs::image::ImageRef { registry, repository, digest }`. `JobInitSpec` references either a concrete `ImageRef` or a registered **catalog id** (group or image) resolved by switchboard. Pinning is always by digest; tags are aliases resolved at registration time. |
+| D4 | Image sets | OCI **image index** (`application/vnd.oci.image.index.v1+json`), `artifactType = application/vnd.treadmill.image-set.v1+json`. Each member descriptor carries `platform` (arch/os/variant) plus `ci.treadmill.target` (`qemu`/`nbd-netboot`) and optional `ci.treadmill.board`. |
+| D5 | Image identity in API/DB | An image is identified by its **manifest digest** plus a resolvable **registry ref**. New type `treadmill_rs::image::ImageRef { registry, repository, digest }`. `JobInitSpec` references either a concrete `ImageRef` or a registered **catalog id** (set or image) resolved by switchboard. Pinning is always by digest; tags are aliases resolved at registration time. |
 | D6 | Registry library | `oci-client` crate (pure-Rust OCI Distribution client) on the supervisor; `oci-spec` crate (or vendored minimal types) for manifest/index structs. No shelling to `skopeo`/`oras` in the hot path. CLI may shell to `oras` for ergonomics. |
 | D7 | Local store shape | A **per-server Zot daemon** owns the store (single writer); its storage is a standard OCI image layout (`blobs/sha256/<digest>`, `oci-layout`). Consumers never write it — they `open()` blobs **read-only** via a ro bind-mount. All ingest/dedup/locking/GC are the daemon's serialized internal job; supervisors only *read*. See §7. |
 | D8 | Daemon on management path, not data path | The daemon fetches each blob **once** (pull-through cache of the canonical registry); consumers read those same files directly → still **single-copy + shared page cache**. This is the §6 single-copy requirement *and* a managed concurrency model — the earlier "registry = second copy" objection applied only to HTTP-served data, which we don't do. **(revisit)** thin custom daemon over the same OCI layout if the Zot direct-read coupling is unacceptable (§7.4 fallback). |
@@ -139,11 +139,11 @@ writes, and GC live in the daemon.
 
 ### 5.3 switchboard DB (new migrations)
 
-> **Superseded (image groups).** The `image_groups` / `image_group_members`
-> shape below — a group as a frozen OCI **index** pinned by `index_digest`, with
-> members rebuilt from that index — has been replaced. Groups are now *mutable,
+> **Superseded (image sets).** The `image_sets` / `image_set_members`
+> shape below — a set as a frozen OCI **index** pinned by `index_digest`, with
+> members rebuilt from that index — has been replaced. Sets are now *mutable,
 > named* switchboard entities with an append-only series of immutable
-> **generations**; jobs reference a group by `id` (+ frozen generation), not an
+> **generations**; jobs reference a set by `id` (+ frozen generation), not an
 > index digest. The `images` / `image_locations` tables below are unchanged. See
 > the IMAGE CATALOG section of `switchboard/SCHEMA.sql` for the authoritative
 > model.
@@ -152,7 +152,7 @@ writes, and GC live in the daemon.
 images(                   -- identity is the digest, NOT a location (D16)
   id uuid pk,
   manifest_digest text unique,
-  artifact_type text,                                      -- image vs group
+  artifact_type text,                                      -- image vs set
   owner_subject uuid -> subjects,
   label text, attrs jsonb,
   created_at timestamptz, ...
@@ -167,18 +167,18 @@ image_locations(          -- N locations per image (D12/D16)
 )                         -- promotion = INSERT a canonical/system location;
                           -- redundancy = multiple rows; digest never changes
 
-image_groups(
+image_sets(
   id uuid pk, index_digest text unique,
   owner_subject uuid, label text, ...
-)                         -- group is itself an OCI index, pinned by digest;
+)                         -- set is itself an OCI index, pinned by digest;
                           -- its locations also live in image_locations
 
-image_group_members(      -- denormalized for the matcher; rebuilt from the index
-  group_id uuid -> image_groups,
+image_set_members(      -- denormalized for the matcher; rebuilt from the index
+  set_id uuid -> image_sets,
   image_id  uuid -> images,
   arch text, os text, variant text,
   tml_target text, tml_board text,        -- selection axes from annotations
-  primary key (group_id, image_id)
+  primary key (set_id, image_id)
 )
 ```
 
@@ -362,7 +362,7 @@ via flock + lease files:
 The canonical registry is **not** protected by supervisor leases. Instead:
 
 - Every **registered** image stays reachable (referenced by a catalog row →
-  kept tagged / kept in its group index); switchboard never removes the registry
+  kept tagged / kept in its set index); switchboard never removes the registry
   reference while the catalog row exists.
 - A **running** job is already protected locally (it holds a lease on its own
   pulled copy), so even if the canonical copy were GC'd mid-job the job is
@@ -382,12 +382,12 @@ The canonical registry is **not** protected by supervisor leases. Instead:
   an `images` row + first `image_locations` row. Promotion/mirror = `skopeo copy`
   into the canonical registry then INSERT a `canonical`/`system` location (D16);
   the digest and all existing references are unchanged.
-- **Image groups (superseded):** groups are no longer registered as an index
-  digest. `POST /image-groups` creates an empty, *named* group; membership is
+- **Image sets (superseded):** sets are no longer registered as an index
+  digest. `POST /image-sets` creates an empty, *named* set; membership is
   appended as immutable full-replacement **generations**
-  (`POST /image-groups/{id}/generations`) whose members are pre-registered images
+  (`POST /image-sets/{id}/generations`) whose members are pre-registered images
   referenced by id, with `required_host_tags` from the payload. No registry pull.
-- `GET /images`, `GET /image-groups`: list/inspect (ownership-scoped).
+- `GET /images`, `GET /image-sets`: list/inspect (ownership-scoped).
 
 ### 8.2 Token issuer (D11)
 
@@ -433,11 +433,11 @@ axes and the `tag_config` string are gone, §10 resolved):
   requirement to a *distinct* `host_targets` row whose tags ⊇ the requirement
   (Kuhn's, in Rust, since this isn't clean SQL). **Nothing is stored**: a job
   on a host simply has access to every DUT physically wired to that host.
-- **Image-group selection** picks the admissible member of the job's *frozen
-  generation* (`image_group_generation`, pinned at enqueue) whose
+- **Image-set selection** picks the admissible member of the job's *frozen
+  generation* (`image_set_generation`, pinned at enqueue) whose
   `required_host_tags ⊆ host.tags` (most-specific wins; ties → the member's
   `index`), yielding the concrete `manifest_digest`. The candidate set is the
-  generation's `image_group_members`.
+  generation's `image_set_members`.
 
 **Dispatch transaction** (per candidate host, `try_assign`): lock the host row
 `FOR UPDATE` (host-before-job lock order, matching the worker, so no deadlock),
@@ -461,7 +461,7 @@ via `principals()`). Every site that needs it carries a `TODO(authz)` comment.
 ### 8.4 Protocol/type changes (drift-guarded)
 
 - `treadmill-rs/src/api/switchboard.rs`: `JobInitSpec::Image { image_id }` →
-  `Image { image_ref }` + `ImageGroup { group_id }`.
+  `Image { image_ref }` + `ImageSet { set_id }`.
 - `treadmill-rs/src/api/switchboard_supervisor.rs`: `ImageSpecification::Image
   { image_id }` → `Image { manifest_digest, locations: Vec<{ image_ref,
   pull_token }> }` (ordered, for token-gated pull + failover, D11/D16).
@@ -550,13 +550,13 @@ Each phase below names its verifying test target.
   assumption that Zot GC honors references — against the real binary.)
 
 ### Phase 4 — Switchboard catalog & scheduler
-- DB migrations (§5.3). `images`/`image-groups` registration + list routes with
-  manifest validation. Matcher (group + host attrs → concrete digest).
+- DB migrations (§5.3). `images`/`image-sets` registration + list routes with
+  manifest validation. Matcher (set + host attrs → concrete digest).
 - Protocol change (§8.4) + schema snapshot regen. Replace `jobs.image_id` plumbing
   in `switchboard/src/sql/job.rs` and the dispatch path.
 - **Verified by:** `cargo test -p switchboard routes::images` (mirroring the
   `users` route tests) — registration validates against a child Zot + writes an
-  audit entry; `matcher::` unit tests (group + host attrs → concrete digest);
+  audit entry; `matcher::` unit tests (set + host attrs → concrete digest);
   `cargo sqlx prepare --check`.
 
 ### Phase 5 — Canonical registry, tokens, push, CLI
@@ -641,7 +641,7 @@ Each phase below names its verifying test target.
 - **Host attribute source (RESOLVED 2026-06-07).** Replaced the `arch/target/board`
   axes and the "FIXME: TO BE SPECIFIED" `tag_config` string with opaque tag-set
   containment throughout (§8.3): `hosts.tags`, per-DUT `host_targets.tags`, job
-  `host_tag_requirements` + `job_target_requirements`, and image-group member
+  `host_tag_requirements` + `job_target_requirements`, and image-set member
   `required_host_tags`. Matching is array containment (`@>`) plus a Rust
   bipartite DUT match; no tag parsing remains.
 - **Scheduler authorization (open).** `eligible_hosts` does not yet enforce that

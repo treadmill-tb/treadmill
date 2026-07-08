@@ -47,7 +47,7 @@ enum AssignOutcome {
     /// The job was assigned to the host.
     Assigned,
     /// The host does not admit this job (DUT requirements unmet, or no image
-    /// group member matches it) — try the next candidate host.
+    /// set member matches it) — try the next candidate host.
     HostRejected,
     /// The host was taken/no-longer-live by the time we locked it — try the next
     /// candidate host.
@@ -211,10 +211,10 @@ impl Scheduler {
         // Resolve the image against the chosen host, inside the transaction.
         // The resolved spec itself is rebuilt at dispatch from the recorded
         // `resolved_image_id`; here we only need resolution to succeed (validating
-        // the image / picking the group member) and the id to pin.
+        // the image / picking the set member) and the id to pin.
         let (_spec, resolved_image_id) = match job.resolve_image_spec(&host_tags, &mut txn).await {
             Ok(resolved) => resolved,
-            // No group member matches this host: a different host might, so this
+            // No set member matches this host: a different host might, so this
             // is a host rejection, not a job failure.
             Err(ImageResolveError::NoMatchingMember) => return Ok(AssignOutcome::HostRejected),
             // The image itself is unusable (unregistered / no registry location /
@@ -489,10 +489,10 @@ mod tests {
         Ok((id, d))
     }
 
-    /// Register an image group (named `group-{name_seed}`) with one generation
-    /// whose members are `(seed, required_host_tags)`. Returns the group's id and
+    /// Register an image set (named `set-{name_seed}`) with one generation
+    /// whose members are `(seed, required_host_tags)`. Returns the set's id and
     /// each member's manifest digest (in member order).
-    async fn register_group(
+    async fn register_set(
         pool: &PgPool,
         owner: Uuid,
         name_seed: u8,
@@ -500,7 +500,7 @@ mod tests {
     ) -> anyhow::Result<(Uuid, Vec<Digest>)> {
         let gid = Uuid::new_v4();
         let mut tx = pool.begin().await?;
-        sql::image::create_group(&mut *tx, gid, &format!("group-{name_seed}"), owner, None).await?;
+        sql::image::create_set(&mut *tx, gid, &format!("set-{name_seed}"), owner, None).await?;
         let mut member_rows = Vec::new();
         let mut member_digests = Vec::new();
         for (index, (seed, req_tags)) in members.iter().enumerate() {
@@ -912,12 +912,12 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn image_group_resolves_most_specific_member(pool: PgPool) -> anyhow::Result<()> {
+    async fn image_set_resolves_most_specific_member(pool: PgPool) -> anyhow::Result<()> {
         let user = insert_user(&pool).await?;
         let token = insert_token(&pool, user).await?;
         let host = insert_live_host(&pool, user, &["arch=arm64", "rpi4"]).await?;
         // Member 0 is generic; member 1 is more specific and also admissible.
-        let (group, members) = register_group(
+        let (set, members) = register_set(
             &pool,
             user,
             9,
@@ -927,8 +927,8 @@ mod tests {
         let job = enqueue(
             &pool,
             token,
-            JobInitSpec::ImageGroup {
-                group_id: group,
+            JobInitSpec::ImageSet {
+                set_id: set,
                 generation: None,
             },
             &["arch=arm64"],

@@ -51,11 +51,11 @@ export default function JobNew() {
       case "image":
         init_spec = { type: "image", image_id: str("image_id") };
         break;
-      case "image_group": {
+      case "image_set": {
         const gen = str("generation");
         init_spec = {
-          type: "image_group",
-          group_id: str("group_id"),
+          type: "image_set",
+          set_id: str("set_id"),
           generation: gen === "" ? null : Number(gen),
         };
         break;
@@ -102,7 +102,7 @@ export default function JobNew() {
             onChange={(e) => setInitType(e.target.value as InitType)}
           >
             <option value="image">Catalog image</option>
-            <option value="image_group">Image group</option>
+            <option value="image_set">Image set</option>
             <option value="resume">Resume a previous job</option>
             <option value="restart">Restart a previous job</option>
           </select>
@@ -114,11 +114,11 @@ export default function JobNew() {
             <input name="image_id" required className="mono" />
           </label>
         )}
-        {initType === "image_group" && (
+        {initType === "image_set" && (
           <>
             <label className="field">
-              <span>Group id (UUID)</span>
-              <input name="group_id" required className="mono" />
+              <span>Set id (UUID)</span>
+              <input name="set_id" required className="mono" />
             </label>
             <label className="field">
               <span>Generation (empty pins the latest at enqueue)</span>

@@ -9,37 +9,37 @@ import { EntityLink } from "../components/entity-link";
 import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
 import { Tags } from "../components/tags";
-import type { Route } from "./+types/image-group-detail";
+import type { Route } from "./+types/image-set-detail";
 
 type MemberRow = { image_id: string; tags: string };
 
 /// The well-known `everyone` subject (see switchboard `SCHEMA.sql`). Granting it
-/// `use` on a group or image source makes the entity public; there is no
+/// `use` on a set or image source makes the entity public; there is no
 /// dedicated public flag.
 export const EVERYONE_SUBJECT = "00000000-0000-0000-0000-000000000004";
 
 function NewGenerationForm({
-  groupId,
+  setId,
   seed,
   onDone,
 }: {
-  groupId: string;
+  setId: string;
   seed: MemberRow[];
   onDone: () => void;
 }) {
   const queryClient = useQueryClient();
   const [rows, setRows] = useState<MemberRow[]>(seed);
-  const create = $api.useMutation("post", "/image-groups/{id}/generations", {
+  const create = $api.useMutation("post", "/image-sets/{id}/generations", {
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ["get", "/image-groups/{id}"],
+          queryKey: ["get", "/image-sets/{id}"],
         }),
         queryClient.invalidateQueries({
-          queryKey: ["get", "/image-groups/{id}/generations/{n}"],
+          queryKey: ["get", "/image-sets/{id}/generations/{n}"],
         }),
         queryClient.invalidateQueries({
-          queryKey: ["audit", "image-groups", groupId],
+          queryKey: ["audit", "image-sets", setId],
         }),
       ]);
       onDone();
@@ -49,7 +49,7 @@ function NewGenerationForm({
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     create.mutate({
-      params: { path: { id: groupId } },
+      params: { path: { id: setId } },
       body: {
         members: rows
           .filter((r) => r.image_id.trim() !== "")
@@ -64,7 +64,7 @@ function NewGenerationForm({
   return (
     <form className="form card" onSubmit={onSubmit}>
       <span className="muted">
-        A generation replaces the group's whole membership; earlier members are
+        A generation replaces the set's whole membership; earlier members are
         pre-filled. Order is the tie-break among equally-specific members.
       </span>
       {rows.map((row, i) => (
@@ -122,22 +122,16 @@ function NewGenerationForm({
   );
 }
 
-function GrantForm({
-  groupId,
-  onDone,
-}: {
-  groupId: string;
-  onDone: () => void;
-}) {
+function GrantForm({ setId, onDone }: { setId: string; onDone: () => void }) {
   const queryClient = useQueryClient();
-  const grant = $api.useMutation("post", "/image-groups/{id}/grants", {
+  const grant = $api.useMutation("post", "/image-sets/{id}/grants", {
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ["get", "/image-groups/{id}/grants"],
+          queryKey: ["get", "/image-sets/{id}/grants"],
         }),
         queryClient.invalidateQueries({
-          queryKey: ["audit", "image-groups", groupId],
+          queryKey: ["audit", "image-sets", setId],
         }),
       ]);
       onDone();
@@ -153,7 +147,7 @@ function GrantForm({
       return;
     }
     grant.mutate({
-      params: { path: { id: groupId } },
+      params: { path: { id: setId } },
       body: {
         subject_id: subject.trim(),
         permission: permission === "manage" ? "manage" : "use",
@@ -170,7 +164,7 @@ function GrantForm({
       <label className="field">
         <span>Permission</span>
         <select name="permission" defaultValue="use">
-          <option value="use">use — may run jobs against the group</option>
+          <option value="use">use — may run jobs against the set</option>
           <option value="manage">
             manage — may create generations and manage grants
           </option>
@@ -189,19 +183,19 @@ function GrantForm({
   );
 }
 
-export default function ImageGroupDetail({ params }: Route.ComponentProps) {
+export default function ImageSetDetail({ params }: Route.ComponentProps) {
   const queryClient = useQueryClient();
-  const group = $api.useQuery("get", "/image-groups/{id}", {
+  const set = $api.useQuery("get", "/image-sets/{id}", {
     params: { path: { id: params.id } },
   });
-  const grants = $api.useQuery("get", "/image-groups/{id}/grants", {
+  const grants = $api.useQuery("get", "/image-sets/{id}/grants", {
     params: { path: { id: params.id } },
   });
 
-  const latest = group.data?.latest_generation;
+  const latest = set.data?.latest_generation;
   const generation = $api.useQuery(
     "get",
-    "/image-groups/{id}/generations/{n}",
+    "/image-sets/{id}/generations/{n}",
     { params: { path: { id: params.id, n: latest ?? 0 } } },
     { enabled: latest != null },
   );
@@ -209,35 +203,35 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
   const [showGenerationForm, setShowGenerationForm] = useState(false);
   const [showGrantForm, setShowGrantForm] = useState(false);
 
-  // "Public" is not a flag on the group: it is a `use` grant to the well-known
+  // "Public" is not a flag on the set: it is a `use` grant to the well-known
   // `everyone` subject. Deriving it needs the grant list, which is manage-gated,
   // so the toggle is only meaningful to a manager (who can read grants).
   const isPublic = grants.data?.some(
     (g) => g.subject_id === EVERYONE_SUBJECT && g.permission === "use",
   );
-  const setPublic = $api.useMutation("post", "/image-groups/{id}/grants", {
+  const setPublic = $api.useMutation("post", "/image-sets/{id}/grants", {
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ["get", "/image-groups/{id}/grants"],
+          queryKey: ["get", "/image-sets/{id}/grants"],
         }),
         queryClient.invalidateQueries({
-          queryKey: ["audit", "image-groups", params.id],
+          queryKey: ["audit", "image-sets", params.id],
         }),
       ]);
     },
   });
   const revoke = $api.useMutation(
     "delete",
-    "/image-groups/{id}/grants/{subject_id}/{permission}",
+    "/image-sets/{id}/grants/{subject_id}/{permission}",
     {
       onSuccess: async () => {
         await Promise.all([
           queryClient.invalidateQueries({
-            queryKey: ["get", "/image-groups/{id}/grants"],
+            queryKey: ["get", "/image-sets/{id}/grants"],
           }),
           queryClient.invalidateQueries({
-            queryKey: ["audit", "image-groups", params.id],
+            queryKey: ["audit", "image-sets", params.id],
           }),
         ]);
       },
@@ -246,12 +240,12 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
 
   return (
     <>
-      {group.isPending && <p className="muted">Loading…</p>}
-      {group.isError && <p className="error">Failed to load the group.</p>}
-      {group.data && (
+      {set.isPending && <p className="muted">Loading…</p>}
+      {set.isError && <p className="error">Failed to load the set.</p>}
+      {set.data && (
         <>
           <div className="toolbar">
-            <h1>Group {group.data.name}</h1>
+            <h1>Set {set.data.name}</h1>
             <span className="spacer" />
             {grants.data && (
               <button
@@ -260,7 +254,7 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
                   if (isPublic) {
                     if (
                       window.confirm(
-                        "Make this group private again? Revokes the `everyone` grant; only explicit grants keep access.",
+                        "Make this set private again? Revokes the `everyone` grant; only explicit grants keep access.",
                       )
                     ) {
                       revoke.mutate({
@@ -275,7 +269,7 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
                     }
                   } else if (
                     window.confirm(
-                      "Make this group public? Grants `everyone` `use`, so every subject may run jobs against it.",
+                      "Make this set public? Grants `everyone` `use`, so every subject may run jobs against it.",
                     )
                   ) {
                     setPublic.mutate({
@@ -295,7 +289,7 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
           <MutationError error={setPublic.error} />
           {showGenerationForm && (
             <NewGenerationForm
-              groupId={params.id}
+              setId={params.id}
               seed={
                 generation.data?.members.map((m) => ({
                   image_id: m.image_id,
@@ -308,9 +302,9 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
 
           <dl className="props">
             <dt>Id</dt>
-            <dd className="mono">{group.data.id}</dd>
+            <dd className="mono">{set.data.id}</dd>
             <dt>Label</dt>
-            <dd>{group.data.label ?? <span className="muted">—</span>}</dd>
+            <dd>{set.data.label ?? <span className="muted">—</span>}</dd>
             <dt>Visibility</dt>
             <dd>
               {isPublic == null ? (
@@ -323,11 +317,11 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
             </dd>
             <dt>Owner</dt>
             <dd>
-              <EntityLink kind="user" id={group.data.owner_id} />
+              <EntityLink kind="user" id={set.data.owner_id} />
             </dd>
             <dt>Created</dt>
             <dd>
-              <RelTime iso={group.data.created_at} />
+              <RelTime iso={set.data.created_at} />
             </dd>
           </dl>
 
@@ -338,7 +332,7 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
                 <>
                   {" "}
                   <Link
-                    to={`/image-groups/${params.id}/generations/${latest}`}
+                    to={`/image-sets/${params.id}/generations/${latest}`}
                     className="mono"
                   >
                     #{latest}
@@ -368,7 +362,7 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
             </div>
             {showGrantForm && (
               <GrantForm
-                groupId={params.id}
+                setId={params.id}
                 onDone={() => setShowGrantForm(false)}
               />
             )}
@@ -430,7 +424,7 @@ export default function ImageGroupDetail({ params }: Route.ComponentProps) {
               ))}
           </section>
 
-          <AuditLog entity="image-groups" id={params.id} />
+          <AuditLog entity="image-sets" id={params.id} />
         </>
       )}
     </>
@@ -457,7 +451,7 @@ export function GenerationMembers({
       {members.some((m) => !m.usable_by_grantees) && (
         <p className="error">
           Some members have no source usable by every holder of a `use` grant on
-          this group: for those subjects, jobs against this generation will not
+          this set: for those subjects, jobs against this generation will not
           resolve. Grant `use` on a source of the flagged members (e.g. to
           `everyone`) to fix this.
         </p>
@@ -500,7 +494,7 @@ export function GenerationMembers({
                 ) : (
                   <span
                     className="badge warn"
-                    title="Some subject holding a `use` grant on this group cannot use any source of this image."
+                    title="Some subject holding a `use` grant on this set cannot use any source of this image."
                   >
                     not grantee-usable
                   </span>

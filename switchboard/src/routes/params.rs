@@ -39,19 +39,19 @@ pub(crate) struct TokenIdPath {
     pub token_id: Uuid,
 }
 
-/// The `{id}/generations/{n}` segments of an image-group generation route.
+/// The `{id}/generations/{n}` segments of an image-set generation route.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub(crate) struct GenerationPath {
-    /// The image group's unique identifier.
+    /// The image set's unique identifier.
     pub id: Uuid,
-    /// The generation number within the group.
+    /// The generation number within the set.
     pub n: u32,
 }
 
 /// The `{id}/grants/{subject_id}/{permission}` segments of a grant route.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub(crate) struct GrantPath {
-    /// The image group's unique identifier.
+    /// The image set's unique identifier.
     pub id: Uuid,
     /// The subject (user or group) the grant applies to.
     pub subject_id: Uuid,

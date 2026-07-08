@@ -148,7 +148,7 @@ pub struct NatsLogStreamCredentials {
 }
 
 /// What a job is based off, as seen by `GET /jobs/{id}`: a concrete image, an
-/// image group (with the frozen generation), or a resume/restart of an earlier
+/// image set (with the frozen generation), or a resume/restart of an earlier
 /// job. The concrete manifest digest actually dispatched is reported separately
 /// as `resolved_image_digest`.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
@@ -156,9 +156,9 @@ pub struct NatsLogStreamCredentials {
 pub enum JobImageRef {
     /// Based off a concrete catalog image, addressed by its catalog id.
     Image { image_id: Uuid },
-    /// Based off a registered image *group*, addressed by its id plus the frozen
+    /// Based off a registered image *set*, addressed by its id plus the frozen
     /// generation; the concrete member is chosen at dispatch.
-    ImageGroup { group_id: Uuid, generation: u32 },
+    ImageSet { set_id: Uuid, generation: u32 },
     /// Resumes a previously started job.
     Resume { job_id: Uuid },
     /// Restarts a previously started job (inherits its image reference).

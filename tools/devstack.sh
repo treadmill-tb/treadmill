@@ -441,22 +441,22 @@ if [ "$enable_supervisor" = 1 ]; then
     tiny_efi_image_id="$(echo "$RESP" | jq -r .id)"
     echo "  registered as $tiny_efi_image_id"
 
-    # Wrap the fixture image in a public image group so jobs can target a
+    # Wrap the fixture image in a public image set so jobs can target a
     # stable moving-target handle (`tiny-efi`) rather than a concrete
-    # digest. The group is public, so any mock identity holds `use` on it
+    # digest. The set is public, so any mock identity holds `use` on it
     # without an explicit grant; its single generation has one member with
     # no required host tags (selectable on every host).
-    echo "Creating tiny-efi image group"
+    echo "Creating tiny-efi image set"
     if GRP="$(\
-      curl -fsS -X POST "http://127.0.0.1:$sb_port/api/v1/image-groups" \
+      curl -fsS -X POST "http://127.0.0.1:$sb_port/api/v1/image-sets" \
        -H "Authorization: Bearer $api_token_bearer" \
        -H 'content-type: application/json' \
        -d "{\"name\":\"tiny-efi\",\"label\":\"tiny-efi (dev)\",\"public\":true}" \
     )"; then
-      tiny_efi_group_id="$(echo "$GRP" | jq -r .id)"
-      echo "  created as $tiny_efi_group_id"
+      tiny_efi_set_id="$(echo "$GRP" | jq -r .id)"
+      echo "  created as $tiny_efi_set_id"
       if curl -fsS -o /dev/null \
-        -X POST "http://127.0.0.1:$sb_port/api/v1/image-groups/$tiny_efi_group_id/generations" \
+        -X POST "http://127.0.0.1:$sb_port/api/v1/image-sets/$tiny_efi_set_id/generations" \
         -H "Authorization: Bearer $api_token_bearer" \
         -H 'content-type: application/json' \
         -d "{\"members\":[{\"image_id\":\"$tiny_efi_image_id\",\"required_host_tags\":[]}]}"; then
@@ -465,7 +465,7 @@ if [ "$enable_supervisor" = 1 ]; then
         echo "  ! generation creation failed (continuing)" >&2
       fi
     else
-      echo "  ! image group creation failed (continuing)" >&2
+      echo "  ! image set creation failed (continuing)" >&2
     fi
   else
     echo "  ! image registration failed (continuing)" >&2
@@ -512,7 +512,7 @@ if [ "$enable_supervisor" = 1 ]; then
   cat <<EOF
     zot registry    : http://127.0.0.1:$zot_port (repo treadmill/tiny-efi)
     qemu supervisor : host $host_id (aarch64 TCG)
-    image group     : tiny-efi (public; targets the tiny-efi fixture)
+    image set     : tiny-efi (public; targets the tiny-efi fixture)
 EOF
 else
   echo "    qemu supervisor : DISABLED (non-Linux: tiny-efi fixture unavailable)"

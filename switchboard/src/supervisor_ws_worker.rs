@@ -1463,8 +1463,8 @@ mod tests {
         let image_id = insert_image(pool).await?;
         sqlx::query(
             "insert into tml_switchboard.jobs \
-             (job_id, resume_job_id, restart_job_id, image_id, image_group_id, \
-              image_group_generation, ssh_keys, \
+             (job_id, resume_job_id, restart_job_id, image_id, image_set_id, \
+              image_set_generation, ssh_keys, \
               restart_policy, enqueued_by_token_id, owner_id, host_tag_requirements, job_timeout, \
               job_state, \
               initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
@@ -1522,8 +1522,8 @@ mod tests {
         let image_id = insert_image(pool).await?;
         sqlx::query(
             "insert into tml_switchboard.jobs \
-             (job_id, resume_job_id, restart_job_id, image_id, image_group_id, \
-              image_group_generation, ssh_keys, \
+             (job_id, resume_job_id, restart_job_id, image_id, image_set_id, \
+              image_set_generation, ssh_keys, \
               restart_policy, enqueued_by_token_id, owner_id, host_tag_requirements, job_timeout, \
               job_state, \
               initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
@@ -3009,15 +3009,15 @@ mod tests {
         }
 
         // Resume job: `ResumeJob` carrying the original job's id. A resume row has
-        // no image/group reference (the `valid_init_spec` invariant), so it is
+        // no image/set reference (the `valid_init_spec` invariant), so it is
         // inserted directly rather than via `insert_job`. `resume_job_id` is an FK,
         // so it must point at a real job — reuse the concrete one above.
         let resume_target = job_id;
         let resume_job = Uuid::new_v4();
         sqlx::query(
             "insert into tml_switchboard.jobs \
-             (job_id, resume_job_id, restart_job_id, image_id, image_group_id, \
-              image_group_generation, ssh_keys, \
+             (job_id, resume_job_id, restart_job_id, image_id, image_set_id, \
+              image_set_generation, ssh_keys, \
               restart_policy, enqueued_by_token_id, host_tag_requirements, job_timeout, job_state, \
               initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
               termination_reason, task_exit_status, exit_message, terminated_at) \

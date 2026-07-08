@@ -11,7 +11,7 @@ and the console:
   across every resource kind (issue #4).
 - **The image / source restructure** — stop treating an image as an ownable
   thing; make the *source* (registry location, eventually credentialed) the
-  ownable, grantable, deletable entity, and derive image-group usability from it
+  ownable, grantable, deletable entity, and derive image-set usability from it
   (issue #7).
 
 Everything else from the original issue batch (job label, retaining
@@ -43,23 +43,23 @@ A *source* is a place an image's bytes can be pulled from (`registry`,
   credentials and restrict *use* to grantees.
 
 Sources are **always deletable** by their owner (+ admins), even when referenced
-by an image-group generation. This is the deliberate decoupling: images and
+by an image-set generation. This is the deliberate decoupling: images and
 generations are immortal; the bytes behind them are not guaranteed to stay
 reachable.
 
-### 1.3 Image groups pin images; usability is derived
+### 1.3 Image sets pin images; usability is derived
 
-A group generation pins **images** (by id), never sources. Whether a subject `S`
-can actually *use* a group generation `g` is:
+A set generation pins **images** (by id), never sources. Whether a subject `S`
+can actually *use* a set generation `g` is:
 
 ```
-usable(S, group, g) := can_access_image_group(S, group, 'use')     -- group ACL
+usable(S, set, g) := can_access_image_set(S, set, 'use')         -- set ACL
                        AND for every member image m of g:
                            exists a source of m that S may `use`     -- source ACL
 ```
 
-A group grant is therefore **necessary but not sufficient**: `S` may hold `use`
-on the group yet be unable to run it because a member image has no source `S` can
+A set grant is therefore **necessary but not sufficient**: `S` may hold `use`
+on the set yet be unable to run it because a member image has no source `S` can
 reach. This is intentional (a source can go down or get too expensive to host);
 the console must surface it per generation rather than treat it as a bug.
 
@@ -78,7 +78,7 @@ the console must surface it per generation rather than treat it as a bug.
    credentials), so `use` grants are mostly inert, but the structure lands now to
    avoid churn when credentials arrive.
 4. **Public is revocable.** No irreversibility. With images non-owned and sources
-   always deletable, nothing's privacy hinges on a group staying public; "public"
+   always deletable, nothing's privacy hinges on a set staying public; "public"
    is a normal grant to the `everyone` subject, addable/removable with `manage`.
 5. **"Public" is expressed uniformly as a grant.** No dedicated public endpoint;
    publishing = grant the `everyone` subject `use`. The console renders a "Public"
@@ -87,8 +87,8 @@ the console must surface it per generation rather than treat it as a bug.
    and add a source, owning the source they add. Sources are
    deletable/manageable by owner + admins.
 7. **Usability is computed lazily per generation, for all subjects** (not just the
-   viewer), and exposed via the API — serving both "is this group broken?" (owner
-   view) and "can I use this group?" (grantee view).
+   viewer), and exposed via the API — serving both "is this set broken?" (owner
+   view) and "can I use this set?" (grantee view).
 8. **Private registries fully deferred.** `image_sources` carries a brief SCHEMA
    note that a location may later carry credentials (stored in an external system
    or encrypted); not a concern now.
@@ -110,44 +110,44 @@ rewrites "public" as a grant everywhere it appears.
   - Change `tml_switchboard.principals(uuid)` to **always union the `everyone`
     id** into its result, so a grant to `everyone` on any resource is visible to
     every subject. (This is the single mechanism that makes "public" work across
-    hosts/jobs/image-groups/sources uniformly.)
-  - Drop `image_groups.public` and update the table comment.
+    hosts/jobs/image-sets/sources uniformly.)
+  - Drop `image_sets.public` and update the table comment.
 - **Migration** (`nix run '.#switchboard-migrate' -c everyone_subject`): seed the
-  subject/group; for every existing `image_groups` row with `public = true`,
-  insert `image_group_grants(group_id, EVERYONE, 'use')`; drop the column. Then
+  subject/group; for every existing `image_sets` row with `public = true`,
+  insert `image_set_grants(set_id, EVERYONE, 'use')`; drop the column. Then
   `-v` to verify migrations reproduce SCHEMA; the `switchboard-migrations-
   consistency` check enforces this. `principals()` is a function change → carried
   in the migration by hand (Atlas community won't diff function bodies reliably;
   see AGENTS.md §2).
 - **`switchboard/src/auth/engine.rs`**
   - Add `EVERYONE_SUBJECT_ID: Uuid = Uuid::from_u128(4)`.
-  - Remove the `$3 = 'use' and public` branch from `can_access_image_group` and
-    the `public` union from `image_group_permissions` — both are now subsumed by
+  - Remove the `$3 = 'use' and public` branch from `can_access_image_set` and
+    the `public` union from `image_set_permissions` — both are now subsumed by
     the ordinary grant check, because `principals()` includes `everyone`.
 - **`switchboard/src/sql/image.rs`**: drop `public` from `GroupRecord`,
   `create_group`, all `select`s; delete `set_group_public`; `list_owned_groups`
-  loses the `g.public OR` disjunction (public groups now reach the caller via the
+  loses the `g.public OR` disjunction (public sets now reach the caller via the
   `everyone` grant through `principals()` — verify listing still shows them, and
-  extend the query to include groups reachable by a grant if it doesn't already).
-- **`switchboard/src/routes/images.rs`**: delete `set_image_group_public`; drop
-  `public` from `group_info`, `create_image_group`. "Make public" is now just a
-  `POST /image-groups/{id}/grants` with `subject_id = EVERYONE`.
-- **`switchboard/src/routes/mod.rs`**: remove the `PUT /image-groups/{id}/public`
+  extend the query to include sets reachable by a grant if it doesn't already).
+- **`switchboard/src/routes/images.rs`**: delete `set_image_set_public`; drop
+  `public` from `group_info`, `create_image_set`. "Make public" is now just a
+  `POST /image-sets/{id}/grants` with `subject_id = EVERYONE`.
+- **`switchboard/src/routes/mod.rs`**: remove the `PUT /image-sets/{id}/public`
   route.
-- **Audit**: retire the `ImageGroupPublicSet` event (or keep the type but stop
+- **Audit**: retire the `ImageSetPublicSet` event (or keep the type but stop
   emitting) — grant/revoke of the `everyone` subject already produces
-  `ImageGroupGrantCreated`/`Revoked`, which is the more honest record.
+  `ImageSetGrantCreated`/`Revoked`, which is the more honest record.
 - **`treadmill-rs/src/api/switchboard/images.rs`**: remove `public` from
-  `ImageGroupInfo` and `CreateImageGroupRequest`; delete `SetImageGroupPublicRequest`.
+  `ImageSetInfo` and `CreateImageSetRequest`; delete `SetImageSetPublicRequest`.
 - **OpenAPI**: regenerate (`UPDATE_SCHEMA=1 cargo test -p treadmill-switchboard
   --test openapi_spec`).
 - **`.sqlx`**: regenerate (`nix run '.#switchboard-sqlx-prepare'`).
 - **Console** (`console/`):
-  - `app/routes/image-group-detail.tsx`: replace the `setPublic` mutation +
+  - `app/routes/image-set-detail.tsx`: replace the `setPublic` mutation +
     "Make public/private" button with a "Public" toggle that grants/revokes the
     `everyone` subject `use`; render the "public" badge off the presence of that
     grant rather than a `public` field.
-  - `app/routes/image-groups.tsx`: drop the `public` checkbox from the create
+  - `app/routes/image-sets.tsx`: drop the `public` checkbox from the create
     form and the `public` badge column (or derive it from grants).
   - Expose the `everyone` subject id to the console (a small constant, matching
     the seeded UUID) so the toggle can target it.
@@ -165,7 +165,7 @@ rewrites "public" as a grant everywhere it appears.
     `image_id, registry, repository, status, added_at`; keep a `UNIQUE(image_id,
     registry, repository)` to preserve dedup. Add the deferred-credentials note.
   - `image_source_permission` enum (`use`, `manage`) + `image_source_grants`
-    table (mirror `image_group_grants`; no irrevocable trigger).
+    table (mirror `image_set_grants`; no irrevocable trigger).
   - A usability helper, e.g. `image_reachable_source(p_subject, p_image)` →
     `bool` (exists a source of the image the subject may `use`, evaluated over
     `principals()`; with `everyone` folded in, a public source satisfies
@@ -177,14 +177,14 @@ rewrites "public" as a grant everywhere it appears.
   pre-existing behavior (any image usable by anyone) is preserved; create the
   grants table/enum; drop `images.owner_subject` and the old `image_locations`.
 - **`switchboard/src/auth/engine.rs`**: add `ImageSourcePermission` +
-  `can_access_image_source` / `image_source_permissions`, mirroring the group
+  `can_access_image_source` / `image_source_permissions`, mirroring the set
   helpers.
 - **`switchboard/src/sql/image.rs`**:
   - `ImageRecord` loses `owner_subject`. Registration owns the *source*, not the
     image.
   - Source CRUD: create source (id + owner), delete source, list sources for an
     image, fetch source; source grant CRUD + list.
-  - Image/group listing reworked from "owned" to "reachable via a usable source"
+  - Image/set listing reworked from "owned" to "reachable via a usable source"
     (and/or via group membership) — `list_owned` / `list_owned_groups` semantics
     revisited.
   - Generation-usability query returning, per member image, whether it has (a) a
@@ -197,7 +197,7 @@ rewrites "public" as a grant everywhere it appears.
     + the viewer's permissions.
   - New source routes: add/delete a source, grant/revoke source `use`/`manage`,
     list source grants. Wire in `routes/mod.rs`.
-  - `generation_info` / group detail: include per-member usability + an
+  - `generation_info` / set detail: include per-member usability + an
     aggregate "broken for public" / "usable by you" signal.
   - Visibility checks (`visible_group`, `get_image`) move off image ownership.
 - **`switchboard/src/routes/jobs.rs`** (enqueue): after freezing the generation,
@@ -216,8 +216,8 @@ rewrites "public" as a grant everywhere it appears.
 - **Console**:
   - `image-detail.tsx`, `images.tsx`: drop image `owner_id`; show sources with
     owners; add source add/delete + grant UI (own detail section).
-  - `image-group-detail.tsx` / `generation-detail.tsx`: per-member "no source you
-    can use" / "no public source" indicators; group-level "this generation is not
+  - `image-set-detail.tsx` / `generation-detail.tsx`: per-member "no source you
+    can use" / "no public source" indicators; set-level "this generation is not
     usable by all its grantees" banner for owners.
   - Regenerate `schema.d.ts`.
 
@@ -230,7 +230,7 @@ rewrites "public" as a grant everywhere it appears.
 - Job `label`; retaining `started_at`/`dispatched_on_host_id` past finalization;
   dropping `users.username`; primary email — all `TODOS.md`.
 - An `image` / `image_source` **audit entity kind** for source grant/credential
-  changes (parity with `image_group`) — optional; add in B only if cheap.
+  changes (parity with `image_set`) — optional; add in B only if cheap.
 
 ## 5. Risks / things to watch
 
@@ -240,8 +240,8 @@ rewrites "public" as a grant everywhere it appears.
   ownership semantics are unchanged; only grant checks gain the public grant.
   Verify the route + DB test suites (`user_routes.rs`, `#[sqlx::test]`) stay
   green.
-- **Listing semantics.** After dropping the `public` column, "list groups I can
-  see" must include groups I reach via the `everyone` grant; make sure the
+- **Listing semantics.** After dropping the `public` column, "list sets I can
+  see" must include sets I reach via the `everyone` grant; make sure the
   listing query joins grants (through `principals()`), not just ownership.
 - **Enqueue vs. per-host resolution.** Decision #1 checks *all* members at
   enqueue even though only one is resolved per host — accepted as the
@@ -279,7 +279,7 @@ re-hash+verify the migration with `nix run '.#switchboard-migrate' -- -r` /
 - `image_source_permission` enum (`use`, `manage`) + `image_source_grants`
   table `(source_id, subject_id, permission, granted_at)` PK
   `(source_id, subject_id, permission)`, FKs cascade. No irrevocable trigger
-  (mirror `image_group_grants`).
+  (mirror `image_set_grants`).
 - Usability SQL function (hand-carried in the migration; Atlas won't diff it):
   ```sql
   -- exists a source of p_image that p_subject may `use` (owner ∨ admin ∨ grant,
@@ -290,7 +290,7 @@ re-hash+verify the migration with `nix run '.#switchboard-migrate' -- -r` /
   ```
   Use it for the API per-member fields (viewer usability = call with the viewer;
   public = call with `EVERYONE_SUBJECT_ID`) and for the enqueue/dispatch gates.
-  A group-generation gate is just: no member lacks a usable source, i.e.
+  A set-generation gate is just: no member lacks a usable source, i.e.
   `not exists (member m where not image_source_usable(p_subject, m.image_id))`.
 
 ### B2. Migration (`nix run '.#switchboard-migrate' -- -c image_sources`, then hand-edit)
@@ -306,7 +306,7 @@ by anyone" — see decision note below); then drop `image_locations` and
 
 Add `ImageSourcePermission { Use, Manage }` with `as_str`/`from_db_str`/`ALL`,
 `can_access_image_source(subject, source_id, perm)` and
-`image_source_permissions(subject, source_id)` — copy the image-group helpers
+`image_source_permissions(subject, source_id)` — copy the image-set helpers
 verbatim, swapping table/column names (`image_sources.owner_subject`,
 `image_source_grants`). No `public` special-case needed (folded into
 `principals()`).
@@ -319,10 +319,10 @@ verbatim, swapping table/column names (`image_sources.owner_subject`,
   `locations_for_image`→`sources_for_image` (same ordering).
 - New: `insert_source(id, image_id, registry, repository, status, owner)`,
   `delete_source(source_id)`, `fetch_source(source_id)`, source grant CRUD +
-  list (mirror the group-grant fns).
+  list (mirror the set-grant fns).
 - `list_owned`→`list_usable_images(viewer)`: images where
   `image_source_usable(viewer, i.id)`.
-- Add `generation_usable(subject, group, gen)` and a per-member usability query
+- Add `generation_usable(subject, set, gen)` and a per-member usability query
   returning, per member, `usable` (viewer) and `public_source`
   (`image_source_usable(EVERYONE, image)`).
 
@@ -359,9 +359,9 @@ verbatim, swapping table/column names (`image_sources.owner_subject`,
 ### B7. Enqueue + dispatch gates
 
 - **Enqueue** (`routes/jobs.rs`): keep the existing caller-side
-  `can_access_image_group(caller, group, Use)` check. **Add**, after the owner
-  is resolved and the generation frozen: group job ⇒ `generation_usable(owner,
-  group, gen)`; concrete-image job (`JobInitSpec::Image { image_id }`) ⇒
+  `can_access_image_set(caller, set, Use)` check. **Add**, after the owner
+  is resolved and the generation frozen: set job ⇒ `generation_usable(owner,
+  set, gen)`; concrete-image job (`JobInitSpec::Image { image_id }`) ⇒
   `image_source_usable(owner, image_id)`. On failure return **422
   UNPROCESSABLE_ENTITY** (the owner cannot source the image; not a visibility
   leak). This also closes the currently-unchecked concrete-image path
@@ -381,7 +381,7 @@ verbatim, swapping table/column names (`image_sources.owner_subject`,
 
 Add an `image_source` value to `audit_entity_kind` (migration + `audit/model.rs`)
 and events `ImageSourceAdded` / `ImageSourceRemoved` / `ImageSourceGrant{Created,
-Revoked}` (mirror the image-group grant events, `view(Manage)` on the source).
+Revoked}` (mirror the image-set grant events, `view(Manage)` on the source).
 Keep `ImageRegistered`. If this balloons scope, it is acceptable to **defer** the
 source audit surface to `TODOS.md` and ship B without it — but then do not add
 the entity-kind enum value either.
@@ -390,9 +390,9 @@ the entity-kind enum value either.
 
 - `image-detail.tsx`/`images.tsx`: drop image `owner_id`; render `sources`
   (registry/repository/status/owner) with add-source + delete-source forms and a
-  per-source grant UI (mirror `image-group-detail.tsx`'s grant form + the
+  per-source grant UI (mirror `image-set-detail.tsx`'s grant form + the
   `EVERYONE_SUBJECT` "public source" toggle).
-- `image-group-detail.tsx`/`generation-detail.tsx`: per-member badges from
+- `image-set-detail.tsx`/`generation-detail.tsx`: per-member badges from
   `usable` / `public_source` ("no source you can use" / "no public source"), and
   an owner-facing "this generation is not publicly usable" banner when some
   member lacks a `public_source`.
@@ -408,5 +408,5 @@ the entity-kind enum value either.
 2. **Migration makes every existing image public** (grants `everyone` `use` on
    all migrated sources) to preserve today's "any image usable by anyone".
    Acceptable on this pre-production branch; the alternative (migrate as
-   owner-private) would render existing group generations unusable until sources
+   owner-private) would render existing set generations unusable until sources
    are re-granted. Default: **grant `everyone`.**

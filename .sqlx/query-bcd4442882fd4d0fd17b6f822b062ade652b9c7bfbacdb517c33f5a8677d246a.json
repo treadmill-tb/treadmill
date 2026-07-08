@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select max(generation) as \"max\"\n           from tml_switchboard.image_group_generations\n           where group_id = $1",
+  "query": "select coalesce(max(generation), 0) + 1 as \"next!\"\n           from tml_switchboard.image_set_generations\n           where set_id = $1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "max",
+        "name": "next!",
         "type_info": "Int4",
         "origin": "Expression"
       }
@@ -19,5 +19,5 @@
       null
     ]
   },
-  "hash": "98a8494c7064f98c14e01883ac34b6568a19c41d30686feba0a9fdbd112d87cf"
+  "hash": "bcd4442882fd4d0fd17b6f822b062ade652b9c7bfbacdb517c33f5a8677d246a"
 }
