@@ -105,18 +105,28 @@ impl std::fmt::Debug for JobParameter {
 /// may *subscribe* to the job's log subjects (`subject`) and its own inboxes
 /// (`inbox_prefix`), and *publish* to the slice of the JetStream API needed to
 /// run an ordered consumer against the job's stream (`stream`) — enough to
-/// replay stored history and then follow live. The client connects to
-/// `nats_url` with the token string alone (no nkey seed). The token only needs
-/// to be valid at connect time — an established NATS connection is not dropped
-/// when the JWT expires — so a client re-requests credentials when it next
-/// reconnects, after roughly `expires_in_secs`.
+/// replay stored history and then follow live. The client connects with the
+/// token string alone (no nkey seed) to whichever endpoint suits its transport:
+/// `websocket_url` for browsers, `nats_url` for native TCP clients. The same
+/// token authorizes either. The token only needs to be valid at connect time —
+/// an established NATS connection is not dropped when the JWT expires — so a
+/// client re-requests credentials when it next reconnects, after roughly
+/// `expires_in_secs`.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct NatsLogStreamCredentials {
-    /// NATS URL to connect to. Deployments serving browser clients
-    /// configure this as a WebSocket listener URL (e.g.
-    /// `wss://nats.example:443`); it falls back to the plain client URL
-    /// (e.g. `nats://nats.example:4222`) otherwise.
-    pub nats_url: String,
+    /// Plain-TCP NATS client URL (e.g. `nats://nats.example:4222`), for native
+    /// clients that speak the binary protocol. Nullable: a deployment may
+    /// choose to expose only the WebSocket endpoint publicly, in which case
+    /// only `websocket_url` is returned. Browsers cannot use this — they must
+    /// use `websocket_url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nats_url: Option<String>,
+    /// NATS **WebSocket** URL (e.g. `wss://nats.example:443`), for browser
+    /// clients, which cannot speak the plain TCP protocol. Absent when the
+    /// deployment does not expose a WebSocket listener; a browser client cannot
+    /// stream logs against such a deployment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub websocket_url: Option<String>,
     /// Subject wildcard covering all of this job's log channels:
     /// `logs.<job-id>.>`.
     pub subject: String,

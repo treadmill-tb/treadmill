@@ -20,6 +20,7 @@ type Status =
   | { kind: "live" }
   | { kind: "reconnecting" }
   | { kind: "disabled" }
+  | { kind: "no-websocket" }
   | { kind: "error"; message: string };
 
 const RETRY_DELAY_MS = 3_000;
@@ -125,11 +126,21 @@ export function JobLog({
           return;
         }
 
+        // Browsers can only speak the WebSocket protocol; a deployment that
+        // exposes no WebSocket listener (`websocket_url` absent) cannot serve
+        // the console, even though log streaming is otherwise enabled. This is
+        // distinct from the feature being off entirely (the 503 above).
+        const websocketUrl = creds.data.websocket_url;
+        if (websocketUrl === undefined || websocketUrl === null) {
+          setStatus({ kind: "no-websocket" });
+          return;
+        }
+
         try {
           // Reconnection is handled by this loop, not the client: each new
           // connection needs freshly minted credentials.
           nc = await wsconnect({
-            servers: [creds.data.nats_url],
+            servers: [websocketUrl],
             authenticator: jwtAuthenticator(creds.data.token),
             // The token's subscribe permission covers only inboxes under
             // this per-job prefix, not the account-default `_INBOX.>`.
@@ -255,6 +266,18 @@ export function JobLog({
 
   if (status.kind === "disabled") {
     return null;
+  }
+
+  if (status.kind === "no-websocket") {
+    return (
+      <section>
+        <h2>Console log</h2>
+        <p className="error">
+          Log streaming is enabled, but this deployment does not expose a NATS
+          WebSocket endpoint, so console logs cannot be tailed from the browser.
+        </p>
+      </section>
+    );
   }
 
   return (

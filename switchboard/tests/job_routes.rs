@@ -54,7 +54,7 @@ fn test_log_streaming() -> LogStreaming {
     LogStreaming {
         config: LogStreamingConfig {
             nats_url: "nats://nats.example:4222".to_string(),
-            websocket_url: None,
+            websocket_url: Some("wss://nats.example:443".to_string()),
             jetstream_domain: None,
             account_seed: account.seed().expect("account seed"),
         },
@@ -818,7 +818,13 @@ async fn admin_gets_a_read_token_for_any_job(pool: PgPool) {
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
 
     let creds: NatsLogStreamCredentials = resp.json().await.unwrap();
-    assert_eq!(creds.nats_url, "nats://nats.example:4222");
+    // Both endpoints pass through straight from config — no fallback, so the
+    // client picks by transport. The token authorizes either.
+    assert_eq!(creds.nats_url.as_deref(), Some("nats://nats.example:4222"));
+    assert_eq!(
+        creds.websocket_url.as_deref(),
+        Some("wss://nats.example:443")
+    );
     assert_eq!(creds.subject, format!("logs.{job_id}.>"));
     assert_eq!(creds.stream, format!("logs-{job_id}"));
     assert_eq!(creds.inbox_prefix, format!("_INBOX.logs-{job_id}"));
