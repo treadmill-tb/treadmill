@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    select resume_job_id, restart_job_id, image_id,\n                           image_set_id, image_set_generation\n                    from tml_switchboard.jobs\n                    where job_id = $1\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "resume_job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "resume_job_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "restart_job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "restart_job_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "image_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "image_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "image_set_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "image_set_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "image_set_generation",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "image_set_generation"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "198233efd8cae6a10c004139588098314f10293ebcc2e676813bc3bd65a5f2c8"
+}

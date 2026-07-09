@@ -63,7 +63,7 @@ pub(crate) async fn fetch_events_for_entity(
     entity_id: Uuid,
     query: &AuditFeedQuery,
 ) -> Result<AuditFeedResponse, StatusCode> {
-    let valid_kinds = ["job", "host", "subject", "image_group"];
+    let valid_kinds = ["job", "host", "subject", "image_set"];
     if !valid_kinds.contains(&entity_kind) {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -89,10 +89,10 @@ pub(crate) async fn fetch_events_for_entity(
                     .or_internal("computing job permissions")?;
                 allowed_policies.extend(perms.into_iter().map(|p| p.as_str().to_string()));
             }
-            "image_group" => {
-                let perms = engine::image_group_permissions(state.pool(), viewer_id, entity_id)
+            "image_set" => {
+                let perms = engine::image_set_permissions(state.pool(), viewer_id, entity_id)
                     .await
-                    .or_internal("computing image-group permissions")?;
+                    .or_internal("computing image-set permissions")?;
                 allowed_policies.extend(perms.into_iter().map(|p| p.as_str().to_string()));
             }
             "subject" => {

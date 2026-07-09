@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from tml_switchboard.image_source_grants\n           where source_id = $1 and subject_id = $2\n             and permission = $3::text::tml_switchboard.image_source_permission\n           returning source_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "source_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_source_grants",
+            "name": "source_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "873d689036e56989bf7f7a495c362d082e80e7af4d0e4f1fed4f8822548f4033"
+}

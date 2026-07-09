@@ -41,12 +41,12 @@ macro_rules! __audit_process_field {
             })
         }
     };
-    ($rels:ident, $val:expr, ImageGroup @ view($view:ident)) => {
+    ($rels:ident, $val:expr, ImageSet @ view($view:ident)) => {
         $rels.push($crate::audit::model::Relation {
-            entity: $crate::audit::model::EntityRef::ImageGroup($val.0),
+            entity: $crate::audit::model::EntityRef::ImageSet($val.0),
             role: $crate::audit::model::Role::Subject,
             view: $crate::audit::model::ViewPolicy::Permission(
-                $crate::auth::engine::ImageGroupPermission::$view.into(),
+                $crate::auth::engine::ImageSetPermission::$view.into(),
             ),
         })
     };

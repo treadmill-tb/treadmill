@@ -152,7 +152,7 @@ pub enum ImageSpecification {
     /// The supervisor protocol is always **content-addressed**: an image is
     /// identified by the OCI `manifest_digest` of its manifest, and
     /// `locations` is an ordered, failover list of the registry locations that
-    /// serve it. Switchboard resolves human labels/groups to a concrete digest
+    /// serve it. Switchboard resolves human labels/sets to a concrete digest
     /// + locations before dispatch (Phase 4).
     ///
     /// Note that if a job is being restarted, it will use this variant.

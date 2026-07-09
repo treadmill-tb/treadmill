@@ -18,7 +18,7 @@ use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
 use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_entity};
 use crate::audit::model::{Job as AuditJob, Subject as AuditSubject};
 use crate::audit::{self, events};
-use crate::auth::engine::{self, ImageGroupPermission, JobPermission};
+use crate::auth::engine::{self, ImageSetPermission, JobPermission};
 use crate::http_error::OrInternal;
 use crate::log_streaming::{self, TokenScope};
 use crate::routes::params::IdPath;
@@ -130,9 +130,9 @@ pub async fn list_events(
 ///     the job is owned by the caller.
 ///   - **Resume/restart.** A `Resume`/`Restart` references an existing job;
 ///     the caller must hold `Manage` on it, else `403`.
-///   - **Image group.** An `ImageGroup` job requires `use` on the group (else
+///   - **Image set.** An `ImageSet` job requires `use` on the set (else
 ///     `403`, existence not leaked) and freezes a concrete generation now; a
-///     group with no generation to freeze is a `400`.
+///     set with no generation to freeze is a `400`.
 ///
 /// Concrete-image (`Image`) validity and host eligibility are **not** checked
 /// here: an unresolvable image finalizes the job as `image_error` at dispatch,
@@ -183,25 +183,17 @@ pub async fn enqueue(
         }
     }
 
-    // An image-group job requires `use` on the group and freezes a concrete
+    // An image-set job requires `use` on the set and freezes a concrete
     // generation at enqueue, so the candidate set is reproducible (resolution to
     // a concrete member still happens per-host at dispatch). Resolve and validate
-    // it up front rather than deferring to dispatch: a missing group or missing
-    // `use` is a 403 (existence is not leaked), and a group with no generation to
+    // it up front rather than deferring to dispatch: a missing set or missing
+    // `use` is a 403 (existence is not leaked), and a set with no generation to
     // freeze is a 400.
-    if let JobInitSpec::ImageGroup {
-        group_id,
-        generation,
-    } = req.init_spec
-    {
-        let may_use = engine::can_access_image_group(
-            state.pool(),
-            caller,
-            group_id,
-            ImageGroupPermission::Use,
-        )
-        .await
-        .or_internal(&format!("checking `use` on image group {group_id}"))?;
+    if let JobInitSpec::ImageSet { set_id, generation } = req.init_spec {
+        let may_use =
+            engine::can_access_image_set(state.pool(), caller, set_id, ImageSetPermission::Use)
+                .await
+                .or_internal(&format!("checking `use` on image set {set_id}"))?;
         if !may_use {
             return Err(StatusCode::FORBIDDEN);
         }
@@ -210,31 +202,73 @@ pub async fn enqueue(
             // An explicitly requested generation must exist (nothing to pin
             // otherwise); the FK would also reject it, but a 400 here is clearer.
             Some(g) => {
-                if image::fetch_generation(state.pool(), group_id, g)
+                if image::fetch_generation(state.pool(), set_id, g)
                     .await
-                    .or_internal(&format!(
-                        "looking up generation {g} of image group {group_id}"
-                    ))?
+                    .or_internal(&format!("looking up generation {g} of image set {set_id}"))?
                     .is_none()
                 {
                     return Err(StatusCode::BAD_REQUEST);
                 }
                 g
             }
-            None => image::latest_generation(state.pool(), group_id)
+            None => image::latest_generation(state.pool(), set_id)
                 .await
                 .or_internal(&format!(
-                    "resolving latest generation of image group {group_id}"
+                    "resolving latest generation of image set {set_id}"
                 ))?
                 .ok_or(StatusCode::BAD_REQUEST)?,
         };
 
         // Pin the resolved generation so the stored freeze is exactly what we
         // authorized and validated (job::insert would otherwise re-derive it).
-        req.init_spec = JobInitSpec::ImageGroup {
-            group_id,
+        req.init_spec = JobInitSpec::ImageSet {
+            set_id,
             generation: Some(frozen),
         };
+    }
+
+    // Source-availability gate (plan decisions #1/#2): every referenced image
+    // must have a source the *job owner* may `use`, else 422. Keyed on the owner
+    // (not the enqueuer): the enqueuer already inherits the owner's permissions,
+    // so this can only narrow the eligible image set. A 422 (not 403) — the owner
+    // simply cannot source the image; existence is not a leak. This also closes
+    // the previously-unchecked concrete-image path. Evaluated after the set
+    // freeze above, so an image-set job carries a concrete `Some(generation)`.
+    match req.init_spec {
+        JobInitSpec::Image {
+            ref manifest_digest,
+        } => {
+            // An unregistered digest and a sourceless image are the same 422:
+            // the owner cannot source the image (existence is not a leak).
+            let rec = image::fetch_by_digest(state.pool(), &manifest_digest.encoded())
+                .await
+                .or_internal(&format!("looking up image {manifest_digest}"))?
+                .ok_or(StatusCode::UNPROCESSABLE_ENTITY)?;
+            let usable = image::image_source_usable(state.pool(), owner, rec.id)
+                .await
+                .or_internal(&format!(
+                    "checking source availability for image {manifest_digest}"
+                ))?;
+            if !usable {
+                return Err(StatusCode::UNPROCESSABLE_ENTITY);
+            }
+        }
+        JobInitSpec::ImageSet {
+            set_id,
+            generation: Some(g),
+        } => {
+            let usable = image::generation_usable(state.pool(), owner, set_id, g)
+                .await
+                .or_internal(&format!(
+                    "checking source availability for image set {set_id} generation {g}"
+                ))?;
+            if !usable {
+                return Err(StatusCode::UNPROCESSABLE_ENTITY);
+            }
+        }
+        // Resume/Restart carry no image reference of their own (they inherit the
+        // predecessor's, already source-gated at its own enqueue).
+        _ => {}
     }
 
     // Resolve the timeout (explicit override, else the deployment default) and

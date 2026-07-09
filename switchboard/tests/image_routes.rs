@@ -7,10 +7,10 @@
 //! [`StubRegistry`] (these tests have no Zot), so validation runs against real
 //! OCI wire-format JSON without a registry daemon.
 //!
-//! Image *groups* are mutable, named switchboard entities: created empty, then
+//! Image *sets* are mutable, named switchboard entities: created empty, then
 //! given membership by appending immutable, full-replacement generations whose
-//! members are pre-registered images referenced by id. No registry pull is
-//! involved in group/generation creation.
+//! members are pre-registered images referenced by digest. No registry pull is
+//! involved in set/generation creation.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -23,7 +23,9 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
-use treadmill_rs::api::switchboard::images::{ImageGroupGenerationInfo, ImageGroupInfo, ImageInfo};
+use treadmill_rs::api::switchboard::images::{
+    ImageInfo, ImageSetGenerationInfo, ImageSetInfo, ImageSourceGrantInfo, ImageSourcePermission,
+};
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, JobImageRef, JobInfo};
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, WhoAmIResponse};
@@ -145,7 +147,8 @@ async fn whoami(client: &reqwest::Client, addr: SocketAddr, token: &str) -> Uuid
     resp.json::<WhoAmIResponse>().await.unwrap().user_id
 }
 
-/// Register a staged manifest via `POST /images` and return its catalog view.
+/// Register a staged manifest by adding its first source via
+/// `POST /images/{digest}/sources` and return its catalog view.
 async fn register_image(
     client: &reqwest::Client,
     base: &str,
@@ -153,12 +156,11 @@ async fn register_image(
     digest: &Digest,
 ) -> ImageInfo {
     let resp = client
-        .post(format!("{base}/images"))
+        .post(format!("{base}/images/{}/sources", digest.encoded()))
         .bearer_auth(token)
         .json(&serde_json::json!({
             "registry": REGISTRY,
             "repository": REPO,
-            "manifest_digest": digest.encoded(),
         }))
         .send()
         .await
@@ -167,18 +169,12 @@ async fn register_image(
     resp.json().await.unwrap()
 }
 
-/// Create an empty image group via `POST /image-groups` and return its view.
-async fn create_group(
-    client: &reqwest::Client,
-    base: &str,
-    token: &str,
-    name: &str,
-    public: bool,
-) -> ImageGroupInfo {
+/// Create an empty image set via `POST /image-sets` and return its view.
+async fn create_set(client: &reqwest::Client, base: &str, token: &str, name: &str) -> ImageSetInfo {
     let resp = client
-        .post(format!("{base}/image-groups"))
+        .post(format!("{base}/image-sets"))
         .bearer_auth(token)
-        .json(&serde_json::json!({ "name": name, "public": public }))
+        .json(&serde_json::json!({ "name": name }))
         .send()
         .await
         .unwrap();
@@ -186,19 +182,53 @@ async fn create_group(
     resp.json().await.unwrap()
 }
 
-/// Append a one-member generation referencing `image_id`.
+/// The well-known `everyone` subject (see `SCHEMA.sql`): granting it `use` makes
+/// a set public.
+const EVERYONE_SUBJECT: Uuid = Uuid::from_u128(4);
+
+/// Make a set public (or private again) by granting/revoking the `everyone`
+/// subject `use` — the uniform replacement for a dedicated public flag. Returns
+/// the response so the caller can assert on the authorization outcome.
+async fn set_public(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    set: Uuid,
+    public: bool,
+) -> reqwest::Response {
+    if public {
+        client
+            .post(format!("{base}/image-sets/{set}/grants"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "subject_id": EVERYONE_SUBJECT, "permission": "use" }))
+            .send()
+            .await
+            .unwrap()
+    } else {
+        client
+            .delete(format!(
+                "{base}/image-sets/{set}/grants/{EVERYONE_SUBJECT}/use"
+            ))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+    }
+}
+
+/// Append a one-member generation referencing an image by digest.
 async fn add_generation(
     client: &reqwest::Client,
     base: &str,
     token: &str,
-    group: Uuid,
-    image: Uuid,
+    set: Uuid,
+    image: &Digest,
 ) {
     let resp = client
-        .post(format!("{base}/image-groups/{group}/generations"))
+        .post(format!("{base}/image-sets/{set}/generations"))
         .bearer_auth(token)
         .json(&serde_json::json!({ "members": [
-            { "image_id": image, "required_host_tags": [] },
+            { "manifest_digest": image.encoded(), "required_host_tags": [] },
         ] }))
         .send()
         .await
@@ -206,19 +236,73 @@ async fn add_generation(
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
 }
 
-/// `POST /jobs` referencing an image group; returns the raw response so the
+/// `POST /jobs` referencing an image set; returns the raw response so the
 /// caller can assert on the status (the enqueue authorization is under test).
-async fn enqueue_group(
+async fn enqueue_set(
     client: &reqwest::Client,
     base: &str,
     token: &str,
-    group: Uuid,
+    set: Uuid,
     generation: Option<u32>,
 ) -> reqwest::Response {
     let req = JobRequest {
-        init_spec: JobInitSpec::ImageGroup {
-            group_id: group,
+        init_spec: JobInitSpec::ImageSet {
+            set_id: set,
             generation,
+        },
+        owner: None,
+        ssh_keys: vec![],
+        restart_policy: RestartPolicy { max_restarts: 0 },
+        parameters: HashMap::new(),
+        host_tag_requirements: vec![],
+        target_requirements: vec![],
+        override_timeout: None,
+    };
+    client
+        .post(format!("{base}/jobs"))
+        .bearer_auth(token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap()
+}
+
+/// Grant `permission` on an image source to `subject` via
+/// `POST /images/{digest}/sources/{source_id}/grants`. Returns the response so
+/// the caller can assert on the authorization outcome. Granting the `everyone`
+/// subject `use` makes the source public.
+async fn grant_source(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    digest: &Digest,
+    source_id: Uuid,
+    subject: Uuid,
+    permission: &str,
+) -> reqwest::Response {
+    client
+        .post(format!(
+            "{base}/images/{}/sources/{source_id}/grants",
+            digest.encoded()
+        ))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "subject_id": subject, "permission": permission }))
+        .send()
+        .await
+        .unwrap()
+}
+
+/// `POST /jobs` referencing a concrete image; returns the raw response so the
+/// caller can assert on the status (the source-availability gate is under test).
+async fn enqueue_image_job(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    image: &Digest,
+) -> reqwest::Response {
+    let req = JobRequest {
+        init_spec: JobInitSpec::Image {
+            manifest_digest: *image,
         },
         owner: None,
         ssh_keys: vec![],
@@ -249,15 +333,14 @@ async fn register_list_and_inspect_image(pool: PgPool) {
     let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let base = format!("http://{addr}/api/v1");
 
-    // POST /images registers the image and reports its single external location.
+    // Adding the first source registers the image (201) and reports its single
+    // external source; the title is cached off the manifest annotation.
     let resp = client
-        .post(format!("{base}/images"))
+        .post(format!("{base}/images/{}/sources", digest.encoded()))
         .bearer_auth(&token)
         .json(&serde_json::json!({
             "registry": REGISTRY,
             "repository": REPO,
-            "manifest_digest": digest.encoded(),
-            "label": "my ubuntu",
         }))
         .send()
         .await
@@ -265,17 +348,19 @@ async fn register_list_and_inspect_image(pool: PgPool) {
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
     let info: ImageInfo = resp.json().await.unwrap();
     assert_eq!(info.manifest_digest, digest);
-    assert_eq!(info.label.as_deref(), Some("my ubuntu"));
-    assert_eq!(info.locations.len(), 1);
-    assert_eq!(info.locations[0].registry, REGISTRY);
-    assert_eq!(info.locations[0].status, "external");
+    assert_eq!(info.title.as_deref(), Some("Ubuntu test"));
+    assert_eq!(info.sources.len(), 1);
+    assert_eq!(info.sources[0].registry, REGISTRY);
+    assert_eq!(info.sources[0].repository, REPO);
+    assert_eq!(info.sources[0].status, "external");
 
-    // Re-registering the same digest is idempotent (200, not a duplicate).
+    // Re-adding the same source to the known digest is idempotent (200, not a
+    // duplicate).
     let resp = client
-        .post(format!("{base}/images"))
+        .post(format!("{base}/images/{}/sources", digest.encoded()))
         .bearer_auth(&token)
         .json(&serde_json::json!({
-            "registry": REGISTRY, "repository": REPO, "manifest_digest": digest.encoded(),
+            "registry": REGISTRY, "repository": REPO,
         }))
         .send()
         .await
@@ -305,7 +390,7 @@ async fn register_list_and_inspect_image(pool: PgPool) {
         .json()
         .await
         .unwrap();
-    assert_eq!(one.id, info.id);
+    assert_eq!(one.manifest_digest, info.manifest_digest);
 }
 
 #[sqlx::test]
@@ -319,10 +404,10 @@ async fn rejects_unknown_and_malformed_manifests(pool: PgPool) {
 
     let unknown = Digest::from_sha256([7u8; 32]);
     let resp = client
-        .post(format!("{base}/images"))
+        .post(format!("{base}/images/{}/sources", unknown.encoded()))
         .bearer_auth(&token)
         .json(&serde_json::json!({
-            "registry": REGISTRY, "repository": REPO, "manifest_digest": unknown.encoded(),
+            "registry": REGISTRY, "repository": REPO,
         }))
         .send()
         .await
@@ -336,10 +421,10 @@ async fn rejects_unknown_and_malformed_manifests(pool: PgPool) {
     let token = mock_login_token(&pool, &client, addr, "bob", false).await;
     let base = format!("http://{addr}/api/v1");
     let resp = client
-        .post(format!("{base}/images"))
+        .post(format!("{base}/images/{}/sources", bogus.encoded()))
         .bearer_auth(&token)
         .json(&serde_json::json!({
-            "registry": REGISTRY, "repository": REPO, "manifest_digest": bogus.encoded(),
+            "registry": REGISTRY, "repository": REPO,
         }))
         .send()
         .await
@@ -347,7 +432,7 @@ async fn rejects_unknown_and_malformed_manifests(pool: PgPool) {
     assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
 }
 
-// -- image groups ---------------------------------------------------------------
+// -- image sets ---------------------------------------------------------------
 
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
@@ -361,56 +446,55 @@ async fn create_group_append_generations_and_inspect(pool: PgPool) {
     let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let base = format!("http://{addr}/api/v1");
 
-    let img0 = register_image(&client, &base, &token, &m0).await;
-    let img1 = register_image(&client, &base, &token, &m1).await;
+    register_image(&client, &base, &token, &m0).await;
+    register_image(&client, &base, &token, &m1).await;
 
-    // POST /image-groups creates an empty, named group with no generation yet.
+    // POST /image-sets creates an empty, named set with no generation yet.
     let resp = client
-        .post(format!("{base}/image-groups"))
+        .post(format!("{base}/image-sets"))
         .bearer_auth(&token)
-        .json(&serde_json::json!({ "name": "ubuntu", "label": "Ubuntu group" }))
+        .json(&serde_json::json!({ "name": "ubuntu", "label": "Ubuntu set" }))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
-    let group: ImageGroupInfo = resp.json().await.unwrap();
-    assert_eq!(group.name, "ubuntu");
-    assert_eq!(group.label.as_deref(), Some("Ubuntu group"));
-    assert_eq!(group.latest_generation, None);
+    let set: ImageSetInfo = resp.json().await.unwrap();
+    assert_eq!(set.name, "ubuntu");
+    assert_eq!(set.label.as_deref(), Some("Ubuntu set"));
+    assert_eq!(set.latest_generation, None);
 
     // POST a first generation: member 0 generic, member 1 more specific.
     let resp = client
-        .post(format!("{base}/image-groups/{}/generations", group.id))
+        .post(format!("{base}/image-sets/{}/generations", set.id))
         .bearer_auth(&token)
         .json(&serde_json::json!({ "members": [
-            { "image_id": img0.id, "required_host_tags": ["arch=arm64"] },
-            { "image_id": img1.id, "required_host_tags": ["arch=arm64", "raspberrypi-4"] },
+            { "manifest_digest": m0.encoded(), "required_host_tags": ["arch=arm64"] },
+            { "manifest_digest": m1.encoded(), "required_host_tags": ["arch=arm64", "raspberrypi-4"] },
         ] }))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
-    let gen1: ImageGroupGenerationInfo = resp.json().await.unwrap();
+    let gen1: ImageSetGenerationInfo = resp.json().await.unwrap();
     assert_eq!(gen1.generation, 1);
     assert_eq!(gen1.members.len(), 2);
-    // Members come back in array (index) order; the manifest digest is recovered.
+    // Members come back in array (index) order.
     assert_eq!(gen1.members[0].index, 0);
-    assert_eq!(gen1.members[0].image_id, img0.id);
     assert_eq!(gen1.members[0].manifest_digest, m0);
     assert_eq!(
         gen1.members[0].required_host_tags,
         vec!["arch=arm64".to_string()]
     );
     assert_eq!(gen1.members[1].index, 1);
-    assert_eq!(gen1.members[1].image_id, img1.id);
+    assert_eq!(gen1.members[1].manifest_digest, m1);
     assert_eq!(
         gen1.members[1].required_host_tags,
         vec!["arch=arm64".to_string(), "raspberrypi-4".to_string()]
     );
 
-    // The group now reports its latest generation.
-    let info: ImageGroupInfo = client
-        .get(format!("{base}/image-groups/{}", group.id))
+    // The set now reports its latest generation.
+    let info: ImageSetInfo = client
+        .get(format!("{base}/image-sets/{}", set.id))
         .bearer_auth(&token)
         .send()
         .await
@@ -423,23 +507,23 @@ async fn create_group_append_generations_and_inspect(pool: PgPool) {
     // A second generation fully replaces the membership (just member 1 now) and
     // increments the generation number.
     let resp = client
-        .post(format!("{base}/image-groups/{}/generations", group.id))
+        .post(format!("{base}/image-sets/{}/generations", set.id))
         .bearer_auth(&token)
         .json(&serde_json::json!({ "members": [
-            { "image_id": img1.id, "required_host_tags": [] },
+            { "manifest_digest": m1.encoded(), "required_host_tags": [] },
         ] }))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
-    let gen2: ImageGroupGenerationInfo = resp.json().await.unwrap();
+    let gen2: ImageSetGenerationInfo = resp.json().await.unwrap();
     assert_eq!(gen2.generation, 2);
     assert_eq!(gen2.members.len(), 1);
-    assert_eq!(gen2.members[0].image_id, img1.id);
+    assert_eq!(gen2.members[0].manifest_digest, m1);
 
     // Generation 1 is immutable and still inspectable after the replacement.
-    let one: ImageGroupGenerationInfo = client
-        .get(format!("{base}/image-groups/{}/generations/1", group.id))
+    let one: ImageSetGenerationInfo = client
+        .get(format!("{base}/image-sets/{}/generations/1", set.id))
         .bearer_auth(&token)
         .send()
         .await
@@ -458,8 +542,8 @@ async fn create_generation_rejects_an_unregistered_image(pool: PgPool) {
     let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let base = format!("http://{addr}/api/v1");
 
-    let group: ImageGroupInfo = client
-        .post(format!("{base}/image-groups"))
+    let set: ImageSetInfo = client
+        .post(format!("{base}/image-sets"))
         .bearer_auth(&token)
         .json(&serde_json::json!({ "name": "empty" }))
         .send()
@@ -469,12 +553,13 @@ async fn create_generation_rejects_an_unregistered_image(pool: PgPool) {
         .await
         .unwrap();
 
-    // A member image id that was never registered is a 422.
+    // A member digest that was never registered is a 422.
+    let unregistered = Digest::from_sha256([9u8; 32]);
     let resp = client
-        .post(format!("{base}/image-groups/{}/generations", group.id))
+        .post(format!("{base}/image-sets/{}/generations", set.id))
         .bearer_auth(&token)
         .json(&serde_json::json!({ "members": [
-            { "image_id": Uuid::new_v4(), "required_host_tags": [] },
+            { "manifest_digest": unregistered.encoded(), "required_host_tags": [] },
         ] }))
         .send()
         .await
@@ -484,15 +569,15 @@ async fn create_generation_rejects_an_unregistered_image(pool: PgPool) {
 
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-async fn image_group_permissions_are_enforced(pool: PgPool) {
+async fn image_set_permissions_are_enforced(pool: PgPool) {
     let addr = spawn_with_registry(&pool, Arc::new(StubRegistry::default())).await;
     let client = http_client();
     let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let base = format!("http://{addr}/api/v1");
 
-    // `bob` owns a group; `carol` initially has no access to it.
-    let group: ImageGroupInfo = client
-        .post(format!("{base}/image-groups"))
+    // `bob` owns a set; `carol` initially has no access to it.
+    let set: ImageSetInfo = client
+        .post(format!("{base}/image-sets"))
         .bearer_auth(&bob_token)
         .json(&serde_json::json!({ "name": "private" }))
         .send()
@@ -505,9 +590,9 @@ async fn image_group_permissions_are_enforced(pool: PgPool) {
     let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
     let carol = whoami(&client, addr, &carol_token).await;
 
-    // Carol cannot even see the group (404, not 403 — existence is not leaked).
+    // Carol cannot even see the set (404, not 403 — existence is not leaked).
     let resp = client
-        .get(format!("{base}/image-groups/{}", group.id))
+        .get(format!("{base}/image-sets/{}", set.id))
         .bearer_auth(&carol_token)
         .send()
         .await
@@ -517,7 +602,7 @@ async fn image_group_permissions_are_enforced(pool: PgPool) {
     // Bob grants Carol `use`: she can now inspect it, but creating a generation
     // needs `manage` (403).
     let resp = client
-        .post(format!("{base}/image-groups/{}/grants", group.id))
+        .post(format!("{base}/image-sets/{}/grants", set.id))
         .bearer_auth(&bob_token)
         .json(&serde_json::json!({ "subject_id": carol, "permission": "use" }))
         .send()
@@ -526,7 +611,7 @@ async fn image_group_permissions_are_enforced(pool: PgPool) {
     assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
 
     let resp = client
-        .get(format!("{base}/image-groups/{}", group.id))
+        .get(format!("{base}/image-sets/{}", set.id))
         .bearer_auth(&carol_token)
         .send()
         .await
@@ -534,7 +619,7 @@ async fn image_group_permissions_are_enforced(pool: PgPool) {
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
 
     let resp = client
-        .post(format!("{base}/image-groups/{}/generations", group.id))
+        .post(format!("{base}/image-sets/{}/generations", set.id))
         .bearer_auth(&carol_token)
         .json(&serde_json::json!({ "members": [] }))
         .send()
@@ -545,7 +630,7 @@ async fn image_group_permissions_are_enforced(pool: PgPool) {
     // Bob grants Carol `manage`: she may now append a generation (an empty
     // membership is a valid full replacement).
     let resp = client
-        .post(format!("{base}/image-groups/{}/grants", group.id))
+        .post(format!("{base}/image-sets/{}/grants", set.id))
         .bearer_auth(&bob_token)
         .json(&serde_json::json!({ "subject_id": carol, "permission": "manage" }))
         .send()
@@ -554,7 +639,7 @@ async fn image_group_permissions_are_enforced(pool: PgPool) {
     assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
 
     let resp = client
-        .post(format!("{base}/image-groups/{}/generations", group.id))
+        .post(format!("{base}/image-sets/{}/generations", set.id))
         .bearer_auth(&carol_token)
         .json(&serde_json::json!({ "members": [] }))
         .send()
@@ -565,7 +650,7 @@ async fn image_group_permissions_are_enforced(pool: PgPool) {
 
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-async fn image_group_events_feed_records_acl_and_catalog_changes(pool: PgPool) {
+async fn image_set_events_feed_records_acl_and_catalog_changes(pool: PgPool) {
     let mut reg = StubRegistry::default();
     let m = reg.put(REGISTRY, REPO, image_manifest_bytes("member"));
     let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
@@ -573,16 +658,16 @@ async fn image_group_events_feed_records_acl_and_catalog_changes(pool: PgPool) {
     let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let base = format!("http://{addr}/api/v1");
 
-    // Exercise the whole catalog/ACL surface on one group.
-    let img = register_image(&client, &base, &bob_token, &m).await;
-    let group = create_group(&client, &base, &bob_token, "audited", false).await;
-    add_generation(&client, &base, &bob_token, group.id, img.id).await;
+    // Exercise the whole catalog/ACL surface on one set.
+    register_image(&client, &base, &bob_token, &m).await;
+    let set = create_set(&client, &base, &bob_token, "audited").await;
+    add_generation(&client, &base, &bob_token, set.id, &m).await;
 
     let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
     let carol = whoami(&client, addr, &carol_token).await;
 
     let grant = client
-        .post(format!("{base}/image-groups/{}/grants", group.id))
+        .post(format!("{base}/image-sets/{}/grants", set.id))
         .bearer_auth(&bob_token)
         .json(&serde_json::json!({ "subject_id": carol, "permission": "use" }))
         .send()
@@ -590,29 +675,23 @@ async fn image_group_events_feed_records_acl_and_catalog_changes(pool: PgPool) {
         .unwrap();
     assert_eq!(grant.status(), reqwest::StatusCode::NO_CONTENT);
 
-    let public = client
-        .put(format!("{base}/image-groups/{}/public", group.id))
-        .bearer_auth(&bob_token)
-        .json(&serde_json::json!({ "public": true }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(public.status(), reqwest::StatusCode::OK);
+    // Making the set public is a grant to the `everyone` subject.
+    let public = set_public(&client, &base, &bob_token, set.id, true).await;
+    assert_eq!(public.status(), reqwest::StatusCode::NO_CONTENT);
 
     let revoke = client
-        .delete(format!(
-            "{base}/image-groups/{}/grants/{carol}/use",
-            group.id
-        ))
+        .delete(format!("{base}/image-sets/{}/grants/{carol}/use", set.id))
         .bearer_auth(&bob_token)
         .send()
         .await
         .unwrap();
     assert_eq!(revoke.status(), reqwest::StatusCode::NO_CONTENT);
 
-    // The owner (a manager) sees the full group feed: one row per change above.
+    // The owner (a manager) sees the full set feed: one row per change above.
+    // "Public" is an ordinary grant to the `everyone` subject, so it shows up as
+    // a grant event, not a dedicated public-flag event.
     let feed: AuditFeedResponse = client
-        .get(format!("{base}/image-groups/{}/events", group.id))
+        .get(format!("{base}/image-sets/{}/events", set.id))
         .bearer_auth(&bob_token)
         .send()
         .await
@@ -622,11 +701,10 @@ async fn image_group_events_feed_records_acl_and_catalog_changes(pool: PgPool) {
         .unwrap();
     let types: Vec<&str> = feed.events.iter().map(|e| e.event_type.as_str()).collect();
     for expected in [
-        "image_group_created.v1",
-        "image_group_generation_created.v1",
-        "image_group_grant_created.v1",
-        "image_group_public_set.v1",
-        "image_group_grant_revoked.v1",
+        "image_set_created.v1",
+        "image_set_generation_created.v1",
+        "image_set_grant_created.v1",
+        "image_set_grant_revoked.v1",
     ] {
         assert!(
             types.contains(&expected),
@@ -635,9 +713,9 @@ async fn image_group_events_feed_records_acl_and_catalog_changes(pool: PgPool) {
     }
 
     // The feed is manage-gated: `carol` holds only `use` (via the now-public
-    // group), so she can see the group but not its audit feed (403).
+    // set), so she can see the set but not its audit feed (403).
     let forbidden = client
-        .get(format!("{base}/image-groups/{}/events", group.id))
+        .get(format!("{base}/image-sets/{}/events", set.id))
         .bearer_auth(&carol_token)
         .send()
         .await
@@ -647,7 +725,7 @@ async fn image_group_events_feed_records_acl_and_catalog_changes(pool: PgPool) {
 
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-async fn enqueue_image_group_checks_use_and_freezes_generation(pool: PgPool) {
+async fn enqueue_image_set_checks_use_and_freezes_generation(pool: PgPool) {
     let mut reg = StubRegistry::default();
     let m = reg.put(REGISTRY, REPO, image_manifest_bytes("member"));
     let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
@@ -655,17 +733,17 @@ async fn enqueue_image_group_checks_use_and_freezes_generation(pool: PgPool) {
     let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let base = format!("http://{addr}/api/v1");
 
-    let img = register_image(&client, &base, &bob_token, &m).await;
-    let group = create_group(&client, &base, &bob_token, "ubuntu", false).await;
+    register_image(&client, &base, &bob_token, &m).await;
+    let set = create_set(&client, &base, &bob_token, "ubuntu").await;
 
-    // A group with no generation has nothing to freeze: enqueue is a 400.
-    let resp = enqueue_group(&client, &base, &bob_token, group.id, None).await;
+    // A set with no generation has nothing to freeze: enqueue is a 400.
+    let resp = enqueue_set(&client, &base, &bob_token, set.id, None).await;
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
 
-    add_generation(&client, &base, &bob_token, group.id, img.id).await;
+    add_generation(&client, &base, &bob_token, set.id, &m).await;
 
     // `latest` is frozen onto the job (generation 1) at enqueue.
-    let resp = enqueue_group(&client, &base, &bob_token, group.id, None).await;
+    let resp = enqueue_set(&client, &base, &bob_token, set.id, None).await;
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
     let job_id = resp.json::<EnqueueJobResponse>().await.unwrap().job_id;
     let info: JobInfo = client
@@ -679,19 +757,19 @@ async fn enqueue_image_group_checks_use_and_freezes_generation(pool: PgPool) {
         .unwrap();
     assert!(matches!(
         info.image,
-        JobImageRef::ImageGroup { group_id, generation } if group_id == group.id && generation == 1
+        JobImageRef::ImageSet { set_id, generation } if set_id == set.id && generation == 1
     ));
 
     // A non-existent explicit generation is a 400; the existing one is accepted.
-    let resp = enqueue_group(&client, &base, &bob_token, group.id, Some(2)).await;
+    let resp = enqueue_set(&client, &base, &bob_token, set.id, Some(2)).await;
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
-    let resp = enqueue_group(&client, &base, &bob_token, group.id, Some(1)).await;
+    let resp = enqueue_set(&client, &base, &bob_token, set.id, Some(1)).await;
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
 
-    // `carol`, with no access to the private group, cannot enqueue against it
+    // `carol`, with no access to the private set, cannot enqueue against it
     // (403, existence not leaked).
     let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
-    let resp = enqueue_group(&client, &base, &carol_token, group.id, None).await;
+    let resp = enqueue_set(&client, &base, &carol_token, set.id, None).await;
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 }
 
@@ -706,61 +784,247 @@ async fn public_grants_use_to_everyone(pool: PgPool) {
     let base = format!("http://{addr}/api/v1");
 
     let img = register_image(&client, &base, &bob_token, &m).await;
-    // Created public at the start.
-    let group = create_group(&client, &base, &bob_token, "public-ubuntu", true).await;
-    assert!(group.public);
-    add_generation(&client, &base, &bob_token, group.id, img.id).await;
+    // Made public by granting the `everyone` subject `use`.
+    let set = create_set(&client, &base, &bob_token, "public-ubuntu").await;
+    let resp = set_public(&client, &base, &bob_token, set.id, true).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    add_generation(&client, &base, &bob_token, set.id, &m).await;
 
-    // `carol` holds no grant, yet a public group is visible and usable to her.
+    // `carol` holds no grant, yet a public set is visible to her.
     let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
     let resp = client
-        .get(format!("{base}/image-groups/{}", group.id))
+        .get(format!("{base}/image-sets/{}", set.id))
         .bearer_auth(&carol_token)
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
-    let resp = enqueue_group(&client, &base, &carol_token, group.id, None).await;
+
+    // The set grant is necessary but not sufficient to enqueue: the member's
+    // only source is bob's private one, so carol cannot source the image (422).
+    let resp = enqueue_set(&client, &base, &carol_token, set.id, None).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Bob makes the member's source public too; now carol can enqueue.
+    let resp = grant_source(
+        &client,
+        &base,
+        &bob_token,
+        &m,
+        img.sources[0].id,
+        EVERYONE_SUBJECT,
+        "use",
+    )
+    .await;
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    let resp = enqueue_set(&client, &base, &carol_token, set.id, None).await;
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
 
-    // But `public` confers only `use`, never `manage`: carol cannot append a
-    // generation, nor toggle the flag.
+    // But the `everyone` grant confers only `use`, never `manage`: carol cannot
+    // append a generation, nor change the set's grants (make it private).
     let resp = client
-        .post(format!("{base}/image-groups/{}/generations", group.id))
+        .post(format!("{base}/image-sets/{}/generations", set.id))
         .bearer_auth(&carol_token)
         .json(&serde_json::json!({ "members": [] }))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
-    let resp = client
-        .put(format!("{base}/image-groups/{}/public", group.id))
-        .bearer_auth(&carol_token)
-        .json(&serde_json::json!({ "public": false }))
-        .send()
-        .await
-        .unwrap();
+    let resp = set_public(&client, &base, &carol_token, set.id, false).await;
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 
-    // The owner toggles the group back to private; carol loses `use` again
-    // (404 on inspect, 403 on enqueue).
-    let resp = client
-        .put(format!("{base}/image-groups/{}/public", group.id))
-        .bearer_auth(&bob_token)
-        .json(&serde_json::json!({ "public": false }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), reqwest::StatusCode::OK);
-    assert!(!resp.json::<ImageGroupInfo>().await.unwrap().public);
+    // The owner revokes the `everyone` grant; carol loses `use` again (404 on
+    // inspect, 403 on enqueue).
+    let resp = set_public(&client, &base, &bob_token, set.id, false).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
 
     let resp = client
-        .get(format!("{base}/image-groups/{}", group.id))
+        .get(format!("{base}/image-sets/{}", set.id))
         .bearer_auth(&carol_token)
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
-    let resp = enqueue_group(&client, &base, &carol_token, group.id, None).await;
+    let resp = enqueue_set(&client, &base, &carol_token, set.id, None).await;
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+// -- image sources ----------------------------------------------------------------
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn image_source_grants_gate_visibility_and_use(pool: PgPool) {
+    let mut reg = StubRegistry::default();
+    let m = reg.put(REGISTRY, REPO, image_manifest_bytes("source acl"));
+    let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
+    let client = http_client();
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &bob_token).await;
+    let base = format!("http://{addr}/api/v1");
+
+    // Bob registers the image: he owns its only source, holding both permissions
+    // on it implicitly.
+    let info = register_image(&client, &base, &bob_token, &m).await;
+    assert_eq!(info.sources.len(), 1);
+    let source_id = info.sources[0].id;
+    assert_eq!(info.sources[0].owner_id, Some(bob));
+    for p in [ImageSourcePermission::Use, ImageSourcePermission::Manage] {
+        assert!(
+            info.sources[0].permissions.contains(&p),
+            "owner must hold {p:?} implicitly"
+        );
+    }
+
+    // Carol has no usable source, so the image does not exist for her: 404 on
+    // inspect (existence not leaked) and absent from her list.
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let carol = whoami(&client, addr, &carol_token).await;
+    let resp = client
+        .get(format!("{base}/images/{}", m.encoded()))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+    let list: Vec<ImageInfo> = client
+        .get(format!("{base}/images"))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(list.is_empty(), "no usable source: nothing to list");
+
+    // Bob grants carol `use`: the image becomes visible to her, and her surfaced
+    // permissions on the source are exactly `use`.
+    let resp = grant_source(&client, &base, &bob_token, &m, source_id, carol, "use").await;
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    let one: ImageInfo = client
+        .get(format!("{base}/images/{}", m.encoded()))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(one.sources[0].permissions, vec![ImageSourcePermission::Use]);
+
+    // `use` does not confer management: granting, listing grants, and deleting
+    // the source are all 403 for carol.
+    let resp = grant_source(&client, &base, &carol_token, &m, source_id, carol, "manage").await;
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    let resp = client
+        .get(format!(
+            "{base}/images/{}/sources/{source_id}/grants",
+            m.encoded()
+        ))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    let resp = client
+        .delete(format!("{base}/images/{}/sources/{source_id}", m.encoded()))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // Bob (manage) sees the grant listed; revoking it hides the image from carol
+    // again.
+    let grants: Vec<ImageSourceGrantInfo> = client
+        .get(format!(
+            "{base}/images/{}/sources/{source_id}/grants",
+            m.encoded()
+        ))
+        .bearer_auth(&bob_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        grants
+            .iter()
+            .any(|g| g.subject_id == carol && g.permission == ImageSourcePermission::Use),
+        "the grant to carol must be listed, got {grants:?}"
+    );
+    let resp = client
+        .delete(format!(
+            "{base}/images/{}/sources/{source_id}/grants/{carol}/use",
+            m.encoded()
+        ))
+        .bearer_auth(&bob_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    let resp = client
+        .get(format!("{base}/images/{}", m.encoded()))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+    // The owner deletes his source: the image keeps existing as a manifest
+    // identity, but with no sources left nobody — bob included — has a usable
+    // source, so even his inspect is now a 404.
+    let resp = client
+        .delete(format!("{base}/images/{}/sources/{source_id}", m.encoded()))
+        .bearer_auth(&bob_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    let resp = client
+        .get(format!("{base}/images/{}", m.encoded()))
+        .bearer_auth(&bob_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn enqueue_concrete_image_requires_usable_source(pool: PgPool) {
+    let mut reg = StubRegistry::default();
+    let m = reg.put(REGISTRY, REPO, image_manifest_bytes("concrete gate"));
+    let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
+    let client = http_client();
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let base = format!("http://{addr}/api/v1");
+    let img = register_image(&client, &base, &bob_token, &m).await;
+
+    // The source's owner can enqueue against the image.
+    let resp = enqueue_image_job(&client, &base, &bob_token, &m).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+
+    // Carol cannot source it: 422 (the concrete-image path has no set-style
+    // pre-check, so this gate is the only thing standing between her and a job
+    // that would only image_error at dispatch).
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let resp = enqueue_image_job(&client, &base, &carol_token, &m).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A public source (`everyone` granted `use`) unblocks her.
+    let resp = grant_source(
+        &client,
+        &base,
+        &bob_token,
+        &m,
+        img.sources[0].id,
+        EVERYONE_SUBJECT,
+        "use",
+    )
+    .await;
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    let resp = enqueue_image_job(&client, &base, &carol_token, &m).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
 }

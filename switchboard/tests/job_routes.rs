@@ -24,6 +24,7 @@ use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobImageRef, JobInfo, JobListResponse, NatsLogStreamCredentials,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, WhoAmIResponse};
+use treadmill_rs::image::Digest;
 
 /// The built-in admins group subject (`engine::ADMINS_GROUP_ID`). `alice` is a
 /// member, so she may file a job under it.
@@ -96,25 +97,47 @@ async fn latest_token_id(pool: &PgPool, user_id: Uuid) -> Uuid {
     .unwrap()
 }
 
-/// Register a throwaway concrete image (unique digest, no location) and return
-/// its catalog id. A job's `image_id` is an FK into `images`, so the seed/enqueue
-/// helpers need a real row to reference. Uses the runtime query API, so no
-/// `.sqlx` entry is needed.
-async fn register_image(pool: &PgPool) -> Uuid {
+/// Register a throwaway concrete image (unique digest) and return its catalog
+/// id plus manifest digest. A job's `image_id` is an FK into `images`, so the
+/// seed/enqueue helpers need a real row to reference. The image gets one source
+/// granted `everyone` `use`, so the enqueue source-availability gate admits any
+/// job owner (these tests exercise job authorization, not source availability —
+/// see `image_routes.rs` for that). Uses the runtime query API, so no `.sqlx`
+/// entry is needed.
+async fn register_image(pool: &PgPool) -> (Uuid, Digest) {
     let id = Uuid::new_v4();
     let id_hex = id.simple().to_string();
     let digest = format!("sha256:{id_hex:0>64}");
     sqlx::query(
         "insert into tml_switchboard.images \
-           (id, manifest_digest, artifact_type, owner_subject, attrs) \
-         values ($1, $2, 'application/vnd.treadmill.image.v1+json', null, '{}'::jsonb)",
+           (id, manifest_digest, artifact_type) \
+         values ($1, $2, 'application/vnd.treadmill.image.v1+json')",
     )
     .bind(id)
-    .bind(digest)
+    .bind(&digest)
     .execute(pool)
     .await
     .unwrap();
-    id
+    let source_id = Uuid::new_v4();
+    sqlx::query(
+        "insert into tml_switchboard.image_sources \
+           (id, image_id, registry, repository, status, owner_subject) \
+         values ($1, $2, 'reg.example:5000', 'repo', 'external', null)",
+    )
+    .bind(source_id)
+    .bind(id)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into tml_switchboard.image_source_grants (source_id, subject_id, permission) \
+         values ($1, '00000000-0000-0000-0000-000000000004', 'use')",
+    )
+    .bind(source_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    (id, digest.parse().unwrap())
 }
 
 /// Insert a `queued`, concrete-image job owned by `owner`, with the given
@@ -123,7 +146,7 @@ async fn register_image(pool: &PgPool) -> Uuid {
 /// `.sqlx` entry is needed.
 async fn seed_job(pool: &PgPool, owner: Uuid, token: Uuid, params: &[(&str, &str, bool)]) -> Uuid {
     let job_id = Uuid::new_v4();
-    let image_id = register_image(pool).await;
+    let (image_id, _) = register_image(pool).await;
     sqlx::query(
         "insert into tml_switchboard.jobs \
            (job_id, owner_id, image_id, ssh_keys, restart_policy, \
@@ -165,7 +188,7 @@ async fn seed_job_at(
     queued_at: chrono::DateTime<chrono::Utc>,
 ) -> Uuid {
     let job_id = Uuid::new_v4();
-    let image_id = register_image(pool).await;
+    let (image_id, _) = register_image(pool).await;
     sqlx::query(
         "insert into tml_switchboard.jobs \
            (job_id, owner_id, image_id, ssh_keys, restart_policy, \
@@ -314,8 +337,14 @@ async fn enqueue_and_cancel_emit_audit_events(pool: PgPool) {
     let token = mock_login_token(&pool, &client, addr, "bob", true).await;
 
     // Enqueue a job, then cancel it (still queued, so it finalizes immediately).
-    let image = register_image(&pool).await;
-    let req = image_job_request(None, JobInitSpec::Image { image_id: image }, None);
+    let (_, image) = register_image(&pool).await;
+    let req = image_job_request(
+        None,
+        JobInitSpec::Image {
+            manifest_digest: image,
+        },
+        None,
+    );
     let job_id = client
         .post(format!("http://{addr}/api/v1/jobs"))
         .bearer_auth(&token)
@@ -405,8 +434,14 @@ async fn enqueue_creates_a_queued_job_owned_by_caller(pool: PgPool) {
 
     let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let bob = whoami(&client, addr, &token).await;
-    let image = register_image(&pool).await;
-    let req = image_job_request(None, JobInitSpec::Image { image_id: image }, None);
+    let (_, image) = register_image(&pool).await;
+    let req = image_job_request(
+        None,
+        JobInitSpec::Image {
+            manifest_digest: image,
+        },
+        None,
+    );
 
     let resp = client
         .post(format!("http://{addr}/api/v1/jobs"))
@@ -445,10 +480,12 @@ async fn enqueue_under_a_group_the_caller_belongs_to(pool: PgPool) {
 
     // `alice` is a member of the admins group, so she may own the job under it.
     let token = mock_login_token(&pool, &client, addr, "alice", true).await;
-    let image = register_image(&pool).await;
+    let (_, image) = register_image(&pool).await;
     let req = image_job_request(
         Some(ADMINS_GROUP_ID),
-        JobInitSpec::Image { image_id: image },
+        JobInitSpec::Image {
+            manifest_digest: image,
+        },
         None,
     );
 
@@ -487,11 +524,11 @@ async fn enqueue_with_unrelated_owner_is_forbidden(pool: PgPool) {
     // so he cannot file a job under it.
     let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     // The unrelated-owner check rejects this (403) before the image is ever
-    // looked up, so an unregistered image id is fine here.
+    // looked up, so an unregistered digest is fine here.
     let req = image_job_request(
         Some(Uuid::new_v4()),
         JobInitSpec::Image {
-            image_id: Uuid::new_v4(),
+            manifest_digest: Digest::from_sha256([7u8; 32]),
         },
         None,
     );
@@ -544,10 +581,12 @@ async fn enqueue_honors_an_override_timeout(pool: PgPool) {
         .unwrap();
 
     let token = mock_login_token(&pool, &client, addr, "bob", true).await;
-    let image = register_image(&pool).await;
+    let (_, image) = register_image(&pool).await;
     let req = image_job_request(
         None,
-        JobInitSpec::Image { image_id: image },
+        JobInitSpec::Image {
+            manifest_digest: image,
+        },
         Some(chrono::Duration::hours(2)),
     );
 
@@ -691,13 +730,17 @@ async fn owner_reads_own_job_with_secret_redacted(pool: PgPool) {
         &[("api_key", "s3cr3t", true), ("region", "us-east", false)],
     )
     .await;
-    // The image the seed helper registered and bound onto the job.
-    let image_id: Uuid =
-        sqlx::query_scalar("select image_id from tml_switchboard.jobs where job_id = $1")
-            .bind(job_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    // The image the seed helper registered and bound onto the job, as the
+    // digest the API view reports it under.
+    let image_digest: String = sqlx::query_scalar(
+        "select i.manifest_digest from tml_switchboard.jobs j \
+         join tml_switchboard.images i on i.id = j.image_id \
+         where j.job_id = $1",
+    )
+    .bind(job_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     let resp = client
         .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
@@ -711,7 +754,9 @@ async fn owner_reads_own_job_with_secret_redacted(pool: PgPool) {
     assert_eq!(info.job_id, job_id);
     assert_eq!(info.owner_id, Some(bob));
     assert_eq!(info.state, JobState::Queued);
-    assert!(matches!(info.image, JobImageRef::Image { image_id: got } if got == image_id));
+    assert!(
+        matches!(info.image, JobImageRef::Image { manifest_digest: got } if got.encoded() == image_digest)
+    );
 
     // Secret parameter: flagged secret, value withheld.
     let secret = &info.parameters["api_key"];

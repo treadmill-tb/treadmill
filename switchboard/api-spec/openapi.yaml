@@ -780,62 +780,6 @@ paths:
                   $ref: '#/components/schemas/ImageInfo'
       security:
       - token: []
-    post:
-      tags:
-      - Images
-      summary: Register an image
-      operationId: registerImage
-      requestBody:
-        description: |-
-          `POST /images`: register a concrete image by digest. The switchboard pulls
-          the manifest from `registry/repository@manifest_digest`, validates it is a
-          Treadmill image, and records the image plus its first location.
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RegisterImageRequest'
-        required: true
-      responses:
-        '401':
-          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
-        '403':
-          description: The authenticated account is locked, or lacks permission for this resource.
-        '400':
-          description: Failed to parse the request body as JSON
-          content:
-            text/plain:
-              schema:
-                type: string
-        '415':
-          description: 'Expected request with `Content-Type: application/json`'
-          content:
-            text/plain:
-              schema:
-                type: string
-        '422':
-          description: Failed to deserialize the JSON body into the target type
-          content:
-            text/plain:
-              schema:
-                type: string
-        '201':
-          description: The image was newly registered.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ImageInfo'
-        '200':
-          description: The image was already registered; this location was added.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ImageInfo'
-        '409':
-          description: This digest is already registered to another owner.
-        '502':
-          description: The image's registry could not be reached or returned an error.
-      security:
-      - token: []
   /images/{digest}:
     get:
       tags:
@@ -857,7 +801,9 @@ paths:
         '403':
           description: The authenticated account is locked, or lacks permission for this resource.
         '200':
-          description: A registered image, as returned by the catalog list/inspect routes.
+          description: |-
+            A registered image, as returned by the catalog list/inspect routes. An image
+            is non-owned; ownership lives on its `sources`.
           content:
             application/json:
               schema:
@@ -866,42 +812,31 @@ paths:
           description: No such image, or it is not visible to the caller.
       security:
       - token: []
-  /image-groups:
-    get:
-      tags:
-      - Image groups
-      summary: List image groups
-      description: Returns the complete set in a stable order; this route is not paginated.
-      operationId: listImageGroups
-      responses:
-        '401':
-          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
-        '403':
-          description: The authenticated account is locked, or lacks permission for this resource.
-        '200':
-          description: ''
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ImageGroupInfo'
-      security:
-      - token: []
+  /images/{digest}/sources:
     post:
       tags:
-      - Image groups
-      summary: Create an image group
-      operationId: createImageGroup
+      - Images
+      summary: Add a source to an image
+      operationId: addImageSource
+      parameters:
+      - in: path
+        name: digest
+        description: The image's OCI manifest digest (`sha256:<hex>`).
+        required: true
+        schema:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        style: simple
       requestBody:
         description: |-
-          `POST /image-groups`: create an empty, named image group. The caller becomes
-          its owner; membership is added afterwards via per-generation snapshots (see
-          [`CreateGenerationRequest`]).
+          `POST /images/{digest}/sources`: add a registry source for an image,
+          registering the image on first sight. The caller owns the source it adds;
+          the image itself (its cached manifest projection) is non-owned and created
+          implicitly when its digest is first sourced.
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateImageGroupRequest'
+              $ref: '#/components/schemas/AddImageSourceRequest'
         required: true
       responses:
         '401':
@@ -927,21 +862,285 @@ paths:
               schema:
                 type: string
         '201':
-          description: The image group was created.
+          description: The image was newly registered, with this source as its first.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ImageGroupInfo'
-        '409':
-          description: An image group with that name already exists.
+                $ref: '#/components/schemas/ImageInfo'
+        '200':
+          description: The image was already registered; the caller-owned source was added.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageInfo'
+        '502':
+          description: The source could not be reached or does not serve the image.
       security:
       - token: []
-  /image-groups/{id}:
+  /images/{digest}/sources/{source_id}:
+    delete:
+      tags:
+      - Images
+      summary: Delete an image source
+      operationId: deleteImageSource
+      parameters:
+      - in: path
+        name: digest
+        description: The image's OCI manifest digest (`sha256:<hex>`).
+        required: true
+        schema:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        style: simple
+      - in: path
+        name: source_id
+        description: The source's unique identifier.
+        required: true
+        schema:
+          description: The source's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '204':
+          description: The source was deleted.
+        '404':
+          description: No such image or source.
+      security:
+      - token: []
+  /images/{digest}/sources/{source_id}/grants:
     get:
       tags:
-      - Image groups
-      summary: Get an image group
-      operationId: getImageGroup
+      - Images
+      summary: List an image source's grants
+      description: Returns the complete set in a stable order; this route is not paginated.
+      operationId: listImageSourceGrants
+      parameters:
+      - in: path
+        name: digest
+        description: The image's OCI manifest digest (`sha256:<hex>`).
+        required: true
+        schema:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        style: simple
+      - in: path
+        name: source_id
+        description: The source's unique identifier.
+        required: true
+        schema:
+          description: The source's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImageSourceGrantInfo'
+      security:
+      - token: []
+    post:
+      tags:
+      - Images
+      summary: Grant a permission on an image source
+      operationId: createImageSourceGrant
+      parameters:
+      - in: path
+        name: digest
+        description: The image's OCI manifest digest (`sha256:<hex>`).
+        required: true
+        schema:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        style: simple
+      - in: path
+        name: source_id
+        description: The source's unique identifier.
+        required: true
+        schema:
+          description: The source's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        description: |-
+          `POST /images/{digest}/sources/{source_id}/grants`: grant `permission` on a
+          source to a subject.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageSourceGrantRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '204':
+          description: The grant was recorded.
+        '404':
+          description: No such image or source.
+      security:
+      - token: []
+  /images/{digest}/sources/{source_id}/grants/{subject_id}/{permission}:
+    delete:
+      tags:
+      - Images
+      summary: Revoke a grant on an image source
+      operationId: revokeImageSourceGrant
+      parameters:
+      - in: path
+        name: digest
+        description: The image's OCI manifest digest (`sha256:<hex>`).
+        required: true
+        schema:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        style: simple
+      - in: path
+        name: permission
+        description: The permission being revoked (`use` or `manage`).
+        required: true
+        schema:
+          description: The permission being revoked (`use` or `manage`).
+          type: string
+        style: simple
+      - in: path
+        name: source_id
+        description: The source's unique identifier.
+        required: true
+        schema:
+          description: The source's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      - in: path
+        name: subject_id
+        description: The subject (user or group) the grant applies to.
+        required: true
+        schema:
+          description: The subject (user or group) the grant applies to.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '204':
+          description: The grant was revoked.
+        '404':
+          description: No matching grant to revoke.
+      security:
+      - token: []
+  /image-sets:
+    get:
+      tags:
+      - Images
+      summary: List image sets
+      description: Returns the complete set in a stable order; this route is not paginated.
+      operationId: listImageSets
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImageSetInfo'
+      security:
+      - token: []
+    post:
+      tags:
+      - Images
+      summary: Create an image set
+      operationId: createImageSet
+      requestBody:
+        description: |-
+          `POST /image-sets`: create an empty, named image set. The caller becomes
+          its owner; membership is added afterwards via per-generation snapshots (see
+          [`CreateGenerationRequest`]).
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateImageSetRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '201':
+          description: The image set was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageSetInfo'
+        '409':
+          description: An image set with that name already exists.
+      security:
+      - token: []
+  /image-sets/{id}:
+    get:
+      tags:
+      - Images
+      summary: Get an image set
+      operationId: getImageSet
       parameters:
       - in: path
         name: id
@@ -958,21 +1157,21 @@ paths:
         '403':
           description: The authenticated account is locked, or lacks permission for this resource.
         '200':
-          description: A named, mutable image group, as returned by the catalog list/inspect routes.
+          description: A named, mutable image set, as returned by the catalog list/inspect routes.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ImageGroupInfo'
+                $ref: '#/components/schemas/ImageSetInfo'
         '404':
-          description: No such image group, or it is not visible to the caller.
+          description: No such image set, or it is not visible to the caller.
       security:
       - token: []
-  /image-groups/{id}/events:
+  /image-sets/{id}/events:
     get:
       tags:
-      - Image groups
-      summary: List an image group's audit events
-      operationId: listImageGroupEvents
+      - Images
+      summary: List an image set's audit events
+      operationId: listImageSetEvents
       parameters:
       - in: path
         name: id
@@ -1020,15 +1219,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuditFeedResponse'
         '404':
-          description: No such image group, or it is not visible to the caller.
+          description: No such image set, or it is not visible to the caller.
       security:
       - token: []
-  /image-groups/{id}/generations:
+  /image-sets/{id}/generations:
     post:
       tags:
-      - Image groups
-      summary: Append a generation to an image group
-      operationId: createImageGroupGeneration
+      - Images
+      summary: Append a generation to an image set
+      operationId: createImageSetGeneration
       parameters:
       - in: path
         name: id
@@ -1041,8 +1240,8 @@ paths:
         style: simple
       requestBody:
         description: |-
-          `POST /image-groups/{id}/generations`: append a new, immutable
-          full-replacement generation of a group's membership.
+          `POST /image-sets/{id}/generations`: append a new, immutable
+          full-replacement generation of a set's membership.
         content:
           application/json:
             schema:
@@ -1076,33 +1275,33 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ImageGroupGenerationInfo'
+                $ref: '#/components/schemas/ImageSetGenerationInfo'
         '404':
-          description: No such image group, or it is not visible to the caller.
+          description: No such image set, or it is not visible to the caller.
       security:
       - token: []
-  /image-groups/{id}/generations/{n}:
+  /image-sets/{id}/generations/{n}:
     get:
       tags:
-      - Image groups
-      summary: Get an image-group generation
-      operationId: getImageGroupGeneration
+      - Images
+      summary: Get an image-set generation
+      operationId: getImageSetGeneration
       parameters:
       - in: path
         name: id
-        description: The image group's unique identifier.
+        description: The image set's unique identifier.
         required: true
         schema:
-          description: The image group's unique identifier.
+          description: The image set's unique identifier.
           type: string
           format: uuid
         style: simple
       - in: path
         name: n
-        description: The generation number within the group.
+        description: The generation number within the set.
         required: true
         schema:
-          description: The generation number within the group.
+          description: The generation number within the set.
           type: integer
           format: uint32
           minimum: 0
@@ -1113,22 +1312,22 @@ paths:
         '403':
           description: The authenticated account is locked, or lacks permission for this resource.
         '200':
-          description: One immutable generation (membership snapshot) of an image group.
+          description: One immutable generation (membership snapshot) of an image set.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ImageGroupGenerationInfo'
+                $ref: '#/components/schemas/ImageSetGenerationInfo'
         '404':
-          description: No such image group or generation.
+          description: No such image set or generation.
       security:
       - token: []
-  /image-groups/{id}/grants:
+  /image-sets/{id}/grants:
     get:
       tags:
-      - Image groups
-      summary: List an image group's grants
+      - Images
+      summary: List an image set's grants
       description: Returns the complete set in a stable order; this route is not paginated.
-      operationId: listImageGroupGrants
+      operationId: listImageSetGrants
       parameters:
       - in: path
         name: id
@@ -1151,14 +1350,14 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/ImageGroupGrantInfo'
+                  $ref: '#/components/schemas/ImageSetGrantInfo'
       security:
       - token: []
     post:
       tags:
-      - Image groups
-      summary: Grant a permission on an image group
-      operationId: createImageGroupGrant
+      - Images
+      summary: Grant a permission on an image set
+      operationId: createImageSetGrant
       parameters:
       - in: path
         name: id
@@ -1170,11 +1369,11 @@ paths:
           format: uuid
         style: simple
       requestBody:
-        description: '`POST /image-groups/{id}/grants`: grant `permission` on the group to a subject.'
+        description: '`POST /image-sets/{id}/grants`: grant `permission` on the set to a subject.'
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ImageGroupGrantRequest'
+              $ref: '#/components/schemas/ImageSetGrantRequest'
         required: true
       responses:
         '401':
@@ -1202,22 +1401,22 @@ paths:
         '204':
           description: The grant was recorded.
         '404':
-          description: No such image group, or it is not visible to the caller.
+          description: No such image set, or it is not visible to the caller.
       security:
       - token: []
-  /image-groups/{id}/grants/{subject_id}/{permission}:
+  /image-sets/{id}/grants/{subject_id}/{permission}:
     delete:
       tags:
-      - Image groups
-      summary: Revoke a grant on an image group
-      operationId: revokeImageGroupGrant
+      - Images
+      summary: Revoke a grant on an image set
+      operationId: revokeImageSetGrant
       parameters:
       - in: path
         name: id
-        description: The image group's unique identifier.
+        description: The image set's unique identifier.
         required: true
         schema:
-          description: The image group's unique identifier.
+          description: The image set's unique identifier.
           type: string
           format: uuid
         style: simple
@@ -1249,64 +1448,6 @@ paths:
           description: No matching grant to revoke.
       security:
       - token: []
-  /image-groups/{id}/public:
-    put:
-      tags:
-      - Image groups
-      summary: Set an image group's public flag
-      operationId: setImageGroupPublic
-      parameters:
-      - in: path
-        name: id
-        description: The resource's unique identifier.
-        required: true
-        schema:
-          description: The resource's unique identifier.
-          type: string
-          format: uuid
-        style: simple
-      requestBody:
-        description: |-
-          `PUT /image-groups/{id}/public`: declare a group public (or private again).
-          Requires `manage`.
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SetImageGroupPublicRequest'
-        required: true
-      responses:
-        '401':
-          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
-        '403':
-          description: The authenticated account is locked, or lacks permission for this resource.
-        '200':
-          description: A named, mutable image group, as returned by the catalog list/inspect routes.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ImageGroupInfo'
-        '400':
-          description: Failed to parse the request body as JSON
-          content:
-            text/plain:
-              schema:
-                type: string
-        '415':
-          description: 'Expected request with `Content-Type: application/json`'
-          content:
-            text/plain:
-              schema:
-                type: string
-        '422':
-          description: Failed to deserialize the JSON body into the target type
-          content:
-            text/plain:
-              schema:
-                type: string
-        '404':
-          description: No such image group, or it is not visible to the caller.
-      security:
-      - token: []
 components:
   securitySchemes:
     token:
@@ -1314,6 +1455,23 @@ components:
       scheme: bearer
       description: 'A Treadmill user API token, presented as `Authorization: Bearer <token>`.'
   schemas:
+    AddImageSourceRequest:
+      description: |-
+        `POST /images/{digest}/sources`: add a registry source for an image,
+        registering the image on first sight. The caller owns the source it adds;
+        the image itself (its cached manifest projection) is non-owned and created
+        implicitly when its digest is first sourced.
+      type: object
+      properties:
+        registry:
+          description: Registry authority (`host:port`) the image can be pulled from.
+          type: string
+        repository:
+          description: Repository path within the registry.
+          type: string
+      required:
+      - registry
+      - repository
     AuditFeedQuery:
       description: Query parameters for an audit feed (`GET /{entity}/{id}/events`).
       type: object
@@ -1390,8 +1548,8 @@ components:
       - state
     CreateGenerationRequest:
       description: |-
-        `POST /image-groups/{id}/generations`: append a new, immutable
-        full-replacement generation of a group's membership.
+        `POST /image-sets/{id}/generations`: append a new, immutable
+        full-replacement generation of a set's membership.
       type: object
       properties:
         members:
@@ -1400,9 +1558,9 @@ components:
             $ref: '#/components/schemas/GenerationMemberSpec'
       required:
       - members
-    CreateImageGroupRequest:
+    CreateImageSetRequest:
       description: |-
-        `POST /image-groups`: create an empty, named image group. The caller becomes
+        `POST /image-sets`: create an empty, named image set. The caller becomes
         its owner; membership is added afterwards via per-generation snapshots (see
         [`CreateGenerationRequest`]).
       type: object
@@ -1416,12 +1574,6 @@ components:
         name:
           description: The stable, globally-unique moving-target handle a job references (by id).
           type: string
-        public:
-          description: |-
-            When `true`, every subject implicitly holds `use` on the group (may run
-            jobs against it) without an explicit grant. Never confers `manage`.
-          type: boolean
-          default: false
       required:
       - name
     Digest:
@@ -1455,9 +1607,6 @@ components:
         `required_host_tags`.
       type: object
       properties:
-        image_id:
-          type: string
-          format: uuid
         index:
           type: integer
           format: uint32
@@ -1468,21 +1617,38 @@ components:
           type: array
           items:
             type: string
+        usable:
+          description: |-
+            Whether the viewer may use some source of this member image. A set grant
+            is necessary but not sufficient: `false` means the member has no source the
+            viewer can reach (so a job would not resolve it for this viewer).
+          type: boolean
+        usable_by_grantees:
+          description: |-
+            Whether *every* subject holding a `use` grant on the set can source this
+            member (for a public set, the grantees include the `everyone` subject).
+            This is the owner-facing health signal: `false` flags a member some grantee
+            cannot reach, so the set's `use` grant is unusable for them in practice.
+            Vacuously `true` for a set with no `use` grants.
+          type: boolean
       required:
-      - image_id
       - manifest_digest
       - required_host_tags
       - index
+      - usable
+      - usable_by_grantees
     GenerationMemberSpec:
       description: |-
         One member of a new generation; `index` is the member's array position in the
         request, used as the deterministic tie-break among equally-specific members.
       type: object
       properties:
-        image_id:
-          description: Image to include; must already be registered via `POST /images`.
-          type: string
-          format: uuid
+        manifest_digest:
+          description: |-
+            Image to include; must already be registered (have at least one source,
+            `POST /images/{digest}/sources`).
+          allOf:
+          - $ref: '#/components/schemas/Digest'
         required_host_tags:
           description: |-
             Host tags a host must carry (as a superset) for this member to be
@@ -1492,17 +1658,17 @@ components:
           items:
             type: string
       required:
-      - image_id
+      - manifest_digest
     GenerationPath:
-      description: The `{id}/generations/{n}` segments of an image-group generation route.
+      description: The `{id}/generations/{n}` segments of an image-set generation route.
       type: object
       properties:
         id:
-          description: The image group's unique identifier.
+          description: The image set's unique identifier.
           type: string
           format: uuid
         n:
-          description: The generation number within the group.
+          description: The generation number within the set.
           type: integer
           format: uint32
           minimum: 0
@@ -1514,7 +1680,7 @@ components:
       type: object
       properties:
         id:
-          description: The image group's unique identifier.
+          description: The image set's unique identifier.
           type: string
           format: uuid
         permission:
@@ -1619,8 +1785,34 @@ components:
           format: uuid
       required:
       - id
-    ImageGroupGenerationInfo:
-      description: One immutable generation (membership snapshot) of an image group.
+    ImageInfo:
+      description: |-
+        A registered image, as returned by the catalog list/inspect routes. An image
+        is non-owned; ownership lives on its `sources`.
+      type: object
+      properties:
+        artifact_type:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        manifest_digest:
+          $ref: '#/components/schemas/Digest'
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageSourceInfo'
+        title:
+          type:
+          - string
+          - 'null'
+      required:
+      - manifest_digest
+      - artifact_type
+      - created_at
+      - sources
+    ImageSetGenerationInfo:
+      description: One immutable generation (membership snapshot) of an image set.
       type: object
       properties:
         created_at:
@@ -1635,44 +1827,44 @@ components:
           type: integer
           format: uint32
           minimum: 0
-        group_id:
-          type: string
-          format: uuid
         members:
           type: array
           items:
             $ref: '#/components/schemas/GenerationMemberInfo'
+        set_id:
+          type: string
+          format: uuid
       required:
-      - group_id
+      - set_id
       - generation
       - created_at
       - members
-    ImageGroupGrantInfo:
-      description: One grant on an image group, as returned by the list-grants route.
+    ImageSetGrantInfo:
+      description: One grant on an image set, as returned by the list-grants route.
       type: object
       properties:
         permission:
-          $ref: '#/components/schemas/ImageGroupPermission'
+          $ref: '#/components/schemas/ImageSetPermission'
         subject_id:
           type: string
           format: uuid
       required:
       - subject_id
       - permission
-    ImageGroupGrantRequest:
-      description: '`POST /image-groups/{id}/grants`: grant `permission` on the group to a subject.'
+    ImageSetGrantRequest:
+      description: '`POST /image-sets/{id}/grants`: grant `permission` on the set to a subject.'
       type: object
       properties:
         permission:
-          $ref: '#/components/schemas/ImageGroupPermission'
+          $ref: '#/components/schemas/ImageSetPermission'
         subject_id:
           type: string
           format: uuid
       required:
       - subject_id
       - permission
-    ImageGroupInfo:
-      description: A named, mutable image group, as returned by the catalog list/inspect routes.
+    ImageSetInfo:
+      description: A named, mutable image set, as returned by the catalog list/inspect routes.
       type: object
       properties:
         created_at:
@@ -1686,7 +1878,7 @@ components:
           - string
           - 'null'
         latest_generation:
-          description: The group's latest generation number, or null if it has none yet.
+          description: The set's latest generation number, or null if it has none yet.
           type:
           - integer
           - 'null'
@@ -1699,60 +1891,66 @@ components:
           - string
           - 'null'
           format: uuid
-        public:
-          description: When `true`, every subject implicitly holds `use` on the group.
-          type: boolean
       required:
       - id
       - name
-      - public
       - created_at
-    ImageGroupPermission:
-      description: A permission on an image group.
+    ImageSetPermission:
+      description: A permission on an image set.
       oneOf:
-      - description: May run a job referencing the group (and so its member images).
+      - description: May run a job referencing the set (and so its member images).
         type: string
         const: use
       - description: May create generations and manage grants (owner holds this implicitly).
         type: string
         const: manage
-    ImageInfo:
-      description: A registered image, as returned by the catalog list/inspect routes.
+    ImageSourceGrantInfo:
+      description: One grant on an image source, as returned by the list-grants route.
       type: object
       properties:
-        artifact_type:
+        permission:
+          $ref: '#/components/schemas/ImageSourcePermission'
+        subject_id:
           type: string
-        created_at:
+          format: uuid
+      required:
+      - subject_id
+      - permission
+    ImageSourceGrantRequest:
+      description: |-
+        `POST /images/{digest}/sources/{source_id}/grants`: grant `permission` on a
+        source to a subject.
+      type: object
+      properties:
+        permission:
+          $ref: '#/components/schemas/ImageSourcePermission'
+        subject_id:
           type: string
-          format: date-time
+          format: uuid
+      required:
+      - subject_id
+      - permission
+    ImageSourceInfo:
+      description: |-
+        One registry source of a registered image — the ownable, grantable catalog
+        entity — as returned by the inspect routes. `permissions` is the *viewer's*
+        permissions on this source (like host/job permission surfacing).
+      type: object
+      properties:
         id:
           type: string
           format: uuid
-        label:
-          type:
-          - string
-          - 'null'
-        locations:
-          type: array
-          items:
-            $ref: '#/components/schemas/ImageLocation'
-        manifest_digest:
-          $ref: '#/components/schemas/Digest'
         owner_id:
+          description: The source's owner, or null if orphaned.
           type:
           - string
           - 'null'
           format: uuid
-      required:
-      - id
-      - manifest_digest
-      - artifact_type
-      - created_at
-      - locations
-    ImageLocation:
-      description: One registry location of a registered image.
-      type: object
-      properties:
+        permissions:
+          description: The viewer's permissions on this source.
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageSourcePermission'
         registry:
           type: string
         repository:
@@ -1761,30 +1959,42 @@ components:
           description: '`external`, `canonical`, or `system`.'
           type: string
       required:
+      - id
       - registry
       - repository
       - status
+      - permissions
+    ImageSourcePermission:
+      description: |-
+        A permission on an image source. A "public" (unauthenticated) source is one
+        that grants the well-known `everyone` subject `use`.
+      oneOf:
+      - description: May pull the image from this source (run jobs that resolve to it).
+        type: string
+        const: use
+      - description: May manage the source's grants and delete it (owner holds this implicitly).
+        type: string
+        const: manage
     JobImageRef:
       description: |-
         What a job is based off, as seen by `GET /jobs/{id}`: a concrete image, an
-        image group (with the frozen generation), or a resume/restart of an earlier
+        image set (with the frozen generation), or a resume/restart of an earlier
         job. The concrete manifest digest actually dispatched is reported separately
         as `resolved_image_digest`.
       oneOf:
-      - description: Based off a concrete catalog image, addressed by its catalog id.
+      - description: Based off a concrete catalog image, addressed by its manifest digest.
         type: object
         properties:
-          image_id:
-            type: string
-            format: uuid
+          manifest_digest:
+            $ref: '#/components/schemas/Digest'
           type:
             type: string
             const: image
         required:
         - type
-        - image_id
+        - manifest_digest
       - description: |-
-          Based off a registered image *group*, addressed by its id plus the frozen
+          Based off a registered image *set*, addressed by its id plus the frozen
           generation; the concrete member is chosen at dispatch.
         type: object
         properties:
@@ -1792,15 +2002,15 @@ components:
             type: integer
             format: uint32
             minimum: 0
-          group_id:
+          set_id:
             type: string
             format: uuid
           type:
             type: string
-            const: image_group
+            const: image_set
         required:
         - type
-        - group_id
+        - set_id
         - generation
       - description: Resumes a previously started job.
         type: object
@@ -1982,24 +2192,23 @@ components:
         - job_id
       - description: |-
           Base this job off a concrete image registered in the switchboard
-          catalog, addressed by its catalog id (`POST /images`). At dispatch the
+          catalog, addressed by its OCI manifest digest. At dispatch the
           switchboard resolves the image to its registry locations for the
           supervisor.
         type: object
         properties:
-          image_id:
-            type: string
-            format: uuid
+          manifest_digest:
+            $ref: '#/components/schemas/Digest'
           type:
             type: string
             const: image
         required:
         - type
-        - image_id
+        - manifest_digest
       - description: |-
-          Base this job off a registered image *group*, addressed by its stable id.
+          Base this job off a registered image *set*, addressed by its stable id.
           `generation` pins a specific membership snapshot; when omitted, the
-          group's latest generation is resolved and frozen onto the job at enqueue.
+          set's latest generation is resolved and frozen onto the job at enqueue.
           After a host is chosen, the switchboard matcher selects the generation's
           member whose required host tags the chosen host satisfies and dispatches
           that concrete member.
@@ -2012,15 +2221,15 @@ components:
             format: uint32
             default: null
             minimum: 0
-          group_id:
+          set_id:
             type: string
             format: uuid
           type:
             type: string
-            const: image_group
+            const: image_set
         required:
         - type
-        - group_id
+        - set_id
     JobInitializingStage:
       description: |-
         The fine-grained stage of a job that is still coming up, exposed as
@@ -2523,33 +2732,6 @@ components:
       required:
       - user_id
       - username
-    RegisterImageRequest:
-      description: |-
-        `POST /images`: register a concrete image by digest. The switchboard pulls
-        the manifest from `registry/repository@manifest_digest`, validates it is a
-        Treadmill image, and records the image plus its first location.
-      type: object
-      properties:
-        label:
-          description: Optional human-readable label.
-          type:
-          - string
-          - 'null'
-          default: null
-        manifest_digest:
-          description: The OCI manifest digest identifying the image.
-          allOf:
-          - $ref: '#/components/schemas/Digest'
-        registry:
-          description: Registry authority (`host:port`) the manifest can be pulled from.
-          type: string
-        repository:
-          description: Repository path within the registry.
-          type: string
-      required:
-      - registry
-      - repository
-      - manifest_digest
     RenderedAuditRow:
       description: |-
         One audit event, already rendered to a human-readable `message` for the
@@ -2701,16 +2883,45 @@ components:
       - created_at
       - expires_at
       - current
-    SetImageGroupPublicRequest:
+    SourceGrantPath:
       description: |-
-        `PUT /image-groups/{id}/public`: declare a group public (or private again).
-        Requires `manage`.
+        The `{digest}/sources/{source_id}/grants/{subject_id}/{permission}` segments
+        of an image-source grant route.
       type: object
       properties:
-        public:
-          type: boolean
+        digest:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        permission:
+          description: The permission being revoked (`use` or `manage`).
+          type: string
+        source_id:
+          description: The source's unique identifier.
+          type: string
+          format: uuid
+        subject_id:
+          description: The subject (user or group) the grant applies to.
+          type: string
+          format: uuid
       required:
-      - public
+      - digest
+      - source_id
+      - subject_id
+      - permission
+    SourcePath:
+      description: The `{digest}/sources/{source_id}` segments of an image-source route.
+      type: object
+      properties:
+        digest:
+          description: The image's OCI manifest digest (`sha256:<hex>`).
+          type: string
+        source_id:
+          description: The source's unique identifier.
+          type: string
+          format: uuid
+      required:
+      - digest
+      - source_id
     SshEndpoint:
       description: An SSH endpoint a running job can be reached on.
       type: object
@@ -2871,8 +3082,6 @@ tags:
 - name: Hosts
   description: Inspect hosts and their attached targets.
 - name: Images
-  description: Register and inspect catalog images.
-- name: Image groups
-  description: Manage image groups, their generations, and grants.
+  description: Manage images, sources, sets, their generations, and grants.
 - name: Users
   description: Profiles, sessions, and audit feeds.

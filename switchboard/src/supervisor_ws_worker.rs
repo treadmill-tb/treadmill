@@ -1438,8 +1438,8 @@ mod tests {
         let digest = format!("sha256:{id_hex:0>64}");
         sqlx::query(
             "insert into tml_switchboard.images \
-             (id, manifest_digest, artifact_type, owner_subject, attrs) \
-             values ($1, $2, 'application/vnd.oci.image.manifest.v1+json', null, '{}'::jsonb)",
+             (id, manifest_digest, artifact_type) \
+             values ($1, $2, 'application/vnd.oci.image.manifest.v1+json')",
         )
         .bind(image_id)
         .bind(digest)
@@ -1463,14 +1463,16 @@ mod tests {
         let image_id = insert_image(pool).await?;
         sqlx::query(
             "insert into tml_switchboard.jobs \
-             (job_id, resume_job_id, restart_job_id, image_id, image_group_id, \
-              image_group_generation, ssh_keys, \
-              restart_policy, enqueued_by_token_id, host_tag_requirements, job_timeout, job_state, \
+             (job_id, resume_job_id, restart_job_id, image_id, image_set_id, \
+              image_set_generation, ssh_keys, \
+              restart_policy, enqueued_by_token_id, owner_id, host_tag_requirements, job_timeout, \
+              job_state, \
               initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
               termination_reason, task_exit_status, exit_message, terminated_at) \
              values \
              ($1, null, null, $2, null, null, '{}'::text[], row($3)::tml_switchboard.restart_policy, \
-              $4, '{}'::text[], interval '1 hour', $5::tml_switchboard.job_state, null, \
+              $4, (select user_id from tml_switchboard.api_tokens where token_id = $4), \
+              '{}'::text[], interval '1 hour', $5::tml_switchboard.job_state, null, \
               now(), \
               case when $5::tml_switchboard.job_state \
                         in ('initializing', 'ready', 'terminating') \
@@ -1520,14 +1522,16 @@ mod tests {
         let image_id = insert_image(pool).await?;
         sqlx::query(
             "insert into tml_switchboard.jobs \
-             (job_id, resume_job_id, restart_job_id, image_id, image_group_id, \
-              image_group_generation, ssh_keys, \
-              restart_policy, enqueued_by_token_id, host_tag_requirements, job_timeout, job_state, \
+             (job_id, resume_job_id, restart_job_id, image_id, image_set_id, \
+              image_set_generation, ssh_keys, \
+              restart_policy, enqueued_by_token_id, owner_id, host_tag_requirements, job_timeout, \
+              job_state, \
               initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
               termination_reason, task_exit_status, exit_message, terminated_at) \
              values \
              ($1, null, null, $2, null, null, '{}'::text[], row(0)::tml_switchboard.restart_policy, \
-              $3, '{}'::text[], interval '1 hour', 'finalized', null, \
+              $3, (select user_id from tml_switchboard.api_tokens where token_id = $3), \
+              '{}'::text[], interval '1 hour', 'finalized', null, \
               now(), null, null, null, \
               'workload_exited', null, null, now())",
         )
@@ -2813,8 +2817,23 @@ mod tests {
                 .bind(job_id)
                 .fetch_one(pool)
                 .await?;
+        // Source owned by the job's owner so the dispatch source gate admits it.
+        let owner: Option<Uuid> =
+            sqlx::query_scalar("select owner_id from tml_switchboard.jobs where job_id = $1")
+                .bind(job_id)
+                .fetch_one(pool)
+                .await?;
         let (registry, repository) = ("registry.example".to_string(), "team/image".to_string());
-        sql::image::upsert_location(pool, image_id, &registry, &repository, "canonical").await?;
+        sql::image::insert_source(
+            pool,
+            Uuid::new_v4(),
+            image_id,
+            &registry,
+            &repository,
+            "canonical",
+            owner,
+        )
+        .await?;
         let digest_str: String =
             sqlx::query_scalar("select manifest_digest from tml_switchboard.images where id = $1")
                 .bind(image_id)
@@ -2948,7 +2967,25 @@ mod tests {
 
         // Concrete image: resolved digest + its locations.
         let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
-        let (digest, _registry, _repository) = register_resolved_image(&pool, job_id).await?;
+        let (digest, registry, repository) = register_resolved_image(&pool, job_id).await?;
+        // A second source owned by an unrelated user (no grants): the dispatch
+        // filter must hand the supervisor only sources the job owner may `use`.
+        let stranger = insert_user(&pool).await?;
+        let image_id: Uuid =
+            sqlx::query_scalar("select image_id from tml_switchboard.jobs where job_id = $1")
+                .bind(job_id)
+                .fetch_one(&pool)
+                .await?;
+        sql::image::insert_source(
+            &pool,
+            Uuid::new_v4(),
+            image_id,
+            "other.example",
+            "stranger/mirror",
+            "external",
+            Some(stranger),
+        )
+        .await?;
         let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
         let msg = sql::job::build_start_job_message(&job, &mut conn, None)
             .await
@@ -2960,21 +2997,27 @@ mod tests {
                 locations,
             } => {
                 assert_eq!(manifest_digest, digest);
-                assert_eq!(locations.len(), 1);
+                assert_eq!(
+                    locations.len(),
+                    1,
+                    "the stranger-owned source must be filtered out"
+                );
+                assert_eq!(locations[0].registry, registry);
+                assert_eq!(locations[0].repository, repository);
             }
             other => panic!("expected concrete Image spec, got {other:?}"),
         }
 
         // Resume job: `ResumeJob` carrying the original job's id. A resume row has
-        // no image/group reference (the `valid_init_spec` invariant), so it is
+        // no image/set reference (the `valid_init_spec` invariant), so it is
         // inserted directly rather than via `insert_job`. `resume_job_id` is an FK,
         // so it must point at a real job — reuse the concrete one above.
         let resume_target = job_id;
         let resume_job = Uuid::new_v4();
         sqlx::query(
             "insert into tml_switchboard.jobs \
-             (job_id, resume_job_id, restart_job_id, image_id, image_group_id, \
-              image_group_generation, ssh_keys, \
+             (job_id, resume_job_id, restart_job_id, image_id, image_set_id, \
+              image_set_generation, ssh_keys, \
               restart_policy, enqueued_by_token_id, host_tag_requirements, job_timeout, job_state, \
               initializing_stage, queued_at, started_at, dispatched_on_host_id, ssh_endpoints, \
               termination_reason, task_exit_status, exit_message, terminated_at) \

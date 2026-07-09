@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select tml_switchboard.image_source_usable($1, $2) as \"usable!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "usable!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "ae82393ff47739fb176acfc77453bf328287e8cff011ec02bad60d8dc16aeab4"
+}

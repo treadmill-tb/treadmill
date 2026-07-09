@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select m.image_id,\n                  tml_switchboard.image_source_usable($1, m.image_id) as \"usable!\",\n                  not exists (\n                      select 1\n                      from tml_switchboard.image_set_grants ggr\n                      where ggr.set_id = $2 and ggr.permission = 'use'\n                        and not tml_switchboard.image_source_usable(ggr.subject_id, m.image_id)\n                  ) as \"usable_by_grantees!\"\n           from tml_switchboard.image_set_members m\n           where m.set_id = $2 and m.generation = $3\n           order by m.\"index\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "image_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_set_members",
+            "name": "image_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "usable!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "usable_by_grantees!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "354fe0cd38aa1c6c9738d1e5d174418d6b06d06e9d46a692bf0cd0dae8d9a42b"
+}

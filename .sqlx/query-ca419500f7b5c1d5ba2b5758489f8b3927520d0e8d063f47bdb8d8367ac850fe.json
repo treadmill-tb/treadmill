@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select g.id, g.name, g.owner_subject, g.label, g.created_at\n           from tml_switchboard.image_sets g\n           where exists (\n                  select 1 from tml_switchboard.principals($1) p\n                  where p.id = g.owner_subject\n              )\n              or exists (\n                  select 1\n                  from tml_switchboard.image_set_grants gr\n                  join tml_switchboard.principals($1) p on gr.subject_id = p.id\n                  where gr.set_id = g.id\n              )\n           order by g.created_at, g.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_sets",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_sets",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "owner_subject",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_sets",
+            "name": "owner_subject"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "label",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_sets",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_sets",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "ca419500f7b5c1d5ba2b5758489f8b3927520d0e8d063f47bdb8d8367ac850fe"
+}

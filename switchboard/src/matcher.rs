@@ -1,9 +1,9 @@
-//! Group → concrete image matching.
+//! Image-set → concrete image matching.
 //!
-//! When a job names an image *group*, the switchboard must, after choosing a
-//! host, pick the single group member appropriate for that host. The candidate
+//! When a job names an image *set*, the switchboard must, after choosing a
+//! host, pick the single set member appropriate for that host. The candidate
 //! set is the membership of the job's **frozen generation** (the
-//! `image_group_members` rows of the generation pinned onto the job at enqueue).
+//! `image_set_members` rows of the generation pinned onto the job at enqueue).
 //! Selection is by **host tags only**: each member carries a set of
 //! `required_host_tags` (supplied when the generation is created), and a member
 //! is admissible for a host iff the host's tags are a superset of that set.
@@ -23,7 +23,7 @@ pub fn host_tag_set(tags: &[String]) -> BTreeSet<String> {
     tags.iter().cloned().collect()
 }
 
-/// A selectable group member, as denormalized in `image_group_members`.
+/// A selectable set member, as denormalized in `image_set_members`.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct GroupMember<T> {
     /// The caller's handle for the selected member (e.g. an image id or digest).
@@ -48,7 +48,7 @@ impl<T> GroupMember<T> {
     }
 }
 
-/// Select the group member for a host with `host_tags`, preferring the most
+/// Select the set member for a host with `host_tags`, preferring the most
 /// specific admissible match. Returns `None` when no member is admissible.
 ///
 /// Ties on specificity resolve to the earliest member in `members`, so a

@@ -8,13 +8,13 @@ import { RelTime } from "./rel-time";
 type AuditFeedResponse = components["schemas"]["AuditFeedResponse"];
 
 /** The audit-feed routes share one shape; this component serves them all. */
-export type AuditEntity = "jobs" | "hosts" | "users" | "image-groups";
+export type AuditEntity = "jobs" | "hosts" | "users" | "image-sets";
 
 const PATHS = {
   jobs: "/jobs/{id}/events",
   hosts: "/hosts/{id}/events",
   users: "/users/{id}/events",
-  "image-groups": "/image-groups/{id}/events",
+  "image-sets": "/image-sets/{id}/events",
 } as const;
 
 function useAuditFeed(entity: AuditEntity, id: string) {

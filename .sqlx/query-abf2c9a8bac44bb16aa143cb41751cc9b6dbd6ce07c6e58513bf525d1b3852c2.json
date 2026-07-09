@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select subject_id, permission::text as \"permission!\"\n           from tml_switchboard.image_source_grants\n           where source_id = $1\n           order by granted_at, subject_id, permission",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "subject_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_source_grants",
+            "name": "subject_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "permission!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "abf2c9a8bac44bb16aa143cb41751cc9b6dbd6ce07c6e58513bf525d1b3852c2"
+}

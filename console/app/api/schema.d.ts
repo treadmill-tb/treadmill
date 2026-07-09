@@ -367,8 +367,7 @@ export interface paths {
          */
         get: operations["listImages"];
         put?: never;
-        /** Register an image */
-        post: operations["registerImage"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -392,7 +391,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/image-groups": {
+    "/images/{digest}/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add a source to an image */
+        post: operations["addImageSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/images/{digest}/sources/{source_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete an image source */
+        delete: operations["deleteImageSource"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/images/{digest}/sources/{source_id}/grants": {
         parameters: {
             query?: never;
             header?: never;
@@ -400,54 +433,20 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List image groups
+         * List an image source's grants
          * @description Returns the complete set in a stable order; this route is not paginated.
          */
-        get: operations["listImageGroups"];
+        get: operations["listImageSourceGrants"];
         put?: never;
-        /** Create an image group */
-        post: operations["createImageGroup"];
+        /** Grant a permission on an image source */
+        post: operations["createImageSourceGrant"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/image-groups/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get an image group */
-        get: operations["getImageGroup"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/image-groups/{id}/events": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List an image group's audit events */
-        get: operations["listImageGroupEvents"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/image-groups/{id}/generations": {
+    "/images/{digest}/sources/{source_id}/grants/{subject_id}/{permission}": {
         parameters: {
             query?: never;
             header?: never;
@@ -456,32 +455,15 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Append a generation to an image group */
-        post: operations["createImageGroupGeneration"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/image-groups/{id}/generations/{n}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get an image-group generation */
-        get: operations["getImageGroupGeneration"];
-        put?: never;
         post?: never;
-        delete?: never;
+        /** Revoke a grant on an image source */
+        delete: operations["revokeImageSourceGrant"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/image-groups/{id}/grants": {
+    "/image-sets": {
         parameters: {
             query?: never;
             header?: never;
@@ -489,20 +471,109 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List an image group's grants
+         * List image sets
          * @description Returns the complete set in a stable order; this route is not paginated.
          */
-        get: operations["listImageGroupGrants"];
+        get: operations["listImageSets"];
         put?: never;
-        /** Grant a permission on an image group */
-        post: operations["createImageGroupGrant"];
+        /** Create an image set */
+        post: operations["createImageSet"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/image-groups/{id}/grants/{subject_id}/{permission}": {
+    "/image-sets/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get an image set */
+        get: operations["getImageSet"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/image-sets/{id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List an image set's audit events */
+        get: operations["listImageSetEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/image-sets/{id}/generations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Append a generation to an image set */
+        post: operations["createImageSetGeneration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/image-sets/{id}/generations/{n}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get an image-set generation */
+        get: operations["getImageSetGeneration"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/image-sets/{id}/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List an image set's grants
+         * @description Returns the complete set in a stable order; this route is not paginated.
+         */
+        get: operations["listImageSetGrants"];
+        put?: never;
+        /** Grant a permission on an image set */
+        post: operations["createImageSetGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/image-sets/{id}/grants/{subject_id}/{permission}": {
         parameters: {
             query?: never;
             header?: never;
@@ -512,25 +583,8 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Revoke a grant on an image group */
-        delete: operations["revokeImageGroupGrant"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/image-groups/{id}/public": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** Set an image group's public flag */
-        put: operations["setImageGroupPublic"];
-        post?: never;
-        delete?: never;
+        /** Revoke a grant on an image set */
+        delete: operations["revokeImageSetGrant"];
         options?: never;
         head?: never;
         patch?: never;
@@ -540,6 +594,18 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description `POST /images/{digest}/sources`: add a registry source for an image,
+         *     registering the image on first sight. The caller owns the source it adds;
+         *     the image itself (its cached manifest projection) is non-owned and created
+         *     implicitly when its digest is first sourced.
+         */
+        AddImageSourceRequest: {
+            /** @description Registry authority (`host:port`) the image can be pulled from. */
+            registry: string;
+            /** @description Repository path within the registry. */
+            repository: string;
+        };
         /** @description Query parameters for an audit feed (`GET /{entity}/{id}/events`). */
         AuditFeedQuery: {
             /** @description Opaque keyset cursor from a previous response's `next_cursor`. */
@@ -585,18 +651,18 @@ export interface components {
             state: string;
         };
         /**
-         * @description `POST /image-groups/{id}/generations`: append a new, immutable
-         *     full-replacement generation of a group's membership.
+         * @description `POST /image-sets/{id}/generations`: append a new, immutable
+         *     full-replacement generation of a set's membership.
          */
         CreateGenerationRequest: {
             members: components["schemas"]["GenerationMemberSpec"][];
         };
         /**
-         * @description `POST /image-groups`: create an empty, named image group. The caller becomes
+         * @description `POST /image-sets`: create an empty, named image set. The caller becomes
          *     its owner; membership is added afterwards via per-generation snapshots (see
          *     [`CreateGenerationRequest`]).
          */
-        CreateImageGroupRequest: {
+        CreateImageSetRequest: {
             /**
              * @description Optional human-readable label.
              * @default null
@@ -604,12 +670,6 @@ export interface components {
             label: string | null;
             /** @description The stable, globally-unique moving-target handle a job references (by id). */
             name: string;
-            /**
-             * @description When `true`, every subject implicitly holds `use` on the group (may run
-             *     jobs against it) without an explicit grant. Never confers `manage`.
-             * @default false
-             */
-            public: boolean;
         };
         /**
          * @description A content-addressable OCI digest over 32 bytes of SHA-256.
@@ -633,12 +693,24 @@ export interface components {
          *     `required_host_tags`.
          */
         GenerationMemberInfo: {
-            /** Format: uuid */
-            image_id: string;
             /** Format: uint32 */
             index: number;
             manifest_digest: components["schemas"]["Digest"];
             required_host_tags: string[];
+            /**
+             * @description Whether the viewer may use some source of this member image. A set grant
+             *     is necessary but not sufficient: `false` means the member has no source the
+             *     viewer can reach (so a job would not resolve it for this viewer).
+             */
+            usable: boolean;
+            /**
+             * @description Whether *every* subject holding a `use` grant on the set can source this
+             *     member (for a public set, the grantees include the `everyone` subject).
+             *     This is the owner-facing health signal: `false` flags a member some grantee
+             *     cannot reach, so the set's `use` grant is unusable for them in practice.
+             *     Vacuously `true` for a set with no `use` grants.
+             */
+            usable_by_grantees: boolean;
         };
         /**
          * @description One member of a new generation; `index` is the member's array position in the
@@ -646,10 +718,10 @@ export interface components {
          */
         GenerationMemberSpec: {
             /**
-             * Format: uuid
-             * @description Image to include; must already be registered via `POST /images`.
+             * @description Image to include; must already be registered (have at least one source,
+             *     `POST /images/{digest}/sources`).
              */
-            image_id: string;
+            manifest_digest: components["schemas"]["Digest"];
             /**
              * @description Host tags a host must carry (as a superset) for this member to be
              *     selectable on it.
@@ -657,16 +729,16 @@ export interface components {
              */
             required_host_tags: string[];
         };
-        /** @description The `{id}/generations/{n}` segments of an image-group generation route. */
+        /** @description The `{id}/generations/{n}` segments of an image-set generation route. */
         GenerationPath: {
             /**
              * Format: uuid
-             * @description The image group's unique identifier.
+             * @description The image set's unique identifier.
              */
             id: string;
             /**
              * Format: uint32
-             * @description The generation number within the group.
+             * @description The generation number within the set.
              */
             n: number;
         };
@@ -674,7 +746,7 @@ export interface components {
         GrantPath: {
             /**
              * Format: uuid
-             * @description The image group's unique identifier.
+             * @description The image set's unique identifier.
              */
             id: string;
             /** @description The permission being revoked (`use` or `manage`). */
@@ -743,32 +815,44 @@ export interface components {
              */
             id: string;
         };
-        /** @description One immutable generation (membership snapshot) of an image group. */
-        ImageGroupGenerationInfo: {
+        /**
+         * @description A registered image, as returned by the catalog list/inspect routes. An image
+         *     is non-owned; ownership lives on its `sources`.
+         */
+        ImageInfo: {
+            artifact_type: string;
+            /** Format: date-time */
+            created_at: string;
+            manifest_digest: components["schemas"]["Digest"];
+            sources: components["schemas"]["ImageSourceInfo"][];
+            title?: string | null;
+        };
+        /** @description One immutable generation (membership snapshot) of an image set. */
+        ImageSetGenerationInfo: {
             /** Format: date-time */
             created_at: string;
             /** Format: uuid */
             created_by?: string | null;
             /** Format: uint32 */
             generation: number;
-            /** Format: uuid */
-            group_id: string;
             members: components["schemas"]["GenerationMemberInfo"][];
+            /** Format: uuid */
+            set_id: string;
         };
-        /** @description One grant on an image group, as returned by the list-grants route. */
-        ImageGroupGrantInfo: {
-            permission: components["schemas"]["ImageGroupPermission"];
+        /** @description One grant on an image set, as returned by the list-grants route. */
+        ImageSetGrantInfo: {
+            permission: components["schemas"]["ImageSetPermission"];
             /** Format: uuid */
             subject_id: string;
         };
-        /** @description `POST /image-groups/{id}/grants`: grant `permission` on the group to a subject. */
-        ImageGroupGrantRequest: {
-            permission: components["schemas"]["ImageGroupPermission"];
+        /** @description `POST /image-sets/{id}/grants`: grant `permission` on the set to a subject. */
+        ImageSetGrantRequest: {
+            permission: components["schemas"]["ImageSetPermission"];
             /** Format: uuid */
             subject_id: string;
         };
-        /** @description A named, mutable image group, as returned by the catalog list/inspect routes. */
-        ImageGroupInfo: {
+        /** @description A named, mutable image set, as returned by the catalog list/inspect routes. */
+        ImageSetInfo: {
             /** Format: date-time */
             created_at: string;
             /** Format: uuid */
@@ -776,55 +860,72 @@ export interface components {
             label?: string | null;
             /**
              * Format: uint32
-             * @description The group's latest generation number, or null if it has none yet.
+             * @description The set's latest generation number, or null if it has none yet.
              */
             latest_generation?: number | null;
             name: string;
             /** Format: uuid */
             owner_id?: string | null;
-            /** @description When `true`, every subject implicitly holds `use` on the group. */
-            public: boolean;
         };
-        /** @description A permission on an image group. */
-        ImageGroupPermission: "use" | "manage";
-        /** @description A registered image, as returned by the catalog list/inspect routes. */
-        ImageInfo: {
-            artifact_type: string;
-            /** Format: date-time */
-            created_at: string;
+        /** @description A permission on an image set. */
+        ImageSetPermission: "use" | "manage";
+        /** @description One grant on an image source, as returned by the list-grants route. */
+        ImageSourceGrantInfo: {
+            permission: components["schemas"]["ImageSourcePermission"];
+            /** Format: uuid */
+            subject_id: string;
+        };
+        /**
+         * @description `POST /images/{digest}/sources/{source_id}/grants`: grant `permission` on a
+         *     source to a subject.
+         */
+        ImageSourceGrantRequest: {
+            permission: components["schemas"]["ImageSourcePermission"];
+            /** Format: uuid */
+            subject_id: string;
+        };
+        /**
+         * @description One registry source of a registered image — the ownable, grantable catalog
+         *     entity — as returned by the inspect routes. `permissions` is the *viewer's*
+         *     permissions on this source (like host/job permission surfacing).
+         */
+        ImageSourceInfo: {
             /** Format: uuid */
             id: string;
-            label?: string | null;
-            locations: components["schemas"]["ImageLocation"][];
-            manifest_digest: components["schemas"]["Digest"];
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description The source's owner, or null if orphaned.
+             */
             owner_id?: string | null;
-        };
-        /** @description One registry location of a registered image. */
-        ImageLocation: {
+            /** @description The viewer's permissions on this source. */
+            permissions: components["schemas"]["ImageSourcePermission"][];
             registry: string;
             repository: string;
             /** @description `external`, `canonical`, or `system`. */
             status: string;
         };
         /**
+         * @description A permission on an image source. A "public" (unauthenticated) source is one
+         *     that grants the well-known `everyone` subject `use`.
+         */
+        ImageSourcePermission: "use" | "manage";
+        /**
          * @description What a job is based off, as seen by `GET /jobs/{id}`: a concrete image, an
-         *     image group (with the frozen generation), or a resume/restart of an earlier
+         *     image set (with the frozen generation), or a resume/restart of an earlier
          *     job. The concrete manifest digest actually dispatched is reported separately
          *     as `resolved_image_digest`.
          */
         JobImageRef: {
-            /** Format: uuid */
-            image_id: string;
+            manifest_digest: components["schemas"]["Digest"];
             /** @constant */
             type: "image";
         } | {
             /** Format: uint32 */
             generation: number;
             /** Format: uuid */
-            group_id: string;
+            set_id: string;
             /** @constant */
-            type: "image_group";
+            type: "image_set";
         } | {
             /** Format: uuid */
             job_id: string;
@@ -927,8 +1028,7 @@ export interface components {
             /** @constant */
             type: "restart";
         } | {
-            /** Format: uuid */
-            image_id: string;
+            manifest_digest: components["schemas"]["Digest"];
             /** @constant */
             type: "image";
         } | {
@@ -938,9 +1038,9 @@ export interface components {
              */
             generation: number | null;
             /** Format: uuid */
-            group_id: string;
+            set_id: string;
             /** @constant */
-            type: "image_group";
+            type: "image_set";
         };
         /**
          * @description The fine-grained stage of a job that is still coming up, exposed as
@@ -1272,24 +1372,6 @@ export interface components {
             username: string;
         };
         /**
-         * @description `POST /images`: register a concrete image by digest. The switchboard pulls
-         *     the manifest from `registry/repository@manifest_digest`, validates it is a
-         *     Treadmill image, and records the image plus its first location.
-         */
-        RegisterImageRequest: {
-            /**
-             * @description Optional human-readable label.
-             * @default null
-             */
-            label: string | null;
-            /** @description The OCI manifest digest identifying the image. */
-            manifest_digest: components["schemas"]["Digest"];
-            /** @description Registry authority (`host:port`) the manifest can be pulled from. */
-            registry: string;
-            /** @description Repository path within the registry. */
-            repository: string;
-        };
-        /**
          * @description One audit event, already rendered to a human-readable `message` for the
          *     requesting viewer (the switchboard resolves the per-event template and
          *     applies the viewer's visibility before sending it).
@@ -1378,11 +1460,34 @@ export interface components {
             user_agent?: string | null;
         };
         /**
-         * @description `PUT /image-groups/{id}/public`: declare a group public (or private again).
-         *     Requires `manage`.
+         * @description The `{digest}/sources/{source_id}/grants/{subject_id}/{permission}` segments
+         *     of an image-source grant route.
          */
-        SetImageGroupPublicRequest: {
-            public: boolean;
+        SourceGrantPath: {
+            /** @description The image's OCI manifest digest (`sha256:<hex>`). */
+            digest: string;
+            /** @description The permission being revoked (`use` or `manage`). */
+            permission: string;
+            /**
+             * Format: uuid
+             * @description The source's unique identifier.
+             */
+            source_id: string;
+            /**
+             * Format: uuid
+             * @description The subject (user or group) the grant applies to.
+             */
+            subject_id: string;
+        };
+        /** @description The `{digest}/sources/{source_id}` segments of an image-source route. */
+        SourcePath: {
+            /** @description The image's OCI manifest digest (`sha256:<hex>`). */
+            digest: string;
+            /**
+             * Format: uuid
+             * @description The source's unique identifier.
+             */
+            source_id: string;
         };
         /** @description An SSH endpoint a running job can be reached on. */
         SshEndpoint: {
@@ -2412,99 +2517,6 @@ export interface operations {
             };
         };
     };
-    registerImage: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * @description `POST /images`: register a concrete image by digest. The switchboard pulls
-         *     the manifest from `registry/repository@manifest_digest`, validates it is a
-         *     Treadmill image, and records the image plus its first location.
-         */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RegisterImageRequest"];
-            };
-        };
-        responses: {
-            /** @description The image was already registered; this location was added. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ImageInfo"];
-                };
-            };
-            /** @description The image was newly registered. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ImageInfo"];
-                };
-            };
-            /** @description Failed to parse the request body as JSON */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
-            };
-            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The authenticated account is locked, or lacks permission for this resource. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description This digest is already registered to another owner. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Expected request with `Content-Type: application/json` */
-            415: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
-            };
-            /** @description Failed to deserialize the JSON body into the target type */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
-            };
-            /** @description The image's registry could not be reached or returned an error. */
-            502: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     getImage: {
         parameters: {
             query?: never;
@@ -2517,7 +2529,10 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A registered image, as returned by the catalog list/inspect routes. */
+            /**
+             * @description A registered image, as returned by the catalog list/inspect routes. An image
+             *     is non-owned; ownership lives on its `sources`.
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2549,64 +2564,44 @@ export interface operations {
             };
         };
     };
-    listImageGroups: {
+    addImageSource: {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                /** @description The image's OCI manifest digest (`sha256:<hex>`). */
+                digest: string;
+            };
             cookie?: never;
         };
-        requestBody?: never;
+        /**
+         * @description `POST /images/{digest}/sources`: add a registry source for an image,
+         *     registering the image on first sight. The caller owns the source it adds;
+         *     the image itself (its cached manifest projection) is non-owned and created
+         *     implicitly when its digest is first sourced.
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddImageSourceRequest"];
+            };
+        };
         responses: {
+            /** @description The image was already registered; the caller-owned source was added. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImageGroupInfo"][];
+                    "application/json": components["schemas"]["ImageInfo"];
                 };
             };
-            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The authenticated account is locked, or lacks permission for this resource. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createImageGroup: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * @description `POST /image-groups`: create an empty, named image group. The caller becomes
-         *     its owner; membership is added afterwards via per-generation snapshots (see
-         *     [`CreateGenerationRequest`]).
-         */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateImageGroupRequest"];
-            };
-        };
-        responses: {
-            /** @description The image group was created. */
+            /** @description The image was newly registered, with this source as its first. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImageGroupInfo"];
+                    "application/json": components["schemas"]["ImageInfo"];
                 };
             };
             /** @description Failed to parse the request body as JSON */
@@ -2632,7 +2627,326 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description An image group with that name already exists. */
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Failed to deserialize the JSON body into the target type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The source could not be reached or does not serve the image. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteImageSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The image's OCI manifest digest (`sha256:<hex>`). */
+                digest: string;
+                /** @description The source's unique identifier. */
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The source was deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such image or source. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listImageSourceGrants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The image's OCI manifest digest (`sha256:<hex>`). */
+                digest: string;
+                /** @description The source's unique identifier. */
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageSourceGrantInfo"][];
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createImageSourceGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The image's OCI manifest digest (`sha256:<hex>`). */
+                digest: string;
+                /** @description The source's unique identifier. */
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * @description `POST /images/{digest}/sources/{source_id}/grants`: grant `permission` on a
+         *     source to a subject.
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImageSourceGrantRequest"];
+            };
+        };
+        responses: {
+            /** @description The grant was recorded. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such image or source. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Failed to deserialize the JSON body into the target type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    revokeImageSourceGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The image's OCI manifest digest (`sha256:<hex>`). */
+                digest: string;
+                /** @description The permission being revoked (`use` or `manage`). */
+                permission: string;
+                /** @description The source's unique identifier. */
+                source_id: string;
+                /** @description The subject (user or group) the grant applies to. */
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The grant was revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No matching grant to revoke. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listImageSets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageSetInfo"][];
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createImageSet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description `POST /image-sets`: create an empty, named image set. The caller becomes
+         *     its owner; membership is added afterwards via per-generation snapshots (see
+         *     [`CreateGenerationRequest`]).
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateImageSetRequest"];
+            };
+        };
+        responses: {
+            /** @description The image set was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageSetInfo"];
+                };
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An image set with that name already exists. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2659,7 +2973,7 @@ export interface operations {
             };
         };
     };
-    getImageGroup: {
+    getImageSet: {
         parameters: {
             query?: never;
             header?: never;
@@ -2671,13 +2985,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A named, mutable image group, as returned by the catalog list/inspect routes. */
+            /** @description A named, mutable image set, as returned by the catalog list/inspect routes. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImageGroupInfo"];
+                    "application/json": components["schemas"]["ImageSetInfo"];
                 };
             };
             /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
@@ -2694,7 +3008,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No such image group, or it is not visible to the caller. */
+            /** @description No such image set, or it is not visible to the caller. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2703,7 +3017,7 @@ export interface operations {
             };
         };
     };
-    listImageGroupEvents: {
+    listImageSetEvents: {
         parameters: {
             query?: {
                 /** @description Opaque keyset cursor from a previous response's `next_cursor`. */
@@ -2752,7 +3066,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No such image group, or it is not visible to the caller. */
+            /** @description No such image set, or it is not visible to the caller. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2761,7 +3075,7 @@ export interface operations {
             };
         };
     };
-    createImageGroupGeneration: {
+    createImageSetGeneration: {
         parameters: {
             query?: never;
             header?: never;
@@ -2772,8 +3086,8 @@ export interface operations {
             cookie?: never;
         };
         /**
-         * @description `POST /image-groups/{id}/generations`: append a new, immutable
-         *     full-replacement generation of a group's membership.
+         * @description `POST /image-sets/{id}/generations`: append a new, immutable
+         *     full-replacement generation of a set's membership.
          */
         requestBody: {
             content: {
@@ -2787,7 +3101,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImageGroupGenerationInfo"];
+                    "application/json": components["schemas"]["ImageSetGenerationInfo"];
                 };
             };
             /** @description Failed to parse the request body as JSON */
@@ -2813,7 +3127,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No such image group, or it is not visible to the caller. */
+            /** @description No such image set, or it is not visible to the caller. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2840,27 +3154,27 @@ export interface operations {
             };
         };
     };
-    getImageGroupGeneration: {
+    getImageSetGeneration: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description The image group's unique identifier. */
+                /** @description The image set's unique identifier. */
                 id: string;
-                /** @description The generation number within the group. */
+                /** @description The generation number within the set. */
                 n: number;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description One immutable generation (membership snapshot) of an image group. */
+            /** @description One immutable generation (membership snapshot) of an image set. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImageGroupGenerationInfo"];
+                    "application/json": components["schemas"]["ImageSetGenerationInfo"];
                 };
             };
             /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
@@ -2877,7 +3191,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No such image group or generation. */
+            /** @description No such image set or generation. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2886,7 +3200,7 @@ export interface operations {
             };
         };
     };
-    listImageGroupGrants: {
+    listImageSetGrants: {
         parameters: {
             query?: never;
             header?: never;
@@ -2903,7 +3217,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImageGroupGrantInfo"][];
+                    "application/json": components["schemas"]["ImageSetGrantInfo"][];
                 };
             };
             /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
@@ -2922,7 +3236,7 @@ export interface operations {
             };
         };
     };
-    createImageGroupGrant: {
+    createImageSetGrant: {
         parameters: {
             query?: never;
             header?: never;
@@ -2932,10 +3246,10 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description `POST /image-groups/{id}/grants`: grant `permission` on the group to a subject. */
+        /** @description `POST /image-sets/{id}/grants`: grant `permission` on the set to a subject. */
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ImageGroupGrantRequest"];
+                "application/json": components["schemas"]["ImageSetGrantRequest"];
             };
         };
         responses: {
@@ -2969,7 +3283,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No such image group, or it is not visible to the caller. */
+            /** @description No such image set, or it is not visible to the caller. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2996,12 +3310,12 @@ export interface operations {
             };
         };
     };
-    revokeImageGroupGrant: {
+    revokeImageSetGrant: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description The image group's unique identifier. */
+                /** @description The image set's unique identifier. */
                 id: string;
                 /** @description The permission being revoked (`use` or `manage`). */
                 permission: string;
@@ -3039,85 +3353,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-        };
-    };
-    setImageGroupPublic: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The resource's unique identifier. */
-                id: string;
-            };
-            cookie?: never;
-        };
-        /**
-         * @description `PUT /image-groups/{id}/public`: declare a group public (or private again).
-         *     Requires `manage`.
-         */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SetImageGroupPublicRequest"];
-            };
-        };
-        responses: {
-            /** @description A named, mutable image group, as returned by the catalog list/inspect routes. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ImageGroupInfo"];
-                };
-            };
-            /** @description Failed to parse the request body as JSON */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
-            };
-            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The authenticated account is locked, or lacks permission for this resource. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No such image group, or it is not visible to the caller. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Expected request with `Content-Type: application/json` */
-            415: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
-            };
-            /** @description Failed to deserialize the JSON body into the target type */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
             };
         };
     };

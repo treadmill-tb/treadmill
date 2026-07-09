@@ -10,7 +10,7 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::audit::model::{Host, ImageGroup, Job, Subject};
+use crate::audit::model::{Host, ImageSet, Job, Subject};
 use crate::define_event;
 
 define_event! {
@@ -287,9 +287,10 @@ define_event! {
 }
 
 define_event! {
-    /// A concrete image was registered in the catalog by digest (`POST /images`).
-    /// Related to the registering owner with the `self` policy so it surfaces in
-    /// that user's own feed; the catalog has no per-image audit feed.
+    /// A concrete image was registered in the catalog, implicitly, by the first
+    /// source added for its digest (`POST /images/{digest}/sources`). Related to
+    /// the registering owner with the `self` policy so it surfaces in that
+    /// user's own feed; the catalog has no per-image audit feed.
     ImageRegistered v1 {
         actor: Subject,
         owner: Subject @ view(SelfAccess),
@@ -301,69 +302,55 @@ define_event! {
 }
 
 define_event! {
-    /// A new, empty image group was created (`POST /image-groups`). Visible to
-    /// the group's managers and to the creating owner's own feed.
-    ImageGroupCreated v1 {
+    /// A new, empty image set was created (`POST /image-sets`). Visible to
+    /// the set's managers and to the creating owner's own feed.
+    ImageSetCreated v1 {
         actor: Subject,
         owner: Subject @ view(SelfAccess),
-        group: ImageGroup @ view(Manage),
+        set: ImageSet @ view(Manage),
         name: String,
     }
-    event_type = "image_group_created";
-    render = "created image group {name}";
+    event_type = "image_set_created";
+    render = "created image set {name}";
 }
 
 define_event! {
-    /// A full-replacement generation was appended to an image group
-    /// (`POST /image-groups/{id}/generations`). Visible to the group's managers.
-    ImageGroupGenerationCreated v1 {
+    /// A full-replacement generation was appended to an image set
+    /// (`POST /image-sets/{id}/generations`). Visible to the set's managers.
+    ImageSetGenerationCreated v1 {
         actor: Subject,
-        group: ImageGroup @ view(Manage),
+        set: ImageSet @ view(Manage),
         generation: i64,
         member_count: i64,
     }
-    event_type = "image_group_generation_created";
+    event_type = "image_set_generation_created";
     render = "appended generation {generation} with {member_count} members";
 }
 
 define_event! {
-    /// A `use`/`manage` grant on an image group was created
-    /// (`POST /image-groups/{id}/grants`). Visible to the group's managers and,
+    /// A `use`/`manage` grant on an image set was created
+    /// (`POST /image-sets/{id}/grants`). Visible to the set's managers and,
     /// via the `self` policy, to the subject who received the grant.
-    ImageGroupGrantCreated v1 {
+    ImageSetGrantCreated v1 {
         actor: Subject,
-        group: ImageGroup @ view(Manage),
+        set: ImageSet @ view(Manage),
         grantee: Subject @ view(SelfAccess),
         permission: String,
     }
-    event_type = "image_group_grant_created";
-    render = "granted {permission} on the image group";
+    event_type = "image_set_grant_created";
+    render = "granted {permission} on the image set";
 }
 
 define_event! {
-    /// A grant on an image group was revoked
-    /// (`DELETE /image-groups/{id}/grants/...`). Visible to the group's managers
+    /// A grant on an image set was revoked
+    /// (`DELETE /image-sets/{id}/grants/...`). Visible to the set's managers
     /// and, via the `self` policy, to the subject whose grant was removed.
-    ImageGroupGrantRevoked v1 {
+    ImageSetGrantRevoked v1 {
         actor: Subject,
-        group: ImageGroup @ view(Manage),
+        set: ImageSet @ view(Manage),
         grantee: Subject @ view(SelfAccess),
         permission: String,
     }
-    event_type = "image_group_grant_revoked";
-    render = "revoked {permission} on the image group";
-}
-
-define_event! {
-    /// An image group's `public` flag was set or cleared
-    /// (`PUT /image-groups/{id}/public`). `public` is an implicit `use` grant to
-    /// every subject, so it is part of the authorization surface; visible to the
-    /// group's managers.
-    ImageGroupPublicSet v1 {
-        actor: Subject,
-        group: ImageGroup @ view(Manage),
-        public: bool,
-    }
-    event_type = "image_group_public_set";
-    render = "set image group public = {public}";
+    event_type = "image_set_grant_revoked";
+    render = "revoked {permission} on the image set";
 }

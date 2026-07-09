@@ -47,7 +47,7 @@ enum AssignOutcome {
     /// The job was assigned to the host.
     Assigned,
     /// The host does not admit this job (DUT requirements unmet, or no image
-    /// group member matches it) — try the next candidate host.
+    /// set member matches it) — try the next candidate host.
     HostRejected,
     /// The host was taken/no-longer-live by the time we locked it — try the next
     /// candidate host.
@@ -211,10 +211,10 @@ impl Scheduler {
         // Resolve the image against the chosen host, inside the transaction.
         // The resolved spec itself is rebuilt at dispatch from the recorded
         // `resolved_image_id`; here we only need resolution to succeed (validating
-        // the image / picking the group member) and the id to pin.
+        // the image / picking the set member) and the id to pin.
         let (_spec, resolved_image_id) = match job.resolve_image_spec(&host_tags, &mut txn).await {
             Ok(resolved) => resolved,
-            // No group member matches this host: a different host might, so this
+            // No set member matches this host: a different host might, so this
             // is a host rejection, not a job failure.
             Err(ImageResolveError::NoMatchingMember) => return Ok(AssignOutcome::HostRejected),
             // The image itself is unusable (unregistered / no registry location /
@@ -468,23 +468,30 @@ mod tests {
             id,
             &d.encoded(),
             media_types::IMAGE_ARTIFACT_TYPE,
-            owner,
             None,
-            &serde_json::json!({}),
         )
         .await?;
         if with_location {
-            sql::image::upsert_location(&mut *tx, id, "reg.example:5000", "repo", "external")
-                .await?;
+            // Source owned by the job owner so the dispatch source gate passes.
+            sql::image::insert_source(
+                &mut *tx,
+                Uuid::new_v4(),
+                id,
+                "reg.example:5000",
+                "repo",
+                "external",
+                Some(owner),
+            )
+            .await?;
         }
         tx.commit().await?;
         Ok((id, d))
     }
 
-    /// Register an image group (named `group-{name_seed}`) with one generation
-    /// whose members are `(seed, required_host_tags)`. Returns the group's id and
+    /// Register an image set (named `set-{name_seed}`) with one generation
+    /// whose members are `(seed, required_host_tags)`. Returns the set's id and
     /// each member's manifest digest (in member order).
-    async fn register_group(
+    async fn register_set(
         pool: &PgPool,
         owner: Uuid,
         name_seed: u8,
@@ -492,15 +499,7 @@ mod tests {
     ) -> anyhow::Result<(Uuid, Vec<Digest>)> {
         let gid = Uuid::new_v4();
         let mut tx = pool.begin().await?;
-        sql::image::create_group(
-            &mut *tx,
-            gid,
-            &format!("group-{name_seed}"),
-            owner,
-            None,
-            false,
-        )
-        .await?;
+        sql::image::create_set(&mut *tx, gid, &format!("set-{name_seed}"), owner, None).await?;
         let mut member_rows = Vec::new();
         let mut member_digests = Vec::new();
         for (index, (seed, req_tags)) in members.iter().enumerate() {
@@ -511,13 +510,19 @@ mod tests {
                 img_id,
                 &md.encoded(),
                 media_types::IMAGE_ARTIFACT_TYPE,
-                owner,
                 None,
-                &serde_json::json!({}),
             )
             .await?;
-            sql::image::upsert_location(&mut *tx, img_id, "reg.example:5000", "repo", "external")
-                .await?;
+            sql::image::insert_source(
+                &mut *tx,
+                Uuid::new_v4(),
+                img_id,
+                "reg.example:5000",
+                "repo",
+                "external",
+                Some(owner),
+            )
+            .await?;
             member_rows.push((img_id, tags(req_tags), index as i32));
             member_digests.push(md);
         }
@@ -570,18 +575,20 @@ mod tests {
         Ok(job_id)
     }
 
-    /// Convenience: enqueue a concrete-image job by image id.
+    /// Convenience: enqueue a concrete-image job by manifest digest.
     async fn enqueue_image(
         pool: &PgPool,
         token: Uuid,
-        image: Uuid,
+        image: Digest,
         host_tag_requirements: &[&str],
         target_requirements: &[&[&str]],
     ) -> anyhow::Result<Uuid> {
         enqueue(
             pool,
             token,
-            JobInitSpec::Image { image_id: image },
+            JobInitSpec::Image {
+                manifest_digest: image,
+            },
             host_tag_requirements,
             target_requirements,
             Utc::now(),
@@ -697,7 +704,7 @@ mod tests {
         .await?;
         let busy = insert_live_host(&pool, user, &["arch=arm64"]).await?;
 
-        let (img, _) = register_image(&pool, user, 1, true).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
         let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
         // Make `busy` busy by pointing its current_job at an unrelated job.
         let other = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
@@ -722,7 +729,7 @@ mod tests {
         let cutoff = Utc::now() - Duration::seconds(60);
         let a = insert_live_host(&pool, user, &["x"]).await?;
         let b = insert_live_host(&pool, user, &[]).await?;
-        let (img, _) = register_image(&pool, user, 1, true).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
         let job = enqueue_image(&pool, token, img, &[], &[]).await?;
         let mut got = eligible(&pool, job, cutoff).await?;
         got.sort();
@@ -749,7 +756,7 @@ mod tests {
         let granted = insert_live_host(&pool, other, &["arch=arm64"]).await?;
         grant_host_start(&pool, granted, owner).await?;
 
-        let (img, _) = register_image(&pool, owner, 1, true).await?;
+        let (_, img) = register_image(&pool, owner, 1, true).await?;
         let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
 
         let mut got = eligible(&pool, job, cutoff).await?;
@@ -780,7 +787,7 @@ mod tests {
 
         let group_owned = insert_live_host(&pool, group, &["arch=arm64"]).await?;
 
-        let (img, _) = register_image(&pool, user, 1, true).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
         let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
 
         assert_eq!(eligible(&pool, job, cutoff).await?, vec![group_owned]);
@@ -799,7 +806,7 @@ mod tests {
         // Owned by someone else, no grant -- but the job owner is an admin.
         let foreign = insert_live_host(&pool, other, &["arch=arm64"]).await?;
 
-        let (img, _) = register_image(&pool, owner, 1, true).await?;
+        let (_, img) = register_image(&pool, owner, 1, true).await?;
         let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
 
         assert_eq!(
@@ -819,7 +826,7 @@ mod tests {
         // The only live, tag-matching host belongs to another user; the job
         // owner holds no grant on it.
         let foreign = insert_live_host(&pool, other, &["arch=arm64"]).await?;
-        let (img, _) = register_image(&pool, owner, 1, true).await?;
+        let (_, img) = register_image(&pool, owner, 1, true).await?;
         let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
 
         scheduler(pool.clone()).tick().await?;
@@ -841,7 +848,7 @@ mod tests {
         let other = insert_user(&pool).await?;
         let host = insert_live_host(&pool, other, &["arch=arm64"]).await?;
         grant_host_start(&pool, host, owner).await?;
-        let (img, _) = register_image(&pool, owner, 1, true).await?;
+        let (_, img) = register_image(&pool, owner, 1, true).await?;
         let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
 
         scheduler(pool.clone()).tick().await?;
@@ -861,7 +868,7 @@ mod tests {
         let token = insert_token(&pool, owner).await?;
         let other = insert_user(&pool).await?;
         let foreign = insert_live_host(&pool, other, &["arch=arm64"]).await?;
-        let (img, _) = register_image(&pool, owner, 1, true).await?;
+        let (_, img) = register_image(&pool, owner, 1, true).await?;
         let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
 
         let outcome = scheduler(pool.clone()).try_assign(job, foreign).await?;
@@ -879,8 +886,8 @@ mod tests {
         let user = insert_user(&pool).await?;
         let token = insert_token(&pool, user).await?;
         let host = insert_live_host(&pool, user, &["arch=arm64", "rack=1"]).await?;
-        let (img, img_digest) = register_image(&pool, user, 1, true).await?;
-        let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+        let (_, img_digest) = register_image(&pool, user, 1, true).await?;
+        let job = enqueue_image(&pool, token, img_digest, &["arch=arm64"], &[]).await?;
 
         scheduler(pool.clone()).tick().await?;
 
@@ -905,12 +912,12 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn image_group_resolves_most_specific_member(pool: PgPool) -> anyhow::Result<()> {
+    async fn image_set_resolves_most_specific_member(pool: PgPool) -> anyhow::Result<()> {
         let user = insert_user(&pool).await?;
         let token = insert_token(&pool, user).await?;
         let host = insert_live_host(&pool, user, &["arch=arm64", "rpi4"]).await?;
         // Member 0 is generic; member 1 is more specific and also admissible.
-        let (group, members) = register_group(
+        let (set, members) = register_set(
             &pool,
             user,
             9,
@@ -920,8 +927,8 @@ mod tests {
         let job = enqueue(
             &pool,
             token,
-            JobInitSpec::ImageGroup {
-                group_id: group,
+            JobInitSpec::ImageSet {
+                set_id: set,
                 generation: None,
             },
             &["arch=arm64"],
@@ -949,7 +956,7 @@ mod tests {
         // Dead host (no heartbeat) and a live host missing the required tag.
         let _dead = insert_host(&pool, user, &["arch=arm64"], None).await?;
         let _wrong = insert_live_host(&pool, user, &["arch=amd64"]).await?;
-        let (img, _) = register_image(&pool, user, 1, true).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
         let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
 
         scheduler(pool.clone()).tick().await?;
@@ -963,7 +970,7 @@ mod tests {
     async fn target_requirements_gate_scheduling(pool: PgPool) -> anyhow::Result<()> {
         let user = insert_user(&pool).await?;
         let token = insert_token(&pool, user).await?;
-        let (img, _) = register_image(&pool, user, 1, true).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
 
         // Host has a single nRF DUT; a job needing one nRF schedules.
         let host = insert_live_host(&pool, user, &["arch=arm64"]).await?;
@@ -1006,13 +1013,15 @@ mod tests {
         let user = insert_user(&pool).await?;
         let token = insert_token(&pool, user).await?;
         let host = insert_live_host(&pool, user, &["arch=arm64"]).await?;
-        let (img, _) = register_image(&pool, user, 1, true).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
 
         let now = Utc::now();
         let older = enqueue(
             &pool,
             token,
-            JobInitSpec::Image { image_id: img },
+            JobInitSpec::Image {
+                manifest_digest: img,
+            },
             &["arch=arm64"],
             &[],
             now - Duration::seconds(10),
@@ -1021,7 +1030,9 @@ mod tests {
         let newer = enqueue(
             &pool,
             token,
-            JobInitSpec::Image { image_id: img },
+            JobInitSpec::Image {
+                manifest_digest: img,
+            },
             &["arch=arm64"],
             &[],
             now,
@@ -1046,10 +1057,10 @@ mod tests {
         let user = insert_user(&pool).await?;
         let token = insert_token(&pool, user).await?;
         let _host = insert_live_host(&pool, user, &["arch=arm64"]).await?;
-        // An image id that was never registered in the catalog. The
-        // `jobs.image_id` foreign key rejects the enqueue outright, instead of
-        // deferring to a dispatch-time image error as the old digest column did.
-        let unregistered = Uuid::new_v4();
+        // A digest that was never registered in the catalog. Resolving it to an
+        // image row at insert fails outright, instead of deferring to a
+        // dispatch-time image error as the old digest column did.
+        let unregistered = digest(99);
         let result = enqueue_image(&pool, token, unregistered, &["arch=arm64"], &[]).await;
 
         assert!(
@@ -1066,7 +1077,7 @@ mod tests {
         let token = insert_token(&pool, user).await?;
         let _host = insert_live_host(&pool, user, &["arch=arm64"]).await?;
         // Registered, but with no registry location to pull from.
-        let (img, _) = register_image(&pool, user, 1, false).await?;
+        let (_, img) = register_image(&pool, user, 1, false).await?;
         let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
 
         scheduler(pool.clone()).tick().await?;
@@ -1084,13 +1095,49 @@ mod tests {
         Ok(())
     }
 
+    /// Sources can be deleted or restricted between enqueue and dispatch, so the
+    /// dispatch-time re-check is load-bearing: a source that still *exists* but
+    /// is no longer usable by the job owner must finalize the job `image_error`,
+    /// exactly like a missing one.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn source_lost_after_enqueue_finalizes_as_image_error(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let _host = insert_live_host(&pool, user, &["arch=arm64"]).await?;
+        let (img_id, img) = register_image(&pool, user, 1, true).await?;
+        let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+
+        // The owner loses the source before the scheduler runs: it now belongs
+        // to an unrelated user and carries no grants.
+        let stranger = insert_user(&pool).await?;
+        sqlx::query(
+            "update tml_switchboard.image_sources set owner_subject = $1 where image_id = $2",
+        )
+        .bind(stranger)
+        .bind(img_id)
+        .execute(&pool)
+        .await?;
+
+        scheduler(pool.clone()).tick().await?;
+
+        assert_eq!(job_state(&pool, job).await?, "finalized");
+        assert_eq!(
+            job_termination(&pool, job).await?.as_deref(),
+            Some("image_error")
+        );
+        Ok(())
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn does_not_reassign_a_busy_host(pool: PgPool) -> anyhow::Result<()> {
         let user = insert_user(&pool).await?;
         let token = insert_token(&pool, user).await?;
         let host = insert_live_host(&pool, user, &["arch=arm64"]).await?;
-        let (img, _) = register_image(&pool, user, 1, true).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
 
         // Host already running a job.
         let running = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;

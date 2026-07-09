@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        with principals(id) as (\n             select id from tml_switchboard.principals($1::uuid)\n         ),\n         is_global_or_owner as (\n             select (\n                 exists (select 1 from principals where id = $3::uuid)\n                 or exists (\n                     select 1 from tml_switchboard.image_sources s\n                     join principals p on s.owner_subject = p.id\n                     where s.id = $2::uuid\n                 )\n             ) as is_auth\n         )\n         select '*' as \"perm!\" from is_global_or_owner where is_auth\n         union\n         select g.permission::text as \"perm!\"\n         from tml_switchboard.image_source_grants g\n         join principals p on g.subject_id = p.id\n         where g.source_id = $2::uuid\n           and not (select is_auth from is_global_or_owner)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "perm!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "dbd4df3dedbfa773914115f8d99d15b3545d5d9bb7d9b6837b43b7cc7a55437f"
+}

@@ -116,7 +116,7 @@
           ]
         },
         {
-          "description": "Which image to base this job off. If the image is not locally cached\nat the supervisor, it will be fetched (from one of `locations`) prior\nto executing the job.\n\nThe supervisor protocol is always **content-addressed**: an image is\nidentified by the OCI `manifest_digest` of its manifest, and\n`locations` is an ordered, failover list of the registry locations that\nserve it. Switchboard resolves human labels/groups to a concrete digest\n+ locations before dispatch (Phase 4).\n\nNote that if a job is being restarted, it will use this variant.",
+          "description": "Which image to base this job off. If the image is not locally cached\nat the supervisor, it will be fetched (from one of `locations`) prior\nto executing the job.\n\nThe supervisor protocol is always **content-addressed**: an image is\nidentified by the OCI `manifest_digest` of its manifest, and\n`locations` is an ordered, failover list of the registry locations that\nserve it. Switchboard resolves human labels/sets to a concrete digest\n+ locations before dispatch (Phase 4).\n\nNote that if a job is being restarted, it will use this variant.",
           "type": "object",
           "properties": {
             "locations": {
