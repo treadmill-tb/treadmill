@@ -130,8 +130,6 @@ pub struct QemuSupervisorFetchingImageState {
 #[derive(Debug)]
 pub struct QemuSupervisorImageFetchedState {
     start_job_req: connector::StartJobMessage,
-    /// Repository the image was made present under in the local store.
-    repository: String,
     /// The parsed Treadmill view of the OCI manifest (backing-chain layers).
     image: TreadmillImage,
 }
@@ -296,9 +294,9 @@ impl QemuSupervisor {
             }
         };
 
-        // Ask the local OCI store to make the manifest digest present — a
-        // pull-through from one of the dispatched locations, or a cache hit —
-        // then read+parse its manifest into the Treadmill backing-chain view.
+        // Ask the local OCI store to make the manifest digest present — a copy
+        // from one of the dispatched locations, or a cache hit — then
+        // read+parse its manifest into the Treadmill backing-chain view.
         // `ensure_present` is a single operation (no in-progress polling), so on
         // success we transition straight to `ImageFetched` and continue.
         //
@@ -330,7 +328,7 @@ impl QemuSupervisor {
             }};
         }
 
-        let repository = match this
+        if let Err(e) = this
             .image_store
             .ensure_present(
                 &fetching_image_state.manifest_digest,
@@ -338,22 +336,19 @@ impl QemuSupervisor {
             )
             .await
         {
-            Ok(repository) => repository,
-            Err(e) => {
-                event!(Level::WARN, fetch_image_error = ?e, "Failed to fetch image");
-                fail!(
-                    connector::JobErrorKind::InternalError,
-                    format!(
-                        "Failed to fetch image {}: {e:#}",
-                        fetching_image_state.manifest_digest,
-                    )
-                );
-            }
-        };
+            event!(Level::WARN, fetch_image_error = ?e, "Failed to fetch image");
+            fail!(
+                connector::JobErrorKind::InternalError,
+                format!(
+                    "Failed to fetch image {}: {e:#}",
+                    fetching_image_state.manifest_digest,
+                )
+            );
+        }
 
         let manifest = match this
             .image_store
-            .manifest(&repository, &fetching_image_state.manifest_digest)
+            .manifest(&fetching_image_state.manifest_digest)
             .await
         {
             Ok(manifest) => manifest,
@@ -391,7 +386,6 @@ impl QemuSupervisor {
         );
         *job_lg = QemuSupervisorJobState::ImageFetched(QemuSupervisorImageFetchedState {
             start_job_req: fetching_image_state.start_job_req,
-            repository,
             image,
         });
 
@@ -402,7 +396,7 @@ impl QemuSupervisor {
     }
 
     /// Order the image's runtime backing chain base→head and map each layer to
-    /// its on-disk blob path under `repository`.
+    /// its on-disk blob path in the local store.
     ///
     /// The chain is read from the OCI manifest (D3): starting at the head, we
     /// follow each layer's `lower` annotation down to the base, guarding against
@@ -412,11 +406,7 @@ impl QemuSupervisor {
     /// paths are never baked into the shared blobs; the chain is assembled at
     /// launch via `-blockdev` nodes (D9).
     #[instrument(skip(self, image), err(Debug, level = Level::WARN))]
-    fn assemble_backing_chain(
-        &self,
-        image: &TreadmillImage,
-        repository: &str,
-    ) -> Result<(Vec<PathBuf>, u64)> {
+    fn assemble_backing_chain(&self, image: &TreadmillImage) -> Result<(Vec<PathBuf>, u64)> {
         let by_digest: HashMap<&Digest, &ImageLayer> =
             image.layers.iter().map(|l| (&l.digest, l)).collect();
 
@@ -445,7 +435,7 @@ impl QemuSupervisor {
         let lower_paths = head_first
             .iter()
             .rev()
-            .map(|layer| self.image_store.blob_path(repository, &layer.digest))
+            .map(|layer| self.image_store.blob_path(&layer.digest))
             .collect();
 
         Ok((lower_paths, head_virtual_size))
@@ -580,7 +570,6 @@ impl QemuSupervisor {
         // return immediately:
         let QemuSupervisorImageFetchedState {
             start_job_req,
-            repository,
             image,
         } = match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Starting) {
             QemuSupervisorJobState::ImageFetched(state) => state,
@@ -611,31 +600,30 @@ impl QemuSupervisor {
 
         // Order the OCI backing chain base→head and map each layer to its
         // read-only store blob path. The head's virtual size sizes the overlay.
-        let (lower_paths, head_virtual_size) =
-            match this.assemble_backing_chain(&image, &repository) {
-                Ok(v) => v,
+        let (lower_paths, head_virtual_size) = match this.assemble_backing_chain(&image) {
+            Ok(v) => v,
 
-                Err(e) => {
-                    // The chain is malformed (dangling/cyclic lower, missing
-                    // virtual size): treat as an invalid image.
-                    this.connector
-                        .report_job_error(
-                            start_job_req.job_id,
-                            connector::JobError {
-                                error_kind: connector::JobErrorKind::ImageInvalid,
-                                description: format!("Invalid backing chain: {e:#}"),
-                            },
-                        )
-                        .await;
+            Err(e) => {
+                // The chain is malformed (dangling/cyclic lower, missing
+                // virtual size): treat as an invalid image.
+                this.connector
+                    .report_job_error(
+                        start_job_req.job_id,
+                        connector::JobError {
+                            error_kind: connector::JobErrorKind::ImageInvalid,
+                            description: format!("Invalid backing chain: {e:#}"),
+                        },
+                    )
+                    .await;
 
-                    // No resources have been allocated (yet), so simply remove
-                    // the job and set its state to `Stopping`:
-                    this.remove_job(job_id).await;
-                    *job_lg = QemuSupervisorJobState::Stopping;
+                // No resources have been allocated (yet), so simply remove
+                // the job and set its state to `Stopping`:
+                this.remove_job(job_id).await;
+                *job_lg = QemuSupervisorJobState::Stopping;
 
-                    return;
-                }
-            };
+                return;
+            }
+        };
 
         // Allocate the job's working directory and per-job overlay (no baked
         // backing):
@@ -1287,12 +1275,10 @@ impl connector::Supervisor for QemuSupervisor {
             )
             .await;
 
-        // Resolve the requested image into its content-addressed digest and
-        // the ordered failover list of local-store locations serving it. The
-        // supervisor protocol's repository maps directly onto the local Zot
-        // daemon's repository in the direct-read model (the daemon's sync
-        // config maps it upstream); the `registry` field is for the switchboard
-        // catalog (Phase 4/5) and is not consulted here.
+        // Resolve the requested image into its content-addressed digest and the
+        // ordered failover list of upstream locations serving it. The supervisor
+        // copies from a location's `(registry, repository)` into its local Zot
+        // and reads it back off disk.
         let (manifest_digest, locations) = match start_job_req.image_spec.clone() {
             ImageSpecification::Image {
                 manifest_digest,
@@ -1301,7 +1287,7 @@ impl connector::Supervisor for QemuSupervisor {
                 manifest_digest,
                 locations
                     .into_iter()
-                    .map(|loc| Location::new(loc.repository))
+                    .map(|loc| Location::new(loc.registry, loc.repository))
                     .collect::<Vec<_>>(),
             ),
             unsupported_init_spec => {
@@ -1767,7 +1753,7 @@ mod tests {
     }
 
     /// OCI store stub: returns a canned manifest + a fixed blob path for any
-    /// digest/repository, simulating a present image.
+    /// digest, simulating a present image.
     #[derive(Debug)]
     struct StubStore {
         blob_file: PathBuf,
@@ -1776,13 +1762,13 @@ mod tests {
 
     #[async_trait]
     impl ImageStore for StubStore {
-        async fn ensure_present(&self, _: &Digest, _: &[Location]) -> Result<String> {
-            Ok("treadmill/stub".to_string())
+        async fn ensure_present(&self, _: &Digest, _: &[Location]) -> Result<()> {
+            Ok(())
         }
-        async fn manifest(&self, _: &str, _: &Digest) -> Result<ImageManifest> {
+        async fn manifest(&self, _: &Digest) -> Result<ImageManifest> {
             Ok(self.manifest.clone())
         }
-        fn blob_path(&self, _: &str, _: &Digest) -> PathBuf {
+        fn blob_path(&self, _: &Digest) -> PathBuf {
             self.blob_file.clone()
         }
     }
