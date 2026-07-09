@@ -73,3 +73,18 @@ with a KEK from config/env, or an external secret store — never plaintext in t
 DB), handed to the supervisor only at dispatch; and (b) a source-level `use`
 grant surface (owner + grants + the `everyone` subject) so usability becomes
 "the job owner can *use* some source" rather than "some source exists".
+
+## Future-Proofing Route Filters
+
+Currently, routes such as `/images` implicitly filter their output to only
+include resources that the user owns (transitively) or that they can use.
+However, this means that weakening these filters in the future can have
+undesired effects: for instance, the frotend may suddenly present images as
+owned or accessible that actually arent. So, we should have mandatory filters on
+these endpoints. For instance, this could mean a mandatory "owned" or "usable"
+filter (owned implies usable), and an owner filter that can take an ID (for a
+group that the user is a member of), or the special values "self" and
+"self-groups" (for transitive group reachability). These types of filters should
+be standardized across most resource endpoints, except for ones where extending
+it beyond some natural ownership definition is unlikely (e.g., audit events
+should only ever be requestable for one self, or by admins).
