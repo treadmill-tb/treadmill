@@ -1,7 +1,8 @@
-h1:v31CgMrzrREzJf63hVyi2qBPI2iEzjv/yIWE5VHsOcQ=
+h1:l0X+PDwf+TMKxFAOYVLgXIn0OI6DLr8u/Z+XOLbLQns=
 00000000000001_base.sql h1:7OodY/qoessjRRoCAAX04fthKHTDNzzloQ4srKlxs+o=
 20260704040624_add_login_admission.sql h1:hYEzBBXagVmDVTtFsA1uosdNLKUi8JvitaMOFw/4jbk=
 20260708035542_everyone_subject.sql h1:eshPaeCj4UtkHWVuGTZHzsESVxK09Vy8ys5+ywA09pU=
 20260708120000_image_sources.sql h1:d/zkNF8eZ0QhQsfz/4+NbRuAziZNd5Og6AC3h0nk/ug=
 20260708153836_image_set_rename.sql h1:pYf4N6yTa0CPC58MA0bTMhNGEHFJfZKnnP91oxg9lFw=
 20260709090000_images_title.sql h1:6oX7RzSWvr+UEzFgcSPYcEo45hYxE9uHjb1n6sh3Pg0=
+20260709090001_remove_image_attrs_jsonb.sql h1:93BKzCkpTJ9YECRmz1fUvhFBadA1P6YLBvIerHyi9b0=

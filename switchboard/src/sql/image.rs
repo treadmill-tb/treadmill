@@ -22,7 +22,6 @@ pub struct ImageRecord {
     pub manifest_digest: String,
     pub artifact_type: String,
     pub title: Option<String>,
-    pub attrs: serde_json::Value,
     pub created_at: DateTime<Utc>,
 }
 
@@ -104,7 +103,7 @@ pub async fn fetch_by_digest(
     sqlx::query_as!(
         ImageRecord,
         r#"select id, manifest_digest, artifact_type, title,
-                  attrs as "attrs: serde_json::Value", created_at
+                  created_at
            from tml_switchboard.images where manifest_digest = $1"#,
         manifest_digest,
     )
@@ -120,7 +119,7 @@ pub async fn fetch_by_id(
     sqlx::query_as!(
         ImageRecord,
         r#"select id, manifest_digest, artifact_type, title,
-                  attrs as "attrs: serde_json::Value", created_at
+                  created_at
            from tml_switchboard.images where id = $1"#,
         id,
     )
@@ -135,17 +134,15 @@ pub async fn insert(
     manifest_digest: &str,
     artifact_type: &str,
     title: Option<&str>,
-    attrs: &serde_json::Value,
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
         r#"insert into tml_switchboard.images
-             (id, manifest_digest, artifact_type, title, attrs)
-           values ($1, $2, $3, $4, $5)"#,
+             (id, manifest_digest, artifact_type, title)
+           values ($1, $2, $3, $4)"#,
         id,
         manifest_digest,
         artifact_type,
         title,
-        attrs,
     )
     .execute(conn)
     .await
@@ -365,7 +362,7 @@ pub async fn list_usable_images(
     sqlx::query_as!(
         ImageRecord,
         r#"select i.id, i.manifest_digest, i.artifact_type, i.title,
-                  i.attrs as "attrs: serde_json::Value", i.created_at
+                  i.created_at
            from tml_switchboard.images i
            where tml_switchboard.image_source_usable($1, i.id)
            order by i.created_at, i.id"#,

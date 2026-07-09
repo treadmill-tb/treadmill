@@ -1438,8 +1438,8 @@ mod tests {
         let digest = format!("sha256:{id_hex:0>64}");
         sqlx::query(
             "insert into tml_switchboard.images \
-             (id, manifest_digest, artifact_type, attrs) \
-             values ($1, $2, 'application/vnd.oci.image.manifest.v1+json', '{}'::jsonb)",
+             (id, manifest_digest, artifact_type) \
+             values ($1, $2, 'application/vnd.oci.image.manifest.v1+json')",
         )
         .bind(image_id)
         .bind(digest)

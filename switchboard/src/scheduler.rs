@@ -469,7 +469,6 @@ mod tests {
             &d.encoded(),
             media_types::IMAGE_ARTIFACT_TYPE,
             None,
-            &serde_json::json!({}),
         )
         .await?;
         if with_location {
@@ -512,7 +511,6 @@ mod tests {
                 &md.encoded(),
                 media_types::IMAGE_ARTIFACT_TYPE,
                 None,
-                &serde_json::json!({}),
             )
             .await?;
             sql::image::insert_source(

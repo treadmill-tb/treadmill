@@ -564,13 +564,6 @@ pub async fn add_image_source(
         ));
     }
 
-    let attrs = serde_json::json!({
-        "head": parsed.head.encoded(),
-        "layers": parsed.layers.len(),
-        "version": parsed.version,
-        "description": parsed.description,
-    });
-
     let id = Uuid::now_v7();
     let mut tx = state.pool().begin().await.map_err(internal)?;
     image::insert(
@@ -579,7 +572,6 @@ pub async fn add_image_source(
         &digest_str,
         media_types::IMAGE_ARTIFACT_TYPE,
         parsed.title.as_deref(),
-        &attrs,
     )
     .await
     .map_err(internal)?;
