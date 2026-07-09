@@ -8,11 +8,16 @@ type JobImageRef = components["schemas"]["JobImageRef"];
 export function ImageRef({ image }: { image: JobImageRef }) {
   switch (image.type) {
     case "image":
-      // Catalog images are addressed by digest in the UI routes; the id alone
-      // is not navigable, so render it as plain text.
       return (
-        <span title={image.image_id}>
-          image <span className="mono">{shortId(image.image_id)}</span>
+        <span>
+          image{" "}
+          <Link
+            to={`/images/${image.manifest_digest}`}
+            className="mono"
+            title={image.manifest_digest}
+          >
+            {image.manifest_digest.slice(0, 19)}…
+          </Link>
         </span>
       );
     case "image_set":

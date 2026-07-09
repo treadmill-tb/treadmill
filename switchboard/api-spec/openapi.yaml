@@ -780,60 +780,6 @@ paths:
                   $ref: '#/components/schemas/ImageInfo'
       security:
       - token: []
-    post:
-      tags:
-      - Images
-      summary: Register an image
-      operationId: registerImage
-      requestBody:
-        description: |-
-          `POST /images`: register a concrete image by digest. The switchboard pulls
-          the manifest from `registry/repository@manifest_digest`, validates it is a
-          Treadmill image, and records the image plus its first location.
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RegisterImageRequest'
-        required: true
-      responses:
-        '401':
-          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
-        '403':
-          description: The authenticated account is locked, or lacks permission for this resource.
-        '400':
-          description: Failed to parse the request body as JSON
-          content:
-            text/plain:
-              schema:
-                type: string
-        '415':
-          description: 'Expected request with `Content-Type: application/json`'
-          content:
-            text/plain:
-              schema:
-                type: string
-        '422':
-          description: Failed to deserialize the JSON body into the target type
-          content:
-            text/plain:
-              schema:
-                type: string
-        '201':
-          description: The image was newly registered.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ImageInfo'
-        '200':
-          description: The image was already registered; a caller-owned source was added.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ImageInfo'
-        '502':
-          description: The image's registry could not be reached or returned an error.
-      security:
-      - token: []
   /images/{digest}:
     get:
       tags:
@@ -883,8 +829,10 @@ paths:
         style: simple
       requestBody:
         description: |-
-          `POST /images/{digest}/sources`: add a registry source to a registered image.
-          The caller owns the source it adds.
+          `POST /images/{digest}/sources`: add a registry source for an image,
+          registering the image on first sight. The caller owns the source it adds;
+          the image itself (its cached manifest projection) is non-owned and created
+          implicitly when its digest is first sourced.
         content:
           application/json:
             schema:
@@ -914,13 +862,17 @@ paths:
               schema:
                 type: string
         '201':
-          description: The source was added; the caller owns it.
+          description: The image was newly registered, with this source as its first.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ImageInfo'
-        '404':
-          description: No such registered image.
+        '200':
+          description: The image was already registered; the caller-owned source was added.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageInfo'
         '502':
           description: The source could not be reached or does not serve the image.
       security:
@@ -1505,8 +1457,10 @@ components:
   schemas:
     AddImageSourceRequest:
       description: |-
-        `POST /images/{digest}/sources`: add a registry source to a registered image.
-        The caller owns the source it adds.
+        `POST /images/{digest}/sources`: add a registry source for an image,
+        registering the image on first sight. The caller owns the source it adds;
+        the image itself (its cached manifest projection) is non-owned and created
+        implicitly when its digest is first sourced.
       type: object
       properties:
         registry:
@@ -1653,9 +1607,6 @@ components:
         `required_host_tags`.
       type: object
       properties:
-        image_id:
-          type: string
-          format: uuid
         index:
           type: integer
           format: uint32
@@ -1681,7 +1632,6 @@ components:
             Vacuously `true` for a set with no `use` grants.
           type: boolean
       required:
-      - image_id
       - manifest_digest
       - required_host_tags
       - index
@@ -1693,10 +1643,12 @@ components:
         request, used as the deterministic tie-break among equally-specific members.
       type: object
       properties:
-        image_id:
-          description: Image to include; must already be registered via `POST /images`.
-          type: string
-          format: uuid
+        manifest_digest:
+          description: |-
+            Image to include; must already be registered (have at least one source,
+            `POST /images/{digest}/sources`).
+          allOf:
+          - $ref: '#/components/schemas/Digest'
         required_host_tags:
           description: |-
             Host tags a host must carry (as a superset) for this member to be
@@ -1706,7 +1658,7 @@ components:
           items:
             type: string
       required:
-      - image_id
+      - manifest_digest
     GenerationPath:
       description: The `{id}/generations/{n}` segments of an image-set generation route.
       type: object
@@ -1844,9 +1796,6 @@ components:
         created_at:
           type: string
           format: date-time
-        id:
-          type: string
-          format: uuid
         manifest_digest:
           $ref: '#/components/schemas/Digest'
         sources:
@@ -1858,7 +1807,6 @@ components:
           - string
           - 'null'
       required:
-      - id
       - manifest_digest
       - artifact_type
       - created_at
@@ -2034,18 +1982,17 @@ components:
         job. The concrete manifest digest actually dispatched is reported separately
         as `resolved_image_digest`.
       oneOf:
-      - description: Based off a concrete catalog image, addressed by its catalog id.
+      - description: Based off a concrete catalog image, addressed by its manifest digest.
         type: object
         properties:
-          image_id:
-            type: string
-            format: uuid
+          manifest_digest:
+            $ref: '#/components/schemas/Digest'
           type:
             type: string
             const: image
         required:
         - type
-        - image_id
+        - manifest_digest
       - description: |-
           Based off a registered image *set*, addressed by its id plus the frozen
           generation; the concrete member is chosen at dispatch.
@@ -2245,20 +2192,19 @@ components:
         - job_id
       - description: |-
           Base this job off a concrete image registered in the switchboard
-          catalog, addressed by its catalog id (`POST /images`). At dispatch the
+          catalog, addressed by its OCI manifest digest. At dispatch the
           switchboard resolves the image to its registry locations for the
           supervisor.
         type: object
         properties:
-          image_id:
-            type: string
-            format: uuid
+          manifest_digest:
+            $ref: '#/components/schemas/Digest'
           type:
             type: string
             const: image
         required:
         - type
-        - image_id
+        - manifest_digest
       - description: |-
           Base this job off a registered image *set*, addressed by its stable id.
           `generation` pins a specific membership snapshot; when omitted, the
@@ -2786,33 +2732,6 @@ components:
       required:
       - user_id
       - username
-    RegisterImageRequest:
-      description: |-
-        `POST /images`: register a concrete image by digest. The switchboard pulls
-        the manifest from `registry/repository@manifest_digest`, validates it is a
-        Treadmill image, and records the image plus its first location.
-      type: object
-      properties:
-        manifest_digest:
-          description: The OCI manifest digest identifying the image.
-          allOf:
-          - $ref: '#/components/schemas/Digest'
-        registry:
-          description: Registry authority (`host:port`) the manifest can be pulled from.
-          type: string
-        repository:
-          description: Repository path within the registry.
-          type: string
-        title:
-          description: Optional human-readable title.
-          type:
-          - string
-          - 'null'
-          default: null
-      required:
-      - registry
-      - repository
-      - manifest_digest
     RenderedAuditRow:
       description: |-
         One audit event, already rendered to a human-readable `message` for the

@@ -348,27 +348,10 @@ pub fn api_router() -> ApiRouter<AppState> {
             }),
         )
         // image catalog group
-        //  POST /images              -- register a concrete image by digest
-        //  GET  /images              -- list owned images
+        //  GET /images               -- list usable images
         .api_route(
             "/images",
-            post_with(images::register_image, |o| {
-                doc(o, "registerImage", "Images", "Register an image")
-                    .response_with::<201, Json<ImageInfo>, _>(|r| {
-                        r.description("The image was newly registered.")
-                    })
-                    .response_with::<200, Json<ImageInfo>, _>(|r| {
-                        r.description(
-                            "The image was already registered; a caller-owned source was added.",
-                        )
-                    })
-                    .response_with::<502, (), _>(|r| {
-                        r.description(
-                            "The image's registry could not be reached or returned an error.",
-                        )
-                    })
-            })
-            .get_with(images::list_images, |o| {
+            get_with(images::list_images, |o| {
                 doc(o, "listImages", "Images", "List images").description(NOT_PAGINATED)
             }),
         )
@@ -381,15 +364,22 @@ pub fn api_router() -> ApiRouter<AppState> {
                 })
             }),
         )
-        //  POST /images/{digest}/sources -- add a registry source (caller-owned)
+        //  POST /images/{digest}/sources -- add a registry source (caller-owned),
+        //                                   registering the image on first sight
         .api_route(
             "/images/{digest}/sources",
             post_with(images::add_image_source, |o| {
                 doc(o, "addImageSource", "Images", "Add a source to an image")
                     .response_with::<201, Json<ImageInfo>, _>(|r| {
-                        r.description("The source was added; the caller owns it.")
+                        r.description(
+                            "The image was newly registered, with this source as its first.",
+                        )
                     })
-                    .response_with::<404, (), _>(|r| r.description("No such registered image."))
+                    .response_with::<200, Json<ImageInfo>, _>(|r| {
+                        r.description(
+                            "The image was already registered; the caller-owned source was added.",
+                        )
+                    })
                     .response_with::<502, (), _>(|r| {
                         r.description(
                             "The source could not be reached or does not serve the image.",

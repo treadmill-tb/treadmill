@@ -154,8 +154,8 @@ pub struct NatsLogStreamCredentials {
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JobImageRef {
-    /// Based off a concrete catalog image, addressed by its catalog id.
-    Image { image_id: Uuid },
+    /// Based off a concrete catalog image, addressed by its manifest digest.
+    Image { manifest_digest: Digest },
     /// Based off a registered image *set*, addressed by its id plus the frozen
     /// generation; the concrete member is chosen at dispatch.
     ImageSet { set_id: Uuid, generation: u32 },

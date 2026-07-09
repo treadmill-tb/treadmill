@@ -367,8 +367,7 @@ export interface paths {
          */
         get: operations["listImages"];
         put?: never;
-        /** Register an image */
-        post: operations["registerImage"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -596,8 +595,10 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
-         * @description `POST /images/{digest}/sources`: add a registry source to a registered image.
-         *     The caller owns the source it adds.
+         * @description `POST /images/{digest}/sources`: add a registry source for an image,
+         *     registering the image on first sight. The caller owns the source it adds;
+         *     the image itself (its cached manifest projection) is non-owned and created
+         *     implicitly when its digest is first sourced.
          */
         AddImageSourceRequest: {
             /** @description Registry authority (`host:port`) the image can be pulled from. */
@@ -692,8 +693,6 @@ export interface components {
          *     `required_host_tags`.
          */
         GenerationMemberInfo: {
-            /** Format: uuid */
-            image_id: string;
             /** Format: uint32 */
             index: number;
             manifest_digest: components["schemas"]["Digest"];
@@ -719,10 +718,10 @@ export interface components {
          */
         GenerationMemberSpec: {
             /**
-             * Format: uuid
-             * @description Image to include; must already be registered via `POST /images`.
+             * @description Image to include; must already be registered (have at least one source,
+             *     `POST /images/{digest}/sources`).
              */
-            image_id: string;
+            manifest_digest: components["schemas"]["Digest"];
             /**
              * @description Host tags a host must carry (as a superset) for this member to be
              *     selectable on it.
@@ -824,8 +823,6 @@ export interface components {
             artifact_type: string;
             /** Format: date-time */
             created_at: string;
-            /** Format: uuid */
-            id: string;
             manifest_digest: components["schemas"]["Digest"];
             sources: components["schemas"]["ImageSourceInfo"][];
             title?: string | null;
@@ -919,8 +916,7 @@ export interface components {
          *     as `resolved_image_digest`.
          */
         JobImageRef: {
-            /** Format: uuid */
-            image_id: string;
+            manifest_digest: components["schemas"]["Digest"];
             /** @constant */
             type: "image";
         } | {
@@ -1032,8 +1028,7 @@ export interface components {
             /** @constant */
             type: "restart";
         } | {
-            /** Format: uuid */
-            image_id: string;
+            manifest_digest: components["schemas"]["Digest"];
             /** @constant */
             type: "image";
         } | {
@@ -1375,24 +1370,6 @@ export interface components {
             /** Format: uuid */
             user_id: string;
             username: string;
-        };
-        /**
-         * @description `POST /images`: register a concrete image by digest. The switchboard pulls
-         *     the manifest from `registry/repository@manifest_digest`, validates it is a
-         *     Treadmill image, and records the image plus its first location.
-         */
-        RegisterImageRequest: {
-            /** @description The OCI manifest digest identifying the image. */
-            manifest_digest: components["schemas"]["Digest"];
-            /** @description Registry authority (`host:port`) the manifest can be pulled from. */
-            registry: string;
-            /** @description Repository path within the registry. */
-            repository: string;
-            /**
-             * @description Optional human-readable title.
-             * @default null
-             */
-            title: string | null;
         };
         /**
          * @description One audit event, already rendered to a human-readable `message` for the
@@ -2540,92 +2517,6 @@ export interface operations {
             };
         };
     };
-    registerImage: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * @description `POST /images`: register a concrete image by digest. The switchboard pulls
-         *     the manifest from `registry/repository@manifest_digest`, validates it is a
-         *     Treadmill image, and records the image plus its first location.
-         */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RegisterImageRequest"];
-            };
-        };
-        responses: {
-            /** @description The image was already registered; a caller-owned source was added. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ImageInfo"];
-                };
-            };
-            /** @description The image was newly registered. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ImageInfo"];
-                };
-            };
-            /** @description Failed to parse the request body as JSON */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
-            };
-            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The authenticated account is locked, or lacks permission for this resource. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Expected request with `Content-Type: application/json` */
-            415: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
-            };
-            /** @description Failed to deserialize the JSON body into the target type */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
-            };
-            /** @description The image's registry could not be reached or returned an error. */
-            502: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     getImage: {
         parameters: {
             query?: never;
@@ -2684,8 +2575,10 @@ export interface operations {
             cookie?: never;
         };
         /**
-         * @description `POST /images/{digest}/sources`: add a registry source to a registered image.
-         *     The caller owns the source it adds.
+         * @description `POST /images/{digest}/sources`: add a registry source for an image,
+         *     registering the image on first sight. The caller owns the source it adds;
+         *     the image itself (its cached manifest projection) is non-owned and created
+         *     implicitly when its digest is first sourced.
          */
         requestBody: {
             content: {
@@ -2693,7 +2586,16 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The source was added; the caller owns it. */
+            /** @description The image was already registered; the caller-owned source was added. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageInfo"];
+                };
+            };
+            /** @description The image was newly registered, with this source as its first. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -2720,13 +2622,6 @@ export interface operations {
             };
             /** @description The authenticated account is locked, or lacks permission for this resource. */
             403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No such registered image. */
-            404: {
                 headers: {
                     [name: string]: unknown;
                 };

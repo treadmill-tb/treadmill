@@ -287,9 +287,10 @@ define_event! {
 }
 
 define_event! {
-    /// A concrete image was registered in the catalog by digest (`POST /images`).
-    /// Related to the registering owner with the `self` policy so it surfaces in
-    /// that user's own feed; the catalog has no per-image audit feed.
+    /// A concrete image was registered in the catalog, implicitly, by the first
+    /// source added for its digest (`POST /images/{digest}/sources`). Related to
+    /// the registering owner with the `self` policy so it surfaces in that
+    /// user's own feed; the catalog has no per-image audit feed.
     ImageRegistered v1 {
         actor: Subject,
         owner: Subject @ view(SelfAccess),

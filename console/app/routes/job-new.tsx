@@ -49,7 +49,7 @@ export default function JobNew() {
     let init_spec: JobInitSpec;
     switch (initType) {
       case "image":
-        init_spec = { type: "image", image_id: str("image_id") };
+        init_spec = { type: "image", manifest_digest: str("manifest_digest") };
         break;
       case "image_set": {
         const gen = str("generation");
@@ -110,8 +110,8 @@ export default function JobNew() {
 
         {initType === "image" && (
           <label className="field">
-            <span>Image id (catalog UUID)</span>
-            <input name="image_id" required className="mono" />
+            <span>Image manifest digest (sha256:…)</span>
+            <input name="manifest_digest" required className="mono" />
           </label>
         )}
         {initType === "image_set" && (

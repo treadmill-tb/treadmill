@@ -11,7 +11,7 @@ import { RelTime } from "../components/rel-time";
 import { Tags } from "../components/tags";
 import type { Route } from "./+types/image-set-detail";
 
-type MemberRow = { image_id: string; tags: string };
+type MemberRow = { manifest_digest: string; tags: string };
 
 /// The well-known `everyone` subject (see switchboard `SCHEMA.sql`). Granting it
 /// `use` on a set or image source makes the entity public; there is no
@@ -52,9 +52,9 @@ function NewGenerationForm({
       params: { path: { id: setId } },
       body: {
         members: rows
-          .filter((r) => r.image_id.trim() !== "")
+          .filter((r) => r.manifest_digest.trim() !== "")
           .map((r) => ({
-            image_id: r.image_id.trim(),
+            manifest_digest: r.manifest_digest.trim(),
             required_host_tags: r.tags.split(/[\s,]+/).filter((t) => t !== ""),
           })),
       },
@@ -70,13 +70,13 @@ function NewGenerationForm({
       {rows.map((row, i) => (
         <div className="field-row" key={i}>
           <input
-            placeholder="image id (catalog UUID)"
+            placeholder="image manifest digest (sha256:…)"
             className="mono"
-            value={row.image_id}
+            value={row.manifest_digest}
             onChange={(e) =>
               setRows(
                 rows.map((r, j) =>
-                  j === i ? { ...r, image_id: e.target.value } : r,
+                  j === i ? { ...r, manifest_digest: e.target.value } : r,
                 ),
               )
             }
@@ -104,7 +104,7 @@ function NewGenerationForm({
       <div>
         <button
           type="button"
-          onClick={() => setRows([...rows, { image_id: "", tags: "" }])}
+          onClick={() => setRows([...rows, { manifest_digest: "", tags: "" }])}
         >
           Add member
         </button>
@@ -292,7 +292,7 @@ export default function ImageSetDetail({ params }: Route.ComponentProps) {
               setId={params.id}
               seed={
                 generation.data?.members.map((m) => ({
-                  image_id: m.image_id,
+                  manifest_digest: m.manifest_digest,
                   tags: m.required_host_tags.join(" "),
                 })) ?? []
               }
@@ -436,7 +436,6 @@ export function GenerationMembers({
 }: {
   members: {
     index: number;
-    image_id: string;
     manifest_digest: string;
     required_host_tags: string[];
     usable: boolean;
@@ -472,7 +471,7 @@ export function GenerationMembers({
               <td>{m.index}</td>
               <td>
                 <Link to={`/images/${m.manifest_digest}`} className="mono">
-                  {m.image_id.slice(0, 8)}
+                  {m.manifest_digest.slice(7, 15)}
                 </Link>
               </td>
               <td>

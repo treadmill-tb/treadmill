@@ -7,6 +7,7 @@ pub mod jobs;
 pub mod users;
 
 use crate::api::switchboard::jobs::{JobParameter, RestartPolicy};
+use crate::image::Digest;
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -171,10 +172,10 @@ pub enum JobInitSpec {
     Restart { job_id: Uuid },
 
     /// Base this job off a concrete image registered in the switchboard
-    /// catalog, addressed by its catalog id (`POST /images`). At dispatch the
+    /// catalog, addressed by its OCI manifest digest. At dispatch the
     /// switchboard resolves the image to its registry locations for the
     /// supervisor.
-    Image { image_id: Uuid },
+    Image { manifest_digest: Digest },
 
     /// Base this job off a registered image *set*, addressed by its stable id.
     /// `generation` pins a specific membership snapshot; when omitted, the

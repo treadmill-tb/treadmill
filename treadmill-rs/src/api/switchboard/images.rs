@@ -12,22 +12,6 @@ use uuid::Uuid;
 
 use crate::image::Digest;
 
-/// `POST /images`: register a concrete image by digest. The switchboard pulls
-/// the manifest from `registry/repository@manifest_digest`, validates it is a
-/// Treadmill image, and records the image plus its first location.
-#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct RegisterImageRequest {
-    /// Registry authority (`host:port`) the manifest can be pulled from.
-    pub registry: String,
-    /// Repository path within the registry.
-    pub repository: String,
-    /// The OCI manifest digest identifying the image.
-    pub manifest_digest: Digest,
-    /// Optional human-readable title.
-    #[serde(default)]
-    pub title: Option<String>,
-}
-
 /// A permission on an image source. A "public" (unauthenticated) source is one
 /// that grants the well-known `everyone` subject `use`.
 #[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,7 +43,6 @@ pub struct ImageSourceInfo {
 /// is non-owned; ownership lives on its `sources`.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct ImageInfo {
-    pub id: Uuid,
     pub manifest_digest: Digest,
     pub artifact_type: String,
     pub title: Option<String>,
@@ -67,8 +50,10 @@ pub struct ImageInfo {
     pub sources: Vec<ImageSourceInfo>,
 }
 
-/// `POST /images/{digest}/sources`: add a registry source to a registered image.
-/// The caller owns the source it adds.
+/// `POST /images/{digest}/sources`: add a registry source for an image,
+/// registering the image on first sight. The caller owns the source it adds;
+/// the image itself (its cached manifest projection) is non-owned and created
+/// implicitly when its digest is first sourced.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct AddImageSourceRequest {
     /// Registry authority (`host:port`) the image can be pulled from.
@@ -108,8 +93,9 @@ pub struct CreateImageSetRequest {
 /// request, used as the deterministic tie-break among equally-specific members.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationMemberSpec {
-    /// Image to include; must already be registered via `POST /images`.
-    pub image_id: Uuid,
+    /// Image to include; must already be registered (have at least one source,
+    /// `POST /images/{digest}/sources`).
+    pub manifest_digest: Digest,
     /// Host tags a host must carry (as a superset) for this member to be
     /// selectable on it.
     #[serde(default)]
@@ -140,7 +126,6 @@ pub struct ImageSetInfo {
 /// `required_host_tags`.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationMemberInfo {
-    pub image_id: Uuid,
     pub manifest_digest: Digest,
     pub required_host_tags: Vec<String>,
     pub index: u32,

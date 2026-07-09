@@ -235,11 +235,19 @@ pub async fn enqueue(
     // the previously-unchecked concrete-image path. Evaluated after the set
     // freeze above, so an image-set job carries a concrete `Some(generation)`.
     match req.init_spec {
-        JobInitSpec::Image { image_id } => {
-            let usable = image::image_source_usable(state.pool(), owner, image_id)
+        JobInitSpec::Image {
+            ref manifest_digest,
+        } => {
+            // An unregistered digest and a sourceless image are the same 422:
+            // the owner cannot source the image (existence is not a leak).
+            let rec = image::fetch_by_digest(state.pool(), &manifest_digest.encoded())
+                .await
+                .or_internal(&format!("looking up image {manifest_digest}"))?
+                .ok_or(StatusCode::UNPROCESSABLE_ENTITY)?;
+            let usable = image::image_source_usable(state.pool(), owner, rec.id)
                 .await
                 .or_internal(&format!(
-                    "checking source availability for image {image_id}"
+                    "checking source availability for image {manifest_digest}"
                 ))?;
             if !usable {
                 return Err(StatusCode::UNPROCESSABLE_ENTITY);

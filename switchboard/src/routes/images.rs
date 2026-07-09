@@ -1,14 +1,17 @@
 //! Image-catalog REST routes.
 //!
-//! Concrete images are registered by digest: registration pulls the manifest
-//! from the user's registry, validates it is a well-formed Treadmill artifact via
-//! [`treadmill_rs::image::parse`], and records reference rows — never bytes
-//! (`doc/oci-image-migration-plan.md` §8.1).
+//! Concrete images are identified by their OCI manifest digest and registered
+//! implicitly when their first source is added: adding a source pulls the
+//! manifest from the user's registry, validates it is a well-formed Treadmill
+//! artifact via [`treadmill_rs::image::parse`], and records reference rows —
+//! never bytes (`doc/oci-image-migration-plan.md` §8.1). The image row is a
+//! non-owned cache of the manifest's projections; its database id never leaves
+//! the API.
 //!
 //! Image *sets* are mutable, named, generationed switchboard entities: a set
 //! is created empty, and its membership is replaced wholesale by appending
-//! immutable generations whose members are pre-registered images referenced by id.
-//! No registry pull is involved.
+//! immutable generations whose members are pre-registered images referenced by
+//! digest. No registry pull is involved.
 
 use axum::Json;
 use axum::extract::Path;
@@ -22,7 +25,7 @@ use treadmill_rs::api::switchboard::images::{
     AddImageSourceRequest, CreateGenerationRequest, CreateImageSetRequest, GenerationMemberInfo,
     ImageInfo, ImageSetGenerationInfo, ImageSetGrantInfo, ImageSetGrantRequest, ImageSetInfo,
     ImageSetPermission, ImageSourceGrantInfo, ImageSourceGrantRequest, ImageSourceInfo,
-    ImageSourcePermission, RegisterImageRequest,
+    ImageSourcePermission,
 };
 use treadmill_rs::image::parse::{self, ParseError};
 use treadmill_rs::image::{Digest, media_types};
@@ -103,7 +106,6 @@ async fn image_info(
         });
     }
     Ok(ImageInfo {
-        id: rec.id,
         manifest_digest: rec.manifest_digest.parse().map_err(internal)?,
         artifact_type: rec.artifact_type,
         title: rec.title,
@@ -118,105 +120,6 @@ fn source_perm_to_api(p: SourcePerm) -> ImageSourcePermission {
         SourcePerm::Use => ImageSourcePermission::Use,
         SourcePerm::Manage => ImageSourcePermission::Manage,
     }
-}
-
-/// `POST /images`: register a concrete image by digest. An image is a non-owned
-/// manifest identity; the caller owns the *source* it registers. A known digest
-/// idempotently gains a caller-owned source (e.g. a new mirror); a new digest
-/// inserts the image plus its first source.
-pub async fn register_image(
-    State(state): State<AppState>,
-    subject: crate::auth::Subject,
-    Json(req): Json<RegisterImageRequest>,
-) -> Result<(StatusCode, Json<ImageInfo>), StatusCode> {
-    let owner = subject.user_id();
-
-    // Pull and validate the manifest before recording anything.
-    let bytes = pull_verified(&state, &req.registry, &req.repository, &req.manifest_digest).await?;
-    let manifest: ImageManifest = serde_json::from_slice(&bytes).map_err(|e| {
-        tracing::warn!(
-            "manifest {} is not valid OCI JSON: {e}",
-            req.manifest_digest
-        );
-        StatusCode::UNPROCESSABLE_ENTITY
-    })?;
-    let parsed = parse::parse_image(&manifest).map_err(invalid)?;
-
-    let digest_str = req.manifest_digest.encoded();
-
-    // A known digest is a shared, non-owned identity: any caller may add a source
-    // it owns (idempotent on `(image_id, registry, repository)`).
-    if let Some(existing) = image::fetch_by_digest(state.pool(), &digest_str)
-        .await
-        .map_err(internal)?
-    {
-        image::insert_source(
-            state.pool(),
-            Uuid::now_v7(),
-            existing.id,
-            &req.registry,
-            &req.repository,
-            "external",
-            Some(owner),
-        )
-        .await
-        .map_err(internal)?;
-        return Ok((
-            StatusCode::OK,
-            Json(image_info(&state, existing, owner).await?),
-        ));
-    }
-
-    let attrs = serde_json::json!({
-        "title": parsed.title,
-        "head": parsed.head.encoded(),
-        "layers": parsed.layers.len(),
-    });
-
-    let id = Uuid::now_v7();
-    let mut tx = state.pool().begin().await.map_err(internal)?;
-    image::insert(
-        &mut *tx,
-        id,
-        &digest_str,
-        media_types::IMAGE_ARTIFACT_TYPE,
-        req.title.as_deref(),
-        &attrs,
-    )
-    .await
-    .map_err(internal)?;
-    image::insert_source(
-        &mut *tx,
-        Uuid::now_v7(),
-        id,
-        &req.registry,
-        &req.repository,
-        "external",
-        Some(owner),
-    )
-    .await
-    .map_err(internal)?;
-    audit::emit(
-        &mut tx,
-        &events::ImageRegistered {
-            actor: AuditSubject(owner),
-            owner: AuditSubject(owner),
-            image_id: id,
-            manifest_digest: digest_str.clone(),
-        },
-    )
-    .await
-    .map_err(internal)?;
-    tx.commit().await.map_err(internal)?;
-
-    let rec = image::fetch_by_digest(state.pool(), &digest_str)
-        .await
-        .map_err(internal)?
-        .ok_or_else(|| internal("image vanished immediately after insert"))?;
-    Ok((
-        StatusCode::CREATED,
-        Json(image_info(&state, rec, owner).await?),
-    ))
 }
 
 /// `GET /images`: list images the caller may use (has a reachable source).
@@ -409,7 +312,6 @@ async fn generation_info(
                 .map(|u| (u.usable, u.usable_by_grantees))
                 .unwrap_or((false, false));
             Ok(GenerationMemberInfo {
-                image_id: m.image_id,
                 manifest_digest: m.manifest_digest.parse().map_err(internal)?,
                 required_host_tags: m.required_host_tags,
                 index: m.index as u32,
@@ -428,8 +330,8 @@ async fn generation_info(
 }
 
 /// `POST /image-sets/{id}/generations`: append a full-replacement generation.
-/// Requires `manage`. Every `image_id` must already be registered (the FK also
-/// enforces); `required_host_tags` come from the payload, `index` from order.
+/// Requires `manage`. Every member digest must already be registered;
+/// `required_host_tags` come from the payload, `index` from order.
 pub async fn create_generation(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
@@ -438,22 +340,21 @@ pub async fn create_generation(
 ) -> Result<(StatusCode, Json<ImageSetGenerationInfo>), StatusCode> {
     require_manage(&state, subject.user_id(), set_id).await?;
 
-    // Validate every member image exists up front (clearer than relying on the
-    // FK violation), and build the `(image_id, tags, index)` rows in array order.
+    // Resolve every member digest to a registered image up front, and build the
+    // `(image_id, tags, index)` rows in array order.
     let mut members = Vec::with_capacity(req.members.len());
     for (index, m) in req.members.iter().enumerate() {
-        if image::fetch_by_id(state.pool(), m.image_id)
+        let rec = image::fetch_by_digest(state.pool(), &m.manifest_digest.encoded())
             .await
             .map_err(internal)?
-            .is_none()
-        {
-            tracing::warn!(
-                "create_generation references unregistered image {}",
-                m.image_id
-            );
-            return Err(StatusCode::UNPROCESSABLE_ENTITY);
-        }
-        members.push((m.image_id, m.required_host_tags.clone(), index as i32));
+            .ok_or_else(|| {
+                tracing::warn!(
+                    "create_generation references unregistered image {}",
+                    m.manifest_digest
+                );
+                StatusCode::UNPROCESSABLE_ENTITY
+            })?;
+        members.push((rec.id, m.required_host_tags.clone(), index as i32));
     }
 
     let mut tx = state.pool().begin().await.map_err(internal)?;
@@ -611,10 +512,17 @@ pub async fn list_events(
 
 // -- image sources --------------------------------------------------------------
 
-/// `POST /images/{digest}/sources`: add a registry source to a registered image.
-/// Any authenticated caller may add a source (owning it, per the image/source
-/// model); the image must already be registered and the source must actually
-/// serve the digest (pulled + verified, as at registration).
+/// `POST /images/{digest}/sources`: add a registry source for an image,
+/// registering the image on first sight. An image is a non-owned manifest
+/// identity created (or reused) implicitly when a source naming its digest is
+/// added; the caller owns the *source* it adds.
+///
+/// The manifest is pulled from the submitted source, verified against the path
+/// digest, and validated as a Treadmill artifact before anything is recorded,
+/// so a dispatch never picks an unusable source. An unknown digest inserts the
+/// image row (caching the manifest's projections: title, head, layer count,
+/// version, description) plus the source (201); a known digest idempotently
+/// gains the caller-owned source (200).
 pub async fn add_image_source(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
@@ -622,20 +530,63 @@ pub async fn add_image_source(
     Json(req): Json<AddImageSourceRequest>,
 ) -> Result<(StatusCode, Json<ImageInfo>), StatusCode> {
     let owner = subject.user_id();
-    let rec = image::fetch_by_digest(state.pool(), &digest)
+    let parsed_digest: Digest = digest.parse().map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let bytes = pull_verified(&state, &req.registry, &req.repository, &parsed_digest).await?;
+    let manifest: ImageManifest = serde_json::from_slice(&bytes).map_err(|e| {
+        tracing::warn!("manifest {parsed_digest} is not valid OCI JSON: {e}");
+        StatusCode::UNPROCESSABLE_ENTITY
+    })?;
+    let parsed = parse::parse_image(&manifest).map_err(invalid)?;
+
+    let digest_str = parsed_digest.encoded();
+
+    // A known digest is a shared, non-owned identity: any caller may add a source
+    // it owns (idempotent on `(image_id, registry, repository)`).
+    if let Some(existing) = image::fetch_by_digest(state.pool(), &digest_str)
         .await
         .map_err(internal)?
-        .ok_or(StatusCode::NOT_FOUND)?;
+    {
+        image::insert_source(
+            state.pool(),
+            Uuid::now_v7(),
+            existing.id,
+            &req.registry,
+            &req.repository,
+            "external",
+            Some(owner),
+        )
+        .await
+        .map_err(internal)?;
+        return Ok((
+            StatusCode::OK,
+            Json(image_info(&state, existing, owner).await?),
+        ));
+    }
 
-    // Verify the source genuinely serves this image before recording it, so a
-    // dispatch never picks an unusable source.
-    let parsed_digest: Digest = rec.manifest_digest.parse().map_err(internal)?;
-    pull_verified(&state, &req.registry, &req.repository, &parsed_digest).await?;
+    let attrs = serde_json::json!({
+        "head": parsed.head.encoded(),
+        "layers": parsed.layers.len(),
+        "version": parsed.version,
+        "description": parsed.description,
+    });
 
+    let id = Uuid::now_v7();
+    let mut tx = state.pool().begin().await.map_err(internal)?;
+    image::insert(
+        &mut *tx,
+        id,
+        &digest_str,
+        media_types::IMAGE_ARTIFACT_TYPE,
+        parsed.title.as_deref(),
+        &attrs,
+    )
+    .await
+    .map_err(internal)?;
     image::insert_source(
-        state.pool(),
+        &mut *tx,
         Uuid::now_v7(),
-        rec.id,
+        id,
         &req.registry,
         &req.repository,
         "external",
@@ -643,6 +594,23 @@ pub async fn add_image_source(
     )
     .await
     .map_err(internal)?;
+    audit::emit(
+        &mut tx,
+        &events::ImageRegistered {
+            actor: AuditSubject(owner),
+            owner: AuditSubject(owner),
+            image_id: id,
+            manifest_digest: digest_str.clone(),
+        },
+    )
+    .await
+    .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
+
+    let rec = image::fetch_by_digest(state.pool(), &digest_str)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| internal("image vanished immediately after insert"))?;
     Ok((
         StatusCode::CREATED,
         Json(image_info(&state, rec, owner).await?),

@@ -33,6 +33,8 @@ pub struct TreadmillImage {
     /// Digest of the top (head) layer the chain is assembled from.
     pub head: Digest,
     pub title: Option<String>,
+    pub version: Option<String>,
+    pub description: Option<String>,
 }
 
 /// Why an OCI manifest failed to parse as a Treadmill image.
@@ -134,14 +136,15 @@ pub fn parse_image(manifest: &ImageManifest) -> Result<TreadmillImage, ParseErro
         return Err(ParseError::HeadNotALayer(head));
     }
 
-    let title = manifest_annotations
-        .and_then(|a| a.get(annotations::oci::TITLE))
-        .cloned();
+    let oci_annotation =
+        |key: &str| -> Option<String> { manifest_annotations.and_then(|a| a.get(key)).cloned() };
 
     Ok(TreadmillImage {
         layers,
         head,
-        title,
+        title: oci_annotation(annotations::oci::TITLE),
+        version: oci_annotation(annotations::oci::VERSION),
+        description: oci_annotation(annotations::oci::DESCRIPTION),
     })
 }
 
@@ -176,7 +179,9 @@ mod tests {
                    "annotations": {{ "ci.treadmill.role": "root", "ci.treadmill.qcow2.virtual-size": "{virtual_size_overlay}",
                                      "ci.treadmill.qcow2.lower": "{BASE}" }} }}
               ],
-              "annotations": {{ "org.opencontainers.image.title": "Ubuntu test", "ci.treadmill.qcow2.head": "{head}" }}
+              "annotations": {{ "org.opencontainers.image.title": "Ubuntu test",
+                                "org.opencontainers.image.version": "26.04",
+                                "ci.treadmill.qcow2.head": "{head}" }}
             }}"#
         )
     }
@@ -190,6 +195,8 @@ mod tests {
     fn parses_two_layer_image() {
         let img = parse_json(&image_manifest_json(OVERLAY, "4294967296", true)).unwrap();
         assert_eq!(img.title.as_deref(), Some("Ubuntu test"));
+        assert_eq!(img.version.as_deref(), Some("26.04"));
+        assert_eq!(img.description, None);
         assert_eq!(img.head, OVERLAY.parse().unwrap());
         assert_eq!(img.layers.len(), 2);
 

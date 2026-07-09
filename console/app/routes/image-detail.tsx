@@ -334,8 +334,6 @@ export default function ImageDetail({ params }: Route.ComponentProps) {
           <dl className="props">
             <dt>Title</dt>
             <dd>{image.data.title ?? <span className="muted">—</span>}</dd>
-            <dt>Id</dt>
-            <dd className="mono">{image.data.id}</dd>
             <dt>Digest</dt>
             <dd>
               <Digest digest={image.data.manifest_digest} />

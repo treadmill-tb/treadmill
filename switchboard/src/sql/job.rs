@@ -225,7 +225,16 @@ pub async fn insert(
                 predecessor.image_set_generation,
             )
         }
-        JobInitSpec::Image { image_id } => (None, None, Some(image_id), None, None),
+        JobInitSpec::Image { manifest_digest } => {
+            // The enqueue route resolved and source-gated this digest already; a
+            // now-missing row is a protocol fault (images are never deleted).
+            let rec = image::fetch_by_digest(conn.as_mut(), &manifest_digest.encoded())
+                .await?
+                .ok_or_else(|| {
+                    sqlx::Error::Protocol(format!("image {manifest_digest} is not registered"))
+                })?;
+            (None, None, Some(rec.id), None, None)
+        }
         JobInitSpec::ImageSet { set_id, generation } => {
             // Freeze the candidate set: pin an explicit generation, else the
             // set's latest. The enqueue route rejects a set with no
@@ -534,30 +543,26 @@ impl SqlJob {
         // fields out of `self`.
         let timeout_secs = self.timeout().num_seconds();
 
+        // Image references are stored as internal image ids; the API view
+        // addresses images by digest, recovered by join (images are immortal,
+        // so the rows exist).
+        let image_digest = match self.image_id {
+            Some(id) => Some(digest_for_image_id(&mut *conn, id, self.job_id).await?),
+            None => None,
+        };
+        let resolved_image_digest = match self.resolved_image_id {
+            Some(id) => Some(digest_for_image_id(&mut *conn, id, self.job_id).await?),
+            None => None,
+        };
+
         let image = job_image_ref(
             self.resume_job_id,
             self.restart_job_id,
-            self.image_id,
+            image_digest,
             self.image_set_id,
             self.image_set_generation,
             self.job_id,
         )?;
-
-        // The concrete dispatch pin is stored as an image id; recover its digest
-        // by join (images are immortal, so the row exists).
-        let resolved_image_digest = match self.resolved_image_id {
-            Some(id) => {
-                let rec = image::fetch_by_id(&mut *conn, id)
-                    .await?
-                    .ok_or(JobInfoError::Malformed(self.job_id))?;
-                Some(
-                    rec.manifest_digest
-                        .parse()
-                        .map_err(|_| JobInfoError::Digest(rec.manifest_digest))?,
-                )
-            }
-            None => None,
-        };
 
         Ok(JobInfo {
             job_id: self.job_id,
@@ -717,6 +722,21 @@ impl std::fmt::Display for JobInfoError {
 }
 impl std::error::Error for JobInfoError {}
 
+/// Recover the manifest digest behind an internal image id (images are
+/// immortal, so a missing row is a data-integrity fault on `job_id`).
+async fn digest_for_image_id(
+    conn: &mut sqlx::PgConnection,
+    id: Uuid,
+    job_id: Uuid,
+) -> Result<Digest, JobInfoError> {
+    let rec = image::fetch_by_id(&mut *conn, id)
+        .await?
+        .ok_or(JobInfoError::Malformed(job_id))?;
+    rec.manifest_digest
+        .parse()
+        .map_err(|_| JobInfoError::Digest(rec.manifest_digest))
+}
+
 /// Fold a job row's mutually-exclusive image columns into a single
 /// [`JobImageRef`], following the row invariants in `SCHEMA.sql` (resume →
 /// restart → concrete image → image set). A row that sets none of them
@@ -724,7 +744,7 @@ impl std::error::Error for JobInfoError {}
 fn job_image_ref(
     resume_job_id: Option<Uuid>,
     restart_job_id: Option<Uuid>,
-    image_id: Option<Uuid>,
+    image_digest: Option<Digest>,
     image_set_id: Option<Uuid>,
     image_set_generation: Option<i32>,
     job_id: Uuid,
@@ -733,8 +753,8 @@ fn job_image_ref(
         Ok(JobImageRef::Resume { job_id })
     } else if let Some(job_id) = restart_job_id {
         Ok(JobImageRef::Restart { job_id })
-    } else if let Some(image_id) = image_id {
-        Ok(JobImageRef::Image { image_id })
+    } else if let Some(manifest_digest) = image_digest {
+        Ok(JobImageRef::Image { manifest_digest })
     } else if let (Some(set_id), Some(generation)) = (image_set_id, image_set_generation) {
         Ok(JobImageRef::ImageSet {
             set_id,
@@ -772,7 +792,7 @@ pub async fn list_visible(
           j.job_state as "job_state: SqlJobState",
           j.resume_job_id,
           j.restart_job_id,
-          j.image_id,
+          i.manifest_digest as "image_digest?",
           j.image_set_id,
           j.image_set_generation,
           j.queued_at,
@@ -782,6 +802,7 @@ pub async fn list_visible(
           j.termination_reason as "termination_reason: SqlTerminationReason",
           j.task_exit_status as "task_exit_status: SqlTaskExitStatus"
         from tml_switchboard.jobs j
+        left join tml_switchboard.images i on i.id = j.image_id
         where (
             exists (select 1 from p where p.id = $2)
             or j.owner_id in (select id from p)
@@ -806,6 +827,10 @@ pub async fn list_visible(
 
     rows.into_iter()
         .map(|r| {
+            let image_digest = r
+                .image_digest
+                .map(|d| d.parse().map_err(|_| JobInfoError::Digest(d)))
+                .transpose()?;
             Ok(JobSummary {
                 job_id: r.job_id,
                 owner_id: r.owner_id,
@@ -813,7 +838,7 @@ pub async fn list_visible(
                 image: job_image_ref(
                     r.resume_job_id,
                     r.restart_job_id,
-                    r.image_id,
+                    image_digest,
                     r.image_set_id,
                     r.image_set_generation,
                     r.job_id,

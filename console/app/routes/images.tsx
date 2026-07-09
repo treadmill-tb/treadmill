@@ -9,7 +9,7 @@ import { RelTime } from "../components/rel-time";
 
 function RegisterImageForm({ onDone }: { onDone: () => void }) {
   const queryClient = useQueryClient();
-  const register = $api.useMutation("post", "/images", {
+  const register = $api.useMutation("post", "/images/{digest}/sources", {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["get", "/images"] });
       onDone();
@@ -23,13 +23,11 @@ function RegisterImageForm({ onDone }: { onDone: () => void }) {
       const v = f.get(k);
       return typeof v === "string" ? v.trim() : "";
     };
-    const title = str("title");
     register.mutate({
+      params: { path: { digest: str("manifest_digest") } },
       body: {
         registry: str("registry"),
         repository: str("repository"),
-        manifest_digest: str("manifest_digest"),
-        title: title === "" ? null : title,
       },
     });
   }
@@ -37,20 +35,16 @@ function RegisterImageForm({ onDone }: { onDone: () => void }) {
   return (
     <form className="form card" onSubmit={onSubmit}>
       <label className="field">
+        <span>Manifest digest (sha256:…)</span>
+        <input name="manifest_digest" required className="mono" />
+      </label>
+      <label className="field">
         <span>Registry (host:port)</span>
         <input name="registry" required className="mono" />
       </label>
       <label className="field">
         <span>Repository</span>
         <input name="repository" required className="mono" />
-      </label>
-      <label className="field">
-        <span>Manifest digest (sha256:…)</span>
-        <input name="manifest_digest" required className="mono" />
-      </label>
-      <label className="field">
-        <span>Title (optional)</span>
-        <input name="title" />
       </label>
       <MutationError error={register.error} />
       <div className="toolbar">
@@ -95,10 +89,14 @@ export default function Images() {
             </thead>
             <tbody>
               {images.data.map((img) => (
-                <tr key={img.id}>
+                <tr key={img.manifest_digest}>
                   <td>
                     <Link to={`/images/${img.manifest_digest}`}>
-                      {img.title ?? <span className="mono">{img.id}</span>}
+                      {img.title ?? (
+                        <span className="mono">
+                          {img.manifest_digest.slice(7, 15)}
+                        </span>
+                      )}
                     </Link>
                   </td>
                   <td>

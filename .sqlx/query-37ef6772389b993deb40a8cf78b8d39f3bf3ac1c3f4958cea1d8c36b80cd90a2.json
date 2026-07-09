@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        with p(id) as (select id from tml_switchboard.principals($1))\n        select\n          j.job_id,\n          j.owner_id,\n          j.job_state as \"job_state: SqlJobState\",\n          j.resume_job_id,\n          j.restart_job_id,\n          j.image_id,\n          j.image_set_id,\n          j.image_set_generation,\n          j.queued_at,\n          j.started_at,\n          j.terminated_at,\n          j.dispatched_on_host_id,\n          j.termination_reason as \"termination_reason: SqlTerminationReason\",\n          j.task_exit_status as \"task_exit_status: SqlTaskExitStatus\"\n        from tml_switchboard.jobs j\n        where (\n            exists (select 1 from p where p.id = $2)\n            or j.owner_id in (select id from p)\n            or exists (\n                select 1 from tml_switchboard.job_grants g\n                join p on g.subject_id = p.id\n                where g.job_id = j.job_id\n            )\n        )\n        and ($3::timestamptz is null or (j.queued_at, j.job_id) < ($3, $4))\n        order by j.queued_at desc, j.job_id desc\n        limit $5\n        ",
+  "query": "\n        with p(id) as (select id from tml_switchboard.principals($1))\n        select\n          j.job_id,\n          j.owner_id,\n          j.job_state as \"job_state: SqlJobState\",\n          j.resume_job_id,\n          j.restart_job_id,\n          i.manifest_digest as \"image_digest?\",\n          j.image_set_id,\n          j.image_set_generation,\n          j.queued_at,\n          j.started_at,\n          j.terminated_at,\n          j.dispatched_on_host_id,\n          j.termination_reason as \"termination_reason: SqlTerminationReason\",\n          j.task_exit_status as \"task_exit_status: SqlTaskExitStatus\"\n        from tml_switchboard.jobs j\n        left join tml_switchboard.images i on i.id = j.image_id\n        where (\n            exists (select 1 from p where p.id = $2)\n            or j.owner_id in (select id from p)\n            or exists (\n                select 1 from tml_switchboard.job_grants g\n                join p on g.subject_id = p.id\n                where g.job_id = j.job_id\n            )\n        )\n        and ($3::timestamptz is null or (j.queued_at, j.job_id) < ($3, $4))\n        order by j.queued_at desc, j.job_id desc\n        limit $5\n        ",
   "describe": {
     "columns": [
       {
@@ -74,12 +74,12 @@
       },
       {
         "ordinal": 5,
-        "name": "image_id",
-        "type_info": "Uuid",
+        "name": "image_digest?",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.jobs",
-            "name": "image_id"
+            "table": "tml_switchboard.images",
+            "name": "manifest_digest"
           }
         }
       },
@@ -218,7 +218,7 @@
       false,
       true,
       true,
-      true,
+      false,
       true,
       true,
       false,
@@ -229,5 +229,5 @@
       true
     ]
   },
-  "hash": "326dae99659bae337d810fded60c01038574366adbeff44548613718f4090de3"
+  "hash": "37ef6772389b993deb40a8cf78b8d39f3bf3ac1c3f4958cea1d8c36b80cd90a2"
 }
