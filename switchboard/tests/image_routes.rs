@@ -333,7 +333,7 @@ async fn register_list_and_inspect_image(pool: PgPool) {
             "registry": REGISTRY,
             "repository": REPO,
             "manifest_digest": digest.encoded(),
-            "label": "my ubuntu",
+            "title": "my ubuntu",
         }))
         .send()
         .await
@@ -341,7 +341,7 @@ async fn register_list_and_inspect_image(pool: PgPool) {
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
     let info: ImageInfo = resp.json().await.unwrap();
     assert_eq!(info.manifest_digest, digest);
-    assert_eq!(info.label.as_deref(), Some("my ubuntu"));
+    assert_eq!(info.title.as_deref(), Some("my ubuntu"));
     assert_eq!(info.sources.len(), 1);
     assert_eq!(info.sources[0].registry, REGISTRY);
     assert_eq!(info.sources[0].repository, REPO);

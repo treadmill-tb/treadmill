@@ -826,9 +826,9 @@ export interface components {
             created_at: string;
             /** Format: uuid */
             id: string;
-            label?: string | null;
             manifest_digest: components["schemas"]["Digest"];
             sources: components["schemas"]["ImageSourceInfo"][];
+            title?: string | null;
         };
         /** @description One immutable generation (membership snapshot) of an image set. */
         ImageSetGenerationInfo: {
@@ -1382,17 +1382,17 @@ export interface components {
          *     Treadmill image, and records the image plus its first location.
          */
         RegisterImageRequest: {
-            /**
-             * @description Optional human-readable label.
-             * @default null
-             */
-            label: string | null;
             /** @description The OCI manifest digest identifying the image. */
             manifest_digest: components["schemas"]["Digest"];
             /** @description Registry authority (`host:port`) the manifest can be pulled from. */
             registry: string;
             /** @description Repository path within the registry. */
             repository: string;
+            /**
+             * @description Optional human-readable title.
+             * @default null
+             */
+            title: string | null;
         };
         /**
          * @description One audit event, already rendered to a human-readable `message` for the

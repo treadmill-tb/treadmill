@@ -23,9 +23,9 @@ pub struct RegisterImageRequest {
     pub repository: String,
     /// The OCI manifest digest identifying the image.
     pub manifest_digest: Digest,
-    /// Optional human-readable label.
+    /// Optional human-readable title.
     #[serde(default)]
-    pub label: Option<String>,
+    pub title: Option<String>,
 }
 
 /// A permission on an image source. A "public" (unauthenticated) source is one
@@ -62,7 +62,7 @@ pub struct ImageInfo {
     pub id: Uuid,
     pub manifest_digest: Digest,
     pub artifact_type: String,
-    pub label: Option<String>,
+    pub title: Option<String>,
     pub created_at: DateTime<Utc>,
     pub sources: Vec<ImageSourceInfo>,
 }

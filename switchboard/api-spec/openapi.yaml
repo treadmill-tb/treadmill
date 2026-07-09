@@ -1847,16 +1847,16 @@ components:
         id:
           type: string
           format: uuid
-        label:
-          type:
-          - string
-          - 'null'
         manifest_digest:
           $ref: '#/components/schemas/Digest'
         sources:
           type: array
           items:
             $ref: '#/components/schemas/ImageSourceInfo'
+        title:
+          type:
+          - string
+          - 'null'
       required:
       - id
       - manifest_digest
@@ -2793,12 +2793,6 @@ components:
         Treadmill image, and records the image plus its first location.
       type: object
       properties:
-        label:
-          description: Optional human-readable label.
-          type:
-          - string
-          - 'null'
-          default: null
         manifest_digest:
           description: The OCI manifest digest identifying the image.
           allOf:
@@ -2809,6 +2803,12 @@ components:
         repository:
           description: Repository path within the registry.
           type: string
+        title:
+          description: Optional human-readable title.
+          type:
+          - string
+          - 'null'
+          default: null
       required:
       - registry
       - repository

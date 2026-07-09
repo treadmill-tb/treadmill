@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select i.id, i.manifest_digest, i.artifact_type, i.label,\n                  i.attrs as \"attrs: serde_json::Value\", i.created_at\n           from tml_switchboard.images i\n           where tml_switchboard.image_source_usable($1, i.id)\n           order by i.created_at, i.id",
+  "query": "select id, manifest_digest, artifact_type, title,\n                  attrs as \"attrs: serde_json::Value\", created_at\n           from tml_switchboard.images where manifest_digest = $1",
   "describe": {
     "columns": [
       {
@@ -38,12 +38,12 @@
       },
       {
         "ordinal": 3,
-        "name": "label",
+        "name": "title",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "tml_switchboard.images",
-            "name": "label"
+            "name": "title"
           }
         }
       },
@@ -72,7 +72,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Text"
       ]
     },
     "nullable": [
@@ -84,5 +84,5 @@
       false
     ]
   },
-  "hash": "59f78e9defde688fbcd8a1d12c989bcaffe361a945f64c67233b402457bd237f"
+  "hash": "14dceedafcfb579e5069d123b6e53fe0dc32a01727ce8eddaf93da13faeed263"
 }

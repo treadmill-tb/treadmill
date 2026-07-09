@@ -21,7 +21,7 @@ pub struct ImageRecord {
     pub id: Uuid,
     pub manifest_digest: String,
     pub artifact_type: String,
-    pub label: Option<String>,
+    pub title: Option<String>,
     pub attrs: serde_json::Value,
     pub created_at: DateTime<Utc>,
 }
@@ -103,7 +103,7 @@ pub async fn fetch_by_digest(
 ) -> Result<Option<ImageRecord>, sqlx::Error> {
     sqlx::query_as!(
         ImageRecord,
-        r#"select id, manifest_digest, artifact_type, label,
+        r#"select id, manifest_digest, artifact_type, title,
                   attrs as "attrs: serde_json::Value", created_at
            from tml_switchboard.images where manifest_digest = $1"#,
         manifest_digest,
@@ -119,7 +119,7 @@ pub async fn fetch_by_id(
 ) -> Result<Option<ImageRecord>, sqlx::Error> {
     sqlx::query_as!(
         ImageRecord,
-        r#"select id, manifest_digest, artifact_type, label,
+        r#"select id, manifest_digest, artifact_type, title,
                   attrs as "attrs: serde_json::Value", created_at
            from tml_switchboard.images where id = $1"#,
         id,
@@ -134,17 +134,17 @@ pub async fn insert(
     id: Uuid,
     manifest_digest: &str,
     artifact_type: &str,
-    label: Option<&str>,
+    title: Option<&str>,
     attrs: &serde_json::Value,
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
         r#"insert into tml_switchboard.images
-             (id, manifest_digest, artifact_type, label, attrs)
+             (id, manifest_digest, artifact_type, title, attrs)
            values ($1, $2, $3, $4, $5)"#,
         id,
         manifest_digest,
         artifact_type,
-        label,
+        title,
         attrs,
     )
     .execute(conn)
@@ -364,7 +364,7 @@ pub async fn list_usable_images(
 ) -> Result<Vec<ImageRecord>, sqlx::Error> {
     sqlx::query_as!(
         ImageRecord,
-        r#"select i.id, i.manifest_digest, i.artifact_type, i.label,
+        r#"select i.id, i.manifest_digest, i.artifact_type, i.title,
                   i.attrs as "attrs: serde_json::Value", i.created_at
            from tml_switchboard.images i
            where tml_switchboard.image_source_usable($1, i.id)

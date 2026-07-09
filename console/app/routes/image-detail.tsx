@@ -332,8 +332,8 @@ export default function ImageDetail({ params }: Route.ComponentProps) {
       {image.data && (
         <>
           <dl className="props">
-            <dt>Label</dt>
-            <dd>{image.data.label ?? <span className="muted">—</span>}</dd>
+            <dt>Title</dt>
+            <dd>{image.data.title ?? <span className="muted">—</span>}</dd>
             <dt>Id</dt>
             <dd className="mono">{image.data.id}</dd>
             <dt>Digest</dt>

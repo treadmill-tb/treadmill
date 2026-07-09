@@ -23,13 +23,13 @@ function RegisterImageForm({ onDone }: { onDone: () => void }) {
       const v = f.get(k);
       return typeof v === "string" ? v.trim() : "";
     };
-    const label = str("label");
+    const title = str("title");
     register.mutate({
       body: {
         registry: str("registry"),
         repository: str("repository"),
         manifest_digest: str("manifest_digest"),
-        label: label === "" ? null : label,
+        title: title === "" ? null : title,
       },
     });
   }
@@ -49,8 +49,8 @@ function RegisterImageForm({ onDone }: { onDone: () => void }) {
         <input name="manifest_digest" required className="mono" />
       </label>
       <label className="field">
-        <span>Label (optional)</span>
-        <input name="label" />
+        <span>Title (optional)</span>
+        <input name="title" />
       </label>
       <MutationError error={register.error} />
       <div className="toolbar">
@@ -86,7 +86,7 @@ export default function Images() {
           <table>
             <thead>
               <tr>
-                <th>Label</th>
+                <th>Title</th>
                 <th>Digest</th>
                 <th>Artifact type</th>
                 <th>Sources</th>
@@ -98,7 +98,7 @@ export default function Images() {
                 <tr key={img.id}>
                   <td>
                     <Link to={`/images/${img.manifest_digest}`}>
-                      {img.label ?? <span className="mono">{img.id}</span>}
+                      {img.title ?? <span className="mono">{img.id}</span>}
                     </Link>
                   </td>
                   <td>

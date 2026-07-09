@@ -106,7 +106,7 @@ async fn image_info(
         id: rec.id,
         manifest_digest: rec.manifest_digest.parse().map_err(internal)?,
         artifact_type: rec.artifact_type,
-        label: rec.label,
+        title: rec.title,
         created_at: rec.created_at,
         sources,
     })
@@ -180,7 +180,7 @@ pub async fn register_image(
         id,
         &digest_str,
         media_types::IMAGE_ARTIFACT_TYPE,
-        req.label.as_deref(),
+        req.title.as_deref(),
         &attrs,
     )
     .await

@@ -1029,7 +1029,7 @@ $$;
 --
 -- A registered Treadmill image is a non-owned manifest identity: a content hash
 -- with no owner and no ACL. `manifest_digest` is globally UNIQUE (the same bytes
--- are the same row for everyone). `label`/`attrs` are cached projections of the
+-- are the same row for everyone). `title`/`attrs` are cached projections of the
 -- validated manifest, NOT user-writeable metadata; `artifact_type` records the
 -- manifest's `artifactType` for display. Ownership and grantability live on the
 -- image *sources* below, not here.
@@ -1037,7 +1037,7 @@ CREATE TABLE tml_switchboard.images (
     id uuid NOT NULL PRIMARY KEY,
     manifest_digest text NOT NULL UNIQUE,
     artifact_type text NOT NULL,
-    label text,
+    title text,
     attrs jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamp with time zone NOT NULL DEFAULT current_timestamp
 );
