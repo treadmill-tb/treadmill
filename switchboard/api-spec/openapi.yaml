@@ -1068,7 +1068,7 @@ paths:
   /image-sets:
     get:
       tags:
-      - Image sets
+      - Images
       summary: List image sets
       description: Returns the complete set in a stable order; this route is not paginated.
       operationId: listImageSets
@@ -1089,7 +1089,7 @@ paths:
       - token: []
     post:
       tags:
-      - Image sets
+      - Images
       summary: Create an image set
       operationId: createImageSet
       requestBody:
@@ -1138,7 +1138,7 @@ paths:
   /image-sets/{id}:
     get:
       tags:
-      - Image sets
+      - Images
       summary: Get an image set
       operationId: getImageSet
       parameters:
@@ -1169,7 +1169,7 @@ paths:
   /image-sets/{id}/events:
     get:
       tags:
-      - Image sets
+      - Images
       summary: List an image set's audit events
       operationId: listImageSetEvents
       parameters:
@@ -1225,7 +1225,7 @@ paths:
   /image-sets/{id}/generations:
     post:
       tags:
-      - Image sets
+      - Images
       summary: Append a generation to an image set
       operationId: createImageSetGeneration
       parameters:
@@ -1283,7 +1283,7 @@ paths:
   /image-sets/{id}/generations/{n}:
     get:
       tags:
-      - Image sets
+      - Images
       summary: Get an image-set generation
       operationId: getImageSetGeneration
       parameters:
@@ -1324,7 +1324,7 @@ paths:
   /image-sets/{id}/grants:
     get:
       tags:
-      - Image sets
+      - Images
       summary: List an image set's grants
       description: Returns the complete set in a stable order; this route is not paginated.
       operationId: listImageSetGrants
@@ -1355,7 +1355,7 @@ paths:
       - token: []
     post:
       tags:
-      - Image sets
+      - Images
       summary: Grant a permission on an image set
       operationId: createImageSetGrant
       parameters:
@@ -1407,7 +1407,7 @@ paths:
   /image-sets/{id}/grants/{subject_id}/{permission}:
     delete:
       tags:
-      - Image sets
+      - Images
       summary: Revoke a grant on an image set
       operationId: revokeImageSetGrant
       parameters:
@@ -3082,8 +3082,6 @@ tags:
 - name: Hosts
   description: Inspect hosts and their attached targets.
 - name: Images
-  description: Register and inspect catalog images.
-- name: Image sets
-  description: Manage image sets, their generations, and grants.
+  description: Manage images, sources, sets, their generations, and grants.
 - name: Users
   description: Profiles, sessions, and audit feeds.

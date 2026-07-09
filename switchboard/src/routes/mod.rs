@@ -439,7 +439,7 @@ pub fn api_router() -> ApiRouter<AppState> {
         .api_route(
             "/image-sets",
             post_with(images::create_image_set, |o| {
-                doc(o, "createImageSet", "Image sets", "Create an image set")
+                doc(o, "createImageSet", "Images", "Create an image set")
                     .response_with::<201, Json<ImageSetInfo>, _>(|r| {
                         r.description("The image set was created.")
                     })
@@ -448,14 +448,14 @@ pub fn api_router() -> ApiRouter<AppState> {
                     })
             })
             .get_with(images::list_image_sets, |o| {
-                doc(o, "listImageSets", "Image sets", "List image sets").description(NOT_PAGINATED)
+                doc(o, "listImageSets", "Images", "List image sets").description(NOT_PAGINATED)
             }),
         )
         //  GET /image-sets/{id}    -- inspect one image set
         .api_route(
             "/image-sets/{id}",
             get_with(images::get_image_set, |o| {
-                doc(o, "getImageSet", "Image sets", "Get an image set").response_with::<404, (), _>(
+                doc(o, "getImageSet", "Images", "Get an image set").response_with::<404, (), _>(
                     |r| r.description("No such image set, or it is not visible to the caller."),
                 )
             }),
@@ -467,7 +467,7 @@ pub fn api_router() -> ApiRouter<AppState> {
                 doc(
                     o,
                     "listImageSetEvents",
-                    "Image sets",
+                    "Images",
                     "List an image set's audit events",
                 )
                 .response_with::<404, (), _>(|r| {
@@ -482,7 +482,7 @@ pub fn api_router() -> ApiRouter<AppState> {
                 doc(
                     o,
                     "createImageSetGeneration",
-                    "Image sets",
+                    "Images",
                     "Append a generation to an image set",
                 )
                 .response_with::<201, Json<ImageSetGenerationInfo>, _>(|r| {
@@ -500,7 +500,7 @@ pub fn api_router() -> ApiRouter<AppState> {
                 doc(
                     o,
                     "getImageSetGeneration",
-                    "Image sets",
+                    "Images",
                     "Get an image-set generation",
                 )
                 .response_with::<404, (), _>(|r| r.description("No such image set or generation."))
@@ -514,7 +514,7 @@ pub fn api_router() -> ApiRouter<AppState> {
                 doc(
                     o,
                     "createImageSetGrant",
-                    "Image sets",
+                    "Images",
                     "Grant a permission on an image set",
                 )
                 .response_with::<204, (), _>(|r| r.description("The grant was recorded."))
@@ -526,7 +526,7 @@ pub fn api_router() -> ApiRouter<AppState> {
                 doc(
                     o,
                     "listImageSetGrants",
-                    "Image sets",
+                    "Images",
                     "List an image set's grants",
                 )
                 .description(NOT_PAGINATED)
@@ -539,7 +539,7 @@ pub fn api_router() -> ApiRouter<AppState> {
                 doc(
                     o,
                     "revokeImageSetGrant",
-                    "Image sets",
+                    "Images",
                     "Revoke a grant on an image set",
                 )
                 .response_with::<204, (), _>(|r| r.description("The grant was revoked."))
@@ -594,10 +594,9 @@ pub fn openapi_spec() -> aide::openapi::OpenApi {
             ),
             tag("Jobs", "Enqueue, inspect, and terminate jobs."),
             tag("Hosts", "Inspect hosts and their attached targets."),
-            tag("Images", "Register and inspect catalog images."),
             tag(
-                "Image sets",
-                "Manage image sets, their generations, and grants.",
+                "Images",
+                "Manage images, sources, sets, their generations, and grants.",
             ),
             tag("Users", "Profiles, sessions, and audit feeds."),
         ],
