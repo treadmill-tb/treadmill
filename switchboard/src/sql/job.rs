@@ -7,8 +7,8 @@ use sqlx::{PgExecutor, Postgres, Transaction};
 use std::collections::BTreeSet;
 use treadmill_rs::api::switchboard::jobs::{
     JobImageRef, JobInfo, JobInitializingStage as ClientJobInitializingStage, JobParameterView,
-    JobSummary, RestartPolicy as ClientRestartPolicy, RestartPolicyState, SshEndpoint,
-    TaskExitStatus as ClientTaskExitStatus,
+    JobPermission as ClientJobPermission, JobSummary, RestartPolicy as ClientRestartPolicy,
+    RestartPolicyState, SshEndpoint, TaskExitStatus as ClientTaskExitStatus,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, TerminationReason};
 use treadmill_rs::api::switchboard_supervisor::{
@@ -515,7 +515,8 @@ impl SqlJob {
     }
 
     /// Render this job row into the [`JobInfo`] API view returned by
-    /// `GET /jobs/{id}`.
+    /// `GET /jobs/{id}`, reporting `permissions` as the viewer's permissions
+    /// on the job (computed by the caller, which knows the viewer).
     ///
     /// Reads the job's ordered target requirements and parameters (the latter
     /// **redacted**: secret values are withheld, see [`JobParameterView`]) and
@@ -524,7 +525,11 @@ impl SqlJob {
     /// the row invariants in `SCHEMA.sql`). Stored digests are re-parsed; a
     /// malformed one is a data-integrity fault surfaced as
     /// [`JobInfoError::Digest`].
-    pub async fn into_info(self, conn: &mut sqlx::PgConnection) -> Result<JobInfo, JobInfoError> {
+    pub async fn into_info(
+        self,
+        conn: &mut sqlx::PgConnection,
+        permissions: Vec<ClientJobPermission>,
+    ) -> Result<JobInfo, JobInfoError> {
         let target_requirements = target_requirements_for_job(self.job_id, &mut *conn).await?;
         let parameters = parameters::fetch_by_job_id(self.job_id, &mut *conn)
             .await?
@@ -592,6 +597,7 @@ impl SqlJob {
             task_exit_status: self.task_exit_status.map(Into::into),
             exit_message: self.exit_message,
             terminated_at: self.terminated_at,
+            permissions,
         })
     }
 

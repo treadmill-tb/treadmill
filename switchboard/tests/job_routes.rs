@@ -21,7 +21,8 @@ use uuid::Uuid;
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{
-    EnqueueJobResponse, JobImageRef, JobInfo, JobListResponse, NatsLogStreamCredentials,
+    EnqueueJobResponse, JobImageRef, JobInfo, JobListResponse, JobPermission,
+    NatsLogStreamCredentials,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, WhoAmIResponse};
 use treadmill_rs::image::Digest;
@@ -766,6 +767,55 @@ async fn owner_reads_own_job_with_secret_redacted(pool: PgPool) {
     let plain = &info.parameters["region"];
     assert!(!plain.secret);
     assert_eq!(plain.value.as_deref(), Some("us-east"));
+
+    // As the owner, bob holds every permission on the job.
+    assert_eq!(info.permissions.len(), 4);
+    for perm in [
+        JobPermission::Read,
+        JobPermission::Stop,
+        JobPermission::Ssh,
+        JobPermission::Manage,
+    ] {
+        assert!(info.permissions.contains(&perm), "missing {perm:?}");
+    }
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn read_grantee_sees_only_the_read_permission(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // `bob` owns the job; `carol` holds an explicit `read` grant on it.
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &bob_token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+    let job_id = seed_job(&pool, bob, token_id, &[]).await;
+
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let carol = whoami(&client, addr, &carol_token).await;
+    sqlx::query(
+        "insert into tml_switchboard.job_grants (job_id, subject_id, permission) \
+         values ($1, $2, 'read')",
+    )
+    .bind(job_id)
+    .bind(carol)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let info: JobInfo = resp.json().await.unwrap();
+    assert_eq!(info.permissions, vec![JobPermission::Read]);
 }
 
 #[sqlx::test]

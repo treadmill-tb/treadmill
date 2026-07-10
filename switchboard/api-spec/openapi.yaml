@@ -2088,6 +2088,11 @@ components:
           type: object
           additionalProperties:
             $ref: '#/components/schemas/JobParameterView'
+        permissions:
+          description: The viewer's permissions on this job.
+          type: array
+          items:
+            $ref: '#/components/schemas/JobPermission'
         queued_at:
           description: When the job was enqueued.
           type: string
@@ -2164,6 +2169,7 @@ components:
       - parameters
       - timeout_secs
       - queued_at
+      - permissions
     JobInitSpec:
       oneOf:
       - description: Resume a previously started job.
@@ -2314,6 +2320,25 @@ components:
           - 'null'
       required:
       - secret
+    JobPermission:
+      description: |-
+        A permission on a job. `permissions` on [`JobInfo`] reports which of these
+        the viewer holds (an owner or global admin holds all of them).
+      oneOf:
+      - description: May read the job (its info, listing, and console logs).
+        type: string
+        const: read
+      - description: May request the job's termination.
+        type: string
+        const: stop
+      - description: May connect to the job over SSH.
+        type: string
+        const: ssh
+      - description: |-
+          May perform privileged operations on the job, such as resuming or
+          restarting it (owner holds this implicitly).
+        type: string
+        const: manage
     JobRequest:
       type: object
       properties:

@@ -11,7 +11,8 @@ use sqlx::postgres::types::PgInterval;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::jobs::{
-    EnqueueJobResponse, JobInfo, JobListResponse, NatsLogStreamCredentials,
+    EnqueueJobResponse, JobInfo, JobListResponse, JobPermission as ApiJobPermission,
+    NatsLogStreamCredentials,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
 
@@ -332,12 +333,23 @@ pub async fn enqueue(
     Ok((StatusCode::CREATED, Json(EnqueueJobResponse { job_id })))
 }
 
+/// Map the engine's job permission to the API enum.
+fn job_perm_to_api(p: JobPermission) -> ApiJobPermission {
+    match p {
+        JobPermission::Read => ApiJobPermission::Read,
+        JobPermission::Stop => ApiJobPermission::Stop,
+        JobPermission::Ssh => ApiJobPermission::Ssh,
+        JobPermission::Manage => ApiJobPermission::Manage,
+    }
+}
+
 /// Axum handler for `GET /jobs/{id}`.
 ///
-/// Returns the full [`JobInfo`] view of a job, gated on the caller's `read`
-/// permission. A caller who cannot read the job — including the case where the
-/// job does not exist — gets `403` rather than a signal of the job's
-/// (non-)existence, matching the log-token route.
+/// Returns the full [`JobInfo`] view of a job — including the caller's own
+/// permissions on it — gated on the caller's `read` permission. A caller who
+/// cannot read the job — including the case where the job does not exist —
+/// gets `403` rather than a signal of the job's (non-)existence, matching the
+/// log-token route.
 pub async fn get_job(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
@@ -351,6 +363,13 @@ pub async fn get_job(
         return Err(StatusCode::FORBIDDEN);
     }
 
+    let permissions = engine::job_permissions(state.pool(), subject.user_id(), job_id)
+        .await
+        .or_internal("enumerating job permissions for get_job")?
+        .into_iter()
+        .map(job_perm_to_api)
+        .collect();
+
     let mut conn = state
         .pool()
         .acquire()
@@ -362,7 +381,7 @@ pub async fn get_job(
         .await
         .or_internal(&format!("fetching job {job_id} for get_job"))?;
     let info = sql_job
-        .into_info(&mut conn)
+        .into_info(&mut conn, permissions)
         .await
         .or_internal(&format!("rendering job {job_id} into JobInfo"))?;
 

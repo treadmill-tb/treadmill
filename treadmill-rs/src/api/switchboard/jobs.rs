@@ -9,6 +9,22 @@ use uuid::Uuid;
 use crate::api::switchboard::{JobState, TerminationReason};
 use crate::image::Digest;
 
+/// A permission on a job. `permissions` on [`JobInfo`] reports which of these
+/// the viewer holds (an owner or global admin holds all of them).
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobPermission {
+    /// May read the job (its info, listing, and console logs).
+    Read,
+    /// May request the job's termination.
+    Stop,
+    /// May connect to the job over SSH.
+    Ssh,
+    /// May perform privileged operations on the job, such as resuming or
+    /// restarting it (owner holds this implicitly).
+    Manage,
+}
+
 /// The fine-grained stage of a job that is still coming up, exposed as
 /// `initializing_stage` on [`JobInfo`] while its `state` is `initializing` (and
 /// null in every other state). A job advances through these stages in order as
@@ -238,6 +254,9 @@ pub struct JobInfo {
     pub exit_message: Option<String>,
     /// When the job was finalized; null until then.
     pub terminated_at: Option<DateTime<Utc>>,
+
+    /// The viewer's permissions on this job.
+    pub permissions: Vec<JobPermission>,
 }
 
 /// Response body of `POST /jobs`: the id assigned to the freshly enqueued job.

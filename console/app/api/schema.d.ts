@@ -973,6 +973,8 @@ export interface components {
             parameters: {
                 [key: string]: components["schemas"]["JobParameterView"];
             };
+            /** @description The viewer's permissions on this job. */
+            permissions: components["schemas"]["JobPermission"][];
             /**
              * Format: date-time
              * @description When the job was enqueued.
@@ -1093,6 +1095,11 @@ export interface components {
             /** @description The plaintext value, or null when the parameter is secret (withheld). */
             value?: string | null;
         };
+        /**
+         * @description A permission on a job. `permissions` on [`JobInfo`] reports which of these
+         *     the viewer holds (an owner or global admin holds all of them).
+         */
+        JobPermission: "read" | "stop" | "ssh" | "manage";
         JobRequest: {
             /**
              * @description Host eligibility: the set of tags the chosen host must carry (as a
