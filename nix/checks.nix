@@ -202,7 +202,7 @@
 
         # Phase 1 of the OCI image migration (§6/§7/§12.3): drive the
         # `oci_store` client against a real child Zot. The tests spin up Zot
-        # (and a second one as a pull-through cache) on loopback and skopeo the
+        # (and a second one as a copy source) on loopback and skopeo the
         # `tiny-efi` fixture in, so the check needs zot + skopeo on PATH and the
         # built fixture in TINY_EFI_IMAGE. Like the reparse test, the oci_store
         # tests skip when those are unset, so the plain `nextest` check passes
@@ -287,44 +287,6 @@
             nativeBuildInputs = cmn.cargoCommonArgs.nativeBuildInputs ++ [
               pkgs.qemu
             ];
-          }
-        );
-
-        # Phase 2 deliverable (§12.6): the aarch64 boot test. It pushes the
-        # tiny-efi fixture into a child Zot, points the qemu supervisor's
-        # OciStore at it, and drives the real job core under non-accelerated
-        # (TCG) qemu-system-aarch64 -M virt + AAVMF, asserting the guest prints
-        # the overlay sentinel (and never the base-only tripwire). Needs zot +
-        # skopeo + qemu on PATH, the AAVMF firmware, and the built fixture; the
-        # in-module test skips without them so the plain `nextest` check passes
-        # it over. Linux-only (Zot binary + loopback sandbox networking + TCG).
-        qemu-boot = cmn.craneLib.cargoNextest (
-          cmn.cargoCommonArgs
-          // {
-            pname = "treadmill-qemu-boot";
-            version = "0.1.0";
-            cargoArtifacts = cmn.testArtifacts;
-            cargoNextestExtraArgs = "--workspace --no-tests=pass -E 'test(boot_tiny_efi)'";
-            partitions = 1;
-            partitionType = "count";
-
-            nativeBuildInputs = cmn.cargoCommonArgs.nativeBuildInputs ++ [
-              cmn.zot
-              pkgs.skopeo
-              pkgs.qemu
-            ];
-
-            # oci-client initializes a TLS backend even for the plain-HTTP
-            # loopback pulls; without a CA bundle that init panics (same as the
-            # oci-store check). The connections are HTTP to 127.0.0.1.
-            SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-
-            # AAVMF (aarch64 UEFI) firmware: code (read-only) + variable-store
-            # template (copied writable by the test), shipped by the qemu pkg.
-            TML_AAVMF_CODE = "${pkgs.qemu}/share/qemu/edk2-aarch64-code.fd";
-            TML_AAVMF_VARS = "${pkgs.qemu}/share/qemu/edk2-arm-vars.fd";
-
-            TINY_EFI_IMAGE = self'.packages.tiny-efi-image-layout;
           }
         );
 

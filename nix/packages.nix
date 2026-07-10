@@ -23,9 +23,16 @@
 
         swx = cmn.mkBin { bin = "swx"; };
 
-        treadmill-qemu-supervisor = cmn.mkBin { bin = "treadmill-qemu-supervisor"; };
+        treadmill-qemu-supervisor = cmn.mkBin {
+          bin = "treadmill-qemu-supervisor";
+          # The OCI store execs skopeo to copy images into the local Zot.
+          runtimePath = [ pkgs.skopeo ];
+        };
 
-        treadmill-nbd-netboot-supervisor = cmn.mkBin { bin = "treadmill-nbd-netboot-supervisor"; };
+        treadmill-nbd-netboot-supervisor = cmn.mkBin {
+          bin = "treadmill-nbd-netboot-supervisor";
+          runtimePath = [ pkgs.skopeo ];
+        };
       }
       // lib.optionalAttrs isLinux {
         tml-puppet = cmn.mkBin { bin = "tml-puppet"; };

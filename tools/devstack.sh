@@ -20,8 +20,8 @@ user="$(id -un)"
 # qemu-supervisor stack is then skipped and `.#dev` is just the
 # switchboard/console/NATS stack, as before.
 fixture_layout="${TML_FIXTURE_LAYOUT:-}"
-aavmf_code="${TML_AAVMF_CODE:-}"
-aavmf_vars="${TML_AAVMF_VARS:-}"
+uefi_code="${TML_UEFI_CODE:-}"
+uefi_vars="${TML_UEFI_VARS:-}"
 if [ -n "$fixture_layout" ]; then
     enable_supervisor=1
 else
@@ -297,16 +297,16 @@ if [ "$enable_supervisor" = 1 ]; then
  "log":{"level":"error"}}
 JSON
 
-  # Per-job writable AAVMF variable store (the code blob stays shared
+  # Per-job writable pflash variable store (the code blob stays shared
   # read-only). Modeled on supervisor/qemu/nix_ovmf-vars_start_script.sh.
-  aavmf_start="$cfg_dir/aavmf-vars-start.sh"
-  cat > "$aavmf_start" <<SH
+  pflash_vars_start="$cfg_dir/pflash-vars-start.sh"
+  cat > "$pflash_vars_start" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
-cp "$aavmf_vars" "\$TML_JOB_WORKDIR/AAVMF_VARS.fd"
-chmod u+w "\$TML_JOB_WORKDIR/AAVMF_VARS.fd"
+cp "$uefi_vars" "\$TML_JOB_WORKDIR/UEFI_VARS.fd"
+chmod u+w "\$TML_JOB_WORKDIR/UEFI_VARS.fd"
 SH
-  chmod +x "$aavmf_start"
+  chmod +x "$pflash_vars_start"
 
   cat > "$cfg_dir/supervisor.toml" <<TOML
 [base]
@@ -324,28 +324,27 @@ registry = "127.0.0.1:$zot_port"
 store_root = "$zot_dir"
 
 [qemu]
-qemu_binary = "qemu-system-aarch64"
+qemu_binary = "qemu-kvm"
 qemu_img_binary = "qemu-img"
 state_dir = "$sup_state_dir"
-# The tiny-efi fixture's layers are 16 MiB; the overlay matches.
-working_disk_max_bytes = 16777216
+# 10GB should be enough to run proper Linux images:
+working_disk_max_bytes = 10737418240
 tcp_control_socket_listen_addr = "127.0.0.1:3859"
-start_script = "$aavmf_start"
-# aarch64 under TCG (no KVM), AAVMF pflash, virtio-blk on the backing
-# chain's writable top node. The serial console is wired automatically
-# by the supervisor when the dispatch enables log streaming (it ships
-# the console to NATS), so it is intentionally not listed here.
+start_script = "$pflash_vars_start"
+# KVM, EDK2 OVMF UEFI, virtio-blk on the backing chain's writable top node. The
+# serial console is wired automatically by the supervisor when the dispatch
+# enables log streaming (it ships the console to NATS), so it is intentionally
+# not listed here.
 qemu_args = [
   "-name", "tml-{job_id}",
   "-nodefaults",
-  "-machine", "virt",
-  "-cpu", "cortex-a57",
-  "-m", "512",
-  "-drive", "if=pflash,format=raw,readonly=on,file=$aavmf_code",
-  "-drive", "if=pflash,format=raw,file={job_workdir}/AAVMF_VARS.fd",
-  "-device", "virtio-blk-device,drive={disk_node}",
+  "-machine", "q35",
+  "-m", "1024M",
+  "-drive", "if=pflash,format=raw,readonly=on,file=$uefi_code",
+  "-drive", "if=pflash,format=raw,file={job_workdir}/UEFI_VARS.fd",
+  "-device", "virtio-blk-pci,drive={disk_node}",
   "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
-  "-device", "virtio-net-device,netdev=net0",
+  "-device", "virtio-net-pci,netdev=net0",
   "-fw_cfg", "name=opt/org.tockos.treadmill.tcp-ctrl-socket,string=10.0.2.2:3859",
   "-display", "none",
   "-no-reboot",
@@ -432,14 +431,12 @@ fi
 if [ "$enable_supervisor" = 1 ]; then
   manifest_digest="$(jq -r '.manifests[0].digest' "$fixture_layout/index.json")"
   echo "Registering tiny-efi image ($manifest_digest)"
-  if RESP="$(\
-    curl -fsS -X POST "http://127.0.0.1:$sb_port/api/v1/images" \
+  if curl -fsS -X POST "http://127.0.0.1:$sb_port/api/v1/images/$manifest_digest/sources" \
      -H "Authorization: Bearer $api_token_bearer" \
      -H 'content-type: application/json' \
-     -d "{\"registry\":\"127.0.0.1:$zot_port\",\"repository\":\"treadmill/tiny-efi\",\"manifest_digest\":\"$manifest_digest\",\"label\":\"tiny-efi (dev)\"}" \
-  )"; then
-    tiny_efi_image_id="$(echo "$RESP" | jq -r .id)"
-    echo "  registered as $tiny_efi_image_id"
+     -d "{\"registry\":\"127.0.0.1:$zot_port\",\"repository\":\"treadmill/tiny-efi\"}" > /dev/null \
+  ; then
+    echo "  registered tiny-efi image"
 
     # Wrap the fixture image in a public image set so jobs can target a
     # stable moving-target handle (`tiny-efi`) rather than a concrete
@@ -459,8 +456,8 @@ if [ "$enable_supervisor" = 1 ]; then
         -X POST "http://127.0.0.1:$sb_port/api/v1/image-sets/$tiny_efi_set_id/generations" \
         -H "Authorization: Bearer $api_token_bearer" \
         -H 'content-type: application/json' \
-        -d "{\"members\":[{\"image_id\":\"$tiny_efi_image_id\",\"required_host_tags\":[]}]}"; then
-        echo "  added generation with member $tiny_efi_image_id"
+        -d "{\"members\":[{\"manifest_digest\":\"$manifest_digest\",\"required_host_tags\":[]}]}"; then
+        echo "  added generation with member $manifest_digest"
       else
         echo "  ! generation creation failed (continuing)" >&2
       fi
@@ -471,7 +468,7 @@ if [ "$enable_supervisor" = 1 ]; then
     echo "  ! image registration failed (continuing)" >&2
   fi
 
-  echo "Starting QEMU supervisor (aarch64 TCG; host $host_id)"
+  echo "Starting QEMU supervisor (host $host_id)"
   treadmill-qemu-supervisor -c "$cfg_dir/supervisor.toml" \
     >"$log_dir/supervisor.log" 2>&1 &
   pids+=("$!")
@@ -511,7 +508,7 @@ fi
 if [ "$enable_supervisor" = 1 ]; then
   cat <<EOF
     zot registry    : http://127.0.0.1:$zot_port (repo treadmill/tiny-efi)
-    qemu supervisor : host $host_id (aarch64 TCG)
+    qemu supervisor : host $host_id (qemu-kvm)
     image set     : tiny-efi (public; targets the tiny-efi fixture)
 EOF
 else

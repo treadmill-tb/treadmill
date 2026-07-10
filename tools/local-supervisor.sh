@@ -2,7 +2,7 @@
 
 # Run a Treadmill supervisor standalone — no switchboard, no Postgres, no NATS.
 #
-# This brings up a per-developer zot registry that sources an image from an
+# This brings up a per-developer zot registry, copies an image into it from an
 # upstream registry (ghcr.io by default), resolves the requested tag to its OCI
 # manifest digest, and runs the supervisor under the switchboard-less `local`
 # connector (see connector/local) to boot exactly one job. The guest console is
@@ -24,14 +24,13 @@ set -euo pipefail
 supervisor_bin="${TML_SUPERVISOR_BIN:-treadmill-qemu-supervisor}"
 ovmf_code="${TML_OVMF_CODE:-}"     # x86_64 UEFI code blob (read-only)
 ovmf_vars="${TML_OVMF_VARS:-}"     # x86_64 UEFI vars template
-aavmf_code="${TML_AAVMF_CODE:-}"   # aarch64 UEFI code blob (read-only)
-aavmf_vars="${TML_AAVMF_VARS:-}"   # aarch64 UEFI vars template
+uefi_code="${TML_UEFI_CODE:-}"   # aarch64 UEFI code blob (read-only)
+uefi_vars="${TML_UEFI_VARS:-}"   # aarch64 UEFI vars template
 
 # ---------------------------------------------------------------------------
 # Defaults, overridable by flags / environment.
 # ---------------------------------------------------------------------------
 arch="x86_64"
-mode="sync"                 # sync = zot pull-through; copy = skopeo copy upfront
 use_kvm="auto"
 keep_state=0
 mem="4G"
@@ -55,8 +54,6 @@ Required:
 
 Options:
   --arch {x86_64|aarch64}  Guest architecture (default: x86_64).
-  --copy                 Pull the image upfront with skopeo instead of using
-                         zot's on-demand pull-through (useful offline).
   --no-kvm               Force TCG even when /dev/kvm is available.
   --mem SIZE             Guest RAM (default: $mem).
   --disk-max-bytes N     Per-job overlay ceiling (default: $disk_max_bytes).
@@ -80,7 +77,6 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --image)          image="$2"; shift 2 ;;
     --arch)           arch="$2"; shift 2 ;;
-    --copy)           mode="copy"; shift ;;
     --no-kvm)         use_kvm="no"; shift ;;
     --mem)            mem="$2"; shift 2 ;;
     --disk-max-bytes) disk_max_bytes="$2"; shift 2 ;;
@@ -104,7 +100,7 @@ fi
 # Parse the image reference into (registry host, repository, reference).
 # Accepts <host>/<path>:<tag> or <host>/<path>@sha256:<hex>. A registry host is
 # the first path segment and must look like one (contains '.' or ':', or is
-# 'localhost'); we require it so the upstream URL for zot sync is unambiguous.
+# 'localhost'); we require it so the upstream to copy from is unambiguous.
 # ---------------------------------------------------------------------------
 first_seg="${image%%/*}"
 case "$first_seg" in
@@ -146,8 +142,8 @@ case "$arch" in
     ;;
   aarch64)
     qemu_binary="qemu-system-aarch64"
-    fw_code="$aavmf_code"
-    fw_vars="$aavmf_vars"
+    fw_code="$uefi_code"
+    fw_vars="$uefi_vars"
     machine="virt"
     blk_device="virtio-blk-device"
     net_device="virtio-net-device"
@@ -189,27 +185,18 @@ supervisor_id="$(cat "$sup_id_file")"
 zot_authority="127.0.0.1:$zot_port"
 
 # ---------------------------------------------------------------------------
-# Render the zot config. In sync mode zot is an on-demand pull-through cache of
-# the image's upstream registry; in copy mode it is a plain local store we push
-# into with skopeo.
+# Render the zot config: a plain local store we push into with skopeo.
 # ---------------------------------------------------------------------------
-if [ "$mode" = "sync" ]; then
-  sync_ext=",\"extensions\":{\"sync\":{\"registries\":[
-    {\"urls\":[\"https://$registry_host\"],\"onDemand\":true,
-     \"tlsVerify\":true,\"content\":[{\"prefix\":\"**\"}]}]}}"
-else
-  sync_ext=""
-fi
 cat > "$cfg_dir/zot.json" <<JSON
 {"storage":{"rootDirectory":"$zot_dir","dedupe":true},
  "http":{"address":"127.0.0.1","port":"$zot_port"},
- "log":{"level":"warn"}$sync_ext}
+ "log":{"level":"warn"}}
 JSON
 
 # ---------------------------------------------------------------------------
 # Per-job start script: copy the writable UEFI vars template into the job
-# workdir (the read-only code blob stays shared). Mirrors the AAVMF/OVMF
-# start-script pattern used elsewhere in the repo.
+# workdir (the read-only code blob stays shared). Mirrors the OVMF start-script
+# pattern used elsewhere in the repo.
 # ---------------------------------------------------------------------------
 vars_start="$cfg_dir/uefi-vars-start.sh"
 cat > "$vars_start" <<SH
@@ -291,7 +278,7 @@ wait_http() {
 # ---------------------------------------------------------------------------
 # Start the registry and make the image available, then resolve its digest.
 # ---------------------------------------------------------------------------
-echo "Starting zot registry (http://$zot_authority, mode=$mode)"
+echo "Starting zot registry (http://$zot_authority)"
 zot serve "$cfg_dir/zot.json" >"$cfg_dir/zot.log" 2>&1 &
 zot_pid="$!"
 if ! wait_http "http://$zot_authority/v2/" 120; then
@@ -299,18 +286,15 @@ if ! wait_http "http://$zot_authority/v2/" 120; then
   exit 1
 fi
 
-if [ "$mode" = "copy" ]; then
-  echo "Copying $registry_host/$repo:$ref into the local registry"
-  skopeo \
-    --registries-conf /dev/null \
-    --insecure-policy copy \
-    --dest-tls-verify=false \
-    "docker://$registry_host/$repo:$ref" \
-    "docker://$zot_authority/$repo:$ref"
-fi
+echo "Copying $registry_host/$repo:$ref into the local registry"
+skopeo \
+  --registries-conf /dev/null \
+  --insecure-policy copy \
+  --dest-tls-verify=false \
+  "docker://$registry_host/$repo:$ref" \
+  "docker://$zot_authority/$repo:$ref"
 
-# `skopeo inspect` against the local registry resolves the manifest digest; in
-# sync mode this is also what triggers the on-demand pull-through.
+# `skopeo inspect` against the local registry resolves the manifest digest.
 echo "Resolving $repo:$ref to a manifest digest"
 manifest_digest="$(\
   skopeo inspect \
@@ -343,7 +327,7 @@ cat <<EOF
     image          : $registry_host/$repo:$ref
     digest         : $manifest_digest
     arch           : $arch ($([ -n "$accel" ] && echo KVM || echo TCG))
-    registry       : http://$zot_authority ($mode)
+    registry       : http://$zot_authority
     state          : $state_dir
     ssh into guest : ssh -p 2222 <user>@127.0.0.1   (once it boots)
   (Ctrl-C stops the job and tears the stack down.)

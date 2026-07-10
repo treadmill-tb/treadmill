@@ -34,10 +34,9 @@ nix develop --command bash -c 'cargo build -p treadmill-rs' # default shell
 
 - **`default`** -- default shell. Has the Rust toolchain (`cargo`, `clippy`,
   `rustfmt`), `nixfmt`, plus the heavier externals used by tests: `zot`,
-  `skopeo`, `qemu`, the AAVMF firmware env vars (`TML_AAVMF_*`) for the boot
-  test, and the NATS log-streaming tools (`nats-server`, `nsc`, `nats`).
-  `SQLX_OFFLINE=1` (no DB available), so builds use the committed `.sqlx` query
-  cache.
+  `skopeo`, `qemu`, and the NATS log-streaming tools (`nats-server`, `nsc`,
+  `nats`). `SQLX_OFFLINE=1` (no DB available), so builds use the committed
+  `.sqlx` query cache.
 
 - **`database`** -- adds `postgresql`, `atlas`, `sqlx-cli`, `sql-formatter`. On
   entry it **spins up an ephemeral Postgres** on a unix socket and exports
