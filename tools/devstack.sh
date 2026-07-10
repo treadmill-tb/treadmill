@@ -327,8 +327,8 @@ store_root = "$zot_dir"
 qemu_binary = "qemu-system-aarch64"
 qemu_img_binary = "qemu-img"
 state_dir = "$sup_state_dir"
-# The tiny-efi fixture's layers are 16 MiB; the overlay matches.
-working_disk_max_bytes = 16777216
+# 10GB should be enough to run proper Linux images:
+working_disk_max_bytes = 10737418240
 tcp_control_socket_listen_addr = "127.0.0.1:3859"
 start_script = "$aavmf_start"
 # aarch64 under TCG (no KVM), AAVMF pflash, virtio-blk on the backing
