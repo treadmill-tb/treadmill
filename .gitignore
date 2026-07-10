@@ -21,3 +21,6 @@ result-*
 
 # Direnv state
 .direnv
+
+# Vite state
+.vite
