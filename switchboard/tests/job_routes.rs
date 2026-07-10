@@ -47,6 +47,10 @@ impl LogStreamProvisioner for NoopProvisioner {
     async fn ensure_job_stream(&self, _job_id: Uuid) -> Result<(), ProvisionError> {
         Ok(())
     }
+
+    async fn ensure_console_input_stream(&self, _job_id: Uuid) -> Result<(), ProvisionError> {
+        Ok(())
+    }
 }
 
 /// A streaming-enabled `LogStreaming` with a throwaway account seed (generated

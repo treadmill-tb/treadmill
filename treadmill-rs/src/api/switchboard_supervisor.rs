@@ -245,8 +245,16 @@ pub struct LogStreamingDispatch {
     /// Subject prefix for this job's streams: `logs.<job-id>`. A channel token
     /// is appended as `<subject_prefix>.<channel>` (see [`LogChannel`]).
     pub subject_prefix: String,
-    /// Bearer user JWT authorizing publish to this job's subjects.
+    /// Bearer user JWT authorizing publish to this job's subjects (and, when
+    /// `console_input_subject` is set, subscribe to that subject).
     pub write_token: String,
+    /// Subject carrying user-typed console input for this job
+    /// (`console-in.<job-id>`); the supervisor subscribes and writes each
+    /// message's payload to the workload's serial console. Additive and
+    /// optional: `None` (or an older switchboard omitting the field) means no
+    /// console input is delivered.
+    #[serde(default)]
+    pub console_input_subject: Option<String>,
 }
 
 // -- StopJobRequest -------------------------------------------------------------------------------

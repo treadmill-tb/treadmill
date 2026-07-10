@@ -70,6 +70,23 @@ pub fn stream_name(job_id: Uuid) -> String {
     format!("logs-{job_id}")
 }
 
+/// The NATS subject carrying user-typed console input for a job:
+/// `console-in.<job-id>` (exact, no channel suffix). Deliberately outside the
+/// `logs.<job-id>.>` hierarchy: read-token holders may retrieve the job's log
+/// stream, but typed input may contain secrets and must stay out of their
+/// reach.
+pub fn console_input_subject(job_id: Uuid) -> String {
+    format!("console-in.{job_id}")
+}
+
+/// JetStream stream name recording a job's console input: `console-in-<job-id>`
+/// (stream names may not contain `.`). Bound to [`console_input_subject`], so
+/// the server captures every publish regardless of client behavior; nothing
+/// consumes it — it is an audit record.
+pub fn console_input_stream_name(job_id: Uuid) -> String {
+    format!("console-in-{job_id}")
+}
+
 /// The inbox prefix a read client must use for its request/reply inboxes:
 /// `_INBOX.logs-<job-id>`.
 ///
@@ -93,20 +110,28 @@ fn jetstream_api_prefix(config: &LogStreamingConfig) -> String {
 /// What a minted token authorizes on a job's subjects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenScope {
-    /// Publish only — the supervisor writing this job's console output.
-    Publish,
+    /// The supervisor's scope: publish this job's console output, and
+    /// subscribe to the job's console-input subject to deliver typed input to
+    /// the serial console.
+    Supervisor,
     /// Read — a client tailing and replaying this job's logs: subscribe on the
     /// log subjects plus the job-scoped slice of the JetStream API needed to
     /// run an ordered consumer against the job's stream (replay-then-follow).
     Read,
+    /// Console input — a client sending typed input: publish to the job's
+    /// console-input subject, nothing else. No JetStream API access is needed:
+    /// the input stream is bound to the subject, so the server records every
+    /// publish itself.
+    ConsoleInput,
 }
 
 impl TokenScope {
     /// Short label used in the token's friendly name (diagnostic only).
     fn label(self) -> &'static str {
         match self {
-            TokenScope::Publish => "pub",
+            TokenScope::Supervisor => "sup",
             TokenScope::Read => "read",
+            TokenScope::ConsoleInput => "input",
         }
     }
 }
@@ -151,7 +176,10 @@ pub fn mint_token(
         .bearer_token(true);
 
     token = match scope {
-        TokenScope::Publish => token.allow_publish(scope_subject),
+        TokenScope::Supervisor => token
+            .allow_publish(scope_subject)
+            .allow_subscribe(console_input_subject(job_id)),
+        TokenScope::ConsoleInput => token.allow_publish(console_input_subject(job_id)),
         TokenScope::Read => {
             // Subscribe on the job's log subjects, plus the job-scoped slice
             // of the JetStream API a client needs to run an ordered consumer
@@ -189,18 +217,20 @@ pub fn mint_token(
 }
 
 /// Build the [`LogStreamingDispatch`] handed to a supervisor in
-/// `StartJobMessage`: the NATS URL, this job's subject prefix, and a freshly
-/// minted publish-scoped write token. The token carries no expiry — it is
-/// re-minted on every (re)dispatch rather than persisted.
+/// `StartJobMessage`: the NATS URL, this job's subject prefix, its
+/// console-input subject, and a freshly minted supervisor-scoped write token.
+/// The token carries no expiry — it is re-minted on every (re)dispatch rather
+/// than persisted.
 pub fn build_dispatch(
     config: &LogStreamingConfig,
     job_id: Uuid,
 ) -> Result<LogStreamingDispatch, MintError> {
-    let write_token = mint_token(config, job_id, TokenScope::Publish, None)?;
+    let write_token = mint_token(config, job_id, TokenScope::Supervisor, None)?;
     Ok(LogStreamingDispatch {
         nats_url: config.nats_url.clone(),
         subject_prefix: subject_prefix(job_id),
         write_token,
+        console_input_subject: Some(console_input_subject(job_id)),
     })
 }
 
@@ -231,6 +261,11 @@ pub trait LogStreamProvisioner: Send + Sync {
     /// Must be safe to call repeatedly: reconcile re-dispatches `StartJob`
     /// idempotently, so an already-existing stream is a success, not an error.
     async fn ensure_job_stream(&self, job_id: Uuid) -> Result<(), ProvisionError>;
+
+    /// Idempotently create the per-job stream recording `console-in.<job-id>`
+    /// with no `MaxAge`. Called **before** a console-input token is minted, so
+    /// capture is in place before any client can publish.
+    async fn ensure_console_input_stream(&self, job_id: Uuid) -> Result<(), ProvisionError>;
 }
 
 /// The log-streaming components the switchboard wires through to the dispatch
@@ -311,20 +346,25 @@ impl NatsLogStreamProvisioner {
     }
 }
 
-#[async_trait]
-impl LogStreamProvisioner for NatsLogStreamProvisioner {
-    async fn ensure_job_stream(&self, job_id: Uuid) -> Result<(), ProvisionError> {
+impl NatsLogStreamProvisioner {
+    /// Idempotently create a stream capturing `subjects` under `name`;
+    /// `get_or_create_stream` returns an existing same-named stream, so a
+    /// repeat call is a no-op.
+    async fn ensure_stream(
+        &self,
+        job_id: Uuid,
+        name: String,
+        subjects: Vec<String>,
+    ) -> Result<(), ProvisionError> {
         let stream_config = async_nats::jetstream::stream::Config {
-            name: stream_name(job_id),
-            subjects: vec![subject_scope(job_id)],
-            // No MaxAge: the stream never expires (plan §3). A zero `Duration`
-            // is JetStream's "unlimited age".
+            name,
+            subjects,
+            // No MaxAge: the stream never expires (GC is handled separately,
+            // out of scope). A zero `Duration` is JetStream's "unlimited age".
             max_age: Duration::ZERO,
             ..Default::default()
         };
 
-        // `get_or_create_stream` is the idempotent create: an existing stream
-        // with the same name is returned, so a re-dispatch is a no-op.
         self.jetstream
             .get_or_create_stream(stream_config)
             .await
@@ -334,6 +374,23 @@ impl LogStreamProvisioner for NatsLogStreamProvisioner {
             })?;
 
         Ok(())
+    }
+}
+
+#[async_trait]
+impl LogStreamProvisioner for NatsLogStreamProvisioner {
+    async fn ensure_job_stream(&self, job_id: Uuid) -> Result<(), ProvisionError> {
+        self.ensure_stream(job_id, stream_name(job_id), vec![subject_scope(job_id)])
+            .await
+    }
+
+    async fn ensure_console_input_stream(&self, job_id: Uuid) -> Result<(), ProvisionError> {
+        self.ensure_stream(
+            job_id,
+            console_input_stream_name(job_id),
+            vec![console_input_subject(job_id)],
+        )
+        .await
     }
 }
 
@@ -396,14 +453,22 @@ mod tests {
             stream_name(job_id),
             "logs-00000000-0000-0000-0000-000000000000"
         );
+        assert_eq!(
+            console_input_subject(job_id),
+            "console-in.00000000-0000-0000-0000-000000000000"
+        );
+        assert_eq!(
+            console_input_stream_name(job_id),
+            "console-in-00000000-0000-0000-0000-000000000000"
+        );
     }
 
     #[test]
-    fn write_token_is_bearer_and_pub_scoped_to_the_job() {
+    fn write_token_is_bearer_and_scoped_to_the_job() {
         let config = test_config();
         let job_id = Uuid::new_v4();
 
-        let jwt = mint_token(&config, job_id, TokenScope::Publish, None).expect("mint");
+        let jwt = mint_token(&config, job_id, TokenScope::Supervisor, None).expect("mint");
         let claims = decode_claims(&jwt);
 
         // Issued by the account's own public key (seed doubles as signing key),
@@ -416,12 +481,41 @@ mod tests {
         assert_eq!(claims["nats"]["issuer_account"], account_pub);
         assert_eq!(claims["nats"]["bearer_token"], true);
 
-        // Publish is scoped to exactly this job's subjects; no subscribe scope.
+        // Publish is scoped to exactly this job's log subjects; subscribe to
+        // exactly its console-input subject.
         assert_eq!(allow(&claims, "pub"), vec![subject_scope(job_id)]);
-        assert!(allow(&claims, "sub").is_empty());
+        assert_eq!(allow(&claims, "sub"), vec![console_input_subject(job_id)]);
 
         // No expiry on the (re-minted-per-dispatch) write token.
         assert!(claims.get("exp").is_none());
+    }
+
+    #[test]
+    fn console_input_token_may_only_publish_typed_input() {
+        let config = test_config();
+        let job_id = Uuid::new_v4();
+
+        let jwt = mint_token(
+            &config,
+            job_id,
+            TokenScope::ConsoleInput,
+            Some(Duration::from_secs(300)),
+        )
+        .expect("mint");
+        let claims = decode_claims(&jwt);
+
+        assert_eq!(claims["nats"]["bearer_token"], true);
+
+        // Publish to exactly the job's console-input subject — no log
+        // subjects, no JetStream API (the server records publishes itself via
+        // the subject-bound stream) — and no subscribe scope at all.
+        assert_eq!(allow(&claims, "pub"), vec![console_input_subject(job_id)]);
+        assert!(allow(&claims, "sub").is_empty());
+
+        assert!(
+            claims.get("exp").is_some(),
+            "console input token must expire"
+        );
     }
 
     #[test]
@@ -492,8 +586,8 @@ mod tests {
     #[test]
     fn distinct_jobs_get_distinct_subjects() {
         let config = test_config();
-        let a = mint_token(&config, Uuid::new_v4(), TokenScope::Publish, None).unwrap();
-        let b = mint_token(&config, Uuid::new_v4(), TokenScope::Publish, None).unwrap();
+        let a = mint_token(&config, Uuid::new_v4(), TokenScope::Supervisor, None).unwrap();
+        let b = mint_token(&config, Uuid::new_v4(), TokenScope::Supervisor, None).unwrap();
         assert_ne!(
             allow(&decode_claims(&a), "pub"),
             allow(&decode_claims(&b), "pub"),
@@ -502,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn build_dispatch_carries_url_prefix_and_a_pub_token() {
+    fn build_dispatch_carries_url_subjects_and_a_write_token() {
         let config = test_config();
         let job_id = Uuid::new_v4();
 
@@ -510,9 +604,12 @@ mod tests {
         assert_eq!(dispatch.nats_url, config.nats_url);
         assert_eq!(dispatch.subject_prefix, subject_prefix(job_id));
         assert_eq!(
-            allow(&decode_claims(&dispatch.write_token), "pub"),
-            vec![subject_scope(job_id)]
+            dispatch.console_input_subject,
+            Some(console_input_subject(job_id))
         );
+        let claims = decode_claims(&dispatch.write_token);
+        assert_eq!(allow(&claims, "pub"), vec![subject_scope(job_id)]);
+        assert_eq!(allow(&claims, "sub"), vec![console_input_subject(job_id)]);
     }
 
     #[test]
@@ -523,7 +620,7 @@ mod tests {
             jetstream_domain: None,
             account_seed: "not-a-real-seed".to_string(),
         };
-        let err = mint_token(&config, Uuid::new_v4(), TokenScope::Publish, None).unwrap_err();
+        let err = mint_token(&config, Uuid::new_v4(), TokenScope::Supervisor, None).unwrap_err();
         assert!(matches!(err, MintError::Seed(_)));
     }
 
@@ -661,6 +758,24 @@ mod tests {
             .expect("stream exists");
         let config = &stream.cached_info().config;
         assert_eq!(config.subjects, vec![subject_scope(job_id)]);
+        assert_eq!(config.max_age, Duration::ZERO);
+
+        // Same for the console-input recording stream.
+        provisioner
+            .ensure_console_input_stream(job_id)
+            .await
+            .expect("create input stream");
+        provisioner
+            .ensure_console_input_stream(job_id)
+            .await
+            .expect("idempotent input re-create");
+        let stream = provisioner
+            .jetstream
+            .get_stream(console_input_stream_name(job_id))
+            .await
+            .expect("input stream exists");
+        let config = &stream.cached_info().config;
+        assert_eq!(config.subjects, vec![console_input_subject(job_id)]);
         assert_eq!(config.max_age, Duration::ZERO);
     }
 
