@@ -1,6 +1,6 @@
 # Project Zot — the OCI-native registry used as both the canonical tier and the
-# per-server single-writer store/pull-through cache of the Treadmill image
-# migration (doc/oci-image-migration-plan.md D10/§7). Not in nixpkgs, so we
+# per-server single-writer store of the Treadmill image migration
+# (doc/oci-image-migration-plan.md D10/§7). Not in nixpkgs, so we
 # vendor it here. Adapted from
 # https://raw.githubusercontent.com/ijohanne/nur-packages/refs/heads/master/pkgs/zot/default.nix
 # (the upstream `sources.zot` is replaced with a pinned fetchFromGitHub, and the

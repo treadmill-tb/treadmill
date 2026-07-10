@@ -250,6 +250,8 @@ let
       bin,
       extraBuildInputs ? [ ],
       extraEnv ? { },
+      # Tools the binary execs at runtime; wrapped onto its PATH.
+      runtimePath ? [ ],
     }:
     craneLib.buildPackage (
       cargoCommonArgs
@@ -261,10 +263,16 @@ let
         buildInputs = cargoCommonArgs.buildInputs ++ extraBuildInputs;
         doCheck = false;
       }
+      // lib.optionalAttrs (runtimePath != [ ]) {
+        nativeBuildInputs = cargoCommonArgs.nativeBuildInputs ++ [ pkgs.makeWrapper ];
+        postInstall = ''
+          wrapProgram $out/bin/${bin} --prefix PATH : ${lib.makeBinPath runtimePath}
+        '';
+      }
       // extraEnv
     );
   # Vendored Project Zot registry (see nix/pkgs/zot.nix) — the per-server store
-  # daemon / pull-through cache for the OCI image migration.
+  # daemon.
   zot = pkgs.callPackage ./pkgs/zot.nix { };
 
   # Shell snippet to run a throwaway Postgres cluster in a fresh temp

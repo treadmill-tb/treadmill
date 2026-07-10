@@ -25,8 +25,8 @@
           sql-formatter
 
           # OCI image-migration tooling: the vendored Zot registry (per-server
-          # store daemon / pull-through cache) plus skopeo for moving images
-          # between OCI layouts and registries in tests and the CLI.
+          # store daemon) plus skopeo for moving images between OCI layouts and
+          # registries in tests and the CLI.
           cmn.zot
           skopeo
 

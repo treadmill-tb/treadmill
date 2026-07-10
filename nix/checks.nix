@@ -202,7 +202,7 @@
 
         # Phase 1 of the OCI image migration (§6/§7/§12.3): drive the
         # `oci_store` client against a real child Zot. The tests spin up Zot
-        # (and a second one as a pull-through cache) on loopback and skopeo the
+        # (and a second one as a copy source) on loopback and skopeo the
         # `tiny-efi` fixture in, so the check needs zot + skopeo on PATH and the
         # built fixture in TINY_EFI_IMAGE. Like the reparse test, the oci_store
         # tests skip when those are unset, so the plain `nextest` check passes
