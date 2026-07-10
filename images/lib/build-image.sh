@@ -62,12 +62,14 @@ finalize_delta() {
 nbd_dev=""
 nbd_mnt=""
 nbd_qemu=""
+nbd_devlinks=""
 nbd_cleanup() {
 	# Recursive: a caller may nest a loop mount (the sd boot FAT) under $nbd_mnt;
 	# umount -R unmounts it first and auto-detaches its loop device.
 	[ -n "$nbd_mnt" ] && $SUDO umount -R "$nbd_mnt" 2>/dev/null || true
 	[ -n "$nbd_dev" ] && $SUDO "$nbd_qemu" --disconnect "$nbd_dev" >/dev/null 2>&1 || true
 	[ -n "$nbd_mnt" ] && rmdir "$nbd_mnt" 2>/dev/null || true
+	[ -n "$nbd_devlinks" ] && rm -rf "$nbd_devlinks" 2>/dev/null || true
 }
 
 # qemu-nbd --connect / --disconnect are asynchronous w.r.t. the kernel: connect
@@ -102,6 +104,7 @@ nbd_connect() {
 	nbd_qemu="$(command -v qemu-nbd)"
 	nbd_dev=/dev/nbd0
 	nbd_mnt=""
+	nbd_devlinks=""
 	trap nbd_cleanup EXIT
 	# max_part>0 so the kernel scans the partition table (the disk type's root is
 	# a partition); the module default of 0 would hide /dev/nbd0p1.
@@ -118,7 +121,7 @@ nbd_connect() {
 nbd_release() {
 	nbd_cleanup
 	trap - EXIT
-	nbd_dev="" nbd_mnt=""
+	nbd_dev="" nbd_mnt="" nbd_devlinks=""
 }
 
 # Resolve an fstab spec (LABEL=/UUID=/PARTUUID=/PARTLABEL=/ a /dev path) to the
@@ -319,6 +322,25 @@ nspawn_provision() {
 		for _p in "${nbd_dev}"p*; do
 			[ -b "$_p" ] && nspawn_dev_binds+=(--bind="$_p")
 		done
+		# No udev runs in the container, so /dev/disk/by-*/ is absent. grub-mkconfig's
+		# 10_linux emits root=UUID=<fs-uuid> only when /dev/disk/by-uuid/<uuid> (or the
+		# by-partuuid twin) exists; otherwise it falls back to the raw GRUB_DEVICE and
+		# bakes the build host's /dev/nbd0p1 into grub.cfg — an unbootable root= on the
+		# deployed machine. Recreate the symlink farm for the NBD partitions host-side
+		# and bind it at /dev/disk (the links resolve to the bound partition nodes).
+		nbd_devlinks="$(mktemp -d)"
+		local _tag _val _dir
+		for _p in "${nbd_dev}"p*; do
+			[ -b "$_p" ] || continue
+			for _tag in UUID:by-uuid PARTUUID:by-partuuid LABEL:by-label PARTLABEL:by-partlabel; do
+				_val="$($SUDO blkid -s "${_tag%%:*}" -o value "$_p" 2>/dev/null || true)"
+				[ -n "$_val" ] || continue
+				_dir="$nbd_devlinks/${_tag#*:}"
+				mkdir -p "$_dir"
+				ln -sf "../../$(basename "$_p")" "$_dir/$_val"
+			done
+		done
+		nspawn_dev_binds+=(--bind="$nbd_devlinks:/dev/disk")
 	fi
 
 	# For an sd image, loop-mount the boot FAT at the guest's /boot/firmware so the
