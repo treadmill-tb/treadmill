@@ -33,6 +33,8 @@
           bin = "treadmill-nbd-netboot-supervisor";
           runtimePath = [ pkgs.skopeo ];
         };
+
+        image-util = cmn.mkBin { bin = "image-util"; };
       }
       // lib.optionalAttrs isLinux {
         tml-puppet = cmn.mkBin { bin = "tml-puppet"; };
