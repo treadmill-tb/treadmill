@@ -1,13 +1,10 @@
-# The `tiny-efi` test fixture (doc/oci-image-migration-plan.md §12.2).
+# The `tiny-efi` test fixture.
 #
 # A minimal UEFI app is built twice from one source (a base printing the
 # `BASE-ONLY` tripwire and an overlay printing `TREADMILL_OK rev=1`), packed
-# into FAT EFI System Partitions, converted to qcow2, and stacked into a
-# genuine two-layer backing chain. The chain is then assembled into an OCI
-# image layout carrying the Treadmill media types and annotations the rest of
-# the system consumes, so later phases can push it to a registry (Phase 1) and
-# boot it (Phase 2), and so Phase 0 can prove our `oci-spec`/`parse.rs` view
-# round-trips against a real-wire-format manifest.
+# into FAT EFI System Partitions, converted to qcow2, and stacked into a genuine
+# two-layer backing chain.
+
 { inputs, ... }:
 {
   perSystem =
@@ -23,7 +20,19 @@
 
       fenixPkgs = fenix.packages.${system};
 
-      efiTarget = "aarch64-unknown-uefi";
+      efiTarget =
+        {
+          "x86_64-linux" = "x86_64-unknown-uefi";
+          "aarch64-linux" = "aarch64-unknown-uefi";
+        }
+        ."${system}";
+
+      efiBootFileName =
+        {
+          "x86_64-linux" = "BOOTX64.EFI";
+          "aarch64-linux" = "BOOTAA64.EFI";
+        }
+        ."${system}";
 
       # Stable toolchain plus the foreign UEFI target's prebuilt std.
       efiRust = fenixPkgs.combine [
@@ -46,7 +55,7 @@
         lockFile = ./fixtures/tiny-efi/Cargo.lock;
       };
 
-      # Build BOOTAA64.EFI with a compiled-in sentinel line. `name` only
+      # Build BOOT*.EFI with a compiled-in sentinel line. `name` only
       # disambiguates the derivations / store paths. We drive cargo directly
       # rather than via `buildRustPackage`, whose hooks force the host target;
       # this is a bare-metal cross build to `aarch64-unknown-uefi`.
@@ -80,7 +89,7 @@
           installPhase = ''
             runHook preInstall
             mkdir -p "$out"
-            cp "target/${efiTarget}/release/tiny-efi.efi" "$out/BOOTAA64.EFI"
+            cp "target/${efiTarget}/release/tiny-efi.efi" "$out/${efiBootFileName}"
             runHook postInstall
           '';
         };
@@ -110,7 +119,7 @@
       # tiny EFI binary with room for FAT overhead.
       espBytes = 16 * 1024 * 1024;
 
-      # Pack a single BOOTAA64.EFI into a FAT16 EFI System Partition image. No
+      # Pack a single BOOT*.EFI into a FAT16 EFI System Partition image. No
       # mounting: mkfs.fat + mtools operate on the image file directly, so this
       # needs no privileges and runs in the Nix sandbox.
       mkEsp =
@@ -125,7 +134,7 @@
           mkfs.fat -F 16 -n EFIBOOT esp.img
           mmd -i esp.img ::/EFI
           mmd -i esp.img ::/EFI/BOOT
-          mcopy -i esp.img "${efiApp}/BOOTAA64.EFI" ::/EFI/BOOT/BOOTAA64.EFI
+          mcopy -i esp.img "${efiApp}/${efiBootFileName}" ::/EFI/BOOT/${efiBootFileName}
           mkdir -p "$out"
           cp esp.img "$out/esp.img"
         '';
@@ -147,7 +156,7 @@
       '';
 
       # The overlay qcow2 blob: only the clusters that differ from the base
-      # (the rewritten BOOTAA64.EFI plus the FAT/dir metadata that moves with
+      # (the rewritten BOOT*.EFI plus the FAT/dir metadata that moves with
       # it). `convert -B` writes just the differences against the base; the
       # `rebase -u -b ""` then strips the baked backing reference so the shared
       # blob names no path — the chain is supplied at runtime (D3). Read alone

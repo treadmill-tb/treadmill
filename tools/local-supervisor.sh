@@ -24,8 +24,8 @@ set -euo pipefail
 supervisor_bin="${TML_SUPERVISOR_BIN:-treadmill-qemu-supervisor}"
 ovmf_code="${TML_OVMF_CODE:-}"     # x86_64 UEFI code blob (read-only)
 ovmf_vars="${TML_OVMF_VARS:-}"     # x86_64 UEFI vars template
-aavmf_code="${TML_AAVMF_CODE:-}"   # aarch64 UEFI code blob (read-only)
-aavmf_vars="${TML_AAVMF_VARS:-}"   # aarch64 UEFI vars template
+uefi_code="${TML_UEFI_CODE:-}"   # aarch64 UEFI code blob (read-only)
+uefi_vars="${TML_UEFI_VARS:-}"   # aarch64 UEFI vars template
 
 # ---------------------------------------------------------------------------
 # Defaults, overridable by flags / environment.
@@ -142,8 +142,8 @@ case "$arch" in
     ;;
   aarch64)
     qemu_binary="qemu-system-aarch64"
-    fw_code="$aavmf_code"
-    fw_vars="$aavmf_vars"
+    fw_code="$uefi_code"
+    fw_vars="$uefi_vars"
     machine="virt"
     blk_device="virtio-blk-device"
     net_device="virtio-net-device"
@@ -195,8 +195,8 @@ JSON
 
 # ---------------------------------------------------------------------------
 # Per-job start script: copy the writable UEFI vars template into the job
-# workdir (the read-only code blob stays shared). Mirrors the AAVMF/OVMF
-# start-script pattern used elsewhere in the repo.
+# workdir (the read-only code blob stays shared). Mirrors the OVMF start-script
+# pattern used elsewhere in the repo.
 # ---------------------------------------------------------------------------
 vars_start="$cfg_dir/uefi-vars-start.sh"
 cat > "$vars_start" <<SH

@@ -13,6 +13,17 @@
 
       cmn = import ./lib.nix { inherit inputs system pkgs; };
 
+      archSpecific = {
+        "x86_64-linux" = {
+          uefi-code = "${pkgs.qemu}/share/qemu/edk2-x86_64-code.fd";
+          uefi-vars = "${pkgs.qemu}/share/qemu/edk2-i386-vars.fd";
+        };
+        "aarch64-linux" = {
+          uefi-code = "${pkgs.qemu}/share/qemu/edk2-aarch64-code.fd";
+          uefi-vars = "${pkgs.qemu}/share/qemu/edk2-arm-vars.fd";
+        };
+      };
+
       # The committed switchboard OpenAPI snapshot. Pinned into the store so the
       # app works from a clean checkout; override by passing a path argument
       # (`nix run .#view-openapi -- path/to/spec.yaml`).
@@ -119,8 +130,8 @@
           text = ''
             # Inject Nix-specific variables:
             export TML_FIXTURE_LAYOUT="${lib.optionalString isLinux "${self'.packages.tiny-efi-image-layout}"}"
-            export TML_AAVMF_CODE="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-aarch64-code.fd"}"
-            export TML_AAVMF_VARS="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-arm-vars.fd"}"
+            export TML_UEFI_CODE="${archSpecific."${system}".uefi-code}"
+            export TML_UEFI_VARS="${archSpecific."${system}".uefi-vars}"
 
             # The pre-built static SPA console and the API origin baked into it.
             export TML_CONSOLE_DIST="${devstackConsole}"
@@ -229,10 +240,8 @@
           # Supervisor binary + per-arch UEFI firmware blobs, injected from Nix
           # (empty off Linux; the script errors out cleanly then).
           export TML_SUPERVISOR_BIN="${lib.optionalString isLinux "${self'.packages.treadmill-qemu-supervisor}/bin/treadmill-qemu-supervisor"}"
-          export TML_OVMF_CODE="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-x86_64-code.fd"}"
-          export TML_OVMF_VARS="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-i386-vars.fd"}"
-          export TML_AAVMF_CODE="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-aarch64-code.fd"}"
-          export TML_AAVMF_VARS="${lib.optionalString isLinux "${pkgs.qemu}/share/qemu/edk2-arm-vars.fd"}"
+          export TML_UEFI_CODE="${archSpecific."${system}".uefi-code}"
+          export TML_UEFI_VARS="${archSpecific."${system}".uefi-vars}"
 
           exec ${../tools/local-supervisor.sh} "$@"
         '';
