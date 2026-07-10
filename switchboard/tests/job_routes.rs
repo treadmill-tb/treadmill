@@ -22,7 +22,7 @@ use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobImageRef, JobInfo, JobListResponse, JobPermission,
-    NatsLogStreamCredentials,
+    NatsConsoleInputCredentials, NatsLogStreamCredentials,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, WhoAmIResponse};
 use treadmill_rs::image::Digest;
@@ -39,8 +39,12 @@ mod common;
 use common::{mock_login_token, spawn_server, test_config_mock};
 
 /// A provisioner the read route never calls (it only mints tokens); present
-/// only to satisfy the `LogStreaming` struct.
-struct NoopProvisioner;
+/// only to satisfy the `LogStreaming` struct. The console-input route *does*
+/// provision, so calls are recorded for assertion.
+#[derive(Default)]
+struct NoopProvisioner {
+    console_input_streams: std::sync::Mutex<Vec<Uuid>>,
+}
 
 #[async_trait::async_trait]
 impl LogStreamProvisioner for NoopProvisioner {
@@ -48,14 +52,16 @@ impl LogStreamProvisioner for NoopProvisioner {
         Ok(())
     }
 
-    async fn ensure_console_input_stream(&self, _job_id: Uuid) -> Result<(), ProvisionError> {
+    async fn ensure_console_input_stream(&self, job_id: Uuid) -> Result<(), ProvisionError> {
+        self.console_input_streams.lock().unwrap().push(job_id);
         Ok(())
     }
 }
 
 /// A streaming-enabled `LogStreaming` with a throwaway account seed (generated
-/// per run, so no real secret enters the source tree).
-fn test_log_streaming() -> LogStreaming {
+/// per run, so no real secret enters the source tree), sharing `provisioner`
+/// so tests can assert on its recorded calls.
+fn test_log_streaming(provisioner: Arc<NoopProvisioner>) -> LogStreaming {
     let account = nats_jwt::KeyPair::new_account();
     LogStreaming {
         config: LogStreamingConfig {
@@ -64,16 +70,20 @@ fn test_log_streaming() -> LogStreaming {
             jetstream_domain: None,
             account_seed: account.seed().expect("account seed"),
         },
-        provisioner: Arc::new(NoopProvisioner),
+        provisioner,
     }
 }
 
 fn streaming_enabled_state(pool: PgPool) -> AppState {
+    streaming_enabled_state_with(pool, Arc::new(NoopProvisioner::default()))
+}
+
+fn streaming_enabled_state_with(pool: PgPool, provisioner: Arc<NoopProvisioner>) -> AppState {
     AppState::with_components(
         pool,
         test_config_mock(),
         Arc::new(OciRegistryClient::new()),
-        Some(test_log_streaming()),
+        Some(test_log_streaming(provisioner)),
     )
 }
 
@@ -973,6 +983,180 @@ async fn streaming_disabled_yields_service_unavailable(pool: PgPool) {
 
     let resp = client
         .post(format!("http://{addr}/api/v1/jobs/{job_id}/nats-log-token"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// Decode the (unverified) claims out of a JWT's payload segment as JSON, to
+/// assert the wire-visible scope of a minted token.
+fn decode_jwt_claims(jwt: &str) -> serde_json::Value {
+    use base64::Engine as _;
+    let payload = jwt.split('.').nth(1).expect("jwt has a payload segment");
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .expect("payload is base64url");
+    serde_json::from_slice(&bytes).expect("payload is JSON")
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn owner_gets_a_console_input_token_provisioned_and_audited(pool: PgPool) {
+    let provisioner = Arc::new(NoopProvisioner::default());
+    let addr = spawn_server(streaming_enabled_state_with(
+        pool.clone(),
+        provisioner.clone(),
+    ))
+    .await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // `bob` owns the job, so he holds `manage` implicitly.
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+    let job_id = seed_job(&pool, bob, token_id, &[]).await;
+
+    let resp = client
+        .post(format!(
+            "http://{addr}/api/v1/jobs/{job_id}/nats-console-input-token"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let creds: NatsConsoleInputCredentials = resp.json().await.unwrap();
+    assert_eq!(creds.nats_url.as_deref(), Some("nats://nats.example:4222"));
+    assert_eq!(
+        creds.websocket_url.as_deref(),
+        Some("wss://nats.example:443")
+    );
+    assert_eq!(creds.subject, format!("console-in.{job_id}"));
+    assert_eq!(creds.expires_in_secs, 300);
+
+    // The token is a bearer JWT that may publish to exactly the input subject,
+    // subscribe to nothing, and expires.
+    let claims = decode_jwt_claims(&creds.token);
+    assert_eq!(claims["nats"]["bearer_token"], true);
+    assert_eq!(
+        claims["nats"]["pub"]["allow"],
+        serde_json::json!([creds.subject])
+    );
+    assert!(claims["nats"]["sub"]["allow"].as_array().is_none());
+    assert!(claims.get("exp").is_some(), "token must expire");
+
+    // The recording stream was provisioned (before minting).
+    assert_eq!(
+        *provisioner.console_input_streams.lock().unwrap(),
+        vec![job_id]
+    );
+
+    // The mint is audited on the job, attributed to the caller.
+    let (event_type, actor_id): (String, Uuid) = sqlx::query_as(
+        "select e.event_type, e.actor_id from tml_switchboard.audit_events e \
+         join tml_switchboard.audit_event_relations r on r.event_id = e.event_id \
+         where r.entity_kind = 'job' and r.entity_id = $1 \
+           and e.event_type = 'job_console_input_token_issued.v1'",
+    )
+    .bind(job_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(event_type, "job_console_input_token_issued.v1");
+    assert_eq!(actor_id, bob);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn admin_gets_a_console_input_token_for_any_job(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // `bob` owns the job; `alice` (a global admin) holds `manage` on it.
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &bob_token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+    let job_id = seed_job(&pool, bob, token_id, &[]).await;
+
+    let alice_token = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let resp = client
+        .post(format!(
+            "http://{addr}/api/v1/jobs/{job_id}/nats-console-input-token"
+        ))
+        .bearer_auth(&alice_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let creds: NatsConsoleInputCredentials = resp.json().await.unwrap();
+    assert_eq!(creds.subject, format!("console-in.{job_id}"));
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn read_grantee_is_forbidden_console_input(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // `bob` owns the job; `carol` may read it, but reading is not typing.
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &bob_token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+    let job_id = seed_job(&pool, bob, token_id, &[]).await;
+
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let carol = whoami(&client, addr, &carol_token).await;
+    sqlx::query(
+        "insert into tml_switchboard.job_grants (job_id, subject_id, permission) \
+         values ($1, $2, 'read')",
+    )
+    .bind(job_id)
+    .bind(carol)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = client
+        .post(format!(
+            "http://{addr}/api/v1/jobs/{job_id}/nats-console-input-token"
+        ))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn console_input_unconfigured_yields_service_unavailable(pool: PgPool) {
+    // `AppState::new` leaves log streaming unconfigured (None).
+    let addr = spawn_server(AppState::new(pool.clone(), test_config_mock())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // Use the admin so authorization passes and we reach the streaming check.
+    let token = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let job_id = Uuid::new_v4();
+
+    let resp = client
+        .post(format!(
+            "http://{addr}/api/v1/jobs/{job_id}/nats-console-input-token"
+        ))
         .bearer_auth(&token)
         .send()
         .await

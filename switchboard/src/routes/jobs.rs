@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobInfo, JobListResponse, JobPermission as ApiJobPermission,
-    NatsLogStreamCredentials,
+    NatsConsoleInputCredentials, NatsLogStreamCredentials,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
 
@@ -499,5 +499,89 @@ pub async fn nats_log_token(
         jetstream_domain: log_streaming.config.jetstream_domain.clone(),
         token,
         expires_in_secs: READ_TOKEN_TTL.as_secs(),
+    }))
+}
+
+/// Console-input tokens share the read tokens' rationale for a tight TTL (see
+/// [`READ_TOKEN_TTL`]), with the added weight that they authorize *writing* to
+/// the job's serial console.
+const CONSOLE_INPUT_TOKEN_TTL: Duration = Duration::from_secs(5 * 60);
+
+/// Axum handler for `POST /jobs/{id}/nats-console-input-token`.
+///
+/// Mints a short-lived NATS **bearer** token that may publish typed input to
+/// this job's serial console, gated on the caller's `manage` permission (403
+/// for anyone else, including for a nonexistent job). The job's console-input
+/// recording stream is provisioned *before* the token is minted, so every byte
+/// the token can ever publish is captured; each mint (initial and reconnect
+/// re-mints alike) is recorded as an audit event on the job.
+pub async fn nats_console_input_token(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(IdPath { id: job_id }): Path<IdPath>,
+) -> Result<Json<NatsConsoleInputCredentials>, StatusCode> {
+    let authorized = engine::can_access_job(
+        state.pool(),
+        subject.user_id(),
+        job_id,
+        JobPermission::Manage,
+    )
+    .await
+    .or_internal("checking job manage access for a console input token")?;
+    if !authorized {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Log streaming may be turned off in this deployment; the feature exists but
+    // is unavailable here.
+    let log_streaming = state
+        .log_streaming()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    // Recording must be in place before any token exists: once the stream is
+    // bound to the subject, the NATS server captures every matching publish
+    // regardless of client behavior.
+    log_streaming
+        .provisioner
+        .ensure_console_input_stream(job_id)
+        .await
+        .or_internal(&format!(
+            "provisioning the console input stream for job {job_id}"
+        ))?;
+
+    let token = log_streaming::mint_token(
+        &log_streaming.config,
+        job_id,
+        TokenScope::ConsoleInput,
+        Some(CONSOLE_INPUT_TOKEN_TTL),
+    )
+    .or_internal("minting a console input token")?;
+    let expires_at = Utc::now() + CONSOLE_INPUT_TOKEN_TTL;
+
+    let mut txn = state
+        .pool()
+        .begin()
+        .await
+        .or_internal("opening a transaction to audit a console input token")?;
+    audit::emit(
+        &mut txn,
+        &events::JobConsoleInputTokenIssued {
+            actor: AuditSubject(subject.user_id()),
+            job: AuditJob(job_id),
+            expires_at,
+        },
+    )
+    .await
+    .or_internal(&format!("emitting JobConsoleInputTokenIssued for {job_id}"))?;
+    txn.commit()
+        .await
+        .or_internal(&format!("committing console input audit for {job_id}"))?;
+
+    Ok(Json(NatsConsoleInputCredentials {
+        nats_url: Some(log_streaming.config.nats_url.clone()),
+        websocket_url: log_streaming.config.websocket_url.clone(),
+        subject: log_streaming::console_input_subject(job_id),
+        token,
+        expires_in_secs: CONSOLE_INPUT_TOKEN_TTL.as_secs(),
     }))
 }

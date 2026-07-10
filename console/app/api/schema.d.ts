@@ -193,6 +193,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/jobs/{id}/nats-console-input-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a NATS console-input token for a job */
+        post: operations["createJobNatsConsoleInputToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/jobs/{id}": {
         parameters: {
             query?: never;
@@ -1290,6 +1307,45 @@ export interface components {
             login_path: string;
         };
         /**
+         * @description Connection credentials for sending typed input to a job's serial console
+         *     over NATS, returned by `POST /jobs/{id}/nats-console-input-token`.
+         *
+         *     The token is a short-lived **bearer** user JWT that may *publish* to this
+         *     job's console-input subject (`subject`) — nothing else. Every publish is
+         *     recorded server-side, so treat the channel as monitored; feedback (echo)
+         *     arrives through the separate log-streaming (read) channel. As with
+         *     [`NatsLogStreamCredentials`], the token gates connect time only: an
+         *     established connection outlives its expiry, and a client re-requests
+         *     credentials when it next reconnects, after roughly `expires_in_secs`.
+         */
+        NatsConsoleInputCredentials: {
+            /**
+             * Format: uint64
+             * @description Seconds until the token's `exp`; re-request credentials after this
+             *     elapses (only needed to open a *new* connection).
+             */
+            expires_in_secs: number;
+            /**
+             * @description Plain-TCP NATS client URL (e.g. `nats://nats.example:4222`), for native
+             *     clients that speak the binary protocol. Nullable: a deployment may
+             *     choose to expose only the WebSocket endpoint publicly, in which case
+             *     only `websocket_url` is returned. Browsers cannot use this — they must
+             *     use `websocket_url`.
+             */
+            nats_url?: string | null;
+            /** @description The subject to publish typed input to: `console-in.<job-id>`. */
+            subject: string;
+            /** @description Bearer user JWT authorizing publish to `subject`. */
+            token: string;
+            /**
+             * @description NATS **WebSocket** URL (e.g. `wss://nats.example:443`), for browser
+             *     clients, which cannot speak the plain TCP protocol. Absent when the
+             *     deployment does not expose a WebSocket listener; a browser client
+             *     cannot send console input against such a deployment.
+             */
+            websocket_url?: string | null;
+        };
+        /**
          * @description Connection credentials for tailing/replaying a job's console logs over NATS,
          *     returned by `POST /jobs/{id}/nats-log-token`.
          *
@@ -1980,6 +2036,61 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["NatsLogStreamCredentials"];
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Log streaming is not enabled on this deployment. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createJobNatsConsoleInputToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description Connection credentials for sending typed input to a job's serial console
+             *     over NATS, returned by `POST /jobs/{id}/nats-console-input-token`.
+             *
+             *     The token is a short-lived **bearer** user JWT that may *publish* to this
+             *     job's console-input subject (`subject`) — nothing else. Every publish is
+             *     recorded server-side, so treat the channel as monitored; feedback (echo)
+             *     arrives through the separate log-streaming (read) channel. As with
+             *     [`NatsLogStreamCredentials`], the token gates connect time only: an
+             *     established connection outlives its expiry, and a client re-requests
+             *     credentials when it next reconnects, after roughly `expires_in_secs`.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NatsConsoleInputCredentials"];
                 };
             };
             /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */

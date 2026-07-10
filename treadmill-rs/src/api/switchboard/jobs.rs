@@ -163,6 +163,40 @@ pub struct NatsLogStreamCredentials {
     pub expires_in_secs: u64,
 }
 
+/// Connection credentials for sending typed input to a job's serial console
+/// over NATS, returned by `POST /jobs/{id}/nats-console-input-token`.
+///
+/// The token is a short-lived **bearer** user JWT that may *publish* to this
+/// job's console-input subject (`subject`) — nothing else. Every publish is
+/// recorded server-side, so treat the channel as monitored; feedback (echo)
+/// arrives through the separate log-streaming (read) channel. As with
+/// [`NatsLogStreamCredentials`], the token gates connect time only: an
+/// established connection outlives its expiry, and a client re-requests
+/// credentials when it next reconnects, after roughly `expires_in_secs`.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct NatsConsoleInputCredentials {
+    /// Plain-TCP NATS client URL (e.g. `nats://nats.example:4222`), for native
+    /// clients that speak the binary protocol. Nullable: a deployment may
+    /// choose to expose only the WebSocket endpoint publicly, in which case
+    /// only `websocket_url` is returned. Browsers cannot use this — they must
+    /// use `websocket_url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nats_url: Option<String>,
+    /// NATS **WebSocket** URL (e.g. `wss://nats.example:443`), for browser
+    /// clients, which cannot speak the plain TCP protocol. Absent when the
+    /// deployment does not expose a WebSocket listener; a browser client
+    /// cannot send console input against such a deployment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub websocket_url: Option<String>,
+    /// The subject to publish typed input to: `console-in.<job-id>`.
+    pub subject: String,
+    /// Bearer user JWT authorizing publish to `subject`.
+    pub token: String,
+    /// Seconds until the token's `exp`; re-request credentials after this
+    /// elapses (only needed to open a *new* connection).
+    pub expires_in_secs: u64,
+}
+
 /// What a job is based off, as seen by `GET /jobs/{id}`: a concrete image, an
 /// image set (with the frozen generation), or a resume/restart of an earlier
 /// job. The concrete manifest digest actually dispatched is reported separately

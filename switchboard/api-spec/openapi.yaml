@@ -365,6 +365,47 @@ paths:
           description: Log streaming is not enabled on this deployment.
       security:
       - token: []
+  /jobs/{id}/nats-console-input-token:
+    post:
+      tags:
+      - Jobs
+      summary: Create a NATS console-input token for a job
+      operationId: createJobNatsConsoleInputToken
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: |-
+            Connection credentials for sending typed input to a job's serial console
+            over NATS, returned by `POST /jobs/{id}/nats-console-input-token`.
+
+            The token is a short-lived **bearer** user JWT that may *publish* to this
+            job's console-input subject (`subject`) — nothing else. Every publish is
+            recorded server-side, so treat the channel as monitored; feedback (echo)
+            arrives through the separate log-streaming (read) channel. As with
+            [`NatsLogStreamCredentials`], the token gates connect time only: an
+            established connection outlives its expiry, and a client re-requests
+            credentials when it next reconnects, after roughly `expires_in_secs`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NatsConsoleInputCredentials'
+        '503':
+          description: Log streaming is not enabled on this deployment.
+      security:
+      - token: []
   /jobs/{id}:
     get:
       tags:
@@ -2628,6 +2669,56 @@ components:
       - key
       - label
       - login_path
+    NatsConsoleInputCredentials:
+      description: |-
+        Connection credentials for sending typed input to a job's serial console
+        over NATS, returned by `POST /jobs/{id}/nats-console-input-token`.
+
+        The token is a short-lived **bearer** user JWT that may *publish* to this
+        job's console-input subject (`subject`) — nothing else. Every publish is
+        recorded server-side, so treat the channel as monitored; feedback (echo)
+        arrives through the separate log-streaming (read) channel. As with
+        [`NatsLogStreamCredentials`], the token gates connect time only: an
+        established connection outlives its expiry, and a client re-requests
+        credentials when it next reconnects, after roughly `expires_in_secs`.
+      type: object
+      properties:
+        expires_in_secs:
+          description: |-
+            Seconds until the token's `exp`; re-request credentials after this
+            elapses (only needed to open a *new* connection).
+          type: integer
+          format: uint64
+          minimum: 0
+        nats_url:
+          description: |-
+            Plain-TCP NATS client URL (e.g. `nats://nats.example:4222`), for native
+            clients that speak the binary protocol. Nullable: a deployment may
+            choose to expose only the WebSocket endpoint publicly, in which case
+            only `websocket_url` is returned. Browsers cannot use this — they must
+            use `websocket_url`.
+          type:
+          - string
+          - 'null'
+        subject:
+          description: 'The subject to publish typed input to: `console-in.<job-id>`.'
+          type: string
+        token:
+          description: Bearer user JWT authorizing publish to `subject`.
+          type: string
+        websocket_url:
+          description: |-
+            NATS **WebSocket** URL (e.g. `wss://nats.example:443`), for browser
+            clients, which cannot speak the plain TCP protocol. Absent when the
+            deployment does not expose a WebSocket listener; a browser client
+            cannot send console input against such a deployment.
+          type:
+          - string
+          - 'null'
+      required:
+      - subject
+      - token
+      - expires_in_secs
     NatsLogStreamCredentials:
       description: |-
         Connection credentials for tailing/replaying a job's console logs over NATS,
