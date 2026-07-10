@@ -77,9 +77,6 @@ jobs:
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.runs-on }}
 
-    # TODO: remove
-    environment: 'cachix-push'
-
     steps:
       - uses: actions/checkout@v4
 
@@ -87,9 +84,7 @@ jobs:
       - uses: cachix/cachix-action@v15
         with:
           name: treadmill-tb
-          # Read-only here; the explicit (temporary) push below caches just the
-          # two binaries. The image layouts are too large for Cachix (they go to
-          # ghcr instead).
+          # Read-only here; this re-uses the built puppets from the cache.
           skipPush: true
 
       # build-image.sh consumes prebuilt binaries; build them once per runner
@@ -104,18 +99,6 @@ jobs:
           image_util="$(nix build --print-build-logs --no-link --print-out-paths '.#image-util')"
           echo "puppet=$puppet" >> "$GITHUB_OUTPUT"
           echo "image_util=$image_util" >> "$GITHUB_OUTPUT"
-
-      # TEMPORARY: push the freshly built binaries (and their closures) to Cachix
-      # so reruns substitute them instead of recompiling (~20 min). Placed before
-      # the image build, so the cache is populated even if that step later fails.
-      # Needs the CACHIX_AUTH_TOKEN secret; remove once the bins are stable.
-      - name: Push binaries to Cachix
-        env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        run: |
-          set -euxo pipefail
-          cachix push treadmill-tb \
-            "${{ steps.bins.outputs.puppet }}" "${{ steps.bins.outputs.image_util }}"
 
       # The nspawn backend is fully VM-free: it provisions in a systemd-nspawn
       # container and does all image surgery (root grow, SD extraction, fstrim)
