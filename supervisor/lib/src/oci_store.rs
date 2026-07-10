@@ -258,6 +258,8 @@ impl OciStore {
 
         let mut command = tokio::process::Command::new("skopeo");
         command
+            .arg("--registries-conf")
+            .arg("/dev/null")
             .arg("--insecure-policy")
             .arg("copy")
             .arg("--dest-tls-verify=false");
