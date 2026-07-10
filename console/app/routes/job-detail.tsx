@@ -172,7 +172,14 @@ export default function JobDetail({ params }: Route.ComponentProps) {
             )}
           </section>
 
-          <JobLog jobId={params.id} replayBytes={replayBytes} />
+          <JobLog
+            jobId={params.id}
+            replayBytes={replayBytes}
+            canSendInput={
+              job.data.permissions.includes("manage") &&
+              job.data.state !== "finalized"
+            }
+          />
 
           <AuditLog entity="jobs" id={params.id} />
         </>
