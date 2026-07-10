@@ -433,13 +433,12 @@ if [ "$enable_supervisor" = 1 ]; then
   manifest_digest="$(jq -r '.manifests[0].digest' "$fixture_layout/index.json")"
   echo "Registering tiny-efi image ($manifest_digest)"
   if RESP="$(\
-    curl -fsS -X POST "http://127.0.0.1:$sb_port/api/v1/images" \
+    curl -fsS -X POST "http://127.0.0.1:$sb_port/api/v1/images/$manifest_digest/sources" \
      -H "Authorization: Bearer $api_token_bearer" \
      -H 'content-type: application/json' \
-     -d "{\"registry\":\"127.0.0.1:$zot_port\",\"repository\":\"treadmill/tiny-efi\",\"manifest_digest\":\"$manifest_digest\",\"label\":\"tiny-efi (dev)\"}" \
+     -d "{\"registry\":\"127.0.0.1:$zot_port\",\"repository\":\"treadmill/tiny-efi\"}" \
   )"; then
-    tiny_efi_image_id="$(echo "$RESP" | jq -r .id)"
-    echo "  registered as $tiny_efi_image_id"
+    echo "  registered tiny-efi image"
 
     # Wrap the fixture image in a public image set so jobs can target a
     # stable moving-target handle (`tiny-efi`) rather than a concrete
@@ -459,8 +458,8 @@ if [ "$enable_supervisor" = 1 ]; then
         -X POST "http://127.0.0.1:$sb_port/api/v1/image-sets/$tiny_efi_set_id/generations" \
         -H "Authorization: Bearer $api_token_bearer" \
         -H 'content-type: application/json' \
-        -d "{\"members\":[{\"image_id\":\"$tiny_efi_image_id\",\"required_host_tags\":[]}]}"; then
-        echo "  added generation with member $tiny_efi_image_id"
+        -d "{\"members\":[{\"manifest_digest\":\"$manifest_digest\",\"required_host_tags\":[]}]}"; then
+        echo "  added generation with member $manifest_digest"
       else
         echo "  ! generation creation failed (continuing)" >&2
       fi
