@@ -1049,6 +1049,7 @@ async fn owner_gets_a_console_input_token_provisioned_and_audited(pool: PgPool) 
         serde_json::json!([creds.subject])
     );
     assert!(claims["nats"]["sub"]["allow"].as_array().is_none());
+    assert_eq!(claims["nats"]["sub"]["deny"], serde_json::json!([">"]));
     assert!(claims.get("exp").is_some(), "token must expire");
 
     // The recording stream was provisioned (before minting).

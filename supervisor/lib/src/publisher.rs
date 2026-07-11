@@ -384,9 +384,13 @@ async fn run_channel(
 /// auth-callback path (the `with_jwt` builder always installs a signer), so we
 /// return an [`async_nats::Auth`] carrying just the JWT. The server accepts it
 /// because the token is minted with `bearer_token: true`.
-async fn bearer_connect(nats_url: &str, write_token: &str) -> Result<async_nats::Client> {
+async fn bearer_connect(
+    nats_url: &str,
+    write_token: &str,
+    inbox_prefix: Option<&str>,
+) -> Result<async_nats::Client> {
     let token = write_token.to_owned();
-    async_nats::ConnectOptions::with_auth_callback(move |_nonce| {
+    let mut options = async_nats::ConnectOptions::with_auth_callback(move |_nonce| {
         let token = token.clone();
         async move {
             let mut auth = async_nats::Auth::new();
@@ -398,10 +402,16 @@ async fn bearer_connect(nats_url: &str, write_token: &str) -> Result<async_nats:
     // Don't fail (or lose capture) if the broker is briefly down at job start:
     // connect succeeds, the client reconnects in the background, and the
     // shipper retries from the cursor while the drain keeps spilling.
-    .retry_on_initial_connect()
-    .connect(nats_url)
-    .await
-    .with_context(|| format!("connecting to NATS at {nats_url}"))
+    .retry_on_initial_connect();
+    // The write token only permits subscribing to reply inboxes under this
+    // prefix; without it, JetStream publish acks would never arrive.
+    if let Some(prefix) = inbox_prefix {
+        options = options.custom_inbox_prefix(prefix);
+    }
+    options
+        .connect(nats_url)
+        .await
+        .with_context(|| format!("connecting to NATS at {nats_url}"))
 }
 
 /// The console-input side channel: a core-NATS subscription on the job's
@@ -478,7 +488,12 @@ impl LogPublisher {
         dispatch: &LogStreamingDispatch,
         spill_dir: impl Into<PathBuf>,
     ) -> Result<Self> {
-        let client = bearer_connect(&dispatch.nats_url, &dispatch.write_token).await?;
+        let client = bearer_connect(
+            &dispatch.nats_url,
+            &dispatch.write_token,
+            dispatch.inbox_prefix.as_deref(),
+        )
+        .await?;
         let console_input = dispatch
             .console_input_subject
             .clone()

@@ -142,11 +142,19 @@
       ]
     },
     "LogStreamingDispatch": {
-      "description": "Per-job log-streaming destination handed to a supervisor in\n[`StartJobMessage`].\n\nThe supervisor publishes captured console output to the NATS server at\n`nats_url`, under subjects `<subject_prefix>.<channel>` (where\n`subject_prefix` is `logs.<job-id>` and `<channel>` is a [`LogChannel`]\ntoken), authenticating with `write_token`.\n\n`write_token` is a **bearer** user JWT the switchboard mints per dispatch,\nscoped to publish only this job's subjects; the supervisor connects with the\ntoken string alone (no nkey seed is ever shipped).",
+      "description": "Per-job log-streaming destination handed to a supervisor in\n[`StartJobMessage`].\n\nThe supervisor publishes captured console output to the NATS server at\n`nats_url`, under subjects `<subject_prefix>.<channel>` (where\n`subject_prefix` is `logs.<job-id>` and `<channel>` is a [`LogChannel`]\ntoken), authenticating with `write_token`.\n\n`write_token` is a **bearer** user JWT the switchboard mints per dispatch,\nscoped to exactly this job's subjects; the supervisor connects with the\ntoken string alone (no nkey seed is ever shipped).",
       "type": "object",
       "properties": {
         "console_input_subject": {
           "description": "Subject carrying user-typed console input for this job\n(`console-in.<job-id>`); the supervisor subscribes and writes each\nmessage's payload to the workload's serial console. Additive and\noptional: `None` (or an older switchboard omitting the field) means no\nconsole input is delivered.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "inbox_prefix": {
+          "description": "Inbox prefix the supervisor must use for its request/reply inboxes\n(JetStream publish acks): `write_token` only permits subscribing to\nreply subjects under this prefix. Additive and optional: `None` leaves\nthe client's default inbox prefix in place.",
           "type": [
             "string",
             "null"
@@ -162,7 +170,7 @@
           "type": "string"
         },
         "write_token": {
-          "description": "Bearer user JWT authorizing publish to this job's subjects (and, when\n`console_input_subject` is set, subscribe to that subject).",
+          "description": "Bearer user JWT scoped to this job's subjects (see the sibling fields).",
           "type": "string"
         }
       },

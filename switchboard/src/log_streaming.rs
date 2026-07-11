@@ -1,38 +1,20 @@
-//! Per-job log-streaming dispatch: minting the supervisor's write token and
-//! provisioning the per-job JetStream stream.
+//! Per-job log-streaming dispatch: minting NATS tokens and provisioning the
+//! per-job JetStream streams.
 //!
-//! Supervisor console output (qemu stdout/stderr, serial) is published to a
-//! per-job JetStream stream under the subjects `logs.<job-id>.<channel>` (see
-//! [`treadmill_rs::api::switchboard_supervisor::LogChannel`]). The switchboard
-//! is the authority for both ends of that pipe:
+//! The switchboard holds a NATS account signing seed
+//! ([`LogStreamingConfig::account_seed`]; the account identity seed doubles as
+//! the signing seed) and mints per-job **bearer** user JWTs from it: each token
+//! gets a fresh ephemeral user nkey whose seed is discarded after signing, so
+//! the holder authenticates with the JWT string alone and the NATS server
+//! itself enforces the granted subject scope. Every token is deny-by-default:
+//! a direction (publish/subscribe) without an explicit grant is closed, never
+//! left unrestricted (see [`mint_token`]).
 //!
-//! - it **mints** a per-job, publish-scoped **bearer** user JWT (the
-//!   supervisor's `write_token`, handed over in `StartJobMessage`), and
-//! - it **creates** the per-job stream at dispatch.
+//! The opaque API token in [`crate::auth::token`] is unrelated to these JWTs.
 //!
-//! ### Auth model
-//!
-//! The deployment runs a NATS decentralized-auth account whose **signing seed**
-//! the switchboard holds as a secret ([`LogStreamingConfig::account_seed`]). The
-//! account *identity* seed doubles as the *signing* seed, so a minted user JWT's
-//! issuer is simply the account's own public key (derived from the seed) — there
-//! is no separate signing key. Each minted token gets a fresh, ephemeral user
-//! nkey as its subject; the token is a **bearer** token, so the holder connects
-//! with the JWT string alone and the user nkey seed is discarded immediately.
-//! The NATS server validates the granted pub/sub scope itself — that is the
-//! "storage enforces the per-job token" property the design relies on.
-//!
-//! The opaque 32-byte API token in [`crate::auth::token`] is unrelated to these
-//! NATS JWTs; do not conflate them.
-//!
-//! ### Testability
-//!
-//! Token minting and scope assembly are pure (no daemon, no I/O) and unit-tested
-//! below. Stream creation needs a live NATS server, which cannot run in the
-//! sandbox (`AGENTS.md` §2), so it is hidden behind the [`LogStreamProvisioner`]
-//! trait: the production [`NatsLogStreamProvisioner`] talks JetStream, while the
-//! dispatch path is exercised in `#[sqlx::test]`s with log streaming disabled
-//! (no provisioner). The live round-trip belongs in a hermetic Nix check.
+//! Token minting is pure and unit-tested; stream creation needs a live NATS
+//! server, so it sits behind [`LogStreamProvisioner`] and is exercised by
+//! hermetic tests gated on `TML_TEST_NATS_SERVER`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,57 +27,53 @@ use treadmill_rs::api::switchboard_supervisor::LogStreamingDispatch;
 
 use crate::config::LogStreamingConfig;
 
-/// The NATS subject prefix for a job's logs: `logs.<job-id>`. A channel token is
-/// appended as `<prefix>.<channel>` (see
-/// [`treadmill_rs::api::switchboard_supervisor::LogChannel`]). This is the value
-/// carried in [`LogStreamingDispatch::subject_prefix`].
+/// The NATS subject prefix for a job's logs: `logs.<job-id>`. A channel token
+/// is appended as `<prefix>.<channel>` (see
+/// [`treadmill_rs::api::switchboard_supervisor::LogChannel`]).
 pub fn subject_prefix(job_id: Uuid) -> String {
     format!("logs.{job_id}")
 }
 
-/// The subject wildcard covering every channel of a job: `logs.<job-id>.>`. Used
-/// both as the minted token's pub/sub scope and as the stream's captured
-/// subject, and returned to read clients as the subject to subscribe to.
+/// The subject wildcard covering every channel of a job: `logs.<job-id>.>`.
 pub fn subject_scope(job_id: Uuid) -> String {
     format!("logs.{job_id}.>")
 }
 
-/// JetStream stream name for a job's logs.
-///
-/// Stream names may not contain spaces, tabs, or `.` characters, so the dotted
-/// subject prefix cannot be reused verbatim; we use `logs-<job-id>` (the UUID's
-/// hyphens are permitted). Returned to read clients so the naming convention
-/// stays server-owned.
+/// JetStream stream name for a job's logs: `logs-<job-id>` (stream names may
+/// not contain `.`, so the dotted subject prefix cannot be reused).
 pub fn stream_name(job_id: Uuid) -> String {
     format!("logs-{job_id}")
 }
 
 /// The NATS subject carrying user-typed console input for a job:
-/// `console-in.<job-id>` (exact, no channel suffix). Deliberately outside the
-/// `logs.<job-id>.>` hierarchy: read-token holders may retrieve the job's log
-/// stream, but typed input may contain secrets and must stay out of their
+/// `console-in.<job-id>`. Deliberately outside the `logs.<job-id>.>` hierarchy:
+/// typed input may contain secrets and must stay out of read-token holders'
 /// reach.
 pub fn console_input_subject(job_id: Uuid) -> String {
     format!("console-in.{job_id}")
 }
 
-/// JetStream stream name recording a job's console input: `console-in-<job-id>`
-/// (stream names may not contain `.`). Bound to [`console_input_subject`], so
-/// the server captures every publish regardless of client behavior; nothing
-/// consumes it — it is an audit record.
+/// JetStream stream name recording a job's console input:
+/// `console-in-<job-id>`. Bound to [`console_input_subject`], so the server
+/// captures every publish regardless of client behavior; nothing consumes it —
+/// it is an audit record.
 pub fn console_input_stream_name(job_id: Uuid) -> String {
     format!("console-in-{job_id}")
 }
 
 /// The inbox prefix a read client must use for its request/reply inboxes:
-/// `_INBOX.logs-<job-id>`.
-///
-/// Read tokens may not subscribe to the account-wide `_INBOX.>` — other users'
-/// JetStream API replies carry other jobs' log data — so each token is granted
-/// only this per-job prefix, and the client sets it as its connection's inbox
-/// prefix. Returned to read clients alongside the token.
+/// `_INBOX.logs-<job-id>`. Confining each token to a per-job prefix keeps
+/// other users' JetStream API replies — which carry other jobs' log data — out
+/// of reach; the account-wide `_INBOX.>` is never granted.
 pub fn inbox_prefix(job_id: Uuid) -> String {
     format!("_INBOX.logs-{job_id}")
+}
+
+/// The inbox prefix the supervisor must use for its request/reply inboxes
+/// (JetStream publish acks): `_INBOX.sup-<job-id>`. Distinct from the read
+/// clients' [`inbox_prefix`] so the two roles' inbox spaces stay disjoint.
+pub fn supervisor_inbox_prefix(job_id: Uuid) -> String {
+    format!("_INBOX.sup-{job_id}")
 }
 
 /// The JetStream API subject prefix: `$JS.API`, or `$JS.<domain>.API` when the
@@ -110,19 +88,20 @@ fn jetstream_api_prefix(config: &LogStreamingConfig) -> String {
 /// What a minted token authorizes on a job's subjects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenScope {
-    /// The supervisor's scope: publish this job's console output, and
-    /// subscribe to the job's console-input subject to deliver typed input to
-    /// the serial console.
+    /// The supervisor: publish this job's console output and receive its
+    /// typed console input.
     Supervisor,
-    /// Read — a client tailing and replaying this job's logs: subscribe on the
-    /// log subjects plus the job-scoped slice of the JetStream API needed to
-    /// run an ordered consumer against the job's stream (replay-then-follow).
+    /// A client tailing and replaying this job's logs.
     Read,
-    /// Console input — a client sending typed input: publish to the job's
-    /// console-input subject, nothing else. No JetStream API access is needed:
-    /// the input stream is bound to the subject, so the server records every
-    /// publish itself.
+    /// A client sending typed console input.
     ConsoleInput,
+}
+
+/// The subject grants of one token. A direction left empty is explicitly
+/// denied when the token is minted, never left open.
+struct Grants {
+    publish: Vec<String>,
+    subscribe: Vec<String>,
 }
 
 impl TokenScope {
@@ -132,6 +111,48 @@ impl TokenScope {
             TokenScope::Supervisor => "sup",
             TokenScope::Read => "read",
             TokenScope::ConsoleInput => "input",
+        }
+    }
+
+    fn grants(self, config: &LogStreamingConfig, job_id: Uuid) -> Grants {
+        match self {
+            TokenScope::Supervisor => Grants {
+                publish: vec![subject_scope(job_id)],
+                // JetStream publish acks arrive on request/reply inboxes, so
+                // the supervisor needs its per-job inbox prefix besides the
+                // console-input subject.
+                subscribe: vec![
+                    console_input_subject(job_id),
+                    format!("{}.>", supervisor_inbox_prefix(job_id)),
+                ],
+            },
+            // No subscribe at all, and no JetStream API: the input stream is
+            // bound to the subject, so the server records every publish
+            // itself.
+            TokenScope::ConsoleInput => Grants {
+                publish: vec![console_input_subject(job_id)],
+                subscribe: vec![],
+            },
+            // The job-scoped JetStream API slice an ordered consumer needs
+            // for bounded replay-then-follow: STREAM.INFO to compute the
+            // replay start, CONSUMER.CREATE in both its legacy and named
+            // forms, and INFO / MSG.NEXT (ordered consumers are pull-based) /
+            // DELETE for the created consumer.
+            TokenScope::Read => {
+                let api = jetstream_api_prefix(config);
+                let stream = stream_name(job_id);
+                Grants {
+                    publish: vec![
+                        format!("{api}.STREAM.INFO.{stream}"),
+                        format!("{api}.CONSUMER.CREATE.{stream}"),
+                        format!("{api}.CONSUMER.CREATE.{stream}.>"),
+                        format!("{api}.CONSUMER.INFO.{stream}.>"),
+                        format!("{api}.CONSUMER.MSG.NEXT.{stream}.>"),
+                        format!("{api}.CONSUMER.DELETE.{stream}.>"),
+                    ],
+                    subscribe: vec![subject_scope(job_id), format!("{}.>", inbox_prefix(job_id))],
+                }
+            }
         }
     }
 }
@@ -144,69 +165,49 @@ pub enum MintError {
     Seed(String),
 }
 
-/// Mint a per-job **bearer** user JWT scoped to a single job's log subjects
-/// (`logs.<job-id>.>`), signed with the account signing seed.
-///
-/// A fresh ephemeral user nkey is generated as the token's subject and then
-/// discarded: bearer tokens are presented as the JWT string alone, so the seed
-/// is never needed again. `expires_in`, when set, bounds the token's lifetime
-/// (`exp` claim); the supervisor write token is minted without expiry and simply
-/// re-minted on every dispatch, while read tokens are short-lived.
-///
-/// Pure and I/O-free — unit-testable without a NATS server.
+/// Mint a per-job **bearer** user JWT with the scope's [`Grants`], signed with
+/// the account signing seed. `expires_in`, when set, bounds the token's
+/// lifetime; the supervisor write token is minted without expiry and re-minted
+/// on every dispatch, while client tokens are short-lived.
 pub fn mint_token(
     config: &LogStreamingConfig,
     job_id: Uuid,
     scope: TokenScope,
     expires_in: Option<Duration>,
 ) -> Result<String, MintError> {
-    // The account seed is both the identity and the signing key, so the issuer
-    // of the user JWT is the account's own public key.
+    // The account seed doubles as the signing key, so the JWT's issuer is the
+    // account's own public key.
     let account =
         KeyPair::from_seed(&config.account_seed).map_err(|e| MintError::Seed(e.to_string()))?;
-    let account_pub = account.public_key();
 
-    // Ephemeral subject identity. Discarded after signing — the bearer token
-    // carries no nkey challenge, so the seed is never used again.
+    // Ephemeral subject identity, discarded after signing: a bearer token
+    // carries no nkey challenge, so the seed is never needed again.
     let user = KeyPair::new_user();
 
-    let scope_subject = subject_scope(job_id);
-    let mut token = Token::new_user(account_pub, user.public_key())
+    let mut token = Token::new_user(account.public_key(), user.public_key())
         .name(format!("tml-job-{job_id}-{}", scope.label()))
         .bearer_token(true);
 
-    token = match scope {
-        TokenScope::Supervisor => token
-            .allow_publish(scope_subject)
-            .allow_subscribe(console_input_subject(job_id)),
-        TokenScope::ConsoleInput => token.allow_publish(console_input_subject(job_id)),
-        TokenScope::Read => {
-            // Subscribe on the job's log subjects, plus the job-scoped slice
-            // of the JetStream API a client needs to run an ordered consumer
-            // against the job's stream: STREAM.INFO (byte/sequence counts for
-            // computing a bounded replay start), CONSUMER.CREATE (both the
-            // bare legacy form and the named form with consumer-name/filter
-            // suffix), and INFO / MSG.NEXT (ordered consumers are pull-based)
-            // / DELETE for the created consumer. API replies arrive on the
-            // client's inboxes, restricted to the per-job prefix — never the
-            // account-wide `_INBOX.>`.
-            let api = jetstream_api_prefix(config);
-            let stream = stream_name(job_id);
-            token
-                .allow_subscribe(scope_subject)
-                .allow_subscribe(format!("{}.>", inbox_prefix(job_id)))
-                .allow_publish(format!("{api}.STREAM.INFO.{stream}"))
-                .allow_publish(format!("{api}.CONSUMER.CREATE.{stream}"))
-                .allow_publish(format!("{api}.CONSUMER.CREATE.{stream}.>"))
-                .allow_publish(format!("{api}.CONSUMER.INFO.{stream}.>"))
-                .allow_publish(format!("{api}.CONSUMER.MSG.NEXT.{stream}.>"))
-                .allow_publish(format!("{api}.CONSUMER.DELETE.{stream}.>"))
-        }
+    // Deny-by-default: NATS treats a direction carrying no permissions at all
+    // as *unrestricted*, so a direction without grants must be explicitly
+    // closed. (A blanket deny must never be combined with grants: deny
+    // overrides allow on overlapping subjects.)
+    let Grants { publish, subscribe } = scope.grants(config, job_id);
+    token = if publish.is_empty() {
+        token.deny_publish(">")
+    } else {
+        publish.into_iter().fold(token, |t, s| t.allow_publish(s))
+    };
+    token = if subscribe.is_empty() {
+        token.deny_subscribe(">")
+    } else {
+        subscribe
+            .into_iter()
+            .fold(token, |t, s| t.allow_subscribe(s))
     };
 
     if let Some(ttl) = expires_in {
-        // `exp` is unix seconds; saturating add keeps an absurd TTL from
-        // wrapping i64 rather than producing a bogus past timestamp.
+        // Saturating: an absurd TTL must not wrap into a past `exp`.
         let exp = chrono::Utc::now()
             .timestamp()
             .saturating_add(ttl.as_secs() as i64);
@@ -217,10 +218,8 @@ pub fn mint_token(
 }
 
 /// Build the [`LogStreamingDispatch`] handed to a supervisor in
-/// `StartJobMessage`: the NATS URL, this job's subject prefix, its
-/// console-input subject, and a freshly minted supervisor-scoped write token.
-/// The token carries no expiry — it is re-minted on every (re)dispatch rather
-/// than persisted.
+/// `StartJobMessage`. The write token carries no expiry — it is re-minted on
+/// every (re)dispatch rather than persisted.
 pub fn build_dispatch(
     config: &LogStreamingConfig,
     job_id: Uuid,
@@ -231,6 +230,7 @@ pub fn build_dispatch(
         subject_prefix: subject_prefix(job_id),
         write_token,
         console_input_subject: Some(console_input_subject(job_id)),
+        inbox_prefix: Some(supervisor_inbox_prefix(job_id)),
     })
 }
 
@@ -246,32 +246,25 @@ pub enum ProvisionError {
     },
 }
 
-/// Creates the per-job JetStream stream at dispatch.
-///
-/// Abstracted behind a trait so the dispatch path can be unit-tested without a
-/// live NATS server (which cannot run in the sandbox, `AGENTS.md` §2): tests run
-/// with log streaming disabled and no provisioner, while production uses
-/// [`NatsLogStreamProvisioner`]. Mirrors the [`crate::registry::RegistryClient`]
-/// injectable-trait pattern.
+/// Creates the per-job JetStream streams. Behind a trait so the dispatch path
+/// can be tested without a live NATS server; production uses
+/// [`NatsLogStreamProvisioner`].
 #[async_trait]
 pub trait LogStreamProvisioner: Send + Sync {
-    /// Idempotently create the per-job stream capturing `logs.<job-id>.>` with
-    /// no `MaxAge` (it never expires; GC is handled separately, out of scope).
-    ///
+    /// Idempotently create the per-job stream capturing `logs.<job-id>.>`.
     /// Must be safe to call repeatedly: reconcile re-dispatches `StartJob`
-    /// idempotently, so an already-existing stream is a success, not an error.
+    /// idempotently, so an already-existing stream is a success.
     async fn ensure_job_stream(&self, job_id: Uuid) -> Result<(), ProvisionError>;
 
-    /// Idempotently create the per-job stream recording `console-in.<job-id>`
-    /// with no `MaxAge`. Called **before** a console-input token is minted, so
-    /// capture is in place before any client can publish.
+    /// Idempotently create the per-job stream recording `console-in.<job-id>`.
+    /// Called **before** a console-input token is minted, so capture is in
+    /// place before any client can publish.
     async fn ensure_console_input_stream(&self, job_id: Uuid) -> Result<(), ProvisionError>;
 }
 
 /// The log-streaming components the switchboard wires through to the dispatch
-/// path: the (non-secret) config used to mint tokens, and the provisioner used
-/// to create streams. Cloneable (the provisioner is shared behind an `Arc`); a
-/// single instance is built at startup and shared by all supervisor workers.
+/// path. Cloneable; a single instance is built at startup and shared by all
+/// supervisor workers.
 #[derive(Clone)]
 pub struct LogStreaming {
     /// Config for token minting and the dispatch payload's `nats_url`.
@@ -295,33 +288,29 @@ pub enum ConnectError {
     },
 }
 
+/// The inbox prefix of the switchboard's own management connection.
+const MGMT_INBOX_PREFIX: &str = "_INBOX.tml-switchboard-mgmt";
+
 /// The production [`LogStreamProvisioner`]: creates streams over a JetStream
 /// management connection to a real NATS server.
-///
-/// The management connection authenticates with a **non-bearer** user JWT minted
-/// from the account seed and scoped to the JetStream API (`$JS.API.>`, plus its
-/// reply inbox). Because the switchboard generates that management user's nkey,
-/// it can answer the server's nonce challenge — unlike the per-job bearer tokens
-/// it hands out, whose seeds are discarded.
 pub struct NatsLogStreamProvisioner {
     jetstream: async_nats::jetstream::Context,
 }
 
 impl NatsLogStreamProvisioner {
-    /// Connect to NATS and build a provisioner with JetStream management rights.
+    /// Connect to NATS and build a provisioner with JetStream management
+    /// rights. The management user's JWT is **non-bearer** — the switchboard
+    /// holds its nkey seed and answers the server's nonce challenge — and is
+    /// scoped to the JetStream API plus the management inbox prefix.
     pub async fn connect(config: &LogStreamingConfig) -> Result<Self, ConnectError> {
         let account = KeyPair::from_seed(&config.account_seed)
             .map_err(|e| ConnectError::Seed(e.to_string()))?;
-        let account_pub = account.public_key();
 
-        // A management user the switchboard itself holds the seed for, so it can
-        // sign the server's connection nonce. Scoped only to the JetStream API
-        // and its reply inbox — enough to create/inspect streams, nothing else.
         let mgmt_user = Arc::new(KeyPair::new_user());
-        let mgmt_jwt = Token::new_user(account_pub, mgmt_user.public_key())
+        let mgmt_jwt = Token::new_user(account.public_key(), mgmt_user.public_key())
             .name("tml-switchboard-logstream-mgmt")
-            .allow_publish("$JS.API.>")
-            .allow_subscribe("_INBOX.>")
+            .allow_publish(format!("{}.>", jetstream_api_prefix(config)))
+            .allow_subscribe(format!("{MGMT_INBOX_PREFIX}.>"))
             .sign(&account);
 
         let signer = mgmt_user.clone();
@@ -330,6 +319,7 @@ impl NatsLogStreamProvisioner {
             async move { signer.sign(&nonce).map_err(async_nats::AuthError::new) }
         })
         .name("tml-switchboard")
+        .custom_inbox_prefix(MGMT_INBOX_PREFIX)
         .connect(&config.nats_url)
         .await
         .map_err(|source| ConnectError::Connect {
@@ -344,9 +334,7 @@ impl NatsLogStreamProvisioner {
 
         Ok(Self { jetstream })
     }
-}
 
-impl NatsLogStreamProvisioner {
     /// Idempotently create a stream capturing `subjects` under `name`;
     /// `get_or_create_stream` returns an existing same-named stream, so a
     /// repeat call is a no-op.
@@ -359,8 +347,8 @@ impl NatsLogStreamProvisioner {
         let stream_config = async_nats::jetstream::stream::Config {
             name,
             subjects,
-            // No MaxAge: the stream never expires (GC is handled separately,
-            // out of scope). A zero `Duration` is JetStream's "unlimited age".
+            // Zero means "unlimited age": the stream never expires (GC is a
+            // separate concern).
             max_age: Duration::ZERO,
             ..Default::default()
         };
@@ -400,8 +388,7 @@ mod tests {
     use base64::Engine as _;
     use serde_json::Value;
 
-    /// A throwaway account seed for tests. Generating a fresh account keypair
-    /// each run keeps a real secret out of the source tree.
+    /// A throwaway account seed per run keeps a real secret out of the tree.
     fn test_config() -> LogStreamingConfig {
         let account = KeyPair::new_account();
         LogStreamingConfig {
@@ -413,11 +400,8 @@ mod tests {
     }
 
     /// Decode the (unverified) claims out of a JWT's payload segment as JSON.
-    ///
-    /// Deliberately parsed as a [`serde_json::Value`] rather than `nats_jwt`'s
-    /// own `Claims`: that type's permission lists are emitted with
-    /// `skip_serializing_if` but lack a serde default, so it cannot round-trip
-    /// its own output. Inspecting the JSON also asserts the exact wire shape the
+    /// Parsed as a [`Value`] rather than `nats_jwt`'s `Claims` (which cannot
+    /// round-trip its own output); this also asserts the exact wire shape the
     /// NATS server will see.
     fn decode_claims(jwt: &str) -> Value {
         let payload = jwt.split('.').nth(1).expect("jwt has a payload segment");
@@ -427,14 +411,21 @@ mod tests {
         serde_json::from_slice(&bytes).expect("payload is JSON")
     }
 
-    /// The `allow` list under a permission direction (`"pub"` or `"sub"`) of a
-    /// user JWT's NATS claims, as a `Vec<String>` (empty if the direction is
-    /// absent).
-    fn allow(claims: &Value, direction: &str) -> Vec<String> {
-        claims["nats"][direction]["allow"]
+    /// A permission list (`"allow"` / `"deny"`) under a direction (`"pub"` /
+    /// `"sub"`) of a user JWT's NATS claims (empty if absent).
+    fn permission_list(claims: &Value, direction: &str, list: &str) -> Vec<String> {
+        claims["nats"][direction][list]
             .as_array()
             .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
             .unwrap_or_default()
+    }
+
+    fn allow(claims: &Value, direction: &str) -> Vec<String> {
+        permission_list(claims, direction, "allow")
+    }
+
+    fn deny(claims: &Value, direction: &str) -> Vec<String> {
+        permission_list(claims, direction, "deny")
     }
 
     #[test]
@@ -448,7 +439,7 @@ mod tests {
             subject_scope(job_id),
             "logs.00000000-0000-0000-0000-000000000000.>"
         );
-        // Stream names forbid '.', so the prefix is hyphenated.
+        // Stream names forbid '.', so the prefixes are hyphenated.
         assert_eq!(
             stream_name(job_id),
             "logs-00000000-0000-0000-0000-000000000000"
@@ -461,6 +452,14 @@ mod tests {
             console_input_stream_name(job_id),
             "console-in-00000000-0000-0000-0000-000000000000"
         );
+        assert_eq!(
+            inbox_prefix(job_id),
+            "_INBOX.logs-00000000-0000-0000-0000-000000000000"
+        );
+        assert_eq!(
+            supervisor_inbox_prefix(job_id),
+            "_INBOX.sup-00000000-0000-0000-0000-000000000000"
+        );
     }
 
     #[test]
@@ -471,8 +470,8 @@ mod tests {
         let jwt = mint_token(&config, job_id, TokenScope::Supervisor, None).expect("mint");
         let claims = decode_claims(&jwt);
 
-        // Issued by the account's own public key (seed doubles as signing key),
-        // which is also the issuer_account (no separate signing key).
+        // Issued by the account's own public key (seed doubles as signing
+        // key), which is also the issuer_account.
         let account_pub = KeyPair::from_seed(&config.account_seed)
             .unwrap()
             .public_key();
@@ -481,10 +480,16 @@ mod tests {
         assert_eq!(claims["nats"]["issuer_account"], account_pub);
         assert_eq!(claims["nats"]["bearer_token"], true);
 
-        // Publish is scoped to exactly this job's log subjects; subscribe to
-        // exactly its console-input subject.
+        // Publish exactly this job's log subjects; subscribe exactly its
+        // console-input subject and the per-job ack inbox prefix.
         assert_eq!(allow(&claims, "pub"), vec![subject_scope(job_id)]);
-        assert_eq!(allow(&claims, "sub"), vec![console_input_subject(job_id)]);
+        assert_eq!(
+            allow(&claims, "sub"),
+            vec![
+                console_input_subject(job_id),
+                format!("{}.>", supervisor_inbox_prefix(job_id)),
+            ]
+        );
 
         // No expiry on the (re-minted-per-dispatch) write token.
         assert!(claims.get("exp").is_none());
@@ -506,11 +511,11 @@ mod tests {
 
         assert_eq!(claims["nats"]["bearer_token"], true);
 
-        // Publish to exactly the job's console-input subject — no log
-        // subjects, no JetStream API (the server records publishes itself via
-        // the subject-bound stream) — and no subscribe scope at all.
+        // Publish exactly the job's console-input subject; subscribe nothing,
+        // explicitly.
         assert_eq!(allow(&claims, "pub"), vec![console_input_subject(job_id)]);
         assert!(allow(&claims, "sub").is_empty());
+        assert_eq!(deny(&claims, "sub"), vec![">"]);
 
         assert!(
             claims.get("exp").is_some(),
@@ -535,8 +540,7 @@ mod tests {
         assert_eq!(claims["nats"]["bearer_token"], true);
 
         // Subscribe: the job's log subjects plus the job's own inbox prefix —
-        // never the account-wide `_INBOX.>` (other users' API replies carry
-        // other jobs' log data).
+        // never the account-wide `_INBOX.>`.
         assert_eq!(
             allow(&claims, "sub"),
             vec![subject_scope(job_id), format!("{}.>", inbox_prefix(job_id))]
@@ -558,6 +562,30 @@ mod tests {
         );
 
         assert!(claims.get("exp").is_some(), "read token must expire");
+    }
+
+    /// Deny-by-default: no scope may mint a token with an unrestricted
+    /// direction — each direction either has explicit grants or denies `>`.
+    #[test]
+    fn no_scope_leaves_a_direction_unrestricted() {
+        let config = test_config();
+        let job_id = Uuid::new_v4();
+
+        for scope in [
+            TokenScope::Supervisor,
+            TokenScope::Read,
+            TokenScope::ConsoleInput,
+        ] {
+            let claims = decode_claims(&mint_token(&config, job_id, scope, None).expect("mint"));
+            for direction in ["pub", "sub"] {
+                let granted = !allow(&claims, direction).is_empty();
+                let closed = deny(&claims, direction) == vec![">".to_string()];
+                assert!(
+                    granted ^ closed,
+                    "{scope:?} must grant or close '{direction}', never leave it open"
+                );
+            }
+        }
     }
 
     #[test]
@@ -607,9 +635,16 @@ mod tests {
             dispatch.console_input_subject,
             Some(console_input_subject(job_id))
         );
+        assert_eq!(dispatch.inbox_prefix, Some(supervisor_inbox_prefix(job_id)));
         let claims = decode_claims(&dispatch.write_token);
         assert_eq!(allow(&claims, "pub"), vec![subject_scope(job_id)]);
-        assert_eq!(allow(&claims, "sub"), vec![console_input_subject(job_id)]);
+        assert_eq!(
+            allow(&claims, "sub"),
+            vec![
+                console_input_subject(job_id),
+                format!("{}.>", supervisor_inbox_prefix(job_id)),
+            ]
+        );
     }
 
     #[test]
@@ -624,13 +659,11 @@ mod tests {
         assert!(matches!(err, MintError::Seed(_)));
     }
 
-    // ---- Live NATS stream creation (hermetic Nix check) ------------------
+    // ---- Live NATS tests (hermetic Nix check) -----------------------------
     //
-    // Backfills the Phase 2 deliverable left unwritten because the sandbox
-    // can't run a broker: assert `ensure_job_stream` actually creates the
-    // per-job JetStream stream. Gated on `TML_TEST_NATS_SERVER` (the
-    // nats-server binary), set only by the `nats-log-streaming` Nix check;
-    // unset (plain `nextest` / the sandbox) → the test skips.
+    // Gated on `TML_TEST_NATS_SERVER` (the nats-server binary), set only by
+    // the `nats-log-streaming` Nix check; unset → the test skips (the sandbox
+    // cannot run a broker).
 
     fn nats_server_bin() -> Option<std::path::PathBuf> {
         std::env::var_os("TML_TEST_NATS_SERVER")
@@ -646,8 +679,8 @@ mod tests {
             .port()
     }
 
-    /// A child `nats-server` with JetStream enabled (no auth); killed on drop,
-    /// with its JetStream store directory removed.
+    /// A child `nats-server` with JetStream enabled; killed on drop, with its
+    /// store directory removed.
     struct NatsServer {
         child: std::process::Child,
         port: u16,
@@ -667,6 +700,7 @@ mod tests {
             format!("nats://127.0.0.1:{}", self.port)
         }
 
+        /// Start with no auth.
         async fn start(bin: &std::path::Path) -> Self {
             let store =
                 std::env::temp_dir().join(format!("tml-switchboard-nats-{}", Uuid::new_v4()));
@@ -693,10 +727,9 @@ mod tests {
             panic!("nats-server did not become ready");
         }
 
-        /// Like [`NatsServer::start`], but from a rendered config file
-        /// (`render(port, store_dir)`), for servers with auth. Readiness is
-        /// polled with `ready_connect` since anonymous connects are rejected
-        /// once accounts are configured.
+        /// Start from a rendered config file (`render(port, store_dir)`), for
+        /// servers with auth. Readiness is polled with `ready_connect` since
+        /// anonymous connects are rejected once accounts are configured.
         async fn start_with_config(
             bin: &std::path::Path,
             render: impl FnOnce(u16, &str) -> String,
@@ -727,6 +760,68 @@ mod tests {
         }
     }
 
+    /// Render the config `permissions` clause enforcing a token's decoded
+    /// allow/deny lists on a config-file user: password auth stands in for
+    /// the bearer-JWT transport, while the permission set under test is
+    /// exactly the minted one.
+    fn permissions_clause(claims: &Value) -> String {
+        let quote = |subjects: Vec<String>| {
+            subjects
+                .iter()
+                .map(|s| format!("\"{s}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let direction = |config_key: &str, direction: &str| {
+            let mut lists = Vec::new();
+            let allowed = allow(claims, direction);
+            if !allowed.is_empty() {
+                lists.push(format!("allow: [{}]", quote(allowed)));
+            }
+            let denied = deny(claims, direction);
+            if !denied.is_empty() {
+                lists.push(format!("deny: [{}]", quote(denied)));
+            }
+            format!("{config_key}: {{ {} }}", lists.join(", "))
+        };
+        format!(
+            "permissions: {{ {}, {} }}",
+            direction("publish", "pub"),
+            direction("subscribe", "sub")
+        )
+    }
+
+    /// A server config with JetStream, an unrestricted `mgmt` user, and a
+    /// `restricted` user under the given permissions clause.
+    fn restricted_user_config(permissions: &str) -> impl FnOnce(u16, &str) -> String + '_ {
+        move |port, store| {
+            format!(
+                r#"
+listen: "127.0.0.1:{port}"
+jetstream {{ store_dir: "{store}" }}
+accounts {{
+  TEST {{
+    jetstream: enabled
+    users: [
+      {{ user: "mgmt", password: "mgmt" }},
+      {{ user: "restricted", password: "restricted", {permissions} }}
+    ]
+  }}
+}}
+"#
+            )
+        }
+    }
+
+    fn mgmt_opts() -> async_nats::ConnectOptions {
+        async_nats::ConnectOptions::new().user_and_password("mgmt".to_string(), "mgmt".to_string())
+    }
+
+    fn restricted_opts() -> async_nats::ConnectOptions {
+        async_nats::ConnectOptions::new()
+            .user_and_password("restricted".to_string(), "restricted".to_string())
+    }
+
     #[tokio::test]
     async fn nats_live_provisioner_creates_job_stream() {
         let Some(bin) = nats_server_bin() else {
@@ -736,7 +831,7 @@ mod tests {
         let server = NatsServer::start(&bin).await;
 
         // No-auth connection: this asserts the provisioning behavior, not the
-        // (separately unit-tested) bearer-JWT auth model.
+        // (separately tested) auth model.
         let client = async_nats::connect(server.url()).await.unwrap();
         let jetstream = async_nats::jetstream::new(client);
         let provisioner = NatsLogStreamProvisioner { jetstream };
@@ -749,8 +844,7 @@ mod tests {
             .await
             .expect("idempotent re-create");
 
-        // The stream exists, capturing exactly this job's subjects, never
-        // expiring (max_age == 0).
+        // The stream captures exactly this job's subjects and never expires.
         let stream = provisioner
             .jetstream
             .get_stream(stream_name(job_id))
@@ -779,16 +873,84 @@ mod tests {
         assert_eq!(config.max_age, Duration::ZERO);
     }
 
-    /// The read token's granted subject set must be *sufficient* for the web
-    /// console's bounded replay-then-follow: STREAM.INFO for the start-seq
-    /// computation, an ordered consumer over the job's stream, and the live
-    /// tail — all through inboxes under the per-job prefix.
-    ///
-    /// The server enforces the token's **decoded allow lists** on a
-    /// config-file `reader` user: password auth stands in for the bearer-JWT
-    /// transport (a full operator/account hierarchy is beyond `nats-jwt`),
-    /// while the permission set under test is exactly the minted one. The JS
-    /// browser client drives the same `$JS.API` subjects as async-nats here.
+    /// The supervisor scope must be *sufficient* for both directions of the
+    /// serial channel: a durably **acked** JetStream publish (the ack arrives
+    /// on the granted per-job inbox prefix) and receiving console input.
+    #[tokio::test]
+    async fn nats_live_supervisor_scope_suffices_for_acked_publish_and_input() {
+        use futures_util::StreamExt as _;
+
+        let Some(bin) = nats_server_bin() else {
+            eprintln!("TML_TEST_NATS_SERVER unset; skipping live NATS supervisor-scope test");
+            return;
+        };
+
+        let config = test_config();
+        let job_id = Uuid::new_v4();
+        let claims = decode_claims(
+            &mint_token(&config, job_id, TokenScope::Supervisor, None).expect("mint"),
+        );
+        let permissions = permissions_clause(&claims);
+        let server =
+            NatsServer::start_with_config(&bin, restricted_user_config(&permissions), mgmt_opts())
+                .await;
+
+        let mgmt = mgmt_opts()
+            .connect(server.url())
+            .await
+            .expect("mgmt connect");
+        let provisioner = NatsLogStreamProvisioner {
+            jetstream: async_nats::jetstream::new(mgmt.clone()),
+        };
+        provisioner.ensure_job_stream(job_id).await.expect("create");
+
+        // Connect exactly as the supervisor does: the per-job inbox prefix is
+        // the only subscribable reply space.
+        let supervisor = restricted_opts()
+            .custom_inbox_prefix(supervisor_inbox_prefix(job_id))
+            .connect(server.url())
+            .await
+            .expect("supervisor connect");
+
+        let supervisor_js = async_nats::jetstream::new(supervisor.clone());
+        let ack = supervisor_js
+            .publish(format!("{}.serial", subject_prefix(job_id)), "boot".into())
+            .await
+            .expect("publish")
+            .await
+            .expect("durable ack arrives on the granted inbox prefix");
+        assert_eq!(ack.stream, stream_name(job_id));
+
+        // Typed input published on the console-input subject reaches the
+        // supervisor's subscription. The subscription registers
+        // asynchronously and a core publish with no live subscription is
+        // dropped, so republish until it arrives.
+        let mut input = supervisor
+            .subscribe(console_input_subject(job_id))
+            .await
+            .expect("subscribe");
+        supervisor.flush().await.expect("flush subscription");
+        let message = 'republish: {
+            for _ in 0..100 {
+                mgmt.publish(console_input_subject(job_id), "input".into())
+                    .await
+                    .expect("publish input");
+                mgmt.flush().await.expect("flush publish");
+                match tokio::time::timeout(Duration::from_millis(300), input.next()).await {
+                    Ok(message) => break 'republish message.expect("subscription open"),
+                    Err(_elapsed) => continue,
+                }
+            }
+            panic!("console input never arrived on the granted subscription");
+        };
+        assert_eq!(message.payload.as_ref(), b"input");
+    }
+
+    /// The read scope must be *sufficient* for the web console's bounded
+    /// replay-then-follow: STREAM.INFO for the start-seq computation, an
+    /// ordered consumer over the job's stream, and the live tail — all through
+    /// inboxes under the per-job prefix. The JS browser client drives the same
+    /// `$JS.API` subjects as async-nats here.
     #[tokio::test]
     async fn nats_live_read_token_scope_suffices_for_bounded_replay() {
         let Some(bin) = nats_server_bin() else {
@@ -801,45 +963,10 @@ mod tests {
 
         let claims =
             decode_claims(&mint_token(&config, job_id, TokenScope::Read, None).expect("mint"));
-        let quote = |subjects: Vec<String>| {
-            subjects
-                .iter()
-                .map(|s| format!("\"{s}\""))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let pub_allow = quote(allow(&claims, "pub"));
-        let sub_allow = quote(allow(&claims, "sub"));
-
-        let mgmt_opts = || {
-            async_nats::ConnectOptions::new()
-                .user_and_password("mgmt".to_string(), "mgmt".to_string())
-        };
-        let server = NatsServer::start_with_config(
-            &bin,
-            |port, store| {
-                format!(
-                    r#"
-listen: "127.0.0.1:{port}"
-jetstream {{ store_dir: "{store}" }}
-accounts {{
-  TEST {{
-    jetstream: enabled
-    users: [
-      {{ user: "mgmt", password: "mgmt" }},
-      {{ user: "reader", password: "reader", permissions: {{
-        publish: {{ allow: [{pub_allow}] }},
-        subscribe: {{ allow: [{sub_allow}] }},
-      }} }}
-    ]
-  }}
-}}
-"#
-                )
-            },
-            mgmt_opts(),
-        )
-        .await;
+        let permissions = permissions_clause(&claims);
+        let server =
+            NatsServer::start_with_config(&bin, restricted_user_config(&permissions), mgmt_opts())
+                .await;
 
         // Management side: create the job's stream and store frames of a
         // known payload size, awaiting the durable ack for each.
@@ -867,8 +994,7 @@ accounts {{
 
         // Read side, connecting exactly as the browser does: the restricted
         // user, inboxes under the per-job prefix only.
-        let reader = async_nats::ConnectOptions::new()
-            .user_and_password("reader".to_string(), "reader".to_string())
+        let reader = restricted_opts()
             .custom_inbox_prefix(inbox_prefix(job_id))
             .connect(server.url())
             .await

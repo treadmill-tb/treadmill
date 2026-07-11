@@ -3092,6 +3092,10 @@ mod tests {
             dispatch.console_input_subject,
             Some(crate::log_streaming::console_input_subject(job_id))
         );
+        assert_eq!(
+            dispatch.inbox_prefix,
+            Some(crate::log_streaming::supervisor_inbox_prefix(job_id))
+        );
 
         // Decode (unverified) the write token's claims as JSON and check the pub
         // scope. Parsed as JSON rather than `nats_jwt::Claims` because that type
@@ -3120,8 +3124,12 @@ mod tests {
         );
         assert_eq!(
             claims["nats"]["sub"]["allow"],
-            serde_json::json!([format!("console-in.{job_id}")]),
-            "write token must subscribe-scope exactly this job's console-input subject"
+            serde_json::json!([
+                format!("console-in.{job_id}"),
+                format!("_INBOX.sup-{job_id}.>"),
+            ]),
+            "write token must subscribe-scope exactly this job's console-input \
+             subject and ack inbox prefix"
         );
 
         // Disabled (None) leaves the field unset.
