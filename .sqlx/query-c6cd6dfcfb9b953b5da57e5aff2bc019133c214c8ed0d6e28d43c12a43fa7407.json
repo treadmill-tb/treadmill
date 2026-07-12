@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select email, verified from tml_switchboard.user_emails where user_id = $1 and provider = $2;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.user_emails",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "verified",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.user_emails",
+            "name": "verified"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "c6cd6dfcfb9b953b5da57e5aff2bc019133c214c8ed0d6e28d43c12a43fa7407"
+}

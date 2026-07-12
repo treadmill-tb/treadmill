@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select email from tml_switchboard.user_emails where email = any($1::text[]);",
+  "query": "select email from tml_switchboard.user_emails where email = any($1::text[]) and not (user_id = $2 and provider = $3);",
   "describe": {
     "columns": [
       {
@@ -17,12 +17,14 @@
     ],
     "parameters": {
       "Left": [
-        "TextArray"
+        "TextArray",
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "f85af2d47c7ed8ccd69dffa5efadf0d0b209b3f9ba7e616687d6a3826fe884ed"
+  "hash": "fa4725ccf52e77a7728b340fb5fb0a8f37759de4b34be48fba12240af0f85218"
 }

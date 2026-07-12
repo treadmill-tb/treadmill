@@ -90,6 +90,33 @@ define_event! {
 }
 
 define_event! {
+    /// A recorded email's verified flag was aligned with the upstream
+    /// provider's current report (either direction) during a login re-sync.
+    UserEmailVerificationChanged v1 {
+        actor: Subject,
+        user: Subject @ view(SelfAccess),
+        provider: String,
+        email: String,
+        verified: bool,
+    }
+    event_type = "user_email_verification_changed";
+    render = "email {email} verified = {verified:?} via {provider}";
+}
+
+define_event! {
+    /// A recorded email was removed because the upstream provider no longer
+    /// reports it for this identity.
+    UserEmailRemoved v1 {
+        actor: Subject,
+        user: Subject @ view(SelfAccess),
+        provider: String,
+        email: String,
+    }
+    event_type = "user_email_removed";
+    render = "email {email} removed (no longer reported by {provider})";
+}
+
+define_event! {
     /// A `github_org`-sourced group membership was added or removed during
     /// auto-group reconciliation. The group relation is operator-visible; the
     /// affected user sees the event through their own self-viewable relation.

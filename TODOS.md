@@ -13,13 +13,6 @@ grant/revoke therefore produce no audit rows; `ImageRegistered` still fires for 
 new digest. When added, mirror the `image_set` grant events (`view(Manage)` on
 the source) and add the entity-kind enum value in the same migration.
 
-## Re-Sync Verified/Non-Verified Emails on Login
-
-Currently, the auth code does not properly re-sync emails on login. Previously
-unverified emails that are now verified upstream aren't marked as such, emails
-aren't removed, and now-unverified emails aren't transitioned in the switchboard
-DB.
-
 ## Separate `manage` Permission from `own` Permission
 
 Currently, `manage` is the same as ownership: it allows to change ownership
@@ -39,8 +32,8 @@ separate `username` handle. Remove the column, its UNIQUE constraint,
 
 Add a notion of a user's primary email (e.g. `is_primary` on `user_emails`, or a
 `primary_email` FK on `users`). GitHub registration should set it from the
-verified primary email returned by the provider. Coordinate with the existing
-"Re-Sync Verified/Non-Verified Emails on Login" item above.
+verified primary email returned by the provider. Coordinate with the login-time
+email re-sync.
 
 ## Private Image Sources: Credentials + Source-Level Use Grants
 

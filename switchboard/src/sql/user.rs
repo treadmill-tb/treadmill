@@ -202,21 +202,34 @@ async fn refresh_and_reconcile(
         .await?;
     }
 
-    // 4. Record emails from the identify, emitting an event only for ones
-    // genuinely new to the system (an address already on file, even another
-    // user's, is left untouched and unlogged).
-    //
-    // TODO: this should also mark previously unverified emails as verified,
-    // remove emails when they vanish from the OAuth provider, and revoke the
-    // "verified" attribute when an email is no longer reported as verified by
-    // the upstream provider.
-    let present: Vec<Cow<str>> = if identity.emails.is_empty() {
+    // 4. Reconcile recorded emails against the provider's current report,
+    // scoped to THIS provider's rows: record new addresses, align the
+    // `verified` flag in both directions, and remove addresses the provider no
+    // longer reports. Rows recorded under other providers are untouched, and
+    // an address already on file elsewhere (another user's, or this user's
+    // under another provider) is left alone and unlogged, as before.
+    let current: Vec<(String, bool)> = sqlx::query!(
+        "select email, verified from tml_switchboard.user_emails \
+         where user_id = $1 and provider = $2;",
+        user_id,
+        provider,
+    )
+    .fetch_all(&mut **tx)
+    .await?
+    .into_iter()
+    .map(|r| (r.email, r.verified))
+    .collect();
+
+    let present_elsewhere: Vec<Cow<str>> = if identity.emails.is_empty() {
         Vec::new()
     } else {
         let all_emails: Vec<&str> = identity.emails.iter().map(|e| e.address.as_ref()).collect();
         sqlx::query_scalar!(
-            "select email from tml_switchboard.user_emails where email = any($1::text[]);",
+            "select email from tml_switchboard.user_emails \
+             where email = any($1::text[]) and not (user_id = $2 and provider = $3);",
             &all_emails as _,
+            user_id,
+            provider,
         )
         .fetch_all(&mut **tx)
         .await?
@@ -224,15 +237,46 @@ async fn refresh_and_reconcile(
         .map(|email| email.into())
         .collect()
     };
+
     for email in &identity.emails {
-        if !present.contains(&email.address) {
+        match current.iter().find(|(addr, _)| *addr == email.address) {
+            Some((_, verified)) if *verified != email.verified => {
+                audit::transition(
+                    tx,
+                    ChangeEmailVerified {
+                        user_id,
+                        provider,
+                        email: &email.address,
+                        verified: email.verified,
+                    },
+                )
+                .await?;
+            }
+            Some(_) => {}
+            None if !present_elsewhere.contains(&email.address) => {
+                audit::transition(
+                    tx,
+                    AddEmail {
+                        user_id,
+                        provider,
+                        email: &email.address,
+                        verified: email.verified,
+                    },
+                )
+                .await?;
+            }
+            None => {}
+        }
+    }
+
+    for (addr, _) in &current {
+        if !identity.emails.iter().any(|e| e.address == *addr) {
             audit::transition(
                 tx,
-                AddEmail {
+                RemoveEmail {
                     user_id,
                     provider,
-                    email: &email.address,
-                    verified: email.verified,
+                    email: addr,
                 },
             )
             .await?;
@@ -442,6 +486,84 @@ impl Transition for AddEmail<'_> {
             provider: self.provider.to_string(),
             email: self.email.to_string(),
             verified: self.verified,
+        };
+        Ok(((), event))
+    }
+}
+
+/// Align a recorded email's `verified` flag with the provider's current
+/// report. Constructed only when the flag actually differs. Emits
+/// [`events::UserEmailVerificationChanged`].
+struct ChangeEmailVerified<'a> {
+    user_id: Uuid,
+    provider: &'a str,
+    email: &'a str,
+    verified: bool,
+}
+
+impl Transition for ChangeEmailVerified<'_> {
+    type Output = ();
+    type Event = events::UserEmailVerificationChanged;
+
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        sqlx::query!(
+            "update tml_switchboard.user_emails set verified = $4 \
+             where email = $1 and user_id = $2 and provider = $3;",
+            self.email,
+            self.user_id,
+            self.provider,
+            self.verified,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::UserEmailVerificationChanged {
+            actor: AuditSubject(self.user_id),
+            user: AuditSubject(self.user_id),
+            provider: self.provider.to_string(),
+            email: self.email.to_string(),
+            verified: self.verified,
+        };
+        Ok(((), event))
+    }
+}
+
+/// Remove a recorded email the provider no longer reports for this identity.
+/// Emits [`events::UserEmailRemoved`].
+struct RemoveEmail<'a> {
+    user_id: Uuid,
+    provider: &'a str,
+    email: &'a str,
+}
+
+impl Transition for RemoveEmail<'_> {
+    type Output = ();
+    type Event = events::UserEmailRemoved;
+
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        sqlx::query!(
+            "delete from tml_switchboard.user_emails \
+             where email = $1 and user_id = $2 and provider = $3;",
+            self.email,
+            self.user_id,
+            self.provider,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::UserEmailRemoved {
+            actor: AuditSubject(self.user_id),
+            user: AuditSubject(self.user_id),
+            provider: self.provider.to_string(),
+            email: self.email.to_string(),
         };
         Ok(((), event))
     }
