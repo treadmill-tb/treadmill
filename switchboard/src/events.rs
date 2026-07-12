@@ -216,7 +216,14 @@ impl Debounced {
         }
     }
 
+    /// Cancellation-safe (fit for a `select!` arm): the cooldown is waited out
+    /// *before* any wake is consumed, and consumption happens synchronously in
+    /// the resolving poll — a `wait` future dropped mid-flight never loses a
+    /// pending wake.
     pub async fn wait(&mut self) {
+        if let Some(last_fired) = self.last_fired {
+            tokio::time::sleep_until(last_fired + self.cooldown).await;
+        }
         {
             let changed: Vec<_> = self
                 .subs
@@ -224,9 +231,6 @@ impl Debounced {
                 .map(|sub| Box::pin(sub.changed()))
                 .collect();
             futures_util::future::select_all(changed).await;
-        }
-        if let Some(last_fired) = self.last_fired {
-            tokio::time::sleep_until(last_fired + self.cooldown).await;
         }
         // Fold everything that accumulated while waiting into this firing;
         // the caller's imminent pass reads fresh state and covers it all.

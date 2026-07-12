@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::audit::model::{Host as AuditHost, Job as AuditJob, Subject as AuditSubject};
 use crate::audit::{self, SYSTEM_ACTOR_ID, events};
+use crate::events::{Debounced, EventBus, EventFilter};
 use crate::log_streaming::LogStreaming;
 use crate::sql;
 
@@ -62,12 +63,16 @@ pub struct SupervisorWSWorkerConfig {
     /// inbound status response), so it only fires to cover quiet stretches. A
     /// reconcile never issues a `StatusRequest` itself — it reads the in-memory
     /// status cache that the ping-driven `StatusRequest` and (later) the event
-    /// stream keep fresh — so a future Postgres pub/sub trigger costs no round
-    /// trip.
+    /// stream keep fresh — so an event-bus wake costs no round trip.
     ///
     /// [`reconcile`]: SupervisorWSWorker::reconcile
     #[serde(with = "humantime_serde")]
     pub supervisor_reconcile_interval: Duration,
+    /// Minimum spacing between event-driven reconcile passes (the cooldown of
+    /// the worker's debounced change-notification wake);
+    /// `supervisor_reconcile_interval` remains the staleness ceiling.
+    #[serde(with = "humantime_serde")]
+    pub supervisor_event_debounce: Duration,
 }
 
 /// DB-side identity and configuration for one supervisor worker, deliberately
@@ -98,12 +103,17 @@ struct WorkerCtx {
 pub struct SupervisorWSWorker<S: SupervisorSocket> {
     ctx: WorkerCtx,
     socket: S,
+    /// Debounced wake on changes to this host's row or to jobs dispatched on
+    /// it (`dispatched_on_host_id`); the latter is how a user terminate or a
+    /// deadline change reaches the worker without waiting out the reconcile
+    /// timer.
+    wake: Debounced,
     /// The supervisor's last reported status (`J_sup`), refreshed out-of-band by
     /// the periodic `StatusRequest`/`StatusResponse` round trip (and, later, the
     /// event stream). `reconcile` converges against *this* cached value rather
     /// than forcing a fresh round trip, so a reconcile triggered by anything
-    /// (the timer, a status response, a future Postgres pub/sub notification) is
-    /// a pure DB operation. `None` until the first status is seen, during which
+    /// (the timer, a status response, an event-bus wake) is a pure DB
+    /// operation. `None` until the first status is seen, during which
     /// reconcile is a no-op (the actual supervisor state is still unknown).
     last_seen_status: Option<ReportedSupervisorStatus>,
 }
@@ -438,15 +448,16 @@ async fn resolve_assigned_or_running(
 }
 
 impl<S: SupervisorSocket> SupervisorWSWorker<S> {
-    #[tracing::instrument(skip(pool, socket, config, log_streaming))]
+    #[tracing::instrument(skip(pool, socket, config, log_streaming, event_bus))]
     pub async fn run(
         pool: PgPool,
         host_id: Uuid,
         socket: S,
         config: SupervisorWSWorkerConfig,
         log_streaming: Option<LogStreaming>,
+        event_bus: EventBus,
     ) {
-        match Self::run_inner(pool, host_id, socket, config, log_streaming).await {
+        match Self::run_inner(pool, host_id, socket, config, log_streaming, event_bus).await {
             Ok(()) => {
                 tracing::info!("SupervisorWSWorker::run terminated successfully.");
             }
@@ -472,6 +483,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         socket: S,
         config: SupervisorWSWorkerConfig,
         log_streaming: Option<LogStreaming>,
+        event_bus: EventBus,
     ) -> WorkerResult<()> {
         // A supervisor has just opened a new WebSocket connection for this host
         // and successfully authenticated. This might be because it's a new
@@ -501,6 +513,20 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         // authenticated:
         let worker_instance_id = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
 
+        let wake = Debounced::new(
+            vec![
+                event_bus.subscribe(EventFilter {
+                    table: "hosts",
+                    key: Some(("host_id", host_id)),
+                }),
+                event_bus.subscribe(EventFilter {
+                    table: "jobs",
+                    key: Some(("dispatched_on_host_id", host_id)),
+                }),
+            ],
+            config.supervisor_event_debounce,
+        );
+
         // Now, using this ID, construct the worker instance:
         let mut worker = SupervisorWSWorker {
             ctx: WorkerCtx {
@@ -511,6 +537,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 log_streaming,
             },
             socket,
+            wake,
             last_seen_status: None,
         };
 
@@ -560,9 +587,9 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// [`last_seen_status`] cache, **not** by issuing a fresh `StatusRequest`:
     /// the cache is refreshed out-of-band by the periodic status round trip (and,
     /// later, the event stream), so a reconcile is a pure DB operation regardless
-    /// of what triggered it (the timer, an inbound status response, a future
-    /// Postgres pub/sub notification). While the cache is `None` (no status seen
-    /// yet) reconcile is a no-op — the actual state is unknown.
+    /// of what triggered it (the timer, an inbound status response, an event-bus
+    /// wake). While the cache is `None` (no status seen yet) reconcile is a
+    /// no-op — the actual state is unknown.
     ///
     /// Let `J_sb = hosts.current_job`, `S = its job_state`, and `J_sup` = the
     /// reported `OngoingJob` id, if any. The convergence table, split by `S`
@@ -1182,6 +1209,16 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     self.reconcile().await?;
                 }
 
+                // A change notification for this host's row or its dispatched
+                // job: converge now (this is what makes a fresh assignment or
+                // a user terminate near-instant), and reset the dedicated
+                // timer (this counts as the period's reconcile).
+                _ = self.wake.wait() => {
+                    tracing::trace!("reconciling on change notification");
+                    self.reconcile().await?;
+                    reconcile_interval.reset();
+                }
+
                 // Timeout for waiting on a PONG message from the supervisor. If
                 // we haven't received one within the timeout and this fires, it
                 // means we should consider the connection dead.
@@ -1237,7 +1274,22 @@ mod tests {
             // here means the ping/pong/inbound tests don't see stray reconcile
             // ticks (their reconciles, if any, are driven directly).
             supervisor_reconcile_interval: Duration::from_secs(3600),
+            supervisor_event_debounce: Duration::from_millis(10),
         }
+    }
+
+    /// A `wake` for directly-constructed workers: its bus is dropped
+    /// immediately, so it never fires beyond the initial subscribe-time wake
+    /// (which the reconcile-driven tests never poll).
+    fn idle_wake() -> Debounced {
+        let bus = EventBus::default();
+        Debounced::new(
+            vec![bus.subscribe(EventFilter {
+                table: "jobs",
+                key: None,
+            })],
+            Duration::from_secs(3600),
+        )
     }
 
     /// Minimal `SupervisorSocket` impl used by tests that don't exercise the
@@ -1363,6 +1415,7 @@ mod tests {
                 log_streaming: None,
             },
             socket: NoSocket,
+            wake: idle_wake(),
             last_seen_status: None,
         }
     }
@@ -1390,6 +1443,7 @@ mod tests {
                 log_streaming: None,
             },
             socket,
+            wake: idle_wake(),
             last_seen_status: None,
         };
         (to_worker, from_worker, worker)
@@ -1767,7 +1821,14 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            SupervisorWSWorker::run(pool, host_id, socket, worker_config(50, 250), None),
+            SupervisorWSWorker::run(
+                pool,
+                host_id,
+                socket,
+                worker_config(50, 250),
+                None,
+                EventBus::default(),
+            ),
         )
         .await
         .expect("worker should return promptly after peer Close");
@@ -1786,7 +1847,14 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            SupervisorWSWorker::run(pool, host_id, socket, worker_config(50, 250), None),
+            SupervisorWSWorker::run(
+                pool,
+                host_id,
+                socket,
+                worker_config(50, 250),
+                None,
+                EventBus::default(),
+            ),
         )
         .await
         .expect("worker should return promptly on socket stream end");
@@ -1820,6 +1888,7 @@ mod tests {
             socket,
             worker_config(50, 5_000),
             None,
+            EventBus::default(),
         ));
 
         // The worker marks the host live on connect (before the first ping).
@@ -1894,7 +1963,14 @@ mod tests {
         // 50ms ping cadence, 5s dead-pong deadline — the deadline is wide
         // enough that the dead-peer guard never fires during this test.
         let cfg = worker_config(50, 5_000);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg, None));
+        let jh = tokio::spawn(SupervisorWSWorker::run(
+            pool,
+            host_id,
+            socket,
+            cfg,
+            None,
+            EventBus::default(),
+        ));
 
         for n in 1..=3 {
             // The worker also emits `StatusRequest` (Text) frames on connect and
@@ -1927,7 +2003,14 @@ mod tests {
 
         // Tight deadline — worker should declare the peer dead within ~200ms.
         let cfg = worker_config(50, 200);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg, None));
+        let jh = tokio::spawn(SupervisorWSWorker::run(
+            pool,
+            host_id,
+            socket,
+            cfg,
+            None,
+            EventBus::default(),
+        ));
 
         // We never respond with Pongs; the worker must give up on its own.
         // Generous outer bound: pong-dead (200ms) + slack for scheduling/DB
@@ -1958,7 +2041,14 @@ mod tests {
         // false dead-peer detection to flake this liveness check (the exact
         // threshold is pinned by `run_exits_when_no_pong_within_dead_threshold`).
         let cfg = worker_config(50, 400);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg, None));
+        let jh = tokio::spawn(SupervisorWSWorker::run(
+            pool,
+            host_id,
+            socket,
+            cfg,
+            None,
+            EventBus::default(),
+        ));
 
         for n in 1..=16 {
             // Skip the `StatusRequest` (Text) frames the worker also emits; we
@@ -1991,6 +2081,114 @@ mod tests {
         Ok(())
     }
 
+    /// A change notification — here a user terminate writing the job row —
+    /// drives a reconcile through `run_loop` while both the reconcile timer
+    /// (disabled in `worker_config`) and the ping cadence (60s) are out of the
+    /// picture: the worker must emit `StopJob` promptly.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn terminate_event_drives_reconcile_without_timer(pool: PgPool) -> anyhow::Result<()> {
+        use treadmill_rs::api::switchboard_supervisor::SupervisorToSwitchboard;
+
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+
+        let bus = EventBus::default();
+        tokio::spawn(bus.listener(pool.clone()));
+
+        let (to_worker, mut from_worker, socket) = scripted_socket();
+        let jh = tokio::spawn(SupervisorWSWorker::run(
+            pool.clone(),
+            host_id,
+            socket,
+            worker_config(60_000, 600_000),
+            None,
+            bus.clone(),
+        ));
+
+        // Seed the worker's status cache out-of-band: the supervisor reports
+        // the assigned job running, so reconciles are aligned until the
+        // terminate lands.
+        let seed = serde_json::to_string(&SupervisorToSwitchboard::SupervisorEvent(
+            SupervisorEvent::JobEvent {
+                job_id,
+                event: SupervisorJobEvent::StateTransition {
+                    new_state: RunningJobState::Ready,
+                    status_message: None,
+                },
+            },
+        ))?;
+        to_worker
+            .send(Ok(ws::Message::Text(seed.into())))
+            .expect("inbound channel must stay open");
+
+        // Wait until the event listener demonstrably delivers wakes (its
+        // LISTEN may not be up yet), probing a throwaway host so the state
+        // under test stays untouched.
+        let probe_host = insert_host(&pool).await?;
+        let mut probe = bus.subscribe(EventFilter {
+            table: "hosts",
+            key: Some(("host_id", probe_host)),
+        });
+        probe.changed().await;
+        loop {
+            sqlx::query(
+                "update tml_switchboard.hosts set tags = array[md5(random()::text)] \
+                 where host_id = $1",
+            )
+            .bind(probe_host)
+            .execute(&pool)
+            .await?;
+            if tokio::time::timeout(std::time::Duration::from_millis(200), probe.changed())
+                .await
+                .is_ok()
+            {
+                break;
+            }
+        }
+
+        sqlx::query(
+            "update tml_switchboard.jobs set terminate_requested_at = now() where job_id = $1",
+        )
+        .bind(job_id)
+        .execute(&pool)
+        .await?;
+
+        // The jobs event (routed via dispatched_on_host_id) must wake the
+        // worker into a reconcile that emits StopJob; skip the StatusRequest
+        // frames the worker also produces.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let remaining = deadline
+                .checked_duration_since(tokio::time::Instant::now())
+                .expect("no StopJob emitted in response to the terminate event");
+            let msg = tokio::time::timeout(remaining, from_worker.recv())
+                .await
+                .expect("no StopJob emitted in response to the terminate event")
+                .expect("from_worker channel must remain open while worker runs");
+            if let ws::Message::Text(text) = msg
+                && let SwitchboardToSupervisor::StopJob(stop) =
+                    serde_json::from_str::<SwitchboardToSupervisor>(&text)
+                        .expect("outbound must be valid SwitchboardToSupervisor JSON")
+            {
+                assert_eq!(stop.job_id, job_id);
+                break;
+            }
+        }
+
+        to_worker
+            .send(Ok(ws::Message::Close(None)))
+            .expect("inbound channel must stay open");
+        tokio::time::timeout(std::time::Duration::from_secs(2), jh)
+            .await
+            .expect("worker should return promptly after Close")
+            .expect("worker task should not panic");
+        Ok(())
+    }
+
     // -- non-Close inbound frames must not panic the run-loop ----------------
     //
     // These pin down what each inbound frame type does at the worker layer:
@@ -2011,7 +2209,14 @@ mod tests {
         // Wide ping cadence / dead-pong deadline so neither fires during this
         // test — we only care that an inbound Ping doesn't take down the loop.
         let cfg = worker_config(60_000, 600_000);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg, None));
+        let jh = tokio::spawn(SupervisorWSWorker::run(
+            pool,
+            host_id,
+            socket,
+            cfg,
+            None,
+            EventBus::default(),
+        ));
 
         // In production the Pong reply is emitted by the tungstenite framing
         // layer wrapped by axum's WebSocket; the application-level worker only
@@ -2041,7 +2246,14 @@ mod tests {
         let (to_worker, _from_worker, socket) = scripted_socket();
 
         let cfg = worker_config(60_000, 600_000);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg, None));
+        let jh = tokio::spawn(SupervisorWSWorker::run(
+            pool,
+            host_id,
+            socket,
+            cfg,
+            None,
+            EventBus::default(),
+        ));
 
         // Unsolicited Pong — must not panic the run loop.
         to_worker
@@ -2068,7 +2280,14 @@ mod tests {
         let (to_worker, _from_worker, socket) = scripted_socket();
 
         let cfg = worker_config(60_000, 600_000);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg, None));
+        let jh = tokio::spawn(SupervisorWSWorker::run(
+            pool,
+            host_id,
+            socket,
+            cfg,
+            None,
+            EventBus::default(),
+        ));
 
         // The protocol is JSON-over-Text; Binary frames aren't part of it.
         // The loop should log and continue rather than panic.
@@ -2093,7 +2312,14 @@ mod tests {
         let (to_worker, _from_worker, socket) = scripted_socket();
 
         let cfg = worker_config(60_000, 600_000);
-        let jh = tokio::spawn(SupervisorWSWorker::run(pool, host_id, socket, cfg, None));
+        let jh = tokio::spawn(SupervisorWSWorker::run(
+            pool,
+            host_id,
+            socket,
+            cfg,
+            None,
+            EventBus::default(),
+        ));
 
         // Garbage that won't deserialize as a `switchboard_supervisor::Message`.
         // Until step 3 wires up real dispatch, the only contract we need is

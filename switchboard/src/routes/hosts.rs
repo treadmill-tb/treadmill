@@ -177,11 +177,13 @@ pub async fn connect(
         supervisor_ping_interval: state.config().service.supervisor_ping_interval,
         supervisor_pong_dead: state.config().service.supervisor_pong_dead,
         supervisor_reconcile_interval: state.config().service.supervisor_reconcile_interval,
+        supervisor_event_debounce: state.config().service.supervisor_event_debounce,
     };
 
     // Shared with the worker so it can mint per-job write tokens and provision
     // streams at dispatch; `None` when log streaming is disabled.
     let log_streaming = state.log_streaming().cloned();
+    let event_bus = state.event_bus().clone();
 
     let mut response = ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL]).on_upgrade(
         move |mut web_socket| async move {
@@ -212,6 +214,7 @@ pub async fn connect(
                     web_socket,
                     ws_worker_config,
                     log_streaming,
+                    event_bus,
                 )
                 .await
             });
