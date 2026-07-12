@@ -1,4 +1,4 @@
-h1:tiMfdRgBw1aBi+ysBXZzVfxeQsrtg3qOn1pmHQ0Rz9A=
+h1:dUS03d7zUVsVAMISv17sj0l6y0YmzSSSI5rr6BH/KD4=
 00000000000001_base.sql h1:7OodY/qoessjRRoCAAX04fthKHTDNzzloQ4srKlxs+o=
 20260704040624_add_login_admission.sql h1:hYEzBBXagVmDVTtFsA1uosdNLKUi8JvitaMOFw/4jbk=
 20260708035542_everyone_subject.sql h1:eshPaeCj4UtkHWVuGTZHzsESVxK09Vy8ys5+ywA09pU=
@@ -8,3 +8,4 @@ h1:tiMfdRgBw1aBi+ysBXZzVfxeQsrtg3qOn1pmHQ0Rz9A=
 20260709090001_remove_image_attrs_jsonb.sql h1:93BKzCkpTJ9YECRmz1fUvhFBadA1P6YLBvIerHyi9b0=
 20260712034848_pg_notify_events.sql h1:bohYlr4QqjynOXbIEIMlSZNkt978M6vDLynHzHryZ3s=
 20260712171310_job_label.sql h1:zpY2+9dcOSD0ZCWF2R72za3pQeFyg2v2M7PYEgGswvc=
+20260712173957_retain_job_dispatch_columns.sql h1:XRqVur8ckhHjwl0w8LO8AYoVnZdZF/EKjPWYV19zmHI=

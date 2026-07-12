@@ -27,19 +27,6 @@ arbitrary. There should be a more granular permission that allows to change
 attributes of the resource (such as a host's label or tag set), without being
 able to change the ACLs or ownership attribute.
 
-## Retain Job `started_at` and Host After Finalization
-
-`started_at` and `dispatched_on_host_id` are erased when a job finalizes: the
-`started_at_iso_executing` and `dispatched_host_iso_assigned` CHECK constraints
-force them NULL outside the executing states, and the worker's finalize queries
-(`sql/job.rs`) null them explicitly. Consequence: the console's "Started" and
-"Host" fields go blank the moment a job terminates. Fix: relax both CHECKs to
-"monotonic" (set-once, retained through `finalized`; NULL only if the job never
-reached that stage, e.g. queue-timeout) and stop nulling them on finalize.
-"Currently bound" is then derived from `job_state` / `hosts.current_job`, not
-from `dispatched_on_host_id`. Console already reads both fields; no frontend
-change needed beyond confirming the display.
-
 ## Drop `users.username`
 
 Users should have only a display name (`full_name`) and their subject ID — no

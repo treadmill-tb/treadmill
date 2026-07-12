@@ -1224,9 +1224,8 @@ pub async fn request_terminate(
 /// believed `job_id` was assigned to `host_id`, but the supervisor no longer
 /// reports running it.
 ///
-/// The job is finalized with [`TerminationReason::HostDroppedJob`], its
-/// assignment columns (`dispatched_on_host_id`, `started_at`,
-/// `initializing_stage`) are cleared to satisfy the finalized-state invariants,
+/// The job is finalized with [`TerminationReason::HostDroppedJob`]
+/// (`initializing_stage` cleared, placement and start time retained),
 /// a `FinalizeResult` event is appended to the audit log, and
 /// `hosts.current_job` is released (guarded on `job_id` so a pointer that has
 /// since been reassigned is left alone).
@@ -1250,7 +1249,7 @@ pub async fn request_terminate(
 /// one (see the `RunningJobState` Rustdoc on the `Terminated` fold).
 ///
 /// `started_at` is back-filled to `at` if it was null (e.g. adopting `ready`
-/// over a still-`assigned` row), satisfying the `started_at_iso_executing`
+/// over a still-`assigned` row), satisfying the `started_at_monotonic`
 /// CHECK. Idempotent: re-adopting the same state is a harmless rewrite.
 ///
 /// Must be called inside the worker's `with_txn` so the takeover/staleness
@@ -1339,9 +1338,9 @@ pub async fn apply_running_state(
 ///
 /// The task outcome (`task_exit_status` / `exit_message`) is *not* set here — it
 /// is reported out-of-band via [`set_task_outcome`], so whatever the supervisor
-/// last declared is preserved across this transition. The assignment columns
-/// (`dispatched_on_host_id`, `started_at`, `initializing_stage`) are cleared to
-/// satisfy the finalized-state invariants.
+/// last declared is preserved across this transition. `initializing_stage` is
+/// cleared to satisfy its invariant; `dispatched_on_host_id` and `started_at`
+/// are retained so the terminal record keeps its placement and start time.
 ///
 /// `hosts.current_job` is **not** released here. The supervisor retains a
 /// terminal record until it acks the `StopJob` and reports the job gone, so the
@@ -1369,8 +1368,6 @@ pub async fn finalize_terminated(
         update tml_switchboard.jobs
         set job_state = 'finalized',
             termination_reason = 'workload_exited',
-            dispatched_on_host_id = null,
-            started_at = null,
             initializing_stage = null,
             terminated_at = $2
         where job_id = $1 and job_state <> 'finalized'
@@ -1390,8 +1387,9 @@ pub async fn finalize_terminated(
 /// terminal record carries `reason` (e.g. `execution_timeout` / `user_terminated`)
 /// rather than a workload-driven one.
 ///
-/// Records only the reason and `terminated_at` and clears the assignment columns.
-/// The orthogonal `task_exit_status` / `exit_message` are left untouched. Unlike
+/// Records only the reason and `terminated_at` (clearing `initializing_stage`;
+/// placement and start time are retained on the terminal record). The
+/// orthogonal `task_exit_status` / `exit_message` are left untouched. Unlike
 /// [`finalize_dropped_and_maybe_restart`], the restart policy is **not** applied:
 /// a deliberate stop is not retried.
 ///
@@ -1417,8 +1415,6 @@ pub async fn finalize_with_reason(
         update tml_switchboard.jobs
         set job_state = 'finalized',
             termination_reason = $2,
-            dispatched_on_host_id = null,
-            started_at = null,
             initializing_stage = null,
             terminated_at = $3
         where job_id = $1 and job_state <> 'finalized'
@@ -1483,9 +1479,9 @@ pub fn termination_reason_for_job_error(kind: &JobErrorKind) -> SqlTerminationRe
 /// within the caller's transaction. Backs the event path's error handling:
 /// records the terminal `termination_reason` (see
 /// [`termination_reason_for_job_error`]) and the error's `description` as
-/// `exit_message`, and clears the assignment columns. The orthogonal
-/// `task_exit_status` is left untouched (the protocol keeps the *why-it-stopped*
-/// and the *workload outcome* separate).
+/// `exit_message` (clearing `initializing_stage`; placement and start time are
+/// retained). The orthogonal `task_exit_status` is left untouched (the protocol
+/// keeps the *why-it-stopped* and the *workload outcome* separate).
 ///
 /// `hosts.current_job` is **not** released here (see [`finalize_terminated`] for
 /// the rationale): an `Error` is reported out-of-band, before the supervisor's
@@ -1515,8 +1511,6 @@ pub async fn finalize_errored(
         set job_state = 'finalized',
             termination_reason = $2,
             exit_message = $3,
-            dispatched_on_host_id = null,
-            started_at = null,
             initializing_stage = null,
             terminated_at = $4
         where job_id = $1 and job_state <> 'finalized'
@@ -1543,10 +1537,11 @@ pub async fn finalize_errored(
 /// replacing `exit_message` (passing `None` clears the message). The outcome
 /// itself (`pending` / `success` / `failure`) can never be cleared back to unset.
 ///
-/// The write is guarded on `dispatched_on_host_id = host_id`, which is precisely
-/// "the job is assigned to this host": it is a no-op (returns `false`) for a job
-/// assigned to a different host, never dispatched, or already finalized (whose
-/// dispatch pointer has been cleared).
+/// The write is guarded on `dispatched_on_host_id = host_id` plus a
+/// not-finalized check (the dispatch pointer is retained on terminal records):
+/// it is a no-op (returns `false`) for a job assigned to a different host,
+/// never dispatched, or already finalized — a terminal outcome must not be
+/// revised after the fact.
 ///
 /// Must be called inside the worker's `with_txn` so the takeover/staleness guard
 /// covers it.
@@ -1563,6 +1558,7 @@ pub async fn set_task_outcome(
         set task_exit_status = $3,
             exit_message = $4
         where job_id = $1 and dispatched_on_host_id = $2
+              and job_state <> 'finalized'
         returning job_id
         "#,
         job_id,
@@ -1607,8 +1603,6 @@ pub async fn finalize_dropped_and_maybe_restart(
         set job_state = 'finalized',
             termination_reason = 'host_dropped_job',
             task_exit_status = null,
-            dispatched_on_host_id = null,
-            started_at = null,
             initializing_stage = null,
             terminated_at = $2
         where job_id = $1 and job_state <> 'finalized'

@@ -645,9 +645,13 @@ CREATE TABLE tml_switchboard.jobs (
     -- [config:api.jobs.queue_timeout] the job is still queued, it is
     -- terminated.
     queued_at timestamp with time zone NOT NULL,
-    -- The time at which the job was started.
+    -- The time at which the job was started. Set once, when the job begins
+    -- executing, and retained through `finalized`.
     started_at timestamp with time zone,
-    -- ID of the host the job was dispatched to.
+    -- ID of the host the job was dispatched to. Set once, at assignment, and
+    -- retained through `finalized` so a terminated job still reports where it
+    -- ran. "Currently bound" is derived from `job_state` (and
+    -- `hosts.current_job`), not from this column.
     dispatched_on_host_id uuid,
     -- SSH endpoints that this job is reachable under, populated once assigned
     -- to a host that exposes endpoints.
@@ -702,25 +706,26 @@ CREATE TABLE tml_switchboard.jobs (
         label ~ '^[ -~]+$'
         AND char_length(label) <= 256
     ),
-    -- A host is bound from `assigned` onwards (through `finalized`);
-    -- `dispatched_on_host_id` tracks that binding for the assigned,
-    -- not-yet-terminal lifecycle states.
-    CONSTRAINT dispatched_host_iso_assigned CHECK (
-        (dispatched_on_host_id IS NOT NULL) = (
-            job_state IN (
-                'assigned',
-                'initializing',
-                'ready',
-                'terminating'
-            )
-        )
+    -- A host is bound from `assigned` onwards; the binding is set once and
+    -- retained through `finalized`. NULL in `finalized` means the job was
+    -- never placed on a host (e.g. queue-timeout).
+    CONSTRAINT dispatched_host_monotonic CHECK (
+        CASE job_state
+            WHEN 'queued' THEN dispatched_on_host_id IS NULL
+            WHEN 'finalized' THEN TRUE
+            ELSE dispatched_on_host_id IS NOT NULL
+        END
     ),
-    -- `started_at` is set exactly while executing, i.e. once dispatched
-    -- (`initializing`) and until terminal.
-    CONSTRAINT started_at_iso_executing CHECK (
-        (started_at IS NOT NULL) = (
-            job_state IN ('initializing', 'ready', 'terminating')
-        )
+    -- `started_at` is set once the job executes (`initializing` onwards) and
+    -- retained through `finalized`. NULL in `finalized` means the job never
+    -- started executing.
+    CONSTRAINT started_at_monotonic CHECK (
+        CASE job_state
+            WHEN 'queued' THEN started_at IS NULL
+            WHEN 'assigned' THEN started_at IS NULL
+            WHEN 'finalized' THEN TRUE
+            ELSE started_at IS NOT NULL
+        END
     ),
     -- The terminal record is set exactly when `finalized`.
     CONSTRAINT termination_reason_iso_finalized CHECK (
