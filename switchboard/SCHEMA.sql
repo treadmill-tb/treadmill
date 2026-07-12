@@ -1391,11 +1391,21 @@ end;
 $$;
 
 
-CREATE TRIGGER jobs_notify
+-- UPDATE triggers are split from INSERT/DELETE so they can carry
+-- `WHEN (OLD.* IS DISTINCT FROM NEW.*)`: an UPDATE that rewrites a row without
+-- changing it emits nothing. This matters because reconciliation re-applies
+-- the current state idempotently — without the guard, a consumer's own no-op
+-- write would wake it again, sustaining a wake/write cycle at the debounce
+-- rate.
+CREATE TRIGGER jobs_notify_write
 AFTER insert
-OR
-UPDATE
 OR delete ON tml_switchboard.jobs FOR each ROW
+EXECUTE function tml_switchboard.notify_change ('job_id', 'dispatched_on_host_id');
+
+
+CREATE TRIGGER jobs_notify_update
+AFTER
+UPDATE ON tml_switchboard.jobs FOR each ROW WHEN (OLD.* IS DISTINCT FROM NEW.*)
 EXECUTE function tml_switchboard.notify_change ('job_id', 'dispatched_on_host_id');
 
 
@@ -1404,12 +1414,16 @@ EXECUTE function tml_switchboard.notify_change ('job_id', 'dispatched_on_host_id
 -- connect still surfaces (a new worker increments `worker_instance_id`); a
 -- clean disconnect only NULLs `last_seen_at` and deliberately stays silent —
 -- no receiver acts on host death, the liveness cutoff covers it.
-CREATE TRIGGER hosts_notify
+CREATE TRIGGER hosts_notify_write
 AFTER insert
-OR
+OR delete ON tml_switchboard.hosts FOR each ROW
+EXECUTE function tml_switchboard.notify_change ('host_id');
+
+
+CREATE TRIGGER hosts_notify_update
+AFTER
 UPDATE OF current_job,
 tags,
 owner_id,
-worker_instance_id
-OR delete ON tml_switchboard.hosts FOR each ROW
+worker_instance_id ON tml_switchboard.hosts FOR each ROW WHEN (OLD.* IS DISTINCT FROM NEW.*)
 EXECUTE function tml_switchboard.notify_change ('host_id');

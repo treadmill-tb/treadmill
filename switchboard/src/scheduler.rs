@@ -1192,17 +1192,22 @@ mod tests {
 
         // Wait until the listener demonstrably delivers wakes (its LISTEN may
         // not be up yet; a write committed before that is a lost notification,
-        // which only the timer would cover).
+        // which only the timer would cover). Probes a throwaway host so the
+        // eligible host's tags stay intact.
+        let probe_host = insert_host(&pool, user, &[], None).await?;
         let mut probe = bus.subscribe(EventFilter {
             table: "hosts",
-            key: Some(("host_id", host)),
+            key: Some(("host_id", probe_host)),
         });
         probe.changed().await;
         loop {
-            sqlx::query("update tml_switchboard.hosts set tags = tags where host_id = $1")
-                .bind(host)
-                .execute(&pool)
-                .await?;
+            sqlx::query(
+                "update tml_switchboard.hosts set tags = array[md5(random()::text)] \
+                 where host_id = $1",
+            )
+            .bind(probe_host)
+            .execute(&pool)
+            .await?;
             if tokio::time::timeout(std::time::Duration::from_millis(200), probe.changed())
                 .await
                 .is_ok()

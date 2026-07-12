@@ -186,6 +186,14 @@ async fn jobs_changes_emit_routing_keys(pool: PgPool) {
     expected.sort();
     assert_eq!(key_values(&event, "dispatched_on_host_id"), expected);
 
+    // A write that changes nothing is silent (proven by the delete event
+    // arriving next).
+    sqlx::query("update tml_switchboard.jobs set job_state = job_state where job_id = $1")
+        .bind(job)
+        .execute(&pool)
+        .await
+        .unwrap();
+
     // Delete: keys come from the OLD row.
     sqlx::query("delete from tml_switchboard.jobs where job_id = $1")
         .bind(job)
@@ -219,6 +227,14 @@ async fn host_heartbeats_stay_silent(pool: PgPool) {
         .await
         .unwrap();
     sqlx::query("update tml_switchboard.hosts set last_seen_at = null where host_id = $1")
+        .bind(host)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // A statement touching a notifying column without changing the row is
+    // equally silent.
+    sqlx::query("update tml_switchboard.hosts set tags = tags where host_id = $1")
         .bind(host)
         .execute(&pool)
         .await

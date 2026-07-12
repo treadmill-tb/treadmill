@@ -36,20 +36,28 @@ end;
 $$;
 
 
-CREATE TRIGGER jobs_notify
+CREATE TRIGGER jobs_notify_write
 AFTER insert
-OR
-UPDATE
 OR delete ON tml_switchboard.jobs FOR each ROW
 EXECUTE function tml_switchboard.notify_change ('job_id', 'dispatched_on_host_id');
 
 
-CREATE TRIGGER hosts_notify
+CREATE TRIGGER jobs_notify_update
+AFTER
+UPDATE ON tml_switchboard.jobs FOR each ROW WHEN (OLD.* IS DISTINCT FROM NEW.*)
+EXECUTE function tml_switchboard.notify_change ('job_id', 'dispatched_on_host_id');
+
+
+CREATE TRIGGER hosts_notify_write
 AFTER insert
-OR
+OR delete ON tml_switchboard.hosts FOR each ROW
+EXECUTE function tml_switchboard.notify_change ('host_id');
+
+
+CREATE TRIGGER hosts_notify_update
+AFTER
 UPDATE OF current_job,
 tags,
 owner_id,
-worker_instance_id
-OR delete ON tml_switchboard.hosts FOR each ROW
+worker_instance_id ON tml_switchboard.hosts FOR each ROW WHEN (OLD.* IS DISTINCT FROM NEW.*)
 EXECUTE function tml_switchboard.notify_change ('host_id');
