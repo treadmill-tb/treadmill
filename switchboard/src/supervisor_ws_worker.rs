@@ -1213,7 +1213,14 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 // job: converge now (this is what makes a fresh assignment or
                 // a user terminate near-instant), and reset the dedicated
                 // timer (this counts as the period's reconcile).
-                _ = self.wake.wait() => {
+                //
+                // Gated on a populated status cache: reconciling against `None`
+                // is a no-op, so consuming a wake before the first status
+                // report would swallow the edge — a terminate landing right
+                // after (re)connect would then wait out the next status
+                // refresh. Left unpolled, the wake stays pending (`Debounced`
+                // is cancellation-safe) and fires once the cache exists.
+                _ = self.wake.wait(), if self.last_seen_status.is_some() => {
                     tracing::trace!("reconciling on change notification");
                     self.reconcile().await?;
                     reconcile_interval.reset();
