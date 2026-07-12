@@ -167,6 +167,8 @@ pub async fn serve(serve_command: ServeCommand) -> anyhow::Result<()> {
         pg_pool.clone(),
         config.service.match_interval,
         config.service.host_liveness_timeout,
+        &event_bus,
+        config.service.scheduler_event_debounce,
     );
     tokio::spawn(scheduler.run());
 
