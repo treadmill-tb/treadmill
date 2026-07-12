@@ -430,6 +430,7 @@ fn image_job_request(
 ) -> JobRequest {
     JobRequest {
         init_spec,
+        label: None,
         owner,
         ssh_keys: vec![],
         restart_policy: RestartPolicy { max_restarts: 0 },
@@ -484,6 +485,118 @@ async fn enqueue_creates_a_queued_job_owned_by_caller(pool: PgPool) {
     assert_eq!(info.owner_id, Some(bob));
     assert_eq!(info.state, JobState::Queued);
     assert_eq!(info.timeout_secs, 3600);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn job_label_is_set_at_enqueue_and_mutable_via_patch(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let (_, image) = register_image(&pool).await;
+    let mut req = image_job_request(
+        None,
+        JobInitSpec::Image {
+            manifest_digest: image,
+        },
+        None,
+    );
+
+    // A non-printable label is rejected up front.
+    req.label = Some("bad\x7flabel".to_string());
+    let resp = client
+        .post(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(&token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    req.label = Some("nightly ci run".to_string());
+    let resp = client
+        .post(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(&token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    let job_id = resp.json::<EnqueueJobResponse>().await.unwrap().job_id;
+
+    // The label reads back on the detail view and the listing.
+    let info: JobInfo = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(info.label.as_deref(), Some("nightly ci run"));
+    let list: JobListResponse = client
+        .get(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list.jobs[0].label.as_deref(), Some("nightly ci run"));
+
+    // The owner (who holds `manage`) can change and clear the label; a request
+    // carrying any field other than the mutable set is rejected.
+    let resp = client
+        .patch(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "label": "second run" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    let resp = client
+        .patch(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "ssh_keys": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+    let resp = client
+        .patch(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "label": null }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    let info: JobInfo = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(info.label, None);
+
+    // A caller without `manage` on the job cannot relabel it.
+    let stranger = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let resp = client
+        .patch(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&stranger)
+        .json(&serde_json::json!({ "label": "hijacked" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 }
 
 #[sqlx::test]

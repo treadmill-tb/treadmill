@@ -27,13 +27,6 @@ arbitrary. There should be a more granular permission that allows to change
 attributes of the resource (such as a host's label or tag set), without being
 able to change the ACLs or ownership attribute.
 
-## User-Provided Job Label
-
-Jobs should carry an optional, user-provided `label` (naming it `label` to match
-images/image-sets, not `name`). ASCII-printable, max 256 chars, non-unique,
-mutable after enqueue. Needs the DB column + CHECK, Rust validation, the
-enqueue/patch API surface, and the console (job list + detail + new-job form).
-
 ## Retain Job `started_at` and Host After Finalization
 
 `started_at` and `dispatched_on_host_id` are erased when a job finalizes: the

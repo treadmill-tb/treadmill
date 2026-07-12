@@ -37,6 +37,17 @@ export default function JobDetail({ params }: Route.ComponentProps) {
       ]);
     },
   });
+  const update = $api.useMutation("patch", "/jobs/{id}", {
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["get", "/jobs/{id}"] }),
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["audit", "jobs", params.id],
+        }),
+      ]);
+    },
+  });
 
   return (
     <>
@@ -65,8 +76,32 @@ export default function JobDetail({ params }: Route.ComponentProps) {
             </button>
           </div>
           <MutationError error={terminate.error} />
+          <MutationError error={update.error} />
 
           <dl className="props">
+            <dt>Label</dt>
+            <dd>
+              {job.data.label ?? <span className="muted">—</span>}{" "}
+              {job.data.permissions.includes("manage") && (
+                <button
+                  disabled={update.isPending}
+                  onClick={() => {
+                    const label = window.prompt(
+                      "Job label (empty clears it):",
+                      job.data.label ?? "",
+                    );
+                    if (label !== null) {
+                      update.mutate({
+                        params: { path: { id: params.id } },
+                        body: { label: label === "" ? null : label },
+                      });
+                    }
+                  }}
+                >
+                  Edit
+                </button>
+              )}
+            </dd>
             <dt>Image</dt>
             <dd>
               <ImageRef image={job.data.image} />

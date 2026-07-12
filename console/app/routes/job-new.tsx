@@ -77,9 +77,11 @@ export default function JobNew() {
 
     const owner = str("owner");
     const overrideTimeout = str("override_timeout");
+    const label = str("label");
     enqueue.mutate({
       body: {
         init_spec,
+        label: label === "" ? null : label,
         ssh_keys: lines(str("ssh_keys")),
         host_tag_requirements: words(str("host_tags")),
         target_requirements: lines(str("target_reqs")).map(words),
@@ -95,6 +97,11 @@ export default function JobNew() {
     <>
       <h1>Enqueue job</h1>
       <form className="form" onSubmit={onSubmit}>
+        <label className="field">
+          <span>Label (optional)</span>
+          <input name="label" maxLength={256} />
+        </label>
+
         <label className="field">
           <span>Based off</span>
           <select

@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobInfo, JobListResponse, JobPermission as ApiJobPermission,
-    NatsConsoleInputCredentials, NatsLogStreamCredentials,
+    NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
 
@@ -149,6 +149,12 @@ pub async fn enqueue(
     Json(mut req): Json<JobRequest>,
 ) -> Result<(StatusCode, Json<EnqueueJobResponse>), StatusCode> {
     let caller = subject.user_id();
+
+    if let Some(label) = req.label.as_deref()
+        && !label_valid(label)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
 
     // Resolve and validate the owner: the caller, or a group it belongs to.
     let owner = match req.owner {
@@ -331,6 +337,76 @@ pub async fn enqueue(
         .or_internal(&format!("committing enqueued job {job_id}"))?;
 
     Ok((StatusCode::CREATED, Json(EnqueueJobResponse { job_id })))
+}
+
+/// A job label must be printable ASCII, non-empty, and bounded in length
+/// (mirroring the `valid_label` DB constraint).
+fn label_valid(s: &str) -> bool {
+    (1..=256).contains(&s.len()) && s.bytes().all(|b| (b' '..=b'~').contains(&b))
+}
+
+/// Axum handler for `PATCH /jobs/{id}` — update a job's mutable metadata.
+///
+/// Only the fields [`UpdateJobRequest`] carries can be changed (a request with
+/// any other field is rejected at deserialization); today that is the display
+/// label. Gated on the caller's `manage` permission (403 for unauthorized,
+/// including a nonexistent job).
+pub async fn update_job(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(IdPath { id: job_id }): Path<IdPath>,
+    Json(req): Json<UpdateJobRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let authorized = engine::can_access_job(
+        state.pool(),
+        subject.user_id(),
+        job_id,
+        JobPermission::Manage,
+    )
+    .await
+    .or_internal("checking job manage access for update_job")?;
+    if !authorized {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let Some(label) = req.label else {
+        // Empty patch: nothing to change.
+        return Ok(StatusCode::NO_CONTENT);
+    };
+    if let Some(label) = label.as_deref()
+        && !label_valid(label)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let mut txn = state
+        .pool()
+        .begin()
+        .await
+        .or_internal(&format!("opening a transaction to update job {job_id}"))?;
+    let old_label = job::update_label(job_id, label.as_deref(), &mut txn)
+        .await
+        .or_internal(&format!("updating the label of job {job_id}"))?;
+
+    // Audit only an actual change, in the same transaction as the write.
+    if old_label != label {
+        audit::emit(
+            &mut txn,
+            &events::JobLabelChanged {
+                actor: AuditSubject(subject.user_id()),
+                job: AuditJob(job_id),
+                old_label,
+                new_label: label,
+            },
+        )
+        .await
+        .or_internal(&format!("emitting JobLabelChanged for {job_id}"))?;
+    }
+    txn.commit()
+        .await
+        .or_internal(&format!("committing the label update of job {job_id}"))?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Map the engine's job permission to the API enum.

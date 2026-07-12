@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select label from tml_switchboard.jobs where job_id = $1 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "label",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "label"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "dbaf997f6324e2c6c183a83a414ce092b43e9fa0d9c978b4e7c7af2795ec82bc"
+}

@@ -259,6 +259,7 @@ pub async fn insert(
         (
           job_id,
           owner_id,
+          label,
           resume_job_id,
           restart_job_id,
           image_id,
@@ -283,6 +284,7 @@ pub async fn insert(
         values (
           $1,       -- job_id
           $13,	    -- owner_id
+          $14,	    -- label
           $2,	    -- resume_job_id
           $3,	    -- restart_job_id
           $4,	    -- image_id
@@ -321,6 +323,7 @@ pub async fn insert(
         job_timeout,
         queued_at,
         owner,
+        job_request.label,
     )
     .execute(conn.as_mut())
     .await?;
@@ -364,6 +367,8 @@ pub async fn target_requirements_for_job(
 #[allow(dead_code)]
 pub struct SqlJob {
     job_id: Uuid,
+    // The user-provided display label, if any.
+    label: Option<String>,
     owner_id: Option<Uuid>,
     resume_job_id: Option<Uuid>,
     #[allow(dead_code)]
@@ -571,6 +576,7 @@ impl SqlJob {
 
         Ok(JobInfo {
             job_id: self.job_id,
+            label: self.label,
             owner_id: self.owner_id,
             state: self.job_state.into(),
             initializing_stage: self.initializing_stage.map(Into::into),
@@ -634,7 +640,7 @@ pub async fn fetch_by_job_id(
     sqlx::query_as!(
         SqlJob,
         r#"
-        select job_id, owner_id, resume_job_id, restart_job_id, image_id,
+        select job_id, label, owner_id, resume_job_id, restart_job_id, image_id,
         image_set_id, image_set_generation,
         resolved_image_id, ssh_keys,
         restart_policy as "sql_restart_policy: _", enqueued_by_token_id,
@@ -794,6 +800,7 @@ pub async fn list_visible(
         with p(id) as (select id from tml_switchboard.principals($1))
         select
           j.job_id,
+          j.label,
           j.owner_id,
           j.job_state as "job_state: SqlJobState",
           j.resume_job_id,
@@ -839,6 +846,7 @@ pub async fn list_visible(
                 .transpose()?;
             Ok(JobSummary {
                 job_id: r.job_id,
+                label: r.label,
                 owner_id: r.owner_id,
                 state: r.job_state.into(),
                 image: job_image_ref(
@@ -1058,6 +1066,30 @@ pub async fn finalize_unscheduled_as_image_error(
     .fetch_optional(conn)
     .await?;
     Ok(row.is_some())
+}
+
+/// Set or clear a job's user-provided display label, within the caller's
+/// transaction. Locks the row (serializing concurrent patches) and returns the
+/// previous label, so the caller can detect a no-op and audit the change.
+pub async fn update_label(
+    job_id: Uuid,
+    label: Option<&str>,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<Option<String>, sqlx::Error> {
+    let old = sqlx::query_scalar!(
+        r#"select label from tml_switchboard.jobs where job_id = $1 for update"#,
+        job_id,
+    )
+    .fetch_one(&mut **txn)
+    .await?;
+    sqlx::query!(
+        r#"update tml_switchboard.jobs set label = $2 where job_id = $1"#,
+        job_id,
+        label,
+    )
+    .execute(&mut **txn)
+    .await?;
+    Ok(old)
 }
 
 /// Outcome of a user-requested job termination (`DELETE /jobs/{id}`).
@@ -1606,6 +1638,7 @@ pub async fn finalize_dropped_and_maybe_restart(
     let target_requirements = target_requirements_for_job(job_id, &mut **txn).await?;
     let job_request = JobRequest {
         init_spec: JobInitSpec::Restart { job_id },
+        label: predecessor.label.clone(),
         // Ownership is passed to `insert` explicitly (below); this field is the
         // user-facing requested owner and is unused on the internal path.
         owner: None,

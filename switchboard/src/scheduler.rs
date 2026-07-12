@@ -578,6 +578,7 @@ mod tests {
         let job_id = Uuid::new_v4();
         let req = JobRequest {
             init_spec,
+            label: None,
             owner: None,
             ssh_keys: vec![],
             restart_policy: RestartPolicy { max_restarts: 0 },

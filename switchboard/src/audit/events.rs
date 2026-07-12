@@ -237,6 +237,19 @@ define_event! {
 }
 
 define_event! {
+    /// A user changed a job's display label (`PATCH /jobs/{id}`). Visible to
+    /// anyone who can read the job; carries the prior and new values.
+    JobLabelChanged v1 {
+        actor: Subject,
+        job: Job @ view(Read),
+        old_label: Option<String>,
+        new_label: Option<String>,
+    }
+    event_type = "job_label_changed";
+    render = "changed the job label";
+}
+
+define_event! {
     /// A user was issued a console-input token for a job
     /// (`POST /jobs/{id}/nats-console-input-token`), authorizing them to type
     /// into the job's serial console until `expires_at` (re-minted on every

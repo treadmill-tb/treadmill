@@ -225,7 +225,8 @@ export interface paths {
         delete: operations["terminateJob"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** Update a job */
+        patch: operations["updateJob"];
         trace?: never;
     };
     "/hosts": {
@@ -980,6 +981,8 @@ export interface components {
             initializing_stage?: components["schemas"]["JobInitializingStage"] | null;
             /** Format: uuid */
             job_id: string;
+            /** @description The user-provided display label, if any. */
+            label?: string | null;
             /**
              * Format: uuid
              * @description Owning subject (user or group); null if the owner was deleted
@@ -1128,6 +1131,12 @@ export interface components {
             host_tag_requirements: string[];
             /** @description What kind of job this is. */
             init_spec: components["schemas"]["JobInitSpec"];
+            /**
+             * @description An optional display label for the job: printable ASCII, bounded in
+             *     length, not unique. Changeable after enqueue via `PATCH /jobs/{id}`.
+             * @default null
+             */
+            label: string | null;
             override_timeout?: string | null;
             /**
              * Format: uuid
@@ -1182,6 +1191,8 @@ export interface components {
             image: components["schemas"]["JobImageRef"];
             /** Format: uuid */
             job_id: string;
+            /** @description The user-provided display label, if any. */
+            label?: string | null;
             /**
              * Format: uuid
              * @description Owning subject (user or group); null if orphaned.
@@ -1602,6 +1613,18 @@ export interface components {
              * @description The version this text corresponds to (the server's current ToS version).
              */
             version: number;
+        };
+        /**
+         * @description A patch to a job (`PATCH /jobs/{id}`). Only the fields listed here are
+         *     mutable; a request carrying any other field is rejected. Omitting a field
+         *     leaves it unchanged; sending an explicit `null` clears it.
+         */
+        UpdateJobRequest: {
+            /**
+             * @description The job's display label: printable ASCII, bounded in length, not
+             *     unique.
+             */
+            label?: string | null;
         };
         /**
          * @description A patch to the caller's own profile. Omitting a field leaves it unchanged;
@@ -2198,6 +2221,77 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    updateJob: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * @description A patch to a job (`PATCH /jobs/{id}`). Only the fields listed here are
+         *     mutable; a request carrying any other field is rejected. Omitting a field
+         *     leaves it unchanged; sending an explicit `null` clears it.
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateJobRequest"];
+            };
+        };
+        responses: {
+            /** @description The job was updated. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Failed to deserialize the JSON body into the target type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
             };
         };
     };

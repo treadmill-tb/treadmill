@@ -589,6 +589,9 @@ CREATE TABLE tml_switchboard.jobs (
     -- job is conferred separately, as an irrevocable grant inserted at dispatch
     -- time (see job_grants).
     owner_id uuid REFERENCES tml_switchboard.subjects (subject_id) ON DELETE SET NULL,
+    -- Optional user-provided display label (see the `valid_label` constraint
+    -- for its shape). Non-unique, mutable after enqueue.
+    label text,
     -- These columns specify the job image and the nature of the job. A job's
     -- image is referenced against the switchboard image catalog: either a
     -- concrete image (`image_id`, a registered `images` row) or an image set
@@ -693,6 +696,12 @@ CREATE TABLE tml_switchboard.jobs (
     ),
     -- Restart count >= 0
     CONSTRAINT valid_restart_policy CHECK ((restart_policy).remaining_restart_count >= 0),
+    -- Labels are printable ASCII, bounded in length. (The length lives outside
+    -- the regex: Postgres caps regex repetition counts below the label limit.)
+    CONSTRAINT valid_label CHECK (
+        label ~ '^[ -~]+$'
+        AND char_length(label) <= 256
+    ),
     -- A host is bound from `assigned` onwards (through `finalized`);
     -- `dispatched_on_host_id` tracks that binding for the assigned,
     -- not-yet-terminal lifecycle states.

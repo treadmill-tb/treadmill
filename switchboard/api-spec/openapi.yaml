@@ -466,6 +466,58 @@ paths:
           description: The job was already finalized; nothing to do.
       security:
       - token: []
+    patch:
+      tags:
+      - Jobs
+      summary: Update a job
+      operationId: updateJob
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        description: |-
+          A patch to a job (`PATCH /jobs/{id}`). Only the fields listed here are
+          mutable; a request carrying any other field is rejected. Omitting a field
+          leaves it unchanged; sending an explicit `null` clears it.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateJobRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '204':
+          description: The job was updated.
+      security:
+      - token: []
   /hosts:
     get:
       tags:
@@ -2116,6 +2168,11 @@ components:
         job_id:
           type: string
           format: uuid
+        label:
+          description: The user-provided display label, if any.
+          type:
+          - string
+          - 'null'
         owner_id:
           description: |-
             Owning subject (user or group); null if the owner was deleted
@@ -2397,6 +2454,14 @@ components:
           description: What kind of job this is.
           allOf:
           - $ref: '#/components/schemas/JobInitSpec'
+        label:
+          description: |-
+            An optional display label for the job: printable ASCII, bounded in
+            length, not unique. Changeable after enqueue via `PATCH /jobs/{id}`.
+          type:
+          - string
+          - 'null'
+          default: null
         override_timeout:
           type:
           - string
@@ -2489,6 +2554,11 @@ components:
         job_id:
           type: string
           format: uuid
+        label:
+          description: The user-provided display label, if any.
+          type:
+          - string
+          - 'null'
         owner_id:
           description: Owning subject (user or group); null if orphaned.
           type:
@@ -3155,6 +3225,21 @@ components:
       required:
       - version
       - text
+    UpdateJobRequest:
+      description: |-
+        A patch to a job (`PATCH /jobs/{id}`). Only the fields listed here are
+        mutable; a request carrying any other field is rejected. Omitting a field
+        leaves it unchanged; sending an explicit `null` clears it.
+      type: object
+      properties:
+        label:
+          description: |-
+            The job's display label: printable ASCII, bounded in length, not
+            unique.
+          type:
+          - string
+          - 'null'
+      additionalProperties: false
     UpdateProfileRequest:
       description: |-
         A patch to the caller's own profile. Omitting a field leaves it unchanged;

@@ -215,6 +215,11 @@ pub struct JobRequest {
     /// What kind of job this is.
     pub init_spec: JobInitSpec,
 
+    /// An optional display label for the job: printable ASCII, bounded in
+    /// length, not unique. Changeable after enqueue via `PATCH /jobs/{id}`.
+    #[serde(default)]
+    pub label: Option<String>,
+
     /// The subject (user or group) to own the enqueued job. Must be the caller
     /// itself or a group the caller is a member of; absent, ownership defaults
     /// to the caller. Ownership decides who can later read, stop, and manage the

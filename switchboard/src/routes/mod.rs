@@ -237,12 +237,16 @@ pub fn api_router() -> ApiRouter<AppState> {
             }),
         )
         //  GET    /jobs/{id} -- fetch one job's full info
+        //  PATCH  /jobs/{id} -- update a job's mutable metadata (label)
         //  DELETE /jobs/{id} -- request termination of a job
         .api_route(
             "/jobs/{id}",
-            get_with(jobs::get_job, |o| doc(o, "getJob", "Jobs", "Get a job")).delete_with(
-                jobs::terminate,
-                |o| {
+            get_with(jobs::get_job, |o| doc(o, "getJob", "Jobs", "Get a job"))
+                .patch_with(jobs::update_job, |o| {
+                    doc(o, "updateJob", "Jobs", "Update a job")
+                        .response_with::<204, (), _>(|r| r.description("The job was updated."))
+                })
+                .delete_with(jobs::terminate, |o| {
                     doc(o, "terminateJob", "Jobs", "Terminate a job")
                         .response_with::<202, (), _>(|r| {
                             r.description("Termination was initiated.")
@@ -250,8 +254,7 @@ pub fn api_router() -> ApiRouter<AppState> {
                         .response_with::<204, (), _>(|r| {
                             r.description("The job was already finalized; nothing to do.")
                         })
-                },
-            ),
+                }),
         )
         // supervisor management group
         //  GET /supervisors (+ <FILTERS>)
