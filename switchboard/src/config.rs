@@ -238,6 +238,25 @@ pub struct ServiceConfig {
     /// sets scheduling latency, not liveness-detection cadence.
     #[serde(with = "humantime_serde")]
     pub supervisor_reconcile_interval: Duration,
+    /// Minimum spacing between event-driven scheduling passes under sustained
+    /// DB change notifications; `match_interval` remains the staleness ceiling.
+    #[serde(with = "humantime_serde", default = "default_scheduler_event_debounce")]
+    pub scheduler_event_debounce: Duration,
+    /// Minimum spacing between event-driven reconcile passes of a per-host
+    /// worker; `supervisor_reconcile_interval` remains the staleness ceiling.
+    #[serde(
+        with = "humantime_serde",
+        default = "default_supervisor_event_debounce"
+    )]
+    pub supervisor_event_debounce: Duration,
+}
+
+fn default_scheduler_event_debounce() -> Duration {
+    Duration::from_millis(250)
+}
+
+fn default_supervisor_event_debounce() -> Duration {
+    Duration::from_millis(100)
 }
 
 /// Load the switchboard configuration.
@@ -309,6 +328,8 @@ mod tests {
                 supervisor_ping_interval: Duration::from_secs(30),
                 supervisor_pong_dead: Duration::from_secs(60),
                 supervisor_reconcile_interval: Duration::from_secs(30),
+                scheduler_event_debounce: Duration::from_millis(250),
+                supervisor_event_debounce: Duration::from_millis(100),
             },
             oauth: OAuthConfig::default(),
             log_streaming: None,

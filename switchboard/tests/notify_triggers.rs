@@ -13,6 +13,7 @@ use serde_json::Value;
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
 use treadmill_rs::image::{Digest, media_types};
+use treadmill_switchboard::events::{EventBus, EventFilter};
 use treadmill_switchboard::sql;
 use uuid::Uuid;
 
@@ -236,6 +237,45 @@ async fn host_heartbeats_stay_silent(pool: PgPool) {
     let event = next_event(&mut listener).await;
     assert_eq!(event["table"], "hosts");
     assert_eq!(key_values(&event, "host_id"), vec![host.to_string()]);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn event_bus_listener_delivers_wakes(pool: PgPool) {
+    let user = insert_user(&pool).await;
+    let host = insert_host(&pool, user).await;
+
+    let bus = EventBus::default();
+    tokio::spawn(bus.listener(pool.clone()));
+    let mut subscription = bus.subscribe(EventFilter {
+        table: "hosts",
+        key: Some(("host_id", host)),
+    });
+    subscription.changed().await;
+
+    // The listener may not have connected yet when the first write commits (a
+    // wake missed for that reason is what consumers' timers cover); retry the
+    // write until a wake arrives.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        sqlx::query(
+            "update tml_switchboard.hosts set tags = array[md5(random()::text)] where host_id = $1",
+        )
+        .bind(host)
+        .execute(&pool)
+        .await
+        .unwrap();
+        if tokio::time::timeout(Duration::from_millis(500), subscription.changed())
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no wake delivered through the event bus"
+        );
+    }
 }
 
 #[sqlx::test]

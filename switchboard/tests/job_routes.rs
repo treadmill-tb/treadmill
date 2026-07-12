@@ -31,6 +31,7 @@ use treadmill_rs::image::Digest;
 /// member, so she may file a job under it.
 const ADMINS_GROUP_ID: Uuid = Uuid::from_u128(1);
 use treadmill_switchboard::config::LogStreamingConfig;
+use treadmill_switchboard::events::EventBus;
 use treadmill_switchboard::log_streaming::{LogStreamProvisioner, LogStreaming, ProvisionError};
 use treadmill_switchboard::registry::OciRegistryClient;
 use treadmill_switchboard::serve::AppState;
@@ -84,6 +85,7 @@ fn streaming_enabled_state_with(pool: PgPool, provisioner: Arc<NoopProvisioner>)
         test_config_mock(),
         Arc::new(OciRegistryClient::new()),
         Some(test_log_streaming(provisioner)),
+        EventBus::default(),
     )
 }
 
