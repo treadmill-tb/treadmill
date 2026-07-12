@@ -235,7 +235,7 @@ impl LogChannel {
 /// token), authenticating with `write_token`.
 ///
 /// `write_token` is a **bearer** user JWT the switchboard mints per dispatch,
-/// scoped to publish only this job's subjects; the supervisor connects with the
+/// scoped to exactly this job's subjects; the supervisor connects with the
 /// token string alone (no nkey seed is ever shipped).
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
@@ -245,8 +245,21 @@ pub struct LogStreamingDispatch {
     /// Subject prefix for this job's streams: `logs.<job-id>`. A channel token
     /// is appended as `<subject_prefix>.<channel>` (see [`LogChannel`]).
     pub subject_prefix: String,
-    /// Bearer user JWT authorizing publish to this job's subjects.
+    /// Bearer user JWT scoped to this job's subjects (see the sibling fields).
     pub write_token: String,
+    /// Subject carrying user-typed console input for this job
+    /// (`console-in.<job-id>`); the supervisor subscribes and writes each
+    /// message's payload to the workload's serial console. Additive and
+    /// optional: `None` (or an older switchboard omitting the field) means no
+    /// console input is delivered.
+    #[serde(default)]
+    pub console_input_subject: Option<String>,
+    /// Inbox prefix the supervisor must use for its request/reply inboxes
+    /// (JetStream publish acks): `write_token` only permits subscribing to
+    /// reply subjects under this prefix. Additive and optional: `None` leaves
+    /// the client's default inbox prefix in place.
+    #[serde(default)]
+    pub inbox_prefix: Option<String>,
 }
 
 // -- StopJobRequest -------------------------------------------------------------------------------

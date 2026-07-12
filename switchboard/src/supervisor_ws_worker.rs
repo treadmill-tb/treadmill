@@ -3046,9 +3046,11 @@ mod tests {
     }
 
     /// With log streaming enabled, `build_start_job_message` populates
-    /// `log_streaming` with this job's subject prefix and a freshly minted
-    /// **bearer** write token scoped to publish only `logs.<job-id>.>`. Decodes
-    /// the JWT claims directly — no live NATS needed (token minting is pure).
+    /// `log_streaming` with this job's subject prefix, its console-input
+    /// subject, and a freshly minted **bearer** write token scoped to publish
+    /// only `logs.<job-id>.>` and subscribe only `console-in.<job-id>`.
+    /// Decodes the JWT claims directly — no live NATS needed (token minting is
+    /// pure).
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn build_start_job_message_populates_scoped_write_token(
@@ -3086,6 +3088,14 @@ mod tests {
             dispatch.subject_prefix,
             crate::log_streaming::subject_prefix(job_id)
         );
+        assert_eq!(
+            dispatch.console_input_subject,
+            Some(crate::log_streaming::console_input_subject(job_id))
+        );
+        assert_eq!(
+            dispatch.inbox_prefix,
+            Some(crate::log_streaming::supervisor_inbox_prefix(job_id))
+        );
 
         // Decode (unverified) the write token's claims as JSON and check the pub
         // scope. Parsed as JSON rather than `nats_jwt::Claims` because that type
@@ -3112,9 +3122,14 @@ mod tests {
             serde_json::json!([format!("logs.{job_id}.>")]),
             "write token must publish-scope exactly this job's subjects"
         );
-        assert!(
-            claims["nats"].get("sub").is_none(),
-            "write token must not grant subscribe scope"
+        assert_eq!(
+            claims["nats"]["sub"]["allow"],
+            serde_json::json!([
+                format!("console-in.{job_id}"),
+                format!("_INBOX.sup-{job_id}.>"),
+            ]),
+            "write token must subscribe-scope exactly this job's console-input \
+             subject and ack inbox prefix"
         );
 
         // Disabled (None) leaves the field unset.

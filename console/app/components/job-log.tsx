@@ -23,6 +23,13 @@ type Status =
   | { kind: "no-websocket" }
   | { kind: "error"; message: string };
 
+type InputStatus =
+  | { kind: "off" }
+  | { kind: "connecting" }
+  | { kind: "on" }
+  | { kind: "unavailable" }
+  | { kind: "error"; message: string };
+
 const RETRY_DELAY_MS = 3_000;
 
 /** Default bound on replayed history. ~1 MiB roughly matches the terminal's
@@ -62,16 +69,32 @@ function sleep(ms: number): Promise<void> {
  * resumes after the last sequence already written to the terminal.
  * Credentials are re-requested on every (re)connect, satisfying the
  * expires_in_secs contract.
+ *
+ * With `canSendInput`, the section header offers to start an input session:
+ * keystrokes are published to the job's console-input subject over a second,
+ * publish-only connection (every mint of its token is audited server-side, as
+ * is every byte sent). There is no local echo — feedback arrives through the
+ * log channel like any other console output.
  */
 export function JobLog({
   jobId,
   replayBytes = DEFAULT_REPLAY_BYTES,
+  canSendInput = false,
 }: {
   jobId: string;
   replayBytes?: number;
+  canSendInput?: boolean;
 }) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
+  const [inputEnabled, setInputEnabled] = useState(false);
+  const [inputStatus, setInputStatus] = useState<InputStatus>({ kind: "off" });
+  const termRef = useRef<Terminal | null>(null);
+  // The live input connection keystrokes are published over, if any.
+  const inputConnRef = useRef<{
+    nc: NatsConnection;
+    subject: string;
+  } | null>(null);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -92,6 +115,15 @@ export function JobLog({
     fit.fit();
     const onResize = () => fit.fit();
     window.addEventListener("resize", onResize);
+    termRef.current = term;
+
+    // Keystrokes go to the input connection when one is live (xterm emits no
+    // input while `disableStdin` is set, which is whenever there is none).
+    const encoder = new TextEncoder();
+    term.onData((data) => {
+      const conn = inputConnRef.current;
+      if (conn !== null) conn.nc.publish(conn.subject, encoder.encode(data));
+    });
 
     async function run() {
       let first = true;
@@ -260,9 +292,106 @@ export function JobLog({
       cancelled = true;
       window.removeEventListener("resize", onResize);
       void nc?.close();
+      termRef.current = null;
       term.dispose();
     };
   }, [jobId, replayBytes]);
+
+  // Input session: its own connection (parallel to the read loop), living
+  // only while enabled. Each (re)connect mints a fresh token — and each mint
+  // is audited — so the loop re-requests credentials whenever the connection
+  // closes while input is still enabled.
+  useEffect(() => {
+    if (!inputEnabled) return;
+
+    let cancelled = false;
+    let nc: NatsConnection | null = null;
+
+    async function run() {
+      let first = true;
+      while (!cancelled) {
+        if (!first) {
+          await sleep(RETRY_DELAY_MS);
+          if (cancelled) return;
+        }
+        first = false;
+        setInputStatus({ kind: "connecting" });
+
+        let creds;
+        try {
+          creds = await client.POST("/jobs/{id}/nats-console-input-token", {
+            params: { path: { id: jobId } },
+          });
+        } catch {
+          continue;
+        }
+        if (creds.response.status === 403) {
+          // E.g. `manage` was revoked mid-session; surface it and flip off.
+          setInputStatus({
+            kind: "error",
+            message: "You are not authorized to send console input.",
+          });
+          setInputEnabled(false);
+          return;
+        }
+        if (creds.response.status === 503) {
+          setInputStatus({ kind: "unavailable" });
+          setInputEnabled(false);
+          return;
+        }
+        if (creds.data === undefined) {
+          setInputStatus({
+            kind: "error",
+            message: `Fetching input credentials failed (HTTP ${creds.response.status}).`,
+          });
+          setInputEnabled(false);
+          return;
+        }
+        const websocketUrl = creds.data.websocket_url;
+        if (websocketUrl === undefined || websocketUrl === null) {
+          setInputStatus({ kind: "unavailable" });
+          setInputEnabled(false);
+          return;
+        }
+
+        try {
+          nc = await wsconnect({
+            servers: [websocketUrl],
+            authenticator: jwtAuthenticator(creds.data.token),
+            reconnect: false,
+          });
+        } catch {
+          continue;
+        }
+        if (cancelled) {
+          void nc.close();
+          return;
+        }
+
+        inputConnRef.current = { nc, subject: creds.data.subject };
+        if (termRef.current !== null)
+          termRef.current.options.disableStdin = false;
+        setInputStatus({ kind: "on" });
+
+        await nc.closed();
+        inputConnRef.current = null;
+        if (termRef.current !== null)
+          termRef.current.options.disableStdin = true;
+        nc = null;
+      }
+    }
+    void run();
+
+    // Deliberately does not reset `inputStatus`: the loop's own exits (403,
+    // unavailable) set a status that must outlive the session; the button
+    // handler resets it on an explicit toggle.
+    return () => {
+      cancelled = true;
+      inputConnRef.current = null;
+      if (termRef.current !== null) termRef.current.options.disableStdin = true;
+      void nc?.close();
+    };
+  }, [jobId, inputEnabled]);
 
   if (status.kind === "disabled") {
     return null;
@@ -295,7 +424,23 @@ export function JobLog({
             {status.kind === "waiting" ? "waiting for logs" : status.kind}
           </span>
         )}
+        {inputStatus.kind === "on" && (
+          <span className="badge ok">input on</span>
+        )}{" "}
+        {canSendInput && inputStatus.kind !== "unavailable" && (
+          <button
+            onClick={() => {
+              setInputStatus({ kind: "off" });
+              setInputEnabled((enabled) => !enabled);
+            }}
+          >
+            {inputEnabled ? "Disable input" : "Enable console input"}
+          </button>
+        )}
       </h2>
+      {inputStatus.kind === "error" && (
+        <p className="error">{inputStatus.message}</p>
+      )}
       {status.kind === "error" ? (
         <p className="error">{status.message}</p>
       ) : (

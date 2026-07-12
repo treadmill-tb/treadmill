@@ -220,6 +220,22 @@ pub fn api_router() -> ApiRouter<AppState> {
                 })
             }),
         )
+        //  POST /jobs/{id}/nats-console-input-token -- mint a NATS token for typing into this
+        //  job's serial console
+        .api_route(
+            "/jobs/{id}/nats-console-input-token",
+            post_with(jobs::nats_console_input_token, |o| {
+                doc(
+                    o,
+                    "createJobNatsConsoleInputToken",
+                    "Jobs",
+                    "Create a NATS console-input token for a job",
+                )
+                .response_with::<503, (), _>(|r| {
+                    r.description("Log streaming is not enabled on this deployment.")
+                })
+            }),
+        )
         //  GET    /jobs/{id} -- fetch one job's full info
         //  DELETE /jobs/{id} -- request termination of a job
         .api_route(

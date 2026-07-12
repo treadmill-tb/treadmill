@@ -9,6 +9,11 @@
 //! across a supervisor restart. The spill file is **retained** after the job
 //! ends for on-host post-mortem (GC is a later, separate effort).
 //!
+//! The serial channel is bidirectional: when the dispatch carries a
+//! console-input subject, user-typed bytes published there are delivered to
+//! the guest's serial console (see [`ConsoleInput`]) — best-effort, unlike the
+//! must-not-lose capture direction.
+//!
 //! ## Layout
 //!
 //! For a job whose spill directory is `<dir>`, each channel `<ch>` (the
@@ -379,9 +384,13 @@ async fn run_channel(
 /// auth-callback path (the `with_jwt` builder always installs a signer), so we
 /// return an [`async_nats::Auth`] carrying just the JWT. The server accepts it
 /// because the token is minted with `bearer_token: true`.
-async fn bearer_connect(nats_url: &str, write_token: &str) -> Result<async_nats::Client> {
+async fn bearer_connect(
+    nats_url: &str,
+    write_token: &str,
+    inbox_prefix: Option<&str>,
+) -> Result<async_nats::Client> {
     let token = write_token.to_owned();
-    async_nats::ConnectOptions::with_auth_callback(move |_nonce| {
+    let mut options = async_nats::ConnectOptions::with_auth_callback(move |_nonce| {
         let token = token.clone();
         async move {
             let mut auth = async_nats::Auth::new();
@@ -393,15 +402,69 @@ async fn bearer_connect(nats_url: &str, write_token: &str) -> Result<async_nats:
     // Don't fail (or lose capture) if the broker is briefly down at job start:
     // connect succeeds, the client reconnects in the background, and the
     // shipper retries from the cursor while the drain keeps spilling.
-    .retry_on_initial_connect()
-    .connect(nats_url)
-    .await
-    .with_context(|| format!("connecting to NATS at {nats_url}"))
+    .retry_on_initial_connect();
+    // The write token only permits subscribing to reply inboxes under this
+    // prefix; without it, JetStream publish acks would never arrive.
+    if let Some(prefix) = inbox_prefix {
+        options = options.custom_inbox_prefix(prefix);
+    }
+    options
+        .connect(nats_url)
+        .await
+        .with_context(|| format!("connecting to NATS at {nats_url}"))
+}
+
+/// The console-input side channel: a core-NATS subscription on the job's
+/// input subject, whose message payloads are written to the guest's serial
+/// console. Server-side recording happens in parallel at the broker (the
+/// input stream is bound to the subject), so the supervisor just delivers.
+struct ConsoleInput {
+    client: async_nats::Client,
+    subject: String,
+}
+
+/// Subscribe to the console-input subject and write each message's payload to
+/// `writer` (the serial connection's write half), flushing per message.
+///
+/// Ends on subscribe/write error (logged) or when the subscription closes;
+/// qemu exiting closes the socket, which surfaces as a write error on the next
+/// message and terminates the task naturally. Input published while no
+/// subscription is live is dropped, never replayed stale.
+async fn run_console_input(input: ConsoleInput, mut writer: impl tokio::io::AsyncWrite + Unpin) {
+    use futures_util::StreamExt as _;
+
+    let mut subscription = match input.client.subscribe(input.subject.clone()).await {
+        Ok(subscription) => subscription,
+        Err(e) => {
+            tracing::warn!(
+                subject = input.subject,
+                error = ?e,
+                "failed to subscribe to console input; typed input will not be delivered",
+            );
+            return;
+        }
+    };
+
+    while let Some(message) = subscription.next().await {
+        let write = async {
+            writer.write_all(&message.payload).await?;
+            writer.flush().await
+        };
+        if let Err(e) = write.await {
+            tracing::warn!(
+                subject = input.subject,
+                error = ?e,
+                "writing console input to the serial console failed; ending input delivery",
+            );
+            return;
+        }
+    }
 }
 
 struct Inner {
     sink: Arc<dyn ChunkSink>,
     spill_dir: PathBuf,
+    console_input: Option<ConsoleInput>,
 }
 
 /// Spawns the durable capture publisher for a job's log channels.
@@ -417,27 +480,49 @@ pub struct LogPublisher {
 
 impl LogPublisher {
     /// Connect to NATS using the dispatch's bearer write token and build a
-    /// publisher whose spill files live under `spill_dir`.
+    /// publisher whose spill files live under `spill_dir`. When the dispatch
+    /// carries a console-input subject, the serial channel also delivers
+    /// typed input from that subject to the guest (see
+    /// [`spawn_serial`](Self::spawn_serial)).
     pub async fn connect(
         dispatch: &LogStreamingDispatch,
         spill_dir: impl Into<PathBuf>,
     ) -> Result<Self> {
-        let client = bearer_connect(&dispatch.nats_url, &dispatch.write_token).await?;
+        let client = bearer_connect(
+            &dispatch.nats_url,
+            &dispatch.write_token,
+            dispatch.inbox_prefix.as_deref(),
+        )
+        .await?;
+        let console_input = dispatch
+            .console_input_subject
+            .clone()
+            .map(|subject| ConsoleInput {
+                client: client.clone(),
+                subject,
+            });
         let jetstream = async_nats::jetstream::new(client);
         let sink: Arc<dyn ChunkSink> = Arc::new(NatsChunkSink::new(
             jetstream,
             dispatch.subject_prefix.clone(),
         ));
-        Ok(Self::with_sink(sink, spill_dir))
+        Ok(LogPublisher {
+            inner: Arc::new(Inner {
+                sink,
+                spill_dir: spill_dir.into(),
+                console_input,
+            }),
+        })
     }
 
     /// Build a publisher over an arbitrary [`ChunkSink`] (composition seam for
-    /// tests and the hermetic NATS check).
+    /// tests and the hermetic NATS check). No console input is delivered.
     pub fn with_sink(sink: Arc<dyn ChunkSink>, spill_dir: impl Into<PathBuf>) -> Self {
         LogPublisher {
             inner: Arc::new(Inner {
                 sink,
                 spill_dir: spill_dir.into(),
+                console_input: None,
             }),
         }
     }
@@ -458,13 +543,27 @@ impl LogPublisher {
     }
 
     /// Spawn the publisher for the serial channel: accept qemu's serial-socket
-    /// connection off the hot path, then drain+ship it.
+    /// connection off the hot path, then drain+ship it. With console input
+    /// configured, the connection is split and a parallel task delivers typed
+    /// input from the input subject to the write half.
     pub fn spawn_serial(&self, channel: LogChannel, socket: SerialSocket) {
         let inner = self.inner.clone();
         tokio::spawn(async move {
             match socket.accept().await {
                 Ok(stream) => {
-                    if let Err(e) = run_channel(inner, channel, Box::new(stream)).await {
+                    let reader: BoxedAsyncRead = match &inner.console_input {
+                        Some(input) => {
+                            let (read_half, write_half) = stream.into_split();
+                            let input = ConsoleInput {
+                                client: input.client.clone(),
+                                subject: input.subject.clone(),
+                            };
+                            tokio::spawn(run_console_input(input, write_half));
+                            Box::new(read_half)
+                        }
+                        None => Box::new(stream),
+                    };
+                    if let Err(e) = run_channel(inner, channel, reader).await {
                         tracing::error!(error = ?e, "serial channel publisher exited with error");
                     }
                 }
@@ -857,5 +956,94 @@ mod tests {
                 b"world".to_vec()
             )
         );
+    }
+
+    /// Bytes published to the console-input subject reach the serial peer (a
+    /// fake qemu on the other end of the socket) and — with the recording
+    /// stream bound to the subject, as the switchboard provisions before any
+    /// input token exists — are captured server-side in `console-in-<job>`.
+    #[tokio::test]
+    async fn nats_live_console_input_reaches_the_serial_peer_and_is_recorded() {
+        use tokio::io::AsyncReadExt as _;
+
+        let Some(bin) = nats_server_bin() else {
+            eprintln!("TML_TEST_NATS_SERVER unset; skipping live NATS console-input test");
+            return;
+        };
+        let server = NatsServer::start(&bin).await;
+        let client = async_nats::connect(server.url()).await.unwrap();
+        let jetstream = async_nats::jetstream::new(client.clone());
+
+        let job = "testjob";
+        let subject = format!("console-in.{job}");
+        jetstream
+            .get_or_create_stream(async_nats::jetstream::stream::Config {
+                name: format!("console-in-{job}"),
+                subjects: vec![subject.clone()],
+                max_age: Duration::ZERO,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Bind the serial socket and connect the fake-qemu peer (the listener
+        // backlog holds the connection until `spawn_serial` accepts it).
+        let dir = tempfile::tempdir().unwrap();
+        let socket = crate::capture::SerialSocket::bind(dir.path().join("serial.sock"))
+            .await
+            .unwrap();
+        let mut peer = tokio::net::UnixStream::connect(socket.path())
+            .await
+            .unwrap();
+
+        let publisher = LogPublisher {
+            inner: Arc::new(Inner {
+                sink: Arc::new(RecordingSink::new()),
+                spill_dir: dir.path().join("logs"),
+                console_input: Some(ConsoleInput {
+                    client: client.clone(),
+                    subject: subject.clone(),
+                }),
+            }),
+        };
+        publisher.spawn_serial(LogChannel::Serial, socket);
+
+        // The input task subscribes asynchronously and a core publish with no
+        // live subscription is dropped (by design), so republish until the
+        // peer sees input.
+        let payload = b"input!";
+        let mut buf = [0u8; 64];
+        let mut n = 0;
+        for attempt in 0.. {
+            assert!(attempt < 100, "peer never received console input");
+            client
+                .publish(subject.clone(), Bytes::from_static(payload))
+                .await
+                .unwrap();
+            client.flush().await.unwrap();
+            match tokio::time::timeout(Duration::from_millis(300), peer.read(&mut buf)).await {
+                Ok(read) => {
+                    n = read.expect("peer read");
+                    break;
+                }
+                Err(_elapsed) => continue,
+            }
+        }
+        // One `read` may return several coalesced messages; every one is a
+        // copy of the payload, so checking the head suffices.
+        assert!(n >= payload.len(), "read at least one full payload");
+        assert_eq!(&buf[..payload.len()], payload);
+
+        // Every accepted publish was recorded server-side by the
+        // subject-bound stream, no JetStream involvement from the client.
+        let mut stream = jetstream
+            .get_stream(format!("console-in-{job}"))
+            .await
+            .unwrap();
+        let state = &stream.info().await.unwrap().state;
+        assert!(state.messages >= 1, "typed input must be recorded");
+        let first = stream.get_raw_message(1).await.unwrap();
+        assert_eq!(first.subject.as_str(), subject);
+        assert_eq!(first.payload.as_ref(), payload);
     }
 }

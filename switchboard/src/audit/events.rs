@@ -237,6 +237,22 @@ define_event! {
 }
 
 define_event! {
+    /// A user was issued a console-input token for a job
+    /// (`POST /jobs/{id}/nats-console-input-token`), authorizing them to type
+    /// into the job's serial console until `expires_at` (re-minted on every
+    /// reconnect, so a session emits one event per mint). Visible to anyone
+    /// who can read the job. The typed input itself is recorded in the job's
+    /// `console-in` JetStream stream, not in the audit log.
+    JobConsoleInputTokenIssued v1 {
+        actor: Subject,
+        job: Job @ view(Read),
+        expires_at: DateTime<Utc>,
+    }
+    event_type = "job_console_input_token_issued";
+    render = "enabled console input";
+}
+
+define_event! {
     /// The scheduler dispatched a queued job onto a host (`queued` → `assigned`).
     /// Attributed to the system actor; visible to anyone who can read the job and,
     /// as context, to viewers of the host it landed on.
