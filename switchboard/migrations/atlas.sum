@@ -1,4 +1,4 @@
-h1:40dl18UgDz1aTzN5BAtSjQIFge9SmRm0v7wjvLRBZas=
+h1:oXC2EXoqbzWLQyptvQdFoN/8Xk4odlaa5pQzqayndaU=
 00000000000001_base.sql h1:7OodY/qoessjRRoCAAX04fthKHTDNzzloQ4srKlxs+o=
 20260704040624_add_login_admission.sql h1:hYEzBBXagVmDVTtFsA1uosdNLKUi8JvitaMOFw/4jbk=
 20260708035542_everyone_subject.sql h1:eshPaeCj4UtkHWVuGTZHzsESVxK09Vy8ys5+ywA09pU=
@@ -7,3 +7,8 @@ h1:40dl18UgDz1aTzN5BAtSjQIFge9SmRm0v7wjvLRBZas=
 20260709090000_images_title.sql h1:6oX7RzSWvr+UEzFgcSPYcEo45hYxE9uHjb1n6sh3Pg0=
 20260709090001_remove_image_attrs_jsonb.sql h1:93BKzCkpTJ9YECRmz1fUvhFBadA1P6YLBvIerHyi9b0=
 20260712034848_pg_notify_events.sql h1:bohYlr4QqjynOXbIEIMlSZNkt978M6vDLynHzHryZ3s=
+20260712171310_job_label.sql h1:zpY2+9dcOSD0ZCWF2R72za3pQeFyg2v2M7PYEgGswvc=
+20260712173957_retain_job_dispatch_columns.sql h1:XRqVur8ckhHjwl0w8LO8AYoVnZdZF/EKjPWYV19zmHI=
+20260712234437_drop_users_username.sql h1:RPjJ1XLN7Fn/m+pLycivMCFhBoNM0O7ZbvYvuMTpWxs=
+20260713001627_primary_email.sql h1:SlSkvtWHxNgW+2zDCSJnBjsmRDIRdqIwTkJqcfpPSYQ=
+20260713214508_job_valid_label_constr.sql h1:EmIPVJoi/cpLmUUuSpimPEFfSsMtsQRLT+zAe0JHPtM=

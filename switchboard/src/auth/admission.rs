@@ -36,6 +36,11 @@ pub enum DenyReason {
     /// when `fetch_org_ids` errors on the new-user path, failing closed. The
     /// registration is retryable (a transient failure never persists anything).
     OrgLookupFailed,
+    /// The provider reported no verified primary email. NOT produced by
+    /// [`AdmissionPolicy::admit`] -- the login callback raises it on the
+    /// new-user path, since every account is seeded with a verified primary at
+    /// registration.
+    NoVerifiedPrimaryEmail,
 }
 
 impl DenyReason {
@@ -44,6 +49,7 @@ impl DenyReason {
         match self {
             DenyReason::NotAllowlisted => "not_allowlisted",
             DenyReason::OrgLookupFailed => "org_lookup_failed",
+            DenyReason::NoVerifiedPrimaryEmail => "no_verified_primary_email",
         }
     }
 }

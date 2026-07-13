@@ -102,6 +102,7 @@ struct GhUser {
 struct GhEmail {
     email: String,
     verified: bool,
+    primary: bool,
 }
 
 #[derive(Deserialize)]
@@ -160,9 +161,11 @@ impl OAuthProvider for GithubProvider {
                     |GhEmail {
                          email: address,
                          verified,
+                         primary,
                      }| Email {
                         address: address.into(),
                         verified,
+                        primary,
                     },
                 )
                 .collect(),

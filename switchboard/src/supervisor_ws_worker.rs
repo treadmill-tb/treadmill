@@ -1465,7 +1465,7 @@ mod tests {
             .bind(user_id)
             .execute(pool)
             .await?;
-        sqlx::query("insert into tml_switchboard.users (subject_id, username) values ($1, $2)")
+        sqlx::query("insert into tml_switchboard.users (subject_id, name) values ($1, $2)")
             .bind(user_id)
             .bind(format!("user-{user_id}"))
             .execute(pool)
@@ -1568,9 +1568,8 @@ mod tests {
 
     /// Insert a job already in the terminal `finalized` state and point
     /// `host_id.current_job` at it, reproducing the "finalized but still
-    /// assigned" stuck state: the job is terminal (so `dispatched_on_host_id` is
-    /// null per the `dispatched_host_iso_assigned` invariant, and
-    /// `termination_reason`/`terminated_at` are set per the finalized CHECKs) yet
+    /// assigned" stuck state: the job is terminal
+    /// (`termination_reason`/`terminated_at` set per the finalized CHECKs) yet
     /// the host pointer was never released. This is the state a job lands in when
     /// it finalizes (e.g. via a `SupervisorJobEvent::Error`) but the host never
     /// reports the `Terminated` transition that normally clears the assignment.
@@ -2589,6 +2588,30 @@ mod tests {
             current_job_of(&pool, host_id).await?,
             Some(job_id),
             "case 4 (terminated): assignment is kept until the host reports the job gone"
+        );
+        let (started_at, dispatched_on): (Option<chrono::DateTime<chrono::Utc>>, Option<Uuid>) =
+            sqlx::query_as(
+                "select started_at, dispatched_on_host_id \
+                 from tml_switchboard.jobs where job_id = $1",
+            )
+            .bind(job_id)
+            .fetch_one(&pool)
+            .await?;
+        assert!(
+            started_at.is_some(),
+            "case 4 (terminated): started_at must be retained on the terminal record"
+        );
+        assert_eq!(
+            dispatched_on,
+            Some(host_id),
+            "case 4 (terminated): the dispatch host must be retained on the terminal record"
+        );
+        assert!(
+            !worker
+                .apply_task_outcome(job_id, TaskExitStatus::Failure, None)
+                .await
+                .expect("declaring an outcome on a finalized job should not error"),
+            "case 4 (terminated): a finalized job's outcome must not be revisable"
         );
         match decode_outbound(
             from_worker

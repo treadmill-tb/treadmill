@@ -50,7 +50,7 @@ async fn insert_user(pool: &PgPool) -> Uuid {
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query("insert into tml_switchboard.users (subject_id, username) values ($1, $2)")
+    sqlx::query("insert into tml_switchboard.users (subject_id, name) values ($1, $2)")
         .bind(id)
         .bind(format!("user-{id}"))
         .execute(pool)

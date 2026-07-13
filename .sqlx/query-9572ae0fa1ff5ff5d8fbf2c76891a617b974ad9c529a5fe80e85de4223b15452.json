@@ -1,28 +1,28 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select email from tml_switchboard.user_emails where email = any($1::text[]);",
+  "query": "select name from tml_switchboard.users where subject_id = $1;",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "email",
+        "name": "name",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "tml_switchboard.user_emails",
-            "name": "email"
+            "table": "tml_switchboard.users",
+            "name": "name"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
-        "TextArray"
+        "Uuid"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "f85af2d47c7ed8ccd69dffa5efadf0d0b209b3f9ba7e616687d6a3826fe884ed"
+  "hash": "9572ae0fa1ff5ff5d8fbf2c76891a617b974ad9c529a5fe80e85de4223b15452"
 }

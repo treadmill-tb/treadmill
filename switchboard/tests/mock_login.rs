@@ -51,7 +51,7 @@ async fn mock_login_confers_no_admin(pool: PgPool) {
     // Even alice — the roster's designated admin identity — gets nothing from
     // the login itself: admin is only ever provisioned externally.
     let (_session, who) = run_mock_login(&pool, &client, addr, "alice", true).await;
-    assert_eq!(who.username, "alice");
+    assert_eq!(who.name, "Alice Example");
     assert!(
         !is_global_admin(&pool, who.user_id).await,
         "login alone must never confer admin"

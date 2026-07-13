@@ -242,6 +242,8 @@ pub struct SshEndpoint {
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct JobInfo {
     pub job_id: Uuid,
+    /// The user-provided display label, if any.
+    pub label: Option<String>,
     /// Owning subject (user or group); null if the owner was deleted
     /// (orphaned).
     pub owner_id: Option<Uuid>,
@@ -299,6 +301,23 @@ pub struct EnqueueJobResponse {
     pub job_id: Uuid,
 }
 
+/// A patch to a job (`PATCH /jobs/{id}`). Only the fields listed here are
+/// mutable; a request carrying any other field is rejected. Omitting a field
+/// leaves it unchanged; sending an explicit `null` clears it.
+#[derive(schemars::JsonSchema, Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateJobRequest {
+    /// The job's display label: printable ASCII, bounded in length, not
+    /// unique.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
+    #[schemars(with = "Option<String>")]
+    pub label: Option<Option<String>>,
+}
+
 /// A compact per-job row for the `GET /jobs` listing — identity, ownership,
 /// lifecycle state, and the key timestamps/outcome, without the heavier
 /// per-job detail (parameters, target requirements, ssh keys) that
@@ -306,6 +325,8 @@ pub struct EnqueueJobResponse {
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct JobSummary {
     pub job_id: Uuid,
+    /// The user-provided display label, if any.
+    pub label: Option<String>,
     /// Owning subject (user or group); null if orphaned.
     pub owner_id: Option<Uuid>,
     pub state: JobState,

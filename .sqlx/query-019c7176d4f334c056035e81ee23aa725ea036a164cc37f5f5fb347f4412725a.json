@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select u.locked, u.tos_accepted_version, u.username, i.provider_user_id, i.provider_login from tml_switchboard.users u left join tml_switchboard.user_identities i on i.user_id = u.subject_id and i.provider = $2 where u.subject_id = $1;",
+  "query": "select u.locked, u.tos_accepted_version, u.name, i.provider_user_id, i.provider_login from tml_switchboard.users u left join tml_switchboard.user_identities i on i.user_id = u.subject_id and i.provider = $2 where u.subject_id = $1;",
   "describe": {
     "columns": [
       {
@@ -27,12 +27,12 @@
       },
       {
         "ordinal": 2,
-        "name": "username",
+        "name": "name",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "tml_switchboard.users",
-            "name": "username"
+            "name": "name"
           }
         }
       },
@@ -73,5 +73,5 @@
       true
     ]
   },
-  "hash": "a5f4b748f1d22c08aa7ebdd52bd7bc958f114511688df4f29883cca656468702"
+  "hash": "019c7176d4f334c056035e81ee23aa725ea036a164cc37f5f5fb347f4412725a"
 }

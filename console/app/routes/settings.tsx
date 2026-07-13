@@ -35,16 +35,12 @@ function ProfileForm({
       return typeof v === "string" ? v.trim() : "";
     };
 
-    // PATCH semantics: omitted = unchanged, explicit null = cleared. Username
-    // can only change, never clear.
+    // PATCH semantics: omitted = unchanged, explicit null = cleared. The display
+    // name can only change, never clear.
     const body: components["schemas"]["UpdateProfileRequest"] = {};
-    const username = str("username");
-    if (username !== "" && username !== me.username) {
-      body.username = username;
-    }
-    const fullName = str("full_name");
-    if (fullName !== (me.full_name ?? "")) {
-      body.full_name = fullName === "" ? null : fullName;
+    const name = str("name");
+    if (name !== "" && name !== me.name) {
+      body.name = name;
     }
     const avatarUrl = str("avatar_url");
     if (avatarUrl !== (me.avatar_url ?? "")) {
@@ -56,12 +52,8 @@ function ProfileForm({
   return (
     <form className="form card" onSubmit={onSubmit}>
       <label className="field">
-        <span>Username</span>
-        <input name="username" defaultValue={me.username} className="mono" />
-      </label>
-      <label className="field">
-        <span>Full name (empty clears)</span>
-        <input name="full_name" defaultValue={me.full_name ?? ""} />
+        <span>Name</span>
+        <input name="name" defaultValue={me.name} />
       </label>
       <label className="field">
         <span>Avatar URL (empty clears)</span>
@@ -115,21 +107,25 @@ export default function Settings() {
               <ProfileForm me={me.data} onDone={() => setEditing(false)} />
             ) : (
               <dl className="props">
-                <dt>Username</dt>
+                <dt>Name</dt>
                 <dd>
                   <EntityLink
                     kind="user"
                     id={me.data.user_id}
-                    label={me.data.username}
+                    label={me.data.name}
                   />
                 </dd>
-                <dt>Full name</dt>
-                <dd>{me.data.full_name ?? <span className="muted">—</span>}</dd>
                 <dt>Emails</dt>
                 <dd>
                   {me.data.emails.map((e) => (
-                    <div key={e} className="mono">
-                      {e}
+                    <div key={e.email} className="mono">
+                      {e.email}
+                      {e.is_primary && (
+                        <span className="badge active"> primary</span>
+                      )}
+                      {!e.verified && (
+                        <span className="badge"> unverified</span>
+                      )}
                     </div>
                   ))}
                 </dd>

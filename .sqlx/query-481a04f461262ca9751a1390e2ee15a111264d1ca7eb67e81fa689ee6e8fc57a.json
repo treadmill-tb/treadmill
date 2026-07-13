@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select email from tml_switchboard.user_emails where user_id = $1 order by added_at;",
+  "query": "select email from tml_switchboard.user_emails where email = any($1::text[]) and user_id <> $2;",
   "describe": {
     "columns": [
       {
@@ -17,6 +17,7 @@
     ],
     "parameters": {
       "Left": [
+        "TextArray",
         "Uuid"
       ]
     },
@@ -24,5 +25,5 @@
       false
     ]
   },
-  "hash": "fb54de05c51ebf993b59129c26ed1d17115153e0fc11dfd6ad017a2711ec8236"
+  "hash": "481a04f461262ca9751a1390e2ee15a111264d1ca7eb67e81fa689ee6e8fc57a"
 }

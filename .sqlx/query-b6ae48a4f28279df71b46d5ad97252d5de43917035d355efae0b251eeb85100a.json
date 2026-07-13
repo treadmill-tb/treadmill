@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        with p(id) as (select id from tml_switchboard.principals($1))\n        select\n          j.job_id,\n          j.owner_id,\n          j.job_state as \"job_state: SqlJobState\",\n          j.resume_job_id,\n          j.restart_job_id,\n          i.manifest_digest as \"image_digest?\",\n          j.image_set_id,\n          j.image_set_generation,\n          j.queued_at,\n          j.started_at,\n          j.terminated_at,\n          j.dispatched_on_host_id,\n          j.termination_reason as \"termination_reason: SqlTerminationReason\",\n          j.task_exit_status as \"task_exit_status: SqlTaskExitStatus\"\n        from tml_switchboard.jobs j\n        left join tml_switchboard.images i on i.id = j.image_id\n        where (\n            exists (select 1 from p where p.id = $2)\n            or j.owner_id in (select id from p)\n            or exists (\n                select 1 from tml_switchboard.job_grants g\n                join p on g.subject_id = p.id\n                where g.job_id = j.job_id\n            )\n        )\n        and ($3::timestamptz is null or (j.queued_at, j.job_id) < ($3, $4))\n        order by j.queued_at desc, j.job_id desc\n        limit $5\n        ",
+  "query": "\n        with p(id) as (select id from tml_switchboard.principals($1))\n        select\n          j.job_id,\n          j.label,\n          j.owner_id,\n          j.job_state as \"job_state: SqlJobState\",\n          j.resume_job_id,\n          j.restart_job_id,\n          i.manifest_digest as \"image_digest?\",\n          j.image_set_id,\n          j.image_set_generation,\n          j.queued_at,\n          j.started_at,\n          j.terminated_at,\n          j.dispatched_on_host_id,\n          j.termination_reason as \"termination_reason: SqlTerminationReason\",\n          j.task_exit_status as \"task_exit_status: SqlTaskExitStatus\"\n        from tml_switchboard.jobs j\n        left join tml_switchboard.images i on i.id = j.image_id\n        where (\n            exists (select 1 from p where p.id = $2)\n            or j.owner_id in (select id from p)\n            or exists (\n                select 1 from tml_switchboard.job_grants g\n                join p on g.subject_id = p.id\n                where g.job_id = j.job_id\n            )\n        )\n        and ($3::timestamptz is null or (j.queued_at, j.job_id) < ($3, $4))\n        order by j.queued_at desc, j.job_id desc\n        limit $5\n        ",
   "describe": {
     "columns": [
       {
@@ -16,6 +16,17 @@
       },
       {
         "ordinal": 1,
+        "name": "label",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
         "name": "owner_id",
         "type_info": "Uuid",
         "origin": {
@@ -26,7 +37,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "job_state: SqlJobState",
         "type_info": {
           "Custom": {
@@ -51,7 +62,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "resume_job_id",
         "type_info": "Uuid",
         "origin": {
@@ -62,7 +73,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "restart_job_id",
         "type_info": "Uuid",
         "origin": {
@@ -73,7 +84,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "image_digest?",
         "type_info": "Text",
         "origin": {
@@ -84,7 +95,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "image_set_id",
         "type_info": "Uuid",
         "origin": {
@@ -95,7 +106,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "image_set_generation",
         "type_info": "Int4",
         "origin": {
@@ -106,7 +117,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "queued_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -117,7 +128,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "started_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -128,7 +139,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "terminated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -139,7 +150,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "dispatched_on_host_id",
         "type_info": "Uuid",
         "origin": {
@@ -150,7 +161,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "termination_reason: SqlTerminationReason",
         "type_info": {
           "Custom": {
@@ -181,7 +192,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "task_exit_status: SqlTaskExitStatus",
         "type_info": {
           "Custom": {
@@ -215,6 +226,7 @@
     "nullable": [
       false,
       true,
+      true,
       false,
       true,
       true,
@@ -229,5 +241,5 @@
       true
     ]
   },
-  "hash": "37ef6772389b993deb40a8cf78b8d39f3bf3ac1c3f4958cea1d8c36b80cd90a2"
+  "hash": "b6ae48a4f28279df71b46d5ad97252d5de43917035d355efae0b251eeb85100a"
 }

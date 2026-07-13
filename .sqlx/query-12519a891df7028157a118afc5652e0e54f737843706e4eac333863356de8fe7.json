@@ -1,21 +1,10 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select u.full_name, u.avatar_url, i.provider_login from tml_switchboard.users u join tml_switchboard.user_identities i on i.user_id = u.subject_id and i.provider = $2 and i.provider_user_id = $3 where u.subject_id = $1;",
+  "query": "select u.avatar_url, i.provider_login from tml_switchboard.users u join tml_switchboard.user_identities i on i.user_id = u.subject_id and i.provider = $2 and i.provider_user_id = $3 where u.subject_id = $1;",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "full_name",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "tml_switchboard.users",
-            "name": "full_name"
-          }
-        }
-      },
-      {
-        "ordinal": 1,
         "name": "avatar_url",
         "type_info": "Text",
         "origin": {
@@ -26,7 +15,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 1,
         "name": "provider_login",
         "type_info": "Text",
         "origin": {
@@ -46,9 +35,8 @@
     },
     "nullable": [
       true,
-      true,
       true
     ]
   },
-  "hash": "d20a1338d26e711fd2428cf3e3053336b3798559a6db7b8ef5f806b23b439346"
+  "hash": "12519a891df7028157a118afc5652e0e54f737843706e4eac333863356de8fe7"
 }

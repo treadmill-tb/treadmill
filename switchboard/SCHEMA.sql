@@ -33,23 +33,28 @@ CREATE TABLE tml_switchboard.subjects (
 
 -- A human (or system) principal.
 --
--- - `username` is the internal Treadmill handle, suggested from the provider
---   login at first sign-in but freely changeable, hence its own uniqueness
---   independent of any provider identity.
+-- - `name` is the display name: seeded from the provider's display name (or
+--   login) at first sign-in and freely user-changeable afterwards. It is
+--   deliberately NOT unique -- nothing routes on it. Non-emptiness and the
+--   length bound are enforced here; the richer shape rules (no control
+--   characters) live in the route validation.
 -- - `locked` deactivates the account without deleting it (preserving job/audit
 --   provenance). A locked account must not be able to login, and its tokens
 --   must not be accepted.
 CREATE TABLE tml_switchboard.users (
     subject_id uuid NOT NULL PRIMARY KEY REFERENCES tml_switchboard.subjects (subject_id) ON DELETE CASCADE,
-    username text NOT NULL UNIQUE,
-    full_name text,
+    name text NOT NULL,
     avatar_url text,
     locked bool NOT NULL DEFAULT FALSE,
     -- ToS acceptance. NULL version = never accepted. A user whose accepted
     -- version is below the configured current version must re-accept before a
     -- token is issued (their account is not otherwise gated).
     tos_accepted_version integer,
-    tos_accepted_at timestamp with time zone
+    tos_accepted_at timestamp with time zone,
+    CONSTRAINT valid_name CHECK (
+        name <> ''
+        AND char_length(name) <= 256
+    )
 );
 
 
@@ -70,22 +75,80 @@ CREATE TABLE tml_switchboard.user_identities (
 );
 
 
--- Verified email addresses, used to link a future provider login to an existing
+-- Email addresses on file for a user, each tagged with the provider that
+-- reported it. A verified address links a future provider login to an existing
 -- user (same verified email => same person).
 --
--- Globally unique so it can serve as that linking key, multi-row per user, and
--- tagged with the provider that originates from.
+-- The primary key is (email, provider): the same address may appear under
+-- several providers, and the user's PRIMARY email is carried as a dedicated
+-- provider-less row (`provider = ''`, the empty-string convention used for a
+-- distinguished row, as with `group_members.source_ref`). "Is primary" is
+-- exactly `provider = ''`. The primary is pinned once at registration and never
+-- re-synced; a user has at most one (partial unique index below) and it must be
+-- verified (the CHECK).
 --
--- Only `verified` email addresses must be used for any sensitive flow: linking
--- on an unverified address would allow account takeover by claiming someone
--- else's email on the external provider.
+-- A given VERIFIED address belongs to at most one user, enforced by the trigger
+-- below; unverified duplicates across users are allowed. Only `verified`
+-- addresses may drive any sensitive flow: linking on an unverified address would
+-- allow account takeover by claiming someone else's email on the provider.
 CREATE TABLE tml_switchboard.user_emails (
-    email text NOT NULL PRIMARY KEY,
+    email text NOT NULL,
     user_id uuid NOT NULL REFERENCES tml_switchboard.users (subject_id) ON DELETE CASCADE,
     provider text NOT NULL,
     verified bool NOT NULL,
-    added_at timestamp with time zone NOT NULL DEFAULT current_timestamp
+    added_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (email, provider),
+    -- The primary (provider-less) email must be verified.
+    CONSTRAINT primary_email_verified CHECK (
+        provider <> ''
+        OR verified
+    )
 );
+
+
+-- At most one primary (provider-less) email per user.
+CREATE UNIQUE INDEX user_emails_one_primary ON tml_switchboard.user_emails (user_id)
+WHERE
+    provider = '';
+
+
+-- Enforce that a verified address belongs to at most one user. Only verified
+-- rows are constrained; unverified duplicates across users are allowed.
+--
+-- Correctness under concurrency mirrors `group_members_no_cycle`: two
+-- transactions could each verify the same address for a different user, neither
+-- seeing the other's uncommitted row. A transaction-scoped advisory lock held
+-- until commit serializes verified writes, so a waiter resumes only after the
+-- holder commits and its fresh READ COMMITTED snapshot then sees that row and
+-- aborts.
+CREATE OR REPLACE FUNCTION tml_switchboard.user_emails_verified_single_owner () returns trigger language plpgsql AS $$
+begin
+    if not NEW.verified then
+        return NEW;
+    end if;
+
+    perform pg_advisory_xact_lock(hashtext('tml_switchboard.user_emails'));
+
+    if exists (
+        select 1
+        from tml_switchboard.user_emails
+        where email = NEW.email and verified and user_id <> NEW.user_id
+    ) then
+        raise exception
+            'verified email % already belongs to another user', NEW.email;
+    end if;
+
+    return NEW;
+end;
+$$;
+
+
+-- DELETE can never introduce a second owner, so the check runs on INSERT/UPDATE.
+CREATE CONSTRAINT TRIGGER user_emails_verified_owner
+AFTER insert
+OR
+UPDATE ON tml_switchboard.user_emails FOR each ROW
+EXECUTE function tml_switchboard.user_emails_verified_single_owner ();
 
 
 -- A group/organization. Owns resources and aggregates members like any subject.
@@ -589,6 +652,9 @@ CREATE TABLE tml_switchboard.jobs (
     -- job is conferred separately, as an irrevocable grant inserted at dispatch
     -- time (see job_grants).
     owner_id uuid REFERENCES tml_switchboard.subjects (subject_id) ON DELETE SET NULL,
+    -- Optional user-provided display label (see the `valid_label` constraint
+    -- for its shape). Non-unique, mutable after enqueue.
+    label text,
     -- These columns specify the job image and the nature of the job. A job's
     -- image is referenced against the switchboard image catalog: either a
     -- concrete image (`image_id`, a registered `images` row) or an image set
@@ -642,9 +708,13 @@ CREATE TABLE tml_switchboard.jobs (
     -- [config:api.jobs.queue_timeout] the job is still queued, it is
     -- terminated.
     queued_at timestamp with time zone NOT NULL,
-    -- The time at which the job was started.
+    -- The time at which the job was started. Set once, when the job begins
+    -- executing, and retained through `finalized`.
     started_at timestamp with time zone,
-    -- ID of the host the job was dispatched to.
+    -- ID of the host the job was dispatched to. Set once, at assignment, and
+    -- retained through `finalized` so a terminated job still reports where it
+    -- ran. "Currently bound" is derived from `job_state` (and
+    -- `hosts.current_job`), not from this column.
     dispatched_on_host_id uuid,
     -- SSH endpoints that this job is reachable under, populated once assigned
     -- to a host that exposes endpoints.
@@ -693,25 +763,32 @@ CREATE TABLE tml_switchboard.jobs (
     ),
     -- Restart count >= 0
     CONSTRAINT valid_restart_policy CHECK ((restart_policy).remaining_restart_count >= 0),
-    -- A host is bound from `assigned` onwards (through `finalized`);
-    -- `dispatched_on_host_id` tracks that binding for the assigned,
-    -- not-yet-terminal lifecycle states.
-    CONSTRAINT dispatched_host_iso_assigned CHECK (
-        (dispatched_on_host_id IS NOT NULL) = (
-            job_state IN (
-                'assigned',
-                'initializing',
-                'ready',
-                'terminating'
-            )
-        )
+    -- Labels must be 1 to 256 chars, start/end with ASCII alphanumeric, and
+    -- contain only ASCII alphanumeric, space, hyphen, or underscore.
+    CONSTRAINT valid_label CHECK (
+        char_length(label) BETWEEN 1 AND 256
+        AND label ~ '^[A-Za-z0-9]([A-Za-z0-9 _-]*[A-Za-z0-9])?$'
     ),
-    -- `started_at` is set exactly while executing, i.e. once dispatched
-    -- (`initializing`) and until terminal.
-    CONSTRAINT started_at_iso_executing CHECK (
-        (started_at IS NOT NULL) = (
-            job_state IN ('initializing', 'ready', 'terminating')
-        )
+    -- A host is bound from `assigned` onwards; the binding is set once and
+    -- retained through `finalized`. NULL in `finalized` means the job was
+    -- never placed on a host (e.g. queue-timeout).
+    CONSTRAINT dispatched_host_monotonic CHECK (
+        CASE job_state
+            WHEN 'queued' THEN dispatched_on_host_id IS NULL
+            WHEN 'finalized' THEN TRUE
+            ELSE dispatched_on_host_id IS NOT NULL
+        END
+    ),
+    -- `started_at` is set once the job executes (`initializing` onwards) and
+    -- retained through `finalized`. NULL in `finalized` means the job never
+    -- started executing.
+    CONSTRAINT started_at_monotonic CHECK (
+        CASE job_state
+            WHEN 'queued' THEN started_at IS NULL
+            WHEN 'assigned' THEN started_at IS NULL
+            WHEN 'finalized' THEN TRUE
+            ELSE started_at IS NOT NULL
+        END
     ),
     -- The terminal record is set exactly when `finalized`.
     CONSTRAINT termination_reason_iso_finalized CHECK (

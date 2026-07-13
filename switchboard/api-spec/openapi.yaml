@@ -466,6 +466,58 @@ paths:
           description: The job was already finalized; nothing to do.
       security:
       - token: []
+    patch:
+      tags:
+      - Jobs
+      summary: Update a job
+      operationId: updateJob
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        description: |-
+          A patch to a job (`PATCH /jobs/{id}`). Only the fields listed here are
+          mutable; a request carrying any other field is rejected. Omitting a field
+          leaves it unchanged; sending an explicit `null` clears it.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateJobRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '204':
+          description: The job was updated.
+      security:
+      - token: []
   /hosts:
     get:
       tags:
@@ -620,9 +672,9 @@ paths:
       operationId: updateCurrentUser
       requestBody:
         description: |-
-          A patch to the caller's own profile. Omitting a field leaves it unchanged;
-          sending an explicit `null` clears it. `username` cannot be cleared, only
-          changed.
+          A patch to the caller's own profile. Omitting a field leaves it unchanged.
+          `name` cannot be cleared, only changed; an explicit `null` clears
+          `avatar_url`.
         content:
           application/json:
             schema:
@@ -659,8 +711,6 @@ paths:
             text/plain:
               schema:
                 type: string
-        '409':
-          description: The requested username is already taken.
       security:
       - token: []
   /users/me/tokens:
@@ -2116,6 +2166,11 @@ components:
         job_id:
           type: string
           format: uuid
+        label:
+          description: The user-provided display label, if any.
+          type:
+          - string
+          - 'null'
         owner_id:
           description: |-
             Owning subject (user or group); null if the owner was deleted
@@ -2397,6 +2452,14 @@ components:
           description: What kind of job this is.
           allOf:
           - $ref: '#/components/schemas/JobInitSpec'
+        label:
+          description: |-
+            An optional display label for the job: printable ASCII, bounded in
+            length, not unique. Changeable after enqueue via `PATCH /jobs/{id}`.
+          type:
+          - string
+          - 'null'
+          default: null
         override_timeout:
           type:
           - string
@@ -2489,6 +2552,11 @@ components:
         job_id:
           type: string
           format: uuid
+        label:
+          description: The user-provided display label, if any.
+          type:
+          - string
+          - 'null'
         owner_id:
           description: Owning subject (user or group); null if orphaned.
           type:
@@ -2831,23 +2899,20 @@ components:
           type:
           - string
           - 'null'
-        full_name:
-          type:
-          - string
-          - 'null'
         github:
           description: The linked GitHub account, if any.
           anyOf:
           - $ref: '#/components/schemas/LinkedGitHub'
           - type: 'null'
+        name:
+          description: 'The user''s display name: freely chosen, not unique.'
+          type: string
         user_id:
           type: string
           format: uuid
-        username:
-          type: string
       required:
       - user_id
-      - username
+      - name
     RenderedAuditRow:
       description: |-
         One audit event, already rendered to a human-readable `message` for the
@@ -2924,14 +2989,10 @@ components:
           - string
           - 'null'
         emails:
-          description: All verified email addresses on file for the account.
+          description: All email addresses on file for the account, one entry per address.
           type: array
           items:
-            type: string
-        full_name:
-          type:
-          - string
-          - 'null'
+            $ref: '#/components/schemas/UserEmail'
         github:
           description: The linked GitHub account, if any.
           anyOf:
@@ -2945,14 +3006,15 @@ components:
         locked:
           description: Whether the account is locked (cannot log in or use existing sessions).
           type: boolean
+        name:
+          description: 'The user''s display name: freely chosen, not unique.'
+          type: string
         user_id:
           type: string
           format: uuid
-        username:
-          type: string
       required:
       - user_id
-      - username
+      - name
       - emails
       - groups
       - locked
@@ -3155,41 +3217,68 @@ components:
       required:
       - version
       - text
+    UpdateJobRequest:
+      description: |-
+        A patch to a job (`PATCH /jobs/{id}`). Only the fields listed here are
+        mutable; a request carrying any other field is rejected. Omitting a field
+        leaves it unchanged; sending an explicit `null` clears it.
+      type: object
+      properties:
+        label:
+          description: |-
+            The job's display label: printable ASCII, bounded in length, not
+            unique.
+          type:
+          - string
+          - 'null'
+      additionalProperties: false
     UpdateProfileRequest:
       description: |-
-        A patch to the caller's own profile. Omitting a field leaves it unchanged;
-        sending an explicit `null` clears it. `username` cannot be cleared, only
-        changed.
+        A patch to the caller's own profile. Omitting a field leaves it unchanged.
+        `name` cannot be cleared, only changed; an explicit `null` clears
+        `avatar_url`.
       type: object
       properties:
         avatar_url:
           type:
           - string
           - 'null'
-        full_name:
+        name:
+          description: |-
+            The user's display name: non-empty, bounded in length, no control
+            characters, not unique.
           type:
           - string
           - 'null'
-        username:
-          type:
-          - string
-          - 'null'
+    UserEmail:
+      description: One email address on file for a user.
+      type: object
+      properties:
+        email:
+          type: string
+        is_primary:
+          description: Whether this is the user's primary address (set once at registration).
+          type: boolean
+        verified:
+          description: Whether the provider has verified the address belongs to the user.
+          type: boolean
+      required:
+      - email
+      - verified
+      - is_primary
     WhoAmIResponse:
       description: 'Response body for `/auth/whoami`: the identity of the authenticated subject.'
       type: object
       properties:
-        full_name:
-          type:
-          - string
-          - 'null'
+        name:
+          description: 'The user''s display name: freely chosen, not unique.'
+          type: string
         user_id:
           type: string
           format: uuid
-        username:
-          type: string
       required:
       - user_id
-      - username
+      - name
 tags:
 - name: Authentication
   description: Interactive OAuth login, the login-completion step, and token introspection.

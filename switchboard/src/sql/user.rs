@@ -3,8 +3,8 @@
 //!
 //! Every state change here rides through the audit chokepoint
 //! ([`audit::transition`]) so the login flow leaves a gapless, attributable
-//! trail. Pure lookups (resolve-by-identity, link-by-email, username
-//! de-duplication, the reconcile diff) stay plain reads.
+//! trail. Pure lookups (resolve-by-identity, link-by-email, the reconcile
+//! diff) stay plain reads.
 
 use std::borrow::Cow;
 
@@ -124,6 +124,25 @@ pub async fn create_and_reconcile(
         },
     )
     .await?;
+
+    // Pin the primary email as a provider-less row, before the provider sync so
+    // it coexists with the provider-scoped copy. The login callback refuses any
+    // registration without a verified primary, so one is normally present; if
+    // absent (a caller bypassing the gate), the account is simply left without a
+    // primary rather than failing here.
+    if let Some(primary) = identity.emails.iter().find(|e| e.primary && e.verified) {
+        audit::transition(
+            tx,
+            AddEmail {
+                user_id,
+                provider: "",
+                email: &primary.address,
+                verified: true,
+            },
+        )
+        .await?;
+    }
+
     refresh_and_reconcile(tx, provider, identity, org_ids, user_id).await?;
     Ok(user_id)
 }
@@ -169,10 +188,12 @@ async fn refresh_and_reconcile(
     org_ids: &[String],
     user_id: Uuid,
 ) -> Result<(), sqlx::Error> {
-    // 3. Refresh mutable profile fields, but only when something actually
-    // changed, so a no-op re-login does not spam the audit log.
+    // 3. Refresh the provider-sourced mutable fields (avatar, recorded provider
+    // login), but only when something actually changed, so a no-op re-login
+    // does not spam the audit log. The display name is user-chosen and never
+    // overwritten on login.
     let current = sqlx::query!(
-        "select u.full_name, u.avatar_url, i.provider_login \
+        "select u.avatar_url, i.provider_login \
          from tml_switchboard.users u \
          join tml_switchboard.user_identities i \
            on i.user_id = u.subject_id and i.provider = $2 and i.provider_user_id = $3 \
@@ -184,8 +205,7 @@ async fn refresh_and_reconcile(
     .fetch_one(&mut **tx)
     .await?;
 
-    if current.full_name != identity.full_name
-        || current.avatar_url != identity.avatar_url
+    if current.avatar_url != identity.avatar_url
         || current.provider_login.as_deref() != Some(identity.login.as_str())
     {
         audit::transition(
@@ -194,7 +214,6 @@ async fn refresh_and_reconcile(
                 user_id,
                 provider,
                 identity,
-                old_full_name: current.full_name,
                 old_avatar_url: current.avatar_url,
                 old_provider_login: current.provider_login,
             },
@@ -202,21 +221,35 @@ async fn refresh_and_reconcile(
         .await?;
     }
 
-    // 4. Record emails from the identify, emitting an event only for ones
-    // genuinely new to the system (an address already on file, even another
-    // user's, is left untouched and unlogged).
-    //
-    // TODO: this should also mark previously unverified emails as verified,
-    // remove emails when they vanish from the OAuth provider, and revoke the
-    // "verified" attribute when an email is no longer reported as verified by
-    // the upstream provider.
-    let present: Vec<Cow<str>> = if identity.emails.is_empty() {
+    // 4. Reconcile recorded emails against the provider's current report,
+    // scoped to THIS provider's rows: record new addresses, align the
+    // `verified` flag in both directions, and remove addresses the provider no
+    // longer reports. Rows recorded under other providers are untouched --
+    // including this user's own provider-less primary row, so the provider row
+    // coexists with it. Only an address on file for ANOTHER user is left alone
+    // and unlogged: adding it here would either duplicate their claim or, if
+    // both are verified, trip the single-owner trigger and fail the login.
+    let current: Vec<(String, bool)> = sqlx::query!(
+        "select email, verified from tml_switchboard.user_emails \
+         where user_id = $1 and provider = $2;",
+        user_id,
+        provider,
+    )
+    .fetch_all(&mut **tx)
+    .await?
+    .into_iter()
+    .map(|r| (r.email, r.verified))
+    .collect();
+
+    let present_for_other_user: Vec<Cow<str>> = if identity.emails.is_empty() {
         Vec::new()
     } else {
         let all_emails: Vec<&str> = identity.emails.iter().map(|e| e.address.as_ref()).collect();
         sqlx::query_scalar!(
-            "select email from tml_switchboard.user_emails where email = any($1::text[]);",
+            "select email from tml_switchboard.user_emails \
+             where email = any($1::text[]) and user_id <> $2;",
             &all_emails as _,
+            user_id,
         )
         .fetch_all(&mut **tx)
         .await?
@@ -224,15 +257,46 @@ async fn refresh_and_reconcile(
         .map(|email| email.into())
         .collect()
     };
+
     for email in &identity.emails {
-        if !present.contains(&email.address) {
+        match current.iter().find(|(addr, _)| *addr == email.address) {
+            Some((_, verified)) if *verified != email.verified => {
+                audit::transition(
+                    tx,
+                    ChangeEmailVerified {
+                        user_id,
+                        provider,
+                        email: &email.address,
+                        verified: email.verified,
+                    },
+                )
+                .await?;
+            }
+            Some(_) => {}
+            None if !present_for_other_user.contains(&email.address) => {
+                audit::transition(
+                    tx,
+                    AddEmail {
+                        user_id,
+                        provider,
+                        email: &email.address,
+                        verified: email.verified,
+                    },
+                )
+                .await?;
+            }
+            None => {}
+        }
+    }
+
+    for (addr, _) in &current {
+        if !identity.emails.iter().any(|e| e.address == *addr) {
             audit::transition(
                 tx,
-                AddEmail {
+                RemoveEmail {
                     user_id,
                     provider,
-                    email: &email.address,
-                    verified: email.verified,
+                    email: addr,
                 },
             )
             .await?;
@@ -245,8 +309,9 @@ async fn refresh_and_reconcile(
     Ok(())
 }
 
-/// Create a fresh subject + user + identity. The username is suggested from the
-/// provider login and de-duplicated on collision. Emits [`events::UserProvisioned`].
+/// Create a fresh subject + user + identity. The display name is seeded from
+/// the provider's display name, falling back to the login handle. Emits
+/// [`events::UserProvisioned`].
 struct CreateUser<'a> {
     provider: &'a str,
     identity: &'a ExternalIdentity,
@@ -273,14 +338,18 @@ impl Transition for CreateUser<'_> {
         .execute(&mut *conn)
         .await?;
 
-        let username = unique_username(&mut *conn, &self.identity.login).await?;
+        let name = self
+            .identity
+            .full_name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| self.identity.login.clone());
         sqlx::query!(
             "insert into tml_switchboard.users \
-             (subject_id, username, full_name, avatar_url, tos_accepted_version, tos_accepted_at) \
-             values ($1, $2, $3, $4, $5, now());",
+             (subject_id, name, avatar_url, tos_accepted_version, tos_accepted_at) \
+             values ($1, $2, $3, $4, now());",
             user_id,
-            username,
-            self.identity.full_name,
+            name,
             self.identity.avatar_url,
             self.tos_version,
         )
@@ -305,7 +374,7 @@ impl Transition for CreateUser<'_> {
             provider: self.provider.to_string(),
             provider_user_id: self.identity.provider_user_id.clone(),
             login: self.identity.login.clone(),
-            username,
+            name,
         };
         Ok((user_id, event))
     }
@@ -351,14 +420,14 @@ impl Transition for LinkIdentity<'_> {
     }
 }
 
-/// Refresh the mutable profile fields (display name, avatar) and the recorded
-/// provider login handle. Emits [`events::UserProfileChanged`] carrying the
-/// prior and new values. Only constructed when a field actually differs.
+/// Refresh the provider-sourced mutable fields (avatar, recorded provider
+/// login handle). The user-chosen display name is never touched here. Emits
+/// [`events::UserProfileChanged`] carrying the prior and new values. Only
+/// constructed when a field actually differs.
 struct ChangeProfile<'a> {
     user_id: Uuid,
     provider: &'a str,
     identity: &'a ExternalIdentity,
-    old_full_name: Option<String>,
     old_avatar_url: Option<String>,
     old_provider_login: Option<String>,
 }
@@ -373,10 +442,9 @@ impl Transition for ChangeProfile<'_> {
         _w: &WriteToken,
     ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
         sqlx::query!(
-            "update tml_switchboard.users set full_name = $2, avatar_url = $3 \
+            "update tml_switchboard.users set avatar_url = $2 \
              where subject_id = $1;",
             self.user_id,
-            self.identity.full_name,
             self.identity.avatar_url,
         )
         .execute(&mut *conn)
@@ -394,8 +462,6 @@ impl Transition for ChangeProfile<'_> {
         let event = events::UserProfileChanged {
             actor: AuditSubject(self.user_id),
             user: AuditSubject(self.user_id),
-            old_full_name: self.old_full_name,
-            new_full_name: self.identity.full_name.clone(),
             old_avatar_url: self.old_avatar_url,
             new_avatar_url: self.identity.avatar_url.clone(),
             old_provider_login: self.old_provider_login,
@@ -405,10 +471,11 @@ impl Transition for ChangeProfile<'_> {
     }
 }
 
-/// Record a verified email for the user, claiming it only if unowned. Emits
-/// [`events::UserEmailAdded`]. Constructed only for addresses not already on
-/// file, but keeps `on conflict do nothing` to stay safe under a concurrent
-/// login racing to insert the same address.
+/// Record an email for the user under a given provider (the empty provider `""`
+/// marks the provider-less primary row). Emits [`events::UserEmailAdded`].
+/// Constructed only for `(email, provider)` pairs not already on file, but keeps
+/// `on conflict do nothing` to stay safe under a concurrent login racing to
+/// insert the same row.
 struct AddEmail<'a> {
     user_id: Uuid,
     provider: &'a str,
@@ -427,7 +494,7 @@ impl Transition for AddEmail<'_> {
     ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
         sqlx::query!(
             "insert into tml_switchboard.user_emails (email, user_id, provider, verified) \
-             values ($1, $2, $3, $4) on conflict (email) do nothing;",
+             values ($1, $2, $3, $4) on conflict (email, provider) do nothing;",
             self.email,
             self.user_id,
             self.provider,
@@ -442,6 +509,84 @@ impl Transition for AddEmail<'_> {
             provider: self.provider.to_string(),
             email: self.email.to_string(),
             verified: self.verified,
+        };
+        Ok(((), event))
+    }
+}
+
+/// Align a recorded email's `verified` flag with the provider's current
+/// report. Constructed only when the flag actually differs. Emits
+/// [`events::UserEmailVerificationChanged`].
+struct ChangeEmailVerified<'a> {
+    user_id: Uuid,
+    provider: &'a str,
+    email: &'a str,
+    verified: bool,
+}
+
+impl Transition for ChangeEmailVerified<'_> {
+    type Output = ();
+    type Event = events::UserEmailVerificationChanged;
+
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        sqlx::query!(
+            "update tml_switchboard.user_emails set verified = $4 \
+             where email = $1 and user_id = $2 and provider = $3;",
+            self.email,
+            self.user_id,
+            self.provider,
+            self.verified,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::UserEmailVerificationChanged {
+            actor: AuditSubject(self.user_id),
+            user: AuditSubject(self.user_id),
+            provider: self.provider.to_string(),
+            email: self.email.to_string(),
+            verified: self.verified,
+        };
+        Ok(((), event))
+    }
+}
+
+/// Remove a recorded email the provider no longer reports for this identity.
+/// Emits [`events::UserEmailRemoved`].
+struct RemoveEmail<'a> {
+    user_id: Uuid,
+    provider: &'a str,
+    email: &'a str,
+}
+
+impl Transition for RemoveEmail<'_> {
+    type Output = ();
+    type Event = events::UserEmailRemoved;
+
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        sqlx::query!(
+            "delete from tml_switchboard.user_emails \
+             where email = $1 and user_id = $2 and provider = $3;",
+            self.email,
+            self.user_id,
+            self.provider,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::UserEmailRemoved {
+            actor: AuditSubject(self.user_id),
+            user: AuditSubject(self.user_id),
+            provider: self.provider.to_string(),
+            email: self.email.to_string(),
         };
         Ok(((), event))
     }
@@ -525,51 +670,14 @@ impl Transition for RemoveGroupMembership {
     }
 }
 
-/// Change a user's username via the management API. The new value is assumed
-/// pre-validated (shape + reserved-name checks happen in the route); uniqueness
-/// is enforced by the DB and surfaces here as a unique-violation error the route
-/// turns into a clean 409. Emits [`events::UserRenamed`].
-pub struct RenameUser {
-    pub user_id: Uuid,
-    pub old_username: String,
-    pub new_username: String,
-}
-
-impl Transition for RenameUser {
-    type Output = ();
-    type Event = events::UserRenamed;
-
-    async fn apply(
-        self,
-        conn: &mut PgConnection,
-        _w: &WriteToken,
-    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
-        sqlx::query!(
-            "update tml_switchboard.users set username = $2 where subject_id = $1;",
-            self.user_id,
-            self.new_username,
-        )
-        .execute(&mut *conn)
-        .await?;
-
-        let event = events::UserRenamed {
-            actor: AuditSubject(self.user_id),
-            user: AuditSubject(self.user_id),
-            old_username: self.old_username,
-            new_username: self.new_username,
-        };
-        Ok(((), event))
-    }
-}
-
-/// Update a user's display name and/or avatar via the management API. Writes the
-/// final values for both columns (the route fills the unchanged column with its
-/// current value). Emits [`events::UserProfileUpdated`], distinct from the
+/// Update a user's display name and/or avatar via the management API. Writes
+/// the final values for both columns (the route fills the unchanged column with
+/// its current value). Emits [`events::UserProfileUpdated`], distinct from the
 /// login-time [`events::UserProfileChanged`].
 pub struct UpdateUserProfile {
     pub user_id: Uuid,
-    pub old_full_name: Option<String>,
-    pub new_full_name: Option<String>,
+    pub old_name: String,
+    pub new_name: String,
     pub old_avatar_url: Option<String>,
     pub new_avatar_url: Option<String>,
 }
@@ -584,10 +692,10 @@ impl Transition for UpdateUserProfile {
         _w: &WriteToken,
     ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
         sqlx::query!(
-            "update tml_switchboard.users set full_name = $2, avatar_url = $3 \
+            "update tml_switchboard.users set name = $2, avatar_url = $3 \
              where subject_id = $1;",
             self.user_id,
-            self.new_full_name,
+            self.new_name,
             self.new_avatar_url,
         )
         .execute(&mut *conn)
@@ -596,32 +704,12 @@ impl Transition for UpdateUserProfile {
         let event = events::UserProfileUpdated {
             actor: AuditSubject(self.user_id),
             user: AuditSubject(self.user_id),
-            old_full_name: self.old_full_name,
-            new_full_name: self.new_full_name,
+            old_name: self.old_name,
+            new_name: self.new_name,
             old_avatar_url: self.old_avatar_url,
             new_avatar_url: self.new_avatar_url,
         };
         Ok(((), event))
-    }
-}
-
-/// Find an unused username, trying `base`, then `base-2`, `base-3`, ...
-async fn unique_username(conn: &mut PgConnection, base: &str) -> Result<String, sqlx::Error> {
-    let mut candidate = base.to_string();
-    let mut n = 1u32;
-    loop {
-        let taken = sqlx::query_scalar!(
-            "select exists(select 1 from tml_switchboard.users where username = $1);",
-            candidate,
-        )
-        .fetch_one(&mut *conn)
-        .await?
-        .unwrap_or(false);
-        if !taken {
-            return Ok(candidate);
-        }
-        n += 1;
-        candidate = format!("{base}-{n}");
     }
 }
 

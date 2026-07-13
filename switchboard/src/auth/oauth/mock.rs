@@ -26,7 +26,8 @@ use std::collections::HashMap;
 pub struct MockIdentity {
     /// Selector used in `?identity=` and stored as the provider user id.
     pub key: &'static str,
-    /// Login/handle, used as the suggested username and for display.
+    /// Login/handle, recorded as the provider login and used as the display
+    /// name fallback.
     pub login: &'static str,
     /// Display name.
     pub full_name: &'static str,
@@ -49,10 +50,12 @@ pub const MOCK_IDENTITIES: &[MockIdentity] = &[
             Email {
                 address: Cow::Borrowed("alice@example.test"),
                 verified: true,
+                primary: true,
             },
             Email {
                 address: Cow::Borrowed("alice-alt@example.org"),
                 verified: false,
+                primary: false,
             },
         ],
         admin: true,
@@ -64,6 +67,7 @@ pub const MOCK_IDENTITIES: &[MockIdentity] = &[
         emails: &[Email {
             address: Cow::Borrowed("bob@example.test"),
             verified: true,
+            primary: true,
         }],
         admin: false,
     },
@@ -73,7 +77,8 @@ pub const MOCK_IDENTITIES: &[MockIdentity] = &[
         full_name: "Carol Example",
         emails: &[Email {
             address: Cow::Borrowed("carol@example.test"),
-            verified: false,
+            verified: true,
+            primary: true,
         }],
         admin: false,
     },
@@ -81,9 +86,12 @@ pub const MOCK_IDENTITIES: &[MockIdentity] = &[
         key: "trudy",
         login: "trudy",
         full_name: "Trudy Example",
+        // The intruder: denied at the admission gate before the primary-email
+        // check is ever reached, so her primary stays unverified.
         emails: &[Email {
             address: Cow::Borrowed("trudy@example.test"),
             verified: false,
+            primary: true,
         }],
         admin: false,
     },

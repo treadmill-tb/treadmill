@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::users::{
     GroupMembership, LinkedGitHub, PublicUserProfile, SelfUserProfile, SessionInfo,
-    TokenRevocation, UpdateProfileRequest,
+    TokenRevocation, UpdateProfileRequest, UserEmail,
 };
 
 use crate::audit;
@@ -18,38 +18,14 @@ use crate::http_error::internal;
 use crate::routes::params::{IdPath, TokenIdPath};
 use crate::serve::AppState;
 use crate::sql::api_token::{self, RevokeToken};
-use crate::sql::user::{RenameUser, UpdateUserProfile};
+use crate::sql::user::UpdateUserProfile;
 
-/// Usernames that may never be claimed: route literals and well-known names that
-/// would be confusing or dangerous as a handle.
-const RESERVED_USERNAMES: &[&str] = &[
-    "me",
-    "admin",
-    "admins",
-    "administrator",
-    "system",
-    "root",
-    "new",
-    "tokens",
-    "events",
-    "users",
-    "auth",
-    "api",
-];
-
-/// Enforce `^[a-z0-9][a-z0-9-]{1,38}$`: 2..=39 chars, leading alphanumeric, rest
-/// lowercase-alphanumeric or hyphen.
-fn username_valid_shape(s: &str) -> bool {
-    let len = s.len();
-    if !(2..=39).contains(&len) {
-        return false;
-    }
-    let mut bytes = s.bytes();
-    let first = bytes.next().unwrap();
-    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
-        return false;
-    }
-    bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+/// A display name is the trimmed input: non-empty, at most 256 characters, and
+/// free of control characters. Any other Unicode is allowed; nothing routes on
+/// it, so there is no uniqueness or reserved-name check.
+fn name_valid(s: &str) -> bool {
+    let n = s.chars().count();
+    (1..=256).contains(&n) && !s.chars().any(char::is_control)
 }
 
 /// An avatar URL must parse and be an http(s) URL of bounded length.
@@ -87,7 +63,7 @@ async fn github_login(state: &AppState, user_id: Uuid) -> Result<Option<String>,
 /// Assemble the owner's full view of their own account.
 async fn load_self_profile(state: &AppState, user_id: Uuid) -> Result<SelfUserProfile, StatusCode> {
     let row = sqlx::query!(
-        "select username, full_name, avatar_url, locked \
+        "select name, avatar_url, locked \
          from tml_switchboard.users where subject_id = $1;",
         user_id,
     )
@@ -98,13 +74,27 @@ async fn load_self_profile(state: &AppState, user_id: Uuid) -> Result<SelfUserPr
 
     let github = linked_github(github_login(state, user_id).await.map_err(internal)?);
 
-    let emails = sqlx::query_scalar!(
-        "select email from tml_switchboard.user_emails where user_id = $1 order by added_at;",
+    // One entry per address: an address may be on file under several providers
+    // (notably the provider-less primary alongside its provider-scoped copy), so
+    // collapse the rows -- verified if any copy is, primary if the provider-less
+    // copy is present.
+    let emails = sqlx::query!(
+        "select email, bool_or(verified) as \"verified!\", \
+                bool_or(provider = '') as \"is_primary!\" \
+         from tml_switchboard.user_emails where user_id = $1 \
+         group by email order by min(added_at);",
         user_id,
     )
     .fetch_all(state.pool())
     .await
-    .map_err(internal)?;
+    .map_err(internal)?
+    .into_iter()
+    .map(|r| UserEmail {
+        email: r.email,
+        verified: r.verified,
+        is_primary: r.is_primary,
+    })
+    .collect();
 
     // Every group the user reaches transitively. `principals()` returns the
     // user's own subject id plus every group it belongs to; joining to `groups`
@@ -139,8 +129,7 @@ async fn load_self_profile(state: &AppState, user_id: Uuid) -> Result<SelfUserPr
     Ok(SelfUserProfile {
         profile: PublicUserProfile {
             user_id,
-            username: row.username,
-            full_name: row.full_name,
+            name: row.name,
             avatar_url: row.avatar_url,
             github,
         },
@@ -158,7 +147,7 @@ pub async fn get_me(
     load_self_profile(&state, subject.user_id()).await.map(Json)
 }
 
-/// `PATCH /users/me`: update the caller's display name, username, and/or avatar.
+/// `PATCH /users/me`: update the caller's display name and/or avatar.
 pub async fn patch_me(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
@@ -166,10 +155,11 @@ pub async fn patch_me(
 ) -> Result<Json<SelfUserProfile>, StatusCode> {
     let user_id = subject.user_id();
 
-    // Validate inputs up front (cheap, no DB round-trips).
-    if let Some(new_username) = &req.username
-        && (!username_valid_shape(new_username)
-            || RESERVED_USERNAMES.contains(&new_username.as_str()))
+    // Validate inputs up front (cheap, no DB round-trips). The display name is
+    // stored trimmed.
+    let new_name = req.name.map(|n| n.trim().to_string());
+    if let Some(name) = &new_name
+        && !name_valid(name)
     {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -182,7 +172,7 @@ pub async fn patch_me(
     let mut tx = state.pool().begin().await.map_err(internal)?;
 
     let current = sqlx::query!(
-        "select username, full_name, avatar_url \
+        "select name, avatar_url \
          from tml_switchboard.users where subject_id = $1;",
         user_id,
     )
@@ -190,38 +180,18 @@ pub async fn patch_me(
     .await
     .map_err(internal)?;
 
-    // Username rename, only when it actually changes. A collision with another
-    // user's handle surfaces as a unique violation, reported as a clean 409.
-    if let Some(new_username) = req.username
-        && new_username != current.username
-        && let Err(e) = audit::transition(
-            &mut tx,
-            RenameUser {
-                user_id,
-                old_username: current.username.clone(),
-                new_username,
-            },
-        )
-        .await
-    {
-        return Err(match &e {
-            sqlx::Error::Database(db) if db.is_unique_violation() => StatusCode::CONFLICT,
-            _ => internal(e),
-        });
-    }
-
     // Display name / avatar update, only when something was supplied and the
     // final value differs from what is on file (avoids no-op audit rows).
-    if req.full_name.is_some() || req.avatar_url.is_some() {
-        let new_full_name = req.full_name.unwrap_or_else(|| current.full_name.clone());
+    if new_name.is_some() || req.avatar_url.is_some() {
+        let new_name = new_name.unwrap_or_else(|| current.name.clone());
         let new_avatar_url = req.avatar_url.unwrap_or_else(|| current.avatar_url.clone());
-        if new_full_name != current.full_name || new_avatar_url != current.avatar_url {
+        if new_name != current.name || new_avatar_url != current.avatar_url {
             audit::transition(
                 &mut tx,
                 UpdateUserProfile {
                     user_id,
-                    old_full_name: current.full_name.clone(),
-                    new_full_name,
+                    old_name: current.name.clone(),
+                    new_name,
                     old_avatar_url: current.avatar_url.clone(),
                     new_avatar_url,
                 },
@@ -244,7 +214,7 @@ pub async fn get_user(
     Path(IdPath { id: user_id }): Path<IdPath>,
 ) -> Result<Json<PublicUserProfile>, StatusCode> {
     let row = sqlx::query!(
-        "select username, full_name, avatar_url \
+        "select name, avatar_url \
          from tml_switchboard.users where subject_id = $1;",
         user_id,
     )
@@ -257,8 +227,7 @@ pub async fn get_user(
 
     Ok(Json(PublicUserProfile {
         user_id,
-        username: row.username,
-        full_name: row.full_name,
+        name: row.name,
         avatar_url: row.avatar_url,
         github,
     }))

@@ -369,7 +369,7 @@ mod tests {
             .bind(id)
             .execute(pool)
             .await?;
-        sqlx::query("insert into tml_switchboard.users (subject_id, username) values ($1, $2)")
+        sqlx::query("insert into tml_switchboard.users (subject_id, name) values ($1, $2)")
             .bind(id)
             .bind(format!("user-{id}"))
             .execute(pool)
@@ -578,6 +578,7 @@ mod tests {
         let job_id = Uuid::new_v4();
         let req = JobRequest {
             init_spec,
+            label: None,
             owner: None,
             ssh_keys: vec![],
             restart_policy: RestartPolicy { max_restarts: 0 },

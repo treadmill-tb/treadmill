@@ -9,7 +9,9 @@ use std::net::SocketAddr;
 use sqlx::PgPool;
 use tokio::net::TcpListener;
 use treadmill_rs::api::switchboard::LoginResponse;
-use treadmill_rs::api::switchboard::users::{PublicUserProfile, SelfUserProfile, SessionInfo};
+use treadmill_rs::api::switchboard::users::{
+    PublicUserProfile, SelfUserProfile, SessionInfo, UserEmail,
+};
 use treadmill_switchboard::routes::build_router;
 use treadmill_switchboard::serve::AppState;
 use uuid::Uuid;
@@ -165,19 +167,27 @@ async fn self_profile_update_tokens_and_feed(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(me.profile.user_id, user_id);
-    assert_eq!(me.profile.username, "octocat");
-    assert_eq!(me.emails, vec!["octo@example.com".to_string()]);
+    assert_eq!(me.profile.name, "The Octocat");
+    assert_eq!(
+        me.emails,
+        vec![UserEmail {
+            email: "octo@example.com".to_string(),
+            verified: true,
+            is_primary: true,
+        }],
+    );
     assert!(!me.locked);
     let gh = me.profile.github.expect("linked github identity");
     assert_eq!(gh.login, "octocat");
     assert_eq!(gh.profile_url, "https://github.com/octocat");
 
-    // PATCH /users/me with a valid rename + avatar succeeds and is reflected.
+    // PATCH /users/me with a new display name + avatar succeeds and is
+    // reflected. The name is stored trimmed.
     let resp = client
         .patch(format!("{base}/users/me"))
         .bearer_auth(&token)
         .json(&serde_json::json!({
-            "username": "octo-cat",
+            "name": "  Octo Cat  ",
             "avatar_url": "https://example.com/new.png",
         }))
         .send()
@@ -185,25 +195,27 @@ async fn self_profile_update_tokens_and_feed(pool: PgPool) {
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     let updated: SelfUserProfile = resp.json().await.unwrap();
-    assert_eq!(updated.profile.username, "octo-cat");
+    assert_eq!(updated.profile.name, "Octo Cat");
     assert_eq!(
         updated.profile.avatar_url.as_deref(),
         Some("https://example.com/new.png")
     );
 
-    // Reserved names and malformed handles are rejected with 400, not 500.
-    for bad in ["admin", "Bad_Name", "a"] {
+    // A blank name, a name that is only whitespace, one carrying control
+    // characters, and an over-long one are each rejected with 400, not 500.
+    let too_long = "x".repeat(257);
+    for bad in ["", "   ", "bad\u{7}name", too_long.as_str()] {
         let resp = client
             .patch(format!("{base}/users/me"))
             .bearer_auth(&token)
-            .json(&serde_json::json!({ "username": bad }))
+            .json(&serde_json::json!({ "name": bad }))
             .send()
             .await
             .unwrap();
         assert_eq!(
             resp.status(),
             reqwest::StatusCode::BAD_REQUEST,
-            "username {bad:?} should be rejected"
+            "name {bad:?} should be rejected"
         );
     }
 
@@ -217,30 +229,18 @@ async fn self_profile_update_tokens_and_feed(pool: PgPool) {
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
 
-    // Renaming onto a handle already taken by another user is a clean 409.
+    // GET /users/{id} returns only the public subset (no emails/groups/locked).
     let other_id = Uuid::new_v4();
     sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'user')")
         .bind(other_id)
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query(
-        "insert into tml_switchboard.users (subject_id, username) values ($1, 'taken-name')",
-    )
-    .bind(other_id)
-    .execute(&pool)
-    .await
-    .unwrap();
-    let resp = client
-        .patch(format!("{base}/users/me"))
-        .bearer_auth(&token)
-        .json(&serde_json::json!({ "username": "taken-name" }))
-        .send()
+    sqlx::query("insert into tml_switchboard.users (subject_id, name) values ($1, 'Other User')")
+        .bind(other_id)
+        .execute(&pool)
         .await
         .unwrap();
-    assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
-
-    // GET /users/{id} returns only the public subset (no emails/groups/locked).
     let public_raw: serde_json::Value = client
         .get(format!("{base}/users/{other_id}"))
         .bearer_auth(&token)
@@ -250,7 +250,7 @@ async fn self_profile_update_tokens_and_feed(pool: PgPool) {
         .json()
         .await
         .unwrap();
-    assert_eq!(public_raw["username"], "taken-name");
+    assert_eq!(public_raw["name"], "Other User");
     assert!(public_raw.get("emails").is_none());
     assert!(public_raw.get("groups").is_none());
     assert!(public_raw.get("locked").is_none());

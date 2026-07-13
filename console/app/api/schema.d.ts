@@ -225,7 +225,8 @@ export interface paths {
         delete: operations["terminateJob"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** Update a job */
+        patch: operations["updateJob"];
         trace?: never;
     };
     "/hosts": {
@@ -980,6 +981,8 @@ export interface components {
             initializing_stage?: components["schemas"]["JobInitializingStage"] | null;
             /** Format: uuid */
             job_id: string;
+            /** @description The user-provided display label, if any. */
+            label?: string | null;
             /**
              * Format: uuid
              * @description Owning subject (user or group); null if the owner was deleted
@@ -1128,6 +1131,12 @@ export interface components {
             host_tag_requirements: string[];
             /** @description What kind of job this is. */
             init_spec: components["schemas"]["JobInitSpec"];
+            /**
+             * @description An optional display label for the job: printable ASCII, bounded in
+             *     length, not unique. Changeable after enqueue via `PATCH /jobs/{id}`.
+             * @default null
+             */
+            label: string | null;
             override_timeout?: string | null;
             /**
              * Format: uuid
@@ -1182,6 +1191,8 @@ export interface components {
             image: components["schemas"]["JobImageRef"];
             /** Format: uuid */
             job_id: string;
+            /** @description The user-provided display label, if any. */
+            label?: string | null;
             /**
              * Format: uuid
              * @description Owning subject (user or group); null if orphaned.
@@ -1427,12 +1438,12 @@ export interface components {
          */
         PublicUserProfile: {
             avatar_url?: string | null;
-            full_name?: string | null;
             /** @description The linked GitHub account, if any. */
             github?: components["schemas"]["LinkedGitHub"] | null;
+            /** @description The user's display name: freely chosen, not unique. */
+            name: string;
             /** Format: uuid */
             user_id: string;
-            username: string;
         };
         /**
          * @description One audit event, already rendered to a human-readable `message` for the
@@ -1487,18 +1498,18 @@ export interface components {
          */
         SelfUserProfile: {
             avatar_url?: string | null;
-            /** @description All verified email addresses on file for the account. */
-            emails: string[];
-            full_name?: string | null;
+            /** @description All email addresses on file for the account, one entry per address. */
+            emails: components["schemas"]["UserEmail"][];
             /** @description The linked GitHub account, if any. */
             github?: components["schemas"]["LinkedGitHub"] | null;
             /** @description Every group the user belongs to, including transitive memberships. */
             groups: components["schemas"]["GroupMembership"][];
             /** @description Whether the account is locked (cannot log in or use existing sessions). */
             locked: boolean;
+            /** @description The user's display name: freely chosen, not unique. */
+            name: string;
             /** Format: uuid */
             user_id: string;
-            username: string;
         };
         /**
          * @description One of the caller's active or historical sessions/API tokens. Never carries
@@ -1604,21 +1615,44 @@ export interface components {
             version: number;
         };
         /**
-         * @description A patch to the caller's own profile. Omitting a field leaves it unchanged;
-         *     sending an explicit `null` clears it. `username` cannot be cleared, only
-         *     changed.
+         * @description A patch to a job (`PATCH /jobs/{id}`). Only the fields listed here are
+         *     mutable; a request carrying any other field is rejected. Omitting a field
+         *     leaves it unchanged; sending an explicit `null` clears it.
+         */
+        UpdateJobRequest: {
+            /**
+             * @description The job's display label: printable ASCII, bounded in length, not
+             *     unique.
+             */
+            label?: string | null;
+        };
+        /**
+         * @description A patch to the caller's own profile. Omitting a field leaves it unchanged.
+         *     `name` cannot be cleared, only changed; an explicit `null` clears
+         *     `avatar_url`.
          */
         UpdateProfileRequest: {
             avatar_url?: string | null;
-            full_name?: string | null;
-            username?: string | null;
+            /**
+             * @description The user's display name: non-empty, bounded in length, no control
+             *     characters, not unique.
+             */
+            name?: string | null;
+        };
+        /** @description One email address on file for a user. */
+        UserEmail: {
+            email: string;
+            /** @description Whether this is the user's primary address (set once at registration). */
+            is_primary: boolean;
+            /** @description Whether the provider has verified the address belongs to the user. */
+            verified: boolean;
         };
         /** @description Response body for `/auth/whoami`: the identity of the authenticated subject. */
         WhoAmIResponse: {
-            full_name?: string | null;
+            /** @description The user's display name: freely chosen, not unique. */
+            name: string;
             /** Format: uuid */
             user_id: string;
-            username: string;
         };
     };
     responses: never;
@@ -2201,6 +2235,77 @@ export interface operations {
             };
         };
     };
+    updateJob: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * @description A patch to a job (`PATCH /jobs/{id}`). Only the fields listed here are
+         *     mutable; a request carrying any other field is rejected. Omitting a field
+         *     leaves it unchanged; sending an explicit `null` clears it.
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateJobRequest"];
+            };
+        };
+        responses: {
+            /** @description The job was updated. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Failed to deserialize the JSON body into the target type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
     listHosts: {
         parameters: {
             query?: never;
@@ -2357,9 +2462,9 @@ export interface operations {
             cookie?: never;
         };
         /**
-         * @description A patch to the caller's own profile. Omitting a field leaves it unchanged;
-         *     sending an explicit `null` clears it. `username` cannot be cleared, only
-         *     changed.
+         * @description A patch to the caller's own profile. Omitting a field leaves it unchanged.
+         *     `name` cannot be cleared, only changed; an explicit `null` clears
+         *     `avatar_url`.
          */
         requestBody: {
             content: {
@@ -2397,13 +2502,6 @@ export interface operations {
             };
             /** @description The authenticated account is locked, or lacks permission for this resource. */
             403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The requested username is already taken. */
-            409: {
                 headers: {
                     [name: string]: unknown;
                 };

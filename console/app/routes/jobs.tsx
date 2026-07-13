@@ -66,6 +66,9 @@ export default function Jobs() {
                     <tr key={job.job_id}>
                       <td>
                         <EntityLink kind="job" id={job.job_id} />
+                        {job.label != null && (
+                          <div className="muted">{job.label}</div>
+                        )}
                       </td>
                       <td>
                         <JobStateBadge state={job.state} />

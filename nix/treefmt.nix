@@ -1,17 +1,25 @@
-_: {
+{ inputs, ... }: {
   perSystem =
     {
       pkgs,
+      system,
       lib,
       config,
       ...
     }:
+    let
+      cmn = import ./lib.nix { inherit inputs system pkgs; };
+    in
     {
       treefmt = {
         projectRootFile = "flake.nix";
 
         programs = {
-          rustfmt.enable = true;
+          rustfmt = {
+            enable = true;
+            # Avoid pulling in the stable toolchain from upstream Nixpkgs:
+            package = cmn.rustToolchain;
+          };
           nixfmt.enable = true;
           statix.enable = true;
           deadnix.enable = true;

@@ -25,8 +25,21 @@ mod common;
 use common::test_config;
 
 /// Mount canned GitHub responses for the "octocat" identity (numeric id 12345),
-/// reporting active membership in each org in `org_ids`.
+/// reporting active membership in each org in `org_ids` and a single verified
+/// primary email.
 async fn mount_github(server: &MockServer, org_ids: &[i64]) {
+    mount_github_with(
+        server,
+        org_ids,
+        serde_json::json!([
+            { "email": "octo@example.com", "verified": true, "primary": true },
+        ]),
+    )
+    .await;
+}
+
+/// Like [`mount_github`], but with a caller-supplied `/user/emails` payload.
+async fn mount_github_with(server: &MockServer, org_ids: &[i64], emails: serde_json::Value) {
     Mock::given(method("POST"))
         .and(path("/login/oauth/access_token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -50,9 +63,7 @@ async fn mount_github(server: &MockServer, org_ids: &[i64]) {
 
     Mock::given(method("GET"))
         .and(path("/user/emails"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-            { "email": "octo@example.com", "verified": true, "primary": true },
-        ])))
+        .respond_with(ResponseTemplate::new(200).set_body_json(emails))
         .mount(server)
         .await;
 
@@ -223,7 +234,7 @@ async fn unlisted_identity_is_denied_without_record(pool: PgPool) {
         "a denied registration must leave no user_identities row"
     );
     let subjects: i64 = sqlx::query_scalar(
-        "select count(*) from tml_switchboard.users where username like 'octocat%'",
+        "select count(*) from tml_switchboard.users where name like 'The Octocat%'",
     )
     .fetch_one(&pool)
     .await
@@ -249,6 +260,46 @@ async fn unlisted_identity_is_denied_without_record(pool: PgPool) {
     assert_eq!(payload["provider_user_id"], "12345");
     assert_eq!(payload["login"], "octocat");
     assert_eq!(payload["reason"], "not_allowlisted");
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn allowlisted_without_verified_primary_is_denied(pool: PgPool) {
+    let gh = MockServer::start().await;
+    // Admitted by the allow-list, but the provider's primary address is
+    // unverified: every account is seeded with a verified primary, so refuse.
+    mount_github_with(
+        &gh,
+        &[],
+        serde_json::json!([
+            { "email": "octo@example.com", "verified": false, "primary": true },
+            { "email": "alt@example.com", "verified": true, "primary": false },
+        ]),
+    )
+    .await;
+    sqlx::query(
+        "insert into tml_switchboard.login_allowlist (provider, kind, external_id) \
+         values ('github', 'user', '12345')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let addr = spawn_server(AppState::new(pool.clone(), test_config(&gh.uri()))).await;
+
+    let status = drive_callback(&client(), addr, &pool).await;
+    assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
+
+    // No user record, and a registration_denied event carrying the reason.
+    assert_eq!(octocat_user_count(&pool).await, 0);
+    assert_eq!(registration_denied_count(&pool).await, 1);
+    let reason: String = sqlx::query_scalar(
+        "select payload->>'reason' from tml_switchboard.audit_events \
+         where event_type = 'registration_denied.v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(reason, "no_verified_primary_email");
 }
 
 #[sqlx::test]

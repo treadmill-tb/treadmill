@@ -120,8 +120,8 @@ pub struct LoginCompleteRequest {
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct WhoAmIResponse {
     pub user_id: Uuid,
-    pub username: String,
-    pub full_name: Option<String>,
+    /// The user's display name: freely chosen, not unique.
+    pub name: String,
 }
 
 /// Response body for the unauthenticated `/auth/providers` endpoint: which login
@@ -214,6 +214,11 @@ pub enum JobState {
 pub struct JobRequest {
     /// What kind of job this is.
     pub init_spec: JobInitSpec,
+
+    /// An optional display label for the job: printable ASCII, bounded in
+    /// length, not unique. Changeable after enqueue via `PATCH /jobs/{id}`.
+    #[serde(default)]
+    pub label: Option<String>,
 
     /// The subject (user or group) to own the enqueued job. Must be the caller
     /// itself or a group the caller is a member of; absent, ownership defaults

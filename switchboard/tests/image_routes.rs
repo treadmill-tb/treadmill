@@ -246,6 +246,7 @@ async fn enqueue_set(
     generation: Option<u32>,
 ) -> reqwest::Response {
     let req = JobRequest {
+        label: None,
         init_spec: JobInitSpec::ImageSet {
             set_id: set,
             generation,
@@ -301,6 +302,7 @@ async fn enqueue_image_job(
     image: &Digest,
 ) -> reqwest::Response {
     let req = JobRequest {
+        label: None,
         init_spec: JobInitSpec::Image {
             manifest_digest: *image,
         },
