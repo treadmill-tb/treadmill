@@ -1422,8 +1422,8 @@ EXECUTE function tml_switchboard.notify_change ('host_id');
 
 CREATE TRIGGER hosts_notify_update
 AFTER
-UPDATE OF current_job,
-tags,
-owner_id,
-worker_instance_id ON tml_switchboard.hosts FOR each ROW WHEN (OLD.* IS DISTINCT FROM NEW.*)
-EXECUTE function tml_switchboard.notify_change ('host_id');
+UPDATE ON tml_switchboard.hosts FOR each ROW WHEN (
+    -- Exclude `last_seen_at` from check
+    (to_jsonb(OLD) - 'last_seen_at') IS DISTINCT FROM (to_jsonb(NEW) - 'last_seen_at')
+)
+EXECUTE FUNCTION tml_switchboard.notify_change ('host_id');
