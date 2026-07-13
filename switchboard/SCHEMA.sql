@@ -763,11 +763,11 @@ CREATE TABLE tml_switchboard.jobs (
     ),
     -- Restart count >= 0
     CONSTRAINT valid_restart_policy CHECK ((restart_policy).remaining_restart_count >= 0),
-    -- Labels are printable ASCII, bounded in length. (The length lives outside
-    -- the regex: Postgres caps regex repetition counts below the label limit.)
+    -- Labels must be 1 to 256 chars, start/end with ASCII alphanumeric, and
+    -- contain only ASCII alphanumeric, space, hyphen, or underscore.
     CONSTRAINT valid_label CHECK (
-        label ~ '^[ -~]+$'
-        AND char_length(label) <= 256
+        char_length(label) BETWEEN 1 AND 256
+        AND label ~ '^[A-Za-z0-9]([A-Za-z0-9 _-]*[A-Za-z0-9])?$'
     ),
     -- A host is bound from `assigned` onwards; the binding is set once and
     -- retained through `finalized`. NULL in `finalized` means the job was

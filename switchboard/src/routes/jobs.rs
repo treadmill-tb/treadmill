@@ -339,10 +339,19 @@ pub async fn enqueue(
     Ok((StatusCode::CREATED, Json(EnqueueJobResponse { job_id })))
 }
 
-/// A job label must be printable ASCII, non-empty, and bounded in length
-/// (mirroring the `valid_label` DB constraint).
+/// A job label must be printable ASCII, non-empty, start & end with an
+/// alphanumeric character, and bounded in length (must be identical or a
+/// superset of the constraints enforced by the `valid_label` DB constraint).
 fn label_valid(s: &str) -> bool {
-    (1..=256).contains(&s.len()) && s.bytes().all(|b| (b' '..=b'~').contains(&b))
+    let b = s.as_bytes();
+    let len = b.len();
+
+    (1..=256).contains(&len)
+        && b[0].is_ascii_alphanumeric()
+        && b[len - 1].is_ascii_alphanumeric()
+        && b[1..len - 1]
+            .iter()
+            .all(|&c| c.is_ascii_alphanumeric() || c == b' ' || c == b'-' || c == b'_')
 }
 
 /// Axum handler for `PATCH /jobs/{id}` — update a job's mutable metadata.
