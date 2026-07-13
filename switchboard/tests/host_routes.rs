@@ -14,6 +14,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::hosts::HostInfo;
+use treadmill_switchboard::events::EventBus;
 use treadmill_switchboard::registry::OciRegistryClient;
 use treadmill_switchboard::serve::AppState;
 
@@ -26,6 +27,7 @@ fn test_state(pool: PgPool) -> AppState {
         test_config_mock(),
         Arc::new(OciRegistryClient::new()),
         None,
+        EventBus::default(),
     )
 }
 

@@ -5,8 +5,9 @@
 //! database** — it never holds an in-process handle to a worker — so the two can
 //! be distributed across processes later. The scheduler writes the assignment
 //! (`hosts.current_job` + `jobs.job_state = 'assigned'`); the host's own worker
-//! observes it and issues `StartJob`. For now this is poll-based; Postgres
-//! `LISTEN`/`NOTIFY` can replace the polling later without schema changes.
+//! observes it and issues `StartJob`. Passes run when a jobs/hosts change
+//! notification arrives (debounced; see [`crate::events`]), with the periodic
+//! `match_interval` timer as the staleness fallback.
 //!
 //! Each pass:
 //!   1. streams `queued` jobs oldest-first;
@@ -27,18 +28,23 @@ use uuid::Uuid;
 use crate::audit::model::{Host as AuditHost, Job as AuditJob, Subject as AuditSubject};
 use crate::audit::{self, SYSTEM_ACTOR_ID, events};
 use crate::auth::engine::{self, HostPermission};
+use crate::events::{Debounced, EventBus, EventFilter};
 use crate::matcher::{self, TargetCandidate};
 use crate::sql;
 use crate::sql::job::{ImageResolveError, SqlJobState};
 
-/// Periodically dispatches queued jobs onto eligible hosts. Holds only a pool
-/// handle (DB-only coordination).
+/// Dispatches queued jobs onto eligible hosts. Holds only a pool handle and
+/// change-notification subscriptions (DB-only coordination).
 pub struct Scheduler {
     pool: PgPool,
-    /// Interval between scheduling passes.
+    /// Interval between scheduling passes when no change notification arrives.
     match_interval: TimeDelta,
     /// How recently a host must have heartbeat to be considered live.
     host_liveness_timeout: TimeDelta,
+    /// Debounced wake on any jobs/hosts change. Filtering finer than
+    /// table-wide isn't worth it here: a pass with nothing queued is one
+    /// indexed query.
+    wake: Debounced,
 }
 
 /// Outcome of attempting to place one job on one candidate host.
@@ -58,16 +64,36 @@ enum AssignOutcome {
 }
 
 impl Scheduler {
-    pub fn new(pool: PgPool, match_interval: TimeDelta, host_liveness_timeout: TimeDelta) -> Self {
+    pub fn new(
+        pool: PgPool,
+        match_interval: TimeDelta,
+        host_liveness_timeout: TimeDelta,
+        event_bus: &EventBus,
+        event_debounce: std::time::Duration,
+    ) -> Self {
+        let wake = Debounced::new(
+            vec![
+                event_bus.subscribe(EventFilter {
+                    table: "jobs",
+                    key: None,
+                }),
+                event_bus.subscribe(EventFilter {
+                    table: "hosts",
+                    key: None,
+                }),
+            ],
+            event_debounce,
+        );
         Self {
             pool,
             match_interval,
             host_liveness_timeout,
+            wake,
         }
     }
 
     /// Run the scheduling loop forever (until the task is dropped).
-    pub async fn run(self) {
+    pub async fn run(mut self) {
         let period = self
             .match_interval
             .to_std()
@@ -75,7 +101,10 @@ impl Scheduler {
         let mut ticker = tokio::time::interval(period);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            ticker.tick().await;
+            tokio::select! {
+                _ = ticker.tick() => {}
+                _ = self.wake.wait() => {}
+            }
             if let Err(e) = self.tick().await {
                 tracing::error!("scheduler pass failed: {e:?}");
             }
@@ -316,7 +345,13 @@ mod tests {
     use treadmill_rs::image::{Digest, media_types};
 
     fn scheduler(pool: PgPool) -> Scheduler {
-        Scheduler::new(pool, Duration::seconds(1), Duration::seconds(60))
+        Scheduler::new(
+            pool,
+            Duration::seconds(1),
+            Duration::seconds(60),
+            &EventBus::default(),
+            std::time::Duration::from_millis(10),
+        )
     }
 
     /// A deterministic distinct digest per `seed`.
@@ -1128,6 +1163,69 @@ mod tests {
             job_termination(&pool, job).await?.as_deref(),
             Some("image_error")
         );
+        Ok(())
+    }
+
+    /// A change notification, not the `match_interval` timer, drives the pass:
+    /// with the timer effectively disabled, an enqueue after startup must still
+    /// be assigned promptly.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn enqueue_event_drives_a_pass_without_the_timer(pool: PgPool) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let host = insert_live_host(&pool, user, &["arch=arm64"]).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
+
+        let bus = EventBus::default();
+        tokio::spawn(bus.listener(pool.clone()));
+        tokio::spawn(
+            Scheduler::new(
+                pool.clone(),
+                Duration::hours(1),
+                Duration::seconds(60),
+                &bus,
+                std::time::Duration::from_millis(10),
+            )
+            .run(),
+        );
+
+        // Wait until the listener demonstrably delivers wakes (its LISTEN may
+        // not be up yet; a write committed before that is a lost notification,
+        // which only the timer would cover). Probes a throwaway host so the
+        // eligible host's tags stay intact.
+        let probe_host = insert_host(&pool, user, &[], None).await?;
+        let mut probe = bus.subscribe(EventFilter {
+            table: "hosts",
+            key: Some(("host_id", probe_host)),
+        });
+        probe.changed().await;
+        loop {
+            sqlx::query(
+                "update tml_switchboard.hosts set tags = array[md5(random()::text)] \
+                 where host_id = $1",
+            )
+            .bind(probe_host)
+            .execute(&pool)
+            .await?;
+            if tokio::time::timeout(std::time::Duration::from_millis(200), probe.changed())
+                .await
+                .is_ok()
+            {
+                break;
+            }
+        }
+
+        let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while job_state(&pool, job).await? != "assigned" {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the enqueue notification did not drive a scheduling pass"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert_eq!(host_current_job(&pool, host).await?, Some(job));
         Ok(())
     }
 

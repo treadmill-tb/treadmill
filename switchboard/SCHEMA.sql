@@ -1328,3 +1328,102 @@ CREATE TRIGGER audit_events_append_only before
 UPDATE
 OR delete ON tml_switchboard.audit_events FOR each ROW
 EXECUTE function tml_switchboard.deny_audit_event_change ();
+
+
+-- =============================================================================
+-- CHANGE NOTIFICATIONS
+-- =============================================================================
+--
+-- Row-change wake-ups over LISTEN/NOTIFY, on the single channel `tml_events`.
+-- Notifications are edge triggers, not data carriers: a receiver re-reads the
+-- database instead of acting on the payload, so lost or duplicated
+-- notifications are harmless (receivers keep their poll timers as a staleness
+-- fallback). The payload carries only what routing needs:
+--
+--     {"table": <TG_TABLE_NAME>, "keys": {<column>: [<value>, ...], ...}}
+--
+-- The trigger arguments name the routing-key columns; the first must be the
+-- table's primary key (never NULL, so an ordinary row event always has at
+-- least one key). Each key maps to the distinct non-NULL old/new values, so an
+-- UPDATE that moves a row between scopes wakes both. Because payloads are
+-- minimal, Postgres' per-transaction dedup of identical notifications
+-- coalesces repeated changes to the same row.
+--
+-- Bulk-write cap: past a per-table, per-transaction row count (defaulted in
+-- the function body, overridable per session/transaction via the
+-- `tml_switchboard.notify_row_limit` GUC), further rows emit the keyless form
+-- `{"table": ...}` — identical
+-- payloads, deduped to a single delivered notification — which receivers must
+-- treat as "any row of this table may have changed".
+CREATE OR REPLACE FUNCTION tml_switchboard.notify_change () returns trigger language plpgsql AS $$
+declare
+    guc text := 'tml_switchboard.notify_rows_' || TG_TABLE_NAME;
+    n int := coalesce(nullif(current_setting(guc, true), ''), '0')::int + 1;
+    row_limit int := coalesce(
+        nullif(current_setting('tml_switchboard.notify_row_limit', true), ''),
+        '100')::int;
+    old_j jsonb;
+    new_j jsonb;
+    ks jsonb := '{}'::jsonb;
+    col text;
+    vals jsonb;
+begin
+    perform set_config(guc, n::text, true);
+    if n > row_limit then
+        perform pg_notify('tml_events',
+            jsonb_build_object('table', TG_TABLE_NAME)::text);
+        return null;
+    end if;
+    old_j := case when TG_OP <> 'INSERT' then to_jsonb(OLD) end;
+    new_j := case when TG_OP <> 'DELETE' then to_jsonb(NEW) end;
+    foreach col in array TG_ARGV loop
+        select coalesce(jsonb_agg(distinct v), '[]'::jsonb) into vals
+        from unnest(array[old_j -> col, new_j -> col]) as t (v)
+        where v is not null and v <> 'null'::jsonb;
+        if vals <> '[]'::jsonb then
+            ks := ks || jsonb_build_object(col, vals);
+        end if;
+    end loop;
+    perform pg_notify('tml_events',
+        jsonb_build_object('table', TG_TABLE_NAME, 'keys', ks)::text);
+    return null;
+end;
+$$;
+
+
+-- UPDATE triggers are split from INSERT/DELETE so they can carry
+-- `WHEN (OLD.* IS DISTINCT FROM NEW.*)`: an UPDATE that rewrites a row without
+-- changing it emits nothing. This matters because reconciliation re-applies
+-- the current state idempotently — without the guard, a consumer's own no-op
+-- write would wake it again, sustaining a wake/write cycle at the debounce
+-- rate.
+CREATE TRIGGER jobs_notify_write
+AFTER insert
+OR delete ON tml_switchboard.jobs FOR each ROW
+EXECUTE function tml_switchboard.notify_change ('job_id', 'dispatched_on_host_id');
+
+
+CREATE TRIGGER jobs_notify_update
+AFTER
+UPDATE ON tml_switchboard.jobs FOR each ROW WHEN (OLD.* IS DISTINCT FROM NEW.*)
+EXECUTE function tml_switchboard.notify_change ('job_id', 'dispatched_on_host_id');
+
+
+-- Column-filtered so that heartbeat refreshes (`last_seen_at`) never notify:
+-- they arrive per host per ping interval and carry no scheduling edge. Host
+-- connect still surfaces (a new worker increments `worker_instance_id`); a
+-- clean disconnect only NULLs `last_seen_at` and deliberately stays silent —
+-- no receiver acts on host death, the liveness cutoff covers it.
+CREATE TRIGGER hosts_notify_write
+AFTER insert
+OR delete ON tml_switchboard.hosts FOR each ROW
+EXECUTE function tml_switchboard.notify_change ('host_id');
+
+
+CREATE TRIGGER hosts_notify_update
+AFTER
+UPDATE ON tml_switchboard.hosts FOR each ROW WHEN (
+    -- Exclude `last_seen_at` from check
+    (to_jsonb(OLD) - 'last_seen_at') IS DISTINCT FROM (to_jsonb(NEW) - 'last_seen_at')
+)
+EXECUTE FUNCTION tml_switchboard.notify_change ('host_id');

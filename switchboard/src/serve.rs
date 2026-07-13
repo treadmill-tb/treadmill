@@ -1,4 +1,5 @@
 use crate::config::{DatabaseConfig, DatabaseCredentials, SwitchboardConfig};
+use crate::events::EventBus;
 use crate::log_streaming::{LogStreaming, NatsLogStreamProvisioner};
 use crate::registry::{OciRegistryClient, RegistryClient};
 use anyhow::Context;
@@ -20,6 +21,10 @@ pub struct AppStateInner {
     /// feature: jobs dispatch without a streaming destination. Built once at
     /// startup and shared with every supervisor worker.
     log_streaming: Option<LogStreaming>,
+    /// The per-process fan-out for `tml_events` DB change notifications. In
+    /// production [`serve`] spawns its listener; test-constructed states carry
+    /// a bus nothing feeds, so consumers fall back to their timers.
+    event_bus: EventBus,
 }
 
 impl AppStateInner {
@@ -35,13 +40,22 @@ impl AppStateInner {
     pub fn log_streaming(&self) -> Option<&LogStreaming> {
         self.log_streaming.as_ref()
     }
+    pub fn event_bus(&self) -> &EventBus {
+        &self.event_bus
+    }
 }
 
 #[derive(Clone)]
 pub struct AppState(Arc<AppStateInner>);
 impl AppState {
     pub fn new(pg_pool: PgPool, config: SwitchboardConfig) -> Self {
-        Self::with_components(pg_pool, config, Arc::new(OciRegistryClient::new()), None)
+        Self::with_components(
+            pg_pool,
+            config,
+            Arc::new(OciRegistryClient::new()),
+            None,
+            EventBus::default(),
+        )
     }
 
     /// Construct an [`AppState`] with an explicit registry client. Used by
@@ -52,23 +66,25 @@ impl AppState {
         config: SwitchboardConfig,
         registry: Arc<dyn RegistryClient>,
     ) -> Self {
-        Self::with_components(pg_pool, config, registry, None)
+        Self::with_components(pg_pool, config, registry, None, EventBus::default())
     }
 
     /// Construct an [`AppState`] from all of its injectable components. The
     /// production entry point ([`serve`]) uses this to attach the log-streaming
-    /// provisioner it builds at startup.
+    /// provisioner and the fed event bus it builds at startup.
     pub fn with_components(
         pg_pool: PgPool,
         config: SwitchboardConfig,
         registry: Arc<dyn RegistryClient>,
         log_streaming: Option<LogStreaming>,
+        event_bus: EventBus,
     ) -> Self {
         AppState(Arc::new(AppStateInner {
             pg_pool,
             config,
             registry,
             log_streaming,
+            event_bus,
         }))
     }
 }
@@ -139,6 +155,11 @@ pub async fn serve(serve_command: ServeCommand) -> anyhow::Result<()> {
 
     let bind_address = config.server.bind_address;
 
+    // The process-wide change-notification fan-out and its single LISTEN
+    // connection (see `crate::events`).
+    let event_bus = EventBus::default();
+    tokio::spawn(event_bus.listener(pg_pool.clone()));
+
     // Spawn the job scheduler. It coordinates with the per-host supervisor
     // workers entirely through the database (no in-process channel), so it just
     // needs its own pool handle; see `crate::scheduler`.
@@ -146,6 +167,8 @@ pub async fn serve(serve_command: ServeCommand) -> anyhow::Result<()> {
         pg_pool.clone(),
         config.service.match_interval,
         config.service.host_liveness_timeout,
+        &event_bus,
+        config.service.scheduler_event_debounce,
     );
     tokio::spawn(scheduler.run());
 
@@ -174,6 +197,7 @@ pub async fn serve(serve_command: ServeCommand) -> anyhow::Result<()> {
         config,
         Arc::new(OciRegistryClient::new()),
         log_streaming,
+        event_bus,
     );
     let router = super::routes::build_router(app_state);
 
