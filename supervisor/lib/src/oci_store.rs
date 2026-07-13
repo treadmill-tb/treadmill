@@ -646,6 +646,9 @@ mod tests {
         let status = Command::new(skopeo)
             // No /etc/containers/policy.json in the Nix sandbox — accept any.
             .arg("--insecure-policy")
+            // Ignore the host's registries.conf: a v1-format file on the
+            // developer's machine makes skopeo abort before it ever connects.
+            .args(["--registries-conf", "/dev/null"])
             .arg("copy")
             .arg("--dest-tls-verify=false")
             .arg(format!("oci:{}", fixture.display()))
@@ -911,15 +914,17 @@ mod tests {
         // Drop the fixture's catalog tag, so only the lease now references it.
         delete_ref(&zot.authority(), LOCAL_REPOSITORY, "latest").await;
 
-        // GC must reclaim the victim's unique blobs...
+        // GC must reclaim *all* of the victim's unique blobs. Poll the whole
+        // set rather than keying off a single blob: within one sweep Zot unlinks
+        // unreferenced blobs one at a time (each with a dedupe-cache update), so
+        // seeing one blob gone does not imply its siblings are gone yet.
         let victim_layer_path = store.blob_path(&victim_layer);
-        wait_until(90, || !victim_layer_path.is_file())
-            .await
-            .expect("victim layer should be garbage-collected");
-        assert!(
-            !store.blob_path(&victim_config).is_file(),
-            "victim config should be collected too",
-        );
+        let victim_config_path = store.blob_path(&victim_config);
+        wait_until(90, || {
+            !victim_layer_path.is_file() && !victim_config_path.is_file()
+        })
+        .await
+        .expect("victim blobs should be garbage-collected");
 
         // ...while the leased closure is fully retained across that same sweep.
         for d in &closure {
@@ -938,17 +943,14 @@ mod tests {
         // Release the lease: nothing references the fixture now, so GC reclaims
         // the formerly-protected closure — proving the lease was load-bearing.
         store.unpin(job).await.expect("unpin");
-        let manifest_path = store.blob_path(&digest);
-        wait_until(90, || !manifest_path.is_file())
+        // Poll the whole formerly-pinned closure, not just the manifest blob:
+        // the manifest and its layers are unlinked one at a time in the same
+        // sweep, so the manifest vanishing first does not mean the layers are
+        // already gone.
+        let closure_paths: Vec<_> = closure.iter().map(|d| store.blob_path(d)).collect();
+        wait_until(90, || closure_paths.iter().all(|p| !p.is_file()))
             .await
-            .expect("unpinned manifest should be garbage-collected");
-        for layer in &image.layers {
-            assert!(
-                !store.blob_path(&layer.digest).is_file(),
-                "layer {} should be collected after release",
-                layer.digest,
-            );
-        }
+            .expect("unpinned closure should be garbage-collected");
     }
 
     /// Several `ensure_present` calls for a leased digest, issued concurrently,
