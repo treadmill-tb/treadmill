@@ -202,9 +202,11 @@ async fn github_login_provisions_and_reconciles(pool: PgPool) {
             .unwrap();
     assert_eq!(name, "The Octocat");
 
-    // Verified tag of emails was recorded properly.
+    // Verified tag of emails was recorded properly. The primary address is on
+    // file both provider-less and under the provider, so dedupe by address.
     let verified_emails: Vec<String> = sqlx::query_scalar(
-        "select email from tml_switchboard.user_emails where verified = true and user_id = $1",
+        "select distinct email from tml_switchboard.user_emails \
+         where verified = true and user_id = $1",
     )
     .bind(user_id)
     .fetch_all(&pool)

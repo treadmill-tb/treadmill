@@ -447,6 +447,28 @@ pub async fn callback(
                 return Err(StatusCode::FORBIDDEN);
             }
 
+            // Every account is seeded with a verified primary email at
+            // registration, so refuse an identity the provider reports without
+            // one -- recorded like any other registration denial.
+            if !identity.emails.iter().any(|e| e.primary && e.verified) {
+                record_registration_denied(
+                    &state,
+                    provider.name(),
+                    &identity,
+                    DenyReason::NoVerifiedPrimaryEmail,
+                    client_ip.clone(),
+                    client_port,
+                )
+                .await?;
+                tracing::warn!(
+                    "registration denied for {} ({}) via {}: no verified primary email",
+                    identity.login,
+                    identity.provider_user_id,
+                    provider.name(),
+                );
+                return Err(StatusCode::FORBIDDEN);
+            }
+
             // Admitted, but no durable user record may exist before the user
             // accepts the ToS. Stage the identity + org ids; the account is
             // created only when `login_complete` consumes the row.

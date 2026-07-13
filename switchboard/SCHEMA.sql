@@ -75,22 +75,80 @@ CREATE TABLE tml_switchboard.user_identities (
 );
 
 
--- Verified email addresses, used to link a future provider login to an existing
+-- Email addresses on file for a user, each tagged with the provider that
+-- reported it. A verified address links a future provider login to an existing
 -- user (same verified email => same person).
 --
--- Globally unique so it can serve as that linking key, multi-row per user, and
--- tagged with the provider that originates from.
+-- The primary key is (email, provider): the same address may appear under
+-- several providers, and the user's PRIMARY email is carried as a dedicated
+-- provider-less row (`provider = ''`, the empty-string convention used for a
+-- distinguished row, as with `group_members.source_ref`). "Is primary" is
+-- exactly `provider = ''`. The primary is pinned once at registration and never
+-- re-synced; a user has at most one (partial unique index below) and it must be
+-- verified (the CHECK).
 --
--- Only `verified` email addresses must be used for any sensitive flow: linking
--- on an unverified address would allow account takeover by claiming someone
--- else's email on the external provider.
+-- A given VERIFIED address belongs to at most one user, enforced by the trigger
+-- below; unverified duplicates across users are allowed. Only `verified`
+-- addresses may drive any sensitive flow: linking on an unverified address would
+-- allow account takeover by claiming someone else's email on the provider.
 CREATE TABLE tml_switchboard.user_emails (
-    email text NOT NULL PRIMARY KEY,
+    email text NOT NULL,
     user_id uuid NOT NULL REFERENCES tml_switchboard.users (subject_id) ON DELETE CASCADE,
     provider text NOT NULL,
     verified bool NOT NULL,
-    added_at timestamp with time zone NOT NULL DEFAULT current_timestamp
+    added_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (email, provider),
+    -- The primary (provider-less) email must be verified.
+    CONSTRAINT primary_email_verified CHECK (
+        provider <> ''
+        OR verified
+    )
 );
+
+
+-- At most one primary (provider-less) email per user.
+CREATE UNIQUE INDEX user_emails_one_primary ON tml_switchboard.user_emails (user_id)
+WHERE
+    provider = '';
+
+
+-- Enforce that a verified address belongs to at most one user. Only verified
+-- rows are constrained; unverified duplicates across users are allowed.
+--
+-- Correctness under concurrency mirrors `group_members_no_cycle`: two
+-- transactions could each verify the same address for a different user, neither
+-- seeing the other's uncommitted row. A transaction-scoped advisory lock held
+-- until commit serializes verified writes, so a waiter resumes only after the
+-- holder commits and its fresh READ COMMITTED snapshot then sees that row and
+-- aborts.
+CREATE OR REPLACE FUNCTION tml_switchboard.user_emails_verified_single_owner () returns trigger language plpgsql AS $$
+begin
+    if not NEW.verified then
+        return NEW;
+    end if;
+
+    perform pg_advisory_xact_lock(hashtext('tml_switchboard.user_emails'));
+
+    if exists (
+        select 1
+        from tml_switchboard.user_emails
+        where email = NEW.email and verified and user_id <> NEW.user_id
+    ) then
+        raise exception
+            'verified email % already belongs to another user', NEW.email;
+    end if;
+
+    return NEW;
+end;
+$$;
+
+
+-- DELETE can never introduce a second owner, so the check runs on INSERT/UPDATE.
+CREATE CONSTRAINT TRIGGER user_emails_verified_owner
+AFTER insert
+OR
+UPDATE ON tml_switchboard.user_emails FOR each ROW
+EXECUTE function tml_switchboard.user_emails_verified_single_owner ();
 
 
 -- A group/organization. Owns resources and aggregates members like any subject.

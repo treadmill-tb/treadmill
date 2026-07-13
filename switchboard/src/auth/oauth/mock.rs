@@ -50,10 +50,12 @@ pub const MOCK_IDENTITIES: &[MockIdentity] = &[
             Email {
                 address: Cow::Borrowed("alice@example.test"),
                 verified: true,
+                primary: true,
             },
             Email {
                 address: Cow::Borrowed("alice-alt@example.org"),
                 verified: false,
+                primary: false,
             },
         ],
         admin: true,
@@ -65,6 +67,7 @@ pub const MOCK_IDENTITIES: &[MockIdentity] = &[
         emails: &[Email {
             address: Cow::Borrowed("bob@example.test"),
             verified: true,
+            primary: true,
         }],
         admin: false,
     },
@@ -74,7 +77,8 @@ pub const MOCK_IDENTITIES: &[MockIdentity] = &[
         full_name: "Carol Example",
         emails: &[Email {
             address: Cow::Borrowed("carol@example.test"),
-            verified: false,
+            verified: true,
+            primary: true,
         }],
         admin: false,
     },
@@ -82,9 +86,12 @@ pub const MOCK_IDENTITIES: &[MockIdentity] = &[
         key: "trudy",
         login: "trudy",
         full_name: "Trudy Example",
+        // The intruder: denied at the admission gate before the primary-email
+        // check is ever reached, so her primary stays unverified.
         emails: &[Email {
             address: Cow::Borrowed("trudy@example.test"),
             verified: false,
+            primary: true,
         }],
         admin: false,
     },

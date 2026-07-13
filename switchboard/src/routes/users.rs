@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::users::{
     GroupMembership, LinkedGitHub, PublicUserProfile, SelfUserProfile, SessionInfo,
-    TokenRevocation, UpdateProfileRequest,
+    TokenRevocation, UpdateProfileRequest, UserEmail,
 };
 
 use crate::audit;
@@ -74,13 +74,27 @@ async fn load_self_profile(state: &AppState, user_id: Uuid) -> Result<SelfUserPr
 
     let github = linked_github(github_login(state, user_id).await.map_err(internal)?);
 
-    let emails = sqlx::query_scalar!(
-        "select email from tml_switchboard.user_emails where user_id = $1 order by added_at;",
+    // One entry per address: an address may be on file under several providers
+    // (notably the provider-less primary alongside its provider-scoped copy), so
+    // collapse the rows -- verified if any copy is, primary if the provider-less
+    // copy is present.
+    let emails = sqlx::query!(
+        "select email, bool_or(verified) as \"verified!\", \
+                bool_or(provider = '') as \"is_primary!\" \
+         from tml_switchboard.user_emails where user_id = $1 \
+         group by email order by min(added_at);",
         user_id,
     )
     .fetch_all(state.pool())
     .await
-    .map_err(internal)?;
+    .map_err(internal)?
+    .into_iter()
+    .map(|r| UserEmail {
+        email: r.email,
+        verified: r.verified,
+        is_primary: r.is_primary,
+    })
+    .collect();
 
     // Every group the user reaches transitively. `principals()` returns the
     // user's own subject id plus every group it belongs to; joining to `groups`

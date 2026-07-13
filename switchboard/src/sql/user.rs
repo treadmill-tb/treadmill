@@ -124,6 +124,25 @@ pub async fn create_and_reconcile(
         },
     )
     .await?;
+
+    // Pin the primary email as a provider-less row, before the provider sync so
+    // it coexists with the provider-scoped copy. The login callback refuses any
+    // registration without a verified primary, so one is normally present; if
+    // absent (a caller bypassing the gate), the account is simply left without a
+    // primary rather than failing here.
+    if let Some(primary) = identity.emails.iter().find(|e| e.primary && e.verified) {
+        audit::transition(
+            tx,
+            AddEmail {
+                user_id,
+                provider: "",
+                email: &primary.address,
+                verified: true,
+            },
+        )
+        .await?;
+    }
+
     refresh_and_reconcile(tx, provider, identity, org_ids, user_id).await?;
     Ok(user_id)
 }
@@ -205,9 +224,11 @@ async fn refresh_and_reconcile(
     // 4. Reconcile recorded emails against the provider's current report,
     // scoped to THIS provider's rows: record new addresses, align the
     // `verified` flag in both directions, and remove addresses the provider no
-    // longer reports. Rows recorded under other providers are untouched, and
-    // an address already on file elsewhere (another user's, or this user's
-    // under another provider) is left alone and unlogged, as before.
+    // longer reports. Rows recorded under other providers are untouched --
+    // including this user's own provider-less primary row, so the provider row
+    // coexists with it. Only an address on file for ANOTHER user is left alone
+    // and unlogged: adding it here would either duplicate their claim or, if
+    // both are verified, trip the single-owner trigger and fail the login.
     let current: Vec<(String, bool)> = sqlx::query!(
         "select email, verified from tml_switchboard.user_emails \
          where user_id = $1 and provider = $2;",
@@ -220,16 +241,15 @@ async fn refresh_and_reconcile(
     .map(|r| (r.email, r.verified))
     .collect();
 
-    let present_elsewhere: Vec<Cow<str>> = if identity.emails.is_empty() {
+    let present_for_other_user: Vec<Cow<str>> = if identity.emails.is_empty() {
         Vec::new()
     } else {
         let all_emails: Vec<&str> = identity.emails.iter().map(|e| e.address.as_ref()).collect();
         sqlx::query_scalar!(
             "select email from tml_switchboard.user_emails \
-             where email = any($1::text[]) and not (user_id = $2 and provider = $3);",
+             where email = any($1::text[]) and user_id <> $2;",
             &all_emails as _,
             user_id,
-            provider,
         )
         .fetch_all(&mut **tx)
         .await?
@@ -253,7 +273,7 @@ async fn refresh_and_reconcile(
                 .await?;
             }
             Some(_) => {}
-            None if !present_elsewhere.contains(&email.address) => {
+            None if !present_for_other_user.contains(&email.address) => {
                 audit::transition(
                     tx,
                     AddEmail {
@@ -451,10 +471,11 @@ impl Transition for ChangeProfile<'_> {
     }
 }
 
-/// Record a verified email for the user, claiming it only if unowned. Emits
-/// [`events::UserEmailAdded`]. Constructed only for addresses not already on
-/// file, but keeps `on conflict do nothing` to stay safe under a concurrent
-/// login racing to insert the same address.
+/// Record an email for the user under a given provider (the empty provider `""`
+/// marks the provider-less primary row). Emits [`events::UserEmailAdded`].
+/// Constructed only for `(email, provider)` pairs not already on file, but keeps
+/// `on conflict do nothing` to stay safe under a concurrent login racing to
+/// insert the same row.
 struct AddEmail<'a> {
     user_id: Uuid,
     provider: &'a str,
@@ -473,7 +494,7 @@ impl Transition for AddEmail<'_> {
     ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
         sqlx::query!(
             "insert into tml_switchboard.user_emails (email, user_id, provider, verified) \
-             values ($1, $2, $3, $4) on conflict (email) do nothing;",
+             values ($1, $2, $3, $4) on conflict (email, provider) do nothing;",
             self.email,
             self.user_id,
             self.provider,

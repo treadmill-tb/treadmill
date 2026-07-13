@@ -1498,8 +1498,8 @@ export interface components {
          */
         SelfUserProfile: {
             avatar_url?: string | null;
-            /** @description All verified email addresses on file for the account. */
-            emails: string[];
+            /** @description All email addresses on file for the account, one entry per address. */
+            emails: components["schemas"]["UserEmail"][];
             /** @description The linked GitHub account, if any. */
             github?: components["schemas"]["LinkedGitHub"] | null;
             /** @description Every group the user belongs to, including transitive memberships. */
@@ -1638,6 +1638,14 @@ export interface components {
              *     characters, not unique.
              */
             name?: string | null;
+        };
+        /** @description One email address on file for a user. */
+        UserEmail: {
+            email: string;
+            /** @description Whether this is the user's primary address (set once at registration). */
+            is_primary: boolean;
+            /** @description Whether the provider has verified the address belongs to the user. */
+            verified: boolean;
         };
         /** @description Response body for `/auth/whoami`: the identity of the authenticated subject. */
         WhoAmIResponse: {

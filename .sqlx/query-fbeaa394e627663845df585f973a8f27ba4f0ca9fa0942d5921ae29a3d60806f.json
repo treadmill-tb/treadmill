@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.user_emails (email, user_id, provider, verified) values ($1, $2, $3, $4) on conflict (email, provider) do nothing;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fbeaa394e627663845df585f973a8f27ba4f0ca9fa0942d5921ae29a3d60806f"
+}

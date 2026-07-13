@@ -31,6 +31,16 @@ pub struct PublicUserProfile {
     pub github: Option<LinkedGitHub>,
 }
 
+/// One email address on file for a user.
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserEmail {
+    pub email: String,
+    /// Whether the provider has verified the address belongs to the user.
+    pub verified: bool,
+    /// Whether this is the user's primary address (set once at registration).
+    pub is_primary: bool,
+}
+
 /// One group the user belongs to, including transitive memberships (e.g. via
 /// nested groups or a linked GitHub org).
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
@@ -50,8 +60,8 @@ pub struct GroupMembership {
 pub struct SelfUserProfile {
     #[serde(flatten)]
     pub profile: PublicUserProfile,
-    /// All verified email addresses on file for the account.
-    pub emails: Vec<String>,
+    /// All email addresses on file for the account, one entry per address.
+    pub emails: Vec<UserEmail>,
     /// Every group the user belongs to, including transitive memberships.
     pub groups: Vec<GroupMembership>,
     /// Whether the account is locked (cannot log in or use existing sessions).

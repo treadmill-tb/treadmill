@@ -20,13 +20,6 @@ arbitrary. There should be a more granular permission that allows to change
 attributes of the resource (such as a host's label or tag set), without being
 able to change the ACLs or ownership attribute.
 
-## Primary Email; GitHub Registration Sets It
-
-Add a notion of a user's primary email (e.g. `is_primary` on `user_emails`, or a
-`primary_email` FK on `users`). GitHub registration should set it from the
-verified primary email returned by the provider. Coordinate with the login-time
-email re-sync.
-
 ## Private Image Sources: Credentials + Source-Level Use Grants
 
 The image-source permission lift ships owned-but-universally-public sources (any

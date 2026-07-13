@@ -18,6 +18,8 @@ use treadmill_switchboard::sql::user::{
 };
 
 fn identity(provider_user_id: &str, emails: &[(&str, bool)]) -> ExternalIdentity {
+    // Designate the first verified address as primary, as a real provider does.
+    let mut primary_assigned = false;
     ExternalIdentity {
         provider_user_id: provider_user_id.to_string(),
         login: format!("login-{provider_user_id}"),
@@ -25,9 +27,14 @@ fn identity(provider_user_id: &str, emails: &[(&str, bool)]) -> ExternalIdentity
         avatar_url: None,
         emails: emails
             .iter()
-            .map(|(address, verified)| Email {
-                address: Cow::Owned(address.to_string()),
-                verified: *verified,
+            .map(|(address, verified)| {
+                let primary = *verified && !primary_assigned;
+                primary_assigned |= primary;
+                Email {
+                    address: Cow::Owned(address.to_string()),
+                    verified: *verified,
+                    primary,
+                }
             })
             .collect(),
     }
@@ -63,11 +70,24 @@ async fn refresh_user(
     Ok(())
 }
 
-/// The `(email, verified)` rows recorded for a user, ordered by address.
+/// The `(email, verified)` provider-scoped rows recorded for a user, ordered by
+/// address. Excludes the provider-less primary row, which registration pins
+/// independently of the sync exercised here (see `registration_pins_primary`).
 async fn emails_of(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Vec<(String, bool)>> {
     Ok(sqlx::query_as(
         "select email, verified from tml_switchboard.user_emails \
-         where user_id = $1 order by email",
+         where user_id = $1 and provider = 'github' order by email",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// The provider-less primary rows `(email, verified)` for a user.
+async fn primary_of(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Vec<(String, bool)>> {
+    Ok(sqlx::query_as(
+        "select email, verified from tml_switchboard.user_emails \
+         where user_id = $1 and provider = '' order by email",
     )
     .bind(user_id)
     .fetch_all(pool)
@@ -147,12 +167,51 @@ async fn login_resyncs_emails_against_the_provider_report(pool: PgPool) -> anyho
         &identity("1", &[("a@example.test", true), ("c@example.test", true)]),
     )
     .await?;
-    assert_eq!(event_count(&pool, "user_email_added").await?, 3);
+    // Four additions: the provider-less primary `a`, plus the provider copies of
+    // `a`, `b`, and (later) `c`.
+    assert_eq!(event_count(&pool, "user_email_added").await?, 4);
     assert_eq!(
         event_count(&pool, "user_email_verification_changed").await?,
         2
     );
     assert_eq!(event_count(&pool, "user_email_removed").await?, 1);
+
+    Ok(())
+}
+
+#[sqlx::test]
+#[ignore = "requires a database; run via the nextest-db check"]
+async fn registration_pins_primary(pool: PgPool) -> anyhow::Result<()> {
+    // Registration pins the verified primary as a provider-less row alongside
+    // its provider-scoped copy.
+    let user = create_user(
+        &pool,
+        &identity("1", &[("p@example.test", true), ("q@example.test", false)]),
+    )
+    .await?;
+    assert_eq!(
+        primary_of(&pool, user).await?,
+        vec![("p@example.test".to_string(), true)],
+    );
+    assert_eq!(
+        emails_of(&pool, user).await?,
+        vec![
+            ("p@example.test".to_string(), true),
+            ("q@example.test".to_string(), false),
+        ],
+    );
+
+    // A later login that stops reporting the address removes the provider copy
+    // but never the pinned primary.
+    refresh_user(&pool, user, &identity("1", &[("q@example.test", false)])).await?;
+    assert_eq!(
+        primary_of(&pool, user).await?,
+        vec![("p@example.test".to_string(), true)],
+    );
+    assert_eq!(
+        emails_of(&pool, user).await?,
+        vec![("q@example.test".to_string(), false)],
+    );
 
     Ok(())
 }

@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select email, bool_or(verified) as \"verified!\", bool_or(provider = '') as \"is_primary!\" from tml_switchboard.user_emails where user_id = $1 group by email order by min(added_at);",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.user_emails",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "verified!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "is_primary!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "a83a184895e3aa671a6b2b0b5605626492b960e9d78dfeb435cedcac40207ead"
+}

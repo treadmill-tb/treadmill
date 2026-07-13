@@ -2989,10 +2989,10 @@ components:
           - string
           - 'null'
         emails:
-          description: All verified email addresses on file for the account.
+          description: All email addresses on file for the account, one entry per address.
           type: array
           items:
-            type: string
+            $ref: '#/components/schemas/UserEmail'
         github:
           description: The linked GitHub account, if any.
           anyOf:
@@ -3250,6 +3250,22 @@ components:
           type:
           - string
           - 'null'
+    UserEmail:
+      description: One email address on file for a user.
+      type: object
+      properties:
+        email:
+          type: string
+        is_primary:
+          description: Whether this is the user's primary address (set once at registration).
+          type: boolean
+        verified:
+          description: Whether the provider has verified the address belongs to the user.
+          type: boolean
+      required:
+      - email
+      - verified
+      - is_primary
     WhoAmIResponse:
       description: 'Response body for `/auth/whoami`: the identity of the authenticated subject.'
       type: object

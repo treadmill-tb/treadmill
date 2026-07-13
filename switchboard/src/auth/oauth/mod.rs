@@ -31,6 +31,10 @@ pub struct Email<'a> {
     /// Whether the OAuth provider claims (and we trust) that this email address
     /// has been verified to belong to the respective user.
     pub verified: bool,
+    /// Whether the provider designates this as the user's primary address. At
+    /// registration the (verified) primary seeds the user's provider-less
+    /// primary email row; a provider reports at most one primary.
+    pub primary: bool,
 }
 
 /// Identity information fetched from a provider after a successful login.

@@ -118,8 +118,14 @@ export default function Settings() {
                 <dt>Emails</dt>
                 <dd>
                   {me.data.emails.map((e) => (
-                    <div key={e} className="mono">
-                      {e}
+                    <div key={e.email} className="mono">
+                      {e.email}
+                      {e.is_primary && (
+                        <span className="badge active"> primary</span>
+                      )}
+                      {!e.verified && (
+                        <span className="badge"> unverified</span>
+                      )}
                     </div>
                   ))}
                 </dd>

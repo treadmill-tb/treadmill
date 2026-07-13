@@ -9,7 +9,9 @@ use std::net::SocketAddr;
 use sqlx::PgPool;
 use tokio::net::TcpListener;
 use treadmill_rs::api::switchboard::LoginResponse;
-use treadmill_rs::api::switchboard::users::{PublicUserProfile, SelfUserProfile, SessionInfo};
+use treadmill_rs::api::switchboard::users::{
+    PublicUserProfile, SelfUserProfile, SessionInfo, UserEmail,
+};
 use treadmill_switchboard::routes::build_router;
 use treadmill_switchboard::serve::AppState;
 use uuid::Uuid;
@@ -166,7 +168,14 @@ async fn self_profile_update_tokens_and_feed(pool: PgPool) {
         .unwrap();
     assert_eq!(me.profile.user_id, user_id);
     assert_eq!(me.profile.name, "The Octocat");
-    assert_eq!(me.emails, vec!["octo@example.com".to_string()]);
+    assert_eq!(
+        me.emails,
+        vec![UserEmail {
+            email: "octo@example.com".to_string(),
+            verified: true,
+            is_primary: true,
+        }],
+    );
     assert!(!me.locked);
     let gh = me.profile.github.expect("linked github identity");
     assert_eq!(gh.login, "octocat");
