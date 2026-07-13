@@ -123,7 +123,7 @@ impl<S: Supervisor> TcpControlSocket<S> {
                             // send a RequestError response containing the error
                             // message. Otherwise, pass the request onto the
                             // handle function:
-                            debug!("Trying to decode {:?}", &bytes);
+                            debug!("Trying to decode {:?}", bytes);
                             let opt_resp = match serde_json::from_slice(&bytes) {
                                 Ok(PuppetMsg::Request {
                                     request_id,
