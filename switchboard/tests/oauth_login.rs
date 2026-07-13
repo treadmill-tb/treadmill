@@ -194,13 +194,13 @@ async fn github_login_provisions_and_reconciles(pool: PgPool) {
     .await
     .unwrap();
 
-    let username: String =
-        sqlx::query_scalar("select username from tml_switchboard.users where subject_id = $1")
+    let name: String =
+        sqlx::query_scalar("select name from tml_switchboard.users where subject_id = $1")
             .bind(user_id)
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(username, "octocat");
+    assert_eq!(name, "The Octocat");
 
     // Verified tag of emails was recorded properly.
     let verified_emails: Vec<String> = sqlx::query_scalar(
@@ -250,7 +250,7 @@ async fn github_login_provisions_and_reconciles(pool: PgPool) {
     .unwrap();
     for expected in [
         "user_logged_in.v1",
-        "user_provisioned.v1",
+        "user_provisioned.v2",
         "session_token_issued.v1",
     ] {
         assert!(
@@ -290,8 +290,7 @@ async fn github_login_provisions_and_reconciles(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(who.user_id, user_id);
-    assert_eq!(who.username, "octocat");
-    assert_eq!(who.full_name.as_deref(), Some("The Octocat"));
+    assert_eq!(who.name, "The Octocat");
 
     // Add a manual membership; reconciliation must never touch it.
     sqlx::query(

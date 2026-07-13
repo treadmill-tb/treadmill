@@ -39,8 +39,8 @@ pub struct ExternalIdentity {
     /// The provider's STABLE numeric user id, as text. Never the login handle
     /// (handles are renameable/reusable and would mis-link accounts over time).
     pub provider_user_id: String,
-    /// The user's current login/handle on the provider. Used only as the
-    /// suggested internal username and for display.
+    /// The user's current login/handle on the provider. Recorded as the
+    /// provider login and used as the display name fallback at provisioning.
     pub login: String,
     /// The user's display name, if the provider exposes one.
     pub full_name: Option<String>,

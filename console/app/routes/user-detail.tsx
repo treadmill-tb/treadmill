@@ -17,13 +17,11 @@ export default function UserDetail({ params }: Route.ComponentProps) {
             {user.data.avatar_url != null && (
               <img className="avatar" src={user.data.avatar_url} alt="" />
             )}{" "}
-            {user.data.username}
+            {user.data.name}
           </h1>
           <dl className="props">
             <dt>Id</dt>
             <dd className="mono">{user.data.user_id}</dd>
-            <dt>Full name</dt>
-            <dd>{user.data.full_name ?? <span className="muted">—</span>}</dd>
             <dt>GitHub</dt>
             <dd>
               {user.data.github ? (

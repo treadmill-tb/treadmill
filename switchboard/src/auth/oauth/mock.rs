@@ -26,7 +26,8 @@ use std::collections::HashMap;
 pub struct MockIdentity {
     /// Selector used in `?identity=` and stored as the provider user id.
     pub key: &'static str,
-    /// Login/handle, used as the suggested username and for display.
+    /// Login/handle, recorded as the provider login and used as the display
+    /// name fallback.
     pub login: &'static str,
     /// Display name.
     pub full_name: &'static str,

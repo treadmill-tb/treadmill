@@ -238,9 +238,7 @@ export default function JobNew() {
         <label className="field">
           <span>Owner</span>
           <select name="owner" defaultValue="">
-            <option value="">
-              {me.data ? `${me.data.username} (me)` : "me"}
-            </option>
+            <option value="">{me.data ? `${me.data.name} (me)` : "me"}</option>
             {me.data?.groups.map((g) => (
               <option key={g.group_id} value={g.group_id}>
                 group: {g.name}

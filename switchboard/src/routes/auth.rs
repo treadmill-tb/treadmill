@@ -798,7 +798,7 @@ pub async fn login_complete(
     // simply logs in again.
     let existing = if let Some(user_id) = staged.existing_user_id {
         let status = sqlx::query!(
-            "select u.locked, u.tos_accepted_version, u.username, \
+            "select u.locked, u.tos_accepted_version, u.name, \
                     i.provider_user_id, i.provider_login \
              from tml_switchboard.users u \
              left join tml_switchboard.user_identities i \
@@ -818,7 +818,7 @@ pub async fn login_complete(
                     user: AuditSubject(user_id),
                     provider: staged.provider.clone(),
                     provider_user_id: status.provider_user_id.unwrap_or_default(),
-                    login: status.provider_login.unwrap_or(status.username),
+                    login: status.provider_login.unwrap_or(status.name),
                     client_ip: ctx.ip.clone(),
                     client_port: ctx.port,
                 },
@@ -909,7 +909,7 @@ pub async fn login_complete(
                 user_id,
                 false,
                 status.provider_user_id.unwrap_or_default(),
-                status.provider_login.unwrap_or(status.username),
+                status.provider_login.unwrap_or(status.name),
             )
         }
         None => {
@@ -1058,7 +1058,7 @@ pub async fn whoami(
 ) -> Result<Json<WhoAmIResponse>, StatusCode> {
     let user_id = subject.user_id();
     let row = sqlx::query!(
-        "select username, full_name from tml_switchboard.users where subject_id = $1;",
+        "select name from tml_switchboard.users where subject_id = $1;",
         user_id,
     )
     .fetch_one(state.pool())
@@ -1067,7 +1067,6 @@ pub async fn whoami(
 
     Ok(Json(WhoAmIResponse {
         user_id,
-        username: row.username,
-        full_name: row.full_name,
+        name: row.name,
     }))
 }

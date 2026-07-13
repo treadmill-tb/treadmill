@@ -299,7 +299,7 @@ pub fn api_router() -> ApiRouter<AppState> {
         )
         // user management group
         //  GET  /users/me            -- own profile (incl. emails + groups)
-        //  PATCH /users/me           -- update display name / username / avatar
+        //  PATCH /users/me           -- update display name / avatar
         .api_route(
             "/users/me",
             get_with(users::get_me, |o| {
@@ -317,9 +317,6 @@ pub fn api_router() -> ApiRouter<AppState> {
                     "Users",
                     "Update the current user's profile",
                 )
-                .response_with::<409, (), _>(|r| {
-                    r.description("The requested username is already taken.")
-                })
             }),
         )
         //  GET /users/me/tokens      -- list own sessions/tokens

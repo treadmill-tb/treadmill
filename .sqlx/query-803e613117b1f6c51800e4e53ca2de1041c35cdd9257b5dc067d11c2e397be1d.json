@@ -1,27 +1,27 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select username, full_name from tml_switchboard.users where subject_id = $1;",
+  "query": "select name, avatar_url from tml_switchboard.users where subject_id = $1;",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "username",
+        "name": "name",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "tml_switchboard.users",
-            "name": "username"
+            "name": "name"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "full_name",
+        "name": "avatar_url",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "tml_switchboard.users",
-            "name": "full_name"
+            "name": "avatar_url"
           }
         }
       }
@@ -36,5 +36,5 @@
       true
     ]
   },
-  "hash": "67b493bb3e448a66b93c093b6c9383bab1b1c01d4b59fd8331fb8aa1a0d354ea"
+  "hash": "803e613117b1f6c51800e4e53ca2de1041c35cdd9257b5dc067d11c2e397be1d"
 }

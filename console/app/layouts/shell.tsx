@@ -28,7 +28,7 @@ function AuthedShell() {
           </nav>
           <span className="spacer" />
           <Link to="/settings" className="muted">
-            {whoami.data?.username ?? "…"}
+            {whoami.data?.name ?? "…"}
           </Link>
           <button
             onClick={() => {

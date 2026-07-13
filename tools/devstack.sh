@@ -261,8 +261,8 @@ seed_sql="$cfg_dir/dev-seed.sql"
 cat > "$seed_sql" <<SQL
 insert into tml_switchboard.subjects (subject_id, kind)
   values ('$dev_user_id', 'user') on conflict do nothing;
-insert into tml_switchboard.users (subject_id, username, full_name, locked)
-  values ('$dev_user_id', 'alice', 'Alice Example', false) on conflict do nothing;
+insert into tml_switchboard.users (subject_id, name, locked)
+  values ('$dev_user_id', 'Alice Example', false) on conflict do nothing;
 insert into tml_switchboard.user_identities (provider, provider_user_id, user_id, provider_login)
   values ('mock', 'alice', '$dev_user_id', 'alice') on conflict do nothing;
 insert into tml_switchboard.user_emails (email, user_id, provider, verified)

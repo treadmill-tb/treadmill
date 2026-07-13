@@ -120,8 +120,8 @@ pub struct LoginCompleteRequest {
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct WhoAmIResponse {
     pub user_id: Uuid,
-    pub username: String,
-    pub full_name: Option<String>,
+    /// The user's display name: freely chosen, not unique.
+    pub name: String,
 }
 
 /// Response body for the unauthenticated `/auth/providers` endpoint: which login

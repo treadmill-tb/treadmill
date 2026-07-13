@@ -1438,12 +1438,12 @@ export interface components {
          */
         PublicUserProfile: {
             avatar_url?: string | null;
-            full_name?: string | null;
             /** @description The linked GitHub account, if any. */
             github?: components["schemas"]["LinkedGitHub"] | null;
+            /** @description The user's display name: freely chosen, not unique. */
+            name: string;
             /** Format: uuid */
             user_id: string;
-            username: string;
         };
         /**
          * @description One audit event, already rendered to a human-readable `message` for the
@@ -1500,16 +1500,16 @@ export interface components {
             avatar_url?: string | null;
             /** @description All verified email addresses on file for the account. */
             emails: string[];
-            full_name?: string | null;
             /** @description The linked GitHub account, if any. */
             github?: components["schemas"]["LinkedGitHub"] | null;
             /** @description Every group the user belongs to, including transitive memberships. */
             groups: components["schemas"]["GroupMembership"][];
             /** @description Whether the account is locked (cannot log in or use existing sessions). */
             locked: boolean;
+            /** @description The user's display name: freely chosen, not unique. */
+            name: string;
             /** Format: uuid */
             user_id: string;
-            username: string;
         };
         /**
          * @description One of the caller's active or historical sessions/API tokens. Never carries
@@ -1627,21 +1627,24 @@ export interface components {
             label?: string | null;
         };
         /**
-         * @description A patch to the caller's own profile. Omitting a field leaves it unchanged;
-         *     sending an explicit `null` clears it. `username` cannot be cleared, only
-         *     changed.
+         * @description A patch to the caller's own profile. Omitting a field leaves it unchanged.
+         *     `name` cannot be cleared, only changed; an explicit `null` clears
+         *     `avatar_url`.
          */
         UpdateProfileRequest: {
             avatar_url?: string | null;
-            full_name?: string | null;
-            username?: string | null;
+            /**
+             * @description The user's display name: non-empty, bounded in length, no control
+             *     characters, not unique.
+             */
+            name?: string | null;
         };
         /** @description Response body for `/auth/whoami`: the identity of the authenticated subject. */
         WhoAmIResponse: {
-            full_name?: string | null;
+            /** @description The user's display name: freely chosen, not unique. */
+            name: string;
             /** Format: uuid */
             user_id: string;
-            username: string;
         };
     };
     responses: never;
@@ -2451,9 +2454,9 @@ export interface operations {
             cookie?: never;
         };
         /**
-         * @description A patch to the caller's own profile. Omitting a field leaves it unchanged;
-         *     sending an explicit `null` clears it. `username` cannot be cleared, only
-         *     changed.
+         * @description A patch to the caller's own profile. Omitting a field leaves it unchanged.
+         *     `name` cannot be cleared, only changed; an explicit `null` clears
+         *     `avatar_url`.
          */
         requestBody: {
             content: {
@@ -2491,13 +2494,6 @@ export interface operations {
             };
             /** @description The authenticated account is locked, or lacks permission for this resource. */
             403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The requested username is already taken. */
-            409: {
                 headers: {
                     [name: string]: unknown;
                 };

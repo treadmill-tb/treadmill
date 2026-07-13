@@ -20,14 +20,6 @@ arbitrary. There should be a more granular permission that allows to change
 attributes of the resource (such as a host's label or tag set), without being
 able to change the ACLs or ownership attribute.
 
-## Drop `users.username`
-
-Users should have only a display name (`full_name`) and their subject ID — no
-separate `username` handle. Remove the column, its UNIQUE constraint,
-`unique_username`/reserved-name logic, and the username field from
-`PATCH /users/me`. `user_identities.provider_login` remains display-only. Group
-`name` uniqueness is unaffected.
-
 ## Primary Email; GitHub Registration Sets It
 
 Add a notion of a user's primary email (e.g. `is_primary` on `user_emails`, or a

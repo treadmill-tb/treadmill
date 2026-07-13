@@ -223,7 +223,7 @@ async fn unlisted_identity_is_denied_without_record(pool: PgPool) {
         "a denied registration must leave no user_identities row"
     );
     let subjects: i64 = sqlx::query_scalar(
-        "select count(*) from tml_switchboard.users where username like 'octocat%'",
+        "select count(*) from tml_switchboard.users where name like 'The Octocat%'",
     )
     .fetch_one(&pool)
     .await

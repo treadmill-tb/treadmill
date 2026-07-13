@@ -32,7 +32,22 @@ define_event! {
 
 define_event! {
     /// A brand-new local account was created from an external identity.
-    UserProvisioned v1 {
+    UserProvisioned v2 {
+        actor: Subject,
+        user: Subject @ view(SelfAccess),
+        provider: String,
+        provider_user_id: String,
+        login: String,
+        name: String,
+    }
+    event_type = "user_provisioned";
+    render = "provisioned user {name} from {provider} identity {login}";
+}
+
+define_event! {
+    /// Legacy v1 payload shape of [`UserProvisioned`] (with the since-removed
+    /// `username`), retained so stored rows keep rendering. Never emitted.
+    UserProvisionedV1 v1 {
         actor: Subject,
         user: Subject @ view(SelfAccess),
         provider: String,
@@ -59,10 +74,27 @@ define_event! {
 }
 
 define_event! {
-    /// One or more mutable profile fields changed during a login refresh.
-    /// Emitted only when a value actually differs (compare-then-write), so a
-    /// no-op re-login does not spam the log. Carries the prior and new values.
-    UserProfileChanged v1 {
+    /// One or more provider-sourced profile fields changed during a login
+    /// refresh. Emitted only when a value actually differs
+    /// (compare-then-write), so a no-op re-login does not spam the log.
+    /// Carries the prior and new values.
+    UserProfileChanged v2 {
+        actor: Subject,
+        user: Subject @ view(SelfAccess),
+        old_avatar_url: Option<String>,
+        new_avatar_url: Option<String>,
+        old_provider_login: Option<String>,
+        new_provider_login: Option<String>,
+    }
+    event_type = "user_profile_changed";
+    render = "profile updated on login";
+}
+
+define_event! {
+    /// Legacy v1 payload shape of [`UserProfileChanged`] (with the
+    /// since-removed `full_name`), retained so stored rows keep rendering.
+    /// Never emitted.
+    UserProfileChangedV1 v1 {
         actor: Subject,
         user: Subject @ view(SelfAccess),
         old_full_name: Option<String>,
@@ -183,9 +215,9 @@ define_event! {
 }
 
 define_event! {
-    /// A user changed their own username via the management API. Carries the
-    /// immutable `user_id` plus the old and new handle.
-    UserRenamed v1 {
+    /// Legacy record of a username change via the since-removed rename API.
+    /// Retained so stored rows keep rendering. Never emitted.
+    UserRenamedV1 v1 {
         actor: Subject,
         user: Subject @ view(SelfAccess),
         old_username: String,
@@ -199,7 +231,23 @@ define_event! {
     /// A user edited their own display name and/or avatar via the management
     /// API. Distinct from [`UserProfileChanged`], which records the implicit
     /// refresh of provider-sourced fields on login.
-    UserProfileUpdated v1 {
+    UserProfileUpdated v2 {
+        actor: Subject,
+        user: Subject @ view(SelfAccess),
+        old_name: String,
+        new_name: String,
+        old_avatar_url: Option<String>,
+        new_avatar_url: Option<String>,
+    }
+    event_type = "user_profile_updated";
+    render = "profile updated";
+}
+
+define_event! {
+    /// Legacy v1 payload shape of [`UserProfileUpdated`] (with the
+    /// since-removed `full_name`), retained so stored rows keep rendering.
+    /// Never emitted.
+    UserProfileUpdatedV1 v1 {
         actor: Subject,
         user: Subject @ view(SelfAccess),
         old_full_name: Option<String>,

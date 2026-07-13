@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "update tml_switchboard.users set username = $2 where subject_id = $1;",
+  "query": "update tml_switchboard.users set avatar_url = $2 where subject_id = $1;",
   "describe": {
     "columns": [],
     "parameters": {
@@ -11,5 +11,5 @@
     },
     "nullable": []
   },
-  "hash": "03a58959e5157b4666ddc706931d26c6e136b85b80b6edc52a0c7a80ef9b7875"
+  "hash": "8a41ea9ea7ce02cb9dd52f79dbfa95eebdac79f8a9aadf25dc1d1903a6ba5278"
 }

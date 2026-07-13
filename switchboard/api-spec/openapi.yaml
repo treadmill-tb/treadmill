@@ -672,9 +672,9 @@ paths:
       operationId: updateCurrentUser
       requestBody:
         description: |-
-          A patch to the caller's own profile. Omitting a field leaves it unchanged;
-          sending an explicit `null` clears it. `username` cannot be cleared, only
-          changed.
+          A patch to the caller's own profile. Omitting a field leaves it unchanged.
+          `name` cannot be cleared, only changed; an explicit `null` clears
+          `avatar_url`.
         content:
           application/json:
             schema:
@@ -711,8 +711,6 @@ paths:
             text/plain:
               schema:
                 type: string
-        '409':
-          description: The requested username is already taken.
       security:
       - token: []
   /users/me/tokens:
@@ -2901,23 +2899,20 @@ components:
           type:
           - string
           - 'null'
-        full_name:
-          type:
-          - string
-          - 'null'
         github:
           description: The linked GitHub account, if any.
           anyOf:
           - $ref: '#/components/schemas/LinkedGitHub'
           - type: 'null'
+        name:
+          description: 'The user''s display name: freely chosen, not unique.'
+          type: string
         user_id:
           type: string
           format: uuid
-        username:
-          type: string
       required:
       - user_id
-      - username
+      - name
     RenderedAuditRow:
       description: |-
         One audit event, already rendered to a human-readable `message` for the
@@ -2998,10 +2993,6 @@ components:
           type: array
           items:
             type: string
-        full_name:
-          type:
-          - string
-          - 'null'
         github:
           description: The linked GitHub account, if any.
           anyOf:
@@ -3015,14 +3006,15 @@ components:
         locked:
           description: Whether the account is locked (cannot log in or use existing sessions).
           type: boolean
+        name:
+          description: 'The user''s display name: freely chosen, not unique.'
+          type: string
         user_id:
           type: string
           format: uuid
-        username:
-          type: string
       required:
       - user_id
-      - username
+      - name
       - emails
       - groups
       - locked
@@ -3242,20 +3234,19 @@ components:
       additionalProperties: false
     UpdateProfileRequest:
       description: |-
-        A patch to the caller's own profile. Omitting a field leaves it unchanged;
-        sending an explicit `null` clears it. `username` cannot be cleared, only
-        changed.
+        A patch to the caller's own profile. Omitting a field leaves it unchanged.
+        `name` cannot be cleared, only changed; an explicit `null` clears
+        `avatar_url`.
       type: object
       properties:
         avatar_url:
           type:
           - string
           - 'null'
-        full_name:
-          type:
-          - string
-          - 'null'
-        username:
+        name:
+          description: |-
+            The user's display name: non-empty, bounded in length, no control
+            characters, not unique.
           type:
           - string
           - 'null'
@@ -3263,18 +3254,15 @@ components:
       description: 'Response body for `/auth/whoami`: the identity of the authenticated subject.'
       type: object
       properties:
-        full_name:
-          type:
-          - string
-          - 'null'
+        name:
+          description: 'The user''s display name: freely chosen, not unique.'
+          type: string
         user_id:
           type: string
           format: uuid
-        username:
-          type: string
       required:
       - user_id
-      - username
+      - name
 tags:
 - name: Authentication
   description: Interactive OAuth login, the login-completion step, and token introspection.

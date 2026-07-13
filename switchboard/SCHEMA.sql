@@ -33,23 +33,28 @@ CREATE TABLE tml_switchboard.subjects (
 
 -- A human (or system) principal.
 --
--- - `username` is the internal Treadmill handle, suggested from the provider
---   login at first sign-in but freely changeable, hence its own uniqueness
---   independent of any provider identity.
+-- - `name` is the display name: seeded from the provider's display name (or
+--   login) at first sign-in and freely user-changeable afterwards. It is
+--   deliberately NOT unique -- nothing routes on it. Non-emptiness and the
+--   length bound are enforced here; the richer shape rules (no control
+--   characters) live in the route validation.
 -- - `locked` deactivates the account without deleting it (preserving job/audit
 --   provenance). A locked account must not be able to login, and its tokens
 --   must not be accepted.
 CREATE TABLE tml_switchboard.users (
     subject_id uuid NOT NULL PRIMARY KEY REFERENCES tml_switchboard.subjects (subject_id) ON DELETE CASCADE,
-    username text NOT NULL UNIQUE,
-    full_name text,
+    name text NOT NULL,
     avatar_url text,
     locked bool NOT NULL DEFAULT FALSE,
     -- ToS acceptance. NULL version = never accepted. A user whose accepted
     -- version is below the configured current version must re-accept before a
     -- token is issued (their account is not otherwise gated).
     tos_accepted_version integer,
-    tos_accepted_at timestamp with time zone
+    tos_accepted_at timestamp with time zone,
+    CONSTRAINT valid_name CHECK (
+        name <> ''
+        AND char_length(name) <= 256
+    )
 );
 
 

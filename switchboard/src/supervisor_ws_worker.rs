@@ -1465,7 +1465,7 @@ mod tests {
             .bind(user_id)
             .execute(pool)
             .await?;
-        sqlx::query("insert into tml_switchboard.users (subject_id, username) values ($1, $2)")
+        sqlx::query("insert into tml_switchboard.users (subject_id, name) values ($1, $2)")
             .bind(user_id)
             .bind(format!("user-{user_id}"))
             .execute(pool)

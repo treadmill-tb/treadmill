@@ -24,8 +24,8 @@ pub struct LinkedGitHub {
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct PublicUserProfile {
     pub user_id: Uuid,
-    pub username: String,
-    pub full_name: Option<String>,
+    /// The user's display name: freely chosen, not unique.
+    pub name: String,
     pub avatar_url: Option<String>,
     /// The linked GitHub account, if any.
     pub github: Option<LinkedGitHub>,
@@ -58,16 +58,21 @@ pub struct SelfUserProfile {
     pub locked: bool,
 }
 
-/// A patch to the caller's own profile. Omitting a field leaves it unchanged;
-/// sending an explicit `null` clears it. `username` cannot be cleared, only
-/// changed.
+/// A patch to the caller's own profile. Omitting a field leaves it unchanged.
+/// `name` cannot be cleared, only changed; an explicit `null` clears
+/// `avatar_url`.
 #[derive(schemars::JsonSchema, Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateProfileRequest {
+    /// The user's display name: non-empty, bounded in length, no control
+    /// characters, not unique.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub full_name: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub username: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
+    #[schemars(with = "Option<String>")]
     pub avatar_url: Option<Option<String>>,
 }
 
