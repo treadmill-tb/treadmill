@@ -411,7 +411,7 @@ async fn run_command(
 
     let mut child = cmd
         .spawn()
-        .with_context(|| format!("Spawning child process {:?}", &cmdline_osstr))?;
+        .with_context(|| format!("Spawning child process {:?}", cmdline_osstr))?;
 
     // Acquire the stdout and stderr pipes, and spawn a new log-streamer
     // task that collects all log output and streams it to the coordinator:
@@ -784,7 +784,7 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
 	    }
 	};
 
-        debug!("Received supervisor event: {:?}", &event);
+        debug!("Received supervisor event: {:?}", event);
 
         match event {
             SupervisorEvent::SSHKeysUpdated => {
