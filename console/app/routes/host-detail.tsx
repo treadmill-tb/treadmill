@@ -3,12 +3,14 @@ import { LiveBadge } from "../components/badges";
 import { AuditLog } from "../components/audit-log";
 import { RelTime } from "../components/rel-time";
 import { Tags } from "../components/tags";
+import { useResourceWatch } from "../hooks/use-resource-watch";
 import type { Route } from "./+types/host-detail";
 
 export default function HostDetail({ params }: Route.ComponentProps) {
   // There is no GET /hosts/{id}; the detail view derives from the full list.
   const hosts = $api.useQuery("get", "/hosts");
   const host = hosts.data?.find((h) => h.host_id === params.id);
+  useResourceWatch(`/hosts/${params.id}/watch`, ["get", "/hosts"]);
 
   return (
     <>

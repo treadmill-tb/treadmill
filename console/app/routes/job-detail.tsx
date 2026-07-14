@@ -15,10 +15,12 @@ import { JobLog, parseReplayBytes } from "../components/job-log";
 import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
 import { Tags } from "../components/tags";
+import { useResourceWatch } from "../hooks/use-resource-watch";
 import type { Route } from "./+types/job-detail";
 
 export default function JobDetail({ params }: Route.ComponentProps) {
   const queryClient = useQueryClient();
+  useResourceWatch(`/jobs/${params.id}/watch`, ["get", "/jobs/{id}"]);
   // Per-page-load override for how much log history to replay (a user
   // settings page may subsume this later).
   const [searchParams] = useSearchParams();
