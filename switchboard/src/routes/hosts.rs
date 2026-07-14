@@ -18,6 +18,38 @@ pub async fn list_events(
         .map(Json)
 }
 
+/// Axum handler for `GET /hosts/{id}/watch`.
+///
+/// Opens a Server-Sent Events stream that pings whenever the host's row
+/// changes, gated once at open on the caller's `read` permission (403
+/// otherwise, including for a nonexistent host). Each ping is contentless; the
+/// client re-`GET`s the host in response.
+pub async fn watch(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(IdPath { id: host_id }): Path<IdPath>,
+) -> Result<Response, StatusCode> {
+    use crate::auth::engine::{self, HostPermission};
+
+    let authorized = engine::can_access_host(
+        state.pool(),
+        subject.user_id(),
+        host_id,
+        HostPermission::Read,
+    )
+    .await
+    .or_internal("checking host read access for a watch stream")?;
+    if !authorized {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let sub = state.event_bus().subscribe(EventFilter {
+        table: "hosts",
+        key: Some(("host_id", host_id)),
+    });
+    Ok(crate::routes::sse::response(sub, &state.config().service))
+}
+
 /// Axum handler for `GET /hosts` — a read-only listing of every host with its
 /// opaque tags, attached targets (DUTs), and liveness, ordered by name.
 ///
@@ -85,6 +117,7 @@ use treadmill_rs::api::switchboard_supervisor::{ProtocolVersion, ServerHello};
 use uuid::Uuid;
 
 use crate::auth::token::SecurityToken;
+use crate::events::EventFilter;
 use crate::http_error::OrInternal;
 use crate::routes::params::IdPath;
 use crate::serve::AppState;

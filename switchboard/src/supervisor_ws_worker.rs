@@ -2033,57 +2033,61 @@ mod tests {
         Ok(())
     }
 
+    /// The dead-peer detector is a `pong_timeout` sleep that
+    /// `run_exits_when_no_pong_within_dead_threshold` proves fires when no Pong
+    /// arrives; this pins the converse — that an inbound Pong *rearms* that
+    /// deadline, which is what keeps a live connection alive.
+    ///
+    /// We assert on the `Sleep`'s deadline directly rather than running the loop
+    /// and racing wall-clock windows: a full-loop liveness test would have to
+    /// outlive a real `pong_dead` window, and under parallel `nextest-db` load a
+    /// single heartbeat transaction can stall the loop's select past a short
+    /// test deadline — a false dead-peer detection that flakes the check. Poking
+    /// `handle_supervisor_msg` and reading `pong_timeout.deadline()` verifies the
+    /// same invariant with no timers and no DB in the timed path, so it can't
+    /// flake. (In production `pong_dead` is 60s, far beyond any plausible loop
+    /// stall, so only the compressed test constants ever exposed the race.)
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn run_stays_alive_while_pongs_keep_arriving(pool: PgPool) -> anyhow::Result<()> {
+    async fn pong_rearms_the_dead_peer_deadline(pool: PgPool) -> anyhow::Result<()> {
         let host_id = insert_host(&pool).await?;
-        let (to_worker, mut from_worker, socket) = scripted_socket();
-
-        // 50ms pings, 400ms dead-pong deadline: a missed Pong would kill the
-        // worker within ~400ms. We reply promptly across ~800ms (two dead-pong
-        // windows), then close cleanly; the worker must outlive both. The
-        // deadline is generous on purpose — under parallel test load a single
-        // heartbeat transaction can briefly stall the loop, and we don't want a
-        // false dead-peer detection to flake this liveness check (the exact
-        // threshold is pinned by `run_exits_when_no_pong_within_dead_threshold`).
-        let cfg = worker_config(50, 400);
-        let jh = tokio::spawn(SupervisorWSWorker::run(
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let pong_dead = Duration::from_secs(60);
+        let mut worker = worker(
             pool,
             host_id,
-            socket,
-            cfg,
-            None,
-            EventBus::default(),
-        ));
+            wiid,
+            worker_config(50, pong_dead.as_millis() as u64),
+        );
 
-        for n in 1..=16 {
-            // Skip the `StatusRequest` (Text) frames the worker also emits; we
-            // Pong each PING to keep the dead-peer detector satisfied.
-            let payload = loop {
-                let msg =
-                    tokio::time::timeout(std::time::Duration::from_secs(2), from_worker.recv())
-                        .await
-                        .unwrap_or_else(|_| panic!("expected PING #{n} within 2s"))
-                        .expect("from_worker channel must remain open while worker runs");
-                match msg {
-                    ws::Message::Ping(p) => break p,
-                    ws::Message::Text(_) => continue,
-                    other => panic!("expected Ping or StatusRequest #{n}, got {other:?}"),
-                }
-            };
-            to_worker
-                .send(Ok(ws::Message::Pong(payload)))
-                .expect("inbound channel must stay open");
-        }
+        // Arm the deadline as if it were about to fire (1ms out): left alone it
+        // would expire almost immediately, so any push-out is unambiguous.
+        let mut pong_timeout = Box::pin(sleep(Duration::from_millis(1)));
+        let about_to_fire = pong_timeout.deadline();
 
-        // Worker should still be running — close it cleanly.
-        to_worker
-            .send(Ok(ws::Message::Close(None)))
-            .expect("inbound channel must stay open");
-        tokio::time::timeout(std::time::Duration::from_secs(2), jh)
+        // `Instant::now()` inside the handler falls between these two reads, so
+        // the rearmed deadline must land in `[before + pong_dead, after +
+        // pong_dead]` — a fresh full window from the moment the Pong landed.
+        let before = Instant::now();
+        let post = worker
+            .handle_supervisor_msg(ws::Message::Pong(Vec::new().into()), &mut pong_timeout)
             .await
-            .expect("worker should return promptly after Close")
-            .expect("worker task should not panic");
+            .expect("handling a Pong must not error");
+        let after = Instant::now();
+
+        assert!(
+            matches!(post, PostMsg::Continue),
+            "a Pong keeps the loop running"
+        );
+        let rearmed_to = pong_timeout.deadline();
+        assert!(
+            rearmed_to > about_to_fire,
+            "a Pong must push the imminent dead-peer deadline out"
+        );
+        assert!(
+            rearmed_to >= before + pong_dead && rearmed_to <= after + pong_dead,
+            "the deadline must be rearmed to one full pong-dead window from now"
+        );
         Ok(())
     }
 

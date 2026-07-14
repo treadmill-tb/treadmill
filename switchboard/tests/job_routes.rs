@@ -1279,3 +1279,122 @@ async fn console_input_unconfigured_yields_service_unavailable(pool: PgPool) {
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
 }
+
+/// An [`AppState`] whose event bus is fed by a live `tml_events` listener on the
+/// per-test database, so DB writes produce SSE pings end to end.
+fn watch_state(pool: PgPool) -> AppState {
+    let bus = EventBus::default();
+    tokio::spawn(bus.listener(pool.clone()));
+    AppState::with_components(
+        pool,
+        test_config_mock(),
+        Arc::new(OciRegistryClient::new()),
+        None,
+        bus,
+    )
+}
+
+/// Read body chunks until a full `change` event is seen; returns the accumulated
+/// text. Panics on timeout or stream end.
+async fn next_change(resp: &mut reqwest::Response) -> String {
+    let mut buf = String::new();
+    loop {
+        let chunk = tokio::time::timeout(std::time::Duration::from_secs(10), resp.chunk())
+            .await
+            .expect("timed out waiting for an SSE frame")
+            .expect("stream error")
+            .expect("stream ended before a change event");
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+        if buf.contains("event: change") {
+            return buf;
+        }
+    }
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn watch_streams_job_changes(pool: PgPool) {
+    let addr = spawn_server(watch_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+    let job_id = seed_job(&pool, bob, token_id, &[]).await;
+
+    let mut resp = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}/watch"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("text/event-stream"),
+    );
+
+    // The subscription starts woken, so the stream pings immediately on open.
+    next_change(&mut resp).await;
+
+    // A change to the job's row wakes the stream again.
+    sqlx::query(
+        "update tml_switchboard.jobs \
+         set queued_at = queued_at + interval '1 second' where job_id = $1",
+    )
+    .bind(job_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    next_change(&mut resp).await;
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn watch_requires_read_access(pool: PgPool) {
+    let addr = spawn_server(watch_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &bob_token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+    let job_id = seed_job(&pool, bob, token_id, &[]).await;
+
+    // A user with neither ownership nor a grant is refused (403, not a leak).
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let carol = whoami(&client, addr, &carol_token).await;
+    let refused = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}/watch"))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // With an explicit `read` grant, the same user gets the stream.
+    sqlx::query(
+        "insert into tml_switchboard.job_grants (job_id, subject_id, permission) \
+         values ($1, $2, 'read')",
+    )
+    .bind(job_id)
+    .bind(carol)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut granted = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}/watch"))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(granted.status(), reqwest::StatusCode::OK);
+    next_change(&mut granted).await;
+}

@@ -3,6 +3,7 @@ mod hosts;
 mod images;
 mod jobs;
 mod params;
+mod sse;
 mod users;
 
 use crate::config::ServerConfig;
@@ -205,6 +206,19 @@ pub fn api_router() -> ApiRouter<AppState> {
                 doc(o, "listJobEvents", "Jobs", "List a job's audit events")
             }),
         )
+        //  GET /jobs/{id}/watch -- SSE stream of change pings for this job
+        .api_route(
+            "/jobs/{id}/watch",
+            get_with(jobs::watch, |o| {
+                doc(o, "watchJob", "Jobs", "Watch a job for changes").response_with::<200, (), _>(
+                    |r| {
+                        r.description(
+                            "A `text/event-stream` of `change` events; re-GET the job on each.",
+                        )
+                    },
+                )
+            }),
+        )
         //  POST /jobs/{id}/nats-log-token -- mint a NATS read token for this job's logs
         .api_route(
             "/jobs/{id}/nats-log-token",
@@ -280,6 +294,18 @@ pub fn api_router() -> ApiRouter<AppState> {
             "/hosts/{id}/events",
             get_with(hosts::list_events, |o| {
                 doc(o, "listHostEvents", "Hosts", "List a host's audit events")
+            }),
+        )
+        //  GET /hosts/{id}/watch -- SSE stream of change pings for this host
+        .api_route(
+            "/hosts/{id}/watch",
+            get_with(hosts::watch, |o| {
+                doc(o, "watchHost", "Hosts", "Watch a host for changes")
+                    .response_with::<200, (), _>(|r| {
+                        r.description(
+                            "A `text/event-stream` of `change` events; re-GET the host on each.",
+                        )
+                    })
             }),
         )
         //  GET /hosts/{id}/connect

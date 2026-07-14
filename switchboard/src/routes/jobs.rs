@@ -3,6 +3,7 @@ use std::time::Duration;
 use axum::Json;
 use axum::extract::Path;
 use axum::extract::{Query, State};
+use axum::response::Response;
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use http::StatusCode;
@@ -20,6 +21,7 @@ use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_ent
 use crate::audit::model::{Job as AuditJob, Subject as AuditSubject};
 use crate::audit::{self, events};
 use crate::auth::engine::{self, ImageSetPermission, JobPermission};
+use crate::events::EventFilter;
 use crate::http_error::OrInternal;
 use crate::log_streaming::{self, TokenScope};
 use crate::routes::params::IdPath;
@@ -532,6 +534,32 @@ pub async fn terminate(
         // Already terminal: nothing to do.
         job::TerminateOutcome::AlreadyFinalized => StatusCode::NO_CONTENT,
     })
+}
+
+/// Axum handler for `GET /jobs/{id}/watch`.
+///
+/// Opens a Server-Sent Events stream that pings whenever the job's row changes,
+/// gated once at open on the caller's `read` permission (403 otherwise,
+/// including for a nonexistent job). Each ping is contentless; the client
+/// re-`GET`s the job in response.
+pub async fn watch(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(IdPath { id: job_id }): Path<IdPath>,
+) -> Result<Response, StatusCode> {
+    let authorized =
+        engine::can_access_job(state.pool(), subject.user_id(), job_id, JobPermission::Read)
+            .await
+            .or_internal("checking job read access for a watch stream")?;
+    if !authorized {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let sub = state.event_bus().subscribe(EventFilter {
+        table: "jobs",
+        key: Some(("job_id", job_id)),
+    });
+    Ok(crate::routes::sse::response(sub, &state.config().service))
 }
 
 /// Axum handler for `POST /jobs/{id}/nats-log-token`.

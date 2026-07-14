@@ -56,6 +56,9 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
             supervisor_reconcile_interval: std::time::Duration::from_secs(30),
             scheduler_event_debounce: std::time::Duration::from_millis(250),
             supervisor_event_debounce: std::time::Duration::from_millis(100),
+            sse_event_debounce: std::time::Duration::from_millis(250),
+            sse_keepalive: std::time::Duration::from_secs(15),
+            sse_channel_ttl: std::time::Duration::from_secs(30 * 60),
         },
         oauth: OAuthConfig {
             github: Some(GitHubOAuthConfig {
