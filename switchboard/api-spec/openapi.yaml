@@ -320,6 +320,31 @@ paths:
                 $ref: '#/components/schemas/AuditFeedResponse'
       security:
       - token: []
+  /jobs/{id}/watch:
+    get:
+      tags:
+      - Jobs
+      summary: Watch a job for changes
+      operationId: watchJob
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: A `text/event-stream` of `change` events; re-GET the job on each.
+      security:
+      - token: []
   /jobs/{id}/nats-log-token:
     post:
       tags:
@@ -592,6 +617,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuditFeedResponse'
+      security:
+      - token: []
+  /hosts/{id}/watch:
+    get:
+      tags:
+      - Hosts
+      summary: Watch a host for changes
+      operationId: watchHost
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: A `text/event-stream` of `change` events; re-GET the host on each.
       security:
       - token: []
   /hosts/{id}/connect:

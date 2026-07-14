@@ -249,6 +249,19 @@ pub struct ServiceConfig {
         default = "default_supervisor_event_debounce"
     )]
     pub supervisor_event_debounce: Duration,
+    /// Minimum spacing between change pings pushed to a client watch (SSE)
+    /// channel under sustained DB change notifications.
+    #[serde(with = "humantime_serde", default = "default_sse_event_debounce")]
+    pub sse_event_debounce: Duration,
+    /// Interval between keepalive comments on a client watch (SSE) channel, to
+    /// keep idle intermediaries from dropping the connection.
+    #[serde(with = "humantime_serde", default = "default_sse_keepalive")]
+    pub sse_keepalive: Duration,
+    /// How long a client watch (SSE) channel stays open before the server ends
+    /// it and the client reconnects (re-authorizing). Applied with jitter so
+    /// channels opened together do not all expire at once.
+    #[serde(with = "humantime_serde", default = "default_sse_channel_ttl")]
+    pub sse_channel_ttl: Duration,
 }
 
 fn default_scheduler_event_debounce() -> Duration {
@@ -257,6 +270,18 @@ fn default_scheduler_event_debounce() -> Duration {
 
 fn default_supervisor_event_debounce() -> Duration {
     Duration::from_millis(100)
+}
+
+fn default_sse_event_debounce() -> Duration {
+    Duration::from_millis(250)
+}
+
+fn default_sse_keepalive() -> Duration {
+    Duration::from_secs(15)
+}
+
+fn default_sse_channel_ttl() -> Duration {
+    Duration::from_secs(30 * 60)
 }
 
 /// Load the switchboard configuration.
@@ -330,6 +355,9 @@ mod tests {
                 supervisor_reconcile_interval: Duration::from_secs(30),
                 scheduler_event_debounce: Duration::from_millis(250),
                 supervisor_event_debounce: Duration::from_millis(100),
+                sse_event_debounce: Duration::from_millis(250),
+                sse_keepalive: Duration::from_secs(15),
+                sse_channel_ttl: Duration::from_secs(30 * 60),
             },
             oauth: OAuthConfig::default(),
             log_streaming: None,
