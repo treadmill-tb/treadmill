@@ -34,8 +34,8 @@
           pname = "tml-puppet";
           version = "0.1.0";
 
-          # Same per-crate fileset as the native crane build: workspace
-          # skeleton + puppet/, treadmill-rs/, control-socket/tcp/client/.
+          # Same per-crate fileset as the native crane build: workspace skeleton
+          # + puppet/, treadmill-rs/, supervisor/control-socket/tcp/client/.
           # Editing other workspace crates won't invalidate this build.
           src = cmn.binSrcs.tml-puppet;
           buildAndTestSubdir = "puppet";

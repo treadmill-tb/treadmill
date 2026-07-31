@@ -9,16 +9,16 @@ Treadmill is a **distributed hardware testbed**: it uses a central "switchboard"
 to schedule jobs onto real or virtual hardware "hosts" and gives users an
 image-based, reproducible way to run workloads on them.
 
-| Component                             | Crate(s)           | Role                                          |
-|---------------------------------------|--------------------|-----------------------------------------------|
-| **Switchboard** (central coordinator) | `switchboard/`     | Central coordinator.                          |
-| **Supervisors**                       | `supervisor/*`     | Control and manage hosts.                     |
-| **Connectors**                        | `connector/*`,     | Protocol between switchboard and supervisors. |
-| **Puppet**                            | `puppet/`          | Agent on hosts talking to supervisors.        |
-| **Control Sockets**                   | `control-socket/*` | Protocol between supervisors and puppet.      |
-| **CLI**                               | `cli/`             | `tml` user-facing command-line client.        |
-| **Shared Library**                    | `treadmill-rs/`    | Common types & infrastructure.                |
-| **Web Console (SPA)**                 | `console/`         | Browser frontend for the switchboard API.     |
+| Component                             | Crate(s)                      | Role                                          |
+|---------------------------------------|-------------------------------|-----------------------------------------------|
+| **Switchboard** (central coordinator) | `switchboard/`                | Central coordinator.                          |
+| **Supervisors**                       | `supervisor/*`                | Control and manage hosts.                     |
+| **Connectors**                        | `supervisor/connector/*`,     | Protocol between switchboard and supervisors. |
+| **Puppet**                            | `puppet/`                     | Agent on hosts talking to supervisors.        |
+| **Control Sockets**                   | `supervisor/control-socket/*` | Protocol between supervisors and puppet.      |
+| **CLI**                               | `cli/`                        | `tml` user-facing command-line client.        |
+| **Shared Library**                    | `treadmill-rs/`               | Common types & infrastructure.                |
+| **Web Console (SPA)**                 | `console/`                    | Browser frontend for the switchboard API.     |
 
 ## 2. Toolchain & Development Environment (Nix)
 
@@ -200,7 +200,7 @@ nix run .#qemu-supervisor-local -- --image ghcr.io/<org>/<repo>:<tag>
 It starts a per-developer `zot` that sources the image from the upstream
 registry (on-demand pull-through by default; `--copy` does an upfront `skopeo
 copy`), resolves the tag to a manifest digest, and runs the QEMU supervisor
-under the switchboard-less **`local` connector** (`connector/local`,
+under the switchboard-less **`local` connector** (`supervisor/connector/local`,
 `coord_connector = "local"`). The connector synthesizes one `StartJobMessage`
 from CLI flags (`--ssh-key`, `-p key=val`, `--stop-after`, …), streams the guest
 console to the terminal, and tears down on guest-exit or Ctrl-C. The wrapper
