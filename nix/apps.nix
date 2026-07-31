@@ -218,8 +218,9 @@
       # without the switchboard/console/DB/NATS control plane. Brings up a
       # per-developer zot that sources an image from an upstream registry
       # (ghcr.io by default), then drives a single job through the
-      # switchboard-less `local` connector (connector/local). The guest console
-      # streams to the terminal; Ctrl-C stops the job and tears down.
+      # switchboard-less `local` connector (supervisor/connector/local). The
+      # guest console streams to the terminal; Ctrl-C stops the job and tears
+      # down.
       #
       # Linux-only (it needs the qemu supervisor + zot, which are themselves
       # Linux-only here); on other systems the runtime inputs and firmware are

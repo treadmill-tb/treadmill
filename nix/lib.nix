@@ -161,9 +161,9 @@ let
     let
       supervisorShared = [
         "treadmill-rs"
-        "control-socket/tcp/server"
-        "connector/local"
-        "connector/ws"
+        "supervisor/control-socket/tcp/server"
+        "supervisor/connector/local"
+        "supervisor/connector/ws"
         "supervisor/lib"
       ];
     in
@@ -187,7 +187,7 @@ let
       tml-puppet.members = [
         "puppet"
         "treadmill-rs"
-        "control-socket/tcp/client"
+        "supervisor/control-socket/tcp/client"
       ];
       treadmill-qemu-supervisor.members = supervisorShared ++ [ "supervisor/qemu" ];
       treadmill-nbd-netboot-supervisor.members = supervisorShared ++ [ "supervisor/nbd-netboot" ];
