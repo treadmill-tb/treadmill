@@ -1,10 +1,14 @@
-_: {
+{ self, ... }:
+{
   perSystem =
     { pkgs, ... }:
     let
       mkConsole = pkgs.lib.makeOverridable (
         {
           apiUrl ? "",
+          # `self.dirtyShortRev` would change on every uncommitted edit anywhere
+          # in the tree, so omitting that information here.
+          rev ? (self.shortRev or "unknown"),
         }:
         pkgs.buildNpmPackage {
           pname = "treadmill-console";
@@ -29,6 +33,7 @@ _: {
           REDOCLY_TELEMETRY = "off";
 
           VITE_TML_API_URL = apiUrl;
+          VITE_TML_CONSOLE_REV = rev;
 
           preBuild = ''
             cp app/api/schema.d.ts schema.committed.d.ts

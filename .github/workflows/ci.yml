@@ -95,10 +95,14 @@ jobs:
             echo "vars.TML_CONSOLE_API_URL must be set" >&2
             exit 1
           fi
+          export TML_CONSOLE_REV="${GITHUB_SHA:0:7}"
           nix build --impure --print-build-logs --out-link console-result --expr '
             (builtins.getFlake (toString ./.))
               .packages.${builtins.currentSystem}.console
-              .override { apiUrl = builtins.getEnv "TML_CONSOLE_API_URL"; }
+              .override {
+                apiUrl = builtins.getEnv "TML_CONSOLE_API_URL";
+                rev = builtins.getEnv "TML_CONSOLE_REV";
+              }
           '
 
       - name: Resolve symlinks in console build
