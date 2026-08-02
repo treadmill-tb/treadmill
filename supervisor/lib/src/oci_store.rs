@@ -539,11 +539,48 @@ mod tests {
             .port()
     }
 
+    /// Zot config with garbage collection disabled: what every test seeds
+    /// against (see [`Zot::enable_gc`]).
+    fn plain_config(store: &Path, port: u16) -> String {
+        format!(
+            r#"{{"storage":{{"rootDirectory":"{store}","dedupe":true}},
+                "http":{{"address":"127.0.0.1","port":"{port}"}},
+                "log":{{"level":"error"}}}}"#,
+            store = store.display(),
+        )
+    }
+
+    /// Zot config with garbage collection enabled (plan §7.3): periodic GC on a
+    /// short interval, no grace delay for unreferenced blobs (`gcDelay: 0` ⇒
+    /// collect immediately), and a retention policy that prunes untagged
+    /// manifests. References (tags) keep a manifest reachable, so the lease tags
+    /// pushed by [`OciStore::pin`] are honored by GC.
+    ///
+    /// `gcDelay: 0` also makes every *in-flight blob upload* immediately
+    /// "unclaimed", so a GC sweep landing mid-push deletes the `.uploads/` file
+    /// out from under the client and the finishing `PUT` fails with a 500. Only
+    /// ever run this config on a store that is already seeded — see
+    /// [`Zot::enable_gc`].
+    fn gc_config(store: &Path, port: u16) -> String {
+        format!(
+            r#"{{"storage":{{"rootDirectory":"{store}","dedupe":true,
+                  "gc":true,"gcDelay":"0s","gcInterval":"1s",
+                  "retention":{{"policies":[
+                    {{"repositories":["**"],"deleteUntagged":true}}]}}}},
+                "http":{{"address":"127.0.0.1","port":"{port}"}},
+                "log":{{"level":"error"}}}}"#,
+            store = store.display(),
+        )
+    }
+
     /// A running child Zot; killed on drop.
     struct Zot {
+        bin: PathBuf,
         child: Child,
         port: u16,
         store: PathBuf,
+        config_path: PathBuf,
+        log_path: PathBuf,
         _dir: TempDir,
     }
 
@@ -560,63 +597,73 @@ mod tests {
             format!("127.0.0.1:{}", self.port)
         }
 
-        /// Start Zot with a temp store.
+        /// Start Zot with a temp store and garbage collection disabled; wait
+        /// until its API is up.
         fn start(zot_bin: &Path) -> Zot {
-            Self::spawn(zot_bin, |store, port| {
-                format!(
-                    r#"{{"storage":{{"rootDirectory":"{store}","dedupe":true}},
-                        "http":{{"address":"127.0.0.1","port":"{port}"}},
-                        "log":{{"level":"error"}}}}"#,
-                    store = store.display(),
-                )
-            })
-        }
-
-        /// Start Zot with garbage collection enabled (plan §7.3): periodic GC on
-        /// a short interval, no grace delay for unreferenced blobs (`gcDelay: 0`
-        /// ⇒ collect immediately), and a retention policy that prunes untagged
-        /// manifests. References (tags) keep a manifest reachable, so the lease
-        /// tags pushed by [`OciStore::pin`] are honored by GC.
-        fn start_gc(zot_bin: &Path) -> Zot {
-            Self::spawn(zot_bin, |store, port| {
-                format!(
-                    r#"{{"storage":{{"rootDirectory":"{store}","dedupe":true,
-                          "gc":true,"gcDelay":"0s","gcInterval":"1s",
-                          "retention":{{"policies":[
-                            {{"repositories":["**"],"deleteUntagged":true}}]}}}},
-                        "http":{{"address":"127.0.0.1","port":"{port}"}},
-                        "log":{{"level":"error"}}}}"#,
-                    store = store.display(),
-                )
-            })
-        }
-
-        /// Spawn a child Zot whose config is built by `config` from the temp
-        /// store path and a free port; wait until its API is up.
-        fn spawn(zot_bin: &Path, config: impl FnOnce(&Path, u16) -> String) -> Zot {
             let dir = tempfile::tempdir().unwrap();
             let store = dir.path().join("store");
             let port = free_port();
 
             let config_path = dir.path().join("config.json");
-            std::fs::write(&config_path, config(&store, port)).unwrap();
+            std::fs::write(&config_path, plain_config(&store, port)).unwrap();
+            let log_path = dir.path().join("zot.log");
 
-            let child = Command::new(zot_bin)
-                .arg("serve")
-                .arg(&config_path)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("spawn zot");
-
+            let child = Self::spawn(zot_bin, &config_path, &log_path);
             let zot = Zot {
+                bin: zot_bin.to_path_buf(),
                 child,
                 port,
                 store,
+                config_path,
+                log_path,
                 _dir: dir,
             };
             zot.wait_ready();
             zot
+        }
+
+        /// Restart this daemon with garbage collection enabled ([`gc_config`]),
+        /// on the same store directory and port.
+        ///
+        /// GC is switched on only *after* a test has seeded its images, because
+        /// the aggressive `gcDelay: 0` setting the GC tests need also collects
+        /// in-flight blob uploads: a sweep landing mid-`skopeo copy` unlinks the
+        /// upload and the push fails with a 500. Seeding against a GC-less
+        /// daemon removes that race entirely rather than papering over it with a
+        /// grace period a loaded CI machine could still exceed.
+        fn enable_gc(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            std::fs::write(&self.config_path, gc_config(&self.store, self.port)).unwrap();
+            self.child = Self::spawn(&self.bin, &self.config_path, &self.log_path);
+            self.wait_ready();
+        }
+
+        /// Spawn a child Zot serving `config_path`, with its log appended to
+        /// `log_path` so failures can report what the daemon did.
+        fn spawn(zot_bin: &Path, config_path: &Path, log_path: &Path) -> Child {
+            let log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)
+                .expect("open zot log");
+            let errlog = log.try_clone().expect("clone zot log handle");
+
+            Command::new(zot_bin)
+                .arg("serve")
+                .arg(config_path)
+                .stdout(Stdio::from(log))
+                .stderr(Stdio::from(errlog))
+                .spawn()
+                .expect("spawn zot")
+        }
+
+        /// The tail of the daemon's log, for failure messages.
+        fn log_tail(&self) -> String {
+            let log = std::fs::read_to_string(&self.log_path).unwrap_or_default();
+            let mut lines: Vec<&str> = log.lines().rev().take(30).collect();
+            lines.reverse();
+            lines.join("\n")
         }
 
         fn wait_ready(&self) {
@@ -643,7 +690,7 @@ mod tests {
 
     /// Push the fixture layout into `zot` under `repo:latest` via skopeo.
     fn skopeo_push(skopeo: &Path, fixture: &Path, zot: &Zot, repo: &str) {
-        let status = Command::new(skopeo)
+        let out = Command::new(skopeo)
             // No /etc/containers/policy.json in the Nix sandbox — accept any.
             .arg("--insecure-policy")
             // Ignore the host's registries.conf: a v1-format file on the
@@ -653,11 +700,15 @@ mod tests {
             .arg("--dest-tls-verify=false")
             .arg(format!("oci:{}", fixture.display()))
             .arg(format!("docker://{}/{repo}:latest", zot.authority()))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+            .output()
             .expect("run skopeo");
-        assert!(status.success(), "skopeo copy into zot failed: {status:?}",);
+        assert!(
+            out.status.success(),
+            "skopeo copy into zot failed: {:?}\n--- skopeo stderr ---\n{}\n--- zot log (tail) ---\n{}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim_end(),
+            zot.log_tail(),
+        );
     }
 
     /// Manifest digest of the fixture, read from its layout index.
@@ -883,10 +934,17 @@ mod tests {
     #[tokio::test]
     async fn lease_pins_against_gc() {
         let r = skip_unless_available!();
-        let zot = Zot::start_gc(&r.zot);
+        // Seed with GC off (see `Zot::enable_gc`), then turn it on: both the
+        // fixture and the victim are pushed up front, so no push ever races a
+        // sweep.
+        let mut zot = Zot::start(&r.zot);
         // Seed the local repository directly, tagged: the tag keeps the
         // manifest referenced until the lease is taken.
         skopeo_push(&r.skopeo, &r.fixture, &zot, LOCAL_REPOSITORY);
+        // Stage a victim *in the same repo* (so a single GC pass over the repo
+        // decides both); it is untagged below, once GC is running.
+        let (victim_config, victim_layer) = push_victim(&zot, LOCAL_REPOSITORY, "victim").await;
+        zot.enable_gc();
 
         let store = OciStore::new(zot.authority(), &zot.store);
         let digest = fixture_manifest_digest(&r.fixture);
@@ -906,9 +964,7 @@ mod tests {
         let job = "550e8400-e29b-41d4-a716-446655440000";
         store.pin(&digest, job).await.expect("pin");
 
-        // Stage an unreferenced victim *in the same repo* (so a single GC pass
-        // over the repo decides both) and untag it so it is collectible.
-        let (victim_config, victim_layer) = push_victim(&zot, LOCAL_REPOSITORY, "victim").await;
+        // Untag the staged victim, leaving it unreferenced and collectible.
         delete_ref(&zot.authority(), LOCAL_REPOSITORY, "victim").await;
 
         // Drop the fixture's catalog tag, so only the lease now references it.
@@ -961,8 +1017,10 @@ mod tests {
         use std::sync::Arc;
 
         let r = skip_unless_available!();
-        let zot = Zot::start_gc(&r.zot);
+        // Seed with GC off, then turn it on (see `Zot::enable_gc`).
+        let mut zot = Zot::start(&r.zot);
         skopeo_push(&r.skopeo, &r.fixture, &zot, LOCAL_REPOSITORY);
+        zot.enable_gc();
 
         let store = Arc::new(OciStore::new(zot.authority(), &zot.store));
         let digest = fixture_manifest_digest(&r.fixture);
