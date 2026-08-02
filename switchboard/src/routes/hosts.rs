@@ -130,7 +130,9 @@ use crate::supervisor_ws_worker::{SupervisorWSWorker, SupervisorWSWorkerConfig};
 ///
 /// Responds with an `Upgrade: websocket` and launches the supervisor worker as
 /// a `tokio` task.
-#[instrument(skip(state))]
+// `skip_all`: the remaining arguments are the bearer token and the raw request
+// headers, which must not become span fields.
+#[instrument(skip_all, fields(host_id = %host_id))]
 pub async fn connect(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -142,7 +144,7 @@ pub async fn connect(
     let auth_token = match SecurityToken::try_from(bearer) {
         Ok(t) => t,
         Err(e) => {
-            tracing::warn!("Failed to extract bearer token: {e}");
+            tracing::debug!("Failed to extract bearer token: {e}");
             return StatusCode::FORBIDDEN.into_response();
         }
     };
@@ -151,23 +153,21 @@ pub async fn connect(
     match auth_result {
         Ok(true) => (), // Success!
         Ok(false) => {
-            tracing::warn!("invalid host-token ({host_id}, {auth_token}) combination");
+            tracing::warn!("invalid token presented for host ({host_id})");
             return StatusCode::FORBIDDEN.into_response();
         }
         Err(e) => {
-            tracing::error!(
-                "failed to authenticate supervisor for host ({host_id}) with token ({auth_token}): {e}"
-            );
+            tracing::error!("failed to authenticate supervisor for host ({host_id}): {e}");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
 
     /// Check that the WebSocket subprotocol is correctly specified as `treadmill`.
-    fn check_protocol_header(protocol: Option<&HeaderValue>, socket_addr: SocketAddr) -> bool {
+    fn check_protocol_header(protocol: Option<&HeaderValue>, host_id: Uuid) -> bool {
         if let Some(protocol) = protocol {
             if protocol != HeaderValue::from_static(TREADMILL_WEBSOCKET_PROTOCOL) {
-                tracing::error!(
-                    "Websocket connection from {socket_addr} specifies \
+                tracing::warn!(
+                    "Websocket connection for host ({host_id}) specifies \
 		     `Sec-Websocket-Protocol: {protocol:?}`, which is not \
 		     recognized. Closing."
                 );
@@ -176,8 +176,8 @@ pub async fn connect(
                 true
             }
         } else {
-            tracing::error!(
-                "Websocket connection from {socket_addr} does not specify \
+            tracing::warn!(
+                "Websocket connection for host ({host_id}) does not specify \
 		 Sec-Websocket-Protocol, closing."
             );
             false
@@ -218,41 +218,40 @@ pub async fn connect(
     let log_streaming = state.log_streaming().cloned();
     let event_bus = state.event_bus().clone();
 
-    let mut response = ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL]).on_upgrade(
-        move |mut web_socket| async move {
-            tokio::spawn(async move {
-                // Resolve the subprotocol check into an owned `bool` before
-                // any `.await`: `protocol()` borrows `web_socket`, and that
-                // borrow must not straddle the send below — a live
-                // `&WebSocket` across an await would force the spawned future
-                // to require `WebSocket: Sync`, which it isn't.
-                let wrong_protocol = !check_protocol_header(web_socket.protocol(), socket_addr);
-                if wrong_protocol {
-                    if let Err(e) = web_socket.send(ws::Message::Close(None)).await {
-                        tracing::error!(
-                            "Failed to send close frame (wrong subprotocol) to {socket_addr}: {e}."
-                        );
+    let mut response =
+        ws.protocols([TREADMILL_WEBSOCKET_PROTOCOL])
+            .on_upgrade(move |mut web_socket| async move {
+                tokio::spawn(async move {
+                    // Resolve the subprotocol check into an owned `bool` before
+                    // any `.await`: `protocol()` borrows `web_socket`, and that
+                    // borrow must not straddle the send below — a live
+                    // `&WebSocket` across an await would force the spawned future
+                    // to require `WebSocket: Sync`, which it isn't.
+                    let wrong_protocol = !check_protocol_header(web_socket.protocol(), host_id);
+                    if wrong_protocol {
+                        if let Err(e) = web_socket.send(ws::Message::Close(None)).await {
+                            tracing::warn!(
+                                "Failed to send close frame (wrong subprotocol) \
+			     for host ({host_id}): {e}."
+                            );
+                        }
+                        return;
                     }
-                    return;
-                }
 
-                tracing::info!(
-                    "Starting SupervisorWSWorker for host \
-		     ({host_id}), connecting from {socket_addr}."
-                );
+                    tracing::info!("Starting SupervisorWSWorker for host ({host_id}).");
+                    tracing::debug!("Host ({host_id}) is connecting from {socket_addr}.");
 
-                SupervisorWSWorker::run(
-                    worker_pool,
-                    host_id,
-                    web_socket,
-                    ws_worker_config,
-                    log_streaming,
-                    event_bus,
-                )
-                .await
+                    SupervisorWSWorker::run(
+                        worker_pool,
+                        host_id,
+                        web_socket,
+                        ws_worker_config,
+                        log_streaming,
+                        event_bus,
+                    )
+                    .await
+                });
             });
-        },
-    );
 
     let server_hello_json = serde_json::to_string(&ServerHello {
         protocol: ProtocolVersion::CURRENT,

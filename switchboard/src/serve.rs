@@ -122,8 +122,15 @@ pub async fn pg_pool_from_config(db_config: &DatabaseConfig) -> Result<PgPool, s
 pub async fn serve(serve_command: ServeCommand) -> anyhow::Result<()> {
     let config = super::config::load_configuration(serve_command.config.as_deref())?;
 
-    tracing_subscriber::fmt::init();
+    // Held for the process lifetime; dropping it flushes pending Sentry events.
+    let _sentry = crate::observability::init(config.sentry.as_ref())?;
 
+    run(config).await.inspect_err(|e| {
+        sentry::integrations::anyhow::capture_anyhow(e);
+    })
+}
+
+async fn run(config: SwitchboardConfig) -> anyhow::Result<()> {
     // The mock OAuth provider is an unauthenticated login bypass intended only
     // for local development; warn loudly at startup if it is enabled so it can
     // never run in production unnoticed.

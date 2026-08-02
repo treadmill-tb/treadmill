@@ -289,7 +289,7 @@ pub async fn enqueue(
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
     let job_timeout = PgInterval::try_from(timeout).map_err(|e| {
-        tracing::warn!("rejecting job with unrepresentable timeout: {e}");
+        tracing::debug!("rejecting job with unrepresentable timeout: {e}");
         StatusCode::UNPROCESSABLE_ENTITY
     })?;
 

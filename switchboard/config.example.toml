@@ -25,6 +25,15 @@ supervisor_ping_interval = "2s"
 supervisor_pong_dead = "10s"
 supervisor_reconcile_interval = "5s"
 
+# Sentry error reporting, optional.
+# [sentry]
+# dsn = "https://<key>@<org>.ingest.us.sentry.io/<project>"
+# environment = "production"
+# release = "git-<sha>"
+# `warn` (default) or `error`: the lowest level reported as an issue.
+# event_level = "warn"
+# sample_rate = 1.0
+
 # OAuth login providers. Optional; omit the whole section to disable interactive
 # login. Each provider is independently optional.
 #

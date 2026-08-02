@@ -7,6 +7,7 @@ pub(crate) mod http_error;
 pub mod log_streaming;
 pub mod manage;
 pub mod matcher;
+pub mod observability;
 pub mod registry;
 pub mod routes;
 pub mod scheduler;

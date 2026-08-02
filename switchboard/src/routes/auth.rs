@@ -239,7 +239,9 @@ pub struct CallbackQuery {
 /// session token is issued here — every outcome hands the caller a single-use
 /// staged pair (via the flow's `return_to` redirect, or as JSON) that `POST
 /// /auth/login/complete` exchanges for the token.
-#[tracing::instrument(skip(state, query))]
+// `parts` is skipped: its `Debug` carries the request URI (with the OAuth code)
+// and every header.
+#[tracing::instrument(skip(state, query, parts))]
 pub async fn callback(
     State(state): State<AppState>,
     Path(ProviderPath {
@@ -274,7 +276,7 @@ pub async fn callback(
             return Err(StatusCode::BAD_REQUEST);
         }
         None => {
-            tracing::warn!("callback presented an unknown or expired state");
+            tracing::debug!("callback presented an unknown or expired state");
             return Err(StatusCode::BAD_REQUEST);
         }
     };
@@ -404,9 +406,9 @@ pub async fn callback(
                 Ok(ids) => ids,
                 Err(e) => {
                     tracing::warn!(
-                        "org lookup failed during {} registration for {}: {e}",
+                        "org lookup failed during {} registration for identity {}: {e}",
                         provider.name(),
-                        identity.login,
+                        identity.provider_user_id,
                     );
                     record_registration_denied(
                         &state,
@@ -437,13 +439,13 @@ pub async fn callback(
                 )
                 .await?;
                 tracing::warn!(
-                    "registration denied for {} ({}, groups: {:?}) via {}: {}",
-                    identity.login,
+                    "registration denied for identity {} (groups: {:?}) via {}: {}",
                     identity.provider_user_id,
                     org_ids,
                     provider.name(),
                     reason.as_str(),
                 );
+                tracing::debug!("denied registration was for {}", identity.login);
                 return Err(StatusCode::FORBIDDEN);
             }
 
@@ -461,8 +463,7 @@ pub async fn callback(
                 )
                 .await?;
                 tracing::warn!(
-                    "registration denied for {} ({}) via {}: no verified primary email",
-                    identity.login,
+                    "registration denied for identity {} via {}: no verified primary email",
                     identity.provider_user_id,
                     provider.name(),
                 );
@@ -771,7 +772,7 @@ impl FromRequest<AppState> for LoginCompleteBody {
 /// browser form completing a `return_to` flow — stages a fresh ready-to-claim
 /// pair and 302s it to the flow's return point, where the frontend exchanges
 /// it server-to-server.
-#[tracing::instrument(skip(state, body))]
+#[tracing::instrument(skip(state, body, parts))]
 pub async fn login_complete(
     State(state): State<AppState>,
     parts: Parts,
