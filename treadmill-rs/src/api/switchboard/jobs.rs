@@ -1,6 +1,7 @@
 //! Job-scoped client API types.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -225,6 +226,19 @@ pub struct JobParameterView {
     pub value: Option<String>,
 }
 
+/// One service a running job announces, as exposed by `GET /jobs/{id}`.
+///
+/// All three fields are opaque to the switchboard, which stores and echoes them
+/// without interpretation. `name` identifies the service within its job,
+/// `label` is optional human-readable text to display, and `protocol` is a
+/// token the client interprets to decide how to connect (`webapp`, `sshws`, …).
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct JobServiceView {
+    pub name: String,
+    pub label: Option<String>,
+    pub protocol: String,
+}
+
 /// The full server-side view of a single job, returned by `GET /jobs/{id}`.
 ///
 /// Covers the job's identity, ownership, lifecycle state, the spec it was
@@ -278,6 +292,14 @@ pub struct JobInfo {
     pub exit_message: Option<String>,
     /// When the job was finalized; null until then.
     pub terminated_at: Option<DateTime<Utc>>,
+
+    /// The services the job most recently announced; empty until it announces
+    /// any. An announcement replaces the whole set, so this always mirrors the
+    /// latest one.
+    pub services: Vec<JobServiceView>,
+    /// The job's internal network address, as reported by its supervisor; null
+    /// until reported. Retained on the terminal record.
+    pub job_ip_address: Option<IpAddr>,
 
     /// The viewer's permissions on this job.
     pub permissions: Vec<JobPermission>,

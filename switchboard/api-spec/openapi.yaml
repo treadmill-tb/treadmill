@@ -2216,6 +2216,14 @@ components:
         job_id:
           type: string
           format: uuid
+        job_ip_address:
+          description: |-
+            The job's internal network address, as reported by its supervisor; null
+            until reported. Retained on the terminal record.
+          type:
+          - string
+          - 'null'
+          format: ip
         label:
           description: The user-provided display label, if any.
           type:
@@ -2252,6 +2260,14 @@ components:
           - type: 'null'
         restart_policy:
           $ref: '#/components/schemas/RestartPolicyState'
+        services:
+          description: |-
+            The services the job most recently announced; empty until it announces
+            any. An announcement replaces the whole set, so this always mirrors the
+            latest one.
+          type: array
+          items:
+            $ref: '#/components/schemas/JobServiceView'
         started_at:
           description: When the job was dispatched onto a host; null if not yet started.
           type:
@@ -2303,6 +2319,7 @@ components:
       - parameters
       - timeout_secs
       - queued_at
+      - services
       - permissions
     JobInitSpec:
       oneOf:
@@ -2535,6 +2552,27 @@ components:
       - init_spec
       - restart_policy
       - parameters
+    JobServiceView:
+      description: |-
+        One service a running job announces, as exposed by `GET /jobs/{id}`.
+
+        All three fields are opaque to the switchboard, which stores and echoes them
+        without interpretation. `name` identifies the service within its job,
+        `label` is optional human-readable text to display, and `protocol` is a
+        token the client interprets to decide how to connect (`webapp`, `sshws`, …).
+      type: object
+      properties:
+        label:
+          type:
+          - string
+          - 'null'
+        name:
+          type: string
+        protocol:
+          type: string
+      required:
+      - name
+      - protocol
     JobState:
       description: |-
         Where a job is in its execution lifecycle: queued → assigned → initializing

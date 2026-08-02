@@ -8,8 +8,9 @@ use std::collections::BTreeSet;
 use std::net::IpAddr;
 use treadmill_rs::api::switchboard::jobs::{
     JobImageRef, JobInfo, JobInitializingStage as ClientJobInitializingStage, JobParameterView,
-    JobPermission as ClientJobPermission, JobSummary, RestartPolicy as ClientRestartPolicy,
-    RestartPolicyState, TaskExitStatus as ClientTaskExitStatus,
+    JobPermission as ClientJobPermission, JobServiceView, JobSummary,
+    RestartPolicy as ClientRestartPolicy, RestartPolicyState,
+    TaskExitStatus as ClientTaskExitStatus,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, TerminationReason};
 use treadmill_rs::api::switchboard_supervisor::{
@@ -402,6 +403,10 @@ pub struct SqlJob {
     // consumed by the worker's reconcile (see `switchboard_stop_reason`).
     terminate_requested_at: Option<DateTime<Utc>>,
 
+    // The internal address the job's supervisor reports for it, retained on the
+    // terminal record. Stored as `inet`, hence `IpNetwork` rather than `IpAddr`.
+    job_ip_address: Option<IpNetwork>,
+
     // Filled out when transitioned into `finalized` job state
     #[allow(dead_code)]
     termination_reason: Option<SqlTerminationReason>,
@@ -517,7 +522,9 @@ impl SqlJob {
     /// [`JobImageRef`] (resume → restart → concrete image → image set, matching
     /// the row invariants in `SCHEMA.sql`). Stored digests are re-parsed; a
     /// malformed one is a data-integrity fault surfaced as
-    /// [`JobInfoError::Digest`].
+    /// [`JobInfoError::Digest`]. The job's announced services are read
+    /// alongside; [`JobSummary`] (the listing view) carries neither them nor
+    /// the job's IP address.
     pub async fn into_info(
         self,
         conn: &mut sqlx::PgConnection,
@@ -534,6 +541,16 @@ impl SqlJob {
                     value: (!value.secret).then_some(value.value),
                 };
                 (key, view)
+            })
+            .collect();
+
+        let services = fetch_services(self.job_id, &mut *conn)
+            .await?
+            .into_iter()
+            .map(|s| JobServiceView {
+                name: s.name,
+                label: s.label,
+                protocol: s.protocol,
             })
             .collect();
 
@@ -582,6 +599,8 @@ impl SqlJob {
             task_exit_status: self.task_exit_status.map(Into::into),
             exit_message: self.exit_message,
             terminated_at: self.terminated_at,
+            services,
+            job_ip_address: self.job_ip_address.map(|address| address.ip()),
             permissions,
         })
     }
@@ -642,7 +661,8 @@ pub async fn fetch_by_job_id(
         termination_reason as "termination_reason: _",
         task_exit_status as "task_exit_status: _",
         exit_message,
-        terminated_at
+        terminated_at,
+        job_ip_address
         from tml_switchboard.jobs where job_id = $1;
         "#,
         job_id
@@ -917,7 +937,6 @@ pub async fn set_resolved_image(
 ///
 /// Never cleared: like the placement and start time, the address is retained on
 /// the job's terminal record.
-#[allow(dead_code)]
 pub async fn set_job_ip_address(
     job_id: Uuid,
     address: IpAddr,
@@ -935,6 +954,26 @@ pub async fn set_job_ip_address(
     .map(|_| ())
 }
 
+/// A job's currently announced services, ordered by name.
+///
+/// Names are unique within a job, so this order is canonical: a set read back
+/// here compares directly against an announcement sorted the same way.
+pub async fn fetch_services(
+    job_id: Uuid,
+    conn: impl PgExecutor<'_>,
+) -> Result<Vec<JobService>, sqlx::Error> {
+    sqlx::query_as!(
+        JobService,
+        r#"select name, label, protocol
+           from tml_switchboard.job_services
+           where job_id = $1
+           order by name"#,
+        job_id,
+    )
+    .fetch_all(conn)
+    .await
+}
+
 /// Replace a job's announced services with `services`, dropping any it no longer
 /// announces.
 ///
@@ -943,7 +982,6 @@ pub async fn set_job_ip_address(
 /// caller's transaction: a half-applied set must never be observable.
 ///
 /// Announcing a name twice violates the primary key and fails the transaction.
-#[allow(dead_code)]
 pub async fn replace_services(
     job_id: Uuid,
     services: &[JobService],

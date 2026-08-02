@@ -413,7 +413,7 @@ pub enum TaskExitStatus {
 /// clients to display, and `protocol` is a client-interpreted token (`http`,
 /// `ssh-ws`, …) that switchboard, supervisor and puppet store and echo but never
 /// branch on.
-#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct JobService {
     pub name: String,

@@ -343,10 +343,10 @@ async fn event_bus_listener_delivers_wakes(pool: PgPool) {
 
     let bus = EventBus::default();
     tokio::spawn(bus.listener(pool.clone()));
-    let mut subscription = bus.subscribe(EventFilter {
+    let mut subscription = bus.subscribe(&[EventFilter {
         table: "hosts",
         key: Some(("host_id", host)),
-    });
+    }]);
     subscription.changed().await;
 
     // The listener may not have connected yet when the first write commits (a

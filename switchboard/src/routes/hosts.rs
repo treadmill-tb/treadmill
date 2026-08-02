@@ -43,10 +43,10 @@ pub async fn watch(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    let sub = state.event_bus().subscribe(EventFilter {
+    let sub = state.event_bus().subscribe(&[EventFilter {
         table: "hosts",
         key: Some(("host_id", host_id)),
-    });
+    }]);
     Ok(crate::routes::sse::response(sub, &state.config().service))
 }
 

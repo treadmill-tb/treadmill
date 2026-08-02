@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::pin::Pin;
 
 use anyhow::{Context, Result, anyhow};
@@ -6,8 +7,9 @@ use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use sqlx::{PgPool, Postgres, Transaction};
 use tokio::time::{Duration, Instant, Sleep, interval, sleep};
 use treadmill_rs::api::switchboard_supervisor::{
-    ReportedSupervisorStatus, Request, RunningJobState, StopJobMessage, SupervisorEvent,
-    SupervisorJobEvent, SupervisorToSwitchboard, SwitchboardToSupervisor, TaskExitStatus,
+    JobService, ReportedSupervisorStatus, Request, RunningJobState, StopJobMessage,
+    SupervisorEvent, SupervisorJobEvent, SupervisorToSwitchboard, SwitchboardToSupervisor,
+    TaskExitStatus,
 };
 use uuid::Uuid;
 
@@ -515,14 +517,14 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
 
         let wake = Debounced::new(
             vec![
-                event_bus.subscribe(EventFilter {
+                event_bus.subscribe(&[EventFilter {
                     table: "hosts",
                     key: Some(("host_id", host_id)),
-                }),
-                event_bus.subscribe(EventFilter {
+                }]),
+                event_bus.subscribe(&[EventFilter {
                     table: "jobs",
                     key: Some(("dispatched_on_host_id", host_id)),
-                }),
+                }]),
             ],
             config.supervisor_event_debounce,
         );
@@ -963,21 +965,17 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 Ok(PostMsg::Continue)
             }
 
+            // The supervisor-authoritative internal address for the job.
             SupervisorJobEvent::JobNetworkAddress { address } => {
-                tracing::debug!(
-                    %job_id,
-                    %address,
-                    "received JobNetworkAddress event from supervisor; not yet recorded"
-                );
+                tracing::trace!(?address, "received JobNetworkAddress event from supervisor");
+                self.record_job_ip_address(job_id, address).await?;
                 Ok(PostMsg::Continue)
             }
 
+            // The job's full set of announced services, relayed by the supervisor.
             SupervisorJobEvent::JobServiceSet { services } => {
-                tracing::debug!(
-                    %job_id,
-                    ?services,
-                    "received JobServiceSet event from supervisor; not yet recorded"
-                );
+                tracing::trace!(?services, "received JobServiceSet event from supervisor");
+                self.record_service_set(job_id, services).await?;
                 Ok(PostMsg::Continue)
             }
         }
@@ -1123,6 +1121,80 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 %job_id,
                 "Error event for a job not assigned to this host; dropped"
             );
+        }
+        Ok(())
+    }
+
+    /// Record the internal address a [`SupervisorJobEvent::JobNetworkAddress`]
+    /// reports for the job, while it is the one assigned to this host (a
+    /// stale/foreign event is dropped).
+    ///
+    /// The address is supervisor-authoritative and never cleared, so a later
+    /// report simply overwrites an earlier one.
+    async fn record_job_ip_address(&mut self, job_id: Uuid, address: IpAddr) -> WorkerResult<()> {
+        let host_id = self.ctx.host_id;
+
+        let recorded = self
+            .ctx
+            .with_txn(async move |txn| {
+                // Guard: only record against the currently-assigned job.
+                if sql::host::fetch_current_job(host_id, txn).await? != Some(job_id) {
+                    return Ok(false);
+                }
+                sql::job::set_job_ip_address(job_id, address, &mut **txn).await?;
+                Ok(true)
+            })
+            .await?;
+
+        if !recorded {
+            tracing::debug!(
+                %job_id,
+                "JobNetworkAddress for a job not assigned to this host; dropped"
+            );
+        }
+        Ok(())
+    }
+
+    /// Adopt the full service set a [`SupervisorJobEvent::JobServiceSet`]
+    /// announces, while the job is the one assigned to this host (a stale/foreign
+    /// event is dropped).
+    ///
+    /// A set matching the stored one is left alone rather than rewritten: an
+    /// announcement carries the job's whole set, so a supervisor reconnect
+    /// re-asserts an unchanged one, and [`sql::job::replace_services`] would
+    /// notify watchers of a change that did not happen.
+    async fn record_service_set(
+        &mut self,
+        job_id: Uuid,
+        mut services: Vec<JobService>,
+    ) -> WorkerResult<()> {
+        // Match the order `fetch_services` reads back, so the comparison below
+        // is order-insensitive.
+        services.sort_by(|a, b| a.name.cmp(&b.name));
+        let host_id = self.ctx.host_id;
+
+        let replaced = self
+            .ctx
+            .with_txn(async move |txn| {
+                // Guard: only record against the currently-assigned job.
+                if sql::host::fetch_current_job(host_id, txn).await? != Some(job_id) {
+                    return Ok(None);
+                }
+                if sql::job::fetch_services(job_id, &mut **txn).await? == services {
+                    return Ok(Some(false));
+                }
+                sql::job::replace_services(job_id, &services, txn).await?;
+                Ok(Some(true))
+            })
+            .await?;
+
+        match replaced {
+            Some(true) => tracing::info!(%job_id, "adopted announced job service set"),
+            Some(false) => tracing::debug!(%job_id, "announced job service set is unchanged"),
+            None => tracing::debug!(
+                %job_id,
+                "JobServiceSet for a job not assigned to this host; dropped"
+            ),
         }
         Ok(())
     }
@@ -1309,10 +1381,10 @@ mod tests {
     fn idle_wake() -> Debounced {
         let bus = EventBus::default();
         Debounced::new(
-            vec![bus.subscribe(EventFilter {
+            vec![bus.subscribe(&[EventFilter {
                 table: "jobs",
                 key: None,
-            })],
+            }])],
             Duration::from_secs(3600),
         )
     }
@@ -2235,10 +2307,10 @@ mod tests {
         // LISTEN may not be up yet), probing a throwaway host so the state
         // under test stays untouched.
         let probe_host = insert_host(&pool).await?;
-        let mut probe = bus.subscribe(EventFilter {
+        let mut probe = bus.subscribe(&[EventFilter {
             table: "hosts",
             key: Some(("host_id", probe_host)),
-        });
+        }]);
         probe.changed().await;
         loop {
             sqlx::query(
@@ -3709,6 +3781,292 @@ mod tests {
         assert!(
             worker.last_seen_status.is_none(),
             "an Error event must not synthesize an Idle status"
+        );
+        Ok(())
+    }
+
+    fn service(name: &str, label: Option<&str>, protocol: &str) -> JobService {
+        JobService {
+            name: name.to_string(),
+            label: label.map(str::to_string),
+            protocol: protocol.to_string(),
+        }
+    }
+
+    /// Drive one `JobNetworkAddress` event through the worker.
+    async fn announce_address(
+        worker: &mut SupervisorWSWorker<ScriptedSocket>,
+        job_id: Uuid,
+        address: &str,
+    ) {
+        worker
+            .handle_supervisor_event(SupervisorEvent::JobEvent {
+                job_id,
+                event: SupervisorJobEvent::JobNetworkAddress {
+                    address: address.parse().expect("test address must parse"),
+                },
+            })
+            .await
+            .expect("job-network-address event should be handled");
+    }
+
+    /// Drive one `JobServiceSet` event through the worker.
+    async fn announce_services(
+        worker: &mut SupervisorWSWorker<ScriptedSocket>,
+        job_id: Uuid,
+        services: Vec<JobService>,
+    ) {
+        worker
+            .handle_supervisor_event(SupervisorEvent::JobEvent {
+                job_id,
+                event: SupervisorJobEvent::JobServiceSet { services },
+            })
+            .await
+            .expect("job-service-set event should be handled");
+    }
+
+    /// Read a job's recorded `job_ip_address`, without the `inet` netmask.
+    async fn job_ip_address_of(pool: &PgPool, job_id: Uuid) -> anyhow::Result<Option<String>> {
+        let address: Option<String> = sqlx::query_scalar(
+            "select host(job_ip_address) from tml_switchboard.jobs where job_id = $1",
+        )
+        .bind(job_id)
+        .fetch_one(pool)
+        .await?;
+        Ok(address)
+    }
+
+    /// Read a job's announced services as `(name, label, protocol)`, by name.
+    async fn services_of(
+        pool: &PgPool,
+        job_id: Uuid,
+    ) -> anyhow::Result<Vec<(String, Option<String>, String)>> {
+        let rows = sqlx::query_as::<_, (String, Option<String>, String)>(
+            "select name, label, protocol from tml_switchboard.job_services \
+             where job_id = $1 order by name",
+        )
+        .bind(job_id)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// The physical versions of a job's service rows: `xmin` is the inserting
+    /// transaction, so it changes if and only if the rows were rewritten. This
+    /// is what distinguishes a skipped write from a delete+insert that happens
+    /// to restore the same values.
+    async fn service_row_versions(pool: &PgPool, job_id: Uuid) -> anyhow::Result<Vec<String>> {
+        let versions: Vec<String> = sqlx::query_scalar(
+            "select xmin::text from tml_switchboard.job_services \
+             where job_id = $1 order by name",
+        )
+        .bind(job_id)
+        .fetch_all(pool)
+        .await?;
+        Ok(versions)
+    }
+
+    /// A `JobNetworkAddress` event records the supervisor-reported address, and
+    /// a later report overwrites it.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn event_job_network_address_records_address(pool: PgPool) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, _from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        assert_eq!(job_ip_address_of(&pool, job_id).await?, None);
+
+        announce_address(&mut worker, job_id, "fd00::1").await;
+        assert_eq!(
+            job_ip_address_of(&pool, job_id).await?.as_deref(),
+            Some("fd00::1"),
+            "the event must record the reported address"
+        );
+
+        announce_address(&mut worker, job_id, "192.0.2.7").await;
+        assert_eq!(
+            job_ip_address_of(&pool, job_id).await?.as_deref(),
+            Some("192.0.2.7"),
+            "a later report overwrites the recorded address"
+        );
+        Ok(())
+    }
+
+    /// A `JobServiceSet` event adopts the announced set wholesale: a second
+    /// announcement drops the names it no longer carries.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn event_job_service_set_replaces_the_whole_set(pool: PgPool) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, _from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        announce_services(
+            &mut worker,
+            job_id,
+            vec![
+                service("webide", Some("Web IDE"), "webapp"),
+                service("shell", None, "sshws"),
+            ],
+        )
+        .await;
+        assert_eq!(
+            services_of(&pool, job_id).await?,
+            vec![
+                ("shell".to_string(), None, "sshws".to_string()),
+                (
+                    "webide".to_string(),
+                    Some("Web IDE".to_string()),
+                    "webapp".to_string()
+                ),
+            ],
+            "the event must record the announced set"
+        );
+
+        announce_services(
+            &mut worker,
+            job_id,
+            vec![service("webide", Some("Editor"), "webapp")],
+        )
+        .await;
+        assert_eq!(
+            services_of(&pool, job_id).await?,
+            vec![(
+                "webide".to_string(),
+                Some("Editor".to_string()),
+                "webapp".to_string()
+            )],
+            "a later announcement replaces the whole set"
+        );
+
+        announce_services(&mut worker, job_id, vec![]).await;
+        assert_eq!(
+            services_of(&pool, job_id).await?,
+            vec![],
+            "an empty announcement clears the set"
+        );
+        Ok(())
+    }
+
+    /// Re-announcing the set already stored — what a supervisor reconnect does —
+    /// is not written back, so watchers see no change notification.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn event_job_service_set_leaves_an_unchanged_set_alone(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, _from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        let announced = vec![
+            service("webide", Some("Web IDE"), "webapp"),
+            service("shell", None, "sshws"),
+        ];
+        announce_services(&mut worker, job_id, announced.clone()).await;
+        let versions = service_row_versions(&pool, job_id).await?;
+        assert_eq!(versions.len(), 2);
+
+        // Re-announced in the opposite order: the comparison is by set, not by
+        // the order the supervisor happens to send.
+        let mut reordered = announced.clone();
+        reordered.reverse();
+        announce_services(&mut worker, job_id, reordered).await;
+        assert_eq!(
+            service_row_versions(&pool, job_id).await?,
+            versions,
+            "an unchanged set must not rewrite the rows"
+        );
+
+        announce_services(
+            &mut worker,
+            job_id,
+            vec![
+                service("webide", Some("Web IDE"), "webapp"),
+                service("shell", Some("Shell"), "sshws"),
+            ],
+        )
+        .await;
+        assert_ne!(
+            service_row_versions(&pool, job_id).await?,
+            versions,
+            "a set differing only in a label must be written"
+        );
+        Ok(())
+    }
+
+    /// A `JobNetworkAddress` for a job that is not the one assigned to this host
+    /// is dropped.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn event_job_network_address_for_unassigned_job_is_dropped(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        // Bound to the host row, but not the host's current_job.
+        let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, _from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        announce_address(&mut worker, job_id, "fd00::1").await;
+
+        assert_eq!(
+            job_ip_address_of(&pool, job_id).await?,
+            None,
+            "an address for an unassigned job must not be recorded"
+        );
+        Ok(())
+    }
+
+    /// A `JobServiceSet` for a job that is not the one assigned to this host is
+    /// dropped, leaving whatever it announced while it was assigned.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn event_job_service_set_for_unassigned_job_is_dropped(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
+        set_current_job(&pool, host_id, Some(job_id)).await?;
+
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, _from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+
+        announce_services(&mut worker, job_id, vec![service("webide", None, "webapp")]).await;
+        set_current_job(&pool, host_id, None).await?;
+
+        announce_services(&mut worker, job_id, vec![service("shell", None, "sshws")]).await;
+
+        assert_eq!(
+            services_of(&pool, job_id).await?,
+            vec![("webide".to_string(), None, "webapp".to_string())],
+            "a set for an unassigned job must not replace the recorded one"
         );
         Ok(())
     }

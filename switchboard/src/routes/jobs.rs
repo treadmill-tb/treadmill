@@ -537,10 +537,11 @@ pub async fn terminate(
 
 /// Axum handler for `GET /jobs/{id}/watch`.
 ///
-/// Opens a Server-Sent Events stream that pings whenever the job's row changes,
-/// gated once at open on the caller's `read` permission (403 otherwise,
-/// including for a nonexistent job). Each ping is contentless; the client
-/// re-`GET`s the job in response.
+/// Opens a Server-Sent Events stream that pings whenever the job's row or its
+/// announced services change, gated once at open on the caller's `read`
+/// permission (403 otherwise, including for a nonexistent job). Each ping is
+/// contentless; the client re-`GET`s the job in response, which is what carries
+/// both.
 pub async fn watch(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
@@ -554,10 +555,16 @@ pub async fn watch(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    let sub = state.event_bus().subscribe(EventFilter {
-        table: "jobs",
-        key: Some(("job_id", job_id)),
-    });
+    let sub = state.event_bus().subscribe(&[
+        EventFilter {
+            table: "jobs",
+            key: Some(("job_id", job_id)),
+        },
+        EventFilter {
+            table: "job_services",
+            key: Some(("job_id", job_id)),
+        },
+    ]);
     Ok(crate::routes::sse::response(sub, &state.config().service))
 }
 

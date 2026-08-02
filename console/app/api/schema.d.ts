@@ -1015,6 +1015,12 @@ export interface components {
             initializing_stage?: components["schemas"]["JobInitializingStage"] | null;
             /** Format: uuid */
             job_id: string;
+            /**
+             * Format: ip
+             * @description The job's internal network address, as reported by its supervisor; null
+             *     until reported. Retained on the terminal record.
+             */
+            job_ip_address?: string | null;
             /** @description The user-provided display label, if any. */
             label?: string | null;
             /**
@@ -1040,6 +1046,12 @@ export interface components {
              */
             resolved_image_digest?: components["schemas"]["Digest"] | null;
             restart_policy: components["schemas"]["RestartPolicyState"];
+            /**
+             * @description The services the job most recently announced; empty until it announces
+             *     any. An announcement replaces the whole set, so this always mirrors the
+             *     latest one.
+             */
+            services: components["schemas"]["JobServiceView"][];
             /**
              * Format: date-time
              * @description When the job was dispatched onto a host; null if not yet started.
@@ -1194,6 +1206,19 @@ export interface components {
              * @default []
              */
             target_requirements: string[][];
+        };
+        /**
+         * @description One service a running job announces, as exposed by `GET /jobs/{id}`.
+         *
+         *     All three fields are opaque to the switchboard, which stores and echoes them
+         *     without interpretation. `name` identifies the service within its job,
+         *     `label` is optional human-readable text to display, and `protocol` is a
+         *     token the client interprets to decide how to connect (`webapp`, `sshws`, …).
+         */
+        JobServiceView: {
+            label?: string | null;
+            name: string;
+            protocol: string;
         };
         /**
          * @description Where a job is in its execution lifecycle: queued → assigned → initializing
