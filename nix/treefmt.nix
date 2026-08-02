@@ -36,7 +36,6 @@
           "*.lock"
           "*.json"
           "*.md"
-          "switchboard/flyio/**"
           "switchboard/sql-formatter.json"
           # Generated (openapi-typescript); kept as raw codegen output so the
           # drift check in nix/console.nix is a byte-for-byte diff.

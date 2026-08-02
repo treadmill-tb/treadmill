@@ -48,7 +48,6 @@
         ./nix/devshells.nix
         ./nix/console.nix
         ./nix/checks.nix
-        ./nix/docker.nix
       ];
     };
 }
