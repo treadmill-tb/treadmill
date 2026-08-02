@@ -174,7 +174,7 @@
 
       # Assemble the OCI image layout by hand: we need a pure-artifact manifest
       # (empty config + Treadmill artifactType), custom blob media types, and
-      # per-layer/manifest `ci.treadmill.*` annotations that umoci/oras don't
+      # per-layer/manifest `dev.treadmill.*` annotations that umoci/oras don't
       # express conveniently. The result is a standard OCI image layout
       # (oci-layout + index.json + blobs/sha256/<digest>).
       tinyEfiImageLayout =
@@ -243,8 +243,8 @@
                     digest: $base,
                     size: $basesize,
                     annotations: {
-                      "ci.treadmill.role": "root",
-                      "ci.treadmill.qcow2.virtual-size": $basevs
+                      "dev.treadmill.role": "root",
+                      "dev.treadmill.qcow2.virtual-size": $basevs
                     }
                   },
                   {
@@ -252,15 +252,15 @@
                     digest: $overlay,
                     size: $overlaysize,
                     annotations: {
-                      "ci.treadmill.role": "root",
-                      "ci.treadmill.qcow2.virtual-size": $overlayvs,
-                      "ci.treadmill.qcow2.lower": $base
+                      "dev.treadmill.role": "root",
+                      "dev.treadmill.qcow2.virtual-size": $overlayvs,
+                      "dev.treadmill.qcow2.lower": $base
                     }
                   }
                 ],
                 annotations: {
                   "org.opencontainers.image.title": "tiny-efi",
-                  "ci.treadmill.qcow2.head": $overlay
+                  "dev.treadmill.qcow2.head": $overlay
                 }
               }' > manifest.json
 

@@ -44,11 +44,11 @@ pub enum ParseError {
     NotTreadmillImage,
     /// A descriptor digest did not parse as a [`Digest`].
     BadDigest(DigestParseError),
-    /// The `ci.treadmill.role` annotation had an unrecognized value.
+    /// The `dev.treadmill.role` annotation had an unrecognized value.
     UnknownRole(String),
-    /// The `ci.treadmill.qcow2.virtual-size` annotation was not an integer.
+    /// The `dev.treadmill.qcow2.virtual-size` annotation was not an integer.
     BadVirtualSize(String),
-    /// No `ci.treadmill.qcow2.head` annotation on the manifest.
+    /// No `dev.treadmill.qcow2.head` annotation on the manifest.
     MissingHead,
     /// The head digest does not name any layer in the manifest.
     HeadNotALayer(Digest),
@@ -174,14 +174,14 @@ mod tests {
               "config": {{ "mediaType": "application/vnd.oci.empty.v1+json", "digest": "{EMPTY}", "size": 2 }},
               "layers": [
                 {{ "mediaType": "application/vnd.treadmill.disk.qcow2", "digest": "{BASE}", "size": 2085355520,
-                   "annotations": {{ "ci.treadmill.role": "root", "ci.treadmill.qcow2.virtual-size": "2294284288" }} }},
+                   "annotations": {{ "dev.treadmill.role": "root", "dev.treadmill.qcow2.virtual-size": "2294284288" }} }},
                 {{ "mediaType": "application/vnd.treadmill.disk.qcow2", "digest": "{OVERLAY}", "size": 3145728,
-                   "annotations": {{ "ci.treadmill.role": "root", "ci.treadmill.qcow2.virtual-size": "{virtual_size_overlay}",
-                                     "ci.treadmill.qcow2.lower": "{BASE}" }} }}
+                   "annotations": {{ "dev.treadmill.role": "root", "dev.treadmill.qcow2.virtual-size": "{virtual_size_overlay}",
+                                     "dev.treadmill.qcow2.lower": "{BASE}" }} }}
               ],
               "annotations": {{ "org.opencontainers.image.title": "Ubuntu test",
                                 "org.opencontainers.image.version": "26.04",
-                                "ci.treadmill.qcow2.head": "{head}" }}
+                                "dev.treadmill.qcow2.head": "{head}" }}
             }}"#
         )
     }

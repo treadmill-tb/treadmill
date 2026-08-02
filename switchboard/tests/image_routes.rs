@@ -104,12 +104,12 @@ fn image_manifest_bytes(title: &str) -> Vec<u8> {
           "config": {{ "mediaType": "application/vnd.oci.empty.v1+json", "digest": "{EMPTY}", "size": 2 }},
           "layers": [
             {{ "mediaType": "application/vnd.treadmill.disk.qcow2", "digest": "{BASE}", "size": 2085355520,
-               "annotations": {{ "ci.treadmill.role": "root", "ci.treadmill.qcow2.virtual-size": "2294284288" }} }},
+               "annotations": {{ "dev.treadmill.role": "root", "dev.treadmill.qcow2.virtual-size": "2294284288" }} }},
             {{ "mediaType": "application/vnd.treadmill.disk.qcow2", "digest": "{OVERLAY}", "size": 3145728,
-               "annotations": {{ "ci.treadmill.role": "root", "ci.treadmill.qcow2.virtual-size": "4294967296",
-                                 "ci.treadmill.qcow2.lower": "{BASE}" }} }}
+               "annotations": {{ "dev.treadmill.role": "root", "dev.treadmill.qcow2.virtual-size": "4294967296",
+                                 "dev.treadmill.qcow2.lower": "{BASE}" }} }}
           ],
-          "annotations": {{ "org.opencontainers.image.title": "{title}", "ci.treadmill.qcow2.head": "{OVERLAY}" }}
+          "annotations": {{ "org.opencontainers.image.title": "{title}", "dev.treadmill.qcow2.head": "{OVERLAY}" }}
         }}"#
     )
     .into_bytes()

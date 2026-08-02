@@ -43,13 +43,13 @@ SUBSYSTEM=="usb", GROUP="plugdev", TAG+="uaccess"
 RULES
 
 # --- allow the puppet daemon to own its D-Bus name ------------------------
-cat >/etc/dbus-1/system.d/ci.treadmill.Puppet.conf <<'DBUSCONF'
+cat >/etc/dbus-1/system.d/dev.treadmill.Puppet.conf <<'DBUSCONF'
 <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
 <busconfig>
   <policy context="default">
-    <allow own="ci.treadmill.Puppet"/>
-    <allow send_destination="ci.treadmill.Puppet"/>
-    <allow receive_sender="ci.treadmill.Puppet"/>
+    <allow own="dev.treadmill.Puppet"/>
+    <allow send_destination="dev.treadmill.Puppet"/>
+    <allow receive_sender="dev.treadmill.Puppet"/>
   </policy>
 </busconfig>
 DBUSCONF

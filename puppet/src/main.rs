@@ -142,11 +142,11 @@ struct DbusPuppet {
 }
 
 #[interface(
-    name = "ci.treadmill.Puppet1",
+    name = "dev.treadmill.Puppet1",
     proxy(
         gen_blocking = false,
         default_path = "/ci/treadmill/Puppet",
-        default_service = "ci.treadmill.Puppet",
+        default_service = "dev.treadmill.Puppet",
     )
 )]
 impl DbusPuppet {
@@ -735,7 +735,7 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
     let _dbus_conn = if let Some(dbus_builder) = dbus_builder_opt {
         Some(
             dbus_builder
-                .name("ci.treadmill.Puppet")?
+                .name("dev.treadmill.Puppet")?
                 .serve_at(
                     "/ci/treadmill/Puppet",
                     DbusPuppet {
