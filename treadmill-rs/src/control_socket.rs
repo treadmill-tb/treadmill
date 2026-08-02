@@ -46,6 +46,18 @@ pub trait Supervisor: Send + Sync + 'static {
         job_id: Uuid,
     ) -> Option<HashMap<String, supervisor_puppet::ParameterValue>>;
 
+    /// Gateway material to relay into the job.
+    ///
+    /// Returning `None` means that this supervisor's jobs are not reachable
+    /// through a gateway, and is the default.
+    async fn gateway(
+        &self,
+        _host_id: Uuid,
+        _job_id: Uuid,
+    ) -> Option<supervisor_puppet::JobGatewayInfo> {
+        None
+    }
+
     /// Generic request handler.
     ///
     /// The default implementation of this method calls out to the other methods
@@ -61,7 +73,11 @@ pub trait Supervisor: Send + Sync + 'static {
         match req {
             PuppetReq::Ping => SupervisorResp::PingResp,
 
-            PuppetReq::JobInfo => SupervisorResp::JobInfo(JobInfo { job_id, host_id }),
+            PuppetReq::JobInfo => SupervisorResp::JobInfo(JobInfo {
+                job_id,
+                host_id,
+                gateway: self.gateway(host_id, job_id).await,
+            }),
 
             PuppetReq::Parameters => self
                 .parameters(host_id, job_id)
@@ -114,6 +130,11 @@ pub trait Supervisor: Send + Sync + 'static {
                     .await
             }
 
+            PuppetEvent::JobServiceSet { services } => {
+                self.job_service_set(puppet_event_id, services, host_id, job_id)
+                    .await
+            }
+
             PuppetEvent::RunCommandError { .. }
             | PuppetEvent::RunCommandOutput { .. }
             | PuppetEvent::RunCommandExitCode { .. } => {
@@ -157,4 +178,24 @@ pub trait Supervisor: Send + Sync + 'static {
         host_id: Uuid,
         job_id: Uuid,
     );
+
+    /// The puppet announces the complete set of services of its job.
+    ///
+    /// The default implementation drops the announcement, for supervisors that
+    /// have no coordinator to forward it to.
+    async fn job_service_set(
+        &self,
+        puppet_event_id: u64,
+        services: Vec<supervisor_puppet::JobService>,
+        _host_id: Uuid,
+        job_id: Uuid,
+    ) {
+        event!(
+            Level::WARN,
+            ?job_id,
+            puppet_event_id,
+            "Dropping unhandled puppet job service set: {:?}",
+            services,
+        )
+    }
 }

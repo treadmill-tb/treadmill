@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub use super::switchboard_supervisor::ParameterValue;
+pub use super::switchboard_supervisor::{JobService, ParameterValue};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -91,6 +91,11 @@ pub enum PuppetEvent {
     /// supervisor, the puppet should include this original supervisor event ID
     /// here:
     TerminateJob { supervisor_event_id: Option<u64> },
+
+    /// The complete set of services the job announces. Each event replaces the
+    /// previously announced set in full, so re-announcing is idempotent and no
+    /// drift between the two sides is representable.
+    JobServiceSet { services: Vec<JobService> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,11 +187,22 @@ pub struct NetworkConfig {
     pub ipv6: Option<Ipv6NetworkConfig>,
 }
 
+/// Gateway material relayed into the job, to validate the same tokens that
+/// admit a request at the gateway itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct JobGatewayInfo {
+    pub signing_public_key: String,
+    pub key_id: String,
+    pub domains: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct JobInfo {
     pub job_id: Uuid,
     pub host_id: Uuid,
+    pub gateway: Option<JobGatewayInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
