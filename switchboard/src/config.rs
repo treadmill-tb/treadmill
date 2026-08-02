@@ -22,6 +22,44 @@ pub struct SwitchboardConfig {
     /// read-token API is unavailable.
     #[serde(default)]
     pub log_streaming: Option<LogStreamingConfig>,
+    /// Sentry error reporting. Default: disabled.
+    #[serde(default)]
+    pub sentry: Option<SentryConfig>,
+}
+
+/// Sentry error reporting. See [`crate::observability`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct SentryConfig {
+    /// Ingest DSN.
+    pub dsn: String,
+    /// Sentry environment, e.g. `production`.
+    #[serde(default)]
+    pub environment: Option<String>,
+    /// Release identifier.
+    #[serde(default)]
+    pub release: Option<String>,
+    /// Lowest level reported as a Sentry issue. `warn` (the default) or
+    /// `error`; anything below stays a breadcrumb or is not reported at all.
+    #[serde(default = "default_sentry_event_level")]
+    pub event_level: SentryEventLevel,
+    /// Fraction of events actually sent, 0.0..=1.0.
+    #[serde(default = "default_sentry_sample_rate")]
+    pub sample_rate: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SentryEventLevel {
+    Warn,
+    Error,
+}
+
+fn default_sentry_event_level() -> SentryEventLevel {
+    SentryEventLevel::Warn
+}
+
+fn default_sentry_sample_rate() -> f32 {
+    1.0
 }
 
 impl SwitchboardConfig {
@@ -381,6 +419,7 @@ mod tests {
             },
             oauth: OAuthConfig::default(),
             log_streaming: None,
+            sentry: None,
         }
     }
 

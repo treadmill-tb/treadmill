@@ -26,7 +26,7 @@ impl FromRequestParts<AppState> for Subject {
             Err(rejection) => match rejection.reason() {
                 TypedHeaderRejectionReason::Missing => None,
                 TypedHeaderRejectionReason::Error(e) => {
-                    tracing::error!("failed to extract Authorization<Bearer>: {e:?}");
+                    tracing::debug!("failed to extract Authorization<Bearer>: {e:?}");
                     return Err(StatusCode::UNAUTHORIZED.into_response());
                 }
                 _ => unreachable!(),
@@ -34,23 +34,23 @@ impl FromRequestParts<AppState> for Subject {
         };
         if let Some(bearer) = maybe_bearer {
             let token = SecurityToken::try_from(bearer).map_err(|e| {
-                tracing::warn!("failed to decode bearer token: {e}");
+                tracing::debug!("failed to decode bearer token: {e}");
                 StatusCode::UNAUTHORIZED.into_response()
             })?;
             let token_info =
                 match sql::api_token::fetch_metadata_by_token(state.pool(), token).await {
                     Ok(tib) => tib,
                     Err(TokenError::InvalidToken) => {
-                        tracing::warn!("failed to derive subject: invalid token {token}");
+                        tracing::debug!("failed to derive subject: no such token");
                         return Err(StatusCode::UNAUTHORIZED.into_response());
                     }
                     Err(e) => {
-                        tracing::error!("failed to look up token {token}: {e}");
+                        tracing::error!("failed to look up a bearer token: {e}");
                         return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
                     }
                 };
             if token_info.expires_at < Utc::now() {
-                tracing::warn!(
+                tracing::debug!(
                     "failed to derive subject: token ({}) expired at {}",
                     token_info.token_id,
                     token_info.expires_at
@@ -58,14 +58,14 @@ impl FromRequestParts<AppState> for Subject {
                 return Err(StatusCode::UNAUTHORIZED.into_response());
             }
             if let Some(revocation) = token_info.revoked {
-                tracing::warn!(
+                tracing::debug!(
                     "failed to derive subject: revoked token ({}): {revocation}",
                     token_info.token_id,
                 );
                 return Err(StatusCode::UNAUTHORIZED.into_response());
             }
             if token_info.locked {
-                tracing::warn!(
+                tracing::debug!(
                     "failed to derive subject: owning user {} is locked (token {})",
                     token_info.user_id,
                     token_info.token_id,
@@ -76,7 +76,7 @@ impl FromRequestParts<AppState> for Subject {
                 token_info: Arc::new(token_info),
             }))
         } else {
-            tracing::warn!("no token present for request");
+            tracing::debug!("no token present for request");
             Err(StatusCode::UNAUTHORIZED.into_response())
         }
     }

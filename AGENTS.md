@@ -206,3 +206,18 @@ from CLI flags (`--ssh-key`, `-p key=val`, `--stop-after`, …), streams the gue
 console to the terminal, and tears down on guest-exit or Ctrl-C. The wrapper
 lives in `tools/local-supervisor.sh` (`--arch`, `--no-kvm`, `--mem`, etc.). For
 the full stack instead, use `nix run .#devstack`.
+
+## 8. Logging & error reporting
+
+The switchboard uses `tracing` for logging (optionally feeding to Sentry through
+`switchboard/src/observability.rs`). Log levels follow this contract:
+
+- `error!`: the switchboard, or something it depends on, is broken.
+- `warn!`: a human should look eventually. May be client-triggered. Not used for
+  common-case or expected errors, though.
+- `info!`: normal operation, including requests the server correctly refuses.
+- `debug!` and below: purely for debugging, not posted to the console or Sentry.
+
+A request the server rejects because the client got it wrong is `debug!`, not
+`warn!`. `#[instrument]` must `skip` any argument whose `Debug` carries a token,
+a header map, or a request URI, or any non-pseudonymous PII.

@@ -98,6 +98,18 @@ reqwest = { version = "0.12", default-features = false, features = [
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
+# Error reporting through sentry.
+sentry = { version = "0.49.0", default-features = false, features = [
+  "panic",
+  "backtrace",
+  "debug-images",
+  "contexts",
+  "tracing",
+  "anyhow",
+  "reqwest",
+  "rustls",
+] }
+
 # Command line arguments
 clap = { workspace = true, features = ["derive", "error-context", "env"] }
 
