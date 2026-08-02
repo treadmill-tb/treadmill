@@ -58,9 +58,15 @@
             /*  /index.html  200
             EOF
 
+            # `_headers` matches on request path, not on the resolved file.
+            # Hence a 404 will also be cached, and immutable would stop
+            # browsers re-validating even on a manual reload. This introduces
+            # a failure case we've observed where assets resolve to 404s right
+            # during deploys, which then get cached. Work around this using a
+            # short-ish max-age, and explicit cache purge on deploy.
             cat > $out/_headers <<'EOF'
             /assets/*
-              Cache-Control: public, max-age=31536000, immutable
+              Cache-Control: public, max-age=86400
             /index.html
               Cache-Control: no-cache
             EOF
