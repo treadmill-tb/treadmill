@@ -16,10 +16,22 @@ export function Layout({ children }: { children: ReactNode }) {
       </head>
       <body>
         {children}
+        <Footer />
         <ScrollRestoration />
         <Scripts />
       </body>
     </html>
+  );
+}
+
+function Footer() {
+  return (
+    <footer className="footer muted">
+      built from{" "}
+      <span className="mono">
+        {import.meta.env.VITE_TML_CONSOLE_REV ?? "unknown"}
+      </span>
+    </footer>
   );
 }
 

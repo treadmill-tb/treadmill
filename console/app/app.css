@@ -228,6 +228,13 @@ button.danger {
 }
 
 /* Misc */
+.footer {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 0 1rem 1rem;
+  font-size: 0.85em;
+}
+
 .muted {
   color: var(--fg-muted);
 }

@@ -1,5 +1,18 @@
+import { execFileSync } from "node:child_process";
+
 import { reactRouter } from "@react-router/dev/vite";
 import { defineConfig } from "vite";
+
+// Fall back to git only when the version isn't supplied in an env var.
+process.env.VITE_TML_CONSOLE_REV ??= (() => {
+  try {
+    return execFileSync("git", ["describe", "--tags", "--always", "--dirty"], {
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    return "unknown";
+  }
+})();
 
 export default defineConfig({
   plugins: [reactRouter()],
