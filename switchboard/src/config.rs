@@ -61,7 +61,7 @@ pub struct LogStreamingConfig {
     /// the per-job user JWTs. The matching account public key is derived from
     /// this seed, so it doubles as the JWT issuer.
     ///
-    /// SECRET — supply via `TML_LOGSTREAMING__ACCOUNT_SEED`, never on-disk
+    /// SECRET — supply via `TML_LOG_STREAMING__ACCOUNT_SEED`, never on-disk
     /// config (project convention). Unrelated to the opaque API token in
     /// `auth/token.rs`.
     pub account_seed: String,
