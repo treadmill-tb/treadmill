@@ -44,23 +44,6 @@ impl ControlSocketClient {
         }
     }
 
-    pub async fn get_ssh_keys(&self) -> Result<Vec<String>> {
-        let resp = self
-            .request(PuppetReq::SSHKeys)
-            .await
-            .context("Sending SSH keys request to supervisor")?;
-
-        match resp {
-            SupervisorResp::SSHKeysResp { ssh_keys } => Ok(ssh_keys),
-            _ => {
-                bail!(
-                    "Invalid supervisor response to SSH keys request: {:?}",
-                    resp
-                );
-            }
-        }
-    }
-
     pub async fn get_job_info(&self) -> Result<JobInfo> {
         let resp = self
             .request(PuppetReq::JobInfo)

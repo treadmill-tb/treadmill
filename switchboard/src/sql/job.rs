@@ -1,4 +1,3 @@
-use super::SqlSshEndpoint;
 use super::image;
 use crate::matcher::{GroupMember, select_member};
 use chrono::{DateTime, TimeDelta, Utc};
@@ -8,7 +7,7 @@ use std::collections::BTreeSet;
 use treadmill_rs::api::switchboard::jobs::{
     JobImageRef, JobInfo, JobInitializingStage as ClientJobInitializingStage, JobParameterView,
     JobPermission as ClientJobPermission, JobSummary, RestartPolicy as ClientRestartPolicy,
-    RestartPolicyState, SshEndpoint, TaskExitStatus as ClientTaskExitStatus,
+    RestartPolicyState, TaskExitStatus as ClientTaskExitStatus,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, TerminationReason};
 use treadmill_rs::api::switchboard_supervisor::{
@@ -265,7 +264,6 @@ pub async fn insert(
           image_id,
           image_set_id,
           image_set_generation,
-          ssh_keys,
           restart_policy,
           enqueued_by_token_id,
           host_tag_requirements,
@@ -275,7 +273,6 @@ pub async fn insert(
           queued_at,
           started_at,
           dispatched_on_host_id,
-          ssh_endpoints,
           termination_reason,
           task_exit_status,
           exit_message,
@@ -283,28 +280,26 @@ pub async fn insert(
         )
         values (
           $1,       -- job_id
-          $13,	    -- owner_id
-          $14,	    -- label
-          $2,	    -- resume_job_id
-          $3,	    -- restart_job_id
-          $4,	    -- image_id
-          $5,	    -- image_set_id
-          $6,	    -- image_set_generation
-          $7,	    -- ssh_keys
-          $8,	    -- restart_policy
-          $9,	    -- enqueued_by_token_id
-          $10,	    -- host_tag_requirements
-          $11,	    -- job_timeout
+          $12,      -- owner_id
+          $13,      -- label
+          $2,       -- resume_job_id
+          $3,       -- restart_job_id
+          $4,       -- image_id
+          $5,       -- image_set_id
+          $6,       -- image_set_generation
+          $7,       -- restart_policy
+          $8,       -- enqueued_by_token_id
+          $9,       -- host_tag_requirements
+          $10,      -- job_timeout
           'queued', -- job_state
-          null,	    -- initializing_stage
-          $12,	    -- queued_at
-          null,	    -- started_at
-          null,	    -- dispatched_on_host_id
-          null,	    -- ssh_endpoints
-          null,	    -- termination_reason
-          null,	    -- task_exit_status
-          null,	    -- exit_message
-          null	    -- terminated_at
+          null,     -- initializing_stage
+          $11,      -- queued_at
+          null,     -- started_at
+          null,     -- dispatched_on_host_id
+          null,     -- termination_reason
+          null,     -- task_exit_status
+          null,     -- exit_message
+          null      -- terminated_at
         )
         "#,
         as_job_id,
@@ -313,7 +308,6 @@ pub async fn insert(
         image_id,
         image_set_id,
         image_set_generation,
-        job_request.ssh_keys.as_slice(),
         SqlRestartPolicy {
             remaining_restart_count: i32::try_from(job_request.restart_policy.max_restarts)
                 .unwrap(),
@@ -384,7 +378,6 @@ pub struct SqlJob {
     #[allow(dead_code)]
     resolved_image_id: Option<Uuid>,
 
-    ssh_keys: Vec<String>,
     sql_restart_policy: SqlRestartPolicy,
     enqueued_by_token_id: Uuid,
     host_tag_requirements: Vec<String>,
@@ -402,7 +395,6 @@ pub struct SqlJob {
     // Filled out if and when the job is dispatched onto a host
     started_at: Option<DateTime<Utc>>,
     dispatched_on_host_id: Option<Uuid>,
-    ssh_endpoints: Option<Vec<SqlSshEndpoint>>,
 
     // The DB side of user-terminate: set when termination is requested,
     // consumed by the worker's reconcile (see `switchboard_stop_reason`).
@@ -478,9 +470,6 @@ impl SqlJob {
         // non-resume job; reaching here means a row violated that invariant.
         Err(ImageResolveError::MalformedJob(self.job_id))
     }
-    pub fn ssh_keys(&self) -> &[String] {
-        &self.ssh_keys
-    }
     pub fn restart_policy(&self) -> RestartPolicy {
         self.sql_restart_policy.clone().into()
     }
@@ -511,9 +500,6 @@ impl SqlJob {
     }
     pub fn dispatched_on_host_id(&self) -> Option<Uuid> {
         self.dispatched_on_host_id
-    }
-    pub fn ssh_endpoints(&self) -> Option<&Vec<SqlSshEndpoint>> {
-        self.ssh_endpoints.as_ref()
     }
     pub fn job_state(&self) -> SqlJobState {
         self.job_state
@@ -582,7 +568,6 @@ impl SqlJob {
             initializing_stage: self.initializing_stage.map(Into::into),
             image,
             resolved_image_digest,
-            ssh_keys: self.ssh_keys,
             restart_policy: self.sql_restart_policy.into(),
             host_tag_requirements: self.host_tag_requirements,
             target_requirements,
@@ -591,14 +576,6 @@ impl SqlJob {
             queued_at: self.queued_at,
             started_at: self.started_at,
             dispatched_on_host_id: self.dispatched_on_host_id,
-            ssh_endpoints: self.ssh_endpoints.map(|eps| {
-                eps.into_iter()
-                    .map(|ep| SshEndpoint {
-                        ssh_host: ep.ssh_host.into(),
-                        ssh_port: ep.ssh_port.into(),
-                    })
-                    .collect()
-            }),
             termination_reason: self.termination_reason.map(Into::into),
             task_exit_status: self.task_exit_status.map(Into::into),
             exit_message: self.exit_message,
@@ -640,17 +617,30 @@ pub async fn fetch_by_job_id(
     sqlx::query_as!(
         SqlJob,
         r#"
-        select job_id, label, owner_id, resume_job_id, restart_job_id, image_id,
-        image_set_id, image_set_generation,
-        resolved_image_id, ssh_keys,
-        restart_policy as "sql_restart_policy: _", enqueued_by_token_id,
-        host_tag_requirements, job_timeout,
-        queued_at, job_state as "job_state: _",
-        initializing_stage as "initializing_stage: _", started_at,
-        dispatched_on_host_id, ssh_endpoints as "ssh_endpoints: _",
+        select
+        job_id,
+        label,
+        owner_id,
+        resume_job_id,
+        restart_job_id,
+        image_id,
+        image_set_id,
+        image_set_generation,
+        resolved_image_id,
+        restart_policy as "sql_restart_policy: _",
+        enqueued_by_token_id,
+        host_tag_requirements,
+        job_timeout,
+        queued_at,
+        job_state as "job_state: _",
+        initializing_stage as "initializing_stage: _",
+        started_at,
+        dispatched_on_host_id,
         terminate_requested_at,
         termination_reason as "termination_reason: _",
-        task_exit_status as "task_exit_status: _", exit_message, terminated_at
+        task_exit_status as "task_exit_status: _",
+        exit_message,
+        terminated_at
         from tml_switchboard.jobs where job_id = $1;
         "#,
         job_id
@@ -1031,7 +1021,6 @@ pub async fn build_start_job_message(
     Ok(StartJobMessage {
         job_id: job.job_id,
         image_spec,
-        ssh_keys: job.ssh_keys.clone(),
         restart_policy: job.restart_policy(),
         parameters,
         log_streaming,
@@ -1178,45 +1167,6 @@ pub async fn request_terminate(
         }
     }
 }
-
-// pub async fn fetch_all_queued(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJob>, sqlx::Error> {
-//     sqlx::query_as!(
-//         SqlJob,
-//         r#"
-//         select job_id, resume_job_id, restart_job_id, image_digest, image_set_digest,
-//         resolved_image_digest, ssh_keys,
-//         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
-//         queued_at, job_state as "job_state: _",
-//         initializing_stage as "initializing_stage: _", started_at,
-//         dispatched_on_host_id, ssh_endpoints as "ssh_endpoints: _",
-//         termination_reason as "termination_reason: _",
-//         task_exit_status as "task_exit_status: _", exit_message, terminated_at
-//         from tml_switchboard.jobs where job_state = 'queued';
-//         "#
-//     )
-//     .fetch_all(conn)
-//     .await
-// }
-
-// pub async fn fetch_all_dispatched(conn: impl PgExecutor<'_>) -> Result<Vec<SqlJob>, sqlx::Error> {
-//     sqlx::query_as!(
-//         SqlJob,
-//         r#"
-//         select job_id, resume_job_id, restart_job_id, image_digest, image_set_digest,
-//         resolved_image_digest, ssh_keys,
-//         restart_policy as "sql_restart_policy: _", enqueued_by_token_id, tag_config, job_timeout,
-//         queued_at, job_state as "job_state: _",
-//         initializing_stage as "initializing_stage: _", started_at,
-//         dispatched_on_host_id, ssh_endpoints as "ssh_endpoints: _",
-//         termination_reason as "termination_reason: _",
-//         task_exit_status as "task_exit_status: _", exit_message, terminated_at
-//         from tml_switchboard.jobs
-//         where job_state in ('assigned', 'initializing', 'ready', 'terminating');
-//         "#
-//     )
-//     .fetch_all(conn)
-//     .await
-// }
 
 /// Finalize a job that its host's supervisor dropped, releasing the host and --
 /// if the restart policy permits -- enqueuing a successor, all in one
@@ -1636,7 +1586,6 @@ pub async fn finalize_dropped_and_maybe_restart(
         // Ownership is passed to `insert` explicitly (below); this field is the
         // user-facing requested owner and is unused on the internal path.
         owner: None,
-        ssh_keys: predecessor.ssh_keys.clone(),
         restart_policy: ClientRestartPolicy {
             max_restarts: u32::try_from(remaining - 1).unwrap_or(0),
         },

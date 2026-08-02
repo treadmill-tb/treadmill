@@ -469,32 +469,13 @@ CREATE TABLE tml_switchboard.staged_logins (
 -- HOSTS
 -- =============================================================================
 --
--- Host + port tuple for ssh_endpoints of a host.
-CREATE DOMAIN tml_switchboard.port AS integer CHECK (
-    value >= 0
-    AND value < 65535
-);
-
-
-CREATE DOMAIN tml_switchboard.ssh_host AS text CHECK (value IS NOT NULL);
-
-
-CREATE DOMAIN tml_switchboard.ssh_port AS tml_switchboard.port CHECK (value IS NOT NULL);
-
-
-CREATE TYPE tml_switchboard.ssh_endpoint AS (
-    ssh_host tml_switchboard.ssh_host,
-    ssh_port tml_switchboard.ssh_port
-);
-
-
 -- A host is the managed device that actually runs the user workload; the
 -- supervisor is the software process that drives it and is the WebSocket peer
 -- of the switchboard.
 --
 -- The `hosts` table carries both the host's user-facing properties (name, tags,
--- ssh_endpoints, owner) and the credentials/state of the supervisor authorized
--- to drive it (auth_token, worker_instance_id).
+-- owner) and the credentials/state of the supervisor authorized to drive it
+-- (auth_token, worker_instance_id).
 --
 -- The auth_token field authenticates the host's supervisor: a 32-byte random
 -- string uniquely identifying the supervisor on connect.
@@ -510,14 +491,6 @@ CREATE TABLE tml_switchboard.hosts (
     -- members of the admin group. Resources are orphaned (not cascade-deleted)
     -- when their owner is deleted, hence `on delete set null`.
     owner_id uuid REFERENCES tml_switchboard.subjects (subject_id) ON DELETE SET NULL,
-    -- SSH endpoints that all jobs executing on this host are reachable under.
-    -- Each endpoint is a "hostname:port" tuple. IPv6 addreses are enclosed in
-    -- square brackets, such as "[::1]:22".
-    --
-    -- TODO: in the future, SSH endpoints & proxies may be dynamically assigned.
-    -- In that case, this column would be removed, and the assigned endpoints
-    -- will only be written to the `jobs` table.
-    ssh_endpoints tml_switchboard.ssh_endpoint[] NOT NULL,
     -- A host can either be idle or have a job assigned. This column keeps track
     -- of this state. If a job is assigned, then the host is not idle, and the
     -- "sub-state" is determined through the job's state data.
@@ -685,9 +658,6 @@ CREATE TABLE tml_switchboard.jobs (
     -- For a concrete-image job this equals `image_id`; for an image-set job it
     -- is the member the matcher selected.
     resolved_image_id uuid,
-    -- SSH keys to be injected into the job, if any. Can be updated throughout
-    -- the job's lifetime, new keys get deployed through the puppet.
-    ssh_keys TEXT[] NOT NULL,
     -- Job's restart policy.
     restart_policy tml_switchboard.restart_policy NOT NULL,
     -- Token the job was enqueued by. Used to determine which hosts a job can
@@ -716,9 +686,6 @@ CREATE TABLE tml_switchboard.jobs (
     -- ran. "Currently bound" is derived from `job_state` (and
     -- `hosts.current_job`), not from this column.
     dispatched_on_host_id uuid,
-    -- SSH endpoints that this job is reachable under, populated once assigned
-    -- to a host that exposes endpoints.
-    ssh_endpoints tml_switchboard.ssh_endpoint[],
     -- User-requested termination signal: the DB side of user-terminate.
     --
     -- When set, the assigned job's worker converges the job to `finalized` with
@@ -908,10 +875,10 @@ $$;
 -- resources. Irrevocable rows cannot be deleted or modified by anyone (enforced
 -- by trigger); they are cleared only when the resource itself is deleted (FK
 -- cascade).
-CREATE TYPE tml_switchboard.host_permission AS enum('read', 'start', 'ssh', 'manage');
+CREATE TYPE tml_switchboard.host_permission AS enum('read', 'start', 'manage');
 
 
-CREATE TYPE tml_switchboard.job_permission AS enum('read', 'stop', 'ssh', 'manage');
+CREATE TYPE tml_switchboard.job_permission AS enum('read', 'stop', 'manage');
 
 
 CREATE TABLE tml_switchboard.host_grants (
@@ -1365,7 +1332,7 @@ CREATE TYPE tml_switchboard.audit_role AS enum('actor', 'subject', 'context');
 --
 -- `view_policy` is the EXACT permission a viewer must hold on `entity` to see
 -- the event through this relation -- one of the host/job permission enum values
--- ('read'|'start'|'ssh'|'stop'|'manage') stored as text so the same column
+-- ('read'|'start'|'stop'|'manage') stored as text so the same column
 -- covers both resource kinds, plus the sentinel 'operator_only' for
 -- system-internal events that never surface in a user-facing feed. Visibility
 -- is disjunctive across relations: a viewer sees the event if they satisfy ANY

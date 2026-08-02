@@ -2252,17 +2252,6 @@ components:
           - type: 'null'
         restart_policy:
           $ref: '#/components/schemas/RestartPolicyState'
-        ssh_endpoints:
-          description: SSH endpoints the running job is reachable on; null until reported.
-          type:
-          - array
-          - 'null'
-          items:
-            $ref: '#/components/schemas/SshEndpoint'
-        ssh_keys:
-          type: array
-          items:
-            type: string
         started_at:
           description: When the job was dispatched onto a host; null if not yet started.
           type:
@@ -2308,7 +2297,6 @@ components:
       - job_id
       - state
       - image
-      - ssh_keys
       - restart_policy
       - host_tag_requirements
       - target_requirements
@@ -2477,9 +2465,6 @@ components:
       - description: May request the job's termination.
         type: string
         const: stop
-      - description: May connect to the job over SSH.
-        type: string
-        const: ssh
       - description: |-
           May perform privileged operations on the job, such as resuming or
           restarting it (owner holds this implicitly).
@@ -2534,15 +2519,6 @@ components:
             $ref: '#/components/schemas/JobParameter'
         restart_policy:
           $ref: '#/components/schemas/RestartPolicy'
-        ssh_keys:
-          description: |-
-            The set of initial SSH keys to deploy onto the image.
-
-            The image's configuration of the Treadmill puppet daemon determines
-            how and whether these keys will be loaded.
-          type: array
-          items:
-            type: string
         target_requirements:
           description: |-
             Target (DUT) eligibility: an ordered array of requested targets, each a
@@ -2557,7 +2533,6 @@ components:
               type: string
       required:
       - init_spec
-      - ssh_keys
       - restart_policy
       - parameters
     JobState:
@@ -2586,9 +2561,9 @@ components:
     JobSummary:
       description: |-
         A compact per-job row for the `GET /jobs` listing — identity, ownership,
-        lifecycle state, and the key timestamps/outcome, without the heavier
-        per-job detail (parameters, target requirements, ssh keys) that
-        [`JobInfo`] carries. Fetch the full view with `GET /jobs/{id}`.
+        lifecycle state, and the key timestamps/outcome, without the heavier per-job
+        detail (parameters, target requirements) that [`JobInfo`] carries. Fetch the
+        full view with `GET /jobs/{id}`.
       type: object
       properties:
         dispatched_on_host_id:
@@ -3150,20 +3125,6 @@ components:
       required:
       - digest
       - source_id
-    SshEndpoint:
-      description: An SSH endpoint a running job can be reached on.
-      type: object
-      properties:
-        ssh_host:
-          type: string
-        ssh_port:
-          type: integer
-          format: uint16
-          maximum: 65535
-          minimum: 0
-      required:
-      - ssh_host
-      - ssh_port
     TaskExitStatus:
       description: |-
         The user workload's success/failure outcome, exposed as `task_exit_status`

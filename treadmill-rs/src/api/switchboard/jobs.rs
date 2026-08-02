@@ -18,8 +18,6 @@ pub enum JobPermission {
     Read,
     /// May request the job's termination.
     Stop,
-    /// May connect to the job over SSH.
-    Ssh,
     /// May perform privileged operations on the job, such as resuming or
     /// restarting it (owner holds this implicitly).
     Manage,
@@ -227,13 +225,6 @@ pub struct JobParameterView {
     pub value: Option<String>,
 }
 
-/// An SSH endpoint a running job can be reached on.
-#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
-pub struct SshEndpoint {
-    pub ssh_host: String,
-    pub ssh_port: u16,
-}
-
 /// The full server-side view of a single job, returned by `GET /jobs/{id}`.
 ///
 /// Covers the job's identity, ownership, lifecycle state, the spec it was
@@ -259,7 +250,6 @@ pub struct JobInfo {
     /// null until then.
     pub resolved_image_digest: Option<Digest>,
 
-    pub ssh_keys: Vec<String>,
     pub restart_policy: RestartPolicyState,
     /// Host eligibility tags this job requires (superset match against a host's
     /// tags).
@@ -278,8 +268,6 @@ pub struct JobInfo {
     pub started_at: Option<DateTime<Utc>>,
     /// The host the job is (or was) dispatched on; null if unplaced.
     pub dispatched_on_host_id: Option<Uuid>,
-    /// SSH endpoints the running job is reachable on; null until reported.
-    pub ssh_endpoints: Option<Vec<SshEndpoint>>,
 
     /// Why the job terminated; null until finalized.
     pub termination_reason: Option<TerminationReason>,
@@ -319,9 +307,9 @@ pub struct UpdateJobRequest {
 }
 
 /// A compact per-job row for the `GET /jobs` listing — identity, ownership,
-/// lifecycle state, and the key timestamps/outcome, without the heavier
-/// per-job detail (parameters, target requirements, ssh keys) that
-/// [`JobInfo`] carries. Fetch the full view with `GET /jobs/{id}`.
+/// lifecycle state, and the key timestamps/outcome, without the heavier per-job
+/// detail (parameters, target requirements) that [`JobInfo`] carries. Fetch the
+/// full view with `GET /jobs/{id}`.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct JobSummary {
     pub job_id: Uuid,

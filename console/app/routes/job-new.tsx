@@ -82,7 +82,6 @@ export default function JobNew() {
       body: {
         init_spec,
         label: label === "" ? null : label,
-        ssh_keys: lines(str("ssh_keys")),
         host_tag_requirements: words(str("host_tags")),
         target_requirements: lines(str("target_reqs")).map(words),
         parameters,
@@ -139,11 +138,6 @@ export default function JobNew() {
             <input name="job_id" required className="mono" />
           </label>
         )}
-
-        <label className="field">
-          <span>SSH public keys (one per line)</span>
-          <textarea name="ssh_keys" rows={3} className="mono" />
-        </label>
 
         <label className="field">
           <span>Required host tags (whitespace-separated)</span>

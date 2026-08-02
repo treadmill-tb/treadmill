@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        select job_id, label, owner_id, resume_job_id, restart_job_id, image_id,\n        image_set_id, image_set_generation,\n        resolved_image_id, ssh_keys,\n        restart_policy as \"sql_restart_policy: _\", enqueued_by_token_id,\n        host_tag_requirements, job_timeout,\n        queued_at, job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\", started_at,\n        dispatched_on_host_id, ssh_endpoints as \"ssh_endpoints: _\",\n        terminate_requested_at,\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\", exit_message, terminated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
+  "query": "\n        select\n        job_id,\n        label,\n        owner_id,\n        resume_job_id,\n        restart_job_id,\n        image_id,\n        image_set_id,\n        image_set_generation,\n        resolved_image_id,\n        restart_policy as \"sql_restart_policy: _\",\n        enqueued_by_token_id,\n        host_tag_requirements,\n        job_timeout,\n        queued_at,\n        job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\",\n        started_at,\n        dispatched_on_host_id,\n        terminate_requested_at,\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\",\n        exit_message,\n        terminated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
   "describe": {
     "columns": [
       {
@@ -104,17 +104,6 @@
       },
       {
         "ordinal": 9,
-        "name": "ssh_keys",
-        "type_info": "TextArray",
-        "origin": {
-          "Table": {
-            "table": "tml_switchboard.jobs",
-            "name": "ssh_keys"
-          }
-        }
-      },
-      {
-        "ordinal": 10,
         "name": "sql_restart_policy: _",
         "type_info": {
           "Custom": {
@@ -137,7 +126,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "enqueued_by_token_id",
         "type_info": "Uuid",
         "origin": {
@@ -148,7 +137,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 11,
         "name": "host_tag_requirements",
         "type_info": "TextArray",
         "origin": {
@@ -159,7 +148,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 12,
         "name": "job_timeout",
         "type_info": "Interval",
         "origin": {
@@ -170,7 +159,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 13,
         "name": "queued_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -181,7 +170,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 14,
         "name": "job_state: _",
         "type_info": {
           "Custom": {
@@ -206,7 +195,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 15,
         "name": "initializing_stage: _",
         "type_info": {
           "Custom": {
@@ -230,7 +219,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 16,
         "name": "started_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -241,7 +230,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 17,
         "name": "dispatched_on_host_id",
         "type_info": "Uuid",
         "origin": {
@@ -252,62 +241,7 @@
         }
       },
       {
-        "ordinal": 19,
-        "name": "ssh_endpoints: _",
-        "type_info": {
-          "Custom": {
-            "name": "tml_switchboard.ssh_endpoint[]",
-            "kind": {
-              "Array": {
-                "Custom": {
-                  "name": "tml_switchboard.ssh_endpoint",
-                  "kind": {
-                    "Composite": [
-                      [
-                        "ssh_host",
-                        {
-                          "Custom": {
-                            "name": "tml_switchboard.ssh_host",
-                            "kind": {
-                              "Domain": "Text"
-                            }
-                          }
-                        }
-                      ],
-                      [
-                        "ssh_port",
-                        {
-                          "Custom": {
-                            "name": "tml_switchboard.ssh_port",
-                            "kind": {
-                              "Domain": {
-                                "Custom": {
-                                  "name": "tml_switchboard.port",
-                                  "kind": {
-                                    "Domain": "Int4"
-                                  }
-                                }
-                              }
-                            }
-                          }
-                        }
-                      ]
-                    ]
-                  }
-                }
-              }
-            }
-          }
-        },
-        "origin": {
-          "Table": {
-            "table": "tml_switchboard.jobs",
-            "name": "ssh_endpoints"
-          }
-        }
-      },
-      {
-        "ordinal": 20,
+        "ordinal": 18,
         "name": "terminate_requested_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -318,7 +252,7 @@
         }
       },
       {
-        "ordinal": 21,
+        "ordinal": 19,
         "name": "termination_reason: _",
         "type_info": {
           "Custom": {
@@ -349,7 +283,7 @@
         }
       },
       {
-        "ordinal": 22,
+        "ordinal": 20,
         "name": "task_exit_status: _",
         "type_info": {
           "Custom": {
@@ -371,7 +305,7 @@
         }
       },
       {
-        "ordinal": 23,
+        "ordinal": 21,
         "name": "exit_message",
         "type_info": "Text",
         "origin": {
@@ -382,7 +316,7 @@
         }
       },
       {
-        "ordinal": 24,
+        "ordinal": 22,
         "name": "terminated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -414,8 +348,6 @@
       false,
       false,
       false,
-      false,
-      true,
       true,
       true,
       true,
@@ -426,5 +358,5 @@
       true
     ]
   },
-  "hash": "a3d33614f767a97569ae9c98313831d43f32662f49fb565b4d9b996d30914ae0"
+  "hash": "69b6ec343f8de394263b6a51ad069f32fb957aca4b2f1cd75f9b9b13aeea1aee"
 }

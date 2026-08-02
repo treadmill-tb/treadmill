@@ -166,10 +166,10 @@ async fn seed_job(pool: &PgPool, owner: Uuid, token: Uuid, params: &[(&str, &str
     let (image_id, _) = register_image(pool).await;
     sqlx::query(
         "insert into tml_switchboard.jobs \
-           (job_id, owner_id, image_id, ssh_keys, restart_policy, \
+           (job_id, owner_id, image_id, restart_policy, \
             enqueued_by_token_id, host_tag_requirements, job_timeout, \
             job_state, queued_at) \
-         values ($1, $2, $3, '{}', row(0)::tml_switchboard.restart_policy, \
+         values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, \
             $4, '{}', interval '1 hour', 'queued', now())",
     )
     .bind(job_id)
@@ -208,10 +208,10 @@ async fn seed_job_at(
     let (image_id, _) = register_image(pool).await;
     sqlx::query(
         "insert into tml_switchboard.jobs \
-           (job_id, owner_id, image_id, ssh_keys, restart_policy, \
+           (job_id, owner_id, image_id, restart_policy, \
             enqueued_by_token_id, host_tag_requirements, job_timeout, \
             job_state, queued_at) \
-         values ($1, $2, $3, '{}', row(0)::tml_switchboard.restart_policy, \
+         values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, \
             $4, '{}', interval '1 hour', 'queued', $5)",
     )
     .bind(job_id)
@@ -432,7 +432,6 @@ fn image_job_request(
         init_spec,
         label: None,
         owner,
-        ssh_keys: vec![],
         restart_policy: RestartPolicy { max_restarts: 0 },
         parameters: HashMap::new(),
         host_tag_requirements: vec![],
@@ -560,14 +559,6 @@ async fn job_label_is_set_at_enqueue_and_mutable_via_patch(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
-    let resp = client
-        .patch(format!("http://{addr}/api/v1/jobs/{job_id}"))
-        .bearer_auth(&token)
-        .json(&serde_json::json!({ "ssh_keys": [] }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
     let resp = client
         .patch(format!("http://{addr}/api/v1/jobs/{job_id}"))
         .bearer_auth(&token)
@@ -898,11 +889,10 @@ async fn owner_reads_own_job_with_secret_redacted(pool: PgPool) {
     assert_eq!(plain.value.as_deref(), Some("us-east"));
 
     // As the owner, bob holds every permission on the job.
-    assert_eq!(info.permissions.len(), 4);
+    assert_eq!(info.permissions.len(), 3);
     for perm in [
         JobPermission::Read,
         JobPermission::Stop,
-        JobPermission::Ssh,
         JobPermission::Manage,
     ] {
         assert!(info.permissions.contains(&perm), "missing {perm:?}");

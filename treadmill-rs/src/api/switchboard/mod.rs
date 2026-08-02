@@ -227,12 +227,6 @@ pub struct JobRequest {
     #[serde(default)]
     pub owner: Option<Uuid>,
 
-    /// The set of initial SSH keys to deploy onto the image.
-    ///
-    /// The image's configuration of the Treadmill puppet daemon determines
-    /// how and whether these keys will be loaded.
-    pub ssh_keys: Vec<String>,
-
     pub restart_policy: RestartPolicy,
 
     /// A hash map of parameters provided to this job execution. These
