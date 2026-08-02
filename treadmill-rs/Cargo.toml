@@ -6,7 +6,7 @@ edition.workspace = true
 authors.workspace = true
 categories = ["api-bindings"]
 description = "Common type- and API-definitions for the Treadmill distributed hardware testbed"
-homepage = "https://treadmill.ci"
+homepage = "https://treadmill.dev"
 keywords = ["ci", "testing", "testbed", "hardware", "embedded"]
 license = "MIT OR Apache-2.0"
 

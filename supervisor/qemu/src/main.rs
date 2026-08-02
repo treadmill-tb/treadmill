@@ -1846,9 +1846,9 @@ mod tests {
               "config": {{ "mediaType": "application/vnd.oci.empty.v1+json", "digest": "{EMPTY_DIGEST}", "size": 2 }},
               "layers": [
                 {{ "mediaType": "application/vnd.treadmill.disk.qcow2", "digest": "{ROOT_DIGEST}", "size": 10,
-                   "annotations": {{ "ci.treadmill.role": "root", "ci.treadmill.qcow2.virtual-size": "{virtual_size}" }} }}
+                   "annotations": {{ "dev.treadmill.role": "root", "dev.treadmill.qcow2.virtual-size": "{virtual_size}" }} }}
               ],
-              "annotations": {{ "ci.treadmill.qcow2.head": "{ROOT_DIGEST}" }}
+              "annotations": {{ "dev.treadmill.qcow2.head": "{ROOT_DIGEST}" }}
             }}"#
         );
         serde_json::from_str(&json).expect("canned manifest parses as an OCI image manifest")

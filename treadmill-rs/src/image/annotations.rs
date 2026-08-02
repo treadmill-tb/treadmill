@@ -2,23 +2,23 @@
 //!
 //! Selection axes and backing-chain structure that don't fit the standard OCI
 //! `platform`/descriptor fields are carried as annotations under the
-//! `ci.treadmill.*` namespace. See `doc/oci-image-migration-plan.md` §D2/§D3/§D4.
+//! `dev.treadmill.*` namespace. See `doc/oci-image-migration-plan.md` §D2/§D3/§D4.
 
 use std::fmt;
 use std::str::FromStr;
 
 /// Role of a blob within an image (value of the [`ROLE`] annotation).
-pub const ROLE: &str = "ci.treadmill.role";
+pub const ROLE: &str = "dev.treadmill.role";
 
 /// Digest of the top (head) layer of a qcow2 backing chain (manifest-level).
-pub const QCOW2_HEAD: &str = "ci.treadmill.qcow2.head";
+pub const QCOW2_HEAD: &str = "dev.treadmill.qcow2.head";
 
 /// Digest of the layer immediately below this one in a qcow2 backing chain
 /// (descriptor-level).
-pub const QCOW2_LOWER: &str = "ci.treadmill.qcow2.lower";
+pub const QCOW2_LOWER: &str = "dev.treadmill.qcow2.lower";
 
 /// Advertised qcow2 virtual size of a layer, in bytes (descriptor-level).
-pub const QCOW2_VIRTUAL_SIZE: &str = "ci.treadmill.qcow2.virtual-size";
+pub const QCOW2_VIRTUAL_SIZE: &str = "dev.treadmill.qcow2.virtual-size";
 
 /// Standard OCI annotation keys that Treadmill populates.
 pub mod oci {
