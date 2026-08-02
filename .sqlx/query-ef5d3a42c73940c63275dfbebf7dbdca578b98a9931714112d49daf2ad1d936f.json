@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.login_allowlist (provider, kind, external_id, comment) values ($1, $2, $3, $4) on conflict (provider, kind, external_id) do nothing;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ef5d3a42c73940c63275dfbebf7dbdca578b98a9931714112d49daf2ad1d936f"
+}

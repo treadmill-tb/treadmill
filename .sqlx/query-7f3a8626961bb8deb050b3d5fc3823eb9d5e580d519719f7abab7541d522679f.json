@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (\n                select 1 from tml_switchboard.login_allowlist\n                where provider = $1 and kind = $2 and external_id = $3\n            ) as \"present!\";",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "present!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7f3a8626961bb8deb050b3d5fc3823eb9d5e580d519719f7abab7541d522679f"
+}

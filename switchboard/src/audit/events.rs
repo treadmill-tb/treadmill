@@ -286,6 +286,51 @@ define_event! {
 }
 
 define_event! {
+    /// Global admin authority (direct `manual` membership in the `admins`
+    /// group) was granted or revoked by an operator through the `manage` CLI.
+    /// Attributed to the system actor -- the CLI runs against the database
+    /// without an authenticated subject.
+    AdminAuthorityChanged v1 {
+        actor: Subject,
+        user: Subject @ view(SelfAccess),
+        granted: bool,
+    }
+    event_type = "admin_authority_changed";
+    render = "admin authority granted = {granted}";
+}
+
+define_event! {
+    /// A group was created through the `manage` CLI, optionally bound in the
+    /// same transaction to an external auto-membership source (see
+    /// `group_auto_sources`). Attributed to the system actor.
+    GroupCreated v1 {
+        actor: Subject,
+        group: Subject @ view(OperatorOnly),
+        name: String,
+        auto_source_provider: Option<String>,
+        auto_source_external_id: Option<String>,
+    }
+    event_type = "group_created";
+    render = "created group {name}";
+}
+
+define_event! {
+    /// An entry was added to or removed from the `login_allowlist` consulted by
+    /// the admission gate ([`crate::auth::admission`]), through the `manage`
+    /// CLI. Operator-only: the entry names an external identity that may have
+    /// no local account, so there is no user relation to hang it off.
+    LoginAllowlistChanged v1 {
+        actor: Subject,
+        provider: String,
+        kind: String,
+        external_id: String,
+        added: bool,
+    }
+    event_type = "login_allowlist_changed";
+    render = "login allowlist {kind} {external_id} ({provider}) added = {added}";
+}
+
+define_event! {
     /// A user enqueued a new job (`POST /jobs`). Related to the job with the
     /// `read` policy, so it surfaces in the job's event feed for anyone who can
     /// read the job (its owner, a read-grantee, or an admin).

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'group');",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fae9638887cde310e456ab9d766b2b9e661d98ab8795866fe28e2960d552ac56"
+}

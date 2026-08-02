@@ -146,7 +146,7 @@ fn default_github_auth_url() -> String {
 fn default_github_token_url() -> String {
     "https://github.com/login/oauth/access_token".to_string()
 }
-fn default_github_api_base_url() -> String {
+pub(crate) fn default_github_api_base_url() -> String {
     "https://api.github.com".to_string()
 }
 
