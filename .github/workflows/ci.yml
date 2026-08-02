@@ -59,3 +59,56 @@ jobs:
       - name: nix flake check (full)
         if: github.event_name != 'pull_request'
         run: nix flake check --print-build-logs
+
+  deploy-console:
+    needs: nix-flake-check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    runs-on: ubuntu-latest
+
+    environment:
+      name: console-prod
+      url: ${{ vars.TML_CONSOLE_URL }}
+
+    permissions:
+      contents: read
+      deployments: write
+
+    concurrency:
+      group: deploy-console-prod
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: treadmill-tb
+          skipPush: true
+
+      - name: nix build console (production API origin)
+        env:
+          TML_CONSOLE_API_URL: ${{ vars.TML_CONSOLE_API_URL }}
+        run: |
+          if [ -z "$TML_CONSOLE_API_URL" ]; then
+            echo "vars.TML_CONSOLE_API_URL must be set" >&2
+            exit 1
+          fi
+          nix build --impure --print-build-logs --out-link console-result --expr '
+            (builtins.getFlake (toString ./.))
+              .packages.${builtins.currentSystem}.console
+              .override { apiUrl = builtins.getEnv "TML_CONSOLE_API_URL"; }
+          '
+
+      - name: Resolve symlinks in console build
+        run: cp -rL --no-preserve=mode console-result console-dist
+
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          command: >-
+            pages deploy console-dist
+            --project-name=${{ vars.CF_PAGES_PROJECT }}
+            --branch=main
