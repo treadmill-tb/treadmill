@@ -131,17 +131,14 @@ impl std::str::FromStr for UserRef {
 
 impl ManageCommand {
     pub async fn run(self) -> anyhow::Result<()> {
-        let config = crate::config::load_configuration(self.config.as_deref())?;
-        let pool = crate::serve::pg_pool_from_config(&config.database)
-            .await
-            .context("failed to connect to database")?;
-
         // Handle lookups go to the same API the login flow uses, so a GitHub
         // Enterprise deployment resolves against its own instance.
-        let github_api = match &config.oauth.github {
-            Some(gh) => gh.api_base_url.trim_end_matches('/').to_string(),
-            None => crate::config::default_github_api_base_url(),
-        };
+        let (database, github_api) =
+            crate::config::load_manage_configuration(self.config.as_deref())?;
+
+        let pool = crate::serve::pg_pool_from_config(&database)
+            .await
+            .context("failed to connect to database")?;
 
         match self.subcommand {
             ManageSubcommand::Admin(cmd) => cmd.run(&pool).await,

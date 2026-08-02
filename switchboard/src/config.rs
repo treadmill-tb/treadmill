@@ -61,7 +61,7 @@ pub struct LogStreamingConfig {
     /// the per-job user JWTs. The matching account public key is derived from
     /// this seed, so it doubles as the JWT issuer.
     ///
-    /// SECRET — supply via `TML_LOGSTREAMING__ACCOUNT_SEED`, never on-disk
+    /// SECRET — supply via `TML_LOG_STREAMING__ACCOUNT_SEED`, never on-disk
     /// config (project convention). Unrelated to the opaque API token in
     /// `auth/token.rs`.
     pub account_seed: String,
@@ -284,8 +284,7 @@ fn default_sse_channel_ttl() -> Duration {
     Duration::from_secs(30 * 60)
 }
 
-/// Load the switchboard configuration.
-pub fn load_configuration(path: Option<&Path>) -> anyhow::Result<SwitchboardConfig> {
+fn figment(path: Option<&Path>) -> anyhow::Result<figment::Figment> {
     use figment::providers::{self, Format};
     let f = figment::Figment::new();
 
@@ -303,8 +302,12 @@ pub fn load_configuration(path: Option<&Path>) -> anyhow::Result<SwitchboardConf
         f
     };
 
-    let config: SwitchboardConfig = f
-        .merge(providers::Env::prefixed("TML_").split("__"))
+    Ok(f.merge(providers::Env::prefixed("TML_").split("__")))
+}
+
+/// Load the full configuration, including every secret.
+pub fn load_configuration(path: Option<&Path>) -> anyhow::Result<SwitchboardConfig> {
+    let config: SwitchboardConfig = figment(path)?
         .extract()
         .context("Failed to extract switchboard configuration")?;
 
@@ -323,6 +326,23 @@ pub fn load_configuration(path: Option<&Path>) -> anyhow::Result<SwitchboardConf
     }
 
     Ok(config)
+}
+
+/// Load only the sections `swx manage` uses: the database, GitHub API base URL
+/// handles. Doesn't need sections like the NATS config, which may contain
+/// secrets not available in the config passed to the `manage` command.
+pub fn load_manage_configuration(path: Option<&Path>) -> anyhow::Result<(DatabaseConfig, String)> {
+    let f = figment(path)?;
+
+    let database = f
+        .extract_inner("database")
+        .context("Failed to extract database configuration")?;
+
+    let github_api = f
+        .extract_inner::<String>("oauth.github.api_base_url")
+        .unwrap_or_else(|_| default_github_api_base_url());
+
+    Ok((database, github_api.trim_end_matches('/').to_string()))
 }
 
 #[cfg(test)]
