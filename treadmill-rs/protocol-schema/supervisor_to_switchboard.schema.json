@@ -152,6 +152,28 @@
         }
       ]
     },
+    "JobService": {
+      "description": "One service a job announces as reachable through a gateway.\n\nThe control plane never learns what a service *is*: all three fields are\nopaque to it. `name` identifies the service within its job and is the label a\ngateway hostname is built from, `label` is optional human-readable text for\nclients to display, and `protocol` is a client-interpreted token (`http`,\n`ssh-ws`, …) that switchboard, supervisor and puppet store and echo but never\nbranch on.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "protocol": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "protocol"
+      ]
+    },
     "ProtocolError": {
       "description": "A fatal protocol-level error, carried in-band in **both** directions purely\nfor diagnostics (better logs on the receiving side).\n\n# Contract\n\nThere is no in-band *recovery* protocol. Critical state transitions are\nidempotent and a reconnect re-synchronises state, so error handling is\nsimply **log → close → reconnect**. On a fatal violation the offended side\nSHOULD:\n\n1. send this [`ProtocolError`] (so the peer can log a precise reason),\n2. send a WebSocket `Close` frame with the matching\n   [`ProtocolErrorCode::close_code`], then\n3. terminate the connection.\n\nThe peer reconnects and reconciliation re-establishes a consistent state.",
       "type": "object",
@@ -400,6 +422,44 @@
           "required": [
             "type",
             "error"
+          ]
+        },
+        {
+          "description": "The address at which the job is reachable on the supervisor's internal\nnetwork, and which a gateway dials to reach the job's services. This is\nthe supervisor's own account of where it placed the job; it is never\nderived from anything the job reports about itself.",
+          "type": "object",
+          "properties": {
+            "address": {
+              "type": "string",
+              "format": "ip"
+            },
+            "type": {
+              "type": "string",
+              "const": "job_network_address"
+            }
+          },
+          "required": [
+            "type",
+            "address"
+          ]
+        },
+        {
+          "description": "The complete set of services the job announces. Each event replaces the\npreviously announced set in full, so re-announcing after a reconnect is\nidempotent and no drift between the two sides is representable.",
+          "type": "object",
+          "properties": {
+            "services": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/JobService"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "job_service_set"
+            }
+          },
+          "required": [
+            "type",
+            "services"
           ]
         }
       ]

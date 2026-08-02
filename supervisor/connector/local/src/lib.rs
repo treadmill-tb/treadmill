@@ -234,6 +234,7 @@ impl<S: connector::Supervisor> Inner<S> {
             // Local runs stream qemu's console straight to the terminal (the
             // supervisor inherits stdio when this is `None`); no NATS needed.
             log_streaming: None,
+            gateway: None,
         };
 
         event!(

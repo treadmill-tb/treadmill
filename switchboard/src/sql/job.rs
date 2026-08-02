@@ -1024,6 +1024,7 @@ pub async fn build_start_job_message(
         restart_policy: job.restart_policy(),
         parameters,
         log_streaming,
+        gateway: None,
     })
 }
 

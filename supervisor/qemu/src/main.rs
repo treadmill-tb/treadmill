@@ -1907,6 +1907,7 @@ mod tests {
             },
             parameters: HashMap::<String, ParameterValue>::new(),
             log_streaming: None,
+            gateway: None,
         }
     }
 

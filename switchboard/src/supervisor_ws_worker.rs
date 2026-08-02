@@ -962,6 +962,24 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 self.finalize_job_error(job_id, error).await?;
                 Ok(PostMsg::Continue)
             }
+
+            SupervisorJobEvent::JobNetworkAddress { address } => {
+                tracing::debug!(
+                    %job_id,
+                    %address,
+                    "received JobNetworkAddress event from supervisor; not yet recorded"
+                );
+                Ok(PostMsg::Continue)
+            }
+
+            SupervisorJobEvent::JobServiceSet { services } => {
+                tracing::debug!(
+                    %job_id,
+                    ?services,
+                    "received JobServiceSet event from supervisor; not yet recorded"
+                );
+                Ok(PostMsg::Continue)
+            }
         }
     }
 

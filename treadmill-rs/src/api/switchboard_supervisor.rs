@@ -55,7 +55,9 @@ pub const PROTOCOL_MAJOR: u16 = 1;
 /// whenever a new message variant or feature flag is introduced.
 ///
 /// minor 1: `StartJobMessage.log_streaming` (NATS/JetStream log streaming).
-pub const PROTOCOL_MINOR: u16 = 1;
+/// minor 2: `StartJobMessage.gateway` and the `JobNetworkAddress` /
+/// `JobServiceSet` job events (gateway-exposed job services).
+pub const PROTOCOL_MINOR: u16 = 2;
 
 /// A two-level protocol version. `major` is also pinned by the WebSocket
 /// subprotocol token; `minor` is negotiated in the handshake.
@@ -193,6 +195,14 @@ pub struct StartJobMessage {
     /// do not understand this field simply ignore it and capture nothing.
     #[serde(default)]
     pub log_streaming: Option<LogStreamingDispatch>,
+
+    /// Material for reaching this job's services through a gateway, or `None`
+    /// when the deployment runs without one. The supervisor relays it into the
+    /// job (see [`JobGatewayDispatch`]). Additive and optional: older
+    /// supervisors that do not understand this field simply ignore it and
+    /// expose nothing.
+    #[serde(default)]
+    pub gateway: Option<JobGatewayDispatch>,
 }
 
 /// A supervisor console-output channel, used as the final token of a log
@@ -254,6 +264,25 @@ pub struct LogStreamingDispatch {
     /// the client's default inbox prefix in place.
     #[serde(default)]
     pub inbox_prefix: Option<String>,
+}
+
+/// Gateway material handed to a supervisor in [`StartJobMessage`], to be relayed
+/// into the job.
+///
+/// A job's services are reached through stateless gateways that admit a request
+/// only against a switchboard-minted token. The job is handed the key material
+/// to validate those same tokens itself, so that reaching a service requires a
+/// valid token at both ends.
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct JobGatewayDispatch {
+    /// The switchboard's public key for verifying minted service tokens.
+    pub signing_public_key: String,
+    /// Identifier of `signing_public_key`, carried as the `kid` of a minted
+    /// token's header. Rotating the key yields a new `key_id`.
+    pub key_id: String,
+    /// The gateway domains under which this job's services are reachable.
+    pub domains: Vec<String>,
 }
 
 // -- StopJobRequest -------------------------------------------------------------------------------
@@ -376,6 +405,22 @@ pub enum TaskExitStatus {
     /// The workload failed.
     Failure,
 }
+/// One service a job announces as reachable through a gateway.
+///
+/// The control plane never learns what a service *is*: all three fields are
+/// opaque to it. `name` identifies the service within its job and is the label a
+/// gateway hostname is built from, `label` is optional human-readable text for
+/// clients to display, and `protocol` is a client-interpreted token (`http`,
+/// `ssh-ws`, …) that switchboard, supervisor and puppet store and echo but never
+/// branch on.
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct JobService {
+    pub name: String,
+    pub label: Option<String>,
+    pub protocol: String,
+}
+
 /// An asynchronous event a supervisor emits about the job it is executing,
 /// wrapped in a [`SupervisorEvent::JobEvent`]. The switchboard mirrors these
 /// into the DB out-of-band of reconciliation; reconciliation itself is driven by
@@ -410,6 +455,15 @@ pub enum SupervisorJobEvent {
     ///
     /// [`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason
     Error { error: JobError },
+    /// The address at which the job is reachable on the supervisor's internal
+    /// network, and which a gateway dials to reach the job's services. This is
+    /// the supervisor's own account of where it placed the job; it is never
+    /// derived from anything the job reports about itself.
+    JobNetworkAddress { address: std::net::IpAddr },
+    /// The complete set of services the job announces. Each event replaces the
+    /// previously announced set in full, so re-announcing after a reconnect is
+    /// idempotent and no drift between the two sides is representable.
+    JobServiceSet { services: Vec<JobService> },
 }
 
 /// A supervisor's point-in-time status snapshot, returned in the

@@ -141,6 +141,32 @@
         }
       ]
     },
+    "JobGatewayDispatch": {
+      "description": "Gateway material handed to a supervisor in [`StartJobMessage`], to be relayed\ninto the job.\n\nA job's services are reached through stateless gateways that admit a request\nonly against a switchboard-minted token. The job is handed the key material\nto validate those same tokens itself, so that reaching a service requires a\nvalid token at both ends.",
+      "type": "object",
+      "properties": {
+        "domains": {
+          "description": "The gateway domains under which this job's services are reachable.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "key_id": {
+          "description": "Identifier of `signing_public_key`, carried as the `kid` of a minted\ntoken's header. Rotating the key yields a new `key_id`.",
+          "type": "string"
+        },
+        "signing_public_key": {
+          "description": "The switchboard's public key for verifying minted service tokens.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "signing_public_key",
+        "key_id",
+        "domains"
+      ]
+    },
     "LogStreamingDispatch": {
       "description": "Per-job log-streaming destination handed to a supervisor in\n[`StartJobMessage`].\n\nThe supervisor publishes captured console output to the NATS server at\n`nats_url`, under subjects `<subject_prefix>.<channel>` (where\n`subject_prefix` is `logs.<job-id>` and `<channel>` is a [`LogChannel`]\ntoken), authenticating with `write_token`.\n\n`write_token` is a **bearer** user JWT the switchboard mints per dispatch,\nscoped to exactly this job's subjects; the supervisor connects with the\ntoken string alone (no nkey seed is ever shipped).",
       "type": "object",
@@ -269,6 +295,18 @@
     "StartJobMessage": {
       "type": "object",
       "properties": {
+        "gateway": {
+          "description": "Material for reaching this job's services through a gateway, or `None`\nwhen the deployment runs without one. The supervisor relays it into the\njob (see [`JobGatewayDispatch`]). Additive and optional: older\nsupervisors that do not understand this field simply ignore it and\nexpose nothing.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JobGatewayDispatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "image_spec": {
           "$ref": "#/$defs/ImageSpecification"
         },
