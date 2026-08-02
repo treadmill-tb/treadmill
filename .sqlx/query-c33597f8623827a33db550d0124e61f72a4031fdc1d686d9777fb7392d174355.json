@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tml_switchboard.jobs\n           set job_ip_address = $2\n           where job_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Inet"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c33597f8623827a33db550d0124e61f72a4031fdc1d686d9777fb7392d174355"
+}

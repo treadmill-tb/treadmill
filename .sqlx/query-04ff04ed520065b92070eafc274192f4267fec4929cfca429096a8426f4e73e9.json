@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from tml_switchboard.job_services where job_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "04ff04ed520065b92070eafc274192f4267fec4929cfca429096a8426f4e73e9"
+}

@@ -2,8 +2,10 @@ use super::image;
 use crate::matcher::{GroupMember, select_member};
 use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
+use sqlx::types::ipnetwork::IpNetwork;
 use sqlx::{PgExecutor, Postgres, Transaction};
 use std::collections::BTreeSet;
+use std::net::IpAddr;
 use treadmill_rs::api::switchboard::jobs::{
     JobImageRef, JobInfo, JobInitializingStage as ClientJobInitializingStage, JobParameterView,
     JobPermission as ClientJobPermission, JobSummary, RestartPolicy as ClientRestartPolicy,
@@ -11,8 +13,8 @@ use treadmill_rs::api::switchboard::jobs::{
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, TerminationReason};
 use treadmill_rs::api::switchboard_supervisor::{
-    ImageLocation, ImageSpecification, JobInitializingStage, ParameterValue, RestartPolicy,
-    RunningJobState, StartJobMessage, TaskExitStatus,
+    ImageLocation, ImageSpecification, JobInitializingStage, JobService, ParameterValue,
+    RestartPolicy, RunningJobState, StartJobMessage, TaskExitStatus,
 };
 use treadmill_rs::connector::JobErrorKind;
 use treadmill_rs::image::Digest;
@@ -911,6 +913,69 @@ pub async fn set_resolved_image(
     .map(|_| ())
 }
 
+/// Record the internal network address the job's supervisor reports for it.
+///
+/// Never cleared: like the placement and start time, the address is retained on
+/// the job's terminal record.
+#[allow(dead_code)]
+pub async fn set_job_ip_address(
+    job_id: Uuid,
+    address: IpAddr,
+    conn: impl PgExecutor<'_>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"update tml_switchboard.jobs
+           set job_ip_address = $2
+           where job_id = $1"#,
+        job_id,
+        IpNetwork::from(address),
+    )
+    .execute(conn)
+    .await
+    .map(|_| ())
+}
+
+/// Replace a job's announced services with `services`, dropping any it no longer
+/// announces.
+///
+/// An announcement carries the job's entire set rather than a delta, so the
+/// previous rows are dropped rather than merged. Both statements run in the
+/// caller's transaction: a half-applied set must never be observable.
+///
+/// Announcing a name twice violates the primary key and fails the transaction.
+#[allow(dead_code)]
+pub async fn replace_services(
+    job_id: Uuid,
+    services: &[JobService],
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"delete from tml_switchboard.job_services where job_id = $1"#,
+        job_id,
+    )
+    .execute(&mut **txn)
+    .await?;
+
+    let names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
+    let labels: Vec<Option<&str>> = services.iter().map(|s| s.label.as_deref()).collect();
+    let protocols: Vec<&str> = services.iter().map(|s| s.protocol.as_str()).collect();
+
+    sqlx::query!(
+        r#"
+        insert into tml_switchboard.job_services (job_id, name, label, protocol)
+        select $1, s.name, s.label, s.protocol
+        from unnest($2::text[], $3::text[], $4::text[]) as s (name, label, protocol)
+        "#,
+        job_id,
+        names.as_slice() as &[&str],
+        labels.as_slice() as &[Option<&str>],
+        protocols.as_slice() as &[&str],
+    )
+    .execute(&mut **txn)
+    .await
+    .map(|_| ())
+}
+
 /// Why building a [`StartJobMessage`] for dispatch failed.
 #[derive(Debug)]
 pub enum BuildStartJobError {
@@ -1609,4 +1674,240 @@ pub async fn finalize_dropped_and_maybe_restart(
     parameters::insert(successor_id, parameters, &mut **txn).await?;
 
     Ok(Some(successor_id))
+}
+
+#[cfg(test)]
+mod tests {
+    //! DB-backed tests for the job writers. Each is `#[ignore]`d (needs
+    //! Postgres via `DATABASE_URL`); run them in the ephemeral-Postgres
+    //! devshell:
+    //!
+    //!     nix develop '.#database'
+    //!     cargo nextest run --run-ignored only -p treadmill-switchboard
+    //!
+    //! CI runs them via the `nextest-db` Nix check. Helpers use runtime
+    //! (non-macro) queries so they don't add to the `.sqlx` cache.
+
+    use super::*;
+    use sqlx::PgPool;
+    use treadmill_rs::image::media_types;
+
+    /// A queued job, along with the user, token and image its row references.
+    async fn insert_job(pool: &PgPool) -> Uuid {
+        let user = Uuid::new_v4();
+        sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'user')")
+            .bind(user)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("insert into tml_switchboard.users (subject_id, name) values ($1, $2)")
+            .bind(user)
+            .bind(format!("user-{user}"))
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // `token` and the image digest are UNIQUE; seed both from a fresh id so
+        // repeated calls in one test don't collide.
+        let token = Uuid::new_v4();
+        let mut secret = vec![0u8; 32];
+        secret[..16].copy_from_slice(token.as_bytes());
+        sqlx::query(
+            "insert into tml_switchboard.api_tokens \
+             (token_id, token, user_id, revoked, created_at, expires_at) \
+             values ($1, $2, $3, null, now(), now() + interval '1 day')",
+        )
+        .bind(token)
+        .bind(secret)
+        .bind(user)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let image_id = Uuid::new_v4();
+        let mut seed = [0u8; 32];
+        seed[..16].copy_from_slice(image_id.as_bytes());
+        image::insert(
+            pool,
+            image_id,
+            &Digest::from_sha256(seed).encoded(),
+            media_types::IMAGE_ARTIFACT_TYPE,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let job_id = Uuid::now_v7();
+        sqlx::query(
+            "insert into tml_switchboard.jobs \
+             (job_id, owner_id, image_id, restart_policy, enqueued_by_token_id, \
+              host_tag_requirements, job_timeout, job_state, queued_at) \
+             values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, $4, '{}', \
+                     interval '1 hour', 'queued', now())",
+        )
+        .bind(job_id)
+        .bind(user)
+        .bind(image_id)
+        .bind(token)
+        .execute(pool)
+        .await
+        .unwrap();
+        job_id
+    }
+
+    fn service(name: &str, label: Option<&str>, protocol: &str) -> JobService {
+        JobService {
+            name: name.to_string(),
+            label: label.map(str::to_string),
+            protocol: protocol.to_string(),
+        }
+    }
+
+    async fn services_of(pool: &PgPool, job_id: Uuid) -> Vec<(String, Option<String>, String)> {
+        sqlx::query_as(
+            "select name, label, protocol from tml_switchboard.job_services \
+             where job_id = $1 order by name",
+        )
+        .bind(job_id)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn job_ip_address_of(pool: &PgPool, job_id: Uuid) -> Option<IpAddr> {
+        sqlx::query_scalar::<_, Option<IpNetwork>>(
+            "select job_ip_address from tml_switchboard.jobs where job_id = $1",
+        )
+        .bind(job_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+        .map(|network| network.ip())
+    }
+
+    async fn replace(
+        pool: &PgPool,
+        job_id: Uuid,
+        services: &[JobService],
+    ) -> Result<(), sqlx::Error> {
+        let mut txn = pool.begin().await.unwrap();
+        let result = replace_services(job_id, services, &mut txn).await;
+        if result.is_ok() {
+            txn.commit().await.unwrap();
+        }
+        result
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn job_ip_address_round_trips(pool: PgPool) {
+        let job_id = insert_job(&pool).await;
+        assert_eq!(job_ip_address_of(&pool, job_id).await, None);
+
+        let v6: IpAddr = "fd7a:115c:a1e0::1".parse().unwrap();
+        set_job_ip_address(job_id, v6, &pool).await.unwrap();
+        assert_eq!(job_ip_address_of(&pool, job_id).await, Some(v6));
+
+        let v4: IpAddr = "192.0.2.7".parse().unwrap();
+        set_job_ip_address(job_id, v4, &pool).await.unwrap();
+        assert_eq!(job_ip_address_of(&pool, job_id).await, Some(v4));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn replace_services_swaps_the_whole_set(pool: PgPool) {
+        let job_id = insert_job(&pool).await;
+        let other_job_id = insert_job(&pool).await;
+
+        replace(
+            &pool,
+            job_id,
+            &[
+                service("webide", Some("Web IDE"), "webapp"),
+                service("term1", None, "sshws"),
+            ],
+        )
+        .await
+        .unwrap();
+        replace(&pool, other_job_id, &[service("webide", None, "webapp")])
+            .await
+            .unwrap();
+        assert_eq!(
+            services_of(&pool, job_id).await,
+            vec![
+                ("term1".to_string(), None, "sshws".to_string()),
+                (
+                    "webide".to_string(),
+                    Some("Web IDE".to_string()),
+                    "webapp".to_string()
+                ),
+            ]
+        );
+
+        // The next announcement replaces the set rather than merging into it,
+        // and leaves another job's services alone.
+        replace(&pool, job_id, &[service("webide", None, "webapp")])
+            .await
+            .unwrap();
+        assert_eq!(
+            services_of(&pool, job_id).await,
+            vec![("webide".to_string(), None, "webapp".to_string())]
+        );
+        assert_eq!(services_of(&pool, other_job_id).await.len(), 1);
+
+        // Announcing nothing clears the set.
+        replace(&pool, job_id, &[]).await.unwrap();
+        assert!(services_of(&pool, job_id).await.is_empty());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn address_and_services_are_retained_on_finalize(pool: PgPool) {
+        let job_id = insert_job(&pool).await;
+        let address: IpAddr = "fd7a:115c:a1e0::2".parse().unwrap();
+        set_job_ip_address(job_id, address, &pool).await.unwrap();
+        replace(&pool, job_id, &[service("webide", None, "webapp")])
+            .await
+            .unwrap();
+
+        let mut txn = pool.begin().await.unwrap();
+        finalize_terminated(job_id, Utc::now(), &mut txn)
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+
+        assert_eq!(job_ip_address_of(&pool, job_id).await, Some(address));
+        assert_eq!(services_of(&pool, job_id).await.len(), 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn service_names_are_constrained(pool: PgPool) {
+        let job_id = insert_job(&pool).await;
+
+        for name in ["webide", "ide2", "a", "abcdefghijklmnop"] {
+            replace(&pool, job_id, &[service(name, None, "webapp")])
+                .await
+                .unwrap_or_else(|e| panic!("{name} must be accepted: {e}"));
+            assert_eq!(services_of(&pool, job_id).await.len(), 1);
+        }
+
+        for name in [
+            "",
+            "2ide",
+            "web-ide",
+            "web_ide",
+            "WebIDE",
+            "web ide",
+            "abcdefghijklmnopq",
+        ] {
+            let Err(error) = replace(&pool, job_id, &[service(name, None, "webapp")]).await else {
+                panic!("{name} must be rejected");
+            };
+            let sqlx::Error::Database(error) = &error else {
+                panic!("{name}: expected a constraint violation, got {error}");
+            };
+            assert_eq!(error.constraint(), Some("valid_service_name"), "{name}");
+        }
+    }
 }

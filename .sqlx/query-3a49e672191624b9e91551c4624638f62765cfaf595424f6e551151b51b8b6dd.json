@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        insert into tml_switchboard.job_services (job_id, name, label, protocol)\n        select $1, s.name, s.label, s.protocol\n        from unnest($2::text[], $3::text[], $4::text[]) as s (name, label, protocol)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3a49e672191624b9e91551c4624638f62765cfaf595424f6e551151b51b8b6dd"
+}

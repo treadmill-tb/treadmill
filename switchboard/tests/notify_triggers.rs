@@ -211,6 +211,86 @@ async fn jobs_changes_emit_routing_keys(pool: PgPool) {
 
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn job_service_changes_wake_the_owning_job(pool: PgPool) {
+    let user = insert_user(&pool).await;
+    let token = insert_token(&pool, user).await;
+    let image = insert_image(&pool).await;
+    let job = insert_job(&pool, user, token, image).await;
+
+    let mut listener = listen(&pool).await;
+
+    let insert_service = |name: &'static str, protocol: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "insert into tml_switchboard.job_services (job_id, name, label, protocol) \
+                 values ($1, $2, null, $3)",
+            )
+            .bind(job)
+            .bind(name)
+            .bind(protocol)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+
+    // The owning job is the only routing key: a receiver watching the job
+    // re-reads its whole service set.
+    insert_service("webide", "webapp").await;
+    let event = next_event(&mut listener).await;
+    assert_eq!(event["table"], "job_services");
+    assert_eq!(key_values(&event, "job_id"), vec![job.to_string()]);
+
+    sqlx::query("update tml_switchboard.job_services set label = 'Web IDE' where job_id = $1")
+        .bind(job)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let event = next_event(&mut listener).await;
+    assert_eq!(event["table"], "job_services");
+    assert_eq!(key_values(&event, "job_id"), vec![job.to_string()]);
+
+    // A write that changes nothing is silent (proven by the delete event
+    // arriving next).
+    sqlx::query("update tml_switchboard.job_services set label = label where job_id = $1")
+        .bind(job)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlx::query("delete from tml_switchboard.job_services where job_id = $1")
+        .bind(job)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let event = next_event(&mut listener).await;
+    assert_eq!(event["table"], "job_services");
+    assert_eq!(key_values(&event, "job_id"), vec![job.to_string()]);
+
+    // Deleting the job cascades, so the service rows emit their own events
+    // alongside the job's.
+    insert_service("term1", "sshws").await;
+    let event = next_event(&mut listener).await;
+    assert_eq!(event["table"], "job_services");
+
+    sqlx::query("delete from tml_switchboard.jobs where job_id = $1")
+        .bind(job)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut tables = vec![];
+    for _ in 0..2 {
+        let event = next_event(&mut listener).await;
+        assert_eq!(key_values(&event, "job_id"), vec![job.to_string()]);
+        tables.push(event["table"].as_str().unwrap().to_string());
+    }
+    tables.sort();
+    assert_eq!(tables, vec!["job_services", "jobs"]);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn host_heartbeats_stay_silent(pool: PgPool) {
     let user = insert_user(&pool).await;
     let mut listener = listen(&pool).await;

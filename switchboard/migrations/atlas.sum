@@ -1,4 +1,4 @@
-h1:4uCvm7+gnlwfLPY999i+7LECqqZX0VsZ5mLl9ljTFoI=
+h1:OvHcIrzPl15C9j7AyneS343dhXcEpe0yU4KYfx0m7Ts=
 00000000000001_base.sql h1:7OodY/qoessjRRoCAAX04fthKHTDNzzloQ4srKlxs+o=
 20260704040624_add_login_admission.sql h1:hYEzBBXagVmDVTtFsA1uosdNLKUi8JvitaMOFw/4jbk=
 20260708035542_everyone_subject.sql h1:eshPaeCj4UtkHWVuGTZHzsESVxK09Vy8ys5+ywA09pU=
@@ -13,3 +13,4 @@ h1:4uCvm7+gnlwfLPY999i+7LECqqZX0VsZ5mLl9ljTFoI=
 20260713001627_primary_email.sql h1:SlSkvtWHxNgW+2zDCSJnBjsmRDIRdqIwTkJqcfpPSYQ=
 20260713214508_job_valid_label_constr.sql h1:EmIPVJoi/cpLmUUuSpimPEFfSsMtsQRLT+zAe0JHPtM=
 20260802075717_remove_job_ssh.sql h1:fZlTCIF7g/Ro3DTs34xsjWU/J1IDmq4XPIrndg7PIm4=
+20260802220453_job_gateway_services.sql h1:43NqZ5x99//htzrWScV0B1/lZaUvwzFb+e6SL/RyIxs=
