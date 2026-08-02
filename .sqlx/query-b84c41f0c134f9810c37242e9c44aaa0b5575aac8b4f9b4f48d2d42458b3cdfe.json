@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select provider, kind, external_id, comment, added_at from tml_switchboard.login_allowlist order by provider, kind, external_id;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "provider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.login_allowlist",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.login_allowlist",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "external_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.login_allowlist",
+            "name": "external_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "comment",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.login_allowlist",
+            "name": "comment"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "added_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.login_allowlist",
+            "name": "added_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "b84c41f0c134f9810c37242e9c44aaa0b5575aac8b4f9b4f48d2d42458b3cdfe"
+}

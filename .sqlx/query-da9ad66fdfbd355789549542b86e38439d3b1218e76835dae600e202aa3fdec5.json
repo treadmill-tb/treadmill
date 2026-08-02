@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.group_members (group_id, member_id, source) values ($1, $2, 'manual') on conflict do nothing;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "da9ad66fdfbd355789549542b86e38439d3b1218e76835dae600e202aa3fdec5"
+}

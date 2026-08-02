@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select distinct u.subject_id, u.name from tml_switchboard.users u join tml_switchboard.user_identities i on i.user_id = u.subject_id where lower(i.provider_login) = lower($1);",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "subject_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.users",
+            "name": "subject_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.users",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "6186a15cc2734ca6cdbc9cc9e3a91dfa79c79f0e7c34d0fef96491f4e458fd60"
+}

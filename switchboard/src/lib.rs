@@ -5,6 +5,7 @@ pub mod config;
 pub mod events;
 pub(crate) mod http_error;
 pub mod log_streaming;
+pub mod manage;
 pub mod matcher;
 pub mod registry;
 pub mod routes;

@@ -610,10 +610,11 @@ fn doc<'a>(
 
 /// Build the OpenAPI document for the client API.
 ///
-/// Shared by the `dump-openapi` binary and the `openapi_spec` drift test so the
-/// two entry points cannot diverge. Registers the bearer security scheme that
-/// authenticated operations reference via the
-/// [`Subject`](crate::auth::Subject) extractor.
+/// Shared by the OpenAPI spec dump and the `openapi_spec` drift test so the two
+/// entry points cannot diverge.
+///
+/// Registers the bearer security scheme that authenticated operations reference
+/// via the [`Subject`](crate::auth::Subject) extractor.
 pub fn openapi_spec() -> aide::openapi::OpenApi {
     use aide::openapi::{Components, Info, OpenApi, ReferenceOr, SecurityScheme, Tag};
 

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.group_auto_sources (group_id, provider, external_id, external_name, membership_via) values ($1, 'github', $2, $3, 'github_org');",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b05fe2951084dda4fad4bb87524a9dfa8bb6d1b1ec0512fd56648a78182ae5d5"
+}
