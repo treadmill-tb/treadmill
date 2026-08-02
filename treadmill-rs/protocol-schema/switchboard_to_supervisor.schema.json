@@ -298,19 +298,11 @@
         },
         "restart_policy": {
           "$ref": "#/$defs/RestartPolicy"
-        },
-        "ssh_keys": {
-          "description": "The set of initial SSH keys to deploy onto the image.\n\nThe image's configuration of the Treadmill puppet daemon determines\nhow and whether these keys will be loaded.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
         }
       },
       "required": [
         "job_id",
         "image_spec",
-        "ssh_keys",
         "restart_policy",
         "parameters"
       ]

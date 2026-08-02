@@ -160,21 +160,6 @@ export default function JobDetail({ params }: Route.ComponentProps) {
                 <div className="muted">{job.data.exit_message}</div>
               )}
             </dd>
-            <dt>SSH</dt>
-            <dd>
-              {job.data.ssh_endpoints == null ||
-              job.data.ssh_endpoints.length === 0 ? (
-                <span className="muted">—</span>
-              ) : (
-                job.data.ssh_endpoints.map((ep) => (
-                  <div key={`${ep.ssh_host}:${ep.ssh_port}`} className="mono">
-                    {ep.ssh_host}:{ep.ssh_port}
-                  </div>
-                ))
-              )}
-            </dd>
-            <dt>SSH keys</dt>
-            <dd>{job.data.ssh_keys.length} deployed</dd>
           </dl>
 
           <section>

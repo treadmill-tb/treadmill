@@ -74,7 +74,6 @@ INSERT INTO
         auth_token,
         tags,
         owner_id,
-        ssh_endpoints,
         current_job
     )
 VALUES
@@ -85,7 +84,6 @@ VALUES
         '\x38292b85b0cc8941bbad8d4b9527f2c01be092a6f50b23add1d8c8828b3d403cfa5f221a3fe81807ad9727a1caefc7df3edbc35728bd6d18f8163d71555c857a2c593d6d1a9d4d342f3c77a9c9223f6e57b797196d94d7c4529f6fa89f1e9162f372b0906658aec695717b1fd4b73ad3b0ae7079d2bd9f7eb995129e1acde2b7',
         '{"host:7d55ec6d-15e7-4b84-8c04-7c085fe60df4"}',
         '8752ca01-a650-4716-b0a1-d2f1860e4175',
-        '{"(127.0.0.1,22)","([::1],22)"}',
         NULL
     );
 

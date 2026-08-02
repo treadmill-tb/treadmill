@@ -424,8 +424,8 @@ mod tests {
         auth_token[..16].copy_from_slice(id.as_bytes());
         sqlx::query(
             "insert into tml_switchboard.hosts \
-             (host_id, name, auth_token, tags, ssh_endpoints, worker_instance_id, last_seen_at, owner_id) \
-             values ($1, $2, $3, $4, '{}'::tml_switchboard.ssh_endpoint[], 0, $5, $6)",
+             (host_id, name, auth_token, tags, worker_instance_id, last_seen_at, owner_id) \
+             values ($1, $2, $3, $4, 0, $5, $6)",
         )
         .bind(id)
         .bind(format!("host-{id}"))
@@ -580,7 +580,6 @@ mod tests {
             init_spec,
             label: None,
             owner: None,
-            ssh_keys: vec![],
             restart_policy: RestartPolicy { max_restarts: 0 },
             parameters: HashMap::new(),
             host_tag_requirements: tags(host_tag_requirements),

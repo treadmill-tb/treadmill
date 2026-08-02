@@ -46,8 +46,8 @@ async fn seed_live_host(pool: &PgPool, name: &str, tags: &[&str], target_tags: &
 
     sqlx::query(
         "insert into tml_switchboard.hosts \
-           (host_id, name, auth_token, tags, ssh_endpoints, last_seen_at) \
-         values ($1, $2, $3, $4, '{}'::tml_switchboard.ssh_endpoint[], now())",
+           (host_id, name, auth_token, tags, last_seen_at) \
+         values ($1, $2, $3, $4, now())",
     )
     .bind(host_id)
     .bind(name)
@@ -164,8 +164,8 @@ async fn seed_host_owned(pool: &PgPool, name: &str, owner: Uuid) -> Uuid {
     auth_token[..16].copy_from_slice(host_id.as_bytes());
     sqlx::query(
         "insert into tml_switchboard.hosts \
-           (host_id, name, auth_token, tags, ssh_endpoints, worker_instance_id, owner_id) \
-         values ($1, $2, $3, '{}', '{}'::tml_switchboard.ssh_endpoint[], 0, $4)",
+           (host_id, name, auth_token, tags, worker_instance_id, owner_id) \
+         values ($1, $2, $3, '{}', 0, $4)",
     )
     .bind(host_id)
     .bind(name)

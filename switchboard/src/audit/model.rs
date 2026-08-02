@@ -179,8 +179,8 @@ pub enum Permission {
 
 impl Permission {
     /// The textual enum value (matches the underlying `host_permission` /
-    /// `job_permission` / `image_set_permission` enum values: `'read' |
-    /// 'start' | 'ssh' | 'stop' | 'use' | 'manage'`).
+    /// `job_permission` / `image_set_permission` enum values: `'read' | 'start'
+    /// | 'stop' | 'use' | 'manage'`).
     pub fn as_str(self) -> &'static str {
         match self {
             Permission::Host(p) => p.as_str(),

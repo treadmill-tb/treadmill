@@ -1040,9 +1040,6 @@ export interface components {
              */
             resolved_image_digest?: components["schemas"]["Digest"] | null;
             restart_policy: components["schemas"]["RestartPolicyState"];
-            /** @description SSH endpoints the running job is reachable on; null until reported. */
-            ssh_endpoints?: components["schemas"]["SshEndpoint"][] | null;
-            ssh_keys: string[];
             /**
              * Format: date-time
              * @description When the job was dispatched onto a host; null if not yet started.
@@ -1153,7 +1150,7 @@ export interface components {
          * @description A permission on a job. `permissions` on [`JobInfo`] reports which of these
          *     the viewer holds (an owner or global admin holds all of them).
          */
-        JobPermission: "read" | "stop" | "ssh" | "manage";
+        JobPermission: "read" | "stop" | "manage";
         JobRequest: {
             /**
              * @description Host eligibility: the set of tags the chosen host must carry (as a
@@ -1190,13 +1187,6 @@ export interface components {
             };
             restart_policy: components["schemas"]["RestartPolicy"];
             /**
-             * @description The set of initial SSH keys to deploy onto the image.
-             *
-             *     The image's configuration of the Treadmill puppet daemon determines
-             *     how and whether these keys will be loaded.
-             */
-            ssh_keys: string[];
-            /**
              * @description Target (DUT) eligibility: an ordered array of requested targets, each a
              *     set of tags an attached DUT must carry (as a superset). The scheduler
              *     assigns each entry to a distinct attached target (DUT) on the chosen
@@ -1212,9 +1202,9 @@ export interface components {
         JobState: "queued" | "assigned" | "initializing" | "ready" | "terminating" | "finalized";
         /**
          * @description A compact per-job row for the `GET /jobs` listing — identity, ownership,
-         *     lifecycle state, and the key timestamps/outcome, without the heavier
-         *     per-job detail (parameters, target requirements, ssh keys) that
-         *     [`JobInfo`] carries. Fetch the full view with `GET /jobs/{id}`.
+         *     lifecycle state, and the key timestamps/outcome, without the heavier per-job
+         *     detail (parameters, target requirements) that [`JobInfo`] carries. Fetch the
+         *     full view with `GET /jobs/{id}`.
          */
         JobSummary: {
             /**
@@ -1596,12 +1586,6 @@ export interface components {
              * @description The source's unique identifier.
              */
             source_id: string;
-        };
-        /** @description An SSH endpoint a running job can be reached on. */
-        SshEndpoint: {
-            ssh_host: string;
-            /** Format: uint16 */
-            ssh_port: number;
         };
         /**
          * @description The user workload's success/failure outcome, exposed as `task_exit_status`

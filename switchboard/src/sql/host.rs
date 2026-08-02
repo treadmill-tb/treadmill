@@ -3,7 +3,6 @@ use std::collections::BTreeSet;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
-use super::SqlSshEndpoint;
 use crate::auth::token::SecurityToken;
 
 #[derive(Debug)]
@@ -11,7 +10,6 @@ pub struct SqlHost {
     pub host_id: Uuid,
     pub name: String,
     pub tags: Vec<String>,
-    pub ssh_endpoints: Vec<SqlSshEndpoint>,
     pub current_job: Option<Uuid>,
     pub worker_instance_id: i64,
 }
@@ -95,7 +93,6 @@ pub async fn insert(
     name: String,
     auth_token: SecurityToken,
     tag_set: &BTreeSet<String>,
-    ssh_endpoints: Vec<SqlSshEndpoint>,
     conn: impl PgExecutor<'_>,
 ) -> Result<(), sqlx::Error> {
     let tag_vec: Vec<String> = tag_set.iter().cloned().collect();
@@ -108,23 +105,20 @@ pub async fn insert(
             host_id,
             name,
             auth_token,
-            tags,
-            ssh_endpoints
+            tags
         )
         VALUES
         (
             $1,
             $2,
             $3,
-            $4,
-            $5
+            $4
         );
         "#,
         host_id,
         name,
         auth_token.as_bytes(),
         tag_vec.as_slice(),
-        ssh_endpoints.as_slice() as &[SqlSshEndpoint],
     )
     .execute(conn)
     .await
@@ -139,7 +133,6 @@ pub async fn fetch_all_hosts(conn: impl PgExecutor<'_>) -> Result<Vec<SqlHost>, 
             host_id,
             name,
             tags,
-            ssh_endpoints as "ssh_endpoints: _",
             current_job,
             worker_instance_id
         FROM

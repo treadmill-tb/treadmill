@@ -15,7 +15,6 @@ pub use super::switchboard_supervisor::ParameterValue;
 pub enum PuppetReq {
     Ping,
     JobInfo,
-    SSHKeys,
     NetworkConfig,
     Parameters,
 }
@@ -114,12 +113,6 @@ pub enum PuppetMsg {
 #[non_exhaustive]
 pub enum SupervisorEvent {
     // Events:
-    /// The set of SSH keys provided by the supervisor has been updated.
-    ///
-    /// Based on this event, the puppet may want to update the set of SSH keys
-    /// that is authorized to log into the host.
-    SSHKeysUpdated,
-
     /// Request that the host on which the puppet is running be shut
     /// down.
     ///
@@ -204,9 +197,6 @@ pub enum SupervisorResp {
     // Request reponses:
     PingResp,
     JobInfo(JobInfo),
-    SSHKeysResp {
-        ssh_keys: Vec<String>,
-    },
     NetworkConfig(NetworkConfig),
     Parameters {
         parameters: HashMap<String, ParameterValue>,

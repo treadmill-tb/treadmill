@@ -83,8 +83,8 @@ async fn insert_host(pool: &PgPool, owner: Uuid) -> Uuid {
     auth_token[..16].copy_from_slice(id.as_bytes());
     sqlx::query(
         "insert into tml_switchboard.hosts \
-         (host_id, name, auth_token, tags, ssh_endpoints, worker_instance_id, owner_id) \
-         values ($1, $2, $3, '{}', '{}'::tml_switchboard.ssh_endpoint[], 0, $4)",
+         (host_id, name, auth_token, tags, worker_instance_id, owner_id) \
+         values ($1, $2, $3, '{}', 0, $4)",
     )
     .bind(id)
     .bind(format!("host-{id}"))
@@ -119,9 +119,9 @@ async fn insert_job(pool: &PgPool, owner: Uuid, token: Uuid, image: Uuid) -> Uui
     let id = Uuid::new_v4();
     sqlx::query(
         "insert into tml_switchboard.jobs \
-         (job_id, owner_id, image_id, ssh_keys, restart_policy, enqueued_by_token_id, \
+         (job_id, owner_id, image_id, restart_policy, enqueued_by_token_id, \
           host_tag_requirements, job_timeout, job_state, queued_at) \
-         values ($1, $2, $3, '{}', row(0)::tml_switchboard.restart_policy, $4, '{}', \
+         values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, $4, '{}', \
                  interval '1 hour', 'queued', now())",
     )
     .bind(id)

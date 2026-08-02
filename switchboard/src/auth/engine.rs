@@ -38,14 +38,12 @@ pub const ANONYMOUS_SUBJECT_ID: Uuid = Uuid::from_u128(3);
 pub enum HostPermission {
     Read,
     Start,
-    Ssh,
     Manage,
 }
 impl HostPermission {
     pub const ALL: &'static [HostPermission] = &[
         HostPermission::Read,
         HostPermission::Start,
-        HostPermission::Ssh,
         HostPermission::Manage,
     ];
 
@@ -54,7 +52,6 @@ impl HostPermission {
         match self {
             HostPermission::Read => "read",
             HostPermission::Start => "start",
-            HostPermission::Ssh => "ssh",
             HostPermission::Manage => "manage",
         }
     }
@@ -65,7 +62,6 @@ impl HostPermission {
         match s {
             "read" => Some(HostPermission::Read),
             "start" => Some(HostPermission::Start),
-            "ssh" => Some(HostPermission::Ssh),
             "manage" => Some(HostPermission::Manage),
             _ => None,
         }
@@ -77,14 +73,12 @@ impl HostPermission {
 pub enum JobPermission {
     Read,
     Stop,
-    Ssh,
     Manage,
 }
 impl JobPermission {
     pub const ALL: &'static [JobPermission] = &[
         JobPermission::Read,
         JobPermission::Stop,
-        JobPermission::Ssh,
         JobPermission::Manage,
     ];
 
@@ -93,7 +87,6 @@ impl JobPermission {
         match self {
             JobPermission::Read => "read",
             JobPermission::Stop => "stop",
-            JobPermission::Ssh => "ssh",
             JobPermission::Manage => "manage",
         }
     }
@@ -104,7 +97,6 @@ impl JobPermission {
         match s {
             "read" => Some(JobPermission::Read),
             "stop" => Some(JobPermission::Stop),
-            "ssh" => Some(JobPermission::Ssh),
             "manage" => Some(JobPermission::Manage),
             _ => None,
         }

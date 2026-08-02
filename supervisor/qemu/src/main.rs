@@ -41,16 +41,6 @@ pub struct QemuSupervisorArgs {
 }
 
 #[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
-pub enum SSHPreferredIPVersion {
-    #[default]
-    Unspecified,
-    V4,
-    V6,
-}
-
-#[derive(Deserialize, Debug, Clone)]
 pub struct QemuConfig {
     /// Main QEMU binary to execute for a job.
     qemu_binary: PathBuf,
@@ -1326,40 +1316,6 @@ impl connector::Supervisor for QemuSupervisor {
 #[async_trait]
 impl control_socket::Supervisor for QemuSupervisor {
     #[instrument(skip(self))]
-    async fn ssh_keys(&self, _host_id: Uuid, tgt_job_id: Uuid) -> Option<Vec<String>> {
-        match self.jobs.lock().await.get(&tgt_job_id) {
-            Some(job_state) => match &*job_state.lock().await {
-                QemuSupervisorJobState::Running(QemuSupervisorJobRunningState {
-                    start_job_req,
-                    ..
-                }) => Some(start_job_req.ssh_keys.clone()),
-
-                // Only respond to host / puppet requests when the job is marked
-                // as "running":
-                state => {
-                    event!(
-                        Level::WARN,
-                        "Received puppet SSH keys request for job {job_id} in invalid state {job_state}",
-                        job_id = tgt_job_id,
-                        job_state = state.state_name(),
-                    );
-                    None
-                }
-            },
-
-            // Job not found:
-            None => {
-                event!(
-                    Level::WARN,
-                    "Received puppet SSH keys request for non-existent job {job_id}",
-                    job_id = tgt_job_id,
-                );
-                None
-            }
-        }
-    }
-
-    #[instrument(skip(self))]
     async fn network_config(
         &self,
         _host_id: Uuid,
@@ -1946,7 +1902,6 @@ mod tests {
                     repository: "treadmill/stub".to_string(),
                 }],
             },
-            ssh_keys: vec![],
             restart_policy: RestartPolicy {
                 remaining_restart_count: 0,
             },

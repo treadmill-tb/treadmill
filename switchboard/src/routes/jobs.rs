@@ -425,7 +425,6 @@ fn job_perm_to_api(p: JobPermission) -> ApiJobPermission {
     match p {
         JobPermission::Read => ApiJobPermission::Read,
         JobPermission::Stop => ApiJobPermission::Stop,
-        JobPermission::Ssh => ApiJobPermission::Ssh,
         JobPermission::Manage => ApiJobPermission::Manage,
     }
 }

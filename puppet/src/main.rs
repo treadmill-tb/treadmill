@@ -57,12 +57,6 @@ struct PuppetDaemonArgs {
     tcp_control_socket_addr: Option<std::net::SocketAddr>,
 
     #[arg(long)]
-    authorized_keys_file: Option<PathBuf>,
-
-    #[arg(long, default_value = "true")]
-    exit_on_authorized_keys_update_error: bool,
-
-    #[arg(long)]
     network_config_script: Option<PathBuf>,
 
     #[arg(long, default_value = "true")]
@@ -222,58 +216,6 @@ async fn update_parameters_dir(
                     "Renaming temporary parameter file {tmpfile_path:?} to target file {sanitized_path:?}"
                 )
             })?;
-    }
-
-    Ok(())
-}
-
-async fn update_authorized_keys(
-    args: &PuppetDaemonArgs,
-    client: &control_socket_client::ControlSocketClient,
-) -> Result<()> {
-    if let Some(ref authorized_keys_file) = args.authorized_keys_file {
-        info!("Updating SSH authorized_keys file: {authorized_keys_file:?}");
-
-        // Request the set of SSH authorized keys from the supervisor:
-        let ssh_keys = client
-            .get_ssh_keys()
-            .await
-            .context("Requesting SSH keys from supervisor")?;
-
-        // Create the authorized keys file's parent directories (if they
-        // don't exist) and dump the keys to the file:
-        tokio::fs::create_dir_all(authorized_keys_file.parent().ok_or_else(|| {
-            anyhow!(
-                "Failed to determine parent directory of authorized_keys file: {:?}",
-                authorized_keys_file
-            )
-        })?)
-        .await
-        .with_context(|| {
-            format!("Creating parent directories of authorized_keys file {authorized_keys_file:?}")
-        })?;
-
-        let authorized_keys = format!(
-            "# WARNING: this file is managed by tml-puppet and may be overwritten.\n\
-	     # Please add your own SSH keys to an alternative authorized_keys file\n\
-	     # (such as ~/.ssh/authorized_keys2)\n\
-	     {}\n",
-            ssh_keys.join("\n"),
-        );
-        tokio::fs::write(authorized_keys_file, authorized_keys.as_bytes())
-            .await
-            .with_context(|| {
-                format!(
-                    "Writing authorized_keys ({} bytes) to {:?}",
-                    authorized_keys.len(),
-                    authorized_keys_file
-                )
-            })?;
-
-        info!(
-            "Received {} SSH authorized_keys from supervisor, file updated successfully.",
-            ssh_keys.len()
-        );
     }
 
     Ok(())
@@ -678,25 +620,6 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
     // want to exit with an error if they fail. We provided these wrappers here
     // that selectively either log or forward errors:
 
-    async fn update_authorized_keys_wrapper(
-        args: &PuppetDaemonArgs,
-        client: &control_socket_client::ControlSocketClient,
-    ) -> Result<()> {
-        let msg = "Failed to update the SSH authorized_keys database";
-        let res = update_authorized_keys(args, client).await;
-
-        if args.exit_on_authorized_keys_update_error {
-            // Forward the raw Result with additional context:
-            res.context(msg)
-        } else if let Err(e) = res {
-            // Simply log errors with the context part of the log message:
-            warn!("{msg}: {e:?}");
-            Ok(())
-        } else {
-            Ok(())
-        }
-    }
-
     async fn configure_network_wrapper(
         args: &PuppetDaemonArgs,
         client: &control_socket_client::ControlSocketClient,
@@ -719,7 +642,6 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
     // We perform a couple essential supervisor requests at the start, report
     // ourselves as ready, and then listen to supervisor events.
 
-    update_authorized_keys_wrapper(&args, &client).await?;
     configure_network_wrapper(&args, &client).await?;
     update_parameters_dir(&args, &client)
         .await
@@ -787,10 +709,6 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
         debug!("Received supervisor event: {:?}", event);
 
         match event {
-            SupervisorEvent::SSHKeysUpdated => {
-                update_authorized_keys_wrapper(&args, &client).await?;
-            }
-
             SupervisorEvent::ShutdownReq => {
                 warn!("Supervisor requested shutdown, not implemented yet!");
             }

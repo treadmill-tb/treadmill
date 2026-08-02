@@ -62,10 +62,6 @@ pub struct LocalJobArgs {
     #[arg(long)]
     pub repository: Option<String>,
 
-    /// An SSH public key to deploy into the guest (repeatable).
-    #[arg(long = "ssh-key", value_name = "KEY")]
-    pub ssh_keys: Vec<String>,
-
     /// A job parameter as `key=value` (repeatable).
     #[arg(short = 'p', long = "param", value_name = "KEY=VALUE", value_parser = parse_param)]
     pub parameters: Vec<(String, String)>,
@@ -217,7 +213,6 @@ impl<S: connector::Supervisor> Inner<S> {
                     repository: repository.to_string(),
                 }],
             },
-            ssh_keys: self.args.ssh_keys.clone(),
             restart_policy: RestartPolicy {
                 remaining_restart_count: 0,
             },
@@ -365,7 +360,6 @@ mod tests {
                     .unwrap(),
             ),
             repository: Some("treadmill/stub".to_string()),
-            ssh_keys: vec![],
             parameters: vec![],
             stop_after: None,
             job_id: Some(Uuid::new_v4()),

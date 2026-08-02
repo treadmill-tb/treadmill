@@ -14,19 +14,6 @@ use crate::api::supervisor_puppet::{self, JobInfo, PuppetEvent, PuppetReq, Super
 /// to facilitate the delivery of these events.
 #[async_trait]
 pub trait Supervisor: Send + Sync + 'static {
-    /// Puppet SSH keys request.
-    ///
-    /// If the supervisor maintains a set of SSH authorized keys that should be
-    /// deployed on the puppet, it should return with `Some(<authorized keys
-    /// set>)`.
-    ///
-    /// When a supervisor returns `None`, it indicates that this request is not
-    /// supported. A puppet may or may not retry sending SSH keys requests at a
-    /// later point in time when the supervisor ever returned `None`. If a
-    /// supervisor is able to provide SSH authorized keys generally, but
-    /// currently has none configured, it should instead return `Some(vec![])`.
-    async fn ssh_keys(&self, host_id: Uuid, job_id: Uuid) -> Option<Vec<String>>;
-
     /// Puppet network configuration request.
     ///
     /// Hosts may obtain their network configuration through various means, such
@@ -75,13 +62,6 @@ pub trait Supervisor: Send + Sync + 'static {
             PuppetReq::Ping => SupervisorResp::PingResp,
 
             PuppetReq::JobInfo => SupervisorResp::JobInfo(JobInfo { job_id, host_id }),
-
-            PuppetReq::SSHKeys => SupervisorResp::SSHKeysResp {
-                ssh_keys: self
-                    .ssh_keys(host_id, job_id)
-                    .await
-                    .unwrap_or_else(std::vec::Vec::new),
-            },
 
             PuppetReq::Parameters => self
                 .parameters(host_id, job_id)
