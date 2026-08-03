@@ -153,7 +153,7 @@
       ]
     },
     "JobService": {
-      "description": "One service a job announces as reachable through a gateway.\n\nThe control plane never learns what a service *is*: all three fields are\nopaque to it. `name` identifies the service within its job and is the label a\ngateway hostname is built from, `label` is optional human-readable text for\nclients to display, and `protocol` is a client-interpreted token (`http`,\n`ssh-ws`, …) that switchboard, supervisor and puppet store and echo but never\nbranch on.",
+      "description": "One service a job announces as reachable through a gateway.\n\nThe control plane never learns what a service *is*: all three fields are\nopaque to it. `name` identifies the service within its job and is the label a\ngateway hostname is built from, `label` is optional human-readable text for\nclients to display, and `protocol` is a client-interpreted token (`webapp`,\n`sshws`, …) that switchboard, supervisor and puppet store and echo but never\nbranch on.",
       "type": "object",
       "properties": {
         "label": {

@@ -410,8 +410,8 @@ pub enum TaskExitStatus {
 /// The control plane never learns what a service *is*: all three fields are
 /// opaque to it. `name` identifies the service within its job and is the label a
 /// gateway hostname is built from, `label` is optional human-readable text for
-/// clients to display, and `protocol` is a client-interpreted token (`http`,
-/// `ssh-ws`, …) that switchboard, supervisor and puppet store and echo but never
+/// clients to display, and `protocol` is a client-interpreted token (`webapp`,
+/// `sshws`, …) that switchboard, supervisor and puppet store and echo but never
 /// branch on.
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
