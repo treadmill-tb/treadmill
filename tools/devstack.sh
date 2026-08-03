@@ -218,6 +218,11 @@ cat > "$gw_caddyfile" <<CADDY
 {
 	admin off
 	auto_https disable_redirects
+	# Caddy's local CA installs its root into the system trust store on first
+	# use, which asks for a sudo password. A dev stack has no business
+	# needing root, and the certificate is meant to be waved through anyway
+	# (see below) -- run \`caddy trust\` by hand to silence the warning.
+	skip_install_trust
 	# jwtauth comes from a plugin, so it has no place in the default directive
 	# order; it needs one even inside the route below, where what actually
 	# runs is the order written.
