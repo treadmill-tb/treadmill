@@ -94,6 +94,35 @@ async fn update_job_info_files(args: &PuppetDaemonArgs, job_info: JobInfo) -> Re
         .await
         .context("Writing host id to file")?;
 
+    // What an in-job proxy needs to validate a service token for itself: the
+    // key it was signed under, that key's id, and the gateway domains a request
+    // may legitimately have arrived through. Absent for a job that is not
+    // reachable through a gateway.
+    if let Some(gateway) = job_info.gateway {
+        let key_path = job_info_dir.join("gateway-key.pem");
+        info!("Writing gateway signing key to file {key_path:?}");
+        tokio::fs::write(key_path, gateway.signing_public_key.as_bytes())
+            .await
+            .context("Writing gateway signing key to file")?;
+
+        let key_id_path = job_info_dir.join("gateway-key-id");
+        info!("Writing gateway key id to file {key_id_path:?}");
+        tokio::fs::write(key_id_path, gateway.key_id.as_bytes())
+            .await
+            .context("Writing gateway key id to file")?;
+
+        let domains_path = job_info_dir.join("gateway-domains");
+        info!("Writing gateway domains to file {domains_path:?}");
+        let domains: String = gateway
+            .domains
+            .iter()
+            .map(|domain| format!("{domain}\n"))
+            .collect();
+        tokio::fs::write(domains_path, domains.as_bytes())
+            .await
+            .context("Writing gateway domains to file")?;
+    }
+
     Ok(())
 }
 
