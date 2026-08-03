@@ -216,6 +216,9 @@ pub async fn connect(
     // Shared with the worker so it can mint per-job write tokens and provision
     // streams at dispatch; `None` when log streaming is disabled.
     let log_streaming = state.log_streaming().cloned();
+    // Likewise for the gateway material the worker hands a job at dispatch;
+    // `None` when the deployment runs without a gateway.
+    let job_gateway = state.job_gateway().cloned();
     let event_bus = state.event_bus().clone();
 
     let mut response =
@@ -247,6 +250,7 @@ pub async fn connect(
                         web_socket,
                         ws_worker_config,
                         log_streaming,
+                        job_gateway,
                         event_bus,
                     )
                     .await

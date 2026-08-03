@@ -29,6 +29,7 @@ use jsonwebtoken::jwk::{
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
+use treadmill_rs::api::switchboard_supervisor::JobGatewayDispatch;
 use uuid::Uuid;
 
 use crate::config::JobGatewayConfig;
@@ -183,6 +184,20 @@ pub fn service_url(gateway: &JobGateway, job_id: Uuid, service: &str) -> String 
         service_label(job_id, service),
         gateway.primary_domain()
     )
+}
+
+/// Build the [`JobGatewayDispatch`] handed to a supervisor in `StartJobMessage`
+/// and relayed by it into the job.
+///
+/// Carries no token, unlike its log-streaming counterpart: the job mints
+/// nothing and only validates the tokens its callers arrive with, for which the
+/// public key and the domains it is published under are all it needs.
+pub fn build_dispatch(gateway: &JobGateway) -> JobGatewayDispatch {
+    JobGatewayDispatch {
+        signing_public_key: gateway.public_key_pem.clone(),
+        key_id: gateway.key_id.clone(),
+        domains: gateway.config.domains.clone(),
+    }
 }
 
 /// Mint a token admitting `subject_id` to `service` of `job_id`, at any gateway

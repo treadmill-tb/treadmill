@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::audit::model::{Host as AuditHost, Job as AuditJob, Subject as AuditSubject};
 use crate::audit::{self, SYSTEM_ACTOR_ID, events};
 use crate::events::{Debounced, EventBus, EventFilter};
+use crate::job_gateway::JobGateway;
 use crate::log_streaming::LogStreaming;
 use crate::sql;
 
@@ -100,6 +101,11 @@ struct WorkerCtx {
     /// lock — see `reconcile`). `None` disables streaming: jobs dispatch with no
     /// `log_streaming` destination.
     log_streaming: Option<LogStreaming>,
+    /// Job-gateway signing material, present iff the deployment enables the
+    /// feature. Handed to the supervisor at dispatch so the job can validate
+    /// the service tokens its callers arrive with. `None` disables gateway
+    /// access: jobs dispatch with no `gateway` material.
+    job_gateway: Option<JobGateway>,
 }
 
 pub struct SupervisorWSWorker<S: SupervisorSocket> {
@@ -374,6 +380,7 @@ async fn resolve_assigned_or_running(
     at: chrono::DateTime<chrono::Utc>,
     txn: &mut Transaction<'_, Postgres>,
     log_streaming_config: Option<&crate::config::LogStreamingConfig>,
+    job_gateway: Option<&JobGateway>,
 ) -> Result<Option<SwitchboardToSupervisor>> {
     use crate::sql::job::SqlJobState;
 
@@ -381,9 +388,10 @@ async fn resolve_assigned_or_running(
         // Assigned + Idle: the supervisor hasn't picked it up yet — (re)dispatch
         // it. No DB change; the next pass adopts the reported running state.
         (SqlJobState::Assigned, ReportedSupervisorStatus::Idle) => {
-            let msg = sql::job::build_start_job_message(job, txn, log_streaming_config)
-                .await
-                .context("building StartJob message in reconcile")?;
+            let msg =
+                sql::job::build_start_job_message(job, txn, log_streaming_config, job_gateway)
+                    .await
+                    .context("building StartJob message in reconcile")?;
             Some(SwitchboardToSupervisor::StartJob(msg))
         }
 
@@ -450,16 +458,27 @@ async fn resolve_assigned_or_running(
 }
 
 impl<S: SupervisorSocket> SupervisorWSWorker<S> {
-    #[tracing::instrument(skip(pool, socket, config, log_streaming, event_bus))]
+    #[tracing::instrument(skip(pool, socket, config, log_streaming, job_gateway, event_bus))]
     pub async fn run(
         pool: PgPool,
         host_id: Uuid,
         socket: S,
         config: SupervisorWSWorkerConfig,
         log_streaming: Option<LogStreaming>,
+        job_gateway: Option<JobGateway>,
         event_bus: EventBus,
     ) {
-        match Self::run_inner(pool, host_id, socket, config, log_streaming, event_bus).await {
+        match Self::run_inner(
+            pool,
+            host_id,
+            socket,
+            config,
+            log_streaming,
+            job_gateway,
+            event_bus,
+        )
+        .await
+        {
             Ok(()) => {
                 tracing::info!("SupervisorWSWorker::run terminated successfully.");
             }
@@ -485,6 +504,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         socket: S,
         config: SupervisorWSWorkerConfig,
         log_streaming: Option<LogStreaming>,
+        job_gateway: Option<JobGateway>,
         event_bus: EventBus,
     ) -> WorkerResult<()> {
         // A supervisor has just opened a new WebSocket connection for this host
@@ -537,6 +557,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 worker_instance_id,
                 config,
                 log_streaming,
+                job_gateway,
             },
             socket,
             wake,
@@ -667,6 +688,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         // The log-streaming config (token minting only) is read inside the txn;
         // stream provisioning (NATS I/O) happens *after* commit, below.
         let log_streaming_config = self.ctx.log_streaming.as_ref().map(|ls| ls.config.clone());
+        let job_gateway = self.ctx.job_gateway.clone();
 
         // All reads and writes run under the takeover/staleness guard. The
         // closure returns the single command (if any) the worker must send
@@ -716,6 +738,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                                 at,
                                 txn,
                                 log_streaming_config.as_ref(),
+                                job_gateway.as_ref(),
                             )
                             .await?
                         }
@@ -1509,6 +1532,7 @@ mod tests {
                 worker_instance_id,
                 config,
                 log_streaming: None,
+                job_gateway: None,
             },
             socket: NoSocket,
             wake: idle_wake(),
@@ -1537,6 +1561,7 @@ mod tests {
                 worker_instance_id,
                 config,
                 log_streaming: None,
+                job_gateway: None,
             },
             socket,
             wake: idle_wake(),
@@ -2001,6 +2026,7 @@ mod tests {
                 socket,
                 worker_config(50, 250),
                 None,
+                None,
                 EventBus::default(),
             ),
         )
@@ -2026,6 +2052,7 @@ mod tests {
                 host_id,
                 socket,
                 worker_config(50, 250),
+                None,
                 None,
                 EventBus::default(),
             ),
@@ -2061,6 +2088,7 @@ mod tests {
             host_id,
             socket,
             worker_config(50, 5_000),
+            None,
             None,
             EventBus::default(),
         ));
@@ -2143,6 +2171,7 @@ mod tests {
             socket,
             cfg,
             None,
+            None,
             EventBus::default(),
         ));
 
@@ -2182,6 +2211,7 @@ mod tests {
             host_id,
             socket,
             cfg,
+            None,
             None,
             EventBus::default(),
         ));
@@ -2283,6 +2313,7 @@ mod tests {
             host_id,
             socket,
             worker_config(60_000, 600_000),
+            None,
             None,
             bus.clone(),
         ));
@@ -2393,6 +2424,7 @@ mod tests {
             socket,
             cfg,
             None,
+            None,
             EventBus::default(),
         ));
 
@@ -2430,6 +2462,7 @@ mod tests {
             socket,
             cfg,
             None,
+            None,
             EventBus::default(),
         ));
 
@@ -2464,6 +2497,7 @@ mod tests {
             socket,
             cfg,
             None,
+            None,
             EventBus::default(),
         ));
 
@@ -2495,6 +2529,7 @@ mod tests {
             host_id,
             socket,
             cfg,
+            None,
             None,
             EventBus::default(),
         ));
@@ -3414,7 +3449,7 @@ mod tests {
         )
         .await?;
         let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
-        let msg = sql::job::build_start_job_message(&job, &mut conn, None)
+        let msg = sql::job::build_start_job_message(&job, &mut conn, None, None)
             .await
             .expect("concrete-image StartJob should build");
         assert_eq!(msg.job_id, job_id);
@@ -3459,7 +3494,7 @@ mod tests {
         .execute(&pool)
         .await?;
         let rjob = sql::job::fetch_by_job_id(resume_job, &pool).await?;
-        let rmsg = sql::job::build_start_job_message(&rjob, &mut conn, None)
+        let rmsg = sql::job::build_start_job_message(&rjob, &mut conn, None, None)
             .await
             .expect("resume StartJob should build");
         match rmsg.image_spec {
@@ -3503,7 +3538,7 @@ mod tests {
             account_seed: account.seed().expect("account seed"),
         };
 
-        let msg = sql::job::build_start_job_message(&job, &mut conn, Some(&ls_config))
+        let msg = sql::job::build_start_job_message(&job, &mut conn, Some(&ls_config), None)
             .await
             .expect("StartJob should build with log streaming");
 
@@ -3560,10 +3595,71 @@ mod tests {
         );
 
         // Disabled (None) leaves the field unset.
-        let plain = sql::job::build_start_job_message(&job, &mut conn, None)
+        let plain = sql::job::build_start_job_message(&job, &mut conn, None, None)
             .await
             .expect("StartJob should build without log streaming");
         assert!(plain.log_streaming.is_none());
+
+        Ok(())
+    }
+
+    /// With a gateway configured, `build_start_job_message` hands the supervisor
+    /// what a job needs to validate the service tokens its callers arrive with:
+    /// the public key they are signed under, its `kid`, and every domain the
+    /// job's services are published at.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn build_start_job_message_populates_gateway_material(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let mut conn = pool.acquire().await?;
+
+        let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
+        register_resolved_image(&pool, job_id).await?;
+        let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
+
+        // A throwaway signing seed, so no real secret enters the source tree.
+        let domains = vec![
+            "gw-us-east-1.treadmillusercontent.com".to_string(),
+            "gw-eu-central-1.treadmillusercontent.com".to_string(),
+        ];
+        let gateway = crate::job_gateway::JobGateway::new(crate::config::JobGatewayConfig {
+            issuer: "https://switchboard.example".to_string(),
+            domains: domains.clone(),
+            token_ttl: std::time::Duration::from_secs(60 * 60),
+            signing_key: hex::encode(rand::random::<[u8; 32]>()),
+        })
+        .expect("gateway configuration is usable");
+
+        let msg = sql::job::build_start_job_message(&job, &mut conn, None, Some(&gateway))
+            .await
+            .expect("StartJob should build with a gateway");
+
+        let dispatch = msg.gateway.expect("gateway must be populated when enabled");
+        assert_eq!(dispatch.signing_public_key, gateway.public_key_pem());
+        assert_eq!(dispatch.key_id, gateway.key_id());
+        assert_eq!(
+            dispatch.domains, domains,
+            "a job accepts a request arriving at any configured gateway"
+        );
+
+        // A job only ever validates tokens, so what it is handed is the public
+        // half and nothing else.
+        assert!(
+            dispatch
+                .signing_public_key
+                .starts_with("-----BEGIN PUBLIC KEY-----"),
+            "the dispatched key must be the public one"
+        );
+
+        // Disabled (None) leaves the field unset.
+        let plain = sql::job::build_start_job_message(&job, &mut conn, None, None)
+            .await
+            .expect("StartJob should build without a gateway");
+        assert!(plain.gateway.is_none());
 
         Ok(())
     }

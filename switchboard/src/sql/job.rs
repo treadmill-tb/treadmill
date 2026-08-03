@@ -1095,11 +1095,16 @@ impl std::error::Error for BuildStartJobError {}
 /// transaction; the *stream* is created separately, outside the row lock, by the
 /// caller (see the worker's `reconcile`).
 ///
+/// `gateway` travels the same way: `Some` carries the key material the job
+/// validates service tokens with (see [`crate::job_gateway`]), `None` leaves the
+/// field unset and the job's services unreachable from outside.
+///
 /// Read-only; safe to call inside the worker's `with_txn` (it issues no writes).
 pub async fn build_start_job_message(
     job: &SqlJob,
     conn: &mut sqlx::PgConnection,
     log_streaming: Option<&crate::config::LogStreamingConfig>,
+    gateway: Option<&crate::job_gateway::JobGateway>,
 ) -> Result<StartJobMessage, BuildStartJobError> {
     let image_spec = if let Some(resume_job_id) = job.resume_job_id {
         ImageSpecification::ResumeJob {
@@ -1145,7 +1150,7 @@ pub async fn build_start_job_message(
         restart_policy: job.restart_policy(),
         parameters,
         log_streaming,
-        gateway: None,
+        gateway: gateway.map(crate::job_gateway::build_dispatch),
     })
 }
 
