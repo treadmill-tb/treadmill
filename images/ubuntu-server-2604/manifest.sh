@@ -25,7 +25,7 @@ export rustup_init_sha256="4acc9acc76d5079515b46346a485974457b5a79893cfb01112423
 # Extra packages on top of the cloud image's base set (openssh-server, sudo,
 # systemd-networkd/resolved, grub, kernel, cloud-guest-utils/growpart, … are
 # already present in the cloud image).
-export packages=(vim tmux htop build-essential git usbutils pciutils nload nano gnupg bc mtr zip unzip wget curl gpg ca-certificates dbus)
+export packages=(vim tmux htop build-essential git usbutils pciutils nload nano gnupg bc mtr zip unzip wget curl gpg ca-certificates dbus ttyd)
 
 export puppet_daemon_args='--transport auto_discover'
 export serial_consoles=(ttyS0)
