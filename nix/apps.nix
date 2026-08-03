@@ -115,6 +115,12 @@
             # stage on every platform.
             pkgs.curl
             pkgs.jq
+            # Generates the job gateway's Ed25519 key pair and derives both
+            # halves in the encodings the switchboard and the gateway want.
+            pkgs.openssl
+            # The job service gateway itself: Caddy plus a JWT-verification
+            # plugin, since upstream Caddy cannot verify a token at all.
+            self'.packages.job-gateway-caddy
             self'.packages.swx
             # Static file server (with SPA history-API fallback) for the console.
             pkgs.static-web-server
