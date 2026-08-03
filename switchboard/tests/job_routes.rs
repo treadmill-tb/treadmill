@@ -85,6 +85,7 @@ fn streaming_enabled_state_with(pool: PgPool, provisioner: Arc<NoopProvisioner>)
         test_config_mock(),
         Arc::new(OciRegistryClient::new()),
         Some(test_log_streaming(provisioner)),
+        None,
         EventBus::default(),
     )
 }
@@ -1279,6 +1280,7 @@ fn watch_state(pool: PgPool) -> AppState {
         pool,
         test_config_mock(),
         Arc::new(OciRegistryClient::new()),
+        None,
         None,
         bus,
     )

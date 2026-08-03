@@ -73,6 +73,7 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
             return_to_allowlist: Vec::new(),
         },
         log_streaming: None,
+        job_gateway: None,
         sentry: None,
     }
 }
