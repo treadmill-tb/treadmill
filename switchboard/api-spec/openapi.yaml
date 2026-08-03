@@ -431,6 +431,61 @@ paths:
           description: Log streaming is not enabled on this deployment.
       security:
       - token: []
+  /jobs/{id}/services/{service}/token:
+    post:
+      tags:
+      - Jobs
+      summary: Create a gateway token for a job's service
+      operationId: createJobServiceToken
+      parameters:
+      - in: path
+        name: id
+        description: The job's unique identifier.
+        required: true
+        schema:
+          description: The job's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      - in: path
+        name: service
+        description: The service's name within the job, as the job announced it.
+        required: true
+        schema:
+          description: The service's name within the job, as the job announced it.
+          type: string
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: |-
+            Access credentials for one of a job's announced services, returned by
+            `POST /jobs/{id}/services/{service}/token`.
+
+            A job is not reachable from the internet: a request arrives instead at a
+            stateless gateway, which admits it only against `token` and then proxies it
+            to the job, where the same token is validated again. The token names exactly
+            one service of one job and is good at any of `domains`, so it survives a
+            client picking a gateway other than the one `url` points at.
+
+            How the token is presented is the gateway's convention rather than part of
+            this API: a browser navigates to `<url>?tml_token=<token>`, which the
+            gateway promotes to a cookie; other clients send it however they like.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobServiceCredentials'
+        '404':
+          description: The job announces no service by that name.
+        '409':
+          description: The job has no network address recorded yet.
+        '503':
+          description: Job service gateways are not enabled on this deployment.
+      security:
+      - token: []
   /jobs/{id}:
     get:
       tags:
@@ -2552,6 +2607,64 @@ components:
       - init_spec
       - restart_policy
       - parameters
+    JobServiceCredentials:
+      description: |-
+        Access credentials for one of a job's announced services, returned by
+        `POST /jobs/{id}/services/{service}/token`.
+
+        A job is not reachable from the internet: a request arrives instead at a
+        stateless gateway, which admits it only against `token` and then proxies it
+        to the job, where the same token is validated again. The token names exactly
+        one service of one job and is good at any of `domains`, so it survives a
+        client picking a gateway other than the one `url` points at.
+
+        How the token is presented is the gateway's convention rather than part of
+        this API: a browser navigates to `<url>?tml_token=<token>`, which the
+        gateway promotes to a cookie; other clients send it however they like.
+      type: object
+      properties:
+        domains:
+          description: |-
+            Every gateway domain the service is published under, primary first. The
+            same token is accepted at each, so a client may substitute the host of
+            `url` for any of these.
+          type: array
+          items:
+            type: string
+        expires_at:
+          description: |-
+            When the token stops being accepted. Minting again yields a fresh one;
+            an already-minted token is not invalidated before this by anything,
+            including the job ending or the caller's access being revoked.
+          type: string
+          format: date-time
+        token:
+          description: The signed token admitting the caller to this one service.
+          type: string
+        url:
+          description: |-
+            Where the service is published, through the deployment's primary
+            gateway: `https://<service>-<job-id>.<domain>/`.
+          type: string
+      required:
+      - url
+      - domains
+      - token
+      - expires_at
+    JobServicePath:
+      description: The `{id}/services/{service}` segments of a job service route.
+      type: object
+      properties:
+        id:
+          description: The job's unique identifier.
+          type: string
+          format: uuid
+        service:
+          description: The service's name within the job, as the job announced it.
+          type: string
+      required:
+      - id
+      - service
     JobServiceView:
       description: |-
         One service a running job announces, as exposed by `GET /jobs/{id}`.

@@ -227,6 +227,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/jobs/{id}/services/{service}/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a gateway token for a job's service */
+        post: operations["createJobServiceToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/jobs/{id}": {
         parameters: {
             query?: never;
@@ -1206,6 +1223,52 @@ export interface components {
              * @default []
              */
             target_requirements: string[][];
+        };
+        /**
+         * @description Access credentials for one of a job's announced services, returned by
+         *     `POST /jobs/{id}/services/{service}/token`.
+         *
+         *     A job is not reachable from the internet: a request arrives instead at a
+         *     stateless gateway, which admits it only against `token` and then proxies it
+         *     to the job, where the same token is validated again. The token names exactly
+         *     one service of one job and is good at any of `domains`, so it survives a
+         *     client picking a gateway other than the one `url` points at.
+         *
+         *     How the token is presented is the gateway's convention rather than part of
+         *     this API: a browser navigates to `<url>?tml_token=<token>`, which the
+         *     gateway promotes to a cookie; other clients send it however they like.
+         */
+        JobServiceCredentials: {
+            /**
+             * @description Every gateway domain the service is published under, primary first. The
+             *     same token is accepted at each, so a client may substitute the host of
+             *     `url` for any of these.
+             */
+            domains: string[];
+            /**
+             * Format: date-time
+             * @description When the token stops being accepted. Minting again yields a fresh one;
+             *     an already-minted token is not invalidated before this by anything,
+             *     including the job ending or the caller's access being revoked.
+             */
+            expires_at: string;
+            /** @description The signed token admitting the caller to this one service. */
+            token: string;
+            /**
+             * @description Where the service is published, through the deployment's primary
+             *     gateway: `https://<service>-<job-id>.<domain>/`.
+             */
+            url: string;
+        };
+        /** @description The `{id}/services/{service}` segments of a job service route. */
+        JobServicePath: {
+            /**
+             * Format: uuid
+             * @description The job's unique identifier.
+             */
+            id: string;
+            /** @description The service's name within the job, as the job announced it. */
+            service: string;
         };
         /**
          * @description One service a running job announces, as exposed by `GET /jobs/{id}`.
@@ -2220,6 +2283,79 @@ export interface operations {
                 content?: never;
             };
             /** @description Log streaming is not enabled on this deployment. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createJobServiceToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The job's unique identifier. */
+                id: string;
+                /** @description The service's name within the job, as the job announced it. */
+                service: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description Access credentials for one of a job's announced services, returned by
+             *     `POST /jobs/{id}/services/{service}/token`.
+             *
+             *     A job is not reachable from the internet: a request arrives instead at a
+             *     stateless gateway, which admits it only against `token` and then proxies it
+             *     to the job, where the same token is validated again. The token names exactly
+             *     one service of one job and is good at any of `domains`, so it survives a
+             *     client picking a gateway other than the one `url` points at.
+             *
+             *     How the token is presented is the gateway's convention rather than part of
+             *     this API: a browser navigates to `<url>?tml_token=<token>`, which the
+             *     gateway promotes to a cookie; other clients send it however they like.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobServiceCredentials"];
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The job announces no service by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The job has no network address recorded yet. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Job service gateways are not enabled on this deployment. */
             503: {
                 headers: {
                     [name: string]: unknown;

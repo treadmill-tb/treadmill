@@ -11,18 +11,19 @@
 //! needs no entry in the offline `.sqlx` cache.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use reqwest::redirect::Policy;
 use sqlx::PgPool;
+use sqlx::types::ipnetwork::IpNetwork;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobImageRef, JobInfo, JobListResponse, JobPermission,
-    NatsConsoleInputCredentials, NatsLogStreamCredentials,
+    JobServiceCredentials, NatsConsoleInputCredentials, NatsLogStreamCredentials,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, WhoAmIResponse};
 use treadmill_rs::image::Digest;
@@ -30,8 +31,9 @@ use treadmill_rs::image::Digest;
 /// The built-in admins group subject (`engine::ADMINS_GROUP_ID`). `alice` is a
 /// member, so she may file a job under it.
 const ADMINS_GROUP_ID: Uuid = Uuid::from_u128(1);
-use treadmill_switchboard::config::LogStreamingConfig;
+use treadmill_switchboard::config::{JobGatewayConfig, LogStreamingConfig};
 use treadmill_switchboard::events::EventBus;
+use treadmill_switchboard::job_gateway::JobGateway;
 use treadmill_switchboard::log_streaming::{LogStreamProvisioner, LogStreaming, ProvisionError};
 use treadmill_switchboard::registry::OciRegistryClient;
 use treadmill_switchboard::serve::AppState;
@@ -86,6 +88,33 @@ fn streaming_enabled_state_with(pool: PgPool, provisioner: Arc<NoopProvisioner>)
         Arc::new(OciRegistryClient::new()),
         Some(test_log_streaming(provisioner)),
         None,
+        EventBus::default(),
+    )
+}
+
+const GATEWAY_ISSUER: &str = "https://switchboard.example";
+const GATEWAY_DOMAIN: &str = "gw-us-east-1.treadmillusercontent.com";
+const GATEWAY_ALT_DOMAIN: &str = "gw-eu-central-1.treadmillusercontent.com";
+const GATEWAY_TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// A gateway-enabled `AppState` with a throwaway signing seed (generated per
+/// run, so no real secret enters the source tree). Log streaming stays off:
+/// the two features are independent.
+fn gateway_enabled_state(pool: PgPool) -> AppState {
+    let gateway = JobGateway::new(JobGatewayConfig {
+        issuer: GATEWAY_ISSUER.to_string(),
+        domains: vec![GATEWAY_DOMAIN.to_string(), GATEWAY_ALT_DOMAIN.to_string()],
+        token_ttl: GATEWAY_TOKEN_TTL,
+        signing_key: hex::encode(rand::random::<[u8; 32]>()),
+    })
+    .expect("gateway configuration is usable");
+
+    AppState::with_components(
+        pool,
+        test_config_mock(),
+        Arc::new(OciRegistryClient::new()),
+        None,
+        Some(gateway),
         EventBus::default(),
     )
 }
@@ -1389,4 +1418,240 @@ async fn watch_requires_read_access(pool: PgPool) {
         .unwrap();
     assert_eq!(granted.status(), reqwest::StatusCode::OK);
     next_change(&mut granted).await;
+}
+
+/// Record a service as if the job had announced it (the supervisor path that
+/// writes `job_services`).
+async fn announce_service(pool: &PgPool, job_id: Uuid, name: &str, protocol: &str) {
+    sqlx::query(
+        "insert into tml_switchboard.job_services (job_id, name, label, protocol) \
+         values ($1, $2, null, $3)",
+    )
+    .bind(job_id)
+    .bind(name)
+    .bind(protocol)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Record the address the job's supervisor reports for it.
+async fn record_address(pool: &PgPool, job_id: Uuid, address: IpAddr) {
+    sqlx::query("update tml_switchboard.jobs set job_ip_address = $2 where job_id = $1")
+        .bind(job_id)
+        .bind(IpNetwork::from(address))
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// A job with one announced service and a recorded address: everything the
+/// token route needs to mint.
+async fn seed_job_with_service(pool: &PgPool, owner: Uuid, token_id: Uuid) -> (Uuid, IpAddr) {
+    let job_id = seed_job(pool, owner, token_id, &[]).await;
+    announce_service(pool, job_id, "webide", "webapp").await;
+    let address: IpAddr = "fd00::2".parse().unwrap();
+    record_address(pool, job_id, address).await;
+    (job_id, address)
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn owner_gets_a_service_token_audited(pool: PgPool) {
+    let addr = spawn_server(gateway_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // `bob` owns the job, so he holds `manage` implicitly.
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+    let (job_id, address) = seed_job_with_service(&pool, bob, token_id).await;
+
+    let requested_at = chrono::Utc::now();
+    let resp = client
+        .post(format!(
+            "http://{addr}/api/v1/jobs/{job_id}/services/webide/token"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let creds: JobServiceCredentials = resp.json().await.unwrap();
+    assert_eq!(
+        creds.url,
+        format!("https://webide-{job_id}.{GATEWAY_DOMAIN}/")
+    );
+    // Every configured gateway, primary first; the token is good at each.
+    assert_eq!(creds.domains, vec![GATEWAY_DOMAIN, GATEWAY_ALT_DOMAIN]);
+    // Measured from just before the request, so the configured hour lands
+    // slightly beyond it.
+    let lifetime = creds.expires_at - requested_at;
+    assert!(
+        lifetime > chrono::Duration::minutes(59) && lifetime < chrono::Duration::minutes(61),
+        "{lifetime} is not the configured lifetime"
+    );
+
+    // The token names exactly this job's service, at the address a gateway is
+    // to dial, on behalf of the caller.
+    let claims = decode_jwt_claims(&creds.token);
+    assert_eq!(claims["iss"], GATEWAY_ISSUER);
+    assert_eq!(claims["sub"], bob.to_string());
+    assert_eq!(claims["aud"], format!("webide-{job_id}"));
+    assert_eq!(claims["tml_job"], job_id.to_string());
+    assert_eq!(claims["tml_service"], "webide");
+    assert_eq!(claims["tml_addr"], address.to_string());
+    assert_eq!(claims["exp"], creds.expires_at.timestamp());
+
+    // The mint is audited on the job, attributed to the caller, and names the
+    // service it opened.
+    let (event_type, actor_id, payload): (String, Uuid, serde_json::Value) = sqlx::query_as(
+        "select e.event_type, e.actor_id, e.payload from tml_switchboard.audit_events e \
+         join tml_switchboard.audit_event_relations r on r.event_id = e.event_id \
+         where r.entity_kind = 'job' and r.entity_id = $1 \
+           and e.event_type = 'job_service_token_issued.v1'",
+    )
+    .bind(job_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(event_type, "job_service_token_issued.v1");
+    assert_eq!(actor_id, bob);
+    assert_eq!(payload["service"], "webide");
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn read_grantee_is_forbidden_a_service_token(pool: PgPool) {
+    let addr = spawn_server(gateway_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // `bob` owns the job; `carol` may read it, but reading is not reaching in.
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &bob_token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+    let (job_id, _) = seed_job_with_service(&pool, bob, token_id).await;
+
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let carol = whoami(&client, addr, &carol_token).await;
+    sqlx::query(
+        "insert into tml_switchboard.job_grants (job_id, subject_id, permission) \
+         values ($1, $2, 'read')",
+    )
+    .bind(job_id)
+    .bind(carol)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = client
+        .post(format!(
+            "http://{addr}/api/v1/jobs/{job_id}/services/webide/token"
+        ))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // Nothing was minted, so nothing was audited.
+    let audited: i64 = sqlx::query_scalar(
+        "select count(*) from tml_switchboard.audit_events \
+         where event_type = 'job_service_token_issued.v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audited, 0);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn service_token_unconfigured_yields_service_unavailable(pool: PgPool) {
+    // `AppState::new` leaves the job gateway unconfigured (None).
+    let addr = spawn_server(AppState::new(pool.clone(), test_config_mock())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    // Use the admin so authorization passes and we reach the gateway check.
+    let token = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let job_id = Uuid::new_v4();
+
+    let resp = client
+        .post(format!(
+            "http://{addr}/api/v1/jobs/{job_id}/services/webide/token"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_service_token_needs_a_recorded_address(pool: PgPool) {
+    let addr = spawn_server(gateway_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+    let job_id = seed_job(&pool, bob, token_id, &[]).await;
+
+    // A job can announce a service before its supervisor reports an address:
+    // until one is recorded, there is nothing for a gateway to dial.
+    announce_service(&pool, job_id, "webide", "webapp").await;
+    let url = format!("http://{addr}/api/v1/jobs/{job_id}/services/webide/token");
+    let resp = client.post(&url).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+
+    record_address(&pool, job_id, "fd00::2".parse().unwrap()).await;
+    let resp = client.post(&url).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_service_the_job_does_not_announce_is_not_found(pool: PgPool) {
+    let addr = spawn_server(gateway_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &token).await;
+    let token_id = latest_token_id(&pool, bob).await;
+    let (job_id, _) = seed_job_with_service(&pool, bob, token_id).await;
+
+    // A name the job never announced, and one it could not announce: neither
+    // names a service, and the caller learns the same thing about both.
+    for service in ["shell", "Webide", "web-ide", "%2e%2e"] {
+        let resp = client
+            .post(format!(
+                "http://{addr}/api/v1/jobs/{job_id}/services/{service}/token"
+            ))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            reqwest::StatusCode::NOT_FOUND,
+            "{service} named no service"
+        );
+    }
 }

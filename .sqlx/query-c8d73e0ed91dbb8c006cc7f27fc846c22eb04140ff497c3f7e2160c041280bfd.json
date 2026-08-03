@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select job_ip_address\n           from tml_switchboard.jobs\n           where job_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_ip_address",
+        "type_info": "Inet",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "job_ip_address"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "c8d73e0ed91dbb8c006cc7f27fc846c22eb04140ff497c3f7e2160c041280bfd"
+}

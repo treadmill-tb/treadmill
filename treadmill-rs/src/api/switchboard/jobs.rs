@@ -196,6 +196,35 @@ pub struct NatsConsoleInputCredentials {
     pub expires_in_secs: u64,
 }
 
+/// Access credentials for one of a job's announced services, returned by
+/// `POST /jobs/{id}/services/{service}/token`.
+///
+/// A job is not reachable from the internet: a request arrives instead at a
+/// stateless gateway, which admits it only against `token` and then proxies it
+/// to the job, where the same token is validated again. The token names exactly
+/// one service of one job and is good at any of `domains`, so it survives a
+/// client picking a gateway other than the one `url` points at.
+///
+/// How the token is presented is the gateway's convention rather than part of
+/// this API: a browser navigates to `<url>?tml_token=<token>`, which the
+/// gateway promotes to a cookie; other clients send it however they like.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct JobServiceCredentials {
+    /// Where the service is published, through the deployment's primary
+    /// gateway: `https://<service>-<job-id>.<domain>/`.
+    pub url: String,
+    /// Every gateway domain the service is published under, primary first. The
+    /// same token is accepted at each, so a client may substitute the host of
+    /// `url` for any of these.
+    pub domains: Vec<String>,
+    /// The signed token admitting the caller to this one service.
+    pub token: String,
+    /// When the token stops being accepted. Minting again yields a fresh one;
+    /// an already-minted token is not invalidated before this by anything,
+    /// including the job ending or the caller's access being revoked.
+    pub expires_at: DateTime<Utc>,
+}
+
 /// What a job is based off, as seen by `GET /jobs/{id}`: a concrete image, an
 /// image set (with the frozen generation), or a resume/restart of an earlier
 /// job. The concrete manifest digest actually dispatched is reported separately

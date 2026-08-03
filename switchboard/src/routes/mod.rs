@@ -250,6 +250,28 @@ pub fn api_router() -> ApiRouter<AppState> {
                 })
             }),
         )
+        //  POST /jobs/{id}/services/{service}/token -- mint a gateway token admitting the
+        //  caller to one of the job's announced services
+        .api_route(
+            "/jobs/{id}/services/{service}/token",
+            post_with(jobs::service_token, |o| {
+                doc(
+                    o,
+                    "createJobServiceToken",
+                    "Jobs",
+                    "Create a gateway token for a job's service",
+                )
+                .response_with::<404, (), _>(|r| {
+                    r.description("The job announces no service by that name.")
+                })
+                .response_with::<409, (), _>(|r| {
+                    r.description("The job has no network address recorded yet.")
+                })
+                .response_with::<503, (), _>(|r| {
+                    r.description("Job service gateways are not enabled on this deployment.")
+                })
+            }),
+        )
         //  GET    /jobs/{id} -- fetch one job's full info
         //  PATCH  /jobs/{id} -- update a job's mutable metadata (label)
         //  DELETE /jobs/{id} -- request termination of a job

@@ -954,6 +954,24 @@ pub async fn set_job_ip_address(
     .map(|_| ())
 }
 
+/// The internal network address recorded for a job, if its supervisor has
+/// reported one. `None` for a job that has none, and for a job that does not
+/// exist.
+pub async fn fetch_job_ip_address(
+    job_id: Uuid,
+    conn: impl PgExecutor<'_>,
+) -> Result<Option<IpAddr>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"select job_ip_address
+           from tml_switchboard.jobs
+           where job_id = $1"#,
+        job_id,
+    )
+    .fetch_optional(conn)
+    .await
+    .map(|address| address.flatten().map(|address| address.ip()))
+}
+
 /// A job's currently announced services, ordered by name.
 ///
 /// Names are unique within a job, so this order is canonical: a set read back

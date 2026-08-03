@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobInfo, JobListResponse, JobPermission as ApiJobPermission,
-    NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
+    JobServiceCredentials, NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
 
@@ -23,8 +23,9 @@ use crate::audit::{self, events};
 use crate::auth::engine::{self, ImageSetPermission, JobPermission};
 use crate::events::EventFilter;
 use crate::http_error::OrInternal;
+use crate::job_gateway::{self, MintError};
 use crate::log_streaming::{self, TokenScope};
-use crate::routes::params::IdPath;
+use crate::routes::params::{IdPath, JobServicePath};
 use crate::serve::AppState;
 use crate::sql::{image, job};
 
@@ -702,5 +703,90 @@ pub async fn nats_console_input_token(
         subject: log_streaming::console_input_subject(job_id),
         token,
         expires_in_secs: CONSOLE_INPUT_TOKEN_TTL.as_secs(),
+    }))
+}
+
+/// Axum handler for `POST /jobs/{id}/services/{service}/token`.
+///
+/// Mints a token admitting the caller, through a gateway, to one service the
+/// job announced, gated on the caller's `manage` permission (403 for anyone
+/// else, including for a nonexistent job). A service the job does not announce
+/// is a 404, as is a name that could not be one. Each mint is recorded as an
+/// audit event on the job, naming the service it opens.
+pub async fn service_token(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(JobServicePath {
+        id: job_id,
+        service,
+    }): Path<JobServicePath>,
+) -> Result<Json<JobServiceCredentials>, StatusCode> {
+    let authorized = engine::can_access_job(
+        state.pool(),
+        subject.user_id(),
+        job_id,
+        JobPermission::Manage,
+    )
+    .await
+    .or_internal("checking job manage access for a service token")?;
+    if !authorized {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Gateway access may be turned off in this deployment; the feature exists
+    // but is unavailable here.
+    let gateway = state.job_gateway().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let announces_it = job::fetch_services(job_id, state.pool())
+        .await
+        .or_internal(&format!("loading the announced services of job {job_id}"))?
+        .into_iter()
+        .any(|announced| announced.name == service);
+    if !announces_it {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // A job announces its services itself, while its address comes from its
+    // supervisor, so a fast-booting job can reach here before one is recorded.
+    // A token carrying no address is one no gateway could act on.
+    let address = job::fetch_job_ip_address(job_id, state.pool())
+        .await
+        .or_internal(&format!("loading the network address of job {job_id}"))?
+        .ok_or(StatusCode::CONFLICT)?;
+
+    let minted = job_gateway::mint_token(gateway, job_id, &service, subject.user_id(), address)
+        .map_err(|error| match error {
+            MintError::ServiceName(_) => StatusCode::NOT_FOUND,
+            MintError::Sign(_) => {
+                tracing::error!("minting a service token for job {job_id}: {error}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })?;
+
+    let mut txn = state
+        .pool()
+        .begin()
+        .await
+        .or_internal("opening a transaction to audit a service token")?;
+    audit::emit(
+        &mut txn,
+        &events::JobServiceTokenIssued {
+            actor: AuditSubject(subject.user_id()),
+            job: AuditJob(job_id),
+            service: service.clone(),
+            expires_at: minted.expires_at,
+        },
+    )
+    .await
+    .or_internal(&format!("emitting JobServiceTokenIssued for {job_id}"))?;
+    txn.commit()
+        .await
+        .or_internal(&format!("committing service token audit for {job_id}"))?;
+
+    Ok(Json(JobServiceCredentials {
+        url: job_gateway::service_url(gateway, job_id, &service),
+        domains: gateway.config().domains.clone(),
+        token: minted.token,
+        expires_at: minted.expires_at,
     }))
 }
