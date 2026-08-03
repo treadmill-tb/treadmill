@@ -1265,6 +1265,14 @@ impl connector::Supervisor for QemuSupervisor {
             )
             .await;
 
+        // Where this job will be reachable, from our own configuration rather
+        // than from anything the job says about itself.
+        if let Some(job_address) = this.config.base.job_address {
+            this.connector
+                .report_job_network_address(start_job_req.job_id, job_address)
+                .await;
+        }
+
         // Resolve the requested image into its content-addressed digest and the
         // ordered failover list of upstream locations serving it. The supervisor
         // copies from a location's `(registry, repository)` into its local Zot
@@ -1658,6 +1666,7 @@ mod tests {
     struct RecordingConnector {
         states: std::sync::Mutex<Vec<RunningJobState>>,
         errors: std::sync::Mutex<Vec<connector::JobError>>,
+        addresses: std::sync::Mutex<Vec<std::net::IpAddr>>,
     }
 
     impl RecordingConnector {
@@ -1667,6 +1676,10 @@ mod tests {
 
         fn errors(&self) -> Vec<connector::JobError> {
             self.errors.lock().unwrap().clone()
+        }
+
+        fn addresses(&self) -> Vec<std::net::IpAddr> {
+            self.addresses.lock().unwrap().clone()
         }
     }
 
@@ -1702,6 +1715,9 @@ mod tests {
                 }
                 SupervisorJobEvent::Error { error } => {
                     self.errors.lock().unwrap().push(error);
+                }
+                SupervisorJobEvent::JobNetworkAddress { address } => {
+                    self.addresses.lock().unwrap().push(address);
                 }
                 _ => {}
             }
@@ -1837,8 +1853,19 @@ mod tests {
     /// Build a supervisor whose stub image's head layer declares
     /// `head_virtual_size`, against a working-disk ceiling of
     /// `working_disk_max_bytes` — equal for a valid image, with the head larger
-    /// than the ceiling to provoke an `ImageInvalid` failure.
+    /// than the ceiling to provoke an `ImageInvalid` failure. Configures no
+    /// job address, as a deployment without a gateway has none.
     fn harness(head_virtual_size: u64, working_disk_max_bytes: u64) -> Harness {
+        harness_with_job_address(head_virtual_size, working_disk_max_bytes, None)
+    }
+
+    /// Like [`harness`], for a supervisor configured to report `job_address`
+    /// for the jobs it runs.
+    fn harness_with_job_address(
+        head_virtual_size: u64,
+        working_disk_max_bytes: u64,
+        job_address: Option<std::net::IpAddr>,
+    ) -> Harness {
         let tmp = std::env::temp_dir().join(format!("tml-qemu-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         let blob_file = tmp.join("root.qcow2");
@@ -1855,6 +1882,7 @@ mod tests {
             base: SupervisorBaseConfig {
                 coord_connector: SupervisorCoordConnector::WsConnector,
                 supervisor_id: Uuid::new_v4(),
+                job_address,
             },
             ws_connector: None,
             oci_store: OciStoreConfig {
@@ -1959,6 +1987,29 @@ mod tests {
         assert!(labels.iter().any(|l| l == "terminating"), "{labels:?}");
         assert_eq!(labels.last().map(String::as_str), Some("terminated"));
         assert!(h.connector.errors().is_empty());
+    }
+
+    /// A supervisor configured with a job address reports it as the job starts,
+    /// so the coordinator has somewhere to point a gateway at before the job is
+    /// up. One without stays silent, and the job is reachable from nowhere.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_configured_job_address_is_reported_at_start() {
+        let virtual_size = 4u64 * 1024 * 1024 * 1024;
+        let address: std::net::IpAddr = "fd00::2".parse().unwrap();
+        let h = harness_with_job_address(virtual_size, virtual_size, Some(address));
+
+        assert!(h.connector.addresses().is_empty(), "nothing has started");
+
+        QemuSupervisor::start_job(&h.sup, start_msg(Uuid::new_v4()))
+            .await
+            .unwrap();
+        assert_eq!(h.connector.addresses(), vec![address]);
+
+        let unconfigured = harness(virtual_size, virtual_size);
+        QemuSupervisor::start_job(&unconfigured.sup, start_msg(Uuid::new_v4()))
+            .await
+            .unwrap();
+        assert!(unconfigured.connector.addresses().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

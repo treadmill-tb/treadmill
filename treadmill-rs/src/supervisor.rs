@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -33,4 +35,13 @@ pub enum SupervisorCoordConnector {
 pub struct SupervisorBaseConfig {
     pub coord_connector: SupervisorCoordConnector,
     pub supervisor_id: Uuid,
+    /// The internal address at which this supervisor's jobs are reachable,
+    /// reported to the coordinator when a job starts.
+    ///
+    /// The address is the supervisor's to state, never the job's to claim: it
+    /// is what a gateway dials to reach a job's services, so a job that could
+    /// name its own address could point one anywhere. Absent, this supervisor
+    /// reports none and its jobs are not reachable through a gateway.
+    #[serde(default)]
+    pub job_address: Option<IpAddr>,
 }

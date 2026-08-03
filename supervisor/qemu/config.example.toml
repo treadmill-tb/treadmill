@@ -2,6 +2,12 @@
 supervisor_id = "7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
 coord_connector = "ws_connector"
 
+# The internal address at which this supervisor's jobs are reachable, reported
+# to the switchboard when a job starts. It is what a gateway dials to reach a
+# job's services; omit it and this supervisor's jobs are not reachable through
+# one.
+# job_address = "fd00::2"
+
 [ws_connector]
 token = "OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc"
 switchboard_uri = "ws://localhost:8081"
