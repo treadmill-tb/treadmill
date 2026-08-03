@@ -1408,6 +1408,52 @@ impl control_socket::Supervisor for QemuSupervisor {
     }
 
     #[instrument(skip(self))]
+    async fn gateway(
+        &self,
+        _host_id: Uuid,
+        tgt_job_id: Uuid,
+    ) -> Option<treadmill_rs::api::supervisor_puppet::JobGatewayInfo> {
+        match self.jobs.lock().await.get(&tgt_job_id) {
+            Some(job_state) => match &*job_state.lock().await {
+                // Job is currently running, hand back whatever the coordinator
+                // dispatched it with:
+                QemuSupervisorJobState::Running(QemuSupervisorJobRunningState {
+                    start_job_req,
+                    ..
+                }) => start_job_req.gateway.as_ref().map(|gateway| {
+                    treadmill_rs::api::supervisor_puppet::JobGatewayInfo {
+                        signing_public_key: gateway.signing_public_key.clone(),
+                        key_id: gateway.key_id.clone(),
+                        domains: gateway.domains.clone(),
+                    }
+                }),
+
+                // Only respond to host / puppet requests when the job is marked
+                // as "running":
+                state => {
+                    event!(
+                        Level::WARN,
+                        "Received puppet gateway request for job {job_id} in invalid state {job_state}",
+                        job_id = tgt_job_id,
+                        job_state = state.state_name(),
+                    );
+                    None
+                }
+            },
+
+            // Job not found:
+            None => {
+                event!(
+                    Level::WARN,
+                    "Received puppet gateway request for non-existent job {job_id}",
+                    job_id = tgt_job_id,
+                );
+                None
+            }
+        }
+    }
+
+    #[instrument(skip(self))]
     async fn puppet_ready(&self, _puppet_event_id: u64, _host_id: Uuid, job_id: Uuid) {
         event!(Level::INFO, "Received puppet ready event");
 
@@ -1507,6 +1553,26 @@ impl control_socket::Supervisor for QemuSupervisor {
         if let Err(e) = self.stop_job_internal(job_id).await {
             event!(Level::WARN, "Failed to stop job: {:?}", e);
         }
+    }
+
+    #[instrument(skip(self))]
+    async fn job_service_set(
+        &self,
+        _puppet_event_id: u64,
+        services: Vec<treadmill_rs::api::supervisor_puppet::JobService>,
+        _host_id: Uuid,
+        job_id: Uuid,
+    ) {
+        event!(
+            Level::INFO,
+            ?job_id,
+            "Received puppet event announcing {} job service(s)",
+            services.len(),
+        );
+
+        self.connector
+            .report_job_service_set(job_id, services)
+            .await;
     }
 }
 
@@ -1649,7 +1715,8 @@ mod tests {
     use std::time::Duration;
 
     use treadmill_rs::api::switchboard_supervisor::{
-        ImageLocation, ParameterValue, RestartPolicy, SupervisorEvent, SupervisorJobEvent,
+        ImageLocation, JobGatewayDispatch, JobService, ParameterValue, RestartPolicy,
+        SupervisorEvent, SupervisorJobEvent,
     };
     use treadmill_rs::connector::{StartJobMessage, StopJobMessage, SupervisorConnector};
     // Bring the trait methods into scope (associated fns / `puppet_ready`)
@@ -1667,6 +1734,7 @@ mod tests {
         states: std::sync::Mutex<Vec<RunningJobState>>,
         errors: std::sync::Mutex<Vec<connector::JobError>>,
         addresses: std::sync::Mutex<Vec<std::net::IpAddr>>,
+        service_sets: std::sync::Mutex<Vec<Vec<JobService>>>,
     }
 
     impl RecordingConnector {
@@ -1680,6 +1748,10 @@ mod tests {
 
         fn addresses(&self) -> Vec<std::net::IpAddr> {
             self.addresses.lock().unwrap().clone()
+        }
+
+        fn service_sets(&self) -> Vec<Vec<JobService>> {
+            self.service_sets.lock().unwrap().clone()
         }
     }
 
@@ -1718,6 +1790,9 @@ mod tests {
                 }
                 SupervisorJobEvent::JobNetworkAddress { address } => {
                     self.addresses.lock().unwrap().push(address);
+                }
+                SupervisorJobEvent::JobServiceSet { services } => {
+                    self.service_sets.lock().unwrap().push(services);
                 }
                 _ => {}
             }
@@ -1921,6 +1996,15 @@ mod tests {
     }
 
     fn start_msg(job_id: Uuid) -> StartJobMessage {
+        start_msg_with_gateway(job_id, None)
+    }
+
+    /// Like [`start_msg`], for a job the coordinator dispatched with gateway
+    /// material for the supervisor to relay into it.
+    fn start_msg_with_gateway(
+        job_id: Uuid,
+        gateway: Option<JobGatewayDispatch>,
+    ) -> StartJobMessage {
         StartJobMessage {
             job_id,
             image_spec: ImageSpecification::Image {
@@ -1935,7 +2019,7 @@ mod tests {
             },
             parameters: HashMap::<String, ParameterValue>::new(),
             log_streaming: None,
-            gateway: None,
+            gateway,
         }
     }
 
@@ -2010,6 +2094,91 @@ mod tests {
             .await
             .unwrap();
         assert!(unconfigured.connector.addresses().is_empty());
+    }
+
+    /// The puppet asks its supervisor what to validate service tokens against,
+    /// and gets back exactly what the coordinator dispatched the job with —
+    /// nothing if the job was dispatched without a gateway.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_running_job_is_told_its_gateway_material() {
+        let virtual_size = 4u64 * 1024 * 1024 * 1024;
+        let host_id = Uuid::new_v4();
+        let dispatched = JobGatewayDispatch {
+            signing_public_key: "-----BEGIN PUBLIC KEY-----\nstub\n-----END PUBLIC KEY-----\n"
+                .to_string(),
+            key_id: "wI9c-yvsF8".to_string(),
+            domains: vec![
+                "gw-us-east-1.treadmillusercontent.com".to_string(),
+                "gw-eu-central-1.treadmillusercontent.com".to_string(),
+            ],
+        };
+
+        let h = harness(virtual_size, virtual_size);
+        let job_id = Uuid::new_v4();
+
+        // Nothing is answered for a job this supervisor does not run.
+        assert!(h.sup.gateway(host_id, job_id).await.is_none());
+
+        QemuSupervisor::start_job(
+            &h.sup,
+            start_msg_with_gateway(job_id, Some(dispatched.clone())),
+        )
+        .await
+        .unwrap();
+
+        let relayed = h
+            .sup
+            .gateway(host_id, job_id)
+            .await
+            .expect("a job dispatched with a gateway is told about it");
+        assert_eq!(relayed.signing_public_key, dispatched.signing_public_key);
+        assert_eq!(relayed.key_id, dispatched.key_id);
+        assert_eq!(relayed.domains, dispatched.domains);
+
+        // A job dispatched without one has none to be told about.
+        let plain = harness(virtual_size, virtual_size);
+        let plain_job = Uuid::new_v4();
+        QemuSupervisor::start_job(&plain.sup, start_msg(plain_job))
+            .await
+            .unwrap();
+        assert!(plain.sup.gateway(host_id, plain_job).await.is_none());
+    }
+
+    /// A service announcement is relayed to the coordinator as it arrives: the
+    /// supervisor stores nothing and interprets nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_announced_service_set_is_relayed_to_the_coordinator() {
+        let virtual_size = 4u64 * 1024 * 1024 * 1024;
+        let h = harness(virtual_size, virtual_size);
+
+        let job_id = Uuid::new_v4();
+        let host_id = Uuid::new_v4();
+        QemuSupervisor::start_job(&h.sup, start_msg(job_id))
+            .await
+            .unwrap();
+        assert!(h.connector.service_sets().is_empty());
+
+        let announced = vec![
+            JobService {
+                name: "webide".to_string(),
+                label: Some("Web IDE".to_string()),
+                protocol: "webapp".to_string(),
+            },
+            JobService {
+                name: "shell".to_string(),
+                label: None,
+                protocol: "sshws".to_string(),
+            },
+        ];
+        h.sup
+            .job_service_set(0, announced.clone(), host_id, job_id)
+            .await;
+        assert_eq!(h.connector.service_sets(), vec![announced]);
+
+        // An announcement carries a job's whole set, so a later one replaces
+        // the earlier rather than adding to it — including an empty one.
+        h.sup.job_service_set(1, Vec::new(), host_id, job_id).await;
+        assert_eq!(h.connector.service_sets().last().unwrap(), &Vec::new());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
