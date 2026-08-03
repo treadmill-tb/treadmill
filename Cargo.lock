@@ -4810,6 +4810,7 @@ dependencies = [
  "log",
  "nix",
  "sd-notify",
+ "serde_json",
  "simplelog",
  "tokio",
  "treadmill-rs",
