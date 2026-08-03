@@ -240,7 +240,7 @@ https://*.$gw_domain:$gw_port {
 			sign_key {env.TML_GATEWAY_PUBLIC_KEY}
 			sign_alg EdDSA
 			from_query tml_token
-			from_cookies tml_token
+			from_cookies __Host-tml_token
 			issuer_whitelist http://localhost:$sb_port
 			user_claims sub
 			meta_claims tml_job tml_service tml_addr
@@ -251,6 +251,25 @@ https://*.$gw_domain:$gw_port {
 		# gateway knows nothing about the job beyond what the token carries,
 		# and never asks the switchboard anything.
 		@this_service vars {http.request.host.labels.$gw_label_index} {http.auth.user.tml_service}-{http.auth.user.tml_job}
+
+		# A user arrives with the token in the query, which every later request
+		# the service makes -- a reload, a subresource, a websocket -- would
+		# lack. Hand it back as a cookie and redirect to the same URL without
+		# it, so it stops sitting in the address bar and in browser history.
+		# The \`__Host-\` prefix is what keeps the cookie on exactly this job's
+		# host, which matters because every job shares one parent domain.
+		@promote {
+			vars {http.request.host.labels.$gw_label_index} {http.auth.user.tml_service}-{http.auth.user.tml_job}
+			query tml_token=*
+		}
+		# Snapshot the token before it is stripped below: a Set-Cookie value is
+		# only evaluated as the response is written, by which point the query
+		# parameter it came from is gone.
+		vars @promote promoted_token {http.request.uri.query.tml_token}
+		header @promote +Set-Cookie "__Host-tml_token={vars.promoted_token}; Path=/; Secure; HttpOnly; SameSite=Lax"
+		uri @promote query -tml_token
+		redir @promote {http.request.uri} 302
+
 		reverse_proxy @this_service {http.auth.user.tml_addr}:$job_service_port
 
 		respond "this token is not valid for this service" 403
