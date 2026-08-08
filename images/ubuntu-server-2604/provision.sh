@@ -33,8 +33,8 @@ update-grub
 # sudo). Nothing in the job authenticates the request yet: the port is only ever
 # as private as the network the job sits on.
 #
-# --ipv6 makes libwebsockets bind dual-stack: a job is reached at its routable
-# IPv6 address, while a NATed IPv4 one still works for local testing.
+# --ipv6 makes ttyd listen on the job's routable v6. v4 is enabled
+# for local / devstack testing.
 cat >/etc/systemd/system/ttyd.service <<'SERVICE'
 [Install]
 WantedBy=multi-user.target
