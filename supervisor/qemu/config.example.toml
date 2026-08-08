@@ -2,10 +2,7 @@
 supervisor_id = "7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
 coord_connector = "ws_connector"
 
-# The internal address at which this supervisor's jobs are reachable, reported
-# to the switchboard when a job starts. It is what a gateway dials to reach a
-# job's services; omit it and this supervisor's jobs are not reachable through
-# one.
+# IP address of the QEMU guest, announced to the switchboard.
 # job_address = "fd00::2"
 
 [ws_connector]

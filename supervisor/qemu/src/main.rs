@@ -1265,8 +1265,6 @@ impl connector::Supervisor for QemuSupervisor {
             )
             .await;
 
-        // Where this job will be reachable, from our own configuration rather
-        // than from anything the job says about itself.
         if let Some(job_address) = this.config.base.job_address {
             this.connector
                 .report_job_network_address(start_job_req.job_id, job_address)
