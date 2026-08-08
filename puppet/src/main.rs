@@ -68,8 +68,7 @@ struct PuppetDaemonArgs {
     #[arg(long)]
     job_info_dir: Option<PathBuf>,
 
-    /// Directory of `*.json` service declarations to announce. Scanned at
-    /// startup and on every explicit reload; never watched.
+    /// Directory of `*.json` service declarations to announce.
     #[arg(long)]
     services_dir: Option<PathBuf>,
 
@@ -77,9 +76,7 @@ struct PuppetDaemonArgs {
     dbus_bus: PuppetDaemonDbusBus,
 }
 
-/// Longest service name the switchboard accepts. Enforced here as well, so a
-/// name that could not become a DNS label is rejected at the file it came from
-/// rather than silently dropping the whole announcement later.
+/// Longest service name the switchboard accepts.
 const MAX_SERVICE_NAME_LEN: usize = 16;
 
 fn service_name_valid(name: &str) -> bool {
@@ -90,14 +87,7 @@ fn service_name_valid(name: &str) -> bool {
 }
 
 /// The services declared under `--services-dir`, one [`JobService`] per `*.json`
-/// file, ordered by name.
-///
-/// A job describes its own services, so nothing here is fatal: a file that does
-/// not parse, names a service the switchboard would refuse, or repeats a name
-/// an earlier file already claimed is logged and skipped, and the rest are
-/// still announced. Files are read in path order, so which of two files
-/// claiming one name wins does not depend on the order the directory happens to
-/// be read in.
+/// file, ordered by name. Ignores and skips incorrect definitions with warning.
 async fn scan_services(services_dir: &Path) -> Result<Vec<JobService>> {
     let mut read_dir = match tokio::fs::read_dir(services_dir).await {
         Ok(read_dir) => read_dir,
@@ -209,10 +199,7 @@ async fn update_job_info_files(args: &PuppetDaemonArgs, job_info: JobInfo) -> Re
         .await
         .context("Writing host id to file")?;
 
-    // What an in-job proxy needs to validate a service token for itself: the
-    // key it was signed under, that key's id, and the gateway domains a request
-    // may legitimately have arrived through. Absent for a job that is not
-    // reachable through a gateway.
+    // Context for offering HTTP/WS services through public gateways.
     if let Some(gateway) = job_info.gateway {
         let key_path = job_info_dir.join("gateway-key.pem");
         info!("Writing gateway signing key to file {key_path:?}");
@@ -264,7 +251,7 @@ struct PuppetServiceReloadCommand;
 
 #[derive(Debug, Clone, Subcommand)]
 enum PuppetServiceSubcommands {
-    /// Rescan the service directory and announce what it now declares.
+    /// Rescan the service directory for new/changed services.
     Reload(PuppetServiceReloadCommand),
 }
 
@@ -851,9 +838,7 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
         .await
         .context("Reporting puppet ready status to supervisor")?;
 
-    // Announce whatever services the job declares at boot. The directory is
-    // never watched: a job that changes its declarations says so with a
-    // reload.
+    // Announce whatever services the job declares at boot.
     announce_services(args.services_dir.as_deref(), &client).await?;
 
     info!("Puppet started, waiting for supervisor events. Exit with CTRL+C");
