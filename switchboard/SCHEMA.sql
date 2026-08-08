@@ -690,10 +690,9 @@ CREATE TABLE tml_switchboard.jobs (
     -- it. Set once the address is known and retained through `finalized`; never
     -- cleared.
     --
-    -- Supervisor-authoritative: it is the address something outside the job is
-    -- told to dial, so it must not be a value the job itself can choose. NULL
-    -- means none has been reported -- the supervisor has none to report, or the
-    -- job has not started yet.
+    -- Announced by the supervisor, which by protocol must not generate it from
+    -- the (untrusted) job. TODO: eventually, the switchboard should validate
+    -- that this address is one that is within the internal deployment prefix.
     job_ip_address inet,
     -- User-requested termination signal: the DB side of user-terminate.
     --
@@ -997,7 +996,7 @@ CREATE TABLE tml_switchboard.job_services (
     -- standing between a job and the DNS label `<name>-<job_id>` built from it.
     -- Lowercase alphanumeric starting with a letter, so a name can hold no
     -- hyphen and that label always splits at its first one; the length cap
-    -- keeps the whole label inside the 63-character budget.
+    -- keeps the whole label inside the DNS 63-character budget.
     name text NOT NULL,
     -- Optional display name for a user interface. Free-form, never parsed.
     label text,

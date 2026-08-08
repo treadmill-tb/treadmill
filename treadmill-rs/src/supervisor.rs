@@ -38,10 +38,9 @@ pub struct SupervisorBaseConfig {
     /// The internal address at which this supervisor's jobs are reachable,
     /// reported to the coordinator when a job starts.
     ///
-    /// The address is the supervisor's to state, never the job's to claim: it
-    /// is what a gateway dials to reach a job's services, so a job that could
-    /// name its own address could point one anywhere. Absent, this supervisor
-    /// reports none and its jobs are not reachable through a gateway.
+    /// The switchboard trusts this information to be accurate; it must not
+    /// stem from the (untrusted) job. `None` means that this job does not
+    /// have an internal IP, and any announced services will not be reachable.
     #[serde(default)]
     pub job_address: Option<IpAddr>,
 }

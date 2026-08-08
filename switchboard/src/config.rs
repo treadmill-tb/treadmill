@@ -128,12 +128,10 @@ pub struct JobGatewayConfig {
     /// Lifetime of a minted service token.
     #[serde(with = "humantime_serde", default = "default_token_ttl")]
     pub token_ttl: Duration,
-    /// Ed25519 private key **seed**, hex-encoded, whose public key and `kid`
-    /// are derived at startup. Rotating it yields a new `kid` by itself, with
-    /// no further configuration.
+    /// Ed25519 private key **seed**, hex-encoded; whose public key and `kid`
+    /// are derived at startup.
     ///
-    /// SECRET — supply via `TML_JOB_GATEWAY__SIGNING_KEY`, never on-disk config
-    /// (project convention).
+    /// SECRET, supply via `TML_JOB_GATEWAY__SIGNING_KEY`.
     pub signing_key: String,
 }
 

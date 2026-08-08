@@ -196,11 +196,9 @@ pub struct StartJobMessage {
     #[serde(default)]
     pub log_streaming: Option<LogStreamingDispatch>,
 
-    /// Material for reaching this job's services through a gateway, or `None`
-    /// when the deployment runs without one. The supervisor relays it into the
-    /// job (see [`JobGatewayDispatch`]). Additive and optional: older
-    /// supervisors that do not understand this field simply ignore it and
-    /// expose nothing.
+    /// Configuration for reaching this job's services through a gateway, or 
+    /// `None` when the deployment runs without one. The supervisor relays it 
+    /// into the job (see [`JobGatewayDispatch`]).
     #[serde(default)]
     pub gateway: Option<JobGatewayDispatch>,
 }
@@ -407,12 +405,7 @@ pub enum TaskExitStatus {
 }
 /// One service a job announces as reachable through a gateway.
 ///
-/// The control plane never learns what a service *is*: all three fields are
-/// opaque to it. `name` identifies the service within its job and is the label a
-/// gateway hostname is built from, `label` is optional human-readable text for
-/// clients to display, and `protocol` is a client-interpreted token (`webapp`,
-/// `sshws`, …) that switchboard, supervisor and puppet store and echo but never
-/// branch on.
+/// Its fields are opaque to the supervisor, interpreted by the switchboard.
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct JobService {
@@ -456,13 +449,14 @@ pub enum SupervisorJobEvent {
     /// [`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason
     Error { error: JobError },
     /// The address at which the job is reachable on the supervisor's internal
-    /// network, and which a gateway dials to reach the job's services. This is
-    /// the supervisor's own account of where it placed the job; it is never
-    /// derived from anything the job reports about itself.
+    /// network, and which a gateway dials to reach the job's services.
+    ///
+    /// The switchboard trusts this information to be correct. It must not
+    /// stem from the job itself and instead be set by the supervisor.
     JobNetworkAddress { address: std::net::IpAddr },
     /// The complete set of services the job announces. Each event replaces the
     /// previously announced set in full, so re-announcing after a reconnect is
-    /// idempotent and no drift between the two sides is representable.
+    /// idempotent.
     JobServiceSet { services: Vec<JobService> },
 }
 

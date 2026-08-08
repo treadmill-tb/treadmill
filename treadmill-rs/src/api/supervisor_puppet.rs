@@ -93,8 +93,7 @@ pub enum PuppetEvent {
     TerminateJob { supervisor_event_id: Option<u64> },
 
     /// The complete set of services the job announces. Each event replaces the
-    /// previously announced set in full, so re-announcing is idempotent and no
-    /// drift between the two sides is representable.
+    /// previously announced set in full;  re-announcing is idempotent.
     JobServiceSet { services: Vec<JobService> },
 }
 
@@ -188,7 +187,9 @@ pub struct NetworkConfig {
 }
 
 /// Gateway material relayed into the job, to validate the same tokens that
-/// admit a request at the gateway itself.
+/// admit a request at the gateway itself. This prevents untrusted sibling
+/// jobs from sending unauthenticated requests to these endpoints, and
+/// allows jobs to solely trust the switchboard-issued JWT.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct JobGatewayInfo {
