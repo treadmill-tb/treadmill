@@ -41,7 +41,9 @@ WantedBy=multi-user.target
 [Unit]
 After=network.target
 [Service]
-ExecStart=/usr/bin/ttyd --port 3860 --ipv6 --writable /bin/login -f tml
+ExecStart=/usr/bin/ttyd --port 3860 --ipv6 --writable /bin/bash --login
+User=tml
+Group=tml
 Restart=always
 RestartSec=5s
 SERVICE
