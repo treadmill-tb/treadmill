@@ -186,6 +186,19 @@ pub struct NetworkConfig {
     pub ipv6: Option<Ipv6NetworkConfig>,
 }
 
+/// Individual job gateway endpoints, specified as a base-domain (which will be
+/// prepended the service name and job ID as a subdomain), and the port it
+/// listens on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct JobGatewayEndpoint {
+    /// The base domain of the gateway, to be pre-prended with the job- and
+    /// service-specific subdomain.
+    pub base_domain: String,
+    /// The port of the gateway.
+    pub port: u16,
+}
+
 /// Gateway material relayed into the job, to validate the same tokens that
 /// admit a request at the gateway itself. This prevents untrusted sibling
 /// jobs from sending unauthenticated requests to these endpoints, and
@@ -195,7 +208,7 @@ pub struct NetworkConfig {
 pub struct JobGatewayInfo {
     pub signing_public_key: String,
     pub key_id: String,
-    pub domains: Vec<String>,
+    pub endpoints: Vec<JobGatewayEndpoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -23,7 +23,7 @@ use crate::audit::{self, events};
 use crate::auth::engine::{self, ImageSetPermission, JobPermission};
 use crate::events::EventFilter;
 use crate::http_error::OrInternal;
-use crate::job_gateway::{self, MintError};
+use crate::job_gateway::{self, MintError, service_endpoint};
 use crate::log_streaming::{self, TokenScope};
 use crate::routes::params::{IdPath, JobServicePath};
 use crate::serve::AppState;
@@ -784,8 +784,12 @@ pub async fn service_token(
         .or_internal(&format!("committing service token audit for {job_id}"))?;
 
     Ok(Json(JobServiceCredentials {
-        url: job_gateway::service_url(gateway, job_id, &service),
-        domains: gateway.config().domains.clone(),
+        endpoints: gateway
+            .config()
+            .endpoints
+            .iter()
+            .map(|ep| service_endpoint(job_id, &service, &ep.base_domain, ep.port))
+            .collect(),
         token: minted.token,
         expires_at: minted.expires_at,
     }))

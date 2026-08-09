@@ -110,6 +110,25 @@ pub struct LogStreamingConfig {
     pub account_seed: String,
 }
 
+fn default_job_gateway_endpoint_port() -> u16 {
+    443
+}
+
+/// Configuration of a single job service gateway.
+///
+/// Services are published as `<service>-<job-id>.<domain>:<port>`, with
+/// `<domain>` and `<port>` determined by this configuration entry.
+#[derive(Debug, Clone, Deserialize)]
+pub struct JobGatewayEndpoint {
+    /// Base domain of the job service gateway, individual services are assumed
+    /// to be reachable as a subdomain of this domain (as documented on this
+    /// type).
+    pub base_domain: String,
+    /// Port of the job service gateway (defaults to :443).
+    #[serde(default = "default_job_gateway_endpoint_port")]
+    pub port: u16,
+}
+
 /// Configuration for reaching a job's announced services through a gateway.
 ///
 /// Services are published as `<service>-<job-id>.<domain>` at stateless
@@ -120,11 +139,9 @@ pub struct JobGatewayConfig {
     /// The `iss` of every minted service token, e.g.
     /// `https://switchboard.example`. Non-secret.
     pub issuer: String,
-    /// The gateway domains a job's services are reachable under. The first is
-    /// the primary, from which minted URLs are built; the whole list is handed
-    /// to the job, which accepts a request arriving at any of them. Must not be
-    /// empty. Non-secret.
-    pub domains: Vec<String>,
+    /// The gateway endpoints a job's services are reachable under. First is
+    /// used as primary gateway.
+    pub endpoints: Vec<JobGatewayEndpoint>,
     /// Lifetime of a minted service token.
     #[serde(with = "humantime_serde", default = "default_token_ttl")]
     pub token_ttl: Duration,

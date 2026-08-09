@@ -23,7 +23,8 @@ use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobImageRef, JobInfo, JobListResponse, JobPermission,
-    JobServiceCredentials, NatsConsoleInputCredentials, NatsLogStreamCredentials,
+    JobServiceCredentials, JobServiceEndpoint, NatsConsoleInputCredentials,
+    NatsLogStreamCredentials,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, WhoAmIResponse};
 use treadmill_rs::image::Digest;
@@ -31,7 +32,7 @@ use treadmill_rs::image::Digest;
 /// The built-in admins group subject (`engine::ADMINS_GROUP_ID`). `alice` is a
 /// member, so she may file a job under it.
 const ADMINS_GROUP_ID: Uuid = Uuid::from_u128(1);
-use treadmill_switchboard::config::{JobGatewayConfig, LogStreamingConfig};
+use treadmill_switchboard::config::{JobGatewayConfig, JobGatewayEndpoint, LogStreamingConfig};
 use treadmill_switchboard::events::EventBus;
 use treadmill_switchboard::job_gateway::JobGateway;
 use treadmill_switchboard::log_streaming::{LogStreamProvisioner, LogStreaming, ProvisionError};
@@ -103,7 +104,16 @@ const GATEWAY_TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(60
 fn gateway_enabled_state(pool: PgPool) -> AppState {
     let gateway = JobGateway::new(JobGatewayConfig {
         issuer: GATEWAY_ISSUER.to_string(),
-        domains: vec![GATEWAY_DOMAIN.to_string(), GATEWAY_ALT_DOMAIN.to_string()],
+        endpoints: vec![
+            JobGatewayEndpoint {
+                base_domain: GATEWAY_DOMAIN.to_string(),
+                port: 443,
+            },
+            JobGatewayEndpoint {
+                base_domain: GATEWAY_ALT_DOMAIN.to_string(),
+                port: 4433,
+            },
+        ],
         token_ttl: GATEWAY_TOKEN_TTL,
         signing_key: hex::encode(rand::random::<[u8; 32]>()),
     })
@@ -1482,12 +1492,20 @@ async fn owner_gets_a_service_token_audited(pool: PgPool) {
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
 
     let creds: JobServiceCredentials = resp.json().await.unwrap();
-    assert_eq!(
-        creds.url,
-        format!("https://webide-{job_id}.{GATEWAY_DOMAIN}/")
-    );
     // Every configured gateway, primary first; the token is good at each.
-    assert_eq!(creds.domains, vec![GATEWAY_DOMAIN, GATEWAY_ALT_DOMAIN]);
+    assert_eq!(
+        creds.endpoints,
+        vec![
+            JobServiceEndpoint {
+                hostname: format!("webide-{job_id}.{GATEWAY_DOMAIN}"),
+                port: 443
+            },
+            JobServiceEndpoint {
+                hostname: format!("webide-{job_id}.{GATEWAY_ALT_DOMAIN}"),
+                port: 4433
+            }
+        ]
+    );
     // Measured from just before the request, so the configured hour lands
     // slightly beyond it.
     let lifetime = creds.expires_at - requested_at;

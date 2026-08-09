@@ -35,7 +35,8 @@ function mintFailure(status: number): string {
 
 /**
  * The services a job announced, each opened by minting a token for it and
- * following the URL the switchboard returns with that token in the query.
+ * following the URL (crafted from the switchboard endpoint) with that token in
+ * the query.
  *
  * The set arrives with the job, so a `/jobs/{id}/watch` wake-up refreshes it
  * like any other field: a service announced while the page is open shows up on
@@ -76,7 +77,17 @@ export function JobServices({
       return;
     }
 
-    const href = `${creds.data.url}?tml_token=${encodeURIComponent(creds.data.token)}`;
+    const endpoint = creds.data.endpoints[0];
+    if (!endpoint) {
+      tab?.close();
+      setState({
+        kind: "error",
+        message: "There are no endpoints for this service.",
+      });
+      return;
+    }
+
+    const href = `https://${endpoint.hostname}:${endpoint.port}/?tml_token=${encodeURIComponent(creds.data.token)}`;
     if (tab === null) {
       setState({ kind: "blocked", service, href });
       return;

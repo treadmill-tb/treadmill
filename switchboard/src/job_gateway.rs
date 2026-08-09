@@ -29,10 +29,11 @@ use jsonwebtoken::jwk::{
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
-use treadmill_rs::api::switchboard_supervisor::JobGatewayDispatch;
+use treadmill_rs::api;
+use treadmill_rs::api::switchboard::jobs::JobServiceEndpoint;
 use uuid::Uuid;
 
-use crate::config::JobGatewayConfig;
+use crate::config::{self, JobGatewayConfig};
 
 /// Longest service name a job may announce, mirroring the `job_services`
 /// CHECK: names are job-supplied, and the cap is what keeps
@@ -42,9 +43,9 @@ const MAX_SERVICE_NAME_LEN: usize = 16;
 /// Failure to load the configured signing material.
 #[derive(Debug, thiserror::Error)]
 pub enum KeyError {
-    /// No gateway domain configured, leaving no host to build a URL from.
-    #[error("job_gateway.domains must list at least one domain")]
-    NoDomains,
+    /// No gateways configured, leaving no host to build a URL from.
+    #[error("job_gateway.endpoints must list at least one endpoint")]
+    NoEndpoints,
     /// The configured signing key is not a hex-encoded Ed25519 seed. Carries
     /// nothing of what it was given.
     #[error("job_gateway.signing_key must be a hex-encoded 32-byte Ed25519 seed")]
@@ -70,8 +71,8 @@ impl JobGateway {
     /// configuration outright so a deployment fails at startup rather than at
     /// the first mint.
     pub fn new(config: JobGatewayConfig) -> Result<Self, KeyError> {
-        if config.domains.is_empty() {
-            return Err(KeyError::NoDomains);
+        if config.endpoints.is_empty() {
+            return Err(KeyError::NoEndpoints);
         }
 
         let seed: [u8; 32] = hex::decode(config.signing_key.trim())
@@ -111,10 +112,12 @@ impl JobGateway {
         &self.public_key_pem
     }
 
-    /// The domain minted URLs are built from. [`JobGateway::new`] rejects an
-    /// empty domain list, so there is always one.
-    pub fn primary_domain(&self) -> &str {
-        &self.config.domains[0]
+    /// The (base_domain, port) tuple minted URLs are built from.
+    /// [`JobGateway::new`] rejects an empty domain list, so there is always
+    /// one.
+    pub fn primary_endpoint(&self) -> (&str, u16) {
+        let ep = &self.config.endpoints[0];
+        (&ep.base_domain, ep.port)
     }
 }
 
@@ -176,14 +179,17 @@ pub fn service_label(job_id: Uuid, service: &str) -> String {
     format!("{service}-{job_id}")
 }
 
-/// The URL a job's service is reached at, through the primary gateway domain.
-/// Carries no token: the caller decides how to present one.
-pub fn service_url(gateway: &JobGateway, job_id: Uuid, service: &str) -> String {
-    format!(
-        "https://{}.{}/",
-        service_label(job_id, service),
-        gateway.primary_domain()
-    )
+/// The service endpoint for a given gateway (as an `(fqdn, port)` tuple).
+pub fn service_endpoint(
+    job_id: Uuid,
+    service: &str,
+    endpoint_base_domain: &str,
+    endpoint_port: u16,
+) -> JobServiceEndpoint {
+    JobServiceEndpoint {
+        hostname: format!("{}.{endpoint_base_domain}", service_label(job_id, service)),
+        port: endpoint_port,
+    }
 }
 
 /// Build the [`JobGatewayDispatch`] handed to a supervisor in `StartJobMessage`
@@ -192,11 +198,19 @@ pub fn service_url(gateway: &JobGateway, job_id: Uuid, service: &str) -> String 
 /// Carries no token, unlike its log-streaming counterpart: the job mints
 /// nothing and only validates the tokens its callers arrive with, for which the
 /// public key and the domains it is published under are all it needs.
-pub fn build_dispatch(gateway: &JobGateway) -> JobGatewayDispatch {
-    JobGatewayDispatch {
+pub fn build_dispatch(gateway: &JobGateway) -> api::switchboard_supervisor::JobGatewayDispatch {
+    api::switchboard_supervisor::JobGatewayDispatch {
         signing_public_key: gateway.public_key_pem.clone(),
         key_id: gateway.key_id.clone(),
-        domains: gateway.config.domains.clone(),
+        endpoints: gateway
+            .config
+            .endpoints
+            .iter()
+            .cloned()
+            .map(|config::JobGatewayEndpoint { base_domain, port }| {
+                api::switchboard_supervisor::JobGatewayEndpoint { base_domain, port }
+            })
+            .collect(),
     }
 }
 
@@ -257,11 +271,13 @@ fn validate_service_name(service: &str) -> Result<(), MintError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::time::Duration;
+
     use ed25519_dalek::VerifyingKey;
     use ed25519_dalek::pkcs8::DecodePublicKey;
     use jsonwebtoken::{DecodingKey, Validation, decode, decode_header};
-    use std::time::Duration;
+
+    use super::*;
 
     const ISSUER: &str = "https://switchboard.example";
     const PRIMARY_DOMAIN: &str = "gw-us-east-1.treadmillusercontent.com";
@@ -270,9 +286,15 @@ mod tests {
     fn test_config() -> JobGatewayConfig {
         JobGatewayConfig {
             issuer: ISSUER.to_string(),
-            domains: vec![
-                PRIMARY_DOMAIN.to_string(),
-                "gw-eu-central-1.treadmillusercontent.com".to_string(),
+            endpoints: vec![
+                config::JobGatewayEndpoint {
+                    base_domain: PRIMARY_DOMAIN.to_string(),
+                    port: 443,
+                },
+                config::JobGatewayEndpoint {
+                    base_domain: "gw-eu-central-1.treadmillusercontent.com".to_string(),
+                    port: 4433,
+                },
             ],
             token_ttl: Duration::from_secs(7 * 24 * 60 * 60),
             signing_key: hex::encode(rand::random::<[u8; 32]>()),
@@ -351,7 +373,6 @@ mod tests {
         // label of the Host header, so it must carry no domain of its own.
         assert!(!claims.aud.contains('.'));
         assert!(!claims.aud.contains('/'));
-        assert_ne!(claims.aud, service_url(&gateway, job_id, "webide"));
 
         // A service name holds no hyphen, so the label splits at its first one.
         let (service, id) = claims.aud.split_once('-').expect("label has a separator");
@@ -441,34 +462,10 @@ mod tests {
         assert!(!gateway.key_id().is_empty());
     }
 
-    #[test]
-    fn the_url_is_the_label_at_the_primary_domain() {
-        let gateway = test_gateway(test_config());
-        let job_id = Uuid::new_v4();
-
-        let url = service_url(&gateway, job_id, "webide");
-        assert_eq!(
-            url,
-            format!("https://webide-{job_id}.{PRIMARY_DOMAIN}/"),
-            "the first configured domain is the primary"
-        );
-
-        let parsed = url::Url::parse(&url).expect("well-formed URL");
-        assert_eq!(parsed.scheme(), "https");
-        assert_eq!(
-            parsed.host_str().unwrap(),
-            format!("{}.{PRIMARY_DOMAIN}", service_label(job_id, "webide"))
-        );
-        assert_eq!(parsed.path(), "/");
-        assert_eq!(parsed.query(), None);
-        assert_eq!(parsed.port(), None);
-    }
-
     /// The label is what has to fit in DNS; the cap on a service name is what
     /// keeps it there, whatever the domain it is published under.
     #[test]
     fn the_longest_label_fits_a_dns_label() {
-        let gateway = test_gateway(test_config());
         let service = "a".repeat(MAX_SERVICE_NAME_LEN);
         let label = service_label(Uuid::new_v4(), &service);
 
@@ -476,16 +473,6 @@ mod tests {
         // and a job id.
         assert_eq!(label.len(), MAX_SERVICE_NAME_LEN + 1 + 36);
         assert!(label.len() <= 63, "{label} exceeds a DNS label");
-
-        let url = service_url(&gateway, Uuid::new_v4(), &service);
-        assert!(
-            url::Url::parse(&url)
-                .unwrap()
-                .host_str()
-                .unwrap()
-                .split('.')
-                .all(|label| label.len() <= 63)
-        );
     }
 
     #[test]
@@ -528,10 +515,10 @@ mod tests {
     fn unusable_configuration_is_refused() {
         assert!(matches!(
             JobGateway::new(JobGatewayConfig {
-                domains: Vec::new(),
+                endpoints: Vec::new(),
                 ..test_config()
             }),
-            Err(KeyError::NoDomains)
+            Err(KeyError::NoEndpoints)
         ));
 
         for signing_key in [

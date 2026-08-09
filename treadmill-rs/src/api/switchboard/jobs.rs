@@ -196,17 +196,28 @@ pub struct NatsConsoleInputCredentials {
     pub expires_in_secs: u64,
 }
 
+/// An endpoint under which a job's announced service can be reached.
+#[derive(schemars::JsonSchema, Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JobServiceEndpoint {
+    /// The gateway hostname the service is published under.
+    ///
+    /// Already contains the job-part (i.e., `<service>-<job-id>.<gw-fqdn>`).
+    pub hostname: String,
+    /// The port under which the gateway can be reached at `domain`.
+    pub port: u16,
+}
+
 /// Access credentials for one of a job's announced services, returned by
 /// `POST /jobs/{id}/services/{service}/token`.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct JobServiceCredentials {
-    /// Where the service is published, through the deployment's primary
-    /// gateway: `https://<service>-<job-id>.<domain>/`.
-    pub url: String,
-    /// Every gateway domain the service is published under, primary first. The
-    /// same token is accepted at each, so a client may substitute the host of
-    /// `url` for any of these.
-    pub domains: Vec<String>,
+    /// Every gateway hostname + port the service is published under, primary
+    /// first. The gateway hostname already contains the job-part (i.e.,
+    /// `<service>-<job-id>.<gw-fqdn>`).
+    ///
+    /// The same token is accepted at each, so a client may substitute
+    /// the host of `url` for any of these.
+    pub endpoints: Vec<JobServiceEndpoint>,
     /// The signed token admitting the caller to this one service.
     pub token: String,
     /// When the token stops being accepted. Minting again yields a fresh one;

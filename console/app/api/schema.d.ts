@@ -1034,8 +1034,7 @@ export interface components {
             job_id: string;
             /**
              * Format: ip
-             * @description The job's internal network address, as reported by its supervisor; null
-             *     until reported. Retained on the terminal record.
+             * @description The job's internal IP address (generally not publicly routable).
              */
             job_ip_address?: string | null;
             /** @description The user-provided display label, if any. */
@@ -1063,11 +1062,7 @@ export interface components {
              */
             resolved_image_digest?: components["schemas"]["Digest"] | null;
             restart_policy: components["schemas"]["RestartPolicyState"];
-            /**
-             * @description The services the job most recently announced; empty until it announces
-             *     any. An announcement replaces the whole set, so this always mirrors the
-             *     latest one.
-             */
+            /** @description The set of currently announced services by the job. */
             services: components["schemas"]["JobServiceView"][];
             /**
              * Format: date-time
@@ -1227,24 +1222,17 @@ export interface components {
         /**
          * @description Access credentials for one of a job's announced services, returned by
          *     `POST /jobs/{id}/services/{service}/token`.
-         *
-         *     A job is not reachable from the internet: a request arrives instead at a
-         *     stateless gateway, which admits it only against `token` and then proxies it
-         *     to the job, where the same token is validated again. The token names exactly
-         *     one service of one job and is good at any of `domains`, so it survives a
-         *     client picking a gateway other than the one `url` points at.
-         *
-         *     How the token is presented is the gateway's convention rather than part of
-         *     this API: a browser navigates to `<url>?tml_token=<token>`, which the
-         *     gateway promotes to a cookie; other clients send it however they like.
          */
         JobServiceCredentials: {
             /**
-             * @description Every gateway domain the service is published under, primary first. The
-             *     same token is accepted at each, so a client may substitute the host of
-             *     `url` for any of these.
+             * @description Every gateway hostname + port the service is published under, primary
+             *     first. The gateway hostname already contains the job-part (i.e.,
+             *     `<service>-<job-id>.<gw-fqdn>`).
+             *
+             *     The same token is accepted at each, so a client may substitute
+             *     the host of `url` for any of these.
              */
-            domains: string[];
+            endpoints: components["schemas"]["JobServiceEndpoint"][];
             /**
              * Format: date-time
              * @description When the token stops being accepted. Minting again yields a fresh one;
@@ -1254,11 +1242,20 @@ export interface components {
             expires_at: string;
             /** @description The signed token admitting the caller to this one service. */
             token: string;
+        };
+        /** @description An endpoint under which a job's announced service can be reached. */
+        JobServiceEndpoint: {
             /**
-             * @description Where the service is published, through the deployment's primary
-             *     gateway: `https://<service>-<job-id>.<domain>/`.
+             * @description The gateway hostname the service is published under.
+             *
+             *     Already contains the job-part (i.e., `<service>-<job-id>.<gw-fqdn>`).
              */
-            url: string;
+            hostname: string;
+            /**
+             * Format: uint16
+             * @description The port under which the gateway can be reached at `domain`.
+             */
+            port: number;
         };
         /** @description The `{id}/services/{service}` segments of a job service route. */
         JobServicePath: {
@@ -2308,16 +2305,6 @@ export interface operations {
             /**
              * @description Access credentials for one of a job's announced services, returned by
              *     `POST /jobs/{id}/services/{service}/token`.
-             *
-             *     A job is not reachable from the internet: a request arrives instead at a
-             *     stateless gateway, which admits it only against `token` and then proxies it
-             *     to the job, where the same token is validated again. The token names exactly
-             *     one service of one job and is good at any of `domains`, so it survives a
-             *     client picking a gateway other than the one `url` points at.
-             *
-             *     How the token is presented is the gateway's convention rather than part of
-             *     this API: a browser navigates to `<url>?tml_token=<token>`, which the
-             *     gateway promotes to a cookie; other clients send it however they like.
              */
             200: {
                 headers: {

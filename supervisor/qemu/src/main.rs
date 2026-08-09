@@ -1422,7 +1422,7 @@ impl control_socket::Supervisor for QemuSupervisor {
                     treadmill_rs::api::supervisor_puppet::JobGatewayInfo {
                         signing_public_key: gateway.signing_public_key.clone(),
                         key_id: gateway.key_id.clone(),
-                        domains: gateway.domains.clone(),
+                        endpoints: gateway.endpoints.iter().cloned().map(|treadmill_rs::api::switchboard_supervisor::JobGatewayEndpoint { base_domain, port }| treadmill_rs::api::supervisor_puppet::JobGatewayEndpoint { base_domain, port }).collect(),
                     }
                 }),
 
@@ -1712,6 +1712,7 @@ mod tests {
     use std::process::ExitStatus;
     use std::time::Duration;
 
+    use treadmill_rs::api;
     use treadmill_rs::api::switchboard_supervisor::{
         ImageLocation, JobGatewayDispatch, JobService, ParameterValue, RestartPolicy,
         SupervisorEvent, SupervisorJobEvent,
@@ -2105,9 +2106,15 @@ mod tests {
             signing_public_key: "-----BEGIN PUBLIC KEY-----\nstub\n-----END PUBLIC KEY-----\n"
                 .to_string(),
             key_id: "wI9c-yvsF8".to_string(),
-            domains: vec![
-                "gw-us-east-1.treadmillusercontent.com".to_string(),
-                "gw-eu-central-1.treadmillusercontent.com".to_string(),
+            endpoints: vec![
+                api::switchboard_supervisor::JobGatewayEndpoint {
+                    base_domain: "gw-us-east-1.treadmillusercontent.com".to_string(),
+                    port: 443,
+                },
+                api::switchboard_supervisor::JobGatewayEndpoint {
+                    base_domain: "gw-eu-central-1.treadmillusercontent.com".to_string(),
+                    port: 4433,
+                },
             ],
         };
 
@@ -2131,7 +2138,19 @@ mod tests {
             .expect("a job dispatched with a gateway is told about it");
         assert_eq!(relayed.signing_public_key, dispatched.signing_public_key);
         assert_eq!(relayed.key_id, dispatched.key_id);
-        assert_eq!(relayed.domains, dispatched.domains);
+        assert_eq!(
+            relayed.endpoints,
+            dispatched
+                .endpoints
+                .iter()
+                .cloned()
+                .map(
+                    |api::switchboard_supervisor::JobGatewayEndpoint { base_domain, port }| {
+                        api::supervisor_puppet::JobGatewayEndpoint { base_domain, port }
+                    }
+                )
+                .collect::<Vec<_>>()
+        );
 
         // A job dispatched without one has none to be told about.
         let plain = harness(virtual_size, virtual_size);

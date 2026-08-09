@@ -1372,12 +1372,13 @@ mod tests {
 
     use super::*;
     use crate::auth::token::SecurityToken;
+    use crate::config;
     use std::collections::BTreeSet;
     use std::pin::Pin;
     use std::task::{Context as TaskContext, Poll};
     use treadmill_rs::api::switchboard_supervisor::{
-        ImageSpecification, RunningJobState, SupervisorEvent, SupervisorJobEvent,
-        SwitchboardToSupervisor, TaskExitStatus,
+        ImageSpecification, JobGatewayEndpoint, RunningJobState, SupervisorEvent,
+        SupervisorJobEvent, SwitchboardToSupervisor, TaskExitStatus,
     };
     use treadmill_rs::connector::{JobError, JobErrorKind};
 
@@ -3622,13 +3623,19 @@ mod tests {
         let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
 
         // A throwaway signing seed, so no real secret enters the source tree.
-        let domains = vec![
-            "gw-us-east-1.treadmillusercontent.com".to_string(),
-            "gw-eu-central-1.treadmillusercontent.com".to_string(),
+        let endpoints = vec![
+            config::JobGatewayEndpoint {
+                base_domain: "gw-us-east-1.treadmillusercontent.com".to_string(),
+                port: 443,
+            },
+            config::JobGatewayEndpoint {
+                base_domain: "gw-eu-central-1.treadmillusercontent.com".to_string(),
+                port: 4433,
+            },
         ];
         let gateway = crate::job_gateway::JobGateway::new(crate::config::JobGatewayConfig {
             issuer: "https://switchboard.example".to_string(),
-            domains: domains.clone(),
+            endpoints: endpoints.clone(),
             token_ttl: std::time::Duration::from_secs(60 * 60),
             signing_key: hex::encode(rand::random::<[u8; 32]>()),
         })
@@ -3642,7 +3649,17 @@ mod tests {
         assert_eq!(dispatch.signing_public_key, gateway.public_key_pem());
         assert_eq!(dispatch.key_id, gateway.key_id());
         assert_eq!(
-            dispatch.domains, domains,
+            dispatch.endpoints,
+            endpoints
+                .iter()
+                .cloned()
+                .map(
+                    |config::JobGatewayEndpoint { base_domain, port }| JobGatewayEndpoint {
+                        base_domain,
+                        port
+                    }
+                )
+                .collect::<Vec<_>>(),
             "a job accepts a request arriving at any configured gateway"
         );
 

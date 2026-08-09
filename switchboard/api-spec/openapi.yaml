@@ -464,16 +464,6 @@ paths:
           description: |-
             Access credentials for one of a job's announced services, returned by
             `POST /jobs/{id}/services/{service}/token`.
-
-            A job is not reachable from the internet: a request arrives instead at a
-            stateless gateway, which admits it only against `token` and then proxies it
-            to the job, where the same token is validated again. The token names exactly
-            one service of one job and is good at any of `domains`, so it survives a
-            client picking a gateway other than the one `url` points at.
-
-            How the token is presented is the gateway's convention rather than part of
-            this API: a browser navigates to `<url>?tml_token=<token>`, which the
-            gateway promotes to a cookie; other clients send it however they like.
           content:
             application/json:
               schema:
@@ -2272,9 +2262,7 @@ components:
           type: string
           format: uuid
         job_ip_address:
-          description: |-
-            The job's internal network address, as reported by its supervisor; null
-            until reported. Retained on the terminal record.
+          description: The job's internal IP address (generally not publicly routable).
           type:
           - string
           - 'null'
@@ -2316,10 +2304,7 @@ components:
         restart_policy:
           $ref: '#/components/schemas/RestartPolicyState'
         services:
-          description: |-
-            The services the job most recently announced; empty until it announces
-            any. An announcement replaces the whole set, so this always mirrors the
-            latest one.
+          description: The set of currently announced services by the job.
           type: array
           items:
             $ref: '#/components/schemas/JobServiceView'
@@ -2611,26 +2596,19 @@ components:
       description: |-
         Access credentials for one of a job's announced services, returned by
         `POST /jobs/{id}/services/{service}/token`.
-
-        A job is not reachable from the internet: a request arrives instead at a
-        stateless gateway, which admits it only against `token` and then proxies it
-        to the job, where the same token is validated again. The token names exactly
-        one service of one job and is good at any of `domains`, so it survives a
-        client picking a gateway other than the one `url` points at.
-
-        How the token is presented is the gateway's convention rather than part of
-        this API: a browser navigates to `<url>?tml_token=<token>`, which the
-        gateway promotes to a cookie; other clients send it however they like.
       type: object
       properties:
-        domains:
+        endpoints:
           description: |-
-            Every gateway domain the service is published under, primary first. The
-            same token is accepted at each, so a client may substitute the host of
-            `url` for any of these.
+            Every gateway hostname + port the service is published under, primary
+            first. The gateway hostname already contains the job-part (i.e.,
+            `<service>-<job-id>.<gw-fqdn>`).
+
+            The same token is accepted at each, so a client may substitute
+            the host of `url` for any of these.
           type: array
           items:
-            type: string
+            $ref: '#/components/schemas/JobServiceEndpoint'
         expires_at:
           description: |-
             When the token stops being accepted. Minting again yields a fresh one;
@@ -2641,16 +2619,29 @@ components:
         token:
           description: The signed token admitting the caller to this one service.
           type: string
-        url:
-          description: |-
-            Where the service is published, through the deployment's primary
-            gateway: `https://<service>-<job-id>.<domain>/`.
-          type: string
       required:
-      - url
-      - domains
+      - endpoints
       - token
       - expires_at
+    JobServiceEndpoint:
+      description: An endpoint under which a job's announced service can be reached.
+      type: object
+      properties:
+        hostname:
+          description: |-
+            The gateway hostname the service is published under.
+
+            Already contains the job-part (i.e., `<service>-<job-id>.<gw-fqdn>`).
+          type: string
+        port:
+          description: The port under which the gateway can be reached at `domain`.
+          type: integer
+          format: uint16
+          maximum: 65535
+          minimum: 0
+      required:
+      - hostname
+      - port
     JobServicePath:
       description: The `{id}/services/{service}` segments of a job service route.
       type: object

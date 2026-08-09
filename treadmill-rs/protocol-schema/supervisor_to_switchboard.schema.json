@@ -153,7 +153,7 @@
       ]
     },
     "JobService": {
-      "description": "One service a job announces as reachable through a gateway.\n\nThe control plane never learns what a service *is*: all three fields are\nopaque to it. `name` identifies the service within its job and is the label a\ngateway hostname is built from, `label` is optional human-readable text for\nclients to display, and `protocol` is a client-interpreted token (`webapp`,\n`sshws`, …) that switchboard, supervisor and puppet store and echo but never\nbranch on.",
+      "description": "One service a job announces as reachable through a gateway.\n\nIts fields are opaque to the supervisor, interpreted by the switchboard.",
       "type": "object",
       "properties": {
         "label": {
@@ -425,7 +425,7 @@
           ]
         },
         {
-          "description": "The address at which the job is reachable on the supervisor's internal\nnetwork, and which a gateway dials to reach the job's services. This is\nthe supervisor's own account of where it placed the job; it is never\nderived from anything the job reports about itself.",
+          "description": "The address at which the job is reachable on the supervisor's internal\nnetwork, and which a gateway dials to reach the job's services.\n\nThe switchboard trusts this information to be correct. It must not\nstem from the job itself and instead be set by the supervisor.",
           "type": "object",
           "properties": {
             "address": {
@@ -443,7 +443,7 @@
           ]
         },
         {
-          "description": "The complete set of services the job announces. Each event replaces the\npreviously announced set in full, so re-announcing after a reconnect is\nidempotent and no drift between the two sides is representable.",
+          "description": "The complete set of services the job announces. Each event replaces the\npreviously announced set in full, so re-announcing after a reconnect is\nidempotent.",
           "type": "object",
           "properties": {
             "services": {

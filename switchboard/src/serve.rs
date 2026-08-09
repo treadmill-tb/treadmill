@@ -1,4 +1,4 @@
-use crate::config::{DatabaseConfig, DatabaseCredentials, SwitchboardConfig};
+use crate::config::{DatabaseConfig, DatabaseCredentials, JobGatewayEndpoint, SwitchboardConfig};
 use crate::events::EventBus;
 use crate::job_gateway::JobGateway;
 use crate::log_streaming::{LogStreaming, NatsLogStreamProvisioner};
@@ -221,7 +221,7 @@ async fn run(config: SwitchboardConfig) -> anyhow::Result<()> {
                 .context("failed to load the job gateway configuration")?;
             tracing::info!(
                 key_id = %gateway.key_id(),
-                domains = ?gateway_config.domains,
+                endpoints = ?gateway_config.endpoints.iter().map(|JobGatewayEndpoint { base_domain, port }| format!("{base_domain}:{port}")).collect::<Vec<_>>(),
                 "job service gateway enabled"
             );
             Some(gateway)

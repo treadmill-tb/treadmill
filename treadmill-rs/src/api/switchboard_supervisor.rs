@@ -196,8 +196,8 @@ pub struct StartJobMessage {
     #[serde(default)]
     pub log_streaming: Option<LogStreamingDispatch>,
 
-    /// Configuration for reaching this job's services through a gateway, or 
-    /// `None` when the deployment runs without one. The supervisor relays it 
+    /// Configuration for reaching this job's services through a gateway, or
+    /// `None` when the deployment runs without one. The supervisor relays it
     /// into the job (see [`JobGatewayDispatch`]).
     #[serde(default)]
     pub gateway: Option<JobGatewayDispatch>,
@@ -264,6 +264,17 @@ pub struct LogStreamingDispatch {
     pub inbox_prefix: Option<String>,
 }
 
+/// A job gateway endpoint, to be handed to a supervisor.
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct JobGatewayEndpoint {
+    /// The base domain of the gateway, to be pre-prended with the job- and
+    /// service-specific subdomain.
+    pub base_domain: String,
+    /// The port of the gateway.
+    pub port: u16,
+}
+
 /// Gateway material handed to a supervisor in [`StartJobMessage`], to be relayed
 /// into the job.
 ///
@@ -279,8 +290,9 @@ pub struct JobGatewayDispatch {
     /// Identifier of `signing_public_key`, carried as the `kid` of a minted
     /// token's header. Rotating the key yields a new `key_id`.
     pub key_id: String,
-    /// The gateway domains under which this job's services are reachable.
-    pub domains: Vec<String>,
+    /// The gateway endpoints (base-domain & port) under which this job's
+    /// services are reachable.
+    pub endpoints: Vec<JobGatewayEndpoint>,
 }
 
 // -- StopJobRequest -------------------------------------------------------------------------------

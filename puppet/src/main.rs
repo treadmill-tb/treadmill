@@ -12,7 +12,7 @@ use log::{debug, error, info, warn};
 use zbus::interface;
 
 use treadmill_rs::api::supervisor_puppet::{
-    CommandOutputStream, JobInfo, JobService, PuppetEvent, SupervisorEvent,
+    CommandOutputStream, JobGatewayEndpoint, JobInfo, JobService, PuppetEvent, SupervisorEvent,
 };
 
 mod control_socket_client;
@@ -213,16 +213,16 @@ async fn update_job_info_files(args: &PuppetDaemonArgs, job_info: JobInfo) -> Re
             .await
             .context("Writing gateway key id to file")?;
 
-        let domains_path = job_info_dir.join("gateway-domains");
-        info!("Writing gateway domains to file {domains_path:?}");
-        let domains: String = gateway
-            .domains
+        let endpoints_path = job_info_dir.join("gateway-endpoints");
+        info!("Writing gateway endpoints to file {endpoints_path:?}");
+        let endpoints: String = gateway
+            .endpoints
             .iter()
-            .map(|domain| format!("{domain}\n"))
+            .map(|JobGatewayEndpoint { base_domain, port }| format!("{base_domain}:{port}\n"))
             .collect();
-        tokio::fs::write(domains_path, domains.as_bytes())
+        tokio::fs::write(endpoints_path, endpoints.as_bytes())
             .await
-            .context("Writing gateway domains to file")?;
+            .context("Writing gateway endpoints to file")?;
     }
 
     Ok(())
