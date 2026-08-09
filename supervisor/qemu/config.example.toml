@@ -63,3 +63,5 @@ tcp_control_socket_listen_addr = "0.0.0.0:3859"
 working_disk_max_bytes = 34359738368
 
 start_script = "./nix_ovmf-vars_start_script.sh"
+# Optional stop script (might run even if the start script didn't)
+#stop_script = "./foobar"
