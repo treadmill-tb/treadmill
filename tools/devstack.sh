@@ -13,7 +13,21 @@ pg_port="${TML_PG_PORT:-5432}"
 nats_port="${TML_NATS_PORT:-4222}"
 nats_ws_port="${TML_NATS_WS_PORT:-4223}"
 zot_port="${TML_ZOT_PORT:-5000}"
+gw_port="${TML_GW_PORT:-8443}"
+gw_domain="${TML_GW_DOMAIN:-jobgw.localhost}"
 user="$(id -un)"
+
+# The port a job's own reverse proxy listens on, which the gateway dials. Fixed
+# by convention rather than carried in a token: the in-job proxy owns the
+# service -> port mapping, so no forged token can reach an arbitrary listener.
+job_service_port=3860
+
+# Caddy addresses host labels by index from the RIGHT, so the leftmost label
+# (`<service>-<job-id>`) sits just past the gateway domain's own labels. The
+# trailing newline is load-bearing: `wc -l` counts line terminators, so without
+# it a two-label domain counts as one and the gateway compares the token
+# against the wrong label.
+gw_label_index="$(printf '%s\n' "$gw_domain" | tr '.' '\n' | wc -l | tr -d ' ')"
 
 # Linux-only registry/supervisor bootstrap inputs, injected from Nix.
 # Empty on non-Linux (the tiny-efi fixture isn't built there): the zot +
@@ -176,6 +190,98 @@ websocket {
 }
 NATSCONF
 
+# --- Job service gateway: key material once, config every run ---------
+# A job's services are published at `<service>-<job-id>.<domain>` and reached
+# through a stateless gateway that holds no per-job state: it admits a request
+# only against a switchboard-minted EdDSA token and proxies to the address that
+# token names. The key is generated once into the state dir, so tokens minted
+# by an earlier run still verify after a restart. As with the NATS account
+# seed, the SECRET half reaches the switchboard through the environment and
+# never its on-disk config.
+gw_dir="$state_dir/job-gateway"
+mkdir -p "$gw_dir"
+if [ ! -f "$gw_dir/key.pem" ]; then
+  echo "Generating job gateway signing key"
+  openssl genpkey -algorithm ed25519 -out "$gw_dir/key.pem"
+fi
+# The switchboard takes the private seed as hex, and it is the tail of the
+# PKCS#8 encoding. caddy-jwt wants an EdDSA public key as base64 of the raw 32
+# bytes -- not the PEM it accepts for other algorithms -- which is likewise the
+# tail of the SPKI encoding.
+gw_signing_key="$(openssl pkey -in "$gw_dir/key.pem" -outform DER \
+  | tail -c 32 | od -An -v -tx1 | tr -d ' \n')"
+gw_public_key="$(openssl pkey -in "$gw_dir/key.pem" -pubout -outform DER \
+  | tail -c 32 | base64 | tr -d '\n')"
+
+gw_caddyfile="$cfg_dir/gateway.Caddyfile"
+cat > "$gw_caddyfile" <<CADDY
+{
+	admin off
+	auto_https disable_redirects
+	# Caddy's local CA installs its root into the system trust store on first
+	# use, which asks for a sudo password. A dev stack has no business
+	# needing root, and the certificate is meant to be waved through anyway
+	# (see below) -- run \`caddy trust\` by hand to silence the warning.
+	skip_install_trust
+	# jwtauth comes from a plugin, so it has no place in the default directive
+	# order; it needs one even inside the route below, where what actually
+	# runs is the order written.
+	order jwtauth before reverse_proxy
+	# Keep the internal CA out of the developer's XDG dirs.
+	storage file_system {
+		root $gw_dir/caddy
+	}
+}
+
+# One wildcard site covers every job of every user: everything before the first
+# hyphen of the leftmost label is the service, everything after is the job id.
+# \`tls internal\` issues from Caddy's own CA, so a browser will warn on first
+# visit -- this is a development gateway, and binding 443 would need root.
+https://*.$gw_domain:$gw_port {
+	tls internal
+
+	route {
+		jwtauth {
+			sign_key {env.TML_GATEWAY_PUBLIC_KEY}
+			sign_alg EdDSA
+			from_query tml_token
+			from_cookies __Host-tml_token
+			issuer_whitelist http://localhost:$sb_port
+			user_claims sub
+			meta_claims tml_job tml_service tml_addr
+		}
+
+		# A token is good for one service of one job, and only at the host
+		# naming that same one. This is the whole authorization decision: the
+		# gateway knows nothing about the job beyond what the token carries,
+		# and never asks the switchboard anything.
+		@this_service vars {http.request.host.labels.$gw_label_index} {http.auth.user.tml_service}-{http.auth.user.tml_job}
+
+		# A user arrives with the token in the query, which every later request
+		# the service makes -- a reload, a subresource, a websocket -- would
+		# lack. Hand it back as a cookie and redirect to the same URL without
+		# it, so it stops sitting in the address bar and in browser history.
+		# The \`__Host-\` prefix is what keeps the cookie on exactly this job's
+		# host, which matters because every job shares one parent domain.
+		@promote {
+			vars {http.request.host.labels.$gw_label_index} {http.auth.user.tml_service}-{http.auth.user.tml_job}
+			query tml_token=*
+		}
+		# Snapshot the token before it is stripped below: a Set-Cookie value is
+		# only evaluated as the response is written, by which point the query
+		# parameter it came from is gone.
+		vars @promote promoted_token {http.request.uri.query.tml_token}
+		header @promote +Set-Cookie "__Host-tml_token={vars.promoted_token}; Path=/; Secure; HttpOnly; SameSite=Lax"
+		uri @promote query -tml_token
+		redir @promote {http.request.uri} 302
+
+		reverse_proxy @this_service {http.auth.user.tml_addr}:$job_service_port
+
+		respond "this token is not valid for this service" 403
+	}
+}
+CADDY
+
 # --- Generate component configs (regenerated every run) ---------------
 # CORS + return_to entries authorizing the separately-hosted SPA console
 # (empty lists when no console is served, which switchboard treats as
@@ -226,6 +332,16 @@ use_tokio_console_subscriber = false
 nats_url = "nats://127.0.0.1:$nats_port"
 websocket_url = "ws://127.0.0.1:$nats_ws_port"
 
+# Gateway access to the services a job announces. The signing seed is
+# injected via the environment (TML_JOB_GATEWAY__SIGNING_KEY) at launch
+# below, like the NATS account seed. The domain carries the gateway's
+# port because this stack cannot bind 443, so minted URLs point at
+# something reachable.
+[job_gateway]
+issuer = "http://localhost:$sb_port"
+domains = ["$gw_domain:$gw_port"]
+token_ttl = "1h"
+
 # The SPA console declares <its origin>/login/callback as each login's
 # return_to; the allowlist (exact match) authorizes the callback's 302 to
 # that URL carrying the single-use staged pair, which the console exchanges
@@ -272,12 +388,11 @@ insert into tml_switchboard.group_members (group_id, member_id, source, source_r
 insert into tml_switchboard.login_allowlist (provider, kind, external_id)
   values ('mock', 'user', 'bob'), ('mock', 'user', 'carol');
 insert into tml_switchboard.hosts
-  (host_id, name, auth_token, tags, owner_id, ssh_endpoints, current_job)
+  (host_id, name, auth_token, tags, owner_id, current_job)
   values (
     '$host_id', 'dev-qemu-supervisor',
     '\x38292b85b0cc8941bbad8d4b9527f2c01be092a6f50b23add1d8c8828b3d403c',
-    '{"host:$host_id"}', '$dev_user_id',
-    '{"(127.0.0.1,22)","([::1],22)"}', null
+    '{"host:$host_id"}', '$dev_user_id', null
   ) on conflict do nothing;
 insert into tml_switchboard.api_tokens
   (token_id, token, user_id, revoked, created_at, expires_at)
@@ -312,6 +427,11 @@ SH
 [base]
 supervisor_id = "$host_id"
 coord_connector = "ws_connector"
+# Where this supervisor's jobs are reachable, reported to the switchboard when
+# a job starts and dialed by the gateway. The guest is behind QEMU's user-mode
+# networking and has no address of its own on this host, so the gateway is
+# pointed at the forwarded port below rather than at the guest.
+job_address = "127.0.0.1"
 
 [ws_connector]
 token = "$host_token_bearer"
@@ -343,7 +463,11 @@ qemu_args = [
   "-drive", "if=pflash,format=raw,readonly=on,file=$uefi_code",
   "-drive", "if=pflash,format=raw,file={job_workdir}/UEFI_VARS.fd",
   "-device", "virtio-blk-pci,drive={disk_node}",
-  "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
+  # Forward the port a job's own reverse proxy would listen on, so the gateway
+  # reaches into the guest. Nothing in the tiny-efi fixture listens there: it is
+  # a bare-metal EFI binary with no network stack, so the last hop is refused
+  # until this boots an image that runs one.
+  "-netdev", "user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::$job_service_port-:$job_service_port",
   "-device", "virtio-net-pci,netdev=net0",
   "-fw_cfg", "name=opt/org.tockos.treadmill.tcp-ctrl-socket,string=10.0.2.2:3859",
   "-display", "none",
@@ -407,11 +531,21 @@ if [ "$oauth_enabled" = 1 ]; then
   TML_OAUTH__GITHUB__CLIENT_ID="$TML_DEV_GITHUB_CLIENT_ID" \
   TML_OAUTH__GITHUB__CLIENT_SECRET="$TML_DEV_GITHUB_CLIENT_SECRET" \
   TML_LOG_STREAMING__ACCOUNT_SEED="$nats_account_seed" \
+  TML_JOB_GATEWAY__SIGNING_KEY="$gw_signing_key" \
     swx serve -c "$sb_cfg" &
 else
   TML_LOG_STREAMING__ACCOUNT_SEED="$nats_account_seed" \
+  TML_JOB_GATEWAY__SIGNING_KEY="$gw_signing_key" \
     swx serve -c "$sb_cfg" &
 fi
+pids+=("$!")
+
+# The job service gateway. Stateless and switchboard-unaware: it verifies a
+# token against the public half of the key above and proxies to the address
+# that token carries.
+echo "Starting job service gateway (https://<service>-<job-id>.$gw_domain:$gw_port)"
+TML_GATEWAY_PUBLIC_KEY="$gw_public_key" \
+  caddy run --config "$gw_caddyfile" --adapter caddyfile >"$log_dir/gateway.log" 2>&1 &
 pids+=("$!")
 
 # Wait for the switchboard API (also means migrations have run), then
@@ -497,6 +631,9 @@ cat <<EOF
     NATS broker     : nats://127.0.0.1:$nats_port (ws on $nats_ws_port)
     postgresql      : UNIX socket at $sock_dir
       (connect with nix develop -c psql -h $sock_dir -U $user -d tml_switchboard)
+    job gateway     : https://<service>-<job-id>.$gw_domain:$gw_port
+      (self-signed; POST /jobs/{id}/services/{service}/token mints the token,
+       and the gateway proxies to port $job_service_port of the job)
     state directory : $state_dir
     mock login      : ENABLED (alice=admin, bob/carol=user)
 EOF

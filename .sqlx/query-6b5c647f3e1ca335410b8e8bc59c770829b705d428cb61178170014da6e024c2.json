@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, label, protocol\n           from tml_switchboard.job_services\n           where job_id = $1\n           order by name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.job_services",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "label",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.job_services",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "protocol",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.job_services",
+            "name": "protocol"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "6b5c647f3e1ca335410b8e8bc59c770829b705d428cb61178170014da6e024c2"
+}

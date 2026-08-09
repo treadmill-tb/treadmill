@@ -12,6 +12,7 @@ import { Digest } from "../components/digest";
 import { EntityLink } from "../components/entity-link";
 import { ImageRef } from "../components/image-ref";
 import { JobLog, parseReplayBytes } from "../components/job-log";
+import { JobServices } from "../components/job-services";
 import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
 import { Tags } from "../components/tags";
@@ -120,6 +121,15 @@ export default function JobDetail({ params }: Route.ComponentProps) {
             <dd>
               <EntityLink kind="host" id={job.data.dispatched_on_host_id} />
             </dd>
+            <dt>Address</dt>
+            <dd>
+              {job.data.job_ip_address === null ||
+              job.data.job_ip_address === undefined ? (
+                <span className="muted">—</span>
+              ) : (
+                <span className="mono">{job.data.job_ip_address}</span>
+              )}
+            </dd>
             <dt>Queued</dt>
             <dd>
               <RelTime iso={job.data.queued_at} />
@@ -193,6 +203,15 @@ export default function JobDetail({ params }: Route.ComponentProps) {
               </table>
             )}
           </section>
+
+          <JobServices
+            jobId={params.id}
+            services={job.data.services}
+            canOpen={
+              job.data.permissions.includes("manage") &&
+              job.data.state !== "finalized"
+            }
+          />
 
           <JobLog
             jobId={params.id}

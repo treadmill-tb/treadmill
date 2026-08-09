@@ -1,6 +1,7 @@
 //! Job-scoped client API types.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -195,6 +196,36 @@ pub struct NatsConsoleInputCredentials {
     pub expires_in_secs: u64,
 }
 
+/// An endpoint under which a job's announced service can be reached.
+#[derive(schemars::JsonSchema, Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JobServiceEndpoint {
+    /// The gateway hostname the service is published under.
+    ///
+    /// Already contains the job-part (i.e., `<service>-<job-id>.<gw-fqdn>`).
+    pub hostname: String,
+    /// The port under which the gateway can be reached at `domain`.
+    pub port: u16,
+}
+
+/// Access credentials for one of a job's announced services, returned by
+/// `POST /jobs/{id}/services/{service}/token`.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct JobServiceCredentials {
+    /// Every gateway hostname + port the service is published under, primary
+    /// first. The gateway hostname already contains the job-part (i.e.,
+    /// `<service>-<job-id>.<gw-fqdn>`).
+    ///
+    /// The same token is accepted at each, so a client may substitute
+    /// the host of `url` for any of these.
+    pub endpoints: Vec<JobServiceEndpoint>,
+    /// The signed token admitting the caller to this one service.
+    pub token: String,
+    /// When the token stops being accepted. Minting again yields a fresh one;
+    /// an already-minted token is not invalidated before this by anything,
+    /// including the job ending or the caller's access being revoked.
+    pub expires_at: DateTime<Utc>,
+}
+
 /// What a job is based off, as seen by `GET /jobs/{id}`: a concrete image, an
 /// image set (with the frozen generation), or a resume/restart of an earlier
 /// job. The concrete manifest digest actually dispatched is reported separately
@@ -223,6 +254,19 @@ pub struct JobParameterView {
     pub secret: bool,
     /// The plaintext value, or null when the parameter is secret (withheld).
     pub value: Option<String>,
+}
+
+/// One service a running job announces, as exposed by `GET /jobs/{id}`.
+///
+/// All three fields are opaque to the switchboard, which stores and echoes them
+/// without interpretation. `name` identifies the service within its job,
+/// `label` is optional human-readable text to display, and `protocol` is a
+/// token the client interprets to decide how to connect (`webapp`, `sshws`, …).
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct JobServiceView {
+    pub name: String,
+    pub label: Option<String>,
+    pub protocol: String,
 }
 
 /// The full server-side view of a single job, returned by `GET /jobs/{id}`.
@@ -278,6 +322,11 @@ pub struct JobInfo {
     pub exit_message: Option<String>,
     /// When the job was finalized; null until then.
     pub terminated_at: Option<DateTime<Utc>>,
+
+    /// The set of currently announced services by the job.
+    pub services: Vec<JobServiceView>,
+    /// The job's internal IP address (generally not publicly routable).
+    pub job_ip_address: Option<IpAddr>,
 
     /// The viewer's permissions on this job.
     pub permissions: Vec<JobPermission>,

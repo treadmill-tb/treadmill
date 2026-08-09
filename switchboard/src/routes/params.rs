@@ -18,6 +18,15 @@ pub(crate) struct IdPath {
     pub id: Uuid,
 }
 
+/// The `{id}/services/{service}` segments of a job service route.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub(crate) struct JobServicePath {
+    /// The job's unique identifier.
+    pub id: Uuid,
+    /// The service's name within the job, as the job announced it.
+    pub service: String,
+}
+
 /// The `{provider}` segment of an OAuth login route.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub(crate) struct ProviderPath {

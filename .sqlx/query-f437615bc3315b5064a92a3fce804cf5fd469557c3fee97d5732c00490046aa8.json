@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        select\n        job_id,\n        label,\n        owner_id,\n        resume_job_id,\n        restart_job_id,\n        image_id,\n        image_set_id,\n        image_set_generation,\n        resolved_image_id,\n        restart_policy as \"sql_restart_policy: _\",\n        enqueued_by_token_id,\n        host_tag_requirements,\n        job_timeout,\n        queued_at,\n        job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\",\n        started_at,\n        dispatched_on_host_id,\n        terminate_requested_at,\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\",\n        exit_message,\n        terminated_at\n        from tml_switchboard.jobs where job_id = $1;\n        ",
+  "query": "\n        select\n        job_id,\n        label,\n        owner_id,\n        resume_job_id,\n        restart_job_id,\n        image_id,\n        image_set_id,\n        image_set_generation,\n        resolved_image_id,\n        restart_policy as \"sql_restart_policy: _\",\n        enqueued_by_token_id,\n        host_tag_requirements,\n        job_timeout,\n        queued_at,\n        job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\",\n        started_at,\n        dispatched_on_host_id,\n        terminate_requested_at,\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\",\n        exit_message,\n        terminated_at,\n        job_ip_address\n        from tml_switchboard.jobs where job_id = $1;\n        ",
   "describe": {
     "columns": [
       {
@@ -325,6 +325,17 @@
             "name": "terminated_at"
           }
         }
+      },
+      {
+        "ordinal": 23,
+        "name": "job_ip_address",
+        "type_info": "Inet",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "job_ip_address"
+          }
+        }
       }
     ],
     "parameters": {
@@ -355,8 +366,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "69b6ec343f8de394263b6a51ad069f32fb957aca4b2f1cd75f9b9b13aeea1aee"
+  "hash": "f437615bc3315b5064a92a3fce804cf5fd469557c3fee97d5732c00490046aa8"
 }

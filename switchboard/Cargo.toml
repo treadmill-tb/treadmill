@@ -147,6 +147,14 @@ nats-jwt = { workspace = true }
 nkeys = { workspace = true }
 indoc = "2.0.7"
 
+# Job service gateway: EdDSA-signed tokens admitting a request to one of a
+# job's services. `ed25519-dalek` turns the configured seed into the signing
+# key, its PKCS#8 encoding for `jsonwebtoken` and its SPKI PEM for the
+# gateways; `hex` decodes the seed itself.
+ed25519-dalek = { workspace = true, features = ["std", "pem", "zeroize"] }
+hex = { workspace = true }
+jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }
+
 [dev-dependencies]
 sqlx-cli = { version = "0.9.0", features = [
   "postgres",

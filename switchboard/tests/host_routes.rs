@@ -29,6 +29,7 @@ fn test_state(pool: PgPool) -> AppState {
         test_config_mock(),
         Arc::new(OciRegistryClient::new()),
         None,
+        None,
         EventBus::default(),
     )
 }
@@ -140,6 +141,7 @@ fn watch_state(pool: PgPool) -> AppState {
         pool,
         test_config_mock(),
         Arc::new(OciRegistryClient::new()),
+        None,
         None,
         bus,
     )

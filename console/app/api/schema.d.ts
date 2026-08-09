@@ -227,6 +227,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/jobs/{id}/services/{service}/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a gateway token for a job's service */
+        post: operations["createJobServiceToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/jobs/{id}": {
         parameters: {
             query?: never;
@@ -1015,6 +1032,11 @@ export interface components {
             initializing_stage?: components["schemas"]["JobInitializingStage"] | null;
             /** Format: uuid */
             job_id: string;
+            /**
+             * Format: ip
+             * @description The job's internal IP address (generally not publicly routable).
+             */
+            job_ip_address?: string | null;
             /** @description The user-provided display label, if any. */
             label?: string | null;
             /**
@@ -1040,6 +1062,8 @@ export interface components {
              */
             resolved_image_digest?: components["schemas"]["Digest"] | null;
             restart_policy: components["schemas"]["RestartPolicyState"];
+            /** @description The set of currently announced services by the job. */
+            services: components["schemas"]["JobServiceView"][];
             /**
              * Format: date-time
              * @description When the job was dispatched onto a host; null if not yet started.
@@ -1194,6 +1218,67 @@ export interface components {
              * @default []
              */
             target_requirements: string[][];
+        };
+        /**
+         * @description Access credentials for one of a job's announced services, returned by
+         *     `POST /jobs/{id}/services/{service}/token`.
+         */
+        JobServiceCredentials: {
+            /**
+             * @description Every gateway hostname + port the service is published under, primary
+             *     first. The gateway hostname already contains the job-part (i.e.,
+             *     `<service>-<job-id>.<gw-fqdn>`).
+             *
+             *     The same token is accepted at each, so a client may substitute
+             *     the host of `url` for any of these.
+             */
+            endpoints: components["schemas"]["JobServiceEndpoint"][];
+            /**
+             * Format: date-time
+             * @description When the token stops being accepted. Minting again yields a fresh one;
+             *     an already-minted token is not invalidated before this by anything,
+             *     including the job ending or the caller's access being revoked.
+             */
+            expires_at: string;
+            /** @description The signed token admitting the caller to this one service. */
+            token: string;
+        };
+        /** @description An endpoint under which a job's announced service can be reached. */
+        JobServiceEndpoint: {
+            /**
+             * @description The gateway hostname the service is published under.
+             *
+             *     Already contains the job-part (i.e., `<service>-<job-id>.<gw-fqdn>`).
+             */
+            hostname: string;
+            /**
+             * Format: uint16
+             * @description The port under which the gateway can be reached at `domain`.
+             */
+            port: number;
+        };
+        /** @description The `{id}/services/{service}` segments of a job service route. */
+        JobServicePath: {
+            /**
+             * Format: uuid
+             * @description The job's unique identifier.
+             */
+            id: string;
+            /** @description The service's name within the job, as the job announced it. */
+            service: string;
+        };
+        /**
+         * @description One service a running job announces, as exposed by `GET /jobs/{id}`.
+         *
+         *     All three fields are opaque to the switchboard, which stores and echoes them
+         *     without interpretation. `name` identifies the service within its job,
+         *     `label` is optional human-readable text to display, and `protocol` is a
+         *     token the client interprets to decide how to connect (`webapp`, `sshws`, …).
+         */
+        JobServiceView: {
+            label?: string | null;
+            name: string;
+            protocol: string;
         };
         /**
          * @description Where a job is in its execution lifecycle: queued → assigned → initializing
@@ -2195,6 +2280,69 @@ export interface operations {
                 content?: never;
             };
             /** @description Log streaming is not enabled on this deployment. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createJobServiceToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The job's unique identifier. */
+                id: string;
+                /** @description The service's name within the job, as the job announced it. */
+                service: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description Access credentials for one of a job's announced services, returned by
+             *     `POST /jobs/{id}/services/{service}/token`.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobServiceCredentials"];
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The job announces no service by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The job has no network address recorded yet. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Job service gateways are not enabled on this deployment. */
             503: {
                 headers: {
                     [name: string]: unknown;

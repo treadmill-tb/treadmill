@@ -7,7 +7,8 @@ use anyhow::{Context, Result, bail};
 pub use treadmill_tcp_control_socket_client as tcp;
 
 use treadmill_rs::api::supervisor_puppet::{
-    JobInfo, NetworkConfig, ParameterValue, PuppetEvent, PuppetReq, SupervisorEvent, SupervisorResp,
+    JobInfo, JobService, NetworkConfig, ParameterValue, PuppetEvent, PuppetReq, SupervisorEvent,
+    SupervisorResp,
 };
 
 pub enum ControlSocketClient {
@@ -104,5 +105,12 @@ impl ControlSocketClient {
             supervisor_event_id: None,
         })
         .await
+    }
+
+    /// Announce the job's complete set of services, replacing whatever was
+    /// announced before.
+    pub async fn report_service_set(&self, services: Vec<JobService>) -> Result<()> {
+        self.send_event(PuppetEvent::JobServiceSet { services })
+            .await
     }
 }

@@ -2,9 +2,10 @@ pub use crate::api::switchboard_supervisor::JobInitializingStage;
 pub use crate::api::switchboard_supervisor::RunningJobState;
 pub use crate::api::switchboard_supervisor::StartJobMessage;
 pub use crate::api::switchboard_supervisor::StopJobMessage;
-use crate::api::switchboard_supervisor::{SupervisorEvent, SupervisorJobEvent};
+use crate::api::switchboard_supervisor::{JobService, SupervisorEvent, SupervisorJobEvent};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -128,6 +129,20 @@ pub trait SupervisorConnector: std::fmt::Debug + Send + Sync + 'static {
         self.update_event(SupervisorEvent::JobEvent {
             job_id,
             event: SupervisorJobEvent::Error { error },
+        })
+        .await
+    }
+    async fn report_job_network_address(&self, job_id: Uuid, address: IpAddr) {
+        self.update_event(SupervisorEvent::JobEvent {
+            job_id,
+            event: SupervisorJobEvent::JobNetworkAddress { address },
+        })
+        .await
+    }
+    async fn report_job_service_set(&self, job_id: Uuid, services: Vec<JobService>) {
+        self.update_event(SupervisorEvent::JobEvent {
+            job_id,
+            event: SupervisorJobEvent::JobServiceSet { services },
         })
         .await
     }

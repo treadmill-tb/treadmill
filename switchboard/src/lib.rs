@@ -4,6 +4,7 @@ pub mod client_addr;
 pub mod config;
 pub mod events;
 pub(crate) mod http_error;
+pub mod job_gateway;
 pub mod log_streaming;
 pub mod manage;
 pub mod matcher;

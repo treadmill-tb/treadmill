@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,9 +23,9 @@ use treadmill_rs::api::switchboard_supervisor::websocket::{
     TREADMILL_PROTOCOL_MINOR_HEADER, TREADMILL_WEBSOCKET_CONFIG,
 };
 use treadmill_rs::api::switchboard_supervisor::{
-    self, PROTOCOL_MINOR, ProtocolVersion, ReportedSupervisorStatus, Response, ServerHello,
-    SupervisorEvent, SupervisorJobEvent, SupervisorToSwitchboard, SwitchboardToSupervisor,
-    TaskExitStatus, websocket::TREADMILL_WEBSOCKET_PROTOCOL,
+    self, JobService, PROTOCOL_MINOR, ProtocolVersion, ReportedSupervisorStatus, Response,
+    ServerHello, SupervisorEvent, SupervisorJobEvent, SupervisorToSwitchboard,
+    SwitchboardToSupervisor, TaskExitStatus, websocket::TREADMILL_WEBSOCKET_PROTOCOL,
 };
 use treadmill_rs::connector::{self, JobError, RunningJobState};
 use uuid::Uuid;
@@ -163,6 +164,12 @@ impl<S: connector::Supervisor> connector::SupervisorConnector for WsConnector<S>
                 }
                 SupervisorJobEvent::Error { error } => {
                     self.inner.report_job_error(job_id, error).await
+                }
+                SupervisorJobEvent::JobNetworkAddress { address } => {
+                    self.inner.report_job_network_address(job_id, address).await
+                }
+                SupervisorJobEvent::JobServiceSet { services } => {
+                    self.inner.report_job_service_set(job_id, services).await
                 }
             },
         }
@@ -640,6 +647,44 @@ impl<S: connector::Supervisor> Inner<S> {
             ))
         {
             tracing::error!("failed to report job error to runloop: {e}")
+        }
+    }
+
+    async fn report_job_network_address(&self, job_id: Uuid, address: IpAddr) {
+        tracing::info!(
+            "Supervisor provides job network address: job {}, address {}",
+            job_id,
+            address
+        );
+        if let Err(e) = self
+            .update_tx
+            .send(SupervisorToSwitchboard::SupervisorEvent(
+                SupervisorEvent::JobEvent {
+                    job_id,
+                    event: SupervisorJobEvent::JobNetworkAddress { address },
+                },
+            ))
+        {
+            tracing::error!("failed to send job network address to runloop: {e}")
+        }
+    }
+
+    async fn report_job_service_set(&self, job_id: Uuid, services: Vec<JobService>) {
+        tracing::info!(
+            "Supervisor provides job services: job {}, services {:#?}",
+            job_id,
+            services
+        );
+        if let Err(e) = self
+            .update_tx
+            .send(SupervisorToSwitchboard::SupervisorEvent(
+                SupervisorEvent::JobEvent {
+                    job_id,
+                    event: SupervisorJobEvent::JobServiceSet { services },
+                },
+            ))
+        {
+            tracing::error!("failed to send job services to runloop: {e}")
         }
     }
 }

@@ -23,6 +23,7 @@ clap = { workspace = true, features = ["derive"] }
 log = { workspace = true }
 nix = { version = "0.31.3", default-features = false, features = ["signal"] }
 sd-notify = "0.5.0"
+serde_json = { workspace = true }
 simplelog = "0.12.1"
 tokio = { workspace = true, features = [
   "rt-multi-thread",

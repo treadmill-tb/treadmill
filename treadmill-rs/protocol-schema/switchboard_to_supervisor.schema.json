@@ -141,6 +141,53 @@
         }
       ]
     },
+    "JobGatewayDispatch": {
+      "description": "Gateway material handed to a supervisor in [`StartJobMessage`], to be relayed\ninto the job.\n\nA job's services are reached through stateless gateways that admit a request\nonly against a switchboard-minted token. The job is handed the key material\nto validate those same tokens itself, so that reaching a service requires a\nvalid token at both ends.",
+      "type": "object",
+      "properties": {
+        "endpoints": {
+          "description": "The gateway endpoints (base-domain & port) under which this job's\nservices are reachable.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/JobGatewayEndpoint"
+          }
+        },
+        "key_id": {
+          "description": "Identifier of `signing_public_key`, carried as the `kid` of a minted\ntoken's header. Rotating the key yields a new `key_id`.",
+          "type": "string"
+        },
+        "signing_public_key": {
+          "description": "The switchboard's public key for verifying minted service tokens.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "signing_public_key",
+        "key_id",
+        "endpoints"
+      ]
+    },
+    "JobGatewayEndpoint": {
+      "description": "A job gateway endpoint, to be handed to a supervisor.",
+      "type": "object",
+      "properties": {
+        "base_domain": {
+          "description": "The base domain of the gateway, to be pre-prended with the job- and\nservice-specific subdomain.",
+          "type": "string"
+        },
+        "port": {
+          "description": "The port of the gateway.",
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "base_domain",
+        "port"
+      ]
+    },
     "LogStreamingDispatch": {
       "description": "Per-job log-streaming destination handed to a supervisor in\n[`StartJobMessage`].\n\nThe supervisor publishes captured console output to the NATS server at\n`nats_url`, under subjects `<subject_prefix>.<channel>` (where\n`subject_prefix` is `logs.<job-id>` and `<channel>` is a [`LogChannel`]\ntoken), authenticating with `write_token`.\n\n`write_token` is a **bearer** user JWT the switchboard mints per dispatch,\nscoped to exactly this job's subjects; the supervisor connects with the\ntoken string alone (no nkey seed is ever shipped).",
       "type": "object",
@@ -269,6 +316,18 @@
     "StartJobMessage": {
       "type": "object",
       "properties": {
+        "gateway": {
+          "description": "Configuration for reaching this job's services through a gateway, or\n`None` when the deployment runs without one. The supervisor relays it\ninto the job (see [`JobGatewayDispatch`]).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JobGatewayDispatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "image_spec": {
           "$ref": "#/$defs/ImageSpecification"
         },

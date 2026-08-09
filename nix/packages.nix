@@ -19,6 +19,10 @@
         # registry-backed tests (see nix/pkgs/zot.nix).
         inherit (cmn) zot;
 
+        # Caddy carrying a JWT-verification plugin, run by the dev stack as the
+        # job service gateway (see nix/pkgs/job-gateway-caddy.nix).
+        inherit (cmn) job-gateway-caddy;
+
         tml = cmn.mkBin { bin = "tml"; };
 
         swx = cmn.mkBin { bin = "swx"; };

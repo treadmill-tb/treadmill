@@ -73,22 +73,30 @@ fn wake(tx: &watch::Sender<()>) -> bool {
 }
 
 impl EventBus {
-    /// Register a subscription. It starts woken, so there is no gap between
-    /// subscribing and the consumer's first pass over current DB state.
-    pub fn subscribe(&self, filter: EventFilter) -> WakeSubscription {
+    /// Register a subscription matching any of `filters`. It starts woken, so
+    /// there is no gap between subscribing and the consumer's first pass over
+    /// current DB state.
+    ///
+    /// The filters share one wake channel, so a consumer that re-reads several
+    /// tables in one pass is woken once by an event matching any of them, and
+    /// once by an event matching several.
+    pub fn subscribe(&self, filters: &[EventFilter]) -> WakeSubscription {
+        assert!(!filters.is_empty());
         let (tx, mut rx) = watch::channel(());
         rx.mark_changed();
         let mut registry = self.registry.lock().unwrap();
-        let table = registry.tables.entry(filter.table.to_string()).or_default();
-        match filter.key {
-            None => table.wildcard.push(tx),
-            Some((column, value)) => table
-                .keyed
-                .entry(column.to_string())
-                .or_default()
-                .entry(value.to_string())
-                .or_default()
-                .push(tx),
+        for filter in filters {
+            let table = registry.tables.entry(filter.table.to_string()).or_default();
+            match filter.key {
+                None => table.wildcard.push(tx.clone()),
+                Some((column, value)) => table
+                    .keyed
+                    .entry(column.to_string())
+                    .or_default()
+                    .entry(value.to_string())
+                    .or_default()
+                    .push(tx.clone()),
+            }
         }
         WakeSubscription { rx }
     }
@@ -250,7 +258,7 @@ mod tests {
     }
 
     fn wildcard(bus: &EventBus, table: &'static str) -> WakeSubscription {
-        bus.subscribe(EventFilter { table, key: None })
+        bus.subscribe(&[EventFilter { table, key: None }])
     }
 
     fn keyed(
@@ -259,10 +267,10 @@ mod tests {
         column: &'static str,
         value: Uuid,
     ) -> WakeSubscription {
-        bus.subscribe(EventFilter {
+        bus.subscribe(&[EventFilter {
             table,
             key: Some((column, value)),
-        })
+        }])
     }
 
     fn drain(subs: &mut [&mut WakeSubscription]) {
@@ -310,6 +318,36 @@ mod tests {
         assert!(!woken(&mut keyed_miss));
         assert!(!woken(&mut other_column));
         assert!(!woken(&mut other_table));
+    }
+
+    #[tokio::test]
+    async fn multi_filter_subscription_wakes_on_any_filter() {
+        let bus = EventBus::default();
+        let job = Uuid::new_v4();
+        let mut sub = bus.subscribe(&[
+            EventFilter {
+                table: "jobs",
+                key: Some(("job_id", job)),
+            },
+            EventFilter {
+                table: "job_services",
+                key: Some(("job_id", job)),
+            },
+        ]);
+        let mut other_job = keyed(&bus, "job_services", "job_id", Uuid::new_v4());
+        drain(&mut [&mut sub, &mut other_job]);
+
+        bus.handle_payload(&format!(
+            r#"{{"table":"job_services","keys":{{"job_id":["{job}"]}}}}"#
+        ));
+        assert!(woken(&mut sub), "the second filter matches on its own");
+        assert!(!woken(&mut other_job));
+
+        bus.handle_payload(&format!(
+            r#"{{"table":"jobs","keys":{{"job_id":["{job}"]}}}}"#
+        ));
+        assert!(woken(&mut sub), "the first filter matches on its own");
+        assert!(!woken(&mut sub), "one wake per pass, not one per filter");
     }
 
     #[tokio::test]

@@ -54,6 +54,13 @@ cat >/etc/dbus-1/system.d/dev.treadmill.Puppet.conf <<'DBUSCONF'
 </busconfig>
 DBUSCONF
 
+# --- service declarations -------------------------------------------------
+# Under /etc rather than /run, so an image can ship declarations it bakes in at
+# build time; a job may still drop files here at runtime and reload. Created
+# here rather than in the unit's ExecStartPre: /etc persists in the image,
+# unlike the tmpfs the runtime job info lives on.
+mkdir -p /etc/tml/services.d
+
 # --- treadmill puppet daemon ----------------------------------------------
 # Type=notify: only report started once connected to the supervisor.
 # NotifyAccess=main: ignore status updates from child processes.
@@ -74,7 +81,7 @@ StartLimitIntervalSec=0
 Type=notify
 NotifyAccess=main
 ExecStartPre=/bin/mkdir -p /run/tml/parameters
-ExecStart=/bin/bash -c 'exec /usr/local/bin/tml-puppet daemon ${puppet_daemon_args} --job-info-dir /run/tml --parameters-dir /run/tml/parameters'
+ExecStart=/bin/bash -c 'exec /usr/local/bin/tml-puppet daemon ${puppet_daemon_args} --job-info-dir /run/tml --parameters-dir /run/tml/parameters --services-dir /etc/tml/services.d'
 Restart=always
 RestartSec=5s
 SERVICE

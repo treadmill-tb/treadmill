@@ -686,6 +686,14 @@ CREATE TABLE tml_switchboard.jobs (
     -- ran. "Currently bound" is derived from `job_state` (and
     -- `hosts.current_job`), not from this column.
     dispatched_on_host_id uuid,
+    -- The job's internal network address, as reported by the supervisor running
+    -- it. Set once the address is known and retained through `finalized`; never
+    -- cleared.
+    --
+    -- Announced by the supervisor, which by protocol must not generate it from
+    -- the (untrusted) job. TODO: eventually, the switchboard should validate
+    -- that this address is one that is within the internal deployment prefix.
+    job_ip_address inet,
     -- User-requested termination signal: the DB side of user-terminate.
     --
     -- When set, the assigned job's worker converges the job to `finalized` with
@@ -967,6 +975,37 @@ CREATE TABLE tml_switchboard.job_target_requirements (
     req_index int NOT NULL,
     tags TEXT[] NOT NULL DEFAULT '{}',
     PRIMARY KEY (job_id, req_index)
+);
+
+
+-- =============================================================================
+-- JOB SERVICES
+-- =============================================================================
+--
+-- The services a running job announces, one row each. A service is an opaque
+-- `(name, label, protocol)` triple that the switchboard stores and echoes but
+-- never interprets: `protocol` is a token for whoever connects to the service,
+-- so a new kind of service is not a switchboard change.
+--
+-- An announcement replaces a job's whole set at once, so these rows always
+-- mirror the job's most recent announcement and no add/remove drift is
+-- representable.
+CREATE TABLE tml_switchboard.job_services (
+    job_id uuid NOT NULL REFERENCES tml_switchboard.jobs (job_id) ON DELETE CASCADE,
+    -- Job-supplied, and therefore untrusted: the CHECK below is the only thing
+    -- standing between a job and the DNS label `<name>-<job_id>` built from it.
+    -- Lowercase alphanumeric starting with a letter, so a name can hold no
+    -- hyphen and that label always splits at its first one; the length cap
+    -- keeps the whole label inside the DNS 63-character budget.
+    name text NOT NULL,
+    -- Optional display name for a user interface. Free-form, never parsed.
+    label text,
+    protocol text NOT NULL,
+    PRIMARY KEY (job_id, name),
+    CONSTRAINT valid_service_name CHECK (
+        char_length(name) BETWEEN 1 AND 16
+        AND name ~ '^[a-z][a-z0-9]*$'
+    )
 );
 
 
@@ -1451,6 +1490,20 @@ CREATE TRIGGER jobs_notify_update
 AFTER
 UPDATE ON tml_switchboard.jobs FOR each ROW WHEN (OLD.* IS DISTINCT FROM NEW.*)
 EXECUTE function tml_switchboard.notify_change ('job_id', 'dispatched_on_host_id');
+
+
+-- Keyed on the owning job alone: a receiver watching a job re-reads its whole
+-- service set, and nothing subscribes to an individual service row.
+CREATE TRIGGER job_services_notify_write
+AFTER insert
+OR delete ON tml_switchboard.job_services FOR each ROW
+EXECUTE function tml_switchboard.notify_change ('job_id');
+
+
+CREATE TRIGGER job_services_notify_update
+AFTER
+UPDATE ON tml_switchboard.job_services FOR each ROW WHEN (OLD.* IS DISTINCT FROM NEW.*)
+EXECUTE function tml_switchboard.notify_change ('job_id');
 
 
 -- Column-filtered so that heartbeat refreshes (`last_seen_at`) never notify:

@@ -73,14 +73,14 @@ impl Scheduler {
     ) -> Self {
         let wake = Debounced::new(
             vec![
-                event_bus.subscribe(EventFilter {
+                event_bus.subscribe(&[EventFilter {
                     table: "jobs",
                     key: None,
-                }),
-                event_bus.subscribe(EventFilter {
+                }]),
+                event_bus.subscribe(&[EventFilter {
                     table: "hosts",
                     key: None,
-                }),
+                }]),
             ],
             event_debounce,
         );
@@ -1195,10 +1195,10 @@ mod tests {
         // which only the timer would cover). Probes a throwaway host so the
         // eligible host's tags stay intact.
         let probe_host = insert_host(&pool, user, &[], None).await?;
-        let mut probe = bus.subscribe(EventFilter {
+        let mut probe = bus.subscribe(&[EventFilter {
             table: "hosts",
             key: Some(("host_id", probe_host)),
-        });
+        }]);
         probe.changed().await;
         loop {
             sqlx::query(

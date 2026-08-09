@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub use super::switchboard_supervisor::ParameterValue;
+pub use super::switchboard_supervisor::{JobService, ParameterValue};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -91,6 +91,10 @@ pub enum PuppetEvent {
     /// supervisor, the puppet should include this original supervisor event ID
     /// here:
     TerminateJob { supervisor_event_id: Option<u64> },
+
+    /// The complete set of services the job announces. Each event replaces the
+    /// previously announced set in full;  re-announcing is idempotent.
+    JobServiceSet { services: Vec<JobService> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,11 +186,37 @@ pub struct NetworkConfig {
     pub ipv6: Option<Ipv6NetworkConfig>,
 }
 
+/// Individual job gateway endpoints, specified as a base-domain (which will be
+/// prepended the service name and job ID as a subdomain), and the port it
+/// listens on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct JobGatewayEndpoint {
+    /// The base domain of the gateway, to be pre-prended with the job- and
+    /// service-specific subdomain.
+    pub base_domain: String,
+    /// The port of the gateway.
+    pub port: u16,
+}
+
+/// Gateway material relayed into the job, to validate the same tokens that
+/// admit a request at the gateway itself. This prevents untrusted sibling
+/// jobs from sending unauthenticated requests to these endpoints, and
+/// allows jobs to solely trust the switchboard-issued JWT.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct JobGatewayInfo {
+    pub signing_public_key: String,
+    pub key_id: String,
+    pub endpoints: Vec<JobGatewayEndpoint>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct JobInfo {
     pub job_id: Uuid,
     pub host_id: Uuid,
+    pub gateway: Option<JobGatewayInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

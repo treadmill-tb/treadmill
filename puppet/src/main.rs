@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::mem;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -12,7 +12,7 @@ use log::{debug, error, info, warn};
 use zbus::interface;
 
 use treadmill_rs::api::supervisor_puppet::{
-    CommandOutputStream, JobInfo, PuppetEvent, SupervisorEvent,
+    CommandOutputStream, JobGatewayEndpoint, JobInfo, JobService, PuppetEvent, SupervisorEvent,
 };
 
 mod control_socket_client;
@@ -68,8 +68,113 @@ struct PuppetDaemonArgs {
     #[arg(long)]
     job_info_dir: Option<PathBuf>,
 
+    /// Directory of `*.json` service declarations to announce.
+    #[arg(long)]
+    services_dir: Option<PathBuf>,
+
     #[arg(long, default_value = "system")]
     dbus_bus: PuppetDaemonDbusBus,
+}
+
+/// Longest service name the switchboard accepts.
+const MAX_SERVICE_NAME_LEN: usize = 16;
+
+fn service_name_valid(name: &str) -> bool {
+    let mut chars = name.chars();
+    name.len() <= MAX_SERVICE_NAME_LEN
+        && chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
+/// The services declared under `--services-dir`, one [`JobService`] per `*.json`
+/// file, ordered by name. Ignores and skips incorrect definitions with warning.
+async fn scan_services(services_dir: &Path) -> Result<Vec<JobService>> {
+    let mut read_dir = match tokio::fs::read_dir(services_dir).await {
+        Ok(read_dir) => read_dir,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            info!("Service directory {services_dir:?} does not exist, announcing no services.");
+            return Ok(Vec::new());
+        }
+        Err(e) => return Err(e).context("Reading the service directory"),
+    };
+
+    let mut paths = Vec::new();
+    while let Some(entry) = read_dir
+        .next_entry()
+        .await
+        .context("Reading a service directory entry")?
+    {
+        let path = entry.path();
+        if path.extension() == Some(std::ffi::OsStr::new("json")) {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+
+    let mut services: Vec<JobService> = Vec::new();
+    for path in paths {
+        let contents = match tokio::fs::read(&path).await {
+            Ok(contents) => contents,
+            Err(e) => {
+                warn!("Skipping unreadable service file {path:?}: {e}");
+                continue;
+            }
+        };
+
+        let service: JobService = match serde_json::from_slice(&contents) {
+            Ok(service) => service,
+            Err(e) => {
+                warn!("Skipping malformed service file {path:?}: {e}");
+                continue;
+            }
+        };
+
+        if !service_name_valid(&service.name) {
+            warn!(
+                "Skipping service file {path:?}: {:?} is not a usable service name.",
+                service.name
+            );
+            continue;
+        }
+
+        if services.iter().any(|other| other.name == service.name) {
+            warn!(
+                "Skipping service file {path:?}: {:?} was already declared.",
+                service.name
+            );
+            continue;
+        }
+
+        services.push(service);
+    }
+
+    services.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(services)
+}
+
+/// Scan the service directory and announce what it holds, replacing whatever
+/// was announced before. A puppet with no service directory configured
+/// announces nothing at all, rather than an empty set.
+async fn announce_services(
+    services_dir: Option<&Path>,
+    client: &control_socket_client::ControlSocketClient,
+) -> Result<()> {
+    let Some(services_dir) = services_dir else {
+        return Ok(());
+    };
+
+    let services = scan_services(services_dir)
+        .await
+        .context("Scanning the service directory")?;
+
+    info!(
+        "Announcing {} service(s) from {services_dir:?}",
+        services.len()
+    );
+    client
+        .report_service_set(services)
+        .await
+        .context("Announcing the job's services to the supervisor")
 }
 
 async fn update_job_info_files(args: &PuppetDaemonArgs, job_info: JobInfo) -> Result<()> {
@@ -94,6 +199,32 @@ async fn update_job_info_files(args: &PuppetDaemonArgs, job_info: JobInfo) -> Re
         .await
         .context("Writing host id to file")?;
 
+    // Context for offering HTTP/WS services through public gateways.
+    if let Some(gateway) = job_info.gateway {
+        let key_path = job_info_dir.join("gateway-key.pem");
+        info!("Writing gateway signing key to file {key_path:?}");
+        tokio::fs::write(key_path, gateway.signing_public_key.as_bytes())
+            .await
+            .context("Writing gateway signing key to file")?;
+
+        let key_id_path = job_info_dir.join("gateway-key-id");
+        info!("Writing gateway key id to file {key_id_path:?}");
+        tokio::fs::write(key_id_path, gateway.key_id.as_bytes())
+            .await
+            .context("Writing gateway key id to file")?;
+
+        let endpoints_path = job_info_dir.join("gateway-endpoints");
+        info!("Writing gateway endpoints to file {endpoints_path:?}");
+        let endpoints: String = gateway
+            .endpoints
+            .iter()
+            .map(|JobGatewayEndpoint { base_domain, port }| format!("{base_domain}:{port}\n"))
+            .collect();
+        tokio::fs::write(endpoints_path, endpoints.as_bytes())
+            .await
+            .context("Writing gateway endpoints to file")?;
+    }
+
     Ok(())
 }
 
@@ -115,6 +246,24 @@ struct PuppetJobCommand {
     job_command: PuppetJobSubcommands,
 }
 
+#[derive(Debug, Clone, Parser)]
+struct PuppetServiceReloadCommand;
+
+#[derive(Debug, Clone, Subcommand)]
+enum PuppetServiceSubcommands {
+    /// Rescan the service directory for new/changed services.
+    Reload(PuppetServiceReloadCommand),
+}
+
+#[derive(Debug, Clone, Parser)]
+struct PuppetServiceCommand {
+    #[clap(flatten)]
+    bus_options: ClientBusOptions,
+
+    #[clap(subcommand)]
+    service_command: PuppetServiceSubcommands,
+}
+
 #[derive(Debug, Clone, Subcommand)]
 enum PuppetCommands {
     /// Run a puppet daemon, connecting to a supervisor control socket
@@ -123,6 +272,9 @@ enum PuppetCommands {
 
     /// Commands related to the job currently executed on this supervisor.
     Job(PuppetJobCommand),
+
+    /// Commands related to the services this job announces.
+    Service(PuppetServiceCommand),
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -133,6 +285,7 @@ struct PuppetCli {
 
 struct DbusPuppet {
     control_socket_client: Arc<control_socket_client::ControlSocketClient>,
+    services_dir: Option<PathBuf>,
 }
 
 #[interface(
@@ -148,6 +301,13 @@ impl DbusPuppet {
         info!("Received D-bus request to terminate job, forwarding to supervisor.");
         self.control_socket_client
             .terminate_job()
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+
+    async fn reload_services(&self) -> zbus::fdo::Result<()> {
+        info!("Received D-bus request to reload services, rescanning and announcing.");
+        announce_services(self.services_dir.as_deref(), &self.control_socket_client)
             .await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
@@ -662,6 +822,7 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
                     "/ci/treadmill/Puppet",
                     DbusPuppet {
                         control_socket_client: client.clone(),
+                        services_dir: args.services_dir.clone(),
                     },
                 )?
                 .build()
@@ -676,6 +837,9 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
         .report_ready()
         .await
         .context("Reporting puppet ready status to supervisor")?;
+
+    // Announce whatever services the job declares at boot.
+    announce_services(args.services_dir.as_deref(), &client).await?;
 
     info!("Puppet started, waiting for supervisor events. Exit with CTRL+C");
     sd_notify::notify(&[sd_notify::NotifyState::Ready])
@@ -895,6 +1059,21 @@ async fn handle_job_command(job_args: &PuppetJobCommand, proxy: DbusPuppetProxy<
     }
 }
 
+async fn handle_service_command(
+    service_args: &PuppetServiceCommand,
+    proxy: DbusPuppetProxy<'_>,
+) -> Result<()> {
+    match service_args.service_command {
+        PuppetServiceSubcommands::Reload(PuppetServiceReloadCommand) => {
+            info!("Requesting a service reload.");
+            proxy
+                .reload_services()
+                .await
+                .context("Requesting a service reload")
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     use simplelog::{
@@ -928,5 +1107,155 @@ async fn main() -> Result<()> {
             let proxy = client_dbus_connect(&job_args.bus_options).await?;
             handle_job_command(&job_args, proxy).await
         }
+        PuppetCommands::Service(service_args) => {
+            let proxy = client_dbus_connect(&service_args.bus_options).await?;
+            handle_service_command(&service_args, proxy).await
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scratch service directory, removed when the test ends.
+    struct ServicesDir(PathBuf);
+
+    impl Drop for ServicesDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    impl ServicesDir {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("tml-puppet-services-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&path).unwrap();
+            ServicesDir(path)
+        }
+
+        fn write(&self, file_name: &str, contents: &str) -> &Self {
+            std::fs::write(self.0.join(file_name), contents).unwrap();
+            self
+        }
+    }
+
+    #[tokio::test]
+    async fn a_declared_service_is_scanned() {
+        let dir = ServicesDir::new();
+        dir.write(
+            "webide.json",
+            r#"{"name": "webide", "label": "Web IDE", "protocol": "webapp"}"#,
+        );
+
+        assert_eq!(
+            scan_services(&dir.0).await.unwrap(),
+            vec![JobService {
+                name: "webide".to_string(),
+                label: Some("Web IDE".to_string()),
+                protocol: "webapp".to_string(),
+            }]
+        );
+    }
+
+    /// A label is what a client displays, and a service need not have one.
+    #[tokio::test]
+    async fn a_label_is_optional() {
+        let dir = ServicesDir::new();
+        dir.write("shell.json", r#"{"name": "shell", "protocol": "sshws"}"#);
+
+        let scanned = scan_services(&dir.0).await.unwrap();
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].label, None);
+    }
+
+    /// The declarations are the job's own, so a bad one costs the job that one
+    /// service and nothing else.
+    #[tokio::test]
+    async fn an_unusable_declaration_is_skipped_not_fatal() {
+        let dir = ServicesDir::new();
+        dir.write(
+            "good.json",
+            r#"{"name": "webide", "label": null, "protocol": "webapp"}"#,
+        )
+        .write("truncated.json", r#"{"name": "shell", "proto"#)
+        .write("empty.json", "")
+        .write(
+            "uppercase.json",
+            r#"{"name": "Webide", "label": null, "protocol": "webapp"}"#,
+        )
+        .write(
+            "hyphenated.json",
+            r#"{"name": "web-ide", "label": null, "protocol": "webapp"}"#,
+        )
+        .write(
+            "toolong.json",
+            &format!(
+                r#"{{"name": "{}", "label": null, "protocol": "webapp"}}"#,
+                "a".repeat(MAX_SERVICE_NAME_LEN + 1)
+            ),
+        )
+        // Not a declaration at all: only `*.json` is read.
+        .write("README.txt", "these are the services");
+
+        let scanned = scan_services(&dir.0).await.unwrap();
+        assert_eq!(scanned.len(), 1, "{scanned:?}");
+        assert_eq!(scanned[0].name, "webide");
+    }
+
+    /// Two files may claim one name; the announcement may not, or the whole set
+    /// is refused. Files are read in path order, so the same one always wins.
+    #[tokio::test]
+    async fn a_repeated_name_is_declared_once() {
+        let dir = ServicesDir::new();
+        dir.write(
+            "a-first.json",
+            r#"{"name": "webide", "label": "first", "protocol": "webapp"}"#,
+        )
+        .write(
+            "b-second.json",
+            r#"{"name": "webide", "label": "second", "protocol": "webapp"}"#,
+        );
+
+        let scanned = scan_services(&dir.0).await.unwrap();
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].label.as_deref(), Some("first"));
+    }
+
+    /// The set is ordered by name, not by the order the directory happens to be
+    /// read in.
+    #[tokio::test]
+    async fn the_scanned_set_is_ordered_by_name() {
+        let dir = ServicesDir::new();
+        dir.write(
+            "1.json",
+            r#"{"name": "shell", "label": null, "protocol": "sshws"}"#,
+        )
+        .write(
+            "2.json",
+            r#"{"name": "app", "label": null, "protocol": "webapp"}"#,
+        )
+        .write(
+            "3.json",
+            r#"{"name": "webide", "label": null, "protocol": "webapp"}"#,
+        );
+
+        let names: Vec<String> = scan_services(&dir.0)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|service| service.name)
+            .collect();
+        assert_eq!(names, ["app", "shell", "webide"]);
+    }
+
+    /// An image that declares nothing need not create the directory.
+    #[tokio::test]
+    async fn a_missing_directory_declares_nothing() {
+        let dir = ServicesDir::new();
+        let missing = dir.0.join("nonexistent");
+
+        assert_eq!(scan_services(&missing).await.unwrap(), Vec::new());
     }
 }

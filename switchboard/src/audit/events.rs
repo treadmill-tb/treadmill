@@ -386,6 +386,23 @@ define_event! {
 }
 
 define_event! {
+    /// A user was issued a gateway token for one of a job's services
+    /// (`POST /jobs/{id}/services/{service}/token`), admitting them to that
+    /// one service until `expires_at`. Visible to anyone who can read the job.
+    /// A token is scoped to the named service alone, so reaching another one
+    /// takes another mint and emits another event; what passes through the
+    /// service is not recorded here.
+    JobServiceTokenIssued v1 {
+        actor: Subject,
+        job: Job @ view(Read),
+        service: String,
+        expires_at: DateTime<Utc>,
+    }
+    event_type = "job_service_token_issued";
+    render = "opened the job service {service}";
+}
+
+define_event! {
     /// The scheduler dispatched a queued job onto a host (`queued` → `assigned`).
     /// Attributed to the system actor; visible to anyone who can read the job and,
     /// as context, to viewers of the host it landed on.

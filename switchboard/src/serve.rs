@@ -1,5 +1,6 @@
-use crate::config::{DatabaseConfig, DatabaseCredentials, SwitchboardConfig};
+use crate::config::{DatabaseConfig, DatabaseCredentials, JobGatewayEndpoint, SwitchboardConfig};
 use crate::events::EventBus;
+use crate::job_gateway::JobGateway;
 use crate::log_streaming::{LogStreaming, NatsLogStreamProvisioner};
 use crate::registry::{OciRegistryClient, RegistryClient};
 use anyhow::Context;
@@ -21,6 +22,11 @@ pub struct AppStateInner {
     /// feature: jobs dispatch without a streaming destination. Built once at
     /// startup and shared with every supervisor worker.
     log_streaming: Option<LogStreaming>,
+    /// Signing material for the tokens admitting a request to a job's
+    /// services, present only when the deployment configures a gateway. `None`
+    /// disables the feature: jobs dispatch without gateway material and no
+    /// token can be minted. Derived once at startup.
+    job_gateway: Option<JobGateway>,
     /// The per-process fan-out for `tml_events` DB change notifications. In
     /// production [`serve`] spawns its listener; test-constructed states carry
     /// a bus nothing feeds, so consumers fall back to their timers.
@@ -40,6 +46,9 @@ impl AppStateInner {
     pub fn log_streaming(&self) -> Option<&LogStreaming> {
         self.log_streaming.as_ref()
     }
+    pub fn job_gateway(&self) -> Option<&JobGateway> {
+        self.job_gateway.as_ref()
+    }
     pub fn event_bus(&self) -> &EventBus {
         &self.event_bus
     }
@@ -54,6 +63,7 @@ impl AppState {
             config,
             Arc::new(OciRegistryClient::new()),
             None,
+            None,
             EventBus::default(),
         )
     }
@@ -66,17 +76,19 @@ impl AppState {
         config: SwitchboardConfig,
         registry: Arc<dyn RegistryClient>,
     ) -> Self {
-        Self::with_components(pg_pool, config, registry, None, EventBus::default())
+        Self::with_components(pg_pool, config, registry, None, None, EventBus::default())
     }
 
     /// Construct an [`AppState`] from all of its injectable components. The
     /// production entry point ([`serve`]) uses this to attach the log-streaming
-    /// provisioner and the fed event bus it builds at startup.
+    /// provisioner, the job-gateway signing material and the fed event bus it
+    /// builds at startup.
     pub fn with_components(
         pg_pool: PgPool,
         config: SwitchboardConfig,
         registry: Arc<dyn RegistryClient>,
         log_streaming: Option<LogStreaming>,
+        job_gateway: Option<JobGateway>,
         event_bus: EventBus,
     ) -> Self {
         AppState(Arc::new(AppStateInner {
@@ -84,6 +96,7 @@ impl AppState {
             config,
             registry,
             log_streaming,
+            job_gateway,
             event_bus,
         }))
     }
@@ -199,11 +212,29 @@ async fn run(config: SwitchboardConfig) -> anyhow::Result<()> {
         None => None,
     };
 
+    // Derive the gateway signing material (if configured) at startup, so an
+    // unusable key or domain list is a startup failure rather than a failed
+    // mint later on.
+    let job_gateway = match &config.job_gateway {
+        Some(gateway_config) => {
+            let gateway = JobGateway::new(gateway_config.clone())
+                .context("failed to load the job gateway configuration")?;
+            tracing::info!(
+                key_id = %gateway.key_id(),
+                endpoints = ?gateway_config.endpoints.iter().map(|JobGatewayEndpoint { base_domain, port }| format!("{base_domain}:{port}")).collect::<Vec<_>>(),
+                "job service gateway enabled"
+            );
+            Some(gateway)
+        }
+        None => None,
+    };
+
     let app_state = AppState::with_components(
         pg_pool,
         config,
         Arc::new(OciRegistryClient::new()),
         log_streaming,
+        job_gateway,
         event_bus,
     );
     let router = super::routes::build_router(app_state);

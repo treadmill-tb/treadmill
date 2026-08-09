@@ -22,6 +22,11 @@ pub struct SwitchboardConfig {
     /// read-token API is unavailable.
     #[serde(default)]
     pub log_streaming: Option<LogStreamingConfig>,
+    /// Gateway access to the services a job announces. Absent (the default)
+    /// disables the feature: jobs dispatch without gateway material and the
+    /// service-token API is unavailable.
+    #[serde(default)]
+    pub job_gateway: Option<JobGatewayConfig>,
     /// Sentry error reporting. Default: disabled.
     #[serde(default)]
     pub sentry: Option<SentryConfig>,
@@ -103,6 +108,52 @@ pub struct LogStreamingConfig {
     /// config (project convention). Unrelated to the opaque API token in
     /// `auth/token.rs`.
     pub account_seed: String,
+}
+
+fn default_job_gateway_endpoint_port() -> u16 {
+    443
+}
+
+/// Configuration of a single job service gateway.
+///
+/// Services are published as `<service>-<job-id>.<domain>:<port>`, with
+/// `<domain>` and `<port>` determined by this configuration entry.
+#[derive(Debug, Clone, Deserialize)]
+pub struct JobGatewayEndpoint {
+    /// Base domain of the job service gateway, individual services are assumed
+    /// to be reachable as a subdomain of this domain (as documented on this
+    /// type).
+    pub base_domain: String,
+    /// Port of the job service gateway (defaults to :443).
+    #[serde(default = "default_job_gateway_endpoint_port")]
+    pub port: u16,
+}
+
+/// Configuration for reaching a job's announced services through a gateway.
+///
+/// Services are published as `<service>-<job-id>.<domain>` at stateless
+/// gateways that admit a request only against a switchboard-minted token. See
+/// [`crate::job_gateway`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct JobGatewayConfig {
+    /// The `iss` of every minted service token, e.g.
+    /// `https://switchboard.example`. Non-secret.
+    pub issuer: String,
+    /// The gateway endpoints a job's services are reachable under. First is
+    /// used as primary gateway.
+    pub endpoints: Vec<JobGatewayEndpoint>,
+    /// Lifetime of a minted service token.
+    #[serde(with = "humantime_serde", default = "default_token_ttl")]
+    pub token_ttl: Duration,
+    /// Ed25519 private key **seed**, hex-encoded; whose public key and `kid`
+    /// are derived at startup.
+    ///
+    /// SECRET, supply via `TML_JOB_GATEWAY__SIGNING_KEY`.
+    pub signing_key: String,
+}
+
+fn default_token_ttl() -> Duration {
+    Duration::from_secs(7 * 24 * 60 * 60)
 }
 
 /// OAuth login provider configuration. Each provider is independently optional.
@@ -419,6 +470,7 @@ mod tests {
             },
             oauth: OAuthConfig::default(),
             log_streaming: None,
+            job_gateway: None,
             sentry: None,
         }
     }

@@ -275,6 +275,10 @@ let
   # daemon.
   zot = pkgs.callPackage ./pkgs/zot.nix { };
 
+  # Caddy with JWT verification, the dev stack's job service gateway (see
+  # nix/pkgs/job-gateway-caddy.nix).
+  job-gateway-caddy = import ./pkgs/job-gateway-caddy.nix { inherit pkgs; };
+
   # Shell snippet to run a throwaway Postgres cluster in a fresh temp
   # dir. Exports DATABASE_URL (+ the PG* / TML_DATABASE__* vars) pointing at it,
   # and forks a PID-keyed watcher that tears the cluster down when the owning
@@ -329,6 +333,7 @@ in
     workspaceDeps
     testArtifacts
     zot
+    job-gateway-caddy
     ephemeralPostgresHook
     ;
 }
