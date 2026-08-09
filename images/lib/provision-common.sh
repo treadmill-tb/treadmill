@@ -145,6 +145,10 @@ done
 # is harmless on disk-root images (Ubuntu), where it only makes networkd preserve
 # the lease across a restart. (On RPi the stock NetworkManager is masked in the
 # per-image provision so networkd actually owns eth0.)
+#
+# ClientIdentifier=mac and DUIDType=link-layer ensure that the DHCP leases do
+# not depend on any state of the hosts, which might not be persited during
+# reboots. Only use the static, hardware-backed MAC.
 mkdir -p /etc/systemd/network
 cat >/etc/systemd/network/10-eth.network <<'NETWORK'
 [Match]
@@ -154,6 +158,10 @@ DHCP=yes
 IPv6AcceptRA=yes
 IPv6PrivacyExtensions=no
 KeepConfiguration=yes
+[DHCPv4]
+ClientIdentifier=mac
+[DHCPv6]
+DUIDType=link-layer
 [Link]
 RequiredForOnline=true
 NETWORK
