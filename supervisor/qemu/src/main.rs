@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
@@ -89,6 +91,10 @@ pub struct QemuConfig {
     tcp_control_socket_listen_addr: std::net::SocketAddr,
 
     start_script: Option<PathBuf>,
+
+    // TODO: add tests exercising the stop script, with failures at various
+    // parts throughout the job lifecycle
+    stop_script: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -135,6 +141,12 @@ pub struct QemuSupervisorJobRunningState {
     ///
     /// Only one message may be sent, after which is will turn into a `None`:
     shutdown_tx: Option<tokio::sync::oneshot::Sender<QemuSupervisorJobRunningState>>,
+
+    /// Variables associated with this job.
+    ///
+    /// Generated from default values in start job, can be modified or extended
+    /// by the start script, later passed to the stop script.
+    job_vars: HashMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -639,24 +651,25 @@ impl QemuSupervisor {
         // first) with the per-job writable overlay on top.
         let chain = BackingChain::new(lower_paths, overlay_path);
 
-        // Start script environment variables / QEMU command line
-        // parameter template strings:
-        event!(Level::DEBUG, "Templating QEMU argument substitutions");
-        let mut qemu_arg_substs: HashMap<String, String> = HashMap::new();
+        // Variables that can be produced by the start script, and used for
+        // templating the QEMU cmd string or setting other job-specific values
+        // (e.g., the host IP), populated with default values like the Job ID,
+        // working directory or disk node.
+        let mut job_vars: HashMap<String, String> = HashMap::new();
         assert!(
-            qemu_arg_substs
+            job_vars
                 .insert("job_id".to_string(), start_job_req.job_id.to_string())
                 .is_none()
         );
         assert!(
-            qemu_arg_substs
+            job_vars
                 .insert("job_workdir".to_string(), job_workdir.display().to_string())
                 .is_none()
         );
         // The disk is attached by referencing the writable top node of the
         // backing chain the supervisor prepends as `-blockdev` args below.
         assert!(
-            qemu_arg_substs
+            job_vars
                 .insert("disk_node".to_string(), BackingChain::TOP_NODE.to_string())
                 .is_none()
         );
@@ -665,19 +678,56 @@ impl QemuSupervisor {
             event!(Level::DEBUG, ?start_script, "Executing start script");
             let start_script_res = tokio::process::Command::new(start_script)
                 .stdin(std::process::Stdio::null())
-                .stderr(std::process::Stdio::inherit())
                 .envs(
-                    qemu_arg_substs
+                    job_vars
                         .iter()
                         .map(|(k, v)| (format!("TML_{}", k.to_uppercase()), v)),
                 )
                 .output()
-                .await
-                .unwrap(); // TODO: remove panic!
+                .await;
 
-            assert!(start_script_res.status.success(), "Start script failed!");
+            let start_script_res = match start_script_res {
+                Err(e) => Err(format!("Failed to spawn start_script: {}", e)),
+                Ok(out) if !out.status.success() => Err(format!(
+                    "start_script exited with {}, stdout: {:?}, stderr: {:?}",
+                    out.status, out.stdout, out.stderr
+                )),
+                Ok(out) => Ok(out),
+            };
 
-            if let Ok(stdout) = std::str::from_utf8(&start_script_res.stdout) {
+            let start_script_out = match start_script_res {
+                Ok(out) => out,
+                Err(description) => {
+                    // Start script failed, report an error:
+                    this.connector
+                        .report_job_error(
+                            start_job_req.job_id,
+                            connector::JobError {
+                                error_kind: connector::JobErrorKind::InternalError,
+                                description,
+                            },
+                        )
+                        .await;
+
+                    // TODO: remove job resources here.
+
+                    // Even if the start_script failed to spawn or errored
+                    // midway through we still give the stop_script a chance to
+                    // clean up resources:
+                    this.run_stop_job_script(start_job_req.job_id, &job_vars)
+                        .await;
+
+                    // Safe to call, we don't hold a lock on `this.jobs`:
+                    this.remove_job(job_id).await;
+
+                    // Prevent other tasks from further advancing this job's state:
+                    *job_lg = QemuSupervisorJobState::Stopping;
+
+                    return;
+                }
+            };
+
+            if let Ok(stdout) = std::str::from_utf8(&start_script_out.stdout) {
                 for line in stdout.lines() {
                     if let Some(key_value) = line.strip_prefix("tml-set-variable:") {
                         if let Some((key, value)) = key_value.split_once('=') {
@@ -685,9 +735,9 @@ impl QemuSupervisor {
                                 Level::DEBUG,
                                 key,
                                 value,
-                                "Adding variable {key} to QEMU arg substs",
+                                "Extracted variable {key:?} from start script output",
                             );
-                            qemu_arg_substs.insert(key.to_string(), value.to_string());
+                            job_vars.insert(key.to_string(), value.to_string());
                         } else {
                             event!(
                                 Level::WARN,
@@ -700,7 +750,7 @@ impl QemuSupervisor {
             } else {
                 event!(
                     Level::WARN,
-                    stdout = %String::from_utf8_lossy(&start_script_res.stdout),
+                    stdout = %String::from_utf8_lossy(&start_script_out.stdout),
                     "Start script produced non-UTF8 characters on standard output, refusing to interpret",
                 );
             }
@@ -711,7 +761,7 @@ impl QemuSupervisor {
             .qemu
             .qemu_args
             .iter()
-            .map(|argstr| strfmt::strfmt(argstr, &qemu_arg_substs))
+            .map(|argstr| strfmt::strfmt(argstr, &job_vars))
             .collect::<Result<Vec<String>, strfmt::FmtError>>()
         {
             Ok(templated) => templated,
@@ -852,6 +902,27 @@ impl QemuSupervisor {
             )
             .await;
 
+        // Determine the job's IP address. It can either be set as a static IP
+        // in the configuration file (taking priority), or be set by the
+        // start_script.
+        let mut job_address = this.config.base.job_address;
+        if job_address.is_none()
+            && let Some(job_address_str) = job_vars.get("job_ip_address")
+        {
+            job_address = <IpAddr as FromStr>::from_str(job_address_str)
+                .inspect_err(|e| event!(
+                    Level::WARN,
+                    error = ?e,
+                    "Failed to parse `job_ip_address` variable from start script, not reporting",
+                ))
+                .ok();
+        }
+        if let Some(job_address) = job_address {
+            this.connector
+                .report_job_network_address(start_job_req.job_id, job_address)
+                .await;
+        }
+
         // Create a oneshot channel to signal shutdown
         let (shutdown_tx, shutdown_rx) =
             tokio::sync::oneshot::channel::<QemuSupervisorJobRunningState>();
@@ -878,6 +949,7 @@ impl QemuSupervisor {
             start_job_req,
             control_socket,
             shutdown_tx: Some(shutdown_tx),
+            job_vars,
         });
     }
 
@@ -1136,6 +1208,16 @@ impl QemuSupervisor {
             }
         };
 
+        // `job_vars` on the running job state has never been populated, so we
+        // just provide the `job_id` here:
+        let mut job_vars = HashMap::new();
+        assert!(
+            job_vars
+                .insert("job_id".to_string(), job_id.to_string())
+                .is_none()
+        );
+        self.run_stop_job_script(job_id, &job_vars).await;
+
         // Job has been stopped, let the coordinator know:
         self.connector
             .update_job_state(job_id, RunningJobState::Terminated, Some(terminate_message))
@@ -1146,6 +1228,43 @@ impl QemuSupervisor {
         assert!(self.remove_job(job_id).await.is_some());
 
         Ok(())
+    }
+
+    async fn run_stop_job_script(&self, job_id: Uuid, job_vars: &HashMap<String, String>) {
+        if let Some(ref stop_script) = self.config.qemu.stop_script {
+            event!(Level::DEBUG, ?stop_script, "Executing stop script");
+            let stop_script_res = tokio::process::Command::new(stop_script)
+                .stdin(std::process::Stdio::null())
+                .envs(
+                    job_vars
+                        .iter()
+                        .map(|(k, v)| (format!("TML_{}", k.to_uppercase()), v)),
+                )
+                .output()
+                .await;
+
+            let stop_script_res = match stop_script_res {
+                Err(e) => Err(format!("Failed to spawn stop_script: {}", e)),
+                Ok(out) if !out.status.success() => Err(format!(
+                    "stop_script exited with {}, stdout: {:?}, stderr: {:?}",
+                    out.status, out.stdout, out.stderr
+                )),
+                Ok(_out) => Ok(()),
+            };
+
+            if let Err(description) = stop_script_res {
+                // Stop script failed, report an error:
+                self.connector
+                    .report_job_error(
+                        job_id,
+                        connector::JobError {
+                            error_kind: connector::JobErrorKind::InternalError,
+                            description,
+                        },
+                    )
+                    .await;
+            }
+        }
     }
 
     async fn finish_running_job_shutdown(
@@ -1162,10 +1281,13 @@ impl QemuSupervisor {
             control_socket,
             shutdown_tx: _,
             start_job_req: _,
+            job_vars,
         } = job_running_state;
 
         // Shut down the control socket server:
         control_socket.shutdown().await.unwrap();
+
+        self.run_stop_job_script(job_id, &job_vars).await;
 
         // Job has been stopped, let the coordinator know:
         self.connector
@@ -1264,12 +1386,6 @@ impl connector::Supervisor for QemuSupervisor {
                 None,
             )
             .await;
-
-        if let Some(job_address) = this.config.base.job_address {
-            this.connector
-                .report_job_network_address(start_job_req.job_id, job_address)
-                .await;
-        }
 
         // Resolve the requested image into its content-addressed digest and the
         // ordered failover list of upstream locations serving it. The supervisor
@@ -1971,6 +2087,7 @@ mod tests {
                 working_disk_max_bytes,
                 tcp_control_socket_listen_addr: "127.0.0.1:0".parse().unwrap(),
                 start_script: None,
+                stop_script: None,
             },
         };
         let args = QemuSupervisorArgs {
