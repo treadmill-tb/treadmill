@@ -339,7 +339,7 @@ websocket_url = "ws://127.0.0.1:$nats_ws_port"
 # something reachable.
 [job_gateway]
 issuer = "http://localhost:$sb_port"
-domains = ["$gw_domain:$gw_port"]
+endpoints = [{ base_domain = "$gw_domain", port = $gw_port }]
 token_ttl = "1h"
 
 # The SPA console declares <its origin>/login/callback as each login's
