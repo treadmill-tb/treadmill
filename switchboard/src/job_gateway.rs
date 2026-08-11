@@ -135,6 +135,7 @@ fn key_id(verifying_key: &ed25519_dalek::VerifyingKey) -> String {
         }),
     }
     .thumbprint(ThumbprintHash::SHA256)
+    .expect("Failed to generate JWK thumbprint")
 }
 
 /// The claims of a service token. Beyond the registered ones, `tml_job`,
