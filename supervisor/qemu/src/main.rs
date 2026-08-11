@@ -28,7 +28,7 @@ use treadmill_tcp_control_socket_server::TcpControlSocket;
 use treadmill_supervisor_lib::capture::{self, SerialSocket};
 use treadmill_supervisor_lib::launcher::{self, ProcessLauncher, StdioMode, WorkloadProcess};
 use treadmill_supervisor_lib::oci_store::{ImageStore, Location, OciStore, OciStoreConfig};
-use treadmill_supervisor_lib::publisher::LogPublisher;
+use treadmill_supervisor_lib::publisher::{LogPublisher, LogPublisherConfig};
 
 #[derive(Parser, Debug, Clone)]
 pub struct QemuSupervisorArgs {
@@ -109,6 +109,11 @@ pub struct QemuSupervisorConfig {
     /// Local OCI store (per-server Zot daemon) the supervisor pulls images from
     /// and reads blob files out of directly.
     oci_store: OciStoreConfig,
+
+    /// Local tuning of the console capture→publish path. Optional: omitting
+    /// the section leaves every field at its default.
+    #[serde(default)]
+    log_streaming: LogPublisherConfig,
 
     qemu: QemuConfig,
 }
@@ -864,7 +869,9 @@ impl QemuSupervisor {
             let stdout = qemu_proc.take_stdout();
             let stderr = qemu_proc.take_stderr();
             let spill_dir = job_workdir.join("logs");
-            match LogPublisher::connect(&dispatch, spill_dir).await {
+            match LogPublisher::connect(&dispatch, spill_dir, this.config.log_streaming.clone())
+                .await
+            {
                 Ok(publisher) => {
                     if let Some(stdout) = stdout {
                         publisher.spawn_channel(LogChannel::QemuStdout, stdout);
@@ -2079,6 +2086,7 @@ mod tests {
                 registry: "127.0.0.1:0".to_string(),
                 store_root: tmp.clone(),
             },
+            log_streaming: LogPublisherConfig::default(),
             qemu: QemuConfig {
                 qemu_binary: PathBuf::from("/nonexistent/qemu"),
                 qemu_img_binary: PathBuf::from("/nonexistent/qemu-img"),

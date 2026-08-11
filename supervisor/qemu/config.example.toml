@@ -17,6 +17,19 @@ http_endpoint = "https://localhost:8080"
 # Local mountpoint of the read-only image store:
 fs_endpoint = "./image-store"
 
+# Console capture tuning, entirely local to this supervisor. A captured frame
+# is one NATS message, and the drain closes a frame when either bound is
+# reached: `chunk_bytes` of accumulated output, or `flush_interval` since the
+# frame's first byte. The interval is the delay a console viewer sees on a
+# channel that trickles; shrinking it buys latency at the cost of
+# proportionally more, smaller messages. Both fields are optional — omit the
+# whole section to use the built-in defaults.
+#
+# [log_streaming]
+# For example, to cut frames at 32 KiB or 100ms, whichever comes first:
+# chunk_bytes = 32768
+# flush_interval = "100ms"
+
 [qemu]
 qemu_binary = "qemu-kvm"
 qemu_img_binary = "qemu-img"

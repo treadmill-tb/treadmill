@@ -21,9 +21,26 @@
 //!
 //! - `<dir>/<ch>.spill` — append-only frames, each `ts_ns: u64-le ++ len:
 //!   u32-le ++ payload[len]`. `ts_ns` is the supervisor's wall-clock capture
-//!   time; `payload` is the raw byte chunk (up to [`CHUNK_BYTES`]).
+//!   time of the frame's **first** byte; `payload` is the accumulated byte
+//!   chunk, bounded by [`LogPublisherConfig::chunk_bytes`].
 //! - `<dir>/<ch>.cursor` — 16 bytes: `next_seq: u64-le ++ byte_offset: u64-le`,
 //!   the position up to which frames have been durably acked.
+//!
+//! ## Framing and throughput
+//!
+//! A frame is both the spill record and the NATS message, so how the drain
+//! frames its input decides the transport cost. Consoles emit in tiny writes —
+//! an emulated 16550 UART hands over a byte at a time — so a frame per read
+//! would mean a message (subject, dedup header, capture timestamp, JetStream
+//! record) per byte. The drain therefore accumulates into a frame and closes
+//! it on whichever bound comes first: [`LogPublisherConfig::chunk_bytes`] of
+//! payload, or [`LogPublisherConfig::flush_interval`] since its first byte.
+//!
+//! The shipper likewise pipelines: it submits up to [`PUBLISH_WINDOW`] frames
+//! before waiting on the oldest ack, so a channel's throughput is not one
+//! frame per broker round trip. Neither change touches the durability
+//! contract — the cursor still advances only past frames the broker has
+//! acked, and only in order.
 //!
 //! ## Testability
 //!
@@ -33,6 +50,7 @@
 //! capture→publish→read round-trip is a hermetic Nix check (the sandbox cannot
 //! run `nats-server`).
 
+use std::collections::VecDeque;
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -42,6 +60,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures_util::future::BoxFuture;
+use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::sync::Notify;
 
@@ -50,15 +70,67 @@ use treadmill_rs::api::switchboard_supervisor::{LogChannel, LogStreamingDispatch
 use crate::capture::SerialSocket;
 use crate::launcher::BoxedAsyncRead;
 
-/// Max bytes drained from a channel into a single spill frame (plan §2: "flush
-/// on ~16 KB"). Each read of available bytes becomes one frame.
-const CHUNK_BYTES: usize = 16 * 1024;
-
 /// Spill-frame header: `ts_ns: u64-le` + `payload_len: u32-le`.
 const FRAME_HEADER_LEN: u64 = 12;
 
 /// Delay before retrying the shipper after a publish failure (NATS down).
 const SHIP_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// How many frames the shipper submits to the transport before waiting on the
+/// oldest ack. Awaiting each ack inline would cap a channel at one frame per
+/// broker round trip; with a window, throughput is set by the pipe rather than
+/// the latency. The window also bounds the unacked payload in flight
+/// (`PUBLISH_WINDOW * chunk_bytes`), and stays well under `async-nats`' own
+/// in-flight-ack cap, past which it applies backpressure.
+const PUBLISH_WINDOW: usize = 64;
+
+/// Default [`LogPublisherConfig::chunk_bytes`].
+const DEFAULT_CHUNK_BYTES: usize = 16 * 1024;
+
+/// Default [`LogPublisherConfig::flush_interval`].
+const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
+
+fn default_chunk_bytes() -> usize {
+    DEFAULT_CHUNK_BYTES
+}
+
+fn default_flush_interval() -> Duration {
+    DEFAULT_FLUSH_INTERVAL
+}
+
+/// Local tuning of a supervisor's capture→publish path, exposed under
+/// `[log_streaming]` in its configuration file. Every field has a default, so
+/// the section may be omitted entirely.
+///
+/// These bound how the drain cuts captured bytes into frames (see the module
+/// docs): they trade console latency against the number of NATS messages a
+/// job's output is carried in, and are local to this supervisor — nothing
+/// here is negotiated with the switchboard.
+#[derive(Deserialize, Debug, Clone)]
+pub struct LogPublisherConfig {
+    /// Size bound on one frame: the drain closes the frame as soon as this
+    /// much payload has accumulated, without waiting out the flush interval.
+    /// Since a frame is one NATS message, this must stay below the broker's
+    /// maximum payload.
+    #[serde(default = "default_chunk_bytes")]
+    pub chunk_bytes: usize,
+
+    /// Time bound on one frame: how long captured bytes may accumulate before
+    /// the frame is closed and spilled regardless of size. This is the delay a
+    /// console viewer sees on a channel that trickles; lowering it costs
+    /// proportionally more (and smaller) NATS messages.
+    #[serde(with = "humantime_serde", default = "default_flush_interval")]
+    pub flush_interval: Duration,
+}
+
+impl Default for LogPublisherConfig {
+    fn default() -> Self {
+        LogPublisherConfig {
+            chunk_bytes: default_chunk_bytes(),
+            flush_interval: default_flush_interval(),
+        }
+    }
+}
 
 /// The NATS header carrying the supervisor's wall-clock capture timestamp (ns
 /// since the Unix epoch), distinct from JetStream's server-side ingest time.
@@ -83,21 +155,29 @@ fn message_id(channel: LogChannel, seq: u64) -> String {
     format!("{}-{}", channel.as_subject_token(), seq)
 }
 
+/// The **durable ack** of one submitted frame: resolves once the broker has
+/// persisted it, which is the point at which the cursor may pass the frame.
+pub type FrameAck = BoxFuture<'static, Result<()>>;
+
 /// The transport a channel's frames are shipped over. Behind a trait so the
 /// spill/ack/resume logic is unit-testable against a stub with no NATS daemon.
 #[async_trait]
 pub trait ChunkSink: Send + Sync {
-    /// Publish one frame and wait for the broker's **durable ack**. `msg_id` is
-    /// the dedup key (`Nats-Msg-Id`); `capture_ts_ns` is the supervisor capture
-    /// time. Returning `Ok` means the frame is persisted — only then does the
-    /// caller advance the cursor.
-    async fn publish(
+    /// Submit one frame and return its [`FrameAck`]. `msg_id` is the dedup key
+    /// (`Nats-Msg-Id`); `capture_ts_ns` is the supervisor capture time of the
+    /// frame's first byte.
+    ///
+    /// Returning `Ok` means only that the frame was handed to the transport,
+    /// ordered ahead of every frame submitted after it — publishes are
+    /// pipelined, so the caller submits further frames before awaiting this
+    /// ack, and advances the cursor past the frame only once the ack resolves.
+    async fn send(
         &self,
         channel: LogChannel,
         msg_id: &str,
         capture_ts_ns: u64,
         payload: &[u8],
-    ) -> Result<()>;
+    ) -> Result<FrameAck>;
 }
 
 /// Production [`ChunkSink`]: publishes to a per-job JetStream stream.
@@ -117,13 +197,13 @@ impl NatsChunkSink {
 
 #[async_trait]
 impl ChunkSink for NatsChunkSink {
-    async fn publish(
+    async fn send(
         &self,
         channel: LogChannel,
         msg_id: &str,
         capture_ts_ns: u64,
         payload: &[u8],
-    ) -> Result<()> {
+    ) -> Result<FrameAck> {
         let subject = subject_for(&self.subject_prefix, channel);
 
         let mut headers = async_nats::HeaderMap::new();
@@ -132,14 +212,21 @@ impl ChunkSink for NatsChunkSink {
         headers.insert(async_nats::header::NATS_MESSAGE_ID, msg_id);
         headers.insert(TML_TS_HEADER, capture_ts_ns.to_string());
 
+        // This resolves once the message is queued on the connection — in
+        // submission order, and with its ack inbox already registered, so the
+        // ack is captured however late the returned future is polled. That is
+        // what makes the shipper's pipelining safe: frames reach the stream in
+        // the order submitted, and no ack is missed by deferring the wait.
         let ack_future = self
             .jetstream
             .publish_with_headers(subject, headers, Bytes::copy_from_slice(payload))
             .await
-            .context("publishing log frame to JetStream")?;
-        // Awaiting the returned future waits for the durable publish ack.
-        ack_future.await.context("awaiting JetStream publish ack")?;
-        Ok(())
+            .context("submitting log frame to JetStream")?;
+
+        Ok(Box::pin(async move {
+            ack_future.await.context("awaiting JetStream publish ack")?;
+            Ok(())
+        }))
     }
 }
 
@@ -178,11 +265,16 @@ impl SpillWriter {
     /// fsync per chunk, which would slow the drain and risk losing bytes at the
     /// (backpressure-free) source. A kernel panic / power loss may drop the
     /// not-yet-written-back tail.
+    ///
+    /// Header and payload go out as one write: every write on a
+    /// [`tokio::fs::File`] is a round trip through the blocking pool, and the
+    /// drain must stay ahead of the capture source.
     async fn append(&mut self, ts_ns: u64, payload: &[u8]) -> std::io::Result<()> {
-        let len = payload.len() as u32;
-        self.file.write_all(&ts_ns.to_le_bytes()).await?;
-        self.file.write_all(&len.to_le_bytes()).await?;
-        self.file.write_all(payload).await?;
+        let mut frame = Vec::with_capacity(FRAME_HEADER_LEN as usize + payload.len());
+        frame.extend_from_slice(&ts_ns.to_le_bytes());
+        frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        frame.extend_from_slice(payload);
+        self.file.write_all(&frame).await?;
         self.file.flush().await?;
         Ok(())
     }
@@ -255,13 +347,21 @@ impl Cursor {
     }
 }
 
+/// One frame handed to the transport, awaiting its durable ack.
+struct InFlight {
+    /// On-disk size of the frame, added to the cursor once the ack resolves.
+    encoded_len: u64,
+    ack: FrameAck,
+}
+
 /// Publish every frame from the cursor's offset to the current end of the spill
 /// file, advancing (and persisting) the cursor **after each durable ack**.
 ///
-/// On a publish failure this returns `Err` with the cursor left at the last
-/// acked frame, so a retry resumes from exactly there — no loss, and the
-/// `Nats-Msg-Id` dedup absorbs any frame the broker persisted but didn't ack in
-/// time.
+/// Up to [`PUBLISH_WINDOW`] frames are in flight at once, but the cursor still
+/// only ever passes an unbroken run of acked frames, oldest first. On a failure
+/// this returns `Err` with the cursor left at the last such frame, so a retry
+/// resumes from exactly there — no loss, and the `Nats-Msg-Id` dedup absorbs
+/// any frame the broker persisted but didn't ack in time.
 async fn ship_pending(
     spill_path: &Path,
     cursor: &mut Cursor,
@@ -281,20 +381,66 @@ async fn ship_pending(
         .await
         .context("seeking to spill cursor")?;
 
-    while let Some(frame) = read_frame(&mut reader)
-        .await
-        .context("reading spill frame")?
-    {
-        let msg_id = message_id(channel, cursor.next_seq);
-        sink.publish(channel, &msg_id, frame.ts_ns, &frame.payload)
-            .await
-            .with_context(|| format!("publishing frame {msg_id}"))?;
+    // Sequence of the next frame to *submit*, running ahead of the cursor by
+    // however much is in flight.
+    let mut next_seq = cursor.next_seq;
+    let mut inflight: VecDeque<InFlight> = VecDeque::new();
+    let mut spill_exhausted = false;
+    // A read/submit failure is held back until the frames already in flight
+    // have been retired, so the cursor still advances as far as it durably
+    // can before the retry re-ships from there.
+    let mut failure: Option<anyhow::Error> = None;
+
+    loop {
+        // Top the window up, submitting without waiting for any ack.
+        while failure.is_none() && !spill_exhausted && inflight.len() < PUBLISH_WINDOW {
+            let frame = match read_frame(&mut reader).await.context("reading spill frame") {
+                Ok(Some(frame)) => frame,
+                Ok(None) => {
+                    spill_exhausted = true;
+                    break;
+                }
+                Err(e) => {
+                    failure = Some(e);
+                    break;
+                }
+            };
+
+            let msg_id = message_id(channel, next_seq);
+            match sink
+                .send(channel, &msg_id, frame.ts_ns, &frame.payload)
+                .await
+            {
+                Ok(ack) => {
+                    inflight.push_back(InFlight {
+                        encoded_len: frame.encoded_len(),
+                        ack,
+                    });
+                    next_seq += 1;
+                }
+                Err(e) => failure = Some(e.context(format!("submitting frame {msg_id}"))),
+            }
+        }
+
+        // Retire the oldest ack. A failure here abandons the frames behind it:
+        // some may yet be acked, but the cursor cannot skip a gap, so the
+        // retry re-ships from this frame and lets dedup absorb the overlap.
+        let Some(frame) = inflight.pop_front() else {
+            break;
+        };
+        frame.ack.await.with_context(|| {
+            format!("publishing frame {}", message_id(channel, cursor.next_seq))
+        })?;
 
         cursor.next_seq += 1;
-        cursor.offset += frame.encoded_len();
+        cursor.offset += frame.encoded_len;
         cursor.store().await.context("persisting spill cursor")?;
     }
-    Ok(())
+
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// Drain `reader` into the spill file and ship spilled frames to `sink`,
@@ -322,25 +468,77 @@ async fn run_channel(
     // Drain task: reader → spill file, as fast as the disk allows. Decoupled
     // from the shipper so a slow/disconnected NATS never backpressures the
     // (backpressure-free) capture source.
+    //
+    // Reads are accumulated into a frame rather than spilled one per read (see
+    // the module docs on framing): the frame closes when it is full or when
+    // its flush deadline expires, whichever comes first.
     let drain = {
         let notify = notify.clone();
         let eof = eof.clone();
+        let chunk_bytes = inner.config.chunk_bytes;
+        let flush_interval = inner.config.flush_interval;
         tokio::spawn(async move {
-            let mut buf = vec![0u8; CHUNK_BYTES];
+            let mut buf = vec![0u8; chunk_bytes];
+            let mut frame: Vec<u8> = Vec::with_capacity(chunk_bytes);
+            // Capture time of the open frame's first byte, and the instant the
+            // frame must be closed by. `deadline` is `Some` exactly while a
+            // frame is open, i.e. while `frame` is non-empty.
+            let mut frame_ts = 0;
+            let mut deadline: Option<tokio::time::Instant> = None;
+
             loop {
-                match reader.read(&mut buf).await {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if let Err(e) = writer.append(now_ns(), &buf[..n]).await {
-                            tracing::error!(channel = token, error = ?e, "failed to append to spill file");
-                            break;
-                        }
-                        notify.notify_one();
+                // Read into the frame's remaining room, bounded by its flush
+                // deadline while one is open. `read` is cancel-safe, so timing
+                // out never drops captured bytes.
+                let room = chunk_bytes - frame.len();
+                let read = match deadline {
+                    // `None` here is the elapsed deadline: close the frame.
+                    Some(deadline) => {
+                        tokio::time::timeout_at(deadline, reader.read(&mut buf[..room]))
+                            .await
+                            .ok()
                     }
-                    Err(e) => {
+                    None => Some(reader.read(&mut buf[..room]).await),
+                };
+
+                let mut ended = false;
+                match read {
+                    // Flush deadline expired: close the frame at whatever
+                    // size it has reached.
+                    None => {}
+                    Some(Ok(0)) => ended = true,
+                    Some(Ok(n)) => {
+                        if frame.is_empty() {
+                            frame_ts = now_ns();
+                            deadline = Some(tokio::time::Instant::now() + flush_interval);
+                        }
+                        frame.extend_from_slice(&buf[..n]);
+                        // Still room in the frame: keep accumulating.
+                        if frame.len() < chunk_bytes {
+                            continue;
+                        }
+                    }
+                    Some(Err(e)) => {
                         tracing::warn!(channel = token, error = ?e, "capture read error; ending drain");
+                        ended = true;
+                    }
+                }
+
+                // Reaching here always means the open frame is to be closed:
+                // the `continue` above covers every keep-accumulating case.
+                if !frame.is_empty() {
+                    if let Err(e) = writer.append(frame_ts, &frame).await {
+                        tracing::error!(channel = token, error = ?e, "failed to append to spill file");
                         break;
                     }
+                    frame.clear();
+                    notify.notify_one();
+                }
+                // Cleared unconditionally: an armed deadline with no frame
+                // behind it would spin this loop on an instant already past.
+                deadline = None;
+                if ended {
+                    break;
                 }
             }
             eof.store(true, Ordering::SeqCst);
@@ -464,6 +662,7 @@ async fn run_console_input(input: ConsoleInput, mut writer: impl tokio::io::Asyn
 struct Inner {
     sink: Arc<dyn ChunkSink>,
     spill_dir: PathBuf,
+    config: LogPublisherConfig,
     console_input: Option<ConsoleInput>,
 }
 
@@ -480,13 +679,15 @@ pub struct LogPublisher {
 
 impl LogPublisher {
     /// Connect to NATS using the dispatch's bearer write token and build a
-    /// publisher whose spill files live under `spill_dir`. When the dispatch
-    /// carries a console-input subject, the serial channel also delivers
-    /// typed input from that subject to the guest (see
+    /// publisher whose spill files live under `spill_dir`, framing captured
+    /// output as `config` prescribes. When the dispatch carries a
+    /// console-input subject, the serial channel also delivers typed input
+    /// from that subject to the guest (see
     /// [`spawn_serial`](Self::spawn_serial)).
     pub async fn connect(
         dispatch: &LogStreamingDispatch,
         spill_dir: impl Into<PathBuf>,
+        config: LogPublisherConfig,
     ) -> Result<Self> {
         let client = bearer_connect(
             &dispatch.nats_url,
@@ -510,6 +711,7 @@ impl LogPublisher {
             inner: Arc::new(Inner {
                 sink,
                 spill_dir: spill_dir.into(),
+                config,
                 console_input,
             }),
         })
@@ -517,11 +719,16 @@ impl LogPublisher {
 
     /// Build a publisher over an arbitrary [`ChunkSink`] (composition seam for
     /// tests and the hermetic NATS check). No console input is delivered.
-    pub fn with_sink(sink: Arc<dyn ChunkSink>, spill_dir: impl Into<PathBuf>) -> Self {
+    pub fn with_sink(
+        sink: Arc<dyn ChunkSink>,
+        spill_dir: impl Into<PathBuf>,
+        config: LogPublisherConfig,
+    ) -> Self {
         LogPublisher {
             inner: Arc::new(Inner {
                 sink,
                 spill_dir: spill_dir.into(),
+                config,
                 console_input: None,
             }),
         }
@@ -616,13 +823,13 @@ mod tests {
 
     #[async_trait]
     impl ChunkSink for RecordingSink {
-        async fn publish(
+        async fn send(
             &self,
             channel: LogChannel,
             msg_id: &str,
             capture_ts_ns: u64,
             payload: &[u8],
-        ) -> Result<()> {
+        ) -> Result<FrameAck> {
             {
                 let recorded = self.published.lock().unwrap();
                 if Some(recorded.len()) == self.fail_after {
@@ -635,7 +842,9 @@ mod tests {
                 ts_ns: capture_ts_ns,
                 payload: payload.to_vec(),
             });
-            Ok(())
+            // Acks immediately: this stub exercises the submit path, which is
+            // where its `fail_after` failure is injected.
+            Ok(Box::pin(async { Ok(()) }))
         }
     }
 
@@ -784,6 +993,171 @@ mod tests {
             b"f2",
             "resumes at the first un-acked frame",
         );
+    }
+
+    /// A sink that records every submission immediately but holds all acks
+    /// until permits are handed out, so a test can observe how many frames the
+    /// shipper keeps in flight at once.
+    struct GatedSink {
+        submitted: Arc<Mutex<Vec<String>>>,
+        /// One permit releases one ack, in submission order.
+        release: Arc<tokio::sync::Semaphore>,
+    }
+
+    #[async_trait]
+    impl ChunkSink for GatedSink {
+        async fn send(
+            &self,
+            _channel: LogChannel,
+            msg_id: &str,
+            _capture_ts_ns: u64,
+            _payload: &[u8],
+        ) -> Result<FrameAck> {
+            self.submitted.lock().unwrap().push(msg_id.to_string());
+            let release = self.release.clone();
+            Ok(Box::pin(async move {
+                release.acquire_owned().await.unwrap().forget();
+                Ok(())
+            }))
+        }
+    }
+
+    /// Build a publisher's `Inner` over `sink` with the given framing bounds.
+    fn inner_with(sink: Arc<dyn ChunkSink>, spill_dir: &Path, config: LogPublisherConfig) -> Inner {
+        Inner {
+            sink,
+            spill_dir: spill_dir.to_path_buf(),
+            config,
+            console_input: None,
+        }
+    }
+
+    /// With a flush interval that never expires during the test, frames are
+    /// closed only by the size bound — one message per `chunk_bytes`, not one
+    /// per read of the capture source.
+    #[tokio::test]
+    async fn drain_fills_frames_up_to_the_size_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let sink = Arc::new(RecordingSink::new());
+        let inner = Arc::new(inner_with(
+            sink.clone(),
+            dir.path(),
+            LogPublisherConfig {
+                chunk_bytes: 64,
+                flush_interval: Duration::from_secs(3600),
+            },
+        ));
+
+        let (mut write, read) = tokio::io::duplex(1024);
+        let writer = tokio::spawn(async move {
+            // Two full frames and a partial tail, written as one burst.
+            write.write_all(&[b'x'; 160]).await.unwrap();
+            // Dropping the write half is the capture source's EOF.
+        });
+
+        run_channel(inner, LogChannel::Serial, Box::new(read))
+            .await
+            .unwrap();
+        writer.await.unwrap();
+
+        // The tail is closed by EOF, not by the (never-reached) deadline.
+        let sizes: Vec<usize> = sink.records().iter().map(|p| p.payload.len()).collect();
+        assert_eq!(sizes, vec![64, 64, 32]);
+    }
+
+    /// A frame that never fills is still closed once its flush deadline
+    /// expires — that deadline is the console viewer's latency bound.
+    #[tokio::test]
+    async fn drain_closes_a_partial_frame_on_the_flush_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let sink = Arc::new(RecordingSink::new());
+        let inner = Arc::new(inner_with(
+            sink.clone(),
+            dir.path(),
+            LogPublisherConfig {
+                chunk_bytes: 4096,
+                flush_interval: Duration::from_millis(50),
+            },
+        ));
+
+        let (mut write, read) = tokio::io::duplex(1024);
+        let writer = tokio::spawn(async move {
+            write.write_all(b"first").await.unwrap();
+            // Outlast the flush interval by a wide margin, so the partial
+            // frame is closed on its deadline rather than merged with what
+            // follows.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            write.write_all(b"second").await.unwrap();
+        });
+
+        run_channel(inner, LogChannel::Serial, Box::new(read))
+            .await
+            .unwrap();
+        writer.await.unwrap();
+
+        let records = sink.records();
+        assert_eq!(records.len(), 2, "the gap must split the two writes");
+        assert_eq!(records[0].payload, b"first");
+        assert_eq!(records[0].msg_id, "serial-0");
+        // Closed by EOF rather than by its own deadline, but a frame either
+        // way.
+        assert_eq!(records[1].payload, b"second");
+        assert_eq!(records[1].msg_id, "serial-1");
+    }
+
+    /// The shipper submits a whole window of frames before waiting on any ack:
+    /// without pipelining, throughput would be one frame per broker round
+    /// trip.
+    #[tokio::test]
+    async fn ship_pending_keeps_a_window_of_frames_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let spill = dir.path().join("serial.spill");
+        let cursor_path = dir.path().join("serial.cursor");
+
+        let frames: Vec<(u64, &[u8])> = (0..PUBLISH_WINDOW * 2)
+            .map(|i| (i as u64, &b"f"[..]))
+            .collect();
+        write_spill(&spill, &frames).await;
+
+        let submitted = Arc::new(Mutex::new(Vec::new()));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let sink = GatedSink {
+            submitted: submitted.clone(),
+            release: release.clone(),
+        };
+
+        let mut cursor = Cursor::load(&cursor_path).await.unwrap();
+        let ship = tokio::spawn(async move {
+            ship_pending(&spill, &mut cursor, &sink, LogChannel::Serial).await?;
+            anyhow::Ok(cursor.next_seq)
+        });
+
+        // With every ack still held, submissions must reach the full window.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while submitted.lock().unwrap().len() < PUBLISH_WINDOW {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("a full window is submitted before any ack resolves");
+
+        // ...and no further, since the window bounds the unacked payload.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(submitted.lock().unwrap().len(), PUBLISH_WINDOW);
+
+        // Releasing the acks lets the rest through, in order.
+        release.add_permits(PUBLISH_WINDOW * 2);
+        let next_seq = tokio::time::timeout(Duration::from_secs(10), ship)
+            .await
+            .expect("shipping completes")
+            .expect("task joins")
+            .expect("shipping succeeds");
+
+        assert_eq!(next_seq, (PUBLISH_WINDOW * 2) as u64);
+        let expected: Vec<String> = (0..PUBLISH_WINDOW * 2)
+            .map(|i| format!("serial-{i}"))
+            .collect();
+        assert_eq!(*submitted.lock().unwrap(), expected);
     }
 
     // ---- Live NATS round-trip (hermetic Nix check) -----------------------
@@ -1000,6 +1374,7 @@ mod tests {
             inner: Arc::new(Inner {
                 sink: Arc::new(RecordingSink::new()),
                 spill_dir: dir.path().join("logs"),
+                config: LogPublisherConfig::default(),
                 console_input: Some(ConsoleInput {
                     client: client.clone(),
                     subject: subject.clone(),
