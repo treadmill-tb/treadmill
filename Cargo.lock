@@ -4889,6 +4889,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures-util",
+ "humantime-serde",
  "oci-client",
  "oci-spec 0.10.0",
  "reqwest 0.13.4",

@@ -12,6 +12,7 @@ async-nats = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 futures-util = { workspace = true }
+humantime-serde = { workspace = true }
 oci-client = { workspace = true }
 oci-spec = { workspace = true }
 reqwest = { workspace = true }
