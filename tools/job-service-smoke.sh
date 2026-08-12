@@ -19,7 +19,7 @@ registry="${TML_TEST_REGISTRY:-ghcr.io}"
 sb="http://127.0.0.1:${TML_SB_PORT:-8000}"
 gw_domain="${TML_GW_DOMAIN:-jobgw.localhost}"
 gw_port="${TML_GW_PORT:-8443}"
-job_service_port=3860
+job_service_hostfwd_port=3860
 service=webterm
 
 # The devstack's seeded API token (tools/devstack.sh).
@@ -93,10 +93,6 @@ jq '{state, job_ip_address, services}' <<<"$info"
 jq -e --arg s "$service" 'any(.services[]; .name == $s)' >/dev/null <<<"$info" ||
 	{ echo "!! $service was never announced" >&2; exit 1; }
 
-say "ttyd, reached directly through the QEMU hostfwd (gateway bypassed)"
-curl -sS -o /dev/null -w '  HTTP %{http_code} from 127.0.0.1:%{remote_port}\n' \
-	"http://127.0.0.1:$job_service_port/" || echo "  !! ttyd is not answering in the guest"
-
 say "Minting a token for $service"
 creds="$(curl -fsS -X POST "$sb/api/v1/jobs/$job_id/services/$service/token" "${auth[@]}")"
 token="$(jq -r .token <<<"$creds")"
@@ -107,9 +103,25 @@ decode_jwt "$token" | sed 's/^/    /'
 host="$service-$job_id.$gw_domain"
 gw() { curl -sS -k --resolve "$host:$gw_port:127.0.0.1" -o /dev/null -w '%{http_code}' "$@"; }
 
+# The job's own proxy, reached through the QEMU hostfwd with the gateway
+# bypassed: it validates the same token, so a sibling job that reaches the port
+# directly still gets nothing without one.
+direct() {
+	curl -sS -H "Host: $host" -o /dev/null -w '%{http_code}' \
+		"http://127.0.0.1:$job_service_hostfwd_port/" "$@"
+}
+
+say "The job's own proxy, gateway bypassed"
+echo "  without a token  : HTTP $(direct)   (expect 401)"
+echo "  with the token   : HTTP $(direct -H "X-Tml-Token: $token")   (expect 200)"
+echo "  another service  : HTTP $(curl -sS -H "Host: other-$job_id.$gw_domain" \
+	-H "X-Tml-Token: $token" -o /dev/null -w '%{http_code}' \
+	"http://127.0.0.1:$job_service_hostfwd_port/")   (expect 404)"
+
 say "Through the gateway at https://$host:$gw_port/"
 echo "  with the token   : HTTP $(gw "https://$host:$gw_port/?tml_token=$token")   (expect 302, promoting it to a cookie)"
 echo "  without a token  : HTTP $(gw "https://$host:$gw_port/")   (expect 401)"
+echo "  in a header      : HTTP $(gw -H "X-Tml-Token: $token" "https://$host:$gw_port/")   (expect 200)"
 wrong="other-$job_id.$gw_domain"
 echo "  at another host  : HTTP $(curl -sS -k --resolve "$wrong:$gw_port:127.0.0.1" \
 	-o /dev/null -w '%{http_code}' "https://$wrong:$gw_port/?tml_token=$token")   (expect 403)"

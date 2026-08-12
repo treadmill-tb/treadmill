@@ -20,7 +20,11 @@ user="$(id -un)"
 # The port a job's own reverse proxy listens on, which the gateway dials. Fixed
 # by convention rather than carried in a token: the in-job proxy owns the
 # service -> port mapping, so no forged token can reach an arbitrary listener.
-job_service_port=3860
+job_service_port=339
+
+# Host side of the guest forward. Not $job_service_port: that is a privileged
+# port, and the dev stack binds it as an unprivileged user.
+job_service_hostfwd_port=3860
 
 # Caddy addresses host labels by index from the RIGHT, so the leftmost label
 # (`<service>-<job-id>`) sits just past the gateway domain's own labels. The
@@ -245,6 +249,7 @@ https://*.$gw_domain:$gw_port {
 			sign_key {env.TML_GATEWAY_PUBLIC_KEY}
 			sign_alg EdDSA
 			from_query tml_token
+			from_header X-Tml-Token
 			from_cookies __Host-tml_token
 			issuer_whitelist http://localhost:$sb_port
 			user_claims sub
@@ -275,7 +280,15 @@ https://*.$gw_domain:$gw_port {
 		uri @promote query -tml_token
 		redir @promote {http.request.uri} 302
 
-		reverse_proxy @this_service {http.auth.user.tml_addr}:$job_service_port
+		# Caddy severs proxied WebSockets when its config is unloaded. Jobs
+		# carry terminals and SSH-over-WebSocket, so give an established
+		# stream the rest of the day rather than dropping it on a reload.
+		# The forwarded port, not the guest one: the supervisor reports every
+		# job at 127.0.0.1 here, so the address the token names is the host,
+		# and the job's own listener is only reachable through the hostfwd.
+		reverse_proxy @this_service {http.auth.user.tml_addr}:$job_service_hostfwd_port {
+			stream_close_delay 24h
+		}
 
 		respond "this token is not valid for this service" 403
 	}
@@ -467,7 +480,7 @@ qemu_args = [
   # reaches into the guest. Nothing in the tiny-efi fixture listens there: it is
   # a bare-metal EFI binary with no network stack, so the last hop is refused
   # until this boots an image that runs one.
-  "-netdev", "user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::$job_service_port-:$job_service_port",
+  "-netdev", "user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::$job_service_hostfwd_port-:$job_service_port",
   "-device", "virtio-net-pci,netdev=net0",
   "-fw_cfg", "name=opt/org.tockos.treadmill.tcp-ctrl-socket,string=10.0.2.2:3859",
   "-display", "none",
@@ -633,7 +646,9 @@ cat <<EOF
       (connect with nix develop -c psql -h $sock_dir -U $user -d tml_switchboard)
     job gateway     : https://<service>-<job-id>.$gw_domain:$gw_port
       (self-signed; POST /jobs/{id}/services/{service}/token mints the token,
-       and the gateway proxies to port $job_service_port of the job)
+       and the gateway proxies to 127.0.0.1:$job_service_hostfwd_port, forwarded
+       to port $job_service_port of the guest, where the job's own caddy answers
+       and hands off to the named service)
     state directory : $state_dir
     mock login      : ENABLED (alice=admin, bob/carol=user)
 EOF
