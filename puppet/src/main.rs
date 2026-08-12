@@ -12,10 +12,13 @@ use log::{debug, error, info, warn};
 use zbus::interface;
 
 use treadmill_rs::api::supervisor_puppet::{
-    CommandOutputStream, JobGatewayEndpoint, JobInfo, JobService, PuppetEvent, SupervisorEvent,
+    CommandOutputStream, JobGatewayEndpoint, JobInfo, PuppetEvent, SupervisorEvent,
 };
 
 mod control_socket_client;
+mod service_proxy;
+
+use service_proxy::{ServiceDeclaration, ServiceProxy, service_name_valid};
 
 // Cache at most 1024 supervisor-sent events:
 const SUPERVISOR_EVENT_CHANNEL_CAP: usize = 1024;
@@ -72,23 +75,23 @@ struct PuppetDaemonArgs {
     #[arg(long)]
     services_dir: Option<PathBuf>,
 
+    /// Where to write the generated reverse proxy vhost definitions. Without
+    /// it, no proxy configuration is generated at all.
+    #[arg(long)]
+    caddy_config: Option<PathBuf>,
+
+    /// Shell command run after the proxy configuration changed.
+    #[arg(long)]
+    caddy_reload_command: Option<String>,
+
     #[arg(long, default_value = "system")]
     dbus_bus: PuppetDaemonDbusBus,
 }
 
-/// Longest service name the switchboard accepts.
-const MAX_SERVICE_NAME_LEN: usize = 16;
-
-fn service_name_valid(name: &str) -> bool {
-    let mut chars = name.chars();
-    name.len() <= MAX_SERVICE_NAME_LEN
-        && chars.next().is_some_and(|c| c.is_ascii_lowercase())
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-}
-
-/// The services declared under `--services-dir`, one [`JobService`] per `*.json`
-/// file, ordered by name. Ignores and skips incorrect definitions with warning.
-async fn scan_services(services_dir: &Path) -> Result<Vec<JobService>> {
+/// The services declared under `--services-dir`, one [`ServiceDeclaration`] per
+/// `*.json` file, ordered by name. Ignores and skips incorrect definitions with
+/// warning.
+async fn scan_services(services_dir: &Path) -> Result<Vec<ServiceDeclaration>> {
     let mut read_dir = match tokio::fs::read_dir(services_dir).await {
         Ok(read_dir) => read_dir,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -111,7 +114,7 @@ async fn scan_services(services_dir: &Path) -> Result<Vec<JobService>> {
     }
     paths.sort();
 
-    let mut services: Vec<JobService> = Vec::new();
+    let mut services: Vec<ServiceDeclaration> = Vec::new();
     for path in paths {
         let contents = match tokio::fs::read(&path).await {
             Ok(contents) => contents,
@@ -121,60 +124,88 @@ async fn scan_services(services_dir: &Path) -> Result<Vec<JobService>> {
             }
         };
 
-        let service: JobService = match serde_json::from_slice(&contents) {
-            Ok(service) => service,
+        let declaration: ServiceDeclaration = match serde_json::from_slice(&contents) {
+            Ok(declaration) => declaration,
             Err(e) => {
                 warn!("Skipping malformed service file {path:?}: {e}");
                 continue;
             }
         };
 
-        if !service_name_valid(&service.name) {
+        if !service_name_valid(&declaration.service.name) {
             warn!(
                 "Skipping service file {path:?}: {:?} is not a usable service name.",
-                service.name
+                declaration.service.name
             );
             continue;
         }
 
-        if services.iter().any(|other| other.name == service.name) {
+        if services
+            .iter()
+            .any(|other| other.service.name == declaration.service.name)
+        {
             warn!(
                 "Skipping service file {path:?}: {:?} was already declared.",
-                service.name
+                declaration.service.name
             );
             continue;
         }
 
-        services.push(service);
+        services.push(declaration);
     }
 
-    services.sort_by(|a, b| a.name.cmp(&b.name));
+    services.sort_by(|a, b| a.service.name.cmp(&b.service.name));
     Ok(services)
 }
 
-/// Scan the service directory and announce what it holds, replacing whatever
-/// was announced before. A puppet with no service directory configured
-/// announces nothing at all, rather than an empty set.
+/// Scan the service directory, put the local reverse proxy in front of what it
+/// holds, and announce it, replacing whatever was announced before. A puppet with
+/// no service directory configured announces nothing at all, rather than an empty
+/// set.
+///
+/// The proxy is configured before the announcement, so a service is never
+/// mintable at a gateway before the job can serve it. A proxy that could not be
+/// configured is reported, but does not hold back the announcement: what the
+/// switchboard knows about a job should not depend on the job's own proxy.
 async fn announce_services(
     services_dir: Option<&Path>,
+    proxy: Option<&ServiceProxy>,
     client: &control_socket_client::ControlSocketClient,
 ) -> Result<()> {
     let Some(services_dir) = services_dir else {
         return Ok(());
     };
 
-    let services = scan_services(services_dir)
+    let declarations = scan_services(services_dir)
         .await
         .context("Scanning the service directory")?;
 
+    let proxy_res = match proxy {
+        Some(proxy) => proxy
+            .apply(&declarations)
+            .await
+            .context("Configuring the local service proxy"),
+        None => Ok(()),
+    };
+    if let Err(ref e) = proxy_res {
+        error!("Failed to configure the local service proxy: {e:?}");
+    }
+
     info!(
         "Announcing {} service(s) from {services_dir:?}",
-        services.len()
+        declarations.len()
     );
     client
-        .report_service_set(services)
+        .report_service_set(
+            declarations
+                .into_iter()
+                .map(|declaration| declaration.service)
+                .collect(),
+        )
         .await
-        .context("Announcing the job's services to the supervisor")
+        .context("Announcing the job's services to the supervisor")?;
+
+    proxy_res
 }
 
 async fn update_job_info_files(args: &PuppetDaemonArgs, job_info: JobInfo) -> Result<()> {
@@ -201,6 +232,12 @@ async fn update_job_info_files(args: &PuppetDaemonArgs, job_info: JobInfo) -> Re
 
     // Context for offering HTTP/WS services through public gateways.
     if let Some(gateway) = job_info.gateway {
+        let issuer_path = job_info_dir.join("gateway-issuer");
+        info!("Writing gateway issuer to file {issuer_path:?}");
+        tokio::fs::write(issuer_path, gateway.issuer.as_bytes())
+            .await
+            .context("Writing gateway issuer to file")?;
+
         let key_path = job_info_dir.join("gateway-key.pem");
         info!("Writing gateway signing key to file {key_path:?}");
         tokio::fs::write(key_path, gateway.signing_public_key.as_bytes())
@@ -286,6 +323,7 @@ struct PuppetCli {
 struct DbusPuppet {
     control_socket_client: Arc<control_socket_client::ControlSocketClient>,
     services_dir: Option<PathBuf>,
+    proxy: Option<Arc<ServiceProxy>>,
 }
 
 #[interface(
@@ -307,9 +345,13 @@ impl DbusPuppet {
 
     async fn reload_services(&self) -> zbus::fdo::Result<()> {
         info!("Received D-bus request to reload services, rescanning and announcing.");
-        announce_services(self.services_dir.as_deref(), &self.control_socket_client)
-            .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+        announce_services(
+            self.services_dir.as_deref(),
+            self.proxy.as_deref(),
+            &self.control_socket_client,
+        )
+        .await
+        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 }
 
@@ -774,7 +816,27 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
         .await
         .context("Retrieving job_id from supervisor")?;
     info!("Retrieved job info message from supervisor: {job_info:?}");
-    update_job_info_files(&args, job_info).await?;
+    update_job_info_files(&args, job_info.clone()).await?;
+
+    let proxy = match (&args.caddy_config, &job_info.gateway) {
+        (Some(config_path), Some(gateway)) => Some(Arc::new(
+            ServiceProxy::new(
+                config_path.clone(),
+                args.caddy_reload_command.clone(),
+                job_info.job_id,
+                gateway,
+            )
+            .context("Preparing the local service proxy")?,
+        )),
+        (Some(_), None) => {
+            warn!(
+                "A service proxy config was requested, but this job has no gateway. \
+		 Not generating one."
+            );
+            None
+        }
+        (None, _) => None,
+    };
 
     // For certain requests and depending on some command line parameters, we'll
     // want to exit with an error if they fail. We provided these wrappers here
@@ -823,6 +885,7 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
                     DbusPuppet {
                         control_socket_client: client.clone(),
                         services_dir: args.services_dir.clone(),
+                        proxy: proxy.clone(),
                     },
                 )?
                 .build()
@@ -839,7 +902,7 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
         .context("Reporting puppet ready status to supervisor")?;
 
     // Announce whatever services the job declares at boot.
-    announce_services(args.services_dir.as_deref(), &client).await?;
+    announce_services(args.services_dir.as_deref(), proxy.as_deref(), &client).await?;
 
     info!("Puppet started, waiting for supervisor events. Exit with CTRL+C");
     sd_notify::notify(&[sd_notify::NotifyState::Ready])
@@ -1117,6 +1180,8 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use service_proxy::MAX_SERVICE_NAME_LEN;
+    use treadmill_rs::api::supervisor_puppet::JobService;
 
     /// A scratch service directory, removed when the test ends.
     struct ServicesDir(PathBuf);
@@ -1151,10 +1216,13 @@ mod tests {
 
         assert_eq!(
             scan_services(&dir.0).await.unwrap(),
-            vec![JobService {
-                name: "webide".to_string(),
-                label: Some("Web IDE".to_string()),
-                protocol: "webapp".to_string(),
+            vec![ServiceDeclaration {
+                service: JobService {
+                    name: "webide".to_string(),
+                    label: Some("Web IDE".to_string()),
+                    protocol: "webapp".to_string(),
+                },
+                upstream: None,
             }]
         );
     }
@@ -1167,7 +1235,7 @@ mod tests {
 
         let scanned = scan_services(&dir.0).await.unwrap();
         assert_eq!(scanned.len(), 1);
-        assert_eq!(scanned[0].label, None);
+        assert_eq!(scanned[0].service.label, None);
     }
 
     /// The declarations are the job's own, so a bad one costs the job that one
@@ -1201,7 +1269,7 @@ mod tests {
 
         let scanned = scan_services(&dir.0).await.unwrap();
         assert_eq!(scanned.len(), 1, "{scanned:?}");
-        assert_eq!(scanned[0].name, "webide");
+        assert_eq!(scanned[0].service.name, "webide");
     }
 
     /// Two files may claim one name; the announcement may not, or the whole set
@@ -1220,7 +1288,7 @@ mod tests {
 
         let scanned = scan_services(&dir.0).await.unwrap();
         assert_eq!(scanned.len(), 1);
-        assert_eq!(scanned[0].label.as_deref(), Some("first"));
+        assert_eq!(scanned[0].service.label.as_deref(), Some("first"));
     }
 
     /// The set is ordered by name, not by the order the directory happens to be
@@ -1245,7 +1313,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|service| service.name)
+            .map(|declaration| declaration.service.name)
             .collect();
         assert_eq!(names, ["app", "shell", "webide"]);
     }

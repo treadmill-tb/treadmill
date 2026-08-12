@@ -152,6 +152,10 @@
             "$ref": "#/$defs/JobGatewayEndpoint"
           }
         },
+        "issuer": {
+          "description": "The `iss` every minted service token carries, which the job requires of\na token just as the gateway does.",
+          "type": "string"
+        },
         "key_id": {
           "description": "Identifier of `signing_public_key`, carried as the `kid` of a minted\ntoken's header. Rotating the key yields a new `key_id`.",
           "type": "string"
@@ -162,6 +166,7 @@
         }
       },
       "required": [
+        "issuer",
         "signing_public_key",
         "key_id",
         "endpoints"

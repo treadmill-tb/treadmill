@@ -44,6 +44,7 @@
         ./nix/packages.nix
         ./nix/apps.nix
         ./nix/puppet-cross-musl.nix
+        ./nix/image-caddy.nix
         ./nix/tiny-efi.nix
         ./nix/devshells.nix
         ./nix/console.nix

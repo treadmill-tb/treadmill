@@ -81,11 +81,73 @@ StartLimitIntervalSec=0
 Type=notify
 NotifyAccess=main
 ExecStartPre=/bin/mkdir -p /run/tml/parameters
-ExecStart=/bin/bash -c 'exec /usr/local/bin/tml-puppet daemon ${puppet_daemon_args} --job-info-dir /run/tml --parameters-dir /run/tml/parameters --services-dir /etc/tml/services.d'
+ExecStart=/bin/bash -c 'exec /usr/local/bin/tml-puppet daemon ${puppet_daemon_args} --job-info-dir /run/tml --parameters-dir /run/tml/parameters --services-dir /etc/tml/services.d --caddy-config /run/tml/caddy/services.caddy --caddy-reload-command "systemctl --no-block reload-or-restart tml-caddy.service"'
 Restart=always
 RestartSec=5s
 SERVICE
 systemctl enable tml-puppet.service
+
+# --- service reverse proxy ------------------------------------------------
+mkdir -p /etc/caddy
+cat >/etc/caddy/Caddyfile <<'CADDY'
+{
+	admin unix//run/tml-caddy/admin.sock
+	auto_https off
+	skip_install_trust
+	order jwtauth before reverse_proxy
+}
+
+http://:339 {
+	import /run/tml/caddy/services.caddy
+}
+CADDY
+
+cat >/etc/systemd/system/tml-caddy.service <<'SERVICE'
+[Install]
+WantedBy=multi-user.target
+[Unit]
+After=network.target tml-puppet.service
+Wants=tml-puppet.service
+ConditionPathExists=/run/tml/caddy/services.caddy
+[Service]
+RuntimeDirectory=tml-caddy
+ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --address unix//run/tml-caddy/admin.sock
+Restart=always
+RestartSec=5s
+SERVICE
+systemctl enable tml-caddy.service
+
+# --- web terminal ---------------------------------------------------------
+# ttyd has no --socket-mode, so the socket's own mode is whatever libwebsockets
+# picks. The runtime directory is the access control: 0750 tml:tml leaves it
+# traversable by the tml user and by root, which the proxy runs as.
+cat >/etc/systemd/system/ttyd.service <<'SERVICE'
+[Install]
+WantedBy=multi-user.target
+[Unit]
+After=network.target
+[Service]
+User=tml
+Group=tml
+RuntimeDirectory=tml-ttyd
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/ttyd --interface /run/tml-ttyd/ttyd.sock --writable tmux new-session -A -s tml
+Restart=always
+RestartSec=5s
+SERVICE
+systemctl enable ttyd.service
+
+# The puppet announces this to the switchboard at boot (and on reload), which is
+# what makes the terminal addressable as `webterm-<job-id>` at a gateway.
+cat >/etc/tml/services.d/webterm.json <<'SERVICEDECL'
+{
+	"name": "webterm",
+	"label": "Terminal",
+	"protocol": "webapp",
+	"upstream": "unix//run/tml-ttyd/ttyd.sock"
+}
+SERVICEDECL
 
 # --- rustup (installed for the tml user; no default toolchain) ------------
 chmod +x /opt/rustup-init

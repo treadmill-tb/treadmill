@@ -3646,6 +3646,7 @@ mod tests {
             .expect("StartJob should build with a gateway");
 
         let dispatch = msg.gateway.expect("gateway must be populated when enabled");
+        assert_eq!(dispatch.issuer, gateway.config().issuer);
         assert_eq!(dispatch.signing_public_key, gateway.public_key_pem());
         assert_eq!(dispatch.key_id, gateway.key_id());
         assert_eq!(

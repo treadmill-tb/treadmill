@@ -1543,6 +1543,7 @@ impl control_socket::Supervisor for QemuSupervisor {
                     ..
                 }) => start_job_req.gateway.as_ref().map(|gateway| {
                     treadmill_rs::api::supervisor_puppet::JobGatewayInfo {
+                        issuer: gateway.issuer.clone(),
                         signing_public_key: gateway.signing_public_key.clone(),
                         key_id: gateway.key_id.clone(),
                         endpoints: gateway.endpoints.iter().cloned().map(|treadmill_rs::api::switchboard_supervisor::JobGatewayEndpoint { base_domain, port }| treadmill_rs::api::supervisor_puppet::JobGatewayEndpoint { base_domain, port }).collect(),
@@ -2228,6 +2229,7 @@ mod tests {
         let virtual_size = 4u64 * 1024 * 1024 * 1024;
         let host_id = Uuid::new_v4();
         let dispatched = JobGatewayDispatch {
+            issuer: "https://switchboard.example".to_string(),
             signing_public_key: "-----BEGIN PUBLIC KEY-----\nstub\n-----END PUBLIC KEY-----\n"
                 .to_string(),
             key_id: "wI9c-yvsF8".to_string(),
@@ -2261,6 +2263,7 @@ mod tests {
             .gateway(host_id, job_id)
             .await
             .expect("a job dispatched with a gateway is told about it");
+        assert_eq!(relayed.issuer, dispatched.issuer);
         assert_eq!(relayed.signing_public_key, dispatched.signing_public_key);
         assert_eq!(relayed.key_id, dispatched.key_id);
         assert_eq!(
