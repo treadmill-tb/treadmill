@@ -5,7 +5,8 @@
 # qcow2 differential overlay (`virt-customize`, no guest boot), finalizes the
 # delta, then assembles + validates an OCI image layout via `image-util`.
 #
-# See doc/images-libguestfs-build-plan.md §5. Two image types and two variants:
+# See doc/images-libguestfs-build-plan.md §5. Two image types, and a base variant
+# plus any number of overlay variants:
 #
 #   type=disk  (manifest)  the cloud image IS a whole-disk qcow2 (Ubuntu): it is
 #                          the verbatim lowest root layer; our delta overlays it.
@@ -16,18 +17,19 @@
 #
 #   --variant base         the base image (root layers: layer0 + provisioning
 #                          delta).
-#   --variant gha-runner   an overlay (root layers: layer0 + base delta + runner
-#                          delta) adding the GitHub Actions runner units on top
-#                          of the byte-identical base delta. Requires
+#   --variant <overlay>    an overlay (root layers: layer0 + base delta + overlay
+#                          delta) provisioned on top of the byte-identical base
+#                          delta and shipped as its own, suffixed image. Requires
 #                          --base-delta (`<base-out>.build/delta.qcow2`); for
 #                          type=sd it also requires --boot-fat (the base build's
-#                          byte-identical boot blob, shared verbatim).
+#                          byte-identical boot blob, shared verbatim). Defined
+#                          overlays: `gha-runner`, `webide`.
 #
 # Usage:
 #   images/lib/build-image.sh <name> --puppet <path> --caddy <path> \
 #       --image-util <path> [--variant base] -o <out-layout-dir>
 #   images/lib/build-image.sh <name> --puppet <path> --caddy <path> \
-#       --image-util <path> --variant gha-runner \
+#       --image-util <path> --variant <overlay> \
 #       --base-delta <base-out>.build/delta.qcow2 \
 #       [--boot-fat <base-out>.build/boot.fat] -o <out-layout-dir>
 #
@@ -542,23 +544,30 @@ nspawn)
 *) die "unknown --backend: $backend (expected: virt-customize, nspawn)" ;;
 esac
 
-case "$variant" in
-base)
-	[ -z "$base_delta" ] || die "--base-delta is only valid with --variant gha-runner"
-	[ -z "$boot_fat_in" ] || die "--boot-fat is only valid with --variant gha-runner"
-	provision="$images_dir/$name/provision.sh"
-	;;
-gha-runner)
-	[ -n "$base_delta" ] || die "--variant gha-runner requires --base-delta <path>"
+# The in-guest provisioning scripts, in run order: the shared one first, then the
+# per-image one. An overlay may define either or both.
+provision_scripts=()
+if [ "$variant" = base ]; then
+	[ -z "$base_delta" ] || die "--base-delta is only valid for an overlay variant"
+	[ -z "$boot_fat_in" ] || die "--boot-fat is only valid for an overlay variant"
+	provision_scripts=("$images_dir/lib/provision-common.sh" "$images_dir/$name/provision.sh")
+	[ -f "$images_dir/$name/provision.sh" ] ||
+		die "missing provision script: $images_dir/$name/provision.sh"
+else
+	[ -n "$base_delta" ] || die "--variant $variant requires --base-delta <path>"
 	[ -f "$base_delta" ] || die "base delta not found: $base_delta"
-	provision="$images_dir/$name/gha-runner/provision.sh"
-	;;
-*) die "unknown --variant: $variant (expected: base, gha-runner)" ;;
-esac
+	for candidate in "$images_dir/lib/provision-$variant.sh" \
+		"$images_dir/$name/$variant/provision.sh"; do
+		if [ -f "$candidate" ]; then
+			provision_scripts+=("$candidate")
+		fi
+	done
+	[ "${#provision_scripts[@]}" -gt 0 ] ||
+		die "no provisioning for --variant $variant on image $name"
+fi
 
 manifest="$images_dir/$name/manifest.sh"
 [ -f "$manifest" ] || die "no manifest for image $name: $manifest"
-[ -f "$provision" ] || die "missing provision script: $provision"
 
 # Absolute paths: virt-customize and image-util run from a temp cwd / appliance.
 mkdir -p "$out"
@@ -614,25 +623,33 @@ disk | sd) ;;
 *) die "unknown image type '$type' (expected: disk, sd)" ;;
 esac
 
-# An sd gha-runner overlay reuses the base build's byte-identical boot blob.
-if [ "$variant" = gha-runner ]; then
+# An sd overlay reuses the base build's byte-identical boot blob.
+if [ "$variant" != base ]; then
 	if [ "$type" = sd ]; then
-		[ -n "$boot_fat_in" ] || die "sd gha-runner requires --boot-fat <path>"
+		[ -n "$boot_fat_in" ] || die "an sd $variant overlay requires --boot-fat <path>"
 		[ -f "$boot_fat_in" ] || die "boot fat not found: $boot_fat_in"
 	elif [ -n "$boot_fat_in" ]; then
 		die "--boot-fat is only used for sd images"
 	fi
 fi
 
-# The runner variant ships as a distinct image (extra root layer + a suffixed
-# name/title); the base variant ships the manifest's name/title verbatim.
-if [ "$variant" = gha-runner ]; then
-	image_name="$name-gha-runner"
-	image_title="$title with GitHub Actions Runner"
-else
+# An overlay ships as a distinct image, with a suffixed name/title; the base
+# variant ships the manifest's verbatim. Naming an overlay here declares it.
+case "$variant" in
+base)
 	image_name="$name"
 	image_title="$title"
-fi
+	;;
+gha-runner)
+	image_name="$name-gha-runner"
+	image_title="$title with GitHub Actions Runner"
+	;;
+webide)
+	image_name="$name-webide"
+	image_title="$title with code-server Web IDE"
+	;;
+*) die "unknown --variant: $variant (expected: base, gha-runner, webide)" ;;
+esac
 
 # Intermediate blobs live alongside the layout; kept for overlay reuse.
 work_dir="${out%/}.build"
@@ -695,6 +712,19 @@ if [ "$variant" = base ]; then
 		die "rustup-init checksum mismatch"
 	chmod +x "$rustup_init"
 
+	# ttyd, the web terminal's server, likewise (see images/lib/ttyd-release.sh).
+	ttyd_url="" ttyd_sha256=""
+	# shellcheck source=/dev/null
+	source "$images_dir/lib/ttyd-release.sh"
+	: "${ttyd_url:?ttyd_url missing for arch $arch}"
+	: "${ttyd_sha256:?ttyd_sha256 missing for arch $arch}"
+
+	ttyd="$work_dir/ttyd"
+	echo "build-image: fetching ttyd..." >&2
+	curl -fL "$ttyd_url" -o "$ttyd" || die "failed to fetch ttyd"
+	echo "${ttyd_sha256}  ${ttyd}" | sha256sum -c - || die "ttyd checksum mismatch"
+	chmod +x "$ttyd"
+
 	# Manifest-derived values for the in-guest provision scripts. virt-customize
 	# --run does not forward the host environment, so hand them across in a file
 	# the scripts source. serial_consoles is flattened to a space-separated
@@ -709,13 +739,14 @@ if [ "$variant" = base ]; then
 	qemu-img create -f qcow2 -b "$layer0" -F qcow2 "$delta" >/dev/null
 	grow_root_delta "$delta" "$type"
 
-	# Provision via the selected backend: copy in the puppet/rustup/expandroot
-	# payload + the manifest env, install the manifest packages (needs network),
-	# then run the shared + per-image provision scripts.
+	# Provision via the selected backend: copy in the puppet/caddy/ttyd/rustup/
+	# expandroot payload + the manifest env, install the manifest packages (needs
+	# network), then run the shared + per-image provision scripts.
 	prov_network=yes
 	prov_copy_in=(
 		"$puppet:/usr/local/bin"
 		"$caddy:/usr/local/bin"
+		"$ttyd:/usr/local/bin"
 		"$rustup_init:/opt"
 		"$images_dir/lib/expandroot.sh:/opt"
 		"$prov_env:/var/tmp"
@@ -726,7 +757,7 @@ if [ "$variant" = base ]; then
 	[ -f "$images_dir/$name/pre-install.sh" ] &&
 		prov_preinstall=("$images_dir/$name/pre-install.sh")
 	prov_install=("${packages[@]}")
-	prov_run=("$images_dir/lib/provision-common.sh" "$provision")
+	prov_run=("${provision_scripts[@]}")
 	# sd: mount the boot FAT during provisioning so nbd-client's initramfs lands
 	# on the boot layer (see nspawn_provision). boot_fat is the mtools-edited FAT
 	# from step 2; disk images have none.
@@ -734,7 +765,7 @@ if [ "$variant" = base ]; then
 	[ "$type" = sd ] && prov_boot_fat="$boot_fat"
 	provision_delta "$delta" "$type"
 else
-	# gha-runner overlay: a root layer over the base delta. The OCI chain backs
+	# Overlay variant: a root layer over the base delta. The OCI chain backs
 	# onto the byte-identical base delta (--base-delta) so it dedupes with the
 	# base image's head. To CUSTOMIZE on top we need a readable chain, so work on
 	# a COPY whose backing is re-pointed at layer0 (rebase -u only rewrites the
@@ -746,14 +777,34 @@ else
 
 	qemu-img create -f qcow2 -b "$base_delta_work" -F qcow2 "$delta" >/dev/null
 
-	# No network / install / rustup: the overlay only writes the runner units (the
-	# runner itself is downloaded at first boot, see
-	# images/lib/install-gh-actions-runner.sh).
+	# No network / apt / rustup in an overlay: what it installs is either fetched
+	# host-side and copied in, or downloaded at first boot.
 	prov_network=no
-	prov_copy_in=("$images_dir/lib/install-gh-actions-runner.sh:/opt")
 	prov_preinstall=()
 	prov_install=()
-	prov_run=("$provision")
+	prov_run=("${provision_scripts[@]}")
+
+	prov_copy_in=()
+	case "$variant" in
+	gha-runner)
+		prov_copy_in=("$images_dir/lib/install-gh-actions-runner.sh:/opt")
+		;;
+	webide)
+		code_server_url="" code_server_sha256=""
+		# shellcheck source=/dev/null
+		source "$images_dir/lib/code-server-release.sh"
+		: "${code_server_url:?code_server_url missing for arch $arch}"
+		: "${code_server_sha256:?code_server_sha256 missing for arch $arch}"
+
+		code_server_deb="$work_dir/code-server.deb"
+		echo "build-image: fetching code-server..." >&2
+		curl -fL "$code_server_url" -o "$code_server_deb" ||
+			die "failed to fetch code-server"
+		echo "${code_server_sha256}  ${code_server_deb}" | sha256sum -c - ||
+			die "code-server checksum mismatch"
+		prov_copy_in=("$code_server_deb:/var/tmp")
+		;;
+	esac
 	# The overlay reuses the base build's boot FAT verbatim (initrd and all) and
 	# changes only the root, so it never touches /boot/firmware.
 	prov_boot_fat=""
@@ -770,11 +821,11 @@ finalize_delta "$delta"
 layer_args=()
 [ "$type" = sd ] && layer_args+=(--layer "boot=$boot_fat")
 layer_args+=(--layer "root=$layer0")
-[ "$variant" = gha-runner ] && layer_args+=(--layer "root=$base_delta")
+[ "$variant" != base ] && layer_args+=(--layer "root=$base_delta")
 layer_args+=(--layer "root=$delta")
 
 root_layers=2
-[ "$variant" = gha-runner ] && root_layers=3
+[ "$variant" != base ] && root_layers=3
 boot_layers=0
 [ "$type" = sd ] && boot_layers=1
 

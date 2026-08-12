@@ -130,45 +130,83 @@ jobs:
 
       # Fetch + verify the upstream base, provision a qcow2 overlay delta (via the
       # selected backend, no guest boot), then assemble + validate the OCI layout.
-      # Build the base layout, then the gha-runner overlay in the SAME run so the
-      # overlay backs onto the byte-identical base delta (kept in out.build/ by
-      # build-image.sh) — yielding a 3-root-layer chain (layer0 + base delta +
-      # runner delta) whose lower two blobs dedupe with the base image. Each
-      # build-image.sh internally assembles + validates its layout (the base
-      # asserts 2 root layers, the runner asserts 3).
-      - name: Build image layouts (base + gha-runner)
+      # This one keeps its intermediate blobs in out.build/, which every overlay
+      # step below backs onto — hence all of them running in the same job.
+      - name: Build base image layout
+        id: build-base
         run: |
           set -euxo pipefail
-          puppet="${{ steps.bins.outputs.puppet }}/bin/tml-puppet"
-          caddy="${{ steps.bins.outputs.caddy }}/bin/caddy"
-          image_util="${{ steps.bins.outputs.image_util }}/bin/image-util"
           ./images/lib/build-image.sh "${{ matrix.name }}" \
-            --puppet "$puppet" --caddy "$caddy" --image-util "$image_util" \
+            --puppet "${{ steps.bins.outputs.puppet }}/bin/tml-puppet" \
+            --caddy "${{ steps.bins.outputs.caddy }}/bin/caddy" \
+            --image-util "${{ steps.bins.outputs.image_util }}/bin/image-util" \
             --backend "${{ matrix.backend }}" \
             -o out
-          # The overlay backs onto the base build's byte-identical delta; sd
-          # images (Raspberry Pi OS) additionally share its boot blob verbatim.
-          runner_args=(--variant gha-runner --base-delta out.build/delta.qcow2)
+
+      # Each overlay is provisioned on top of the base build's byte-identical
+      # delta, yielding a 3-root-layer chain (layer0 + base delta + overlay
+      # delta) whose lower two blobs dedupe with the base image; sd images
+      # (Raspberry Pi OS) additionally share its boot blob verbatim. The overlays
+      # are independent of each other, so a failing one does not skip the next.
+      - name: Build gha-runner image layout
+        id: build-gha-runner
+        if: ${{ !cancelled() && steps.build-base.outcome == 'success' }}
+        run: |
+          set -euxo pipefail
+          overlay_args=(--variant gha-runner --base-delta out.build/delta.qcow2)
           if [ -f out.build/boot.fat ]; then
-            runner_args+=(--boot-fat out.build/boot.fat)
+            overlay_args+=(--boot-fat out.build/boot.fat)
           fi
           ./images/lib/build-image.sh "${{ matrix.name }}" \
-            --puppet "$puppet" --caddy "$caddy" --image-util "$image_util" \
+            --puppet "${{ steps.bins.outputs.puppet }}/bin/tml-puppet" \
+            --caddy "${{ steps.bins.outputs.caddy }}/bin/caddy" \
+            --image-util "${{ steps.bins.outputs.image_util }}/bin/image-util" \
             --backend "${{ matrix.backend }}" \
-            "${runner_args[@]}" \
+            "${overlay_args[@]}" \
             -o out-gha-runner
 
-      # One artifact carrying both OCI layouts (base + gha-runner overlay) as
-      # top-level out/ and out-gha-runner/ directories. The intermediate build
-      # blobs in out.build/ are deliberately excluded.
-      - name: Upload image layouts
-        if: ${{ inputs.upload_artifacts }}
+      - name: Build webide image layout
+        id: build-webide
+        if: ${{ !cancelled() && steps.build-base.outcome == 'success' }}
+        run: |
+          set -euxo pipefail
+          overlay_args=(--variant webide --base-delta out.build/delta.qcow2)
+          if [ -f out.build/boot.fat ]; then
+            overlay_args+=(--boot-fat out.build/boot.fat)
+          fi
+          ./images/lib/build-image.sh "${{ matrix.name }}" \
+            --puppet "${{ steps.bins.outputs.puppet }}/bin/tml-puppet" \
+            --caddy "${{ steps.bins.outputs.caddy }}/bin/caddy" \
+            --image-util "${{ steps.bins.outputs.image_util }}/bin/image-util" \
+            --backend "${{ matrix.backend }}" \
+            "${overlay_args[@]}" \
+            -o out-webide
+
+      # One artifact per OCI layout, each gated on its own build step: a variant
+      # that failed leaves a half-written layout directory behind. The
+      # intermediate build blobs in out.build/ are deliberately excluded.
+      - name: Upload base image layout
+        if: ${{ !cancelled() && inputs.upload_artifacts && steps.build-base.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: treadmill-image-${{ matrix.name }}
-          path: |
-            out/
-            out-gha-runner/
+          path: out/
+          if-no-files-found: error
+
+      - name: Upload gha-runner image layout
+        if: ${{ !cancelled() && inputs.upload_artifacts && steps.build-gha-runner.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: treadmill-image-${{ matrix.name }}-gha-runner
+          path: out-gha-runner/
+          if-no-files-found: error
+
+      - name: Upload webide image layout
+        if: ${{ !cancelled() && inputs.upload_artifacts && steps.build-webide.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: treadmill-image-${{ matrix.name }}-webide
+          path: out-webide/
           if-no-files-found: error
 
       # --- ghcr push (conditioned on push_to_ghcr input) -----------
@@ -176,7 +214,7 @@ jobs:
       # Authenticate to ghcr; writes the credential to ~/.docker/config.json,
       # which skopeo reads by default in the push step below.
       - name: Log in to ghcr.io
-        if: ${{ inputs.push_to_ghcr }}
+        if: ${{ !cancelled() && inputs.push_to_ghcr }}
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -185,13 +223,17 @@ jobs:
 
       # `skopeo copy` the OCI layout to ghcr.io/<owner>/<name>:{<sha>,latest}.
       # The custom `shell:` resolves skopeo once and puts it on PATH.
-      # Push both layouts: the base to ghcr.io/<owner>/<name> and the overlay to
-      # ghcr.io/<owner>/<name>-gha-runner, each tagged with the commit sha and
-      # latest. The shared lower layers (layer0 + base delta) dedupe across the
-      # two repositories by digest.
+      # Push every layout that built: the base to ghcr.io/<owner>/<name> and each
+      # overlay to ghcr.io/<owner>/<name>-<variant>, each tagged with the commit
+      # sha and latest. The shared lower layers (layer0 + base delta) dedupe
+      # across the repositories by digest.
       - name: Push image layouts to ghcr.io
-        if: ${{ inputs.push_to_ghcr }}
+        if: ${{ !cancelled() && inputs.push_to_ghcr }}
         shell: nix shell nixpkgs#skopeo --command bash -euo pipefail {0}
+        env:
+          BASE_OUTCOME: ${{ steps.build-base.outcome }}
+          GHA_RUNNER_OUTCOME: ${{ steps.build-gha-runner.outcome }}
+          WEBIDE_OUTCOME: ${{ steps.build-webide.outcome }}
         run: |
           # The runner ships a v1 /etc/containers/registries.conf, which this
           # (newer) skopeo rejects ("must be in v2 format"). Point it at our own
@@ -207,5 +249,12 @@ jobs:
               skopeo copy --all "oci:$1" "docker://$2:${tag}"
             done
           }
-          push out          "ghcr.io/${OWNER}/${{ matrix.name }}"
-          push out-gha-runner "ghcr.io/${OWNER}/${{ matrix.name }}-gha-runner"
+          if [ "$BASE_OUTCOME" = success ]; then
+            push out "ghcr.io/${OWNER}/${{ matrix.name }}"
+          fi
+          if [ "$GHA_RUNNER_OUTCOME" = success ]; then
+            push out-gha-runner "ghcr.io/${OWNER}/${{ matrix.name }}-gha-runner"
+          fi
+          if [ "$WEBIDE_OUTCOME" = success ]; then
+            push out-webide "ghcr.io/${OWNER}/${{ matrix.name }}-webide"
+          fi

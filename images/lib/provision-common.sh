@@ -119,6 +119,9 @@ SERVICE
 systemctl enable tml-caddy.service
 
 # --- web terminal ---------------------------------------------------------
+# The ttyd binary comes from build-image.sh, not from apt (see
+# images/lib/ttyd-release.sh); tmux, which it launches, is a manifest package.
+#
 # ttyd has no --socket-mode, so the socket's own mode is whatever libwebsockets
 # picks. The runtime directory is the access control: 0750 tml:tml leaves it
 # traversable by the tml user and by root, which the proxy runs as.
@@ -132,7 +135,7 @@ User=tml
 Group=tml
 RuntimeDirectory=tml-ttyd
 RuntimeDirectoryMode=0750
-ExecStart=/usr/bin/ttyd --interface /run/tml-ttyd/ttyd.sock --writable tmux new-session -A -s tml
+ExecStart=/usr/local/bin/ttyd --interface /run/tml-ttyd/ttyd.sock --writable tmux new-session -A -s tml
 Restart=always
 RestartSec=5s
 SERVICE
