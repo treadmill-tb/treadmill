@@ -712,6 +712,19 @@ if [ "$variant" = base ]; then
 		die "rustup-init checksum mismatch"
 	chmod +x "$rustup_init"
 
+	# ttyd, the web terminal's server, likewise (see images/lib/ttyd-release.sh).
+	ttyd_url="" ttyd_sha256=""
+	# shellcheck source=/dev/null
+	source "$images_dir/lib/ttyd-release.sh"
+	: "${ttyd_url:?ttyd_url missing for arch $arch}"
+	: "${ttyd_sha256:?ttyd_sha256 missing for arch $arch}"
+
+	ttyd="$work_dir/ttyd"
+	echo "build-image: fetching ttyd..." >&2
+	curl -fL "$ttyd_url" -o "$ttyd" || die "failed to fetch ttyd"
+	echo "${ttyd_sha256}  ${ttyd}" | sha256sum -c - || die "ttyd checksum mismatch"
+	chmod +x "$ttyd"
+
 	# Manifest-derived values for the in-guest provision scripts. virt-customize
 	# --run does not forward the host environment, so hand them across in a file
 	# the scripts source. serial_consoles is flattened to a space-separated
@@ -726,13 +739,14 @@ if [ "$variant" = base ]; then
 	qemu-img create -f qcow2 -b "$layer0" -F qcow2 "$delta" >/dev/null
 	grow_root_delta "$delta" "$type"
 
-	# Provision via the selected backend: copy in the puppet/rustup/expandroot
-	# payload + the manifest env, install the manifest packages (needs network),
-	# then run the shared + per-image provision scripts.
+	# Provision via the selected backend: copy in the puppet/caddy/ttyd/rustup/
+	# expandroot payload + the manifest env, install the manifest packages (needs
+	# network), then run the shared + per-image provision scripts.
 	prov_network=yes
 	prov_copy_in=(
 		"$puppet:/usr/local/bin"
 		"$caddy:/usr/local/bin"
+		"$ttyd:/usr/local/bin"
 		"$rustup_init:/opt"
 		"$images_dir/lib/expandroot.sh:/opt"
 		"$prov_env:/var/tmp"
