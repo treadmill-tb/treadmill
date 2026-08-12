@@ -40,8 +40,9 @@ permissions:
 
 jobs:
   # Resolve the dispatch checkboxes into a build matrix: one entry per selected
-  # family, carrying its runner architecture and the matching static puppet
-  # package. This is the single place that maps families -> (runner, puppet).
+  # family, carrying its runner architecture and the matching static puppet and
+  # caddy packages. This is the single place that maps families -> (runner,
+  # binaries).
   prepare:
     runs-on: ubuntu-latest
     outputs:
@@ -58,13 +59,13 @@ jobs:
           add() { include="$(jq -c --argjson o "$1" '. + [$o]' <<<"$include")"; }
 
           if [ "$BUILD_UBUNTU_SERVER_2604" = "true" ]; then
-            add '{"name":"ubuntu-server-2604","runs-on":"ubuntu-latest","puppet":"tml-puppet-static-x86_64","backend":"nspawn"}'
+            add '{"name":"ubuntu-server-2604","runs-on":"ubuntu-latest","puppet":"tml-puppet-static-x86_64","caddy":"tml-caddy-static-x86_64","backend":"nspawn"}'
           fi
 
           # The aarch64 Raspberry Pi OS family builds on a matched-arch hosted
           # runner (the libguestfs appliance has no cross-arch support).
           if [ "$BUILD_RASPBERRYPIOS_13" = "true" ]; then
-            add '{"name":"raspberrypios-13","runs-on":"ubuntu-24.04-arm","puppet":"tml-puppet-static-aarch64","backend":"nspawn"}'
+            add '{"name":"raspberrypios-13","runs-on":"ubuntu-24.04-arm","puppet":"tml-puppet-static-aarch64","caddy":"tml-caddy-static-aarch64","backend":"nspawn"}'
           fi
 
           if [ "$(jq 'length' <<<"$include")" -eq 0 ]; then
@@ -95,13 +96,15 @@ jobs:
       # (natively for the runner's architecture). Capture the store paths
       # directly rather than `-o <link>`, whose symlink would collide with the
       # in-tree `puppet/` crate directory.
-      - name: Build puppet + image-util
+      - name: Build puppet + caddy + image-util
         id: bins
         run: |
           set -euxo pipefail
           puppet="$(nix build --print-build-logs --no-link --print-out-paths ".#${{ matrix.puppet }}")"
+          caddy="$(nix build --print-build-logs --no-link --print-out-paths ".#${{ matrix.caddy }}")"
           image_util="$(nix build --print-build-logs --no-link --print-out-paths '.#image-util')"
           echo "puppet=$puppet" >> "$GITHUB_OUTPUT"
+          echo "caddy=$caddy" >> "$GITHUB_OUTPUT"
           echo "image_util=$image_util" >> "$GITHUB_OUTPUT"
 
       # The nspawn backend is fully VM-free: it provisions in a systemd-nspawn
@@ -137,9 +140,10 @@ jobs:
         run: |
           set -euxo pipefail
           puppet="${{ steps.bins.outputs.puppet }}/bin/tml-puppet"
+          caddy="${{ steps.bins.outputs.caddy }}/bin/caddy"
           image_util="${{ steps.bins.outputs.image_util }}/bin/image-util"
           ./images/lib/build-image.sh "${{ matrix.name }}" \
-            --puppet "$puppet" --image-util "$image_util" \
+            --puppet "$puppet" --caddy "$caddy" --image-util "$image_util" \
             --backend "${{ matrix.backend }}" \
             -o out
           # The overlay backs onto the base build's byte-identical delta; sd
@@ -149,7 +153,7 @@ jobs:
             runner_args+=(--boot-fat out.build/boot.fat)
           fi
           ./images/lib/build-image.sh "${{ matrix.name }}" \
-            --puppet "$puppet" --image-util "$image_util" \
+            --puppet "$puppet" --caddy "$caddy" --image-util "$image_util" \
             --backend "${{ matrix.backend }}" \
             "${runner_args[@]}" \
             -o out-gha-runner

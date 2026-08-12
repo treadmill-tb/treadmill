@@ -24,10 +24,11 @@
 #                          byte-identical boot blob, shared verbatim).
 #
 # Usage:
-#   images/lib/build-image.sh <name> --puppet <path> --image-util <path> \
-#       [--variant base] -o <out-layout-dir>
-#   images/lib/build-image.sh <name> --puppet <path> --image-util <path> \
-#       --variant gha-runner --base-delta <base-out>.build/delta.qcow2 \
+#   images/lib/build-image.sh <name> --puppet <path> --caddy <path> \
+#       --image-util <path> [--variant base] -o <out-layout-dir>
+#   images/lib/build-image.sh <name> --puppet <path> --caddy <path> \
+#       --image-util <path> --variant gha-runner \
+#       --base-delta <base-out>.build/delta.qcow2 \
 #       [--boot-fat <base-out>.build/boot.fat] -o <out-layout-dir>
 #
 # The build's intermediate blobs (layer0, delta, boot.fat) are kept in
@@ -466,6 +467,7 @@ provision_delta() {
 
 name=""
 puppet=""
+caddy=""
 image_util=""
 variant="base"
 backend="virt-customize"
@@ -482,6 +484,10 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 	--puppet)
 		puppet="$2"
+		shift 2
+		;;
+	--caddy)
+		caddy="$2"
 		shift 2
 		;;
 	--image-util)
@@ -514,9 +520,11 @@ done
 
 [ -n "$name" ] || die "missing <name> (e.g. ubuntu-server-2604)"
 [ -n "$puppet" ] || die "missing --puppet <path>"
+[ -n "$caddy" ] || die "missing --caddy <path>"
 [ -n "$image_util" ] || die "missing --image-util <path>"
 [ -n "$out" ] || die "missing -o <out-layout-dir>"
 [ -x "$puppet" ] || die "puppet binary not executable: $puppet"
+[ -x "$caddy" ] || die "caddy binary not executable: $caddy"
 [ -x "$image_util" ] || die "image-util binary not executable: $image_util"
 
 # The nspawn backend (CI: native-arch, no /dev/kvm) provisions in a container
@@ -556,6 +564,7 @@ manifest="$images_dir/$name/manifest.sh"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 puppet="$(cd "$(dirname "$puppet")" && pwd)/$(basename "$puppet")"
+caddy="$(cd "$(dirname "$caddy")" && pwd)/$(basename "$caddy")"
 image_util="$(cd "$(dirname "$image_util")" && pwd)/$(basename "$image_util")"
 if [ -n "$base_delta" ]; then
 	base_delta="$(cd "$(dirname "$base_delta")" && pwd)/$(basename "$base_delta")"
@@ -706,6 +715,7 @@ if [ "$variant" = base ]; then
 	prov_network=yes
 	prov_copy_in=(
 		"$puppet:/usr/local/bin"
+		"$caddy:/usr/local/bin"
 		"$rustup_init:/opt"
 		"$images_dir/lib/expandroot.sh:/opt"
 		"$prov_env:/var/tmp"
