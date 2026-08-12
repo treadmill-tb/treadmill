@@ -285,6 +285,9 @@ pub struct JobGatewayEndpoint {
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct JobGatewayDispatch {
+    /// The `iss` every minted service token carries, which the job requires of
+    /// a token just as the gateway does.
+    pub issuer: String,
     /// The switchboard's public key for verifying minted service tokens.
     pub signing_public_key: String,
     /// Identifier of `signing_public_key`, carried as the `kid` of a minted

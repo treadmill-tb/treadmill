@@ -201,6 +201,7 @@ pub fn service_endpoint(
 /// public key and the domains it is published under are all it needs.
 pub fn build_dispatch(gateway: &JobGateway) -> api::switchboard_supervisor::JobGatewayDispatch {
     api::switchboard_supervisor::JobGatewayDispatch {
+        issuer: gateway.config.issuer.clone(),
         signing_public_key: gateway.public_key_pem.clone(),
         key_id: gateway.key_id.clone(),
         endpoints: gateway

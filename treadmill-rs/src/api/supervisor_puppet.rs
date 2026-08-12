@@ -206,6 +206,7 @@ pub struct JobGatewayEndpoint {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct JobGatewayInfo {
+    pub issuer: String,
     pub signing_public_key: String,
     pub key_id: String,
     pub endpoints: Vec<JobGatewayEndpoint>,

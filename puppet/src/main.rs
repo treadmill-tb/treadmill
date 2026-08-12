@@ -201,6 +201,12 @@ async fn update_job_info_files(args: &PuppetDaemonArgs, job_info: JobInfo) -> Re
 
     // Context for offering HTTP/WS services through public gateways.
     if let Some(gateway) = job_info.gateway {
+        let issuer_path = job_info_dir.join("gateway-issuer");
+        info!("Writing gateway issuer to file {issuer_path:?}");
+        tokio::fs::write(issuer_path, gateway.issuer.as_bytes())
+            .await
+            .context("Writing gateway issuer to file")?;
+
         let key_path = job_info_dir.join("gateway-key.pem");
         info!("Writing gateway signing key to file {key_path:?}");
         tokio::fs::write(key_path, gateway.signing_public_key.as_bytes())
