@@ -11,9 +11,28 @@ use uuid::Uuid;
 use treadmill_rs::api::supervisor_puppet::{PuppetMsg, SupervisorMsg};
 use treadmill_rs::control_socket::Supervisor;
 
+const BIND_ATTEMPTS: usize = 20;
+const BIND_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
 #[derive(Debug, Clone)]
 enum ControlSocketTaskCommand {
     Shutdown,
+}
+
+async fn bind(bind_addr: std::net::SocketAddr) -> Result<TcpListener> {
+    let mut attempts_left = BIND_ATTEMPTS;
+    loop {
+        match TcpListener::bind(bind_addr).await {
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && attempts_left > 1 => {
+                attempts_left -= 1;
+                debug!("Control socket address {bind_addr:?} is still in use, retrying");
+                tokio::time::sleep(BIND_RETRY_INTERVAL).await;
+            }
+            res => {
+                return res.with_context(|| format!("Binding to TCP socket at {bind_addr:?}"));
+            }
+        }
+    }
 }
 
 pub struct TcpControlSocket<S: Supervisor> {
@@ -40,9 +59,7 @@ impl<S: Supervisor> TcpControlSocket<S> {
         bind_addr: std::net::SocketAddr,
         supervisor: Arc<S>,
     ) -> Result<Self> {
-        let server_socket: TcpListener = TcpListener::bind(bind_addr)
-            .await
-            .with_context(|| format!("Binding to TCP socket at {bind_addr:?}"))?;
+        let server_socket: TcpListener = bind(bind_addr).await?;
 
         info!("Opened control socket TCP listener on {bind_addr:?}");
 

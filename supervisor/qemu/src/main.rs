@@ -294,7 +294,7 @@ struct JobSlot {
 
 #[derive(Default)]
 pub struct JobResources {
-    control_socket: Option<TcpControlSocket<QemuSupervisor>>,
+    control_socket: Option<TcpControlSocket<JobControlEndpoint>>,
 
     publisher: Option<LogPublisher>,
 
@@ -349,33 +349,6 @@ impl QemuSupervisor {
             _args: args,
             config,
         }
-    }
-
-    async fn job_handle(&self, tgt_job_id: Uuid) -> Option<JobHandle> {
-        match self.slot.lock().await.as_ref() {
-            Some(slot) if slot.handle.job_id == tgt_job_id => Some(slot.handle.clone()),
-            _ => {
-                event!(
-                    Level::WARN,
-                    ?tgt_job_id,
-                    "Received a puppet request for a job this supervisor does not hold",
-                );
-                None
-            }
-        }
-    }
-
-    async fn job_facts(&self, tgt_job_id: Uuid) -> Option<Arc<JobFacts>> {
-        let facts = self.job_handle(tgt_job_id).await?.facts();
-        if facts.phase.terminated() {
-            event!(
-                Level::WARN,
-                ?tgt_job_id,
-                "Received a puppet request for a job that has already terminated",
-            );
-            return None;
-        }
-        Some(facts)
     }
 
     /// Order the image's runtime backing chain base→head and map each layer to
@@ -554,8 +527,8 @@ impl QemuSupervisor {
 struct JobTask {
     supervisor: Arc<QemuSupervisor>,
     start_job_req: connector::StartJobMessage,
+    handle: JobHandle,
     facts_tx: watch::Sender<Arc<JobFacts>>,
-    cancel: CancellationToken,
     resources: JobResources,
     terminate_acks: Vec<oneshot::Sender<Result<(), connector::JobError>>>,
 }
@@ -585,7 +558,7 @@ impl JobTask {
     async fn run(mut self, mut cmd_rx: mpsc::Receiver<JobCommand>) {
         self.set_phase(Phase::Starting).await;
 
-        let cancel = self.cancel.clone();
+        let cancel = self.handle.cancel.clone();
         let startup = tokio::select! {
             biased;
             _ = cancel.cancelled() => None,
@@ -717,7 +690,9 @@ impl JobTask {
             self.supervisor.config.base.supervisor_id,
             self.job_id(),
             listen_addr,
-            self.supervisor.clone(),
+            Arc::new(JobControlEndpoint {
+                handle: self.handle.clone(),
+            }),
         )
         .await
         .map_err(|e| connector::JobError {
@@ -1140,27 +1115,27 @@ impl connector::Supervisor for QemuSupervisor {
             });
         }
 
-        let job_id = start_job_req.job_id;
         let (cmd_tx, cmd_rx) = mpsc::channel(JOB_MAILBOX_CAPACITY);
         let (facts_tx, facts_rx) = watch::channel(Arc::new(JobFacts::new(&start_job_req)));
-        let cancel = CancellationToken::new();
+
+        let handle = JobHandle {
+            job_id: start_job_req.job_id,
+            cmd: cmd_tx,
+            facts: facts_rx,
+            cancel: CancellationToken::new(),
+        };
 
         let task = JobTask {
             supervisor: this.clone(),
             start_job_req,
+            handle: handle.clone(),
             facts_tx,
-            cancel: cancel.clone(),
             resources: JobResources::default(),
             terminate_acks: Vec::new(),
         };
 
         *slot_lg = Some(JobSlot {
-            handle: JobHandle {
-                job_id,
-                cmd: cmd_tx,
-                facts: facts_rx,
-                cancel,
-            },
+            handle,
             task: tokio::spawn(task.run(cmd_rx)),
         });
 
@@ -1211,15 +1186,47 @@ impl connector::Supervisor for QemuSupervisor {
     }
 }
 
+#[derive(Debug)]
+pub struct JobControlEndpoint {
+    handle: JobHandle,
+}
+
+impl JobControlEndpoint {
+    fn handle(&self, tgt_job_id: Uuid) -> Option<&JobHandle> {
+        if self.handle.job_id != tgt_job_id {
+            event!(
+                Level::WARN,
+                ?tgt_job_id,
+                "Received a puppet request for a job this endpoint does not serve",
+            );
+            return None;
+        }
+        Some(&self.handle)
+    }
+
+    fn facts(&self, tgt_job_id: Uuid) -> Option<Arc<JobFacts>> {
+        let facts = self.handle(tgt_job_id)?.facts();
+        if facts.phase.terminated() {
+            event!(
+                Level::WARN,
+                ?tgt_job_id,
+                "Received a puppet request for a job that has already terminated",
+            );
+            return None;
+        }
+        Some(facts)
+    }
+}
+
 #[async_trait]
-impl control_socket::Supervisor for QemuSupervisor {
+impl control_socket::Supervisor for JobControlEndpoint {
     #[instrument(skip(self))]
     async fn network_config(
         &self,
         _host_id: Uuid,
         tgt_job_id: Uuid,
     ) -> Option<treadmill_rs::api::supervisor_puppet::NetworkConfig> {
-        let facts = self.job_facts(tgt_job_id).await?;
+        let facts = self.facts(tgt_job_id)?;
         Some(treadmill_rs::api::supervisor_puppet::NetworkConfig {
             hostname: facts.hostname.to_string(),
             // QemuSupervisor, don't supply a network interface to configure:
@@ -1235,7 +1242,7 @@ impl control_socket::Supervisor for QemuSupervisor {
         _host_id: Uuid,
         tgt_job_id: Uuid,
     ) -> Option<HashMap<String, ParameterValue>> {
-        let facts = self.job_facts(tgt_job_id).await?;
+        let facts = self.facts(tgt_job_id)?;
         Some((*facts.parameters).clone())
     }
 
@@ -1245,7 +1252,7 @@ impl control_socket::Supervisor for QemuSupervisor {
         _host_id: Uuid,
         tgt_job_id: Uuid,
     ) -> Option<treadmill_rs::api::supervisor_puppet::JobGatewayInfo> {
-        let facts = self.job_facts(tgt_job_id).await?;
+        let facts = self.facts(tgt_job_id)?;
 
         // Hand back whatever the coordinator dispatched this job with:
         facts.gateway.as_ref().as_ref().map(|gateway| {
@@ -1277,7 +1284,7 @@ impl control_socket::Supervisor for QemuSupervisor {
     async fn puppet_ready(&self, _puppet_event_id: u64, _host_id: Uuid, job_id: Uuid) {
         event!(Level::INFO, "Received puppet ready event");
 
-        if let Some(handle) = self.job_handle(job_id).await {
+        if let Some(handle) = self.handle(job_id) {
             handle.notify(JobCommand::PuppetReady);
         }
     }
@@ -1331,7 +1338,7 @@ impl control_socket::Supervisor for QemuSupervisor {
             "Received puppet event to terminate job",
         );
 
-        if let Some(handle) = self.job_handle(job_id).await {
+        if let Some(handle) = self.handle(job_id) {
             handle.cancel.cancel();
             handle.notify(JobCommand::PuppetTerminate);
         }
@@ -1352,7 +1359,7 @@ impl control_socket::Supervisor for QemuSupervisor {
             services.len(),
         );
 
-        if let Some(handle) = self.job_handle(job_id).await {
+        if let Some(handle) = self.handle(job_id) {
             handle.notify(JobCommand::PuppetServiceSet(services));
         }
     }
@@ -1685,6 +1692,19 @@ mod tests {
         serde_json::from_str(&json).expect("canned manifest parses as an OCI image manifest")
     }
 
+    async fn endpoint(sup: &Arc<QemuSupervisor>) -> JobControlEndpoint {
+        JobControlEndpoint {
+            handle: sup
+                .slot
+                .lock()
+                .await
+                .as_ref()
+                .expect("a job occupies the slot")
+                .handle
+                .clone(),
+        }
+    }
+
     async fn job_facts(sup: &Arc<QemuSupervisor>) -> watch::Receiver<Arc<JobFacts>> {
         sup.slot
             .lock()
@@ -1730,7 +1750,10 @@ mod tests {
         let mut facts = job_facts(&h.sup).await;
         wait_for(&mut facts, booting).await;
 
-        h.sup.puppet_ready(0, Uuid::new_v4(), job_id).await;
+        endpoint(&h.sup)
+            .await
+            .puppet_ready(0, Uuid::new_v4(), job_id)
+            .await;
         wait_for(&mut facts, ready).await;
 
         facts
@@ -1978,7 +2001,10 @@ mod tests {
         }
 
         // Puppet reports ready → the job goes Ready.
-        h.sup.puppet_ready(0, host_id, job_id).await;
+        endpoint(&h.sup)
+            .await
+            .puppet_ready(0, host_id, job_id)
+            .await;
         wait_for(&mut facts, ready).await;
         assert_eq!(
             h.connector.labels().last().map(String::as_str),
@@ -2046,13 +2072,13 @@ mod tests {
         let h = harness(virtual_size, virtual_size);
         let job_id = Uuid::new_v4();
 
-        // Nothing is answered for a job this supervisor does not run.
-        assert!(h.sup.gateway(host_id, job_id).await.is_none());
-
         start_and_boot(&h, start_msg_with_gateway(job_id, Some(dispatched.clone()))).await;
+        let puppet = endpoint(&h.sup).await;
 
-        let relayed = h
-            .sup
+        // Nothing is answered for a job this endpoint does not serve.
+        assert!(puppet.gateway(host_id, Uuid::new_v4()).await.is_none());
+
+        let relayed = puppet
             .gateway(host_id, job_id)
             .await
             .expect("a job dispatched with a gateway is told about it");
@@ -2077,7 +2103,13 @@ mod tests {
         let plain = harness(virtual_size, virtual_size);
         let plain_job = Uuid::new_v4();
         start_and_boot(&plain, start_msg(plain_job)).await;
-        assert!(plain.sup.gateway(host_id, plain_job).await.is_none());
+        assert!(
+            endpoint(&plain.sup)
+                .await
+                .gateway(host_id, plain_job)
+                .await
+                .is_none()
+        );
     }
 
     /// A service announcement is relayed to the coordinator as it arrives: the
@@ -2106,10 +2138,11 @@ mod tests {
                 protocol: "sshws".to_string(),
             },
         ];
-        h.sup
+        let puppet = endpoint(&h.sup).await;
+        puppet
             .job_service_set(0, announced.clone(), host_id, job_id)
             .await;
-        h.sup.job_service_set(1, Vec::new(), host_id, job_id).await;
+        puppet.job_service_set(1, Vec::new(), host_id, job_id).await;
 
         // Puppet events are ordered against the job's state changes, so a
         // terminate the job has acted on proves both were relayed first.
