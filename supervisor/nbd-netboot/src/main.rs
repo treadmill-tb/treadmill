@@ -9,7 +9,8 @@
 //!
 //! Until then this binary keeps its configuration schema and connector wiring so
 //! deployments still parse and the supervisor still registers, but the job
-//! lifecycle (`start_job`/`stop_job`) is `todo!()`. The pre-cutover
+//! lifecycle (`start_job`/`terminate_job`/`remove_job`) is `todo!()`. The
+//! pre-cutover
 //! implementation is preserved in git history (commit `705e010`).
 
 use std::path::PathBuf;
@@ -128,9 +129,17 @@ impl connector::Supervisor for NbdNetbootSupervisor {
     }
 
     #[instrument(skip(_this))]
-    async fn stop_job(
+    async fn terminate_job(
         _this: &Arc<Self>,
-        _msg: connector::StopJobMessage,
+        _msg: connector::TerminateJobMessage,
+    ) -> Result<(), connector::JobError> {
+        todo!("Phase 6.6: nbd-netboot OCI migration")
+    }
+
+    #[instrument(skip(_this))]
+    async fn remove_job(
+        _this: &Arc<Self>,
+        _msg: connector::RemoveJobMessage,
     ) -> Result<(), connector::JobError> {
         todo!("Phase 6.6: nbd-netboot OCI migration")
     }

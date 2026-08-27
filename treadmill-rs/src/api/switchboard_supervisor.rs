@@ -5,7 +5,7 @@
 //!
 //! The protocol carries a two-level version. The **major** rides the WebSocket
 //! subprotocol token ([`websocket::TREADMILL_WEBSOCKET_PROTOCOL`], e.g.
-//! `treadmillv1`): standard subprotocol negotiation selects a common token, and
+//! `treadmillv2`): standard subprotocol negotiation selects a common token, and
 //! an incompatible peer fails the HTTP upgrade cleanly. The **minor** (plus an
 //! optional set of feature flags) rides the handshake: the supervisor advertises
 //! its minor in the [`websocket::TREADMILL_PROTOCOL_MINOR_HEADER`] request
@@ -37,7 +37,7 @@ use uuid::Uuid;
 pub mod websocket {
     /// WebSocket subprotocol token carrying the protocol **major** version.
     /// The trailing integer MUST equal [`super::PROTOCOL_MAJOR`].
-    pub static TREADMILL_WEBSOCKET_PROTOCOL: &str = "treadmillv1";
+    pub static TREADMILL_WEBSOCKET_PROTOCOL: &str = "treadmillv2";
     /// Response header (switchboard → supervisor) carrying the JSON-encoded
     /// [`super::ServerHello`].
     pub static TREADMILL_WEBSOCKET_CONFIG: &str = "tml-socket-config";
@@ -50,14 +50,10 @@ pub mod websocket {
 
 /// The protocol major version implemented by this build. Must match the integer
 /// in [`websocket::TREADMILL_WEBSOCKET_PROTOCOL`].
-pub const PROTOCOL_MAJOR: u16 = 1;
+pub const PROTOCOL_MAJOR: u16 = 2;
 /// The protocol minor version implemented by this build. Bumped (additively)
 /// whenever a new message variant or feature flag is introduced.
-///
-/// minor 1: `StartJobMessage.log_streaming` (NATS/JetStream log streaming).
-/// minor 2: `StartJobMessage.gateway` and the `JobNetworkAddress` /
-/// `JobServiceSet` job events (gateway-exposed job services).
-pub const PROTOCOL_MINOR: u16 = 2;
+pub const PROTOCOL_MINOR: u16 = 0;
 
 /// A two-level protocol version. `major` is also pinned by the WebSocket
 /// subprotocol token; `minor` is negotiated in the handshake.
@@ -298,12 +294,20 @@ pub struct JobGatewayDispatch {
     pub endpoints: Vec<JobGatewayEndpoint>,
 }
 
-// -- StopJobRequest -------------------------------------------------------------------------------
+// -- TerminateJobRequest / RemoveJobRequest --------------------------------------------------------
 
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
-pub struct StopJobMessage {
-    /// Unique identifier of the job to be stopped:
+pub struct TerminateJobMessage {
+    /// Unique identifier of the job whose execution is to be stopped:
+    pub job_id: Uuid,
+}
+
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct RemoveJobMessage {
+    /// Unique identifier of the terminated job whose record and resources are
+    /// to be freed:
     pub job_id: Uuid,
 }
 
@@ -337,7 +341,7 @@ pub enum JobInitializingStage {
 /// The supervisor is ground truth for what is *physically executing*. The
 /// switchboard mirrors this into the `tml_switchboard.job_state` DB column and
 /// adopts it verbatim during reconciliation (case 4: the supervisor reports
-/// `OngoingJob(J_sb)` for the assigned job, so the DB takes the reported state).
+/// `HoldingJob(J_sb)` for the assigned job, so the DB takes the reported state).
 ///
 /// # Mapping to the DB `job_state`
 ///
@@ -367,9 +371,9 @@ pub enum JobInitializingStage {
 /// # The retained-terminal contract
 ///
 /// A supervisor keeps reporting `Terminated` for a finished job — retaining it
-/// in memory as `ReportedSupervisorStatus::OngoingJob` — until the switchboard
-/// acknowledges it with [`SwitchboardToSupervisor::StopJob`], at which point the
-/// supervisor drops the record and becomes `Idle`. This prevents a job that
+/// in memory as `ReportedSupervisorStatus::HoldingJob` — until the switchboard
+/// acknowledges it with [`SwitchboardToSupervisor::RemoveJob`], at which point
+/// the supervisor drops the record and becomes `Idle`. This prevents a job that
 /// completes while the switchboard is disconnected from being misread, on
 /// reconnect, as a dropped job (which would spuriously trigger its restart
 /// policy). The record is in-memory only: if the supervisor loses it (restart),
@@ -392,7 +396,7 @@ pub enum RunningJobState {
     /// transition (`termination_reason = workload_exited`). The workload's
     /// outcome is *not* carried here — it is reported out-of-band via
     /// [`SupervisorJobEvent::DeclareExitStatus`]. The supervisor retains this
-    /// report until the switchboard acks it with `StopJob` (see the type-level
+    /// report until the switchboard acks it with `RemoveJob` (see the type-level
     /// Rustdoc).
     Terminated,
 }
@@ -484,19 +488,21 @@ pub enum SupervisorJobEvent {
 /// `reconcile` function) hinge on this value:
 /// - `Idle` with no `J_sb` ⇒ aligned;
 /// - `Idle` with a `J_sb` ⇒ the job was lost (finalize as `SupervisorDroppedJob`);
-/// - `OngoingJob{job_id: J_sb}` ⇒ adopt `job_state` into the DB (case 4); a
-///   `Terminated` state finalizes the job and is acked with `StopJob`;
-/// - `OngoingJob` of any other (or unassigned) id ⇒ a zombie to `StopJob`.
+/// - `HoldingJob{job_id: J_sb}` ⇒ adopt `job_state` into the DB (case 4); a
+///   `Terminated` state finalizes the job and is acked with `RemoveJob`;
+/// - `HoldingJob` of any other (or unassigned) id ⇒ a zombie to terminate, then
+///   remove.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum ReportedSupervisorStatus {
-    /// The supervisor is executing `job_id`, currently in `job_state`.
-    OngoingJob {
+    /// The supervisor holds `job_id`, currently in `job_state`. A `Terminated`
+    /// `job_state` is a retained terminal record, held until `RemoveJob`.
+    HoldingJob {
         job_id: Uuid,
         job_state: RunningJobState,
     },
-    /// The supervisor is executing no job.
+    /// The supervisor holds no job.
     Idle,
 }
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
@@ -608,9 +614,18 @@ pub enum SwitchboardToSupervisor {
     /// rejects the command if it does not apply to the current job state. This
     /// makes re-issuing `StartJob` during reconciliation safe.
     StartJob(StartJobMessage),
-    /// Stop the job identified by the message. Idempotent: it applies regardless
-    /// of state as long as the job exists, and is a no-op once the job is gone.
-    StopJob(StopJobMessage),
+    /// Stop the execution of the job identified by the message. The job goes
+    /// `Terminating → Terminated`; its record and resources stay allocated until
+    /// a [`RemoveJob`](Self::RemoveJob). Idempotent: it applies regardless of
+    /// state, and succeeds on an already-terminated or unknown job.
+    TerminateJob(TerminateJobMessage),
+    /// Free the terminal record of the job identified by the message, and the
+    /// resources it retains; the supervisor becomes `Idle`. Fails with
+    /// [`JobErrorKind::NotTerminated`] on a job that is still executing, and
+    /// succeeds on an unknown job.
+    ///
+    /// [`JobErrorKind::NotTerminated`]: crate::connector::JobErrorKind::NotTerminated
+    RemoveJob(RemoveJobMessage),
     /// Ask the supervisor for its current [`ReportedSupervisorStatus`]. The
     /// correlated reply is a [`SupervisorToSwitchboard::StatusResponse`]; see
     /// [`Request`] for the correlation contract. Reconciliation issues exactly

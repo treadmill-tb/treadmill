@@ -21,15 +21,32 @@
       ]
     },
     {
-      "description": "Stop the job identified by the message. Idempotent: it applies regardless\nof state as long as the job exists, and is a no-op once the job is gone.",
+      "description": "Stop the execution of the job identified by the message. The job goes\n`Terminating → Terminated`; its record and resources stay allocated until\na [`RemoveJob`](Self::RemoveJob). Idempotent: it applies regardless of\nstate, and succeeds on an already-terminated or unknown job.",
       "type": "object",
       "properties": {
         "message": {
-          "$ref": "#/$defs/StopJobMessage"
+          "$ref": "#/$defs/TerminateJobMessage"
         },
         "type": {
           "type": "string",
-          "const": "stop_job"
+          "const": "terminate_job"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ]
+    },
+    {
+      "description": "Free the terminal record of the job identified by the message, and the\nresources it retains; the supervisor becomes `Idle`. Fails with\n[`JobErrorKind::NotTerminated`] on a job that is still executing, and\nsucceeds on an unknown job.\n\n[`JobErrorKind::NotTerminated`]: crate::connector::JobErrorKind::NotTerminated",
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/RemoveJobMessage"
+        },
+        "type": {
+          "type": "string",
+          "const": "remove_job"
         }
       },
       "required": [
@@ -288,6 +305,19 @@
         }
       ]
     },
+    "RemoveJobMessage": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "description": "Unique identifier of the terminated job whose record and resources are\nto be freed:",
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "job_id"
+      ]
+    },
     "Request": {
       "description": "A request carrying a unique `request_id` for correlation with its reply.\n\nThe reply is a [`Response`] whose `response_to_request_id` echoes this\n`request_id`. The requester matches replies by this id and may run several\nrequests concurrently. Reconciliation issues exactly one\n[`SwitchboardToSupervisor::StatusRequest`] on (re)connect and awaits the\ncorrelated [`SupervisorToSwitchboard::StatusResponse`]; a missing/timed-out\nreply is treated as a dead peer.",
       "type": "object",
@@ -371,11 +401,11 @@
         "parameters"
       ]
     },
-    "StopJobMessage": {
+    "TerminateJobMessage": {
       "type": "object",
       "properties": {
         "job_id": {
-          "description": "Unique identifier of the job to be stopped:",
+          "description": "Unique identifier of the job whose execution is to be stopped:",
           "type": "string",
           "format": "uuid"
         }

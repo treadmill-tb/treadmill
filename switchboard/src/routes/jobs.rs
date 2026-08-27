@@ -480,7 +480,7 @@ pub async fn get_job(
 /// Gated on the caller's `stop` permission (403 for unauthorized, including a
 /// nonexistent job). A still-`queued` job is finalized as `user_terminated`
 /// immediately; a dispatched job has its terminate signal recorded and the owning
-/// host's worker converges (issues StopJob, then finalizes). Returns `202
+/// host's worker converges (issues TerminateJob, then finalizes). Returns `202
 /// Accepted` when a termination was initiated, or `204 No Content` when the job
 /// was already finalized (idempotent no-op).
 pub async fn terminate(
