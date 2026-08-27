@@ -29,7 +29,7 @@ use treadmill_rs::api::switchboard_supervisor::{
     ImageLocation, ImageSpecification, ParameterValue, RestartPolicy, RunningJobState,
     SupervisorEvent, SupervisorJobEvent,
 };
-use treadmill_rs::connector::{self, StartJobMessage, StopJobMessage};
+use treadmill_rs::connector::{self, RemoveJobMessage, StartJobMessage, TerminateJobMessage};
 use treadmill_rs::image::Digest;
 
 /// How long to wait for the supervisor to report `Terminated` after a stop is
@@ -276,15 +276,15 @@ impl<S: connector::Supervisor> Inner<S> {
 
         // Graceful stop, then wait (bounded) for the supervisor to confirm
         // teardown so we don't return while qemu is still being killed.
-        if let Err(e) = connector::Supervisor::stop_job(
+        if let Err(e) = connector::Supervisor::terminate_job(
             &supervisor,
-            StopJobMessage {
+            TerminateJobMessage {
                 job_id: self.job_id,
             },
         )
         .await
         {
-            event!(Level::WARN, error = ?e, "stop_job returned an error");
+            event!(Level::WARN, error = ?e, "terminate_job returned an error");
         }
         if tokio::time::timeout(STOP_GRACE, terminated_rx.wait_for(|t| *t))
             .await
@@ -294,6 +294,16 @@ impl<S: connector::Supervisor> Inner<S> {
                 Level::WARN,
                 "job did not report Terminated within the grace period; exiting anyway",
             );
+        }
+        if let Err(e) = connector::Supervisor::remove_job(
+            &supervisor,
+            RemoveJobMessage {
+                job_id: self.job_id,
+            },
+        )
+        .await
+        {
+            event!(Level::WARN, error = ?e, "remove_job returned an error");
         }
         Ok(())
     }
@@ -312,7 +322,7 @@ mod tests {
     /// reports lifecycle events back through its connector. When
     /// `terminate_on_start` is set it reports `Terminated` immediately (a job
     /// that ends on its own); otherwise it reaches `Booting` and only reports
-    /// `Terminated` in response to `stop_job`.
+    /// `Terminated` in response to `terminate_job`.
     #[derive(Debug)]
     struct StubSupervisor {
         connector: Arc<LocalConnector<StubSupervisor>>,
@@ -342,11 +352,16 @@ mod tests {
             Ok(())
         }
 
-        async fn stop_job(this: &Arc<Self>, req: StopJobMessage) -> Result<(), JobError> {
-            this.calls.lock().unwrap().push("stop");
+        async fn terminate_job(this: &Arc<Self>, req: TerminateJobMessage) -> Result<(), JobError> {
+            this.calls.lock().unwrap().push("terminate");
             this.connector
                 .update_job_state(req.job_id, RunningJobState::Terminated, None)
                 .await;
+            Ok(())
+        }
+
+        async fn remove_job(this: &Arc<Self>, _req: RemoveJobMessage) -> Result<(), JobError> {
+            this.calls.lock().unwrap().push("remove");
             Ok(())
         }
     }
@@ -414,14 +429,17 @@ mod tests {
 
         connector.request_shutdown();
         assert_eq!(run.await.unwrap(), Ok(()));
-        assert_eq!(sup.calls.lock().unwrap().as_slice(), &["start", "stop"]);
+        assert_eq!(
+            sup.calls.lock().unwrap().as_slice(),
+            &["start", "terminate", "remove"]
+        );
 
         // Keep the supervisor alive until after run() upgraded its Weak.
         drop(sup);
     }
 
     /// Self-termination path: a job that ends on its own makes `run()` return
-    /// without ever issuing a stop.
+    /// without ever issuing a terminate.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn self_termination_exits_without_stop() {
         let (sup, connector) = build(true);

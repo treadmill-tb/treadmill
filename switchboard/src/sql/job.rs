@@ -1215,7 +1215,7 @@ pub enum TerminateOutcome {
     /// `user_terminated` immediately.
     FinalizedNow,
     /// The job was dispatched; `terminate_requested_at` was set and the owning
-    /// host's worker will converge (StopJob, then finalize).
+    /// host's worker will converge (TerminateJob, then finalize).
     SignalRequested,
     /// The job was already finalized (or gone); nothing to do.
     AlreadyFinalized,
@@ -1315,7 +1315,7 @@ pub async fn request_terminate(
 /// Must be called inside the worker's `with_txn` so the takeover/staleness
 /// guard covers it.
 /// Adopt a supervisor-reported *executing* state into the DB `job_state`, used
-/// by reconciliation case 4 (the supervisor reports `OngoingJob(J_sb)` for the
+/// by reconciliation case 4 (the supervisor reports `HoldingJob(J_sb)` for the
 /// assigned job, so the switchboard takes the reported state as ground truth).
 ///
 /// `job_state` must be one of the executing states (`initializing`, `ready`,
@@ -1367,7 +1367,7 @@ pub async fn set_running_state(
 /// still-`assigned` row is valid). `Terminated` finalizes the job via
 /// [`finalize_terminated`] (`termination_reason = workload_exited`, no restart):
 /// in that case the function returns `true`, signalling the caller it must
-/// `StopJob`-ack so the supervisor can release its retained terminal record. The
+/// `RemoveJob`-ack so the supervisor can release its retained terminal record. The
 /// host assignment pointer is *not* released here (see [`finalize_terminated`]);
 /// reconcile releases it once the supervisor reports the job gone.
 ///
@@ -1420,7 +1420,7 @@ pub async fn apply_running_state(
 /// are retained so the terminal record keeps its placement and start time.
 ///
 /// `hosts.current_job` is **not** released here. The supervisor retains a
-/// terminal record until it acks the `StopJob` and reports the job gone, so the
+/// terminal record until it acks the `RemoveJob` and reports the job gone, so the
 /// pointer is released later — by reconcile's `finalized` rows, once the reported
 /// status confirms the supervisor no longer holds the job (see
 /// [`crate::sql::host::release_job_assignment`]). Keeping the release out of this
@@ -1532,6 +1532,9 @@ pub async fn finalized_reason(
 /// fault `InternalError`; the remaining start-time faults (a duplicate/missing
 /// job, capacity) fold into `HostStartFailure` — the job never started.
 ///
+/// A `NotTerminated` is a coordinator sequencing bug, not a start failure, so it
+/// classifies as `InternalError`.
+///
 /// `#[non_exhaustive]` on `JobErrorKind` forces a catch-all; new kinds default
 /// to `InternalError` until classified.
 pub fn termination_reason_for_job_error(kind: &JobErrorKind) -> SqlTerminationReason {
@@ -1541,11 +1544,13 @@ pub fn termination_reason_for_job_error(kind: &JobErrorKind) -> SqlTerminationRe
         | JobErrorKind::ImageNotCompatible => SqlTerminationReason::ImageError,
         JobErrorKind::CannotResume => SqlTerminationReason::ResumeFailed,
         JobErrorKind::AlreadyRunning
-        | JobErrorKind::AlreadyStopping
+        | JobErrorKind::AlreadyTerminating
         | JobErrorKind::JobAlreadyExists
         | JobErrorKind::JobNotFound
         | JobErrorKind::MaxConcurrentJobs => SqlTerminationReason::HostStartFailure,
-        JobErrorKind::InternalError => SqlTerminationReason::InternalError,
+        JobErrorKind::NotTerminated | JobErrorKind::InternalError => {
+            SqlTerminationReason::InternalError
+        }
         // `JobErrorKind` is `#[non_exhaustive]`: classify unknown future kinds
         // conservatively as an internal error rather than failing to finalize.
         _ => SqlTerminationReason::InternalError,

@@ -7,9 +7,9 @@ use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use sqlx::{PgPool, Postgres, Transaction};
 use tokio::time::{Duration, Instant, Sleep, interval, sleep};
 use treadmill_rs::api::switchboard_supervisor::{
-    JobService, ReportedSupervisorStatus, Request, RunningJobState, StopJobMessage,
+    JobService, RemoveJobMessage, ReportedSupervisorStatus, Request, RunningJobState,
     SupervisorEvent, SupervisorJobEvent, SupervisorToSwitchboard, SwitchboardToSupervisor,
-    TaskExitStatus,
+    TaskExitStatus, TerminateJobMessage,
 };
 use uuid::Uuid;
 
@@ -257,14 +257,27 @@ impl WorkerCtx {
 // of them per pass.
 // ---------------------------------------------------------------------------
 
+/// The command that drives a supervisor holding `job_id` toward releasing it:
+/// `TerminateJob` while it still executes, `RemoveJob` once it reports the
+/// retained terminal record. Both are idempotent, so a job converges in at most
+/// two passes.
+fn release_held_job(job_id: Uuid, job_state: &RunningJobState) -> SwitchboardToSupervisor {
+    match job_state {
+        RunningJobState::Terminated => {
+            SwitchboardToSupervisor::RemoveJob(RemoveJobMessage { job_id })
+        }
+        _ => SwitchboardToSupervisor::TerminateJob(TerminateJobMessage { job_id }),
+    }
+}
+
 /// No job is assigned to the host (`hosts.current_job` is NULL). Pure: aligned
 /// when the supervisor is idle, otherwise the reported job is an unassigned
-/// zombie to stop.
+/// zombie to release.
 fn resolve_unassigned(reported: ReportedSupervisorStatus) -> Option<SwitchboardToSupervisor> {
     match reported {
         ReportedSupervisorStatus::Idle => None,
-        ReportedSupervisorStatus::OngoingJob { job_id, .. } => {
-            Some(SwitchboardToSupervisor::StopJob(StopJobMessage { job_id }))
+        ReportedSupervisorStatus::HoldingJob { job_id, job_state } => {
+            Some(release_held_job(job_id, &job_state))
         }
     }
 }
@@ -290,22 +303,22 @@ async fn resolve_finalized_sticky_host(
         }
 
         // The supervisor still reports *our* job — in any state, including a
-        // retained `Terminated` record. `StopJob`-ack to make it drop the
-        // record, but keep the assignment until it reports gone.
-        ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. } if j_sup == id => {
-            Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
-                job_id: id,
-            }))
-        }
+        // retained `Terminated` record. Drive it to release the record, but keep
+        // the assignment until it reports gone.
+        ReportedSupervisorStatus::HoldingJob {
+            job_id: j_sup,
+            job_state,
+        } if j_sup == id => Some(release_held_job(id, &job_state)),
 
         // The supervisor reports a *different* job: ours is demonstrably gone
         // from the host, so release our pointer; the reported one is an
         // unassigned zombie.
-        ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. } => {
+        ReportedSupervisorStatus::HoldingJob {
+            job_id: j_sup,
+            job_state,
+        } => {
             sql::host::release_job_assignment(host_id, id, txn).await?;
-            Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
-                job_id: j_sup,
-            }))
+            Some(release_held_job(j_sup, &job_state))
         }
     })
 }
@@ -332,25 +345,25 @@ async fn resolve_switchboard_stop(
         }
 
         // The supervisor still reports *this* job.
-        ReportedSupervisorStatus::OngoingJob {
+        ReportedSupervisorStatus::HoldingJob {
             job_id: j_sup,
             job_state,
         } if j_sup == id => match job_state {
             // Already torn down, but the supervisor still retains the terminal
-            // record: finalize with the reason and ack with StopJob, but keep
+            // record: finalize with the reason and ack with RemoveJob, but keep
             // the assignment until it reports the job gone (the `finalized` rows
             // release it then).
             RunningJobState::Terminated => {
                 sql::job::finalize_with_reason(id, reason, at, txn).await?;
-                Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                Some(SwitchboardToSupervisor::RemoveJob(RemoveJobMessage {
                     job_id: id,
                 }))
             }
-            // Still running: track the reported state and (re)issue StopJob until
-            // it reports gone.
+            // Still running: track the reported state and (re)issue TerminateJob
+            // until it reports gone.
             running => {
                 sql::job::apply_running_state(id, running, at, txn).await?;
-                Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+                Some(SwitchboardToSupervisor::TerminateJob(TerminateJobMessage {
                     job_id: id,
                 }))
             }
@@ -358,13 +371,14 @@ async fn resolve_switchboard_stop(
 
         // The supervisor runs a *different* job: ours is gone (finalize with the
         // reason, release the assignment); the reported one is an unassigned
-        // zombie to stop.
-        ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. } => {
+        // zombie to release.
+        ReportedSupervisorStatus::HoldingJob {
+            job_id: j_sup,
+            job_state,
+        } => {
             sql::job::finalize_with_reason(id, reason, at, txn).await?;
             sql::host::release_job_assignment(host_id, id, txn).await?;
-            Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
-                job_id: j_sup,
-            }))
+            Some(release_held_job(j_sup, &job_state))
         }
     })
 }
@@ -399,24 +413,26 @@ async fn resolve_assigned_or_running(
         // the reported running state (assigned → initializing/ready/...).
         (
             SqlJobState::Assigned,
-            ReportedSupervisorStatus::OngoingJob {
+            ReportedSupervisorStatus::HoldingJob {
                 job_id: j_sup,
                 job_state,
             },
         ) if j_sup == id => {
             let terminated = sql::job::apply_running_state(id, job_state, at, txn).await?;
-            terminated.then_some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+            terminated.then_some(SwitchboardToSupervisor::RemoveJob(RemoveJobMessage {
                 job_id: id,
             }))
         }
 
         // Assigned, but the supervisor is busy with some *other* job: that one is
-        // a zombie. Stop it and leave `id` assigned for the next pass to start.
-        (SqlJobState::Assigned, ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. }) => {
-            Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+        // a zombie. Release it and leave `id` assigned for the next pass to start.
+        (
+            SqlJobState::Assigned,
+            ReportedSupervisorStatus::HoldingJob {
                 job_id: j_sup,
-            }))
-        }
+                job_state,
+            },
+        ) => Some(release_held_job(j_sup, &job_state)),
 
         // Running (initializing/ready/terminating) + Idle: the job was lost —
         // finalize (honoring the restart policy) and release the assignment (the
@@ -428,18 +444,18 @@ async fn resolve_assigned_or_running(
         }
 
         // Running + the supervisor reports *this* job: adopt the reported state;
-        // a `Terminated` finalizes and is acked with `StopJob` (the assignment is
-        // kept, then released by the `finalized` rows once the host reports the
+        // a `Terminated` finalizes and is acked with `RemoveJob` (the assignment
+        // is kept, then released by the `finalized` rows once the host reports the
         // job gone).
         (
             _,
-            ReportedSupervisorStatus::OngoingJob {
+            ReportedSupervisorStatus::HoldingJob {
                 job_id: j_sup,
                 job_state,
             },
         ) if j_sup == id => {
             let terminated = sql::job::apply_running_state(id, job_state, at, txn).await?;
-            terminated.then_some(SwitchboardToSupervisor::StopJob(StopJobMessage {
+            terminated.then_some(SwitchboardToSupervisor::RemoveJob(RemoveJobMessage {
                 job_id: id,
             }))
         }
@@ -447,12 +463,16 @@ async fn resolve_assigned_or_running(
         // Running, but the supervisor reports a *different* job: the assigned one
         // is lost (finalize + restart policy, release the assignment); the
         // reported one is an unassigned zombie.
-        (_, ReportedSupervisorStatus::OngoingJob { job_id: j_sup, .. }) => {
+        (
+            _,
+            ReportedSupervisorStatus::HoldingJob {
+                job_id: j_sup,
+                job_state,
+            },
+        ) => {
             sql::job::finalize_dropped_and_maybe_restart(id, at, txn).await?;
             sql::host::release_job_assignment(host_id, id, txn).await?;
-            Some(SwitchboardToSupervisor::StopJob(StopJobMessage {
-                job_id: j_sup,
-            }))
+            Some(release_held_job(j_sup, &job_state))
         }
     })
 }
@@ -603,7 +623,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// (`hosts.current_job`, plus that job's `job_state`); the **supervisor** is
     /// ground truth for what is *physically executing*. Reconciliation drives the
     /// latter toward the former — issuing `StartJob` for newly-scheduled jobs,
-    /// adopting reported running states, finalizing drops/exits, and stopping
+    /// adopting reported running states, finalizing drops/exits, and releasing
     /// zombies.
     ///
     /// The reported supervisor status (`J_sup`) is read from the in-memory
@@ -615,7 +635,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// no-op — the actual state is unknown.
     ///
     /// Let `J_sb = hosts.current_job`, `S = its job_state`, and `J_sup` = the
-    /// reported `OngoingJob` id, if any. The convergence table, split by `S`
+    /// reported `HoldingJob` id, if any. The convergence table, split by `S`
     /// because a never-started (`assigned`), a was-running
     /// (`initializing`/`ready`/`terminating`), and an already-terminal
     /// (`finalized`) job each mean something different when the supervisor is
@@ -624,16 +644,19 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// | `J_sb` (state)     | Supervisor reports     | Resolution |
     /// |--------------------|------------------------|------------|
     /// | none               | `Idle`                 | aligned; no action |
-    /// | none               | `OngoingJob(J)`        | zombie → `StopJob(J)` |
+    /// | none               | `HoldingJob(J)`        | zombie → release `J` |
     /// | `(J, assigned)`   | `Idle`                 | not started yet → `StartJob(J)` (idempotent re-send; no DB change) |
-    /// | `(J, assigned)`   | `OngoingJob(J)`        | picked up → adopt reported `job_state` |
-    /// | `(J, assigned)`   | `OngoingJob(J'≠J)`     | foreign zombie → `StopJob(J')`; leave `J` assigned for the next pass to start |
+    /// | `(J, assigned)`   | `HoldingJob(J)`        | picked up → adopt reported `job_state` |
+    /// | `(J, assigned)`   | `HoldingJob(J'≠J)`     | foreign zombie → release `J'`; leave `J` assigned for the next pass to start |
     /// | `(J, running)`     | `Idle`                 | dropped → finalize `host_dropped_job` (+ `RestartPolicy`) |
-    /// | `(J, running)`     | `OngoingJob(J)`        | adopt reported `job_state`; a `Terminated` finalizes + `StopJob(J)` ack |
-    /// | `(J, running)`     | `OngoingJob(J'≠J)`     | finalize `J` dropped (+ `RestartPolicy`); `StopJob(J')` |
+    /// | `(J, running)`     | `HoldingJob(J)`        | adopt reported `job_state`; a `Terminated` finalizes + `RemoveJob(J)` ack |
+    /// | `(J, running)`     | `HoldingJob(J'≠J)`     | finalize `J` dropped (+ `RestartPolicy`); release `J'` |
     /// | `(J, finalized)`   | `Idle`                 | terminal, host released it → clear assignment |
-    /// | `(J, finalized)`   | `OngoingJob(J)`        | terminal, host still retains the record → `StopJob(J)` ack; **keep** the assignment until the host reports it gone |
-    /// | `(J, finalized)`   | `OngoingJob(J'≠J)`     | terminal, host has moved on → clear assignment; `StopJob(J')` |
+    /// | `(J, finalized)`   | `HoldingJob(J)`        | terminal, host still retains the record → release `J`; **keep** the assignment until the host reports it gone |
+    /// | `(J, finalized)`   | `HoldingJob(J'≠J)`     | terminal, host has moved on → clear assignment; release `J'` |
+    ///
+    /// "Release `J`" is [`release_held_job`]: `TerminateJob` while the reported
+    /// state is live, `RemoveJob` once it is `Terminated`.
     ///
     /// # The `finalized` rows: sticky-host recovery
     ///
@@ -646,15 +669,16 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// rows recover from that: the job row is already terminal, so reconcile
     /// **never** re-finalizes it, adopts a running state over it (which would
     /// un-finalize the row), or applies the restart policy — it only drives the
-    /// supervisor to drop the job (`StopJob`) and releases the pointer once the
-    /// reported status confirms the supervisor no longer holds it. The column
+    /// supervisor to drop the job ([`release_held_job`]) and releases the pointer
+    /// once the reported status confirms the supervisor no longer holds it. The column
     /// thus stays a faithful mirror of the supervisor's actual assignment.
     ///
     /// # Idempotence
     ///
-    /// Every resolution is either an idempotent command (`StartJob`/`StopJob`
-    /// carry the `job_id` and are no-ops when they don't apply to the current job
-    /// state) or a `job_state`-guarded DB transition, so a replayed reconcile
+    /// Every resolution is either an idempotent command
+    /// (`StartJob`/`TerminateJob`/`RemoveJob` carry the `job_id` and are no-ops
+    /// when they don't apply to the current job state) or a `job_state`-guarded
+    /// DB transition, so a replayed reconcile
     /// converges to the same state. All DB writes go through
     /// [`WorkerCtx::with_txn`] so the takeover/staleness guard covers them; the
     /// adopt rows share [`sql::job::apply_running_state`] with the event path so
@@ -664,8 +688,8 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// The `Terminated` fold: a reported `RunningJobState::Terminated` does not
     /// map to a live `job_state`; `apply_running_state` instead finalizes the job
     /// with `termination_reason = workload_exited` (**no** restart — a clean exit
-    /// is not a failure) and signals that the worker must `StopJob`-ack, which the
-    /// supervisor uses to drop its retained terminal record. The task outcome is
+    /// is not a failure) and signals that the worker must `RemoveJob`-ack, which
+    /// the supervisor uses to drop its retained terminal record. The task outcome is
     /// preserved as last declared out-of-band via `apply_task_outcome`. See the
     /// `RunningJobState` Rustdoc in `treadmill_rs::api::switchboard_supervisor`
     /// for the retained-terminal contract.
@@ -1007,7 +1031,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// Adopt a [`SupervisorJobEvent::StateTransition`] into the DB via the shared
     /// [`sql::job::apply_running_state`], but only while the job is the one
     /// assigned to this host (a stale/foreign event is dropped). Refreshes the
-    /// status cache to the reported state, and `StopJob`-acks a `Terminated`.
+    /// status cache to the reported state, and `RemoveJob`-acks a `Terminated`.
     ///
     /// On `Terminated` the job finalizes but the assignment is **not** released
     /// here (see [`sql::job::finalize_terminated`]): the cache is set to the
@@ -1071,14 +1095,16 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         // reconcile sees the same state. A `Terminated` is cached as the reported
         // (retained) terminal record, not `Idle`: the assignment is released only
         // once the supervisor reports the job genuinely gone.
-        self.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+        self.last_seen_status = Some(ReportedSupervisorStatus::HoldingJob {
             job_id,
             job_state: new_state,
         });
 
         if terminated {
-            self.send_command(SwitchboardToSupervisor::StopJob(StopJobMessage { job_id }))
-                .await?;
+            self.send_command(SwitchboardToSupervisor::RemoveJob(RemoveJobMessage {
+                job_id,
+            }))
+            .await?;
         }
         Ok(PostMsg::Continue)
     }
@@ -1093,9 +1119,9 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// terminal `Terminated` transition, so the supervisor may still hold the job.
     /// Leaving the cache reflecting the supervisor's last actual report keeps
     /// `hosts.current_job` a faithful mirror — reconcile's `finalized` rows then
-    /// `StopJob`-drive the supervisor and release the pointer once it reports the
-    /// job gone (the sticky-host recovery path), instead of releasing eagerly here
-    /// on an assumption the supervisor never confirmed.
+    /// drive the supervisor to release the job and release the pointer once it
+    /// reports the job gone (the sticky-host recovery path), instead of eagerly
+    /// releasing here on an assumption the supervisor never confirmed.
     async fn finalize_job_error(
         &mut self,
         job_id: Uuid,
@@ -1543,7 +1569,8 @@ mod tests {
 
     /// Like [`worker`], but over a [`ScriptedSocket`] so a test can observe the
     /// worker's outgoing commands on the returned receiver. Used by the
-    /// reconciliation tests, which assert that `StopJob`/`StartJob` are emitted.
+    /// reconciliation tests, which assert that `TerminateJob`/`RemoveJob`/
+    /// `StartJob` are emitted.
     fn scripted_worker(
         pool: PgPool,
         host_id: Uuid,
@@ -2293,7 +2320,7 @@ mod tests {
     /// A change notification — here a user terminate writing the job row —
     /// drives a reconcile through `run_loop` while both the reconcile timer
     /// (disabled in `worker_config`) and the ping cadence (60s) are out of the
-    /// picture: the worker must emit `StopJob` promptly.
+    /// picture: the worker must emit `TerminateJob` promptly.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn terminate_event_drives_reconcile_without_timer(pool: PgPool) -> anyhow::Result<()> {
@@ -2368,19 +2395,19 @@ mod tests {
         .await?;
 
         // The jobs event (routed via dispatched_on_host_id) must wake the
-        // worker into a reconcile that emits StopJob; skip the StatusRequest
+        // worker into a reconcile that emits TerminateJob; skip the StatusRequest
         // frames the worker also produces.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let remaining = deadline
                 .checked_duration_since(tokio::time::Instant::now())
-                .expect("no StopJob emitted in response to the terminate event");
+                .expect("no TerminateJob emitted in response to the terminate event");
             let msg = tokio::time::timeout(remaining, from_worker.recv())
                 .await
-                .expect("no StopJob emitted in response to the terminate event")
+                .expect("no TerminateJob emitted in response to the terminate event")
                 .expect("from_worker channel must remain open while worker runs");
             if let ws::Message::Text(text) = msg
-                && let SwitchboardToSupervisor::StopJob(stop) =
+                && let SwitchboardToSupervisor::TerminateJob(stop) =
                     serde_json::from_str::<SwitchboardToSupervisor>(&text)
                         .expect("outbound must be valid SwitchboardToSupervisor JSON")
             {
@@ -2593,7 +2620,7 @@ mod tests {
     }
 
     /// Case 2: switchboard has no assigned job but the supervisor reports an
-    /// ongoing one. That job is an unassigned zombie: the worker must `StopJob`
+    /// ongoing one. That job is an unassigned zombie: the worker must `TerminateJob`
     /// it and must not adopt it.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
@@ -2604,7 +2631,7 @@ mod tests {
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         let zombie = Uuid::new_v4();
-        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+        worker.last_seen_status = Some(ReportedSupervisorStatus::HoldingJob {
             job_id: zombie,
             job_state: RunningJobState::Ready,
         });
@@ -2621,10 +2648,10 @@ mod tests {
         match decode_outbound(
             from_worker
                 .try_recv()
-                .expect("case 2: a StopJob command should be emitted"),
+                .expect("case 2: a TerminateJob command should be emitted"),
         ) {
-            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, zombie),
-            other => panic!("case 2: expected StopJob, got {other:?}"),
+            SwitchboardToSupervisor::TerminateJob(m) => assert_eq!(m.job_id, zombie),
+            other => panic!("case 2: expected TerminateJob, got {other:?}"),
         }
         Ok(())
     }
@@ -2681,7 +2708,7 @@ mod tests {
         let (_to_worker, _from_worker, mut worker) =
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
-        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+        worker.last_seen_status = Some(ReportedSupervisorStatus::HoldingJob {
             job_id,
             job_state: RunningJobState::Ready,
         });
@@ -2720,7 +2747,7 @@ mod tests {
 
     /// Case 4, `Terminated`: the supervisor reports the assigned job has
     /// terminated. The switchboard finalizes it (with `workload_exited`, not
-    /// `host_dropped_job`) and `StopJob`s the job to acknowledge the terminal
+    /// `host_dropped_job`) and `RemoveJob`s the job to acknowledge the terminal
     /// report, but **keeps** the assignment — the supervisor still retains the
     /// terminal record. A follow-up pass that observes `Idle` releases the
     /// pointer. The task outcome the supervisor declared out-of-band before
@@ -2752,7 +2779,7 @@ mod tests {
             "the outcome must apply while the job is assigned"
         );
 
-        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+        worker.last_seen_status = Some(ReportedSupervisorStatus::HoldingJob {
             job_id,
             job_state: RunningJobState::Terminated,
         });
@@ -2824,10 +2851,10 @@ mod tests {
         match decode_outbound(
             from_worker
                 .try_recv()
-                .expect("case 4 (terminated): a StopJob ack should be emitted"),
+                .expect("case 4 (terminated): a RemoveJob ack should be emitted"),
         ) {
-            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
-            other => panic!("case 4 (terminated): expected StopJob, got {other:?}"),
+            SwitchboardToSupervisor::RemoveJob(m) => assert_eq!(m.job_id, job_id),
+            other => panic!("case 4 (terminated): expected RemoveJob, got {other:?}"),
         }
 
         // The supervisor acks and drops its retained record, reporting `Idle` on
@@ -2951,7 +2978,7 @@ mod tests {
 
     /// Case 5: switchboard and supervisor disagree on the job id. The assigned
     /// job is lost (finalize as `host_dropped_job`, clear assignment) while
-    /// the reported job is an unassigned zombie that must be `StopJob`'d.
+    /// the reported job is an unassigned zombie that must be `TerminateJob`'d.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn reconcile_case5_mismatched_job_finalizes_and_stops(
@@ -2968,7 +2995,7 @@ mod tests {
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         let reported = Uuid::new_v4();
-        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+        worker.last_seen_status = Some(ReportedSupervisorStatus::HoldingJob {
             job_id: reported,
             job_state: RunningJobState::Ready,
         });
@@ -2990,10 +3017,10 @@ mod tests {
         match decode_outbound(
             from_worker
                 .try_recv()
-                .expect("case 5: a StopJob command for the reported job should be emitted"),
+                .expect("case 5: a TerminateJob for the reported job should be emitted"),
         ) {
-            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, reported),
-            other => panic!("case 5: expected StopJob, got {other:?}"),
+            SwitchboardToSupervisor::TerminateJob(m) => assert_eq!(m.job_id, reported),
+            other => panic!("case 5: expected TerminateJob, got {other:?}"),
         }
         Ok(())
     }
@@ -3060,7 +3087,7 @@ mod tests {
     /// Finalized + the supervisor still reports *this* job in a *running* state:
     /// this is the un-finalize hole. Reconcile must NOT adopt the running state
     /// (which would rewrite `job_state` back to a live value); it must keep the
-    /// row finalized, retain the assignment, and `StopJob`-ack to drive teardown.
+    /// row finalized, retain the assignment, and `TerminateJob` to drive teardown.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn reconcile_finalized_same_running_does_not_unfinalize(
@@ -3076,7 +3103,7 @@ mod tests {
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         // The supervisor reports our finalized job as still *running*.
-        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+        worker.last_seen_status = Some(ReportedSupervisorStatus::HoldingJob {
             job_id,
             job_state: RunningJobState::Ready,
         });
@@ -3098,16 +3125,16 @@ mod tests {
         match decode_outbound(
             from_worker
                 .try_recv()
-                .expect("finalized + same-running: a StopJob ack should be emitted"),
+                .expect("finalized + same-running: a TerminateJob should be emitted"),
         ) {
-            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
-            other => panic!("finalized + same-running: expected StopJob, got {other:?}"),
+            SwitchboardToSupervisor::TerminateJob(m) => assert_eq!(m.job_id, job_id),
+            other => panic!("finalized + same-running: expected TerminateJob, got {other:?}"),
         }
         Ok(())
     }
 
     /// Finalized + the supervisor reports *this* job as a retained `Terminated`
-    /// record: `StopJob`-ack so the supervisor drops it, but keep the assignment
+    /// record: `RemoveJob`-ack so the supervisor drops it, but keep the assignment
     /// until it reports gone. The terminal row is untouched.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
@@ -3123,7 +3150,7 @@ mod tests {
         let (_to_worker, mut from_worker, mut worker) =
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
-        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+        worker.last_seen_status = Some(ReportedSupervisorStatus::HoldingJob {
             job_id,
             job_state: RunningJobState::Terminated,
         });
@@ -3141,17 +3168,17 @@ mod tests {
         match decode_outbound(
             from_worker
                 .try_recv()
-                .expect("finalized + same-terminated: a StopJob ack should be emitted"),
+                .expect("finalized + same-terminated: a RemoveJob ack should be emitted"),
         ) {
-            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
-            other => panic!("finalized + same-terminated: expected StopJob, got {other:?}"),
+            SwitchboardToSupervisor::RemoveJob(m) => assert_eq!(m.job_id, job_id),
+            other => panic!("finalized + same-terminated: expected RemoveJob, got {other:?}"),
         }
         Ok(())
     }
 
     /// Finalized + the supervisor reports a *different* job: ours is gone from the
     /// host, so release our pointer; the reported job is an unassigned zombie to
-    /// `StopJob`. The terminal row is untouched.
+    /// `TerminateJob`. The terminal row is untouched.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn reconcile_finalized_foreign_releases_and_stops(pool: PgPool) -> anyhow::Result<()> {
@@ -3165,7 +3192,7 @@ mod tests {
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         let foreign = Uuid::new_v4();
-        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+        worker.last_seen_status = Some(ReportedSupervisorStatus::HoldingJob {
             job_id: foreign,
             job_state: RunningJobState::Ready,
         });
@@ -3185,12 +3212,12 @@ mod tests {
             "finalized + foreign: the terminal row must stay finalized"
         );
         match decode_outbound(
-            from_worker
-                .try_recv()
-                .expect("finalized + foreign: a StopJob for the foreign zombie should be emitted"),
+            from_worker.try_recv().expect(
+                "finalized + foreign: a TerminateJob for the foreign zombie should be emitted",
+            ),
         ) {
-            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, foreign),
-            other => panic!("finalized + foreign: expected StopJob, got {other:?}"),
+            SwitchboardToSupervisor::TerminateJob(m) => assert_eq!(m.job_id, foreign),
+            other => panic!("finalized + foreign: expected TerminateJob, got {other:?}"),
         }
         Ok(())
     }
@@ -3388,7 +3415,7 @@ mod tests {
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
         let zombie = Uuid::new_v4();
-        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+        worker.last_seen_status = Some(ReportedSupervisorStatus::HoldingJob {
             job_id: zombie,
             job_state: RunningJobState::Ready,
         });
@@ -3410,10 +3437,10 @@ mod tests {
         match decode_outbound(
             from_worker
                 .try_recv()
-                .expect("a StopJob for the foreign zombie must be emitted"),
+                .expect("a TerminateJob for the foreign zombie must be emitted"),
         ) {
-            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, zombie),
-            other => panic!("expected StopJob for the zombie, got {other:?}"),
+            SwitchboardToSupervisor::TerminateJob(m) => assert_eq!(m.job_id, zombie),
+            other => panic!("expected TerminateJob for the zombie, got {other:?}"),
         }
         Ok(())
     }
@@ -3721,11 +3748,11 @@ mod tests {
             "the event must adopt the reported running state"
         );
         match worker.last_seen_status {
-            Some(ReportedSupervisorStatus::OngoingJob {
+            Some(ReportedSupervisorStatus::HoldingJob {
                 job_id: cached,
                 job_state: RunningJobState::Ready,
             }) => assert_eq!(cached, job_id, "the cache must reflect the new state"),
-            other => panic!("expected cached OngoingJob(Ready), got {other:?}"),
+            other => panic!("expected cached HoldingJob(Ready), got {other:?}"),
         }
         assert!(
             from_worker.try_recv().is_err(),
@@ -3735,7 +3762,7 @@ mod tests {
     }
 
     /// A `StateTransition` to `Terminated` finalizes the job (workload_exited)
-    /// and `StopJob`-acks, but keeps the assignment and caches the reported
+    /// and `RemoveJob`-acks, but keeps the assignment and caches the reported
     /// terminal state (not `Idle`): the supervisor still retains the record, so
     /// the pointer is released only later, by a reconcile that observes `Idle`.
     #[sqlx::test(migrations = "./migrations")]
@@ -3771,22 +3798,22 @@ mod tests {
             "a terminated event keeps the assignment until the host reports the job gone"
         );
         match worker.last_seen_status {
-            Some(ReportedSupervisorStatus::OngoingJob {
+            Some(ReportedSupervisorStatus::HoldingJob {
                 job_id: cached,
                 job_state: RunningJobState::Terminated,
             }) => assert_eq!(
                 cached, job_id,
                 "the cache must reflect the reported terminal state, not Idle"
             ),
-            other => panic!("expected cached OngoingJob(Terminated), got {other:?}"),
+            other => panic!("expected cached HoldingJob(Terminated), got {other:?}"),
         }
         match decode_outbound(
             from_worker
                 .try_recv()
-                .expect("a StopJob ack must be emitted"),
+                .expect("a RemoveJob ack must be emitted"),
         ) {
-            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
-            other => panic!("expected StopJob ack, got {other:?}"),
+            SwitchboardToSupervisor::RemoveJob(m) => assert_eq!(m.job_id, job_id),
+            other => panic!("expected RemoveJob ack, got {other:?}"),
         }
 
         // The host acks and drops the retained record, reporting `Idle`; a
@@ -4269,7 +4296,7 @@ mod tests {
     }
 
     /// Past its deadline while the supervisor still reports it running: the
-    /// worker (re)issues StopJob and keeps tracking the job (no finalize yet).
+    /// worker (re)issues TerminateJob and keeps tracking the job (no finalize yet).
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn reconcile_execution_timeout_running_stops(pool: PgPool) -> anyhow::Result<()> {
@@ -4284,7 +4311,7 @@ mod tests {
         let (_to_worker, mut from_worker, mut worker) =
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
-        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+        worker.last_seen_status = Some(ReportedSupervisorStatus::HoldingJob {
             job_id,
             job_state: RunningJobState::Ready,
         });
@@ -4306,16 +4333,16 @@ mod tests {
         match decode_outbound(
             from_worker
                 .try_recv()
-                .expect("a StopJob must be issued for the timed-out job"),
+                .expect("a TerminateJob must be issued for the timed-out job"),
         ) {
-            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
-            other => panic!("expected StopJob, got {other:?}"),
+            SwitchboardToSupervisor::TerminateJob(m) => assert_eq!(m.job_id, job_id),
+            other => panic!("expected TerminateJob, got {other:?}"),
         }
         Ok(())
     }
 
     /// Past its deadline and the supervisor reports it `Terminated` (a retained
-    /// terminal record): finalize as `execution_timeout` and `StopJob`-ack, but
+    /// terminal record): finalize as `execution_timeout` and `RemoveJob`-ack, but
     /// **keep** the assignment — the supervisor still holds the record. A
     /// follow-up pass that observes `Idle` releases the pointer.
     #[sqlx::test(migrations = "./migrations")]
@@ -4332,7 +4359,7 @@ mod tests {
         let (_to_worker, mut from_worker, mut worker) =
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
-        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+        worker.last_seen_status = Some(ReportedSupervisorStatus::HoldingJob {
             job_id,
             job_state: RunningJobState::Terminated,
         });
@@ -4352,9 +4379,9 @@ mod tests {
             Some(job_id),
             "the assignment is kept while the supervisor still reports the job"
         );
-        match decode_outbound(from_worker.try_recv().expect("a StopJob ack is expected")) {
-            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
-            other => panic!("expected StopJob ack, got {other:?}"),
+        match decode_outbound(from_worker.try_recv().expect("a RemoveJob ack is expected")) {
+            SwitchboardToSupervisor::RemoveJob(m) => assert_eq!(m.job_id, job_id),
+            other => panic!("expected RemoveJob ack, got {other:?}"),
         }
 
         // The supervisor drops the record and reports `Idle`; reconcile releases.
@@ -4377,7 +4404,7 @@ mod tests {
     }
 
     /// Within its deadline: the pre-check does not fire — the job is adopted
-    /// normally and no StopJob is issued. This is the re-check that lets a
+    /// normally and no TerminateJob is issued. This is the re-check that lets a
     /// deadline extension (a larger `job_timeout` / later `started_at`) rescue a
     /// job: the very next pass simply sees it is no longer expired.
     #[sqlx::test(migrations = "./migrations")]
@@ -4395,7 +4422,7 @@ mod tests {
         let (_to_worker, mut from_worker, mut worker) =
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
-        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+        worker.last_seen_status = Some(ReportedSupervisorStatus::HoldingJob {
             job_id,
             job_state: RunningJobState::Ready,
         });
@@ -4414,7 +4441,7 @@ mod tests {
     }
 
     /// User-terminate while the supervisor still reports the job running: (re)issue
-    /// StopJob, keep tracking it.
+    /// TerminateJob, keep tracking it.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn reconcile_user_terminate_running_stops(pool: PgPool) -> anyhow::Result<()> {
@@ -4429,7 +4456,7 @@ mod tests {
         let (_to_worker, mut from_worker, mut worker) =
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
-        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+        worker.last_seen_status = Some(ReportedSupervisorStatus::HoldingJob {
             job_id,
             job_state: RunningJobState::Ready,
         });
@@ -4442,16 +4469,16 @@ mod tests {
         match decode_outbound(
             from_worker
                 .try_recv()
-                .expect("a StopJob must be issued for the terminated job"),
+                .expect("a TerminateJob must be issued for the user-terminated job"),
         ) {
-            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
-            other => panic!("expected StopJob, got {other:?}"),
+            SwitchboardToSupervisor::TerminateJob(m) => assert_eq!(m.job_id, job_id),
+            other => panic!("expected TerminateJob, got {other:?}"),
         }
         Ok(())
     }
 
     /// User-terminate and the supervisor reports the job `Terminated` (a retained
-    /// terminal record): finalize as `user_terminated` and `StopJob`-ack, but keep
+    /// terminal record): finalize as `user_terminated` and `RemoveJob`-ack, but keep
     /// the assignment until the supervisor reports the job gone — the column must
     /// not be cleared while the supervisor still holds the record.
     #[sqlx::test(migrations = "./migrations")]
@@ -4470,7 +4497,7 @@ mod tests {
         let (_to_worker, mut from_worker, mut worker) =
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
-        worker.last_seen_status = Some(ReportedSupervisorStatus::OngoingJob {
+        worker.last_seen_status = Some(ReportedSupervisorStatus::HoldingJob {
             job_id,
             job_state: RunningJobState::Terminated,
         });
@@ -4490,9 +4517,9 @@ mod tests {
             Some(job_id),
             "the assignment is kept while the supervisor still reports the job"
         );
-        match decode_outbound(from_worker.try_recv().expect("a StopJob ack is expected")) {
-            SwitchboardToSupervisor::StopJob(m) => assert_eq!(m.job_id, job_id),
-            other => panic!("expected StopJob ack, got {other:?}"),
+        match decode_outbound(from_worker.try_recv().expect("a RemoveJob ack is expected")) {
+            SwitchboardToSupervisor::RemoveJob(m) => assert_eq!(m.job_id, job_id),
+            other => panic!("expected RemoveJob ack, got {other:?}"),
         }
 
         // The supervisor drops the record and reports `Idle`; reconcile releases.

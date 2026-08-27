@@ -350,32 +350,31 @@ impl<S: connector::Supervisor> Inner<S> {
                     }
                 }
             }
-            SwitchboardToSupervisor::StopJob(stop_job_request) => {
-                let job_id = stop_job_request.job_id;
-                // A `StopJob` for a job we are retaining as `Terminated` is the
-                // switchboard acknowledging the terminal outcome: drop the
-                // retained record (→ `Idle`) without bothering the supervisor,
-                // whose workload has already exited.
-                {
-                    let mut lus = self.last_updated_status.lock().await;
-                    if matches!(
-                        &*lus,
-                        ReportedSupervisorStatus::OngoingJob {
-                            job_id: retained,
-                            job_state: RunningJobState::Terminated,
-                        } if *retained == job_id
-                    ) {
-                        *lus = ReportedSupervisorStatus::Idle;
-                        return;
-                    }
-                }
+            SwitchboardToSupervisor::TerminateJob(terminate_job_request) => {
+                let job_id = terminate_job_request.job_id;
                 // TODO: timeout
                 if let Some(supervisor) = self.supervisor.upgrade()
                     && let Err(error) =
-                        connector::Supervisor::stop_job(&supervisor, stop_job_request).await
+                        connector::Supervisor::terminate_job(&supervisor, terminate_job_request)
+                            .await
                 {
                     self.report_job_error(job_id, error).await;
                 }
+            }
+            SwitchboardToSupervisor::RemoveJob(remove_job_request) => {
+                let job_id = remove_job_request.job_id;
+                // TODO: timeout
+                if let Some(supervisor) = self.supervisor.upgrade()
+                    && let Err(error) =
+                        connector::Supervisor::remove_job(&supervisor, remove_job_request).await
+                {
+                    self.report_job_error(job_id, error).await;
+                    return;
+                }
+                // The supervisor does not retain terminal records yet, so the
+                // status fold here is the only record of the removed job: drop
+                // it so the next status report is `Idle`.
+                *self.last_updated_status.lock().await = ReportedSupervisorStatus::Idle;
             }
             SwitchboardToSupervisor::StatusRequest(switchboard_supervisor::Request {
                 request_id,
@@ -574,10 +573,10 @@ impl<S: connector::Supervisor> Inner<S> {
         // `Terminated` state is retained (not folded to `Idle`) so that, if the
         // switchboard reconnects before acknowledging it, the supervisor still
         // reports the terminal outcome instead of looking like a dropped job.
-        // The switchboard acks with `StopJob`, which drops it (see `handle`).
+        // The switchboard acks with `RemoveJob`, which drops it (see `handle`).
         {
             let mut lus_lg = self.last_updated_status.lock().await;
-            *lus_lg = ReportedSupervisorStatus::OngoingJob {
+            *lus_lg = ReportedSupervisorStatus::HoldingJob {
                 job_id,
                 job_state: job_state.clone(),
             };

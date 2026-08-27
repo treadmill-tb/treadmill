@@ -1,7 +1,8 @@
 pub use crate::api::switchboard_supervisor::JobInitializingStage;
+pub use crate::api::switchboard_supervisor::RemoveJobMessage;
 pub use crate::api::switchboard_supervisor::RunningJobState;
 pub use crate::api::switchboard_supervisor::StartJobMessage;
-pub use crate::api::switchboard_supervisor::StopJobMessage;
+pub use crate::api::switchboard_supervisor::TerminateJobMessage;
 use crate::api::switchboard_supervisor::{JobService, SupervisorEvent, SupervisorJobEvent};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,7 @@ pub enum JobErrorKind {
     AlreadyRunning,
 
     /// The requested job is already in the process of being shut down.
-    AlreadyStopping,
+    AlreadyTerminating,
 
     /// A job with this ID was previously running on this supervisor,
     /// but we weren't asked to `resume` it.
@@ -28,6 +29,10 @@ pub enum JobErrorKind {
 
     /// Job with the specified ID cannot be found.
     JobNotFound,
+
+    /// The job cannot be removed, because it is still executing. It must be
+    /// terminated first.
+    NotTerminated,
 
     /// The maximum number of concurrent jobs has been reached.
     MaxConcurrentJobs,
@@ -77,7 +82,10 @@ pub trait Supervisor: std::fmt::Debug + Send + Sync + 'static {
     /// similar actions.
     async fn start_job(this: &Arc<Self>, request: StartJobMessage) -> Result<(), JobError>;
 
-    /// Stop a running job.
+    /// Stop the execution of a job. The job's record and resources stay
+    /// allocated until [`remove_job`](Self::remove_job).
+    ///
+    /// Succeeds on an already-terminated or unknown job.
     ///
     /// A successful return (`Ok(())`) from this method does not imply that the
     /// job was stopped successfully, but merely that there is not an error to
@@ -87,7 +95,13 @@ pub trait Supervisor: std::fmt::Debug + Send + Sync + 'static {
     /// Implementations should use [`SupervisorConnector::update_job_state`] to
     /// report on progress while starting or stopping a job, or performing
     /// similar actions.
-    async fn stop_job(this: &Arc<Self>, request: StopJobMessage) -> Result<(), JobError>;
+    async fn terminate_job(this: &Arc<Self>, request: TerminateJobMessage) -> Result<(), JobError>;
+
+    /// Free a terminated job's record and the resources it retains.
+    ///
+    /// Fails with [`JobErrorKind::NotTerminated`] on a job that is still
+    /// executing; succeeds on an unknown job.
+    async fn remove_job(this: &Arc<Self>, request: RemoveJobMessage) -> Result<(), JobError>;
 }
 
 /// Connector to a coordinator.
