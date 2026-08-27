@@ -204,7 +204,9 @@ impl<S: Supervisor> TcpControlSocket<S> {
             })?;
 
         // Then, try to join it:
-        self.task_handle.await.unwrap().unwrap();
+        self.task_handle
+            .await
+            .context("Joining the control socket request handler task")??;
 
         // The remainding cleanup happens when self is dropped.
         Ok(())

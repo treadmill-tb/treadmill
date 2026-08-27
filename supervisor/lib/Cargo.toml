@@ -26,6 +26,7 @@ tokio = { workspace = true, features = [
   "io-std",
   "time",
 ] }
+tokio-util = { workspace = true, features = ["rt"] }
 toml = { workspace = true }
 tracing = { workspace = true }
 

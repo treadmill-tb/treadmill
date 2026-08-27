@@ -51,6 +51,7 @@
 //! run `nats-server`).
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -64,6 +65,7 @@ use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::sync::Notify;
+use tokio_util::task::TaskTracker;
 
 use treadmill_rs::api::switchboard_supervisor::{LogChannel, LogStreamingDispatch};
 
@@ -664,6 +666,7 @@ struct Inner {
     spill_dir: PathBuf,
     config: LogPublisherConfig,
     console_input: Option<ConsoleInput>,
+    tasks: TaskTracker,
 }
 
 /// Spawns the durable capture publisher for a job's log channels.
@@ -675,6 +678,14 @@ struct Inner {
 #[derive(Clone)]
 pub struct LogPublisher {
     inner: Arc<Inner>,
+}
+
+impl fmt::Debug for LogPublisher {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("LogPublisher")
+            .field("spill_dir", &self.inner.spill_dir)
+            .finish_non_exhaustive()
+    }
 }
 
 impl LogPublisher {
@@ -713,6 +724,7 @@ impl LogPublisher {
                 spill_dir: spill_dir.into(),
                 config,
                 console_input,
+                tasks: TaskTracker::new(),
             }),
         })
     }
@@ -730,6 +742,7 @@ impl LogPublisher {
                 spill_dir: spill_dir.into(),
                 config,
                 console_input: None,
+                tasks: TaskTracker::new(),
             }),
         }
     }
@@ -738,7 +751,7 @@ impl LogPublisher {
     /// stdout/stderr).
     pub fn spawn_channel(&self, channel: LogChannel, reader: BoxedAsyncRead) {
         let inner = self.inner.clone();
-        tokio::spawn(async move {
+        self.inner.tasks.spawn(async move {
             if let Err(e) = run_channel(inner, channel, reader).await {
                 tracing::error!(
                     channel = channel.as_subject_token(),
@@ -755,7 +768,7 @@ impl LogPublisher {
     /// input from the input subject to the write half.
     pub fn spawn_serial(&self, channel: LogChannel, socket: SerialSocket) {
         let inner = self.inner.clone();
-        tokio::spawn(async move {
+        self.inner.tasks.spawn(async move {
             match socket.accept().await {
                 Ok(stream) => {
                     let reader: BoxedAsyncRead = match &inner.console_input {
@@ -779,6 +792,19 @@ impl LogPublisher {
                 }
             }
         });
+    }
+
+    pub async fn drain(&self, timeout: Duration) {
+        self.inner.tasks.close();
+        if tokio::time::timeout(timeout, self.inner.tasks.wait())
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                unfinished_channels = self.inner.tasks.len(),
+                "log publisher drain timed out; dropping what those channels had left",
+            );
+        }
     }
 }
 
@@ -1029,6 +1055,7 @@ mod tests {
             spill_dir: spill_dir.to_path_buf(),
             config,
             console_input: None,
+            tasks: TaskTracker::new(),
         }
     }
 
@@ -1379,6 +1406,7 @@ mod tests {
                     client: client.clone(),
                     subject: subject.clone(),
                 }),
+                tasks: TaskTracker::new(),
             }),
         };
         publisher.spawn_serial(LogChannel::Serial, socket);
