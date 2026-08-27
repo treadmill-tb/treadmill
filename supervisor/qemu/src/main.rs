@@ -8,12 +8,14 @@ use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use clap::Parser;
 use serde::Deserialize;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
+use tokio_util::sync::CancellationToken;
 use tracing::{Level, event, info, instrument, warn};
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard_supervisor::{
-    ImageSpecification, JobInitializingStage, LogChannel, RunningJobState,
+    ImageSpecification, JobGatewayDispatch, JobInitializingStage, JobService, LogChannel,
+    ParameterValue, RunningJobState,
 };
 
 use treadmill_rs::connector;
@@ -120,39 +122,46 @@ pub struct QemuSupervisorConfig {
 
 const PUBLISHER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-#[derive(Debug)]
-pub struct QemuSupervisorFetchingImageState {
-    start_job_req: connector::StartJobMessage,
-    /// OCI manifest digest identifying the image (content-addressed).
-    manifest_digest: Digest,
-    /// Ordered, failover list of local-store locations serving the digest.
-    locations: Vec<Location>,
+const JOB_MAILBOX_CAPACITY: usize = 8;
+
+#[derive(Debug, Clone)]
+pub enum Phase {
+    Starting,
+    FetchingImage,
+    Allocating,
+    Booting,
+    Ready,
+    Terminating,
+    Terminated { outcome: Outcome },
 }
 
-#[derive(Debug)]
-pub struct QemuSupervisorImageFetchedState {
-    start_job_req: connector::StartJobMessage,
-    /// The parsed Treadmill view of the OCI manifest (backing-chain layers).
-    image: TreadmillImage,
+impl Phase {
+    fn running_job_state(&self) -> RunningJobState {
+        match self {
+            Phase::Starting => RunningJobState::Initializing {
+                stage: JobInitializingStage::Starting,
+            },
+            Phase::FetchingImage => RunningJobState::Initializing {
+                stage: JobInitializingStage::FetchingImage,
+            },
+            Phase::Allocating => RunningJobState::Initializing {
+                stage: JobInitializingStage::Allocating,
+            },
+            Phase::Booting => RunningJobState::Initializing {
+                stage: JobInitializingStage::Booting,
+            },
+            Phase::Ready => RunningJobState::Ready,
+            Phase::Terminating => RunningJobState::Terminating,
+            Phase::Terminated { .. } => RunningJobState::Terminated,
+        }
+    }
+
+    fn terminated(&self) -> bool {
+        matches!(self, Phase::Terminated { .. })
+    }
 }
 
-#[derive(Debug, Default)]
-pub struct JobResources {
-    /// Control socket handle:
-    control_socket: Option<TcpControlSocket<QemuSupervisor>>,
-
-    publisher: Option<LogPublisher>,
-
-    /// Variables associated with this job.
-    ///
-    /// Generated from default values in start job, can be modified or extended
-    /// by the start script, later passed to the stop script.
-    job_vars: HashMap<String, String>,
-
-    start_hook_ran: bool,
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Outcome {
     WorkloadExited(std::process::ExitStatus),
     TerminatedByRequest,
@@ -187,55 +196,117 @@ impl Outcome {
     }
 }
 
-#[derive(Debug)]
-pub struct QemuSupervisorJobRunningState {
-    start_job_req: connector::StartJobMessage,
-
-    /// Sender to signal the monitoring task to stop the process.
-    ///
-    /// Only one message may be sent, after which is will turn into a `None`:
-    shutdown_tx: Option<tokio::sync::oneshot::Sender<QemuSupervisorJobRunningState>>,
-
-    resources: JobResources,
+#[derive(Debug, Clone)]
+pub struct JobFacts {
+    job_id: Uuid,
+    phase: Phase,
+    parameters: Arc<HashMap<String, ParameterValue>>,
+    gateway: Arc<Option<JobGatewayDispatch>>,
+    hostname: Arc<str>,
+    network_address: Option<IpAddr>,
 }
 
-#[derive(Debug)]
-pub enum QemuSupervisorJobState {
-    /// State to indicate that the job is starting.
-    ///
-    /// We use this to reserve a spot in the [`QemuSupervisor`]'s `jobs` map,
-    /// such that we can release the global HashMap lock afterwards.
-    Starting,
-
-    /// State to indicate that we're currently waiting on the image to
-    /// be fetched.
-    FetchingImage(QemuSupervisorFetchingImageState),
-
-    /// The job's image has been fully fetched, and we're allocating resources
-    /// and starting it. It's not fully up and running yet.
-    ImageFetched(QemuSupervisorImageFetchedState),
-
-    /// State to indicate that the job is running.
-    Running(QemuSupervisorJobRunningState),
-
-    /// State to indicate that the job is currently shutting down.
-    ///
-    /// While the job is in this state, no job with the same ID must be started
-    /// / resumed. We might still be cleaning up resources associated with this
-    /// job.
-    Stopping,
-}
-
-impl QemuSupervisorJobState {
-    fn state_name(&self) -> &'static str {
-        match self {
-            QemuSupervisorJobState::Starting => "Starting",
-            QemuSupervisorJobState::FetchingImage(_) => "FetchingImage",
-            QemuSupervisorJobState::ImageFetched(_) => "ImageFetched",
-            QemuSupervisorJobState::Running(_) => "Running",
-            QemuSupervisorJobState::Stopping => "Stopping",
+impl JobFacts {
+    fn new(start_job_req: &connector::StartJobMessage) -> Self {
+        let job_id = start_job_req.job_id;
+        JobFacts {
+            job_id,
+            phase: Phase::Starting,
+            parameters: Arc::new(start_job_req.parameters.clone()),
+            gateway: Arc::new(start_job_req.gateway.clone()),
+            hostname: format!("job-{}", format!("{job_id}").split_at(10).0).into(),
+            network_address: None,
         }
     }
+}
+
+pub enum JobCommand {
+    Terminate {
+        ack: oneshot::Sender<Result<(), connector::JobError>>,
+    },
+    Remove {
+        ack: oneshot::Sender<Result<(), connector::JobError>>,
+    },
+    PuppetReady,
+    PuppetTerminate,
+    PuppetServiceSet(Vec<JobService>),
+}
+
+#[derive(Debug, Clone)]
+pub struct JobHandle {
+    job_id: Uuid,
+    cmd: mpsc::Sender<JobCommand>,
+    facts: watch::Receiver<Arc<JobFacts>>,
+    cancel: CancellationToken,
+}
+
+impl JobHandle {
+    fn facts(&self) -> Arc<JobFacts> {
+        self.facts.borrow().clone()
+    }
+
+    async fn terminate(&self) -> Result<(), connector::JobError> {
+        self.cancel.cancel();
+
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if self
+            .cmd
+            .send(JobCommand::Terminate { ack: ack_tx })
+            .await
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        ack_rx.await.unwrap_or(Ok(()))
+    }
+
+    async fn remove(&self) -> Result<(), connector::JobError> {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if self
+            .cmd
+            .send(JobCommand::Remove { ack: ack_tx })
+            .await
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        ack_rx.await.unwrap_or(Ok(()))
+    }
+
+    fn notify(&self, cmd: JobCommand) {
+        if self.cmd.try_send(cmd).is_err() {
+            event!(
+                Level::WARN,
+                job_id = ?self.job_id,
+                "Dropping a puppet event: the job's mailbox is full or closed",
+            );
+        }
+    }
+}
+
+#[derive(Debug)]
+struct JobSlot {
+    handle: JobHandle,
+    task: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Default)]
+pub struct JobResources {
+    control_socket: Option<TcpControlSocket<QemuSupervisor>>,
+
+    publisher: Option<LogPublisher>,
+
+    workload: Option<Box<dyn WorkloadProcess>>,
+
+    /// Variables associated with this job.
+    ///
+    /// Generated from default values in start job, can be modified or extended
+    /// by the start script, later passed to the stop script.
+    job_vars: HashMap<String, String>,
+
+    start_hook_ran: bool,
 }
 
 #[derive(Debug)]
@@ -254,10 +325,9 @@ pub struct QemuSupervisor {
     /// job state machine can be driven by tests without spawning real binaries.
     launcher: Arc<dyn ProcessLauncher>,
 
-    /// This supervisor runs at most one job at a time, but keeps a map of
-    /// `Arc`s behind a mutex to avoid locking the map across long-running
-    /// calls.
-    jobs: Mutex<HashMap<Uuid, Arc<Mutex<QemuSupervisorJobState>>>>,
+    /// The single job this supervisor runs, occupied from `StartJob` until
+    /// `RemoveJob`.
+    slot: Mutex<Option<JobSlot>>,
 
     _args: QemuSupervisorArgs,
     config: QemuSupervisorConfig,
@@ -275,153 +345,37 @@ impl QemuSupervisor {
             connector,
             image_store,
             launcher,
-            jobs: Mutex::new(HashMap::new()),
+            slot: Mutex::new(None),
             _args: args,
             config,
         }
     }
 
-    #[instrument(skip(self))]
-    async fn take_job(&self, job_id: Uuid) -> Option<Arc<Mutex<QemuSupervisorJobState>>> {
-        event!(Level::DEBUG, "Removing job from jobs map");
-        self.jobs.lock().await.remove(&job_id)
-    }
-
-    #[instrument(skip(this))]
-    async fn fetch_image(this: &Arc<Self>, job_id: Uuid) {
-        event!(Level::DEBUG, "Entering fetch_image");
-
-        // This function is called once directly from `start_job`. If the job is
-        // in any state other than `FetchingImage` (e.g. it was stopped in the
-        // meantime), we just exit without doing anything:
-        let job_opt = {
-            // Do not hold onto the global job's lock:
-            this.jobs.lock().await.get(&job_id).cloned()
-        };
-
-        // If the job is no longer alive, return:
-        let job = match job_opt {
-            Some(job) => {
-                event!(Level::TRACE, "Retrieved job object reference");
-                job
-            }
-            None => {
-                // This case should be pretty rare but does not indicate a bug
-                // per se, so let's issue a debug message just in case:
+    async fn job_handle(&self, tgt_job_id: Uuid) -> Option<JobHandle> {
+        match self.slot.lock().await.as_ref() {
+            Some(slot) if slot.handle.job_id == tgt_job_id => Some(slot.handle.clone()),
+            _ => {
                 event!(
-                    Level::DEBUG,
-                    "Job {job_id} vanished across invocations of `fetch_image`",
+                    Level::WARN,
+                    ?tgt_job_id,
+                    "Received a puppet request for a job this supervisor does not hold",
                 );
-                return;
-            }
-        };
-
-        // Acquire a lock on the job:
-        let mut job_lg = job.lock().await;
-        event!(Level::DEBUG, "Acquired job object lock");
-
-        // We swap in a state of `Starting` temporarily to please the Rust
-        // borrow checker. Before we leave this function, we must replace this
-        // state again!
-        //
-        // If the job is in any state other than `FetchingImage`, swap back and
-        // return immediately:
-        let fetching_image_state = match std::mem::replace(
-            &mut *job_lg,
-            QemuSupervisorJobState::Starting,
-        ) {
-            QemuSupervisorJobState::FetchingImage(state) => state,
-            prev_state => {
-                // Swap the old state back:
-                *job_lg = prev_state;
-
-                // Same as above, let's issue a debug message:
-                event!(
-                    Level::DEBUG,
-                    "Job not in FetchingImage state (likely changed state across invocations of fetch_image): {job:?}. Returning.",
-                );
-
-                return;
-            }
-        };
-
-        match this.fetch_and_parse_image(&fetching_image_state).await {
-            Ok(image) => {
-                // Place the job in the `ImageFetched` state and continue
-                // starting it:
-                event!(
-                    Level::DEBUG,
-                    ?image,
-                    "Transitioning job into ImageFetched state"
-                );
-                *job_lg = QemuSupervisorJobState::ImageFetched(QemuSupervisorImageFetchedState {
-                    start_job_req: fetching_image_state.start_job_req,
-                    image,
-                });
-
-                // Release the lock before continuing to start, otherwise this
-                // will deadlock:
-                std::mem::drop(job_lg);
-                Self::start_job_cont(this, job_id).await
-            }
-
-            Err(error) => {
-                // No resources are allocated at this point, but the job still
-                // owes the coordinator a terminal transition:
-                *job_lg = QemuSupervisorJobState::Stopping;
-                std::mem::drop(job_lg);
-                this.finish_job(job_id, JobResources::default(), Outcome::Failed(error))
-                    .await;
+                None
             }
         }
     }
 
-    /// Ask the local OCI store to make the manifest digest present — a copy
-    /// from one of the dispatched locations, or a cache hit — then read+parse
-    /// its manifest into the Treadmill backing-chain view.
-    ///
-    /// `ensure_present` is a single operation (no in-progress polling), so
-    /// there is no `FetchingImage` status to post: a cache hit is the common
-    /// case and reports straight through to `Allocating` (in `start_job_cont`).
-    #[instrument(skip(self, state), err(Debug, level = Level::WARN))]
-    async fn fetch_and_parse_image(
-        &self,
-        state: &QemuSupervisorFetchingImageState,
-    ) -> Result<TreadmillImage, connector::JobError> {
-        event!(
-            Level::TRACE,
-            manifest_digest = %state.manifest_digest,
-            locations = ?state.locations,
-            "Ensuring image present in the local OCI store",
-        );
-
-        self.image_store
-            .ensure_present(&state.manifest_digest, &state.locations)
-            .await
-            .map_err(|e| connector::JobError {
-                error_kind: connector::JobErrorKind::InternalError,
-                description: format!("Failed to fetch image {}: {e:#}", state.manifest_digest),
-            })?;
-
-        let manifest = self
-            .image_store
-            .manifest(&state.manifest_digest)
-            .await
-            .map_err(|e| connector::JobError {
-                error_kind: connector::JobErrorKind::InternalError,
-                description: format!(
-                    "Cannot retrieve image manifest of {}: {e:#}",
-                    state.manifest_digest,
-                ),
-            })?;
-
-        parse::parse_image(&manifest).map_err(|e| connector::JobError {
-            error_kind: connector::JobErrorKind::ImageInvalid,
-            description: format!(
-                "Image {} is not a valid Treadmill image: {e}",
-                state.manifest_digest,
-            ),
-        })
+    async fn job_facts(&self, tgt_job_id: Uuid) -> Option<Arc<JobFacts>> {
+        let facts = self.job_handle(tgt_job_id).await?.facts();
+        if facts.phase.terminated() {
+            event!(
+                Level::WARN,
+                ?tgt_job_id,
+                "Received a puppet request for a job that has already terminated",
+            );
+            return None;
+        }
+        Some(facts)
     }
 
     /// Order the image's runtime backing chain base→head and map each layer to
@@ -456,7 +410,7 @@ impl QemuSupervisor {
 
         let head_virtual_size = head_first
             .first()
-            .expect("chain has at least the head layer")
+            .ok_or_else(|| anyhow!("backing chain has no layers"))?
             .virtual_size
             .ok_or_else(|| anyhow!("head layer {} has no virtual-size annotation", image.head))?;
 
@@ -559,594 +513,6 @@ impl QemuSupervisor {
         Ok((job_dir, overlay_file))
     }
 
-    #[instrument(skip(this))]
-    async fn start_job_cont(this: &Arc<Self>, job_id: Uuid) {
-        // Obtain a reference to the job. It's possible for the job to have
-        // transitioned from `ImageFetched` to any other state in between
-        // `fetch_image` releasing its lock and this function executing, so if
-        // the job is no longer alive or in the `ImageFetched` state, return.
-        let job_opt = {
-            // Do not hold onto the global job's lock:
-            this.jobs.lock().await.get(&job_id).cloned()
-        };
-
-        // If the job is no longer alive, return:
-        let job = match job_opt {
-            Some(job) => {
-                event!(Level::TRACE, "Retrieved job object reference");
-                job
-            }
-            None => {
-                // This case should be pretty rare but does not indicate a bug
-                // per se, so let's issue a debug message just in case:
-                event!(
-                    Level::DEBUG,
-                    "Job vanished before `start_job_cont` could acquire its lock",
-                );
-                return;
-            }
-        };
-
-        // Acquire a lock on the job:
-        let mut job_lg = job.lock().await;
-        event!(Level::DEBUG, "Acquired job object lock");
-
-        // We swap in a state of `Starting` temporarily to please the Rust
-        // borrow checker. Before we leave this function, we must replace this
-        // state again!
-        //
-        // If the job is in any state other than `ImageFetched`, swap back and
-        // return immediately:
-        let QemuSupervisorImageFetchedState {
-            start_job_req,
-            image,
-        } = match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Starting) {
-            QemuSupervisorJobState::ImageFetched(state) => state,
-            prev_state => {
-                // Swap the old state back:
-                *job_lg = prev_state;
-
-                // Same as above, let's issue a debug message:
-                event!(
-                    Level::DEBUG,
-                    "Job not in ImageFetched state (likely changed state before start_job_cont could acquire a lock): {job:?}",
-                );
-
-                return;
-            }
-        };
-
-        let mut resources = JobResources::default();
-        match Self::launch(this, &job, start_job_req, image, &mut resources).await {
-            Ok(running_state) => *job_lg = QemuSupervisorJobState::Running(running_state),
-
-            Err(error) => {
-                *job_lg = QemuSupervisorJobState::Stopping;
-                std::mem::drop(job_lg);
-                this.finish_job(job_id, resources, Outcome::Failed(error))
-                    .await;
-            }
-        }
-    }
-
-    #[instrument(
-        skip(this, job, start_job_req, image, resources),
-        fields(job_id = ?start_job_req.job_id),
-        err(Debug, level = Level::WARN),
-    )]
-    async fn launch(
-        this: &Arc<Self>,
-        job: &Arc<Mutex<QemuSupervisorJobState>>,
-        start_job_req: connector::StartJobMessage,
-        image: TreadmillImage,
-        resources: &mut JobResources,
-    ) -> Result<QemuSupervisorJobRunningState, connector::JobError> {
-        let job_id = start_job_req.job_id;
-
-        // Inform the connector that we're now preparing for start:
-        this.connector
-            .update_job_state(
-                job_id,
-                RunningJobState::Initializing {
-                    stage: JobInitializingStage::Allocating,
-                },
-                Some(String::new()),
-            )
-            .await;
-
-        // Order the OCI backing chain base→head and map each layer to its
-        // read-only store blob path. The head's virtual size sizes the overlay.
-        //
-        // A malformed chain (dangling/cyclic lower, missing virtual size) is
-        // treated as an invalid image.
-        let (lower_paths, head_virtual_size) =
-            this.assemble_backing_chain(&image)
-                .map_err(|e| connector::JobError {
-                    error_kind: connector::JobErrorKind::ImageInvalid,
-                    description: format!("Invalid backing chain: {e:#}"),
-                })?;
-
-        // Allocate the job's working directory and per-job overlay (no baked
-        // backing):
-        let (job_workdir, overlay_path) = this
-            .allocate_job_disk(&start_job_req, head_virtual_size)
-            .await?;
-
-        // Assemble the runtime backing chain: shared read-only lowers (base
-        // first) with the per-job writable overlay on top.
-        let chain = BackingChain::new(lower_paths, overlay_path);
-
-        // Variables that can be produced by the start script, and used for
-        // templating the QEMU cmd string or setting other job-specific values
-        // (e.g., the host IP), populated with default values like the Job ID,
-        // working directory or disk node.
-        resources
-            .job_vars
-            .insert("job_id".to_string(), job_id.to_string());
-        resources
-            .job_vars
-            .insert("job_workdir".to_string(), job_workdir.display().to_string());
-        // The disk is attached by referencing the writable top node of the
-        // backing chain the supervisor prepends as `-blockdev` args below.
-        resources
-            .job_vars
-            .insert("disk_node".to_string(), BackingChain::TOP_NODE.to_string());
-
-        if let Some(ref start_script) = this.config.qemu.start_script {
-            event!(Level::DEBUG, ?start_script, "Executing start script");
-
-            // Even if the start_script fails to spawn or errors midway through
-            // we still give the stop_script a chance to clean up resources:
-            resources.start_hook_ran = true;
-
-            let start_script_res = tokio::process::Command::new(start_script)
-                .stdin(std::process::Stdio::null())
-                .envs(
-                    resources
-                        .job_vars
-                        .iter()
-                        .map(|(k, v)| (format!("TML_{}", k.to_uppercase()), v)),
-                )
-                .output()
-                .await;
-
-            let start_script_out = match start_script_res {
-                Err(e) => Err(format!("Failed to spawn start_script: {}", e)),
-                Ok(out) if !out.status.success() => Err(format!(
-                    "start_script exited with {}, stdout: {:?}, stderr: {:?}",
-                    out.status, out.stdout, out.stderr
-                )),
-                Ok(out) => Ok(out),
-            }
-            .map_err(|description| connector::JobError {
-                error_kind: connector::JobErrorKind::InternalError,
-                description,
-            })?;
-
-            if let Ok(stdout) = std::str::from_utf8(&start_script_out.stdout) {
-                for line in stdout.lines() {
-                    if let Some(key_value) = line.strip_prefix("tml-set-variable:") {
-                        if let Some((key, value)) = key_value.split_once('=') {
-                            event!(
-                                Level::DEBUG,
-                                key,
-                                value,
-                                "Extracted variable {key:?} from start script output",
-                            );
-                            resources
-                                .job_vars
-                                .insert(key.to_string(), value.to_string());
-                        } else {
-                            event!(
-                                Level::WARN,
-                                command = line,
-                                "Malformed tml-set-variable command"
-                            );
-                        }
-                    }
-                }
-            } else {
-                event!(
-                    Level::WARN,
-                    stdout = %String::from_utf8_lossy(&start_script_out.stdout),
-                    "Start script produced non-UTF8 characters on standard output, refusing to interpret",
-                );
-            }
-        }
-
-        let templated_args = this
-            .config
-            .qemu
-            .qemu_args
-            .iter()
-            .map(|argstr| strfmt::strfmt(argstr, &resources.job_vars))
-            .collect::<Result<Vec<String>, strfmt::FmtError>>()
-            .map_err(|format_error| connector::JobError {
-                error_kind: connector::JobErrorKind::InternalError,
-                description: format!(
-                    "Failed to generate QEMU command line arguments: {format_error:?}",
-                ),
-            })?;
-
-        // Prepend the backing-chain `-blockdev` nodes (base → … → overlay) to
-        // the configured invocation; the configured args attach the disk device
-        // to the writable top node via the `{disk_node}` substitution.
-        let mut qemu_args: Vec<String> = Vec::new();
-        for node in chain.blockdev_args() {
-            qemu_args.push("-blockdev".to_string());
-            qemu_args.push(node);
-        }
-        qemu_args.extend(templated_args);
-
-        // When the dispatch enabled log streaming, capture qemu's console
-        // output: pipe stdout/stderr (read back below) and route the guest
-        // serial console to a unix socket we own. When it's disabled, keep the
-        // historical behavior — stdout/stderr inherit our terminal and the
-        // serial console goes wherever the configured args point it.
-        let (stdio_mode, serial_socket) = if start_job_req.log_streaming.is_some() {
-            let serial_sock_path = job_workdir.join("serial.sock");
-            match SerialSocket::bind(&serial_sock_path).await {
-                Ok(socket) => {
-                    // qemu connects to our already-bound listener as the client
-                    // (`server=off`), so there is no connect race.
-                    qemu_args.push("-chardev".to_string());
-                    qemu_args.push(format!(
-                        "socket,id=tml-serial,path={},server=off",
-                        socket.path().display(),
-                    ));
-                    qemu_args.push("-serial".to_string());
-                    qemu_args.push("chardev:tml-serial".to_string());
-                    (StdioMode::Capture, Some(socket))
-                }
-                Err(e) => {
-                    // Don't fail the job over a capture-setup error; fall back
-                    // to inheriting and skip the serial channel.
-                    event!(
-                        Level::WARN,
-                        ?serial_sock_path,
-                        error = ?e,
-                        "Failed to bind serial capture socket; disabling log capture for this job",
-                    );
-                    (StdioMode::Inherit, None)
-                }
-            }
-        } else {
-            (StdioMode::Inherit, None)
-        };
-
-        // Start a TCP control socket on the specified listen addr:
-        resources.control_socket = Some(
-            TcpControlSocket::new(
-                this.config.base.supervisor_id,
-                job_id,
-                this.config.qemu.tcp_control_socket_listen_addr,
-                this.clone(),
-            )
-            .await
-            .map_err(|e| connector::JobError {
-                error_kind: connector::JobErrorKind::InternalError,
-                description: format!(
-                    "Failed to bind the control socket at {:?}: {e:#}",
-                    this.config.qemu.tcp_control_socket_listen_addr,
-                ),
-            })?,
-        );
-
-        event!(Level::INFO, qemu_binary = ?this.config.qemu.qemu_binary, ?qemu_args, "Launching QEMU process");
-        let mut qemu_proc = this
-            .launcher
-            .spawn(&this.config.qemu.qemu_binary, &qemu_args, None, stdio_mode)
-            .await
-            .map_err(|e| connector::JobError {
-                error_kind: connector::JobErrorKind::InternalError,
-                description: format!("Failed to launch the QEMU process: {e:#}"),
-            })?;
-
-        // Ship the captured console channels to NATS (durable spill + ack +
-        // resume). Takes the stdout/stderr readers before the process is moved
-        // into the monitor task below. Spill files live under the per-job
-        // workdir so they survive a supervisor restart and are retained for
-        // post-mortem after the job ends.
-        if let Some(dispatch) = start_job_req.log_streaming.clone() {
-            let stdout = qemu_proc.take_stdout();
-            let stderr = qemu_proc.take_stderr();
-            let spill_dir = job_workdir.join("logs");
-            match LogPublisher::connect(&dispatch, spill_dir, this.config.log_streaming.clone())
-                .await
-            {
-                Ok(publisher) => {
-                    if let Some(stdout) = stdout {
-                        publisher.spawn_channel(LogChannel::QemuStdout, stdout);
-                    }
-                    if let Some(stderr) = stderr {
-                        publisher.spawn_channel(LogChannel::QemuStderr, stderr);
-                    }
-                    if let Some(socket) = serial_socket {
-                        publisher.spawn_serial(LogChannel::Serial, socket);
-                    }
-                    resources.publisher = Some(publisher);
-                }
-                Err(e) => {
-                    // Don't fail the job over log-streaming setup; fall back to
-                    // draining capture to our terminal so the qemu pipes don't
-                    // block and the operator still sees output.
-                    event!(
-                        Level::WARN,
-                        error = ?e,
-                        "Failed to start log publisher; draining capture to terminal instead",
-                    );
-                    capture::drain_to_stdio(stdout, stderr, serial_socket);
-                }
-            }
-        }
-
-        // Job has been started, let the coordinator know:
-        this.connector
-            .update_job_state(
-                job_id,
-                RunningJobState::Initializing {
-                    // Booting, but puppet has not yet reported "ready":
-                    stage: JobInitializingStage::Booting,
-                },
-                None,
-            )
-            .await;
-
-        // Determine the job's IP address. It can either be set as a static IP
-        // in the configuration file (taking priority), or be set by the
-        // start_script.
-        let mut job_address = this.config.base.job_address;
-        if job_address.is_none()
-            && let Some(job_address_str) = resources.job_vars.get("job_ip_address")
-        {
-            job_address = <IpAddr as FromStr>::from_str(job_address_str)
-                .inspect_err(|e| event!(
-                    Level::WARN,
-                    error = ?e,
-                    "Failed to parse `job_ip_address` variable from start script, not reporting",
-                ))
-                .ok();
-        }
-        if let Some(job_address) = job_address {
-            this.connector
-                .report_job_network_address(job_id, job_address)
-                .await;
-        }
-
-        // Create a oneshot channel to signal shutdown
-        let (shutdown_tx, shutdown_rx) =
-            tokio::sync::oneshot::channel::<QemuSupervisorJobRunningState>();
-
-        // Clone necessary variables for the monitoring task
-        let supervisor_clone = Arc::clone(this);
-        let job_clone = job.clone();
-
-        // Spawn the monitoring task
-        tokio::spawn(async move {
-            Self::process_monitor(&supervisor_clone, job_id, job_clone, qemu_proc, shutdown_rx)
-                .await
-        });
-
-        Ok(QemuSupervisorJobRunningState {
-            start_job_req,
-            shutdown_tx: Some(shutdown_tx),
-            resources: std::mem::take(resources),
-        })
-    }
-
-    async fn process_monitor(
-        this: &Arc<Self>,
-        job_id: Uuid,
-        job: Arc<Mutex<QemuSupervisorJobState>>,
-        mut qemu_proc: Box<dyn WorkloadProcess>,
-        mut shutdown_rx: tokio::sync::oneshot::Receiver<QemuSupervisorJobRunningState>,
-    ) {
-        // Set once the QEMU process has exited on its own. Its outcome takes
-        // precedence over a concurrently requested termination.
-        let mut exit_outcome: Option<Outcome> = None;
-
-        let (outcome, job_running_state): (Outcome, QemuSupervisorJobRunningState) = loop {
-            tokio::select! {
-                // When the QEMU process has exited but, at the time of
-                // receiving this event the job was no longer in the running
-                // state, then there must be a message in the shutdown_rx
-                // channel. The `terminate_job_internal` function moves the
-                // `job_running_state` back to this task through it.
-                //
-                // However, if we were to simply always poll for the QEMU exit,
-                // we'd be stuck in an infinite loop in this case. Thus, it's
-                // important that we check the `shutdown_rx` channel first: if
-                // it contains a value, extract it and finish the teardown. If
-                // not, check whether the QEMU process exited on its own.
-                //
-                // We achieve this polling order by making this select `biased`:
-                biased;
-
-                job_running_state_res = &mut shutdown_rx => {
-                    let Ok(job_running_state) = job_running_state_res else {
-                        // The sender was dropped without the job state ever
-                        // being handed over, so there is nothing left to tear
-                        // down here:
-                        event!(
-                            Level::WARN,
-                            ?job_id,
-                            "Shutdown channel closed without handing over the job state",
-                        );
-                        return;
-                    };
-
-                    if let Some(outcome) = exit_outcome.take() {
-                        break (outcome, job_running_state);
-                    }
-
-                    // We were asked to kill the QEMU process:
-                    let outcome = match qemu_proc.kill().await {
-                        Ok(()) => Outcome::TerminatedByRequest,
-                        Err(e) => Outcome::Failed(connector::JobError {
-                            error_kind: connector::JobErrorKind::InternalError,
-                            description: format!("Failed to kill QEMU process: {e:?}"),
-                        }),
-                    };
-
-                    break (outcome, job_running_state);
-                }
-
-                exit_status = qemu_proc.wait(), if exit_outcome.is_none() => {
-                    event!(
-                        Level::DEBUG,
-                        ?job_id,
-                        "Process monitor task has noticed QEMU process exit"
-                    );
-
-                    let outcome = match exit_status {
-                        Ok(status) => Outcome::WorkloadExited(status),
-                        Err(e) => Outcome::Failed(connector::JobError {
-                            error_kind: connector::JobErrorKind::InternalError,
-                            description: format!("Failed to wait on QEMU process: {e:?}"),
-                        }),
-                    };
-
-                    // Get a hold of the job lock and extract the job running
-                    // state. If it no longer contains a running state, then the
-                    // QEMU process exit raced with a call to
-                    // `terminate_job_internal`, which places the job in the
-                    // stopping state and sends the `job_running_state` on the
-                    // shutdown oneshot channel. Thus, in this case, remember
-                    // the outcome and continue into the next loop iteration,
-                    // which should receive that message from `shutdown_rx`:
-                    let mut job_lg = job.lock().await;
-
-                    match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Stopping) {
-                        QemuSupervisorJobState::Running(s) => {
-                            break (outcome, s);
-                        }
-
-                        prev_state => {
-                            // Put back the previous state:
-                            *job_lg = prev_state;
-                            event!(
-                                Level::INFO,
-                                ?job_id,
-                                "Received QEMU process exit, but job is no \
-                                 longer in running state. This can occur when a \
-                                 `terminate_job` races with the running state. \
-                                 Giving up and waiting on a shutdown signal \
-                                 instead."
-                            );
-
-                            exit_outcome = Some(outcome);
-                        }
-                    }
-
-                    // Lock is implicitly released here:
-                }
-            }
-        };
-
-        this.finish_job(job_id, job_running_state.resources, outcome)
-            .await
-    }
-
-    async fn terminate_job_internal(&self, job_id: Uuid) -> Result<(), connector::JobError> {
-        // Get a reference to this job by an emphemeral lock on `jobs` HashMap.
-        // An unknown job is not an error: the postcondition of terminating it
-        // already holds.
-        let Some(job) = self.jobs.lock().await.get(&job_id).cloned() else {
-            return Ok(());
-        };
-
-        let mut job_lg = job.lock().await;
-
-        enum TerminateJobPrevState {
-            Startup,
-            Running(QemuSupervisorJobRunningState),
-        }
-
-        // Make sure the job is in a state in which we can stop it. If so, place
-        // it into the Stopping state.
-        let prev_job_state =
-            match std::mem::replace(&mut *job_lg, QemuSupervisorJobState::Stopping) {
-                // Stoppable states:
-                QemuSupervisorJobState::FetchingImage(_)
-                | QemuSupervisorJobState::ImageFetched(_) => TerminateJobPrevState::Startup,
-                QemuSupervisorJobState::Running(s) => TerminateJobPrevState::Running(s),
-
-                prev_state @ QemuSupervisorJobState::Starting => {
-                    // Put back the previous state:
-                    *job_lg = prev_state;
-
-                    // We must never be able to acquire a lock over a job in this
-                    // state. The job will atomically transition from `Starting` to
-                    // some other state while its lock is held. This state is just a
-                    // placeholder in the global jobs map, such that no other job
-                    // with the same ID can be started:
-                    return Err(connector::JobError {
-                        error_kind: connector::JobErrorKind::InternalError,
-                        description: format!("Job {job_id:?} is wedged in the `Starting` state."),
-                    });
-                }
-
-                prev_state @ QemuSupervisorJobState::Stopping => {
-                    // Put back the previous state:
-                    *job_lg = prev_state;
-
-                    // Another path is already tearing this job down and owes the
-                    // coordinator the terminal transition; terminating is
-                    // idempotent, so acknowledge and change nothing:
-                    return Ok(());
-                }
-            };
-
-        // Job is stopping, let the coordinator know:
-        self.connector
-            .update_job_state(
-                job_id,
-                RunningJobState::Terminating,
-                Some("Terminate job requested".to_string()),
-            )
-            .await;
-
-        // Perform actions depending on the previous job state:
-        match prev_job_state {
-            // Nothing is allocated in between accepting the job and launching
-            // it, so there is nothing to deallocate or shut down:
-            TerminateJobPrevState::Startup => {
-                std::mem::drop(job_lg);
-                self.finish_job(
-                    job_id,
-                    JobResources::default(),
-                    Outcome::CancelledDuringStartup,
-                )
-                .await;
-            }
-
-            TerminateJobPrevState::Running(mut running_state) => {
-                match running_state.shutdown_tx.take() {
-                    // The monitor task kills the QEMU process and takes care of
-                    // the remaining teardown, including removing the job:
-                    Some(shutdown_tx) => {
-                        let _ = shutdown_tx.send(running_state);
-                    }
-
-                    // Only one such message may be sent while the job is in the
-                    // running state, so this cannot happen; tear the job down
-                    // here rather than leaking its resources if it ever does:
-                    None => {
-                        std::mem::drop(job_lg);
-                        self.finish_job(
-                            job_id,
-                            running_state.resources,
-                            Outcome::TerminatedByRequest,
-                        )
-                        .await;
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     async fn run_stop_job_script(&self, job_id: Uuid, job_vars: &HashMap<String, String>) {
         if let Some(ref stop_script) = self.config.qemu.stop_script {
             event!(Level::DEBUG, ?stop_script, "Executing stop script");
@@ -1183,15 +549,537 @@ impl QemuSupervisor {
             }
         }
     }
+}
 
-    #[instrument(skip(self, resources))]
-    async fn finish_job(&self, job_id: Uuid, resources: JobResources, outcome: Outcome) {
+struct JobTask {
+    supervisor: Arc<QemuSupervisor>,
+    start_job_req: connector::StartJobMessage,
+    facts_tx: watch::Sender<Arc<JobFacts>>,
+    cancel: CancellationToken,
+    resources: JobResources,
+    terminate_acks: Vec<oneshot::Sender<Result<(), connector::JobError>>>,
+}
+
+impl JobTask {
+    fn job_id(&self) -> Uuid {
+        self.start_job_req.job_id
+    }
+
+    fn update_facts(&self, update: impl FnOnce(&mut JobFacts)) {
+        self.facts_tx.send_modify(|facts| {
+            let mut next = (**facts).clone();
+            update(&mut next);
+            *facts = Arc::new(next);
+        });
+    }
+
+    async fn set_phase(&mut self, phase: Phase) {
+        self.supervisor
+            .connector
+            .update_job_state(self.job_id(), phase.running_job_state(), None)
+            .await;
+        self.update_facts(|facts| facts.phase = phase);
+    }
+
+    #[instrument(skip(self, cmd_rx), fields(job_id = ?self.job_id()))]
+    async fn run(mut self, mut cmd_rx: mpsc::Receiver<JobCommand>) {
+        self.set_phase(Phase::Starting).await;
+
+        let cancel = self.cancel.clone();
+        let startup = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => None,
+            result = self.startup() => Some(result),
+        };
+
+        let outcome = match startup {
+            None => Outcome::CancelledDuringStartup,
+            Some(Err(error)) => Outcome::Failed(error),
+            Some(Ok(())) => self.supervise(&mut cmd_rx).await,
+        };
+
+        self.terminate(outcome).await;
+        let remove_ack = self.retain(&mut cmd_rx).await;
+        self.release().await;
+
+        if let Some(ack) = remove_ack {
+            let _ = ack.send(Ok(()));
+        }
+    }
+
+    async fn startup(&mut self) -> Result<(), connector::JobError> {
+        self.set_phase(Phase::FetchingImage).await;
+        let image = self.fetch_and_parse_image().await?;
+
+        self.set_phase(Phase::Allocating).await;
+
+        // Order the OCI backing chain base→head and map each layer to its
+        // read-only store blob path. The head's virtual size sizes the overlay.
+        //
+        // A malformed chain (dangling/cyclic lower, missing virtual size) is
+        // treated as an invalid image.
+        let (lower_paths, head_virtual_size) = self
+            .supervisor
+            .assemble_backing_chain(&image)
+            .map_err(|e| connector::JobError {
+                error_kind: connector::JobErrorKind::ImageInvalid,
+                description: format!("Invalid backing chain: {e:#}"),
+            })?;
+
+        // Allocate the job's working directory and per-job overlay (no baked
+        // backing):
+        let (job_workdir, overlay_path) = self
+            .supervisor
+            .allocate_job_disk(&self.start_job_req, head_virtual_size)
+            .await?;
+
+        // Assemble the runtime backing chain: shared read-only lowers (base
+        // first) with the per-job writable overlay on top.
+        let chain = BackingChain::new(lower_paths, overlay_path);
+
+        // Variables that can be produced by the start script, and used for
+        // templating the QEMU cmd string or setting other job-specific values
+        // (e.g., the host IP), populated with default values like the Job ID,
+        // working directory or disk node.
+        let job_vars = &mut self.resources.job_vars;
+        job_vars.insert("job_id".to_string(), self.start_job_req.job_id.to_string());
+        job_vars.insert("job_workdir".to_string(), job_workdir.display().to_string());
+        // The disk is attached by referencing the writable top node of the
+        // backing chain the supervisor prepends as `-blockdev` args below.
+        job_vars.insert("disk_node".to_string(), BackingChain::TOP_NODE.to_string());
+
+        self.run_start_job_script().await?;
+
+        let templated_args = self
+            .supervisor
+            .config
+            .qemu
+            .qemu_args
+            .iter()
+            .map(|argstr| strfmt::strfmt(argstr, &self.resources.job_vars))
+            .collect::<Result<Vec<String>, strfmt::FmtError>>()
+            .map_err(|format_error| connector::JobError {
+                error_kind: connector::JobErrorKind::InternalError,
+                description: format!(
+                    "Failed to generate QEMU command line arguments: {format_error:?}",
+                ),
+            })?;
+
+        // Prepend the backing-chain `-blockdev` nodes (base → … → overlay) to
+        // the configured invocation; the configured args attach the disk device
+        // to the writable top node via the `{disk_node}` substitution.
+        let mut qemu_args: Vec<String> = Vec::new();
+        for node in chain.blockdev_args() {
+            qemu_args.push("-blockdev".to_string());
+            qemu_args.push(node);
+        }
+        qemu_args.extend(templated_args);
+
+        // When the dispatch enabled log streaming, capture qemu's console
+        // output: pipe stdout/stderr (read back below) and route the guest
+        // serial console to a unix socket we own. When it's disabled, keep the
+        // historical behavior — stdout/stderr inherit our terminal and the
+        // serial console goes wherever the configured args point it.
+        let (stdio_mode, serial_socket) = if self.start_job_req.log_streaming.is_some() {
+            let serial_sock_path = job_workdir.join("serial.sock");
+            match SerialSocket::bind(&serial_sock_path).await {
+                Ok(socket) => {
+                    // qemu connects to our already-bound listener as the client
+                    // (`server=off`), so there is no connect race.
+                    qemu_args.push("-chardev".to_string());
+                    qemu_args.push(format!(
+                        "socket,id=tml-serial,path={},server=off",
+                        socket.path().display(),
+                    ));
+                    qemu_args.push("-serial".to_string());
+                    qemu_args.push("chardev:tml-serial".to_string());
+                    (StdioMode::Capture, Some(socket))
+                }
+                Err(e) => {
+                    // Don't fail the job over a capture-setup error; fall back
+                    // to inheriting and skip the serial channel.
+                    event!(
+                        Level::WARN,
+                        ?serial_sock_path,
+                        error = ?e,
+                        "Failed to bind serial capture socket; disabling log capture for this job",
+                    );
+                    (StdioMode::Inherit, None)
+                }
+            }
+        } else {
+            (StdioMode::Inherit, None)
+        };
+
+        // Start a TCP control socket on the specified listen addr:
+        let listen_addr = self.supervisor.config.qemu.tcp_control_socket_listen_addr;
+        let control_socket = TcpControlSocket::new(
+            self.supervisor.config.base.supervisor_id,
+            self.job_id(),
+            listen_addr,
+            self.supervisor.clone(),
+        )
+        .await
+        .map_err(|e| connector::JobError {
+            error_kind: connector::JobErrorKind::InternalError,
+            description: format!("Failed to bind the control socket at {listen_addr:?}: {e:#}"),
+        })?;
+        self.resources.control_socket = Some(control_socket);
+
+        event!(
+            Level::INFO,
+            qemu_binary = ?self.supervisor.config.qemu.qemu_binary,
+            ?qemu_args,
+            "Launching QEMU process",
+        );
+        let mut workload = self
+            .supervisor
+            .launcher
+            .spawn(
+                &self.supervisor.config.qemu.qemu_binary,
+                &qemu_args,
+                None,
+                stdio_mode,
+            )
+            .await
+            .map_err(|e| connector::JobError {
+                error_kind: connector::JobErrorKind::InternalError,
+                description: format!("Failed to launch the QEMU process: {e:#}"),
+            })?;
+
+        // Ship the captured console channels to NATS (durable spill + ack +
+        // resume). Takes the stdout/stderr readers before the process is handed
+        // to `supervise`. Spill files live under the per-job workdir so they
+        // survive a supervisor restart and are retained for post-mortem after
+        // the job ends.
+        if let Some(dispatch) = self.start_job_req.log_streaming.clone() {
+            let stdout = workload.take_stdout();
+            let stderr = workload.take_stderr();
+            let spill_dir = job_workdir.join("logs");
+            let config = self.supervisor.config.log_streaming.clone();
+            match LogPublisher::connect(&dispatch, spill_dir, config).await {
+                Ok(publisher) => {
+                    if let Some(stdout) = stdout {
+                        publisher.spawn_channel(LogChannel::QemuStdout, stdout);
+                    }
+                    if let Some(stderr) = stderr {
+                        publisher.spawn_channel(LogChannel::QemuStderr, stderr);
+                    }
+                    if let Some(socket) = serial_socket {
+                        publisher.spawn_serial(LogChannel::Serial, socket);
+                    }
+                    self.resources.publisher = Some(publisher);
+                }
+                Err(e) => {
+                    // Don't fail the job over log-streaming setup; fall back to
+                    // draining capture to our terminal so the qemu pipes don't
+                    // block and the operator still sees output.
+                    event!(
+                        Level::WARN,
+                        error = ?e,
+                        "Failed to start log publisher; draining capture to terminal instead",
+                    );
+                    capture::drain_to_stdio(stdout, stderr, serial_socket);
+                }
+            }
+        }
+
+        self.resources.workload = Some(workload);
+
+        // Booting, but puppet has not yet reported "ready":
+        self.set_phase(Phase::Booting).await;
+
+        self.report_job_address().await;
+
+        Ok(())
+    }
+
+    /// Resolve the dispatched image into the local OCI store: ask it to make
+    /// the manifest digest present — a copy from one of the dispatched
+    /// locations, or a cache hit — then read+parse its manifest into the
+    /// Treadmill backing-chain view.
+    async fn fetch_and_parse_image(&mut self) -> Result<TreadmillImage, connector::JobError> {
+        let (manifest_digest, locations) = match &self.start_job_req.image_spec {
+            ImageSpecification::Image {
+                manifest_digest,
+                locations,
+            } => (
+                *manifest_digest,
+                locations
+                    .iter()
+                    .cloned()
+                    .map(|loc| Location::new(loc.registry, loc.repository))
+                    .collect::<Vec<_>>(),
+            ),
+
+            unsupported_image_spec => {
+                return Err(connector::JobError {
+                    error_kind: connector::JobErrorKind::ImageNotCompatible,
+                    description: format!(
+                        "Unsupported image specification: {unsupported_image_spec:?}",
+                    ),
+                });
+            }
+        };
+
+        event!(
+            Level::TRACE,
+            %manifest_digest,
+            ?locations,
+            "Ensuring image present in the local OCI store",
+        );
+
+        self.supervisor
+            .image_store
+            .ensure_present(&manifest_digest, &locations)
+            .await
+            .map_err(|e| connector::JobError {
+                error_kind: connector::JobErrorKind::InternalError,
+                description: format!("Failed to fetch image {manifest_digest}: {e:#}"),
+            })?;
+
+        let manifest = self
+            .supervisor
+            .image_store
+            .manifest(&manifest_digest)
+            .await
+            .map_err(|e| connector::JobError {
+                error_kind: connector::JobErrorKind::InternalError,
+                description: format!("Cannot retrieve image manifest of {manifest_digest}: {e:#}",),
+            })?;
+
+        parse::parse_image(&manifest).map_err(|e| connector::JobError {
+            error_kind: connector::JobErrorKind::ImageInvalid,
+            description: format!("Image {manifest_digest} is not a valid Treadmill image: {e}"),
+        })
+    }
+
+    async fn run_start_job_script(&mut self) -> Result<(), connector::JobError> {
+        let Some(start_script) = self.supervisor.config.qemu.start_script.clone() else {
+            return Ok(());
+        };
+
+        event!(Level::DEBUG, ?start_script, "Executing start script");
+
+        // Even if the start_script fails to spawn or errors midway through we
+        // still give the stop_script a chance to clean up resources:
+        self.resources.start_hook_ran = true;
+
+        let start_script_res = tokio::process::Command::new(&start_script)
+            .stdin(std::process::Stdio::null())
+            .envs(
+                self.resources
+                    .job_vars
+                    .iter()
+                    .map(|(k, v)| (format!("TML_{}", k.to_uppercase()), v)),
+            )
+            .output()
+            .await;
+
+        let start_script_out = match start_script_res {
+            Err(e) => Err(format!("Failed to spawn start_script: {}", e)),
+            Ok(out) if !out.status.success() => Err(format!(
+                "start_script exited with {}, stdout: {:?}, stderr: {:?}",
+                out.status, out.stdout, out.stderr
+            )),
+            Ok(out) => Ok(out),
+        }
+        .map_err(|description| connector::JobError {
+            error_kind: connector::JobErrorKind::InternalError,
+            description,
+        })?;
+
+        let Ok(stdout) = std::str::from_utf8(&start_script_out.stdout) else {
+            event!(
+                Level::WARN,
+                stdout = %String::from_utf8_lossy(&start_script_out.stdout),
+                "Start script produced non-UTF8 characters on standard output, refusing to interpret",
+            );
+            return Ok(());
+        };
+
+        for line in stdout.lines() {
+            let Some(key_value) = line.strip_prefix("tml-set-variable:") else {
+                continue;
+            };
+            match key_value.split_once('=') {
+                Some((key, value)) => {
+                    event!(
+                        Level::DEBUG,
+                        key,
+                        value,
+                        "Extracted variable {key:?} from start script output",
+                    );
+                    self.resources
+                        .job_vars
+                        .insert(key.to_string(), value.to_string());
+                }
+                None => event!(
+                    Level::WARN,
+                    command = line,
+                    "Malformed tml-set-variable command"
+                ),
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Determine the job's IP address and report it. It can either be set as a
+    /// static IP in the configuration file (taking priority), or be set by the
+    /// start_script.
+    async fn report_job_address(&mut self) {
+        let mut job_address = self.supervisor.config.base.job_address;
+        if job_address.is_none()
+            && let Some(job_address_str) = self.resources.job_vars.get("job_ip_address")
+        {
+            job_address = <IpAddr as FromStr>::from_str(job_address_str)
+                .inspect_err(|e| event!(
+                    Level::WARN,
+                    error = ?e,
+                    "Failed to parse `job_ip_address` variable from start script, not reporting",
+                ))
+                .ok();
+        }
+
+        let Some(job_address) = job_address else {
+            return;
+        };
+
+        self.update_facts(|facts| facts.network_address = Some(job_address));
+        self.supervisor
+            .connector
+            .report_job_network_address(self.job_id(), job_address)
+            .await;
+    }
+
+    async fn supervise(&mut self, cmd_rx: &mut mpsc::Receiver<JobCommand>) -> Outcome {
+        let Some(mut workload) = self.resources.workload.take() else {
+            return Outcome::Failed(connector::JobError {
+                error_kind: connector::JobErrorKind::InternalError,
+                description: "The job reached `supervise` without a workload process.".to_string(),
+            });
+        };
+
+        enum Wake {
+            Command(Option<JobCommand>),
+            Exited(std::io::Result<std::process::ExitStatus>),
+        }
+
+        loop {
+            let wake = tokio::select! {
+                biased;
+                cmd = cmd_rx.recv() => Wake::Command(cmd),
+                exit_status = workload.wait() => Wake::Exited(exit_status),
+            };
+
+            match wake {
+                Wake::Exited(Ok(status)) => return Outcome::WorkloadExited(status),
+
+                Wake::Exited(Err(e)) => {
+                    self.resources.workload = Some(workload);
+                    return Outcome::Failed(connector::JobError {
+                        error_kind: connector::JobErrorKind::InternalError,
+                        description: format!("Failed to wait on QEMU process: {e:?}"),
+                    });
+                }
+
+                Wake::Command(None) => {
+                    self.resources.workload = Some(workload);
+                    return Outcome::TerminatedByRequest;
+                }
+
+                Wake::Command(Some(JobCommand::Terminate { ack })) => {
+                    self.terminate_acks.push(ack);
+                    self.resources.workload = Some(workload);
+                    return Outcome::TerminatedByRequest;
+                }
+
+                Wake::Command(Some(JobCommand::PuppetTerminate)) => {
+                    self.resources.workload = Some(workload);
+                    return Outcome::TerminatedByRequest;
+                }
+
+                Wake::Command(Some(JobCommand::Remove { ack })) => {
+                    let _ = ack.send(Err(connector::JobError {
+                        error_kind: connector::JobErrorKind::NotTerminated,
+                        description: format!(
+                            "Job {:?} is still executing and must be terminated before removal.",
+                            self.job_id(),
+                        ),
+                    }));
+                }
+
+                Wake::Command(Some(JobCommand::PuppetReady)) => {
+                    self.set_phase(Phase::Ready).await;
+                }
+
+                Wake::Command(Some(JobCommand::PuppetServiceSet(services))) => {
+                    self.supervisor
+                        .connector
+                        .report_job_service_set(self.job_id(), services)
+                        .await;
+                }
+            }
+        }
+    }
+
+    async fn terminate(&mut self, outcome: Outcome) {
+        if !matches!(outcome, Outcome::Failed(_)) {
+            self.set_phase(Phase::Terminating).await;
+        }
+
+        if let Some(mut workload) = self.resources.workload.take()
+            && let Err(e) = workload.kill().await
+        {
+            event!(Level::WARN, error = ?e, "Failed to kill the QEMU process");
+        }
+
+        if let Some(error) = outcome.job_error() {
+            self.supervisor
+                .connector
+                .report_job_error(self.job_id(), error)
+                .await;
+        }
+
+        let status_message = outcome.status_message();
+        self.set_phase(Phase::Terminated { outcome }).await;
+        event!(Level::INFO, status_message, "Job terminated");
+
+        for ack in self.terminate_acks.drain(..) {
+            let _ = ack.send(Ok(()));
+        }
+    }
+
+    async fn retain(
+        &mut self,
+        cmd_rx: &mut mpsc::Receiver<JobCommand>,
+    ) -> Option<oneshot::Sender<Result<(), connector::JobError>>> {
+        while let Some(cmd) = cmd_rx.recv().await {
+            match cmd {
+                JobCommand::Remove { ack } => return Some(ack),
+
+                JobCommand::Terminate { ack } => {
+                    let _ = ack.send(Ok(()));
+                }
+
+                JobCommand::PuppetReady
+                | JobCommand::PuppetTerminate
+                | JobCommand::PuppetServiceSet(_) => (),
+            }
+        }
+
+        None
+    }
+
+    async fn release(&mut self) {
         let JobResources {
             control_socket,
             publisher,
+            workload: _,
             job_vars,
             start_hook_ran,
-        } = resources;
+        } = std::mem::take(&mut self.resources);
 
         if let Some(control_socket) = control_socket
             && let Err(e) = control_socket.shutdown().await
@@ -1200,32 +1088,14 @@ impl QemuSupervisor {
         }
 
         if start_hook_ran {
-            self.run_stop_job_script(job_id, &job_vars).await;
+            self.supervisor
+                .run_stop_job_script(self.job_id(), &job_vars)
+                .await;
         }
 
-        // Let the console channels finish shipping what they captured before we
-        // report the job terminated:
         if let Some(publisher) = publisher {
             publisher.drain(PUBLISHER_DRAIN_TIMEOUT).await;
         }
-
-        // An error is the *cause* of a termination, never a substitute for it:
-        if let Some(error) = outcome.job_error() {
-            self.connector.report_job_error(job_id, error).await;
-        }
-
-        // Job has been stopped, let the coordinator know:
-        self.connector
-            .update_job_state(
-                job_id,
-                RunningJobState::Terminated,
-                Some(outcome.status_message()),
-            )
-            .await;
-
-        // Finally, remove the job from the jobs HashMap. Eventually, all other
-        // `Arc` references (including the one we hold) will get dropped.
-        self.take_job(job_id).await;
     }
 }
 
@@ -1238,116 +1108,61 @@ impl connector::Supervisor for QemuSupervisor {
     ) -> Result<(), connector::JobError> {
         event!(Level::INFO, ?start_job_req);
 
-        // This method may be long-lived, but we should avoid performing
-        // long-running, uninterruptible actions in here (as this will prevent
-        // other events from being delivered). We're provided an &Arc<Self> to
-        // be able to launch async tasks, while returning immediately. We only
-        // perform sanity checks here and transition into other states that
-        // perform potentially long-running actions.
+        let mut slot_lg = this.slot.lock().await;
 
-        // Take a short-lived lock on the global jobs object to check that we're
-        // not asked to double-start a job and whether we can fit another. If
-        // everything's good, insert a job into the HashMap and return its `Arc`
-        // reference. This way we don't hold the global lock for too long.
-        //
-        // We can't use a Rust scope, as we'll want to obtain a lock on the job
-        // itself before releasing the global lock, such that we don't run the
-        // risk of scheduling another action on this job when it's not yet
-        // initialized fully.
-        //
-        // ============ GLOBAL `jobs` HASHMAP LOCK ACQUIRE ==================
-        //
-        let mut jobs_lg = this.jobs.lock().await;
-
-        // Make sure that there's not another job with the same ID executing
-        // currently. Even when we resume a job, it needs to have been
-        // stopped first:
-        if jobs_lg.get(&start_job_req.job_id).is_some() {
-            return Err(connector::JobError {
-                error_kind: connector::JobErrorKind::AlreadyRunning,
-                description: format!(
-                    "Job {:?} is already running and cannot be started again.",
-                    start_job_req.job_id
-                ),
+        if let Some(slot) = slot_lg.as_ref() {
+            let facts = slot.handle.facts();
+            return Err(if facts.job_id == start_job_req.job_id {
+                connector::JobError {
+                    error_kind: connector::JobErrorKind::JobAlreadyExists,
+                    description: format!(
+                        "Job {:?} already occupies this supervisor's job slot.",
+                        facts.job_id,
+                    ),
+                }
+            } else if facts.phase.terminated() {
+                connector::JobError {
+                    error_kind: connector::JobErrorKind::MaxConcurrentJobs,
+                    description: format!(
+                        "Supervisor {:?} still retains the terminated job {:?}, which has to be \
+                         removed before another job can be started.",
+                        this.config.base.supervisor_id, facts.job_id,
+                    ),
+                }
+            } else {
+                connector::JobError {
+                    error_kind: connector::JobErrorKind::AlreadyRunning,
+                    description: format!(
+                        "Supervisor {:?} is already running job {:?}.",
+                        this.config.base.supervisor_id, facts.job_id,
+                    ),
+                }
             });
         }
 
-        // Don't start more jobs than we're allowed to. Currently, the QEMU
-        // supervisor only supports one job at a time (otherwise we'd need to
-        // reason about IP address assignment from a pool, customizable
-        // parameters for each instance, etc.).
-        if !jobs_lg.is_empty() {
-            return Err(connector::JobError {
-                error_kind: connector::JobErrorKind::MaxConcurrentJobs,
-                description: format!(
-                    "Supervisor {:?} cannot start any more concurrent jobs (running {}, max 1).",
-                    this.config.base.supervisor_id,
-                    jobs_lg.len(),
-                ),
-            });
-        }
+        let job_id = start_job_req.job_id;
+        let (cmd_tx, cmd_rx) = mpsc::channel(JOB_MAILBOX_CAPACITY);
+        let (facts_tx, facts_rx) = watch::channel(Arc::new(JobFacts::new(&start_job_req)));
+        let cancel = CancellationToken::new();
 
-        // We're good to create this job, create it in the `Starting` state:
-        let job = Arc::new(Mutex::new(QemuSupervisorJobState::Starting));
-
-        // Acquire a lock on the job. No one else has a reference yet, so this
-        // should succeed immediately:
-        let mut job_lg = job.lock().await;
-
-        // Insert a clone of the Arc into the HashMap:
-        jobs_lg.insert(start_job_req.job_id, job.clone());
-
-        // Release the global lock here:
-        std::mem::drop(jobs_lg);
-        //
-        // ========== GLOBAL `jobs` HASHMAP LOCK RELEASED ======================
-
-        // The job was inserted into the jobs HashMap and initialized as
-        // `Starting`, let the coordinator know:
-        this.connector
-            .update_job_state(
-                start_job_req.job_id,
-                RunningJobState::Initializing {
-                    // Generic starting stage. We don't fetch, allocate or provision any
-                    // resources right now, so report a generic state instead:
-                    stage: JobInitializingStage::Starting,
-                },
-                None,
-            )
-            .await;
-
-        // Resolve the requested image into its content-addressed digest and the
-        // ordered failover list of upstream locations serving it. The supervisor
-        // copies from a location's `(registry, repository)` into its local Zot
-        // and reads it back off disk.
-        let (manifest_digest, locations) = match start_job_req.image_spec.clone() {
-            ImageSpecification::Image {
-                manifest_digest,
-                locations,
-            } => (
-                manifest_digest,
-                locations
-                    .into_iter()
-                    .map(|loc| Location::new(loc.registry, loc.repository))
-                    .collect::<Vec<_>>(),
-            ),
-            unsupported_init_spec => {
-                unimplemented!("Unsupported init spec: {:?}", unsupported_init_spec)
-            }
+        let task = JobTask {
+            supervisor: this.clone(),
+            start_job_req,
+            facts_tx,
+            cancel: cancel.clone(),
+            resources: JobResources::default(),
+            terminate_acks: Vec::new(),
         };
 
-        // Put the job into the `FetchingImage` state:
-        let job_id = start_job_req.job_id; // Copy required below
-        *job_lg = QemuSupervisorJobState::FetchingImage(QemuSupervisorFetchingImageState {
-            start_job_req,
-            manifest_digest,
-            locations,
+        *slot_lg = Some(JobSlot {
+            handle: JobHandle {
+                job_id,
+                cmd: cmd_tx,
+                facts: facts_rx,
+                cancel,
+            },
+            task: tokio::spawn(task.run(cmd_rx)),
         });
-
-        // Release our lock on the job and hand over to the fetch image method:
-        std::mem::drop(job_lg);
-
-        Self::fetch_image(this, job_id).await;
 
         Ok(())
     }
@@ -1357,7 +1172,12 @@ impl connector::Supervisor for QemuSupervisor {
         this: &Arc<Self>,
         msg: connector::TerminateJobMessage,
     ) -> Result<(), connector::JobError> {
-        this.terminate_job_internal(msg.job_id).await
+        let handle = match this.slot.lock().await.as_ref() {
+            Some(slot) if slot.handle.job_id == msg.job_id => slot.handle.clone(),
+            _ => return Ok(()),
+        };
+
+        handle.terminate().await
     }
 
     #[instrument(skip(this), err(Debug, level = Level::WARN))]
@@ -1365,17 +1185,28 @@ impl connector::Supervisor for QemuSupervisor {
         this: &Arc<Self>,
         msg: connector::RemoveJobMessage,
     ) -> Result<(), connector::JobError> {
-        // Terminal records are not retained yet (that lands with the job
-        // actor), so a job still in the map is by construction still executing.
-        if this.jobs.lock().await.contains_key(&msg.job_id) {
+        let handle = match this.slot.lock().await.as_ref() {
+            Some(slot) if slot.handle.job_id == msg.job_id => slot.handle.clone(),
+            _ => return Ok(()),
+        };
+
+        if !handle.facts().phase.terminated() {
             return Err(connector::JobError {
                 error_kind: connector::JobErrorKind::NotTerminated,
                 description: format!(
                     "Job {:?} is still executing and must be terminated before removal.",
-                    msg.job_id
+                    msg.job_id,
                 ),
             });
         }
+
+        handle.remove().await?;
+
+        let slot = this.slot.lock().await.take();
+        if let Some(slot) = slot {
+            let _ = slot.task.await;
+        }
+
         Ok(())
     }
 }
@@ -1388,43 +1219,14 @@ impl control_socket::Supervisor for QemuSupervisor {
         _host_id: Uuid,
         tgt_job_id: Uuid,
     ) -> Option<treadmill_rs::api::supervisor_puppet::NetworkConfig> {
-        match self.jobs.lock().await.get(&tgt_job_id) {
-            Some(job_state) => match &*job_state.lock().await {
-                // Job is currently running, respond with its assigned hostname:
-                QemuSupervisorJobState::Running(_) => {
-                    let hostname = format!("job-{}", format!("{tgt_job_id}").split_at(10).0);
-                    Some(treadmill_rs::api::supervisor_puppet::NetworkConfig {
-                        hostname,
-                        // QemuSupervisor, don't supply a network interface to configure:
-                        interface: None,
-                        ipv4: None,
-                        ipv6: None,
-                    })
-                }
-
-                // Only respond to host / puppet requests when the job is marked
-                // as "running":
-                state => {
-                    event!(
-                        Level::WARN,
-                        "Received puppet network config request for job {job_id} in invalid state {job_state}",
-                        job_id = tgt_job_id,
-                        job_state = state.state_name(),
-                    );
-                    None
-                }
-            },
-
-            // Job not found:
-            None => {
-                event!(
-                    Level::WARN,
-                    "Received puppet network config request for non-existent job {job_id}",
-                    job_id = tgt_job_id,
-                );
-                None
-            }
-        }
+        let facts = self.job_facts(tgt_job_id).await?;
+        Some(treadmill_rs::api::supervisor_puppet::NetworkConfig {
+            hostname: facts.hostname.to_string(),
+            // QemuSupervisor, don't supply a network interface to configure:
+            interface: None,
+            ipv4: None,
+            ipv6: None,
+        })
     }
 
     #[instrument(skip(self))]
@@ -1432,38 +1234,9 @@ impl control_socket::Supervisor for QemuSupervisor {
         &self,
         _host_id: Uuid,
         tgt_job_id: Uuid,
-    ) -> Option<HashMap<String, treadmill_rs::api::supervisor_puppet::ParameterValue>> {
-        match self.jobs.lock().await.get(&tgt_job_id) {
-            Some(job_state) => match &*job_state.lock().await {
-                // Job is currently running:
-                QemuSupervisorJobState::Running(QemuSupervisorJobRunningState {
-                    start_job_req,
-                    ..
-                }) => Some(start_job_req.parameters.clone()),
-
-                // Only respond to host / puppet requests when the job is marked
-                // as "running":
-                state => {
-                    event!(
-                        Level::WARN,
-                        "Received puppet parameters request for job {job_id} in invalid state {job_state}",
-                        job_id = tgt_job_id,
-                        job_state = state.state_name(),
-                    );
-                    None
-                }
-            },
-
-            // Job not found:
-            None => {
-                event!(
-                    Level::WARN,
-                    "Received puppet parameters request for non-existent job {job_id}",
-                    job_id = tgt_job_id,
-                );
-                None
-            }
-        }
+    ) -> Option<HashMap<String, ParameterValue>> {
+        let facts = self.job_facts(tgt_job_id).await?;
+        Some((*facts.parameters).clone())
     }
 
     #[instrument(skip(self))]
@@ -1472,79 +1245,40 @@ impl control_socket::Supervisor for QemuSupervisor {
         _host_id: Uuid,
         tgt_job_id: Uuid,
     ) -> Option<treadmill_rs::api::supervisor_puppet::JobGatewayInfo> {
-        match self.jobs.lock().await.get(&tgt_job_id) {
-            Some(job_state) => match &*job_state.lock().await {
-                // Job is currently running, hand back whatever the coordinator
-                // dispatched it with:
-                QemuSupervisorJobState::Running(QemuSupervisorJobRunningState {
-                    start_job_req,
-                    ..
-                }) => start_job_req.gateway.as_ref().map(|gateway| {
-                    treadmill_rs::api::supervisor_puppet::JobGatewayInfo {
-                        issuer: gateway.issuer.clone(),
-                        signing_public_key: gateway.signing_public_key.clone(),
-                        key_id: gateway.key_id.clone(),
-                        endpoints: gateway.endpoints.iter().cloned().map(|treadmill_rs::api::switchboard_supervisor::JobGatewayEndpoint { base_domain, port }| treadmill_rs::api::supervisor_puppet::JobGatewayEndpoint { base_domain, port }).collect(),
-                    }
-                }),
+        let facts = self.job_facts(tgt_job_id).await?;
 
-                // Only respond to host / puppet requests when the job is marked
-                // as "running":
-                state => {
-                    event!(
-                        Level::WARN,
-                        "Received puppet gateway request for job {job_id} in invalid state {job_state}",
-                        job_id = tgt_job_id,
-                        job_state = state.state_name(),
-                    );
-                    None
-                }
-            },
-
-            // Job not found:
-            None => {
-                event!(
-                    Level::WARN,
-                    "Received puppet gateway request for non-existent job {job_id}",
-                    job_id = tgt_job_id,
-                );
-                None
+        // Hand back whatever the coordinator dispatched this job with:
+        facts.gateway.as_ref().as_ref().map(|gateway| {
+            treadmill_rs::api::supervisor_puppet::JobGatewayInfo {
+                issuer: gateway.issuer.clone(),
+                signing_public_key: gateway.signing_public_key.clone(),
+                key_id: gateway.key_id.clone(),
+                endpoints: gateway
+                    .endpoints
+                    .iter()
+                    .cloned()
+                    .map(
+                        |treadmill_rs::api::switchboard_supervisor::JobGatewayEndpoint {
+                             base_domain,
+                             port,
+                         }| {
+                            treadmill_rs::api::supervisor_puppet::JobGatewayEndpoint {
+                                base_domain,
+                                port,
+                            }
+                        },
+                    )
+                    .collect(),
             }
-        }
+        })
     }
 
     #[instrument(skip(self))]
     async fn puppet_ready(&self, _puppet_event_id: u64, _host_id: Uuid, job_id: Uuid) {
         event!(Level::INFO, "Received puppet ready event");
 
-        match self.jobs.lock().await.get(&job_id) {
-            Some(job_state) => match &*job_state.lock().await {
-                // Job is currently running, forward this event to a `JobState`
-                // change towards `Ready`:
-                QemuSupervisorJobState::Running(_) => {
-                    self.connector
-                        .update_job_state(job_id, RunningJobState::Ready, None)
-                        .await;
-                }
-
-                // Only respond to host / puppet requests when the job is marked
-                // as "running":
-                state => {
-                    event!(
-                        Level::WARN,
-                        "Received puppet ready event in invalid state {job_state}",
-                        job_state = state.state_name(),
-                    );
-                }
-            },
-
-            // Job not found:
-            None => {
-                event!(
-                    Level::WARN,
-                    "Received puppet ready event for non-existent job",
-                );
-            }
+        if let Some(handle) = self.job_handle(job_id).await {
+            handle.notify(JobCommand::PuppetReady);
         }
     }
 
@@ -1567,9 +1301,6 @@ impl control_socket::Supervisor for QemuSupervisor {
         // As an alternative, we should -- in the `Ready` state -- introduce a
         // new field that shows the reported state from the puppet, for instance
         // whether it claims to be rebooting or shutting down.
-        //
-        // The `Stopping` state is then only set for when the QEMU process is
-        // stopped, or when a shutdown is invoked from within the supervisor.
     }
 
     #[instrument(skip(self))]
@@ -1582,18 +1313,8 @@ impl control_socket::Supervisor for QemuSupervisor {
     ) {
         event!(Level::INFO, "Received puppet reboot event");
 
-        // We don't want to do any proper job-state transition here, as this
-        // input is controlled by the puppet. It may simply claim to be
-        // rebooting or shutting down, but not actually doing this. We want the
-        // `JobState` transitions to be well-defined, and governed by the
-        // supervisor, not the host.
-        //
-        // As an alternative, we should -- in the `Ready` state -- introduce a
-        // new field that shows the reported state from the puppet, for instance
-        // whether it claims to be rebooting or shutting down.
-        //
-        // The `Stopping` state is then only set for when the QEMU process is
-        // stopped, or when a shutdown is invoked from within the supervisor.
+        // See `puppet_shutdown`: a puppet-reported reboot is not a supervisor
+        // state transition.
     }
 
     #[instrument(skip(self))]
@@ -1610,8 +1331,9 @@ impl control_socket::Supervisor for QemuSupervisor {
             "Received puppet event to terminate job",
         );
 
-        if let Err(e) = self.terminate_job_internal(job_id).await {
-            event!(Level::WARN, "Failed to stop job: {:?}", e);
+        if let Some(handle) = self.job_handle(job_id).await {
+            handle.cancel.cancel();
+            handle.notify(JobCommand::PuppetTerminate);
         }
     }
 
@@ -1619,7 +1341,7 @@ impl control_socket::Supervisor for QemuSupervisor {
     async fn job_service_set(
         &self,
         _puppet_event_id: u64,
-        services: Vec<treadmill_rs::api::supervisor_puppet::JobService>,
+        services: Vec<JobService>,
         _host_id: Uuid,
         job_id: Uuid,
     ) {
@@ -1630,9 +1352,9 @@ impl control_socket::Supervisor for QemuSupervisor {
             services.len(),
         );
 
-        self.connector
-            .report_job_service_set(job_id, services)
-            .await;
+        if let Some(handle) = self.job_handle(job_id).await {
+            handle.notify(JobCommand::PuppetServiceSet(services));
+        }
     }
 }
 
@@ -1772,7 +1494,6 @@ mod tests {
 
     use std::path::Path;
     use std::process::ExitStatus;
-    use std::time::Duration;
 
     use treadmill_rs::api;
     use treadmill_rs::api::switchboard_supervisor::{
@@ -1964,26 +1685,55 @@ mod tests {
         serde_json::from_str(&json).expect("canned manifest parses as an OCI image manifest")
     }
 
-    async fn wait_until(mut cond: impl FnMut() -> bool) {
-        for _ in 0..300 {
-            if cond() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("condition not met within timeout");
+    async fn job_facts(sup: &Arc<QemuSupervisor>) -> watch::Receiver<Arc<JobFacts>> {
+        sup.slot
+            .lock()
+            .await
+            .as_ref()
+            .expect("a job occupies the slot")
+            .handle
+            .facts
+            .clone()
     }
 
-    /// Wait for the job to be gone from the supervisor's map, which is what
-    /// frees its slot for the next `StartJob`.
-    async fn wait_for_slot_release(sup: &Arc<QemuSupervisor>) {
-        for _ in 0..300 {
-            if sup.jobs.lock().await.is_empty() {
+    async fn wait_for(
+        facts: &mut watch::Receiver<Arc<JobFacts>>,
+        reached: impl Fn(&JobFacts) -> bool,
+    ) {
+        loop {
+            if reached(&facts.borrow_and_update()) {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            facts
+                .changed()
+                .await
+                .expect("the job task keeps publishing its facts");
         }
-        panic!("the job was never removed from the supervisor's map");
+    }
+
+    fn booting(facts: &JobFacts) -> bool {
+        matches!(facts.phase, Phase::Booting)
+    }
+
+    fn ready(facts: &JobFacts) -> bool {
+        matches!(facts.phase, Phase::Ready)
+    }
+
+    fn terminated(facts: &JobFacts) -> bool {
+        facts.phase.terminated()
+    }
+
+    async fn start_and_boot(h: &Harness, msg: StartJobMessage) -> watch::Receiver<Arc<JobFacts>> {
+        let job_id = msg.job_id;
+        QemuSupervisor::start_job(&h.sup, msg).await.unwrap();
+
+        let mut facts = job_facts(&h.sup).await;
+        wait_for(&mut facts, booting).await;
+
+        h.sup.puppet_ready(0, Uuid::new_v4(), job_id).await;
+        wait_for(&mut facts, ready).await;
+
+        facts
     }
 
     async fn terminate(sup: &Arc<QemuSupervisor>, job_id: Uuid) -> Result<(), connector::JobError> {
@@ -2019,7 +1769,19 @@ mod tests {
     /// than the ceiling to provoke an `ImageInvalid` failure. Configures no
     /// job address, as a deployment without a gateway has none.
     fn harness(head_virtual_size: u64, working_disk_max_bytes: u64) -> Harness {
-        harness_with(head_virtual_size, working_disk_max_bytes, None, false)
+        harness_with(head_virtual_size, working_disk_max_bytes, None, false, None)
+    }
+
+    /// Like [`harness`], for a supervisor reading from `store` instead of the
+    /// always-present [`StubStore`].
+    fn harness_with_store(head_virtual_size: u64, store: Arc<dyn ImageStore>) -> Harness {
+        harness_with(
+            head_virtual_size,
+            head_virtual_size,
+            None,
+            false,
+            Some(store),
+        )
     }
 
     /// Like [`harness`], for a supervisor configured to report `job_address`
@@ -2034,6 +1796,7 @@ mod tests {
             working_disk_max_bytes,
             job_address,
             false,
+            None,
         )
     }
 
@@ -2041,7 +1804,7 @@ mod tests {
     /// scripts that each append a line to `<tmp>/<start|stop>-hook.log`, so a
     /// test can count how often they ran (see [`hook_runs`]).
     fn harness_with_hooks(head_virtual_size: u64, working_disk_max_bytes: u64) -> Harness {
-        harness_with(head_virtual_size, working_disk_max_bytes, None, true)
+        harness_with(head_virtual_size, working_disk_max_bytes, None, true, None)
     }
 
     /// Count the lines the named hook appended, zero if it never ran.
@@ -2071,6 +1834,7 @@ mod tests {
         working_disk_max_bytes: u64,
         job_address: Option<std::net::IpAddr>,
         hooks: bool,
+        store: Option<Arc<dyn ImageStore>>,
     ) -> Harness {
         let tmp = std::env::temp_dir().join(format!("tml-qemu-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
@@ -2078,9 +1842,11 @@ mod tests {
         std::fs::write(&blob_file, b"not-a-real-qcow2").unwrap();
 
         let connector = Arc::new(RecordingConnector::default());
-        let store: Arc<dyn ImageStore> = Arc::new(StubStore {
-            blob_file,
-            manifest: single_layer_manifest(head_virtual_size),
+        let store: Arc<dyn ImageStore> = store.unwrap_or_else(|| {
+            Arc::new(StubStore {
+                blob_file,
+                manifest: single_layer_manifest(head_virtual_size),
+            })
         });
         let launcher = Arc::new(StubLauncher::default());
 
@@ -2156,6 +1922,30 @@ mod tests {
         }
     }
 
+    /// An [`ImageStore`] whose `ensure_present` blocks until the test releases
+    /// it, so a job can be stopped while it is still fetching its image.
+    #[derive(Debug)]
+    struct GatedStore {
+        inner: StubStore,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl ImageStore for GatedStore {
+        async fn ensure_present(&self, _: &Digest, _: &[Location]) -> Result<()> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(())
+        }
+        async fn manifest(&self, digest: &Digest) -> Result<ImageManifest> {
+            self.inner.manifest(digest).await
+        }
+        fn blob_path(&self, digest: &Digest) -> PathBuf {
+            self.inner.blob_path(digest)
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn job_lifecycle_transitions() {
         let virtual_size = 4u64 * 1024 * 1024 * 1024;
@@ -2164,15 +1954,17 @@ mod tests {
         let job_id = Uuid::new_v4();
         let host_id = Uuid::new_v4();
 
-        // `start_job` drives synchronously through fetch → allocate → launch.
         QemuSupervisor::start_job(&h.sup, start_msg(job_id))
             .await
             .unwrap();
+        let mut facts = job_facts(&h.sup).await;
+        wait_for(&mut facts, booting).await;
 
         assert_eq!(
             h.connector.labels(),
             vec![
                 "initializing/starting",
+                "initializing/fetching_image",
                 "initializing/allocating",
                 "initializing/booting",
             ],
@@ -2187,26 +1979,25 @@ mod tests {
 
         // Puppet reports ready → the job goes Ready.
         h.sup.puppet_ready(0, host_id, job_id).await;
+        wait_for(&mut facts, ready).await;
         assert_eq!(
             h.connector.labels().last().map(String::as_str),
             Some("ready")
         );
 
-        // Stopping kills the (stub) workload; the monitor task then reports
-        // Terminating → Terminated asynchronously.
-        <QemuSupervisor as connector::Supervisor>::terminate_job(
-            &h.sup,
-            TerminateJobMessage { job_id },
-        )
-        .await
-        .unwrap();
-
-        wait_until(|| h.connector.labels().last().map(String::as_str) == Some("terminated")).await;
+        // Terminating kills the (stub) workload and reports the terminal
+        // transition before it returns.
+        terminate(&h.sup, job_id).await.unwrap();
 
         let labels = h.connector.labels();
         assert!(labels.iter().any(|l| l == "terminating"), "{labels:?}");
         assert_eq!(labels.last().map(String::as_str), Some("terminated"));
         assert!(h.connector.errors().is_empty());
+
+        // The record is retained until it is removed.
+        assert!(terminated(&facts.borrow_and_update()));
+        remove(&h.sup, job_id).await.unwrap();
+        assert!(h.sup.slot.lock().await.is_none());
     }
 
     /// A supervisor configured with a job address reports it as the job starts,
@@ -2220,15 +2011,11 @@ mod tests {
 
         assert!(h.connector.addresses().is_empty(), "nothing has started");
 
-        QemuSupervisor::start_job(&h.sup, start_msg(Uuid::new_v4()))
-            .await
-            .unwrap();
+        start_and_boot(&h, start_msg(Uuid::new_v4())).await;
         assert_eq!(h.connector.addresses(), vec![address]);
 
         let unconfigured = harness(virtual_size, virtual_size);
-        QemuSupervisor::start_job(&unconfigured.sup, start_msg(Uuid::new_v4()))
-            .await
-            .unwrap();
+        start_and_boot(&unconfigured, start_msg(Uuid::new_v4())).await;
         assert!(unconfigured.connector.addresses().is_empty());
     }
 
@@ -2262,12 +2049,7 @@ mod tests {
         // Nothing is answered for a job this supervisor does not run.
         assert!(h.sup.gateway(host_id, job_id).await.is_none());
 
-        QemuSupervisor::start_job(
-            &h.sup,
-            start_msg_with_gateway(job_id, Some(dispatched.clone())),
-        )
-        .await
-        .unwrap();
+        start_and_boot(&h, start_msg_with_gateway(job_id, Some(dispatched.clone()))).await;
 
         let relayed = h
             .sup
@@ -2294,14 +2076,14 @@ mod tests {
         // A job dispatched without one has none to be told about.
         let plain = harness(virtual_size, virtual_size);
         let plain_job = Uuid::new_v4();
-        QemuSupervisor::start_job(&plain.sup, start_msg(plain_job))
-            .await
-            .unwrap();
+        start_and_boot(&plain, start_msg(plain_job)).await;
         assert!(plain.sup.gateway(host_id, plain_job).await.is_none());
     }
 
     /// A service announcement is relayed to the coordinator as it arrives: the
-    /// supervisor stores nothing and interprets nothing.
+    /// supervisor stores nothing and interprets nothing. An announcement
+    /// carries a job's whole set, so a later one replaces the earlier rather
+    /// than adding to it — including an empty one.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_announced_service_set_is_relayed_to_the_coordinator() {
         let virtual_size = 4u64 * 1024 * 1024 * 1024;
@@ -2309,9 +2091,7 @@ mod tests {
 
         let job_id = Uuid::new_v4();
         let host_id = Uuid::new_v4();
-        QemuSupervisor::start_job(&h.sup, start_msg(job_id))
-            .await
-            .unwrap();
+        start_and_boot(&h, start_msg(job_id)).await;
         assert!(h.connector.service_sets().is_empty());
 
         let announced = vec![
@@ -2329,17 +2109,18 @@ mod tests {
         h.sup
             .job_service_set(0, announced.clone(), host_id, job_id)
             .await;
-        assert_eq!(h.connector.service_sets(), vec![announced]);
-
-        // An announcement carries a job's whole set, so a later one replaces
-        // the earlier rather than adding to it — including an empty one.
         h.sup.job_service_set(1, Vec::new(), host_id, job_id).await;
-        assert_eq!(h.connector.service_sets().last().unwrap(), &Vec::new());
+
+        // Puppet events are ordered against the job's state changes, so a
+        // terminate the job has acted on proves both were relayed first.
+        terminate(&h.sup, job_id).await.unwrap();
+        assert_eq!(h.connector.service_sets(), vec![announced, Vec::new()]);
     }
 
     /// A job that fails on its way up still owes the coordinator a terminal
     /// transition (D2.2): the reported error is the *cause* of the
-    /// termination, never a substitute for it.
+    /// termination, never a substitute for it. Its record is then retained,
+    /// occupying the slot, until it is removed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_startup_failure_reports_the_error_and_then_terminated() {
         // The image head's virtual size exceeds the working-disk ceiling, so the
@@ -2348,11 +2129,11 @@ mod tests {
 
         let job_id = Uuid::new_v4();
 
-        // start_job itself still returns Ok — the failure surfaces as a reported
-        // job error, not a returned one.
         QemuSupervisor::start_job(&h.sup, start_msg(job_id))
             .await
             .unwrap();
+        let mut facts = job_facts(&h.sup).await;
+        wait_for(&mut facts, terminated).await;
 
         let errors = h.connector.errors();
         assert_eq!(errors.len(), 1, "{errors:?}");
@@ -2373,10 +2154,21 @@ mod tests {
             "{labels:?}",
         );
 
-        // It did reach Terminated, exactly once, and released its slot.
+        // It did reach Terminated, exactly once.
         assert_eq!(labels.last().map(String::as_str), Some("terminated"));
         assert_eq!(labels.iter().filter(|l| *l == "terminated").count(), 1);
-        wait_for_slot_release(&h.sup).await;
+
+        // The failed job is retained: it still holds the slot until removed.
+        let error = QemuSupervisor::start_job(&h.sup, start_msg(Uuid::new_v4()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error.error_kind, connector::JobErrorKind::MaxConcurrentJobs),
+            "{error:?}",
+        );
+
+        remove(&h.sup, job_id).await.unwrap();
+        assert!(h.sup.slot.lock().await.is_none());
     }
 
     /// D2.3/D2.4: the coordinator may repeat either command, or send one for a
@@ -2393,9 +2185,7 @@ mod tests {
         terminate(&h.sup, job_id).await.unwrap();
         remove(&h.sup, job_id).await.unwrap();
 
-        QemuSupervisor::start_job(&h.sup, start_msg(job_id))
-            .await
-            .unwrap();
+        let mut facts = start_and_boot(&h, start_msg(job_id)).await;
 
         // A live job must be terminated before it can be removed.
         let error = remove(&h.sup, job_id).await.unwrap_err();
@@ -2405,22 +2195,23 @@ mod tests {
         );
 
         terminate(&h.sup, job_id).await.unwrap();
-        wait_for_slot_release(&h.sup).await;
+        assert!(terminated(&facts.borrow_and_update()));
 
         terminate(&h.sup, job_id).await.unwrap();
         remove(&h.sup, job_id).await.unwrap();
         remove(&h.sup, job_id).await.unwrap();
+        assert!(h.sup.slot.lock().await.is_none());
 
         let labels = h.connector.labels();
         assert_eq!(
             labels.iter().filter(|l| *l == "terminating").count(),
             1,
-            "{labels:?}"
+            "{labels:?}",
         );
         assert_eq!(
             labels.iter().filter(|l| *l == "terminated").count(),
             1,
-            "{labels:?}"
+            "{labels:?}",
         );
         assert!(
             h.connector.errors().is_empty(),
@@ -2429,9 +2220,9 @@ mod tests {
         );
     }
 
-    /// D2.1: this supervisor runs a single job. While one occupies the slot, a
-    /// second `StartJob` is refused whatever its id — and the slot is free
-    /// again once that job is gone.
+    /// D2.1: this supervisor runs a single job, which occupies its slot from
+    /// `StartJob` until `RemoveJob` — a terminated-but-retained job refuses a
+    /// new one just as a live one does.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_second_job_is_refused_while_one_occupies_the_slot() {
         let virtual_size = 4u64 * 1024 * 1024 * 1024;
@@ -2439,17 +2230,25 @@ mod tests {
         let occupant = Uuid::new_v4();
         let next = Uuid::new_v4();
 
-        QemuSupervisor::start_job(&h.sup, start_msg(occupant))
-            .await
-            .unwrap();
+        start_and_boot(&h, start_msg(occupant)).await;
 
         let error = QemuSupervisor::start_job(&h.sup, start_msg(occupant))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error.error_kind, connector::JobErrorKind::JobAlreadyExists),
+            "{error:?}",
+        );
+
+        let error = QemuSupervisor::start_job(&h.sup, start_msg(next))
             .await
             .unwrap_err();
         assert!(
             matches!(error.error_kind, connector::JobErrorKind::AlreadyRunning),
             "{error:?}",
         );
+
+        terminate(&h.sup, occupant).await.unwrap();
 
         let error = QemuSupervisor::start_job(&h.sup, start_msg(next))
             .await
@@ -2459,41 +2258,100 @@ mod tests {
             "{error:?}",
         );
 
-        terminate(&h.sup, occupant).await.unwrap();
-        wait_for_slot_release(&h.sup).await;
-
+        remove(&h.sup, occupant).await.unwrap();
         QemuSupervisor::start_job(&h.sup, start_msg(next))
             .await
             .unwrap();
     }
 
     /// The stop hook is the start hook's counterpart: it runs once per job that
-    /// ran the start hook, and never for a job that failed before it.
+    /// ran the start hook, and never for a job that failed before it. It is
+    /// part of releasing the job's resources, which the retention window defers
+    /// until the removal.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_stop_hook_runs_once_and_only_after_the_start_hook() {
         let virtual_size = 4u64 * 1024 * 1024 * 1024;
         let h = harness_with_hooks(virtual_size, virtual_size);
         let job_id = Uuid::new_v4();
 
-        QemuSupervisor::start_job(&h.sup, start_msg(job_id))
-            .await
-            .unwrap();
+        start_and_boot(&h, start_msg(job_id)).await;
         assert_eq!(hook_runs(&h.tmp, "start"), 1);
         assert_eq!(hook_runs(&h.tmp, "stop"), 0);
 
         terminate(&h.sup, job_id).await.unwrap();
-        wait_for_slot_release(&h.sup).await;
+        assert_eq!(hook_runs(&h.tmp, "stop"), 0);
+
+        remove(&h.sup, job_id).await.unwrap();
         assert_eq!(hook_runs(&h.tmp, "start"), 1);
         assert_eq!(hook_runs(&h.tmp, "stop"), 1);
 
         // A job failing before the start hook has nothing for the stop hook to
         // clean up after.
         let failed = harness_with_hooks(8 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
-        QemuSupervisor::start_job(&failed.sup, start_msg(Uuid::new_v4()))
+        let failed_job = Uuid::new_v4();
+        QemuSupervisor::start_job(&failed.sup, start_msg(failed_job))
             .await
             .unwrap();
-        wait_for_slot_release(&failed.sup).await;
+        let mut failed_facts = job_facts(&failed.sup).await;
+        wait_for(&mut failed_facts, terminated).await;
+
+        remove(&failed.sup, failed_job).await.unwrap();
         assert_eq!(hook_runs(&failed.tmp, "start"), 0);
         assert_eq!(hook_runs(&failed.tmp, "stop"), 0);
+    }
+
+    /// Cancellation is structural, not polled: a stop that arrives while the
+    /// job is inside an image fetch does not wait for that fetch to finish, and
+    /// the fetch finishing afterwards does not run a second teardown.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_job_terminated_mid_fetch_is_cancelled_where_it_stands() {
+        let virtual_size = 4u64 * 1024 * 1024 * 1024;
+        let tmp = std::env::temp_dir().join(format!("tml-qemu-gate-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let blob_file = tmp.join("root.qcow2");
+        std::fs::write(&blob_file, b"not-a-real-qcow2").unwrap();
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let store = Arc::new(GatedStore {
+            inner: StubStore {
+                blob_file,
+                manifest: single_layer_manifest(virtual_size),
+            },
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+
+        let h = harness_with_store(virtual_size, store);
+        let job_id = Uuid::new_v4();
+
+        QemuSupervisor::start_job(&h.sup, start_msg(job_id))
+            .await
+            .unwrap();
+        let mut facts = job_facts(&h.sup).await;
+        entered.notified().await;
+
+        terminate(&h.sup, job_id).await.unwrap();
+        assert!(terminated(&facts.borrow_and_update()));
+        assert!(h.launcher.spawned.lock().unwrap().is_empty());
+
+        // Releasing the fetch afterwards must not resurrect the job.
+        release.notify_waiters();
+        remove(&h.sup, job_id).await.unwrap();
+        assert!(h.sup.slot.lock().await.is_none());
+
+        let labels = h.connector.labels();
+        assert_eq!(
+            labels.iter().filter(|l| *l == "terminated").count(),
+            1,
+            "{labels:?}",
+        );
+        assert!(
+            h.connector.errors().is_empty(),
+            "{:?}",
+            h.connector.errors()
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
