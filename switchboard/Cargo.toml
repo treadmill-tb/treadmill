@@ -92,10 +92,11 @@ argon2 = "0.6"
 oauth2 = { version = "5", default-features = false }
 oauth2-reqwest = "0.1.0-alpha.3" # pulls in reqwest without any feature flags
 reqwest = { workspace = true, default-features = false, features = [
+  "charset",
+  "form",
+  "http2",
   "json",
   "rustls",
-  "charset",
-  "http2",
 ] }
 
 # Logging facilities
