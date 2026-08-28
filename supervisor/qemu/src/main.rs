@@ -344,35 +344,27 @@ impl JobBackend for QemuBackend {
                 ),
             })?;
 
-        // Prepend the backing-chain `-blockdev` nodes (base → … → overlay) to
-        // the configured invocation; the configured args attach the disk device
-        // to the writable top node via the `{disk_node}` substitution.
-        let mut qemu_args: Vec<String> = Vec::new();
-        for node in chain.blockdev_args() {
-            qemu_args.push("-blockdev".to_string());
-            qemu_args.push(node);
-        }
-        qemu_args.extend(templated_args);
-
         // When the dispatch enabled log streaming, capture qemu's console
         // output: pipe stdout/stderr (read back by the runner) and route the
         // guest serial console to a unix socket we own. When it's disabled,
         // keep the historical behavior — stdout/stderr inherit our terminal and
         // the serial console goes wherever the configured args point it.
-        let (stdio_mode, serial) = if job.log_streaming.is_some() {
+        let (stdio_mode, serial, capture_args) = if job.log_streaming.is_some() {
             let serial_sock_path = workdir.join("serial.sock");
             match SerialSocket::bind(&serial_sock_path).await {
                 Ok(socket) => {
                     // qemu connects to our already-bound listener as the client
                     // (`server=off`), so there is no connect race.
-                    qemu_args.push("-chardev".to_string());
-                    qemu_args.push(format!(
-                        "socket,id=tml-serial,path={},server=off",
-                        socket.path().display(),
-                    ));
-                    qemu_args.push("-serial".to_string());
-                    qemu_args.push("chardev:tml-serial".to_string());
-                    (StdioMode::Capture, Some(socket))
+                    let args = vec![
+                        "-chardev".to_string(),
+                        format!(
+                            "socket,id=tml-serial,path={},server=off",
+                            socket.path().display(),
+                        ),
+                        "-serial".to_string(),
+                        "chardev:tml-serial".to_string(),
+                    ];
+                    (StdioMode::Capture, Some(socket), args)
                 }
                 Err(e) => {
                     // Don't fail the job over a capture-setup error; fall back
@@ -383,12 +375,25 @@ impl JobBackend for QemuBackend {
                         error = ?e,
                         "Failed to bind serial capture socket; disabling log capture for this job",
                     );
-                    (StdioMode::Inherit, None)
+                    (StdioMode::Inherit, None, Vec::new())
                 }
             }
         } else {
-            (StdioMode::Inherit, None)
+            (StdioMode::Inherit, None, Vec::new())
         };
+
+        // The backing-chain `-blockdev` nodes (base → … → overlay) and the
+        // capture channel go ahead of the configured invocation: the configured
+        // args attach the disk device to the writable top node via the
+        // `{disk_node}` substitution, and a `-serial` of their own takes the
+        // port after the captured one rather than displacing it.
+        let mut qemu_args: Vec<String> = Vec::new();
+        for node in chain.blockdev_args() {
+            qemu_args.push("-blockdev".to_string());
+            qemu_args.push(node);
+        }
+        qemu_args.extend(capture_args);
+        qemu_args.extend(templated_args);
 
         event!(
             Level::INFO,
@@ -637,7 +642,9 @@ mod tests {
     use tempfile::TempDir;
     use uuid::Uuid;
 
-    use treadmill_rs::api::switchboard_supervisor::{ImageLocation, ParameterValue, RestartPolicy};
+    use treadmill_rs::api::switchboard_supervisor::{
+        ImageLocation, LogStreamingDispatch, ParameterValue, RestartPolicy,
+    };
     use treadmill_supervisor_lib::launcher::{QemuImgMetadata, WorkloadProcess};
 
     /// The shipped example is a deployment's starting point, so it has to
@@ -1065,6 +1072,47 @@ mod tests {
             "{:?}",
             f.launcher.spawned_args(),
         );
+    }
+
+    /// The captured serial console has to be QEMU's first `-serial`, or a
+    /// configuration that points one of its own somewhere else takes the
+    /// guest's console with it and the capture ships nothing.
+    #[tokio::test]
+    async fn the_captured_console_precedes_a_configured_serial() {
+        let f = fixture(4 * GIB, vec!["-serial", "mon:stdio"]);
+
+        let job_id = Uuid::new_v4();
+        let mut vars = runner_vars(job_id, f.tmp.path());
+        let head = digest(3);
+        let image = image(vec![base_layer(head, Some(GIB))], head);
+
+        let mut msg = start_msg(job_id);
+        msg.log_streaming = Some(LogStreamingDispatch {
+            nats_url: "nats://127.0.0.1:4222".to_string(),
+            subject_prefix: format!("logs.{job_id}"),
+            write_token: "stub".to_string(),
+            console_input_subject: None,
+            inbox_prefix: None,
+        });
+
+        let chain = f
+            .backend
+            .allocate(&msg, f.tmp.path(), image, &mut vars)
+            .await
+            .unwrap();
+        f.backend
+            .launch(&msg, f.tmp.path(), chain, &vars)
+            .await
+            .unwrap();
+
+        let args = f.launcher.spawned_args();
+        let serials: Vec<&String> = args
+            .iter()
+            .zip(args.iter().skip(1))
+            .filter(|(flag, _)| *flag == "-serial")
+            .map(|(_, value)| value)
+            .collect();
+        assert_eq!(serials, vec!["chardev:tml-serial", "mon:stdio"], "{args:?}");
     }
 
     /// An image the coordinator dispatched in a shape this supervisor cannot
