@@ -45,11 +45,10 @@ pub struct QemuConfig {
     /// Directory to keep state:
     state_dir: PathBuf,
 
-    /// Directory to keep state:
     /// List of arguments to pass to the QEMU binary.
     ///
     /// These arguments support template strings using the
-    /// [`strfmt`](https://docs.rs/strfmt/latest/strfmt/) crate.q
+    /// [`strfmt`](https://docs.rs/strfmt/latest/strfmt/) crate.
     ///
     /// The available template strings are:
     ///
@@ -63,8 +62,8 @@ pub struct QemuConfig {
     ///   configured args should attach the disk device by referencing this
     ///   node, e.g. `-device virtio-blk-device,drive={disk_node}`.
     ///
-    /// - `tcp_control_socket_listen_addr: full socket address, with IPv6
-    ///   address properly enclosed in square brackets, e.g., `[::1]:8080`
+    /// - `tcp_control_socket_listen_addr`: full socket address, with an IPv6
+    ///   address enclosed in square brackets, e.g. `[::1]:8080`
     qemu_args: Vec<String>,
 
     /// Maximum "working" disk image to be allocated for a job, in bytes.
