@@ -27,9 +27,9 @@ jobs:
   nix-flake-check:
     runs-on: ubuntu-latest
 
-    # If building on main, we have access to the "cachix-push" environment
-    # secrets and can push to the cache.
-    environment: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'cachix-push' || '' }}
+    # If building on main or in the merge queue to main, we have access to the
+    # "cachix-push" environment secrets and can push to the cache.
+    environment: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/main')) && 'cachix-push' || '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +39,6 @@ jobs:
         with:
           name: treadmill-tb
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-          skipPush: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
 
       # On `pull_request`, only build a curated subset of checks to keep PR
       # feedback fast. The full `nix flake check` runs in `merge_group` (which
