@@ -84,6 +84,9 @@
             cargoNextestExtraArgs = "--workspace --no-tests=pass";
             partitions = 1;
             partitionType = "count";
+
+            # Required to build a reqwest client:
+            SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
           }
         );
 
@@ -136,6 +139,9 @@
             postCheck = ''
               pg_ctl -D "$PG_BASE_DIR" stop >/dev/null 2>&1 || true
             '';
+
+            # Required to build a reqwest client:
+            SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
           }
         );
 
@@ -227,10 +233,7 @@
               pkgs.skopeo
             ];
 
-            # oci-client builds a reqwest client (which initializes a TLS
-            # backend) even for the plain-HTTP loopback pulls; without a CA
-            # bundle in the sandbox that init panics. The connections
-            # themselves are HTTP to 127.0.0.1.
+            # Required to build a reqwest client:
             SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
 
             TINY_EFI_IMAGE = self'.packages.tiny-efi-image-layout;
@@ -261,8 +264,7 @@
               pkgs.skopeo
             ];
 
-            # See the oci-store check: oci-client's reqwest TLS init needs a CA
-            # bundle present even though the loopback traffic is plain HTTP.
+            # Required to build a reqwest client:
             SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
 
             TINY_EFI_IMAGE = self'.packages.tiny-efi-image-layout;
@@ -315,10 +317,7 @@
               pkgs.nats-server
             ];
 
-            # async-nats initializes a rustls backend even for the plain-text
-            # loopback (nats://) connection; without a CA bundle that init can
-            # panic (same posture as the oci-store check). Traffic is to
-            # 127.0.0.1.
+            # Required to build a reqwest client:
             SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
 
             # The nats-server binary the tests spawn; its presence also gates
