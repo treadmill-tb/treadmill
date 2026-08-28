@@ -14,3 +14,7 @@ updates:
   - package-ecosystem: "nix"
     directory: "/"
     multi-ecosystem-group: "global-rollup"
+
+  - package-ecosystem: "npm"
+    directory: "/console"
+    multi-ecosystem-group: "global-rollup"
