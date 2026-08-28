@@ -10,11 +10,14 @@ updates:
   - package-ecosystem: "cargo"
     directory: "/" 
     multi-ecosystem-group: "global-rollup"
+    patterns: ["*"]
 
   - package-ecosystem: "nix"
     directory: "/"
     multi-ecosystem-group: "global-rollup"
+    patterns: ["*"]
 
   - package-ecosystem: "npm"
     directory: "/console"
     multi-ecosystem-group: "global-rollup"
+    patterns: ["*"]
