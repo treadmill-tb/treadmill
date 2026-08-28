@@ -478,12 +478,12 @@ async fn main() -> Result<()> {
         SupervisorCoordConnector::Local => {
             // One-shot, switchboard-less run: drive a single job from the
             // command-line `LocalJobArgs` against the local OCI store.
-            let local_job = args.local_job.clone().ok_or(anyhow!(
-                "Requested the `local` connector, but no job was supplied on the \
-                 command line (need at least --manifest-digest and --repository)."
-            ))?;
+            let local_job = args.local_job.clone().unwrap_or_default();
             if local_job.manifest_digest.is_none() || local_job.repository.is_none() {
-                bail!("The `local` connector requires both --manifest-digest and --repository.");
+                bail!(
+                    "The `local` connector requires a job on the command line: both \
+                     --manifest-digest and --repository."
+                );
             }
             let registry = config.oci_store.registry.clone();
 
