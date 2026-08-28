@@ -83,10 +83,10 @@ jobs:
     runs-on: ${{ matrix.runs-on }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: cachix/install-nix-action@v30
-      - uses: cachix/cachix-action@v15
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v17
         with:
           name: treadmill-tb
           # Read-only here; this re-uses the built puppets from the cache.
@@ -187,7 +187,7 @@ jobs:
       # intermediate build blobs in out.build/ are deliberately excluded.
       - name: Upload base image layout
         if: ${{ !cancelled() && inputs.upload_artifacts && steps.build-base.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: treadmill-image-${{ matrix.name }}
           path: out/
@@ -195,7 +195,7 @@ jobs:
 
       - name: Upload gha-runner image layout
         if: ${{ !cancelled() && inputs.upload_artifacts && steps.build-gha-runner.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: treadmill-image-${{ matrix.name }}-gha-runner
           path: out-gha-runner/
@@ -203,7 +203,7 @@ jobs:
 
       - name: Upload webide image layout
         if: ${{ !cancelled() && inputs.upload_artifacts && steps.build-webide.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: treadmill-image-${{ matrix.name }}-webide
           path: out-webide/
