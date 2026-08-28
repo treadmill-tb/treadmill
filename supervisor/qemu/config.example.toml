@@ -6,16 +6,17 @@ coord_connector = "ws_connector"
 # job_address = "fd00::2"
 
 [ws_connector]
-token = "OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc"
+# Placeholder: a supervisor token is 32 bytes, base64-encoded. Read one out of
+# a file instead with `token_file = "..."`.
+token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
 switchboard_uri = "ws://localhost:8081"
 
-[image_store]
-# Doesn't do anything yet. This endpoint will be used to request
-# images to be downloaded etc. later on:
-http_endpoint = "https://localhost:8080"
-
-# Local mountpoint of the read-only image store:
-fs_endpoint = "./image-store"
+# Local OCI store (a per-server Zot daemon). The supervisor asks the daemon to
+# make a dispatched manifest digest present, then opens the resulting blobs
+# directly out of its storage root.
+[oci_store]
+registry = "127.0.0.1:5000"
+store_root = "/var/lib/zot"
 
 # Console capture tuning, entirely local to this supervisor. A captured frame
 # is one NATS message, and the drain closes a frame when either bound is
@@ -50,20 +51,19 @@ qemu_args = [
   "if=pflash,format=raw,readonly=on,file={job_workdir}/OVMF_CODE.fd",
   "-drive",
   "if=pflash,format=raw,file={job_workdir}/OVMF_VARS.fd",
-  # Storage:
+  # Storage: the supervisor prepends the `-blockdev` nodes assembling the
+  # image's backing chain, so the disk is attached by referencing the chain's
+  # writable top node.
   "-device",
-  "virtio-scsi-pci,id=scsi0",
-  "-drive",
-  "file={main_disk_image},id=drive0,format=qcow2,if=none",
-  "-device",
-  "scsi-hd,drive=drive0,bus=scsi0.0",
+  "virtio-blk-pci,drive={disk_node}",
   # Network:
   "-netdev",
   "user,id=net0,hostfwd=tcp::2222-:22",
   "-device",
   "virtio-net-pci,id=nic0,netdev=net0",
-  # Treamill-specific attributes:
-  # (10.0.2.2 is the host address in QEMU SLIRP networking)
+  # Where the guest's puppet reaches this supervisor's control socket.
+  # (10.0.2.2 is the host address in QEMU SLIRP networking; the port is
+  # `tcp_control_socket_listen_addr`'s.)
   "-fw_cfg",
   "name=opt/org.tockos.treadmill.tcp-ctrl-socket,string=10.0.2.2:3859",
 ]

@@ -6,16 +6,15 @@ coord_connector = "ws_connector"
 # job_address = "::1"
 
 [ws_connector]
-token = "OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDz6XyIaP+gYB62XJ6HK78ffPtvDVyi9bRj4Fj1xVVyFeixZPW0anU00Lzx3qckiP25Xt5cZbZTXxFKfb6ifHpFi83KwkGZYrsaVcXsf1Lc607CucHnSvZ9+uZUSnhrN4rc"
+# Placeholder: a supervisor token is 32 bytes, base64-encoded. Read one out of
+# a file instead with `token_file = "..."`.
+token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
 switchboard_uri = "ws://localhost:8081"
 
-[image_store]
-# Doesn't do anything yet. This endpoint will be used to request
-# images to be downloaded etc. later on:
-http_endpoint = "https://localhost:8080"
-
-# Local mountpoint of the read-only image store:
-fs_endpoint = "./image-store"
+# Local OCI store (a per-server Zot daemon) the supervisor pulls images from.
+[oci_store]
+registry = "127.0.0.1:5000"
+store_root = "/var/lib/zot"
 
 [nbd_netboot]
 qemu_nbd_binary = "qemu-nbd"

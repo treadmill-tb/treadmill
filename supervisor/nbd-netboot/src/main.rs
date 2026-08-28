@@ -205,3 +205,17 @@ async fn main() -> Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shipped example is a deployment's starting point, so it has to
+    /// parse as the configuration this supervisor actually reads — the point
+    /// of keeping the schema while the lifecycle is stubbed.
+    #[test]
+    fn the_example_config_parses() {
+        toml::from_str::<NbdNetbootSupervisorConfig>(include_str!("../config.example.toml"))
+            .unwrap();
+    }
+}

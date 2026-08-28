@@ -539,6 +539,13 @@ mod tests {
     use treadmill_rs::api::switchboard_supervisor::{ImageLocation, ParameterValue, RestartPolicy};
     use treadmill_supervisor_lib::launcher::{QemuImgMetadata, WorkloadProcess};
 
+    /// The shipped example is a deployment's starting point, so it has to
+    /// parse as the configuration this supervisor actually reads.
+    #[test]
+    fn the_example_config_parses() {
+        toml::from_str::<QemuSupervisorConfig>(include_str!("../config.example.toml")).unwrap();
+    }
+
     /// A distinct, well-formed digest per small integer.
     fn digest(n: u8) -> Digest {
         format!("sha256:{}", format!("{n:02x}").repeat(32))
