@@ -1159,3 +1159,785 @@ impl control_socket::Supervisor for JobControlEndpoint {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! In-process drive of the job lifecycle against a stub backend.
+    //!
+    //! With the backend and the connector behind traits, the runner's state
+    //! machine can be driven from `StartJob` to `RemoveJob` — asserting the
+    //! reported transitions, the slot's occupancy rules, and the teardown
+    //! ordering — without spawning a single real binary.
+
+    use super::*;
+
+    use std::process::ExitStatus;
+
+    use tempfile::TempDir;
+    use tokio::sync::{Notify, oneshot};
+    use uuid::Uuid;
+
+    use treadmill_rs::api;
+    use treadmill_rs::api::switchboard_supervisor::{
+        ImageLocation, ImageSpecification, JobGatewayDispatch, RestartPolicy, SupervisorEvent,
+        SupervisorJobEvent,
+    };
+    use treadmill_rs::control_socket::Supervisor as _;
+
+    const COMMAND_MAILBOX_CAPACITY: usize = 8;
+
+    /// Connector that records the job state transitions and errors reported to
+    /// it.
+    #[derive(Debug, Default)]
+    struct RecordingConnector {
+        states: std::sync::Mutex<Vec<RunningJobState>>,
+        errors: std::sync::Mutex<Vec<JobError>>,
+        addresses: std::sync::Mutex<Vec<IpAddr>>,
+        service_sets: std::sync::Mutex<Vec<Vec<JobService>>>,
+    }
+
+    impl RecordingConnector {
+        fn labels(&self) -> Vec<String> {
+            self.states.lock().unwrap().iter().map(label).collect()
+        }
+
+        fn errors(&self) -> Vec<JobError> {
+            self.errors.lock().unwrap().clone()
+        }
+
+        fn addresses(&self) -> Vec<IpAddr> {
+            self.addresses.lock().unwrap().clone()
+        }
+
+        fn service_sets(&self) -> Vec<Vec<JobService>> {
+            self.service_sets.lock().unwrap().clone()
+        }
+    }
+
+    fn label(s: &RunningJobState) -> String {
+        match s {
+            RunningJobState::Initializing { stage } => {
+                let stage = match stage {
+                    JobInitializingStage::Starting => "starting",
+                    JobInitializingStage::FetchingImage => "fetching_image",
+                    JobInitializingStage::Allocating => "allocating",
+                    JobInitializingStage::Provisioning => "provisioning",
+                    JobInitializingStage::Booting => "booting",
+                };
+                format!("initializing/{stage}")
+            }
+            RunningJobState::Ready => "ready".to_string(),
+            RunningJobState::Terminating => "terminating".to_string(),
+            RunningJobState::Terminated => "terminated".to_string(),
+        }
+    }
+
+    #[async_trait]
+    impl SupervisorConnector for RecordingConnector {
+        async fn run(&self) -> Result<(), ()> {
+            Ok(())
+        }
+
+        async fn emit(&self, event: SupervisorEvent) {
+            let SupervisorEvent::JobEvent { event, .. } = event;
+            match event {
+                SupervisorJobEvent::StateTransition { new_state, .. } => {
+                    self.states.lock().unwrap().push(new_state);
+                }
+                SupervisorJobEvent::Error { error } => {
+                    self.errors.lock().unwrap().push(error);
+                }
+                SupervisorJobEvent::JobNetworkAddress { address } => {
+                    self.addresses.lock().unwrap().push(address);
+                }
+                SupervisorJobEvent::JobServiceSet { services } => {
+                    self.service_sets.lock().unwrap().push(services);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A workload that never exits on its own — it only ends when killed, which
+    /// is exactly the path `terminate_job` drives.
+    struct StubProcess;
+
+    #[async_trait]
+    impl WorkloadProcess for StubProcess {
+        async fn wait(&mut self) -> std::io::Result<ExitStatus> {
+            std::future::pending::<std::io::Result<ExitStatus>>().await
+        }
+        async fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Holds a backend inside `fetch` until the test releases it.
+    #[derive(Debug, Default)]
+    struct Gate {
+        entered: Notify,
+        release: Notify,
+    }
+
+    /// A backend that allocates nothing and launches a workload that outlives
+    /// its job, so what the runner does around it is all a test observes.
+    #[derive(Debug, Default)]
+    struct StubBackend {
+        /// Fails `allocate` with this error rather than allocating.
+        allocate_error: Option<JobError>,
+
+        /// Blocks `fetch` until released, so a job can be stopped mid-fetch.
+        fetch_gate: Option<Arc<Gate>>,
+
+        launched: std::sync::Mutex<usize>,
+    }
+
+    impl StubBackend {
+        fn failing(error_kind: JobErrorKind) -> Self {
+            StubBackend {
+                allocate_error: Some(JobError {
+                    error_kind,
+                    description: "the stub backend refuses to allocate".to_string(),
+                }),
+                ..StubBackend::default()
+            }
+        }
+
+        fn gated(gate: Arc<Gate>) -> Self {
+            StubBackend {
+                fetch_gate: Some(gate),
+                ..StubBackend::default()
+            }
+        }
+
+        fn launched(&self) -> usize {
+            *self.launched.lock().unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl JobBackend for StubBackend {
+        type Image = ();
+        type Allocation = ();
+
+        async fn fetch(&self, _job: &StartJobMessage) -> Result<(), JobError> {
+            if let Some(gate) = &self.fetch_gate {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            }
+            Ok(())
+        }
+
+        async fn allocate(
+            &self,
+            _job: &StartJobMessage,
+            _workdir: &Path,
+            _image: (),
+            _vars: &mut JobVars,
+        ) -> Result<(), JobError> {
+            match &self.allocate_error {
+                Some(error) => Err(error.clone()),
+                None => Ok(()),
+            }
+        }
+
+        async fn launch(
+            &self,
+            _job: &StartJobMessage,
+            _workdir: &Path,
+            _allocation: (),
+            _vars: &JobVars,
+        ) -> Result<Workload, JobError> {
+            *self.launched.lock().unwrap() += 1;
+            Ok(Workload {
+                process: Box::new(StubProcess),
+                serial: None,
+            })
+        }
+    }
+
+    type Runner = Arc<JobRunner<StubBackend>>;
+
+    /// A constructed runner plus the stubs wired into it, over a temp dir.
+    struct Harness {
+        runner: Runner,
+        connector: Arc<RecordingConnector>,
+        backend: Arc<StubBackend>,
+        tmp: TempDir,
+    }
+
+    fn harness(backend: StubBackend) -> Harness {
+        harness_with(backend, |_, _| ())
+    }
+
+    /// Like [`harness`], letting a test settle the deployment-shaped parts of
+    /// the configuration — a job address, the hooks — against the temp dir the
+    /// runner is built over.
+    fn harness_with(
+        backend: StubBackend,
+        tune: impl FnOnce(&Path, &mut JobRunnerConfig),
+    ) -> Harness {
+        let tmp = tempfile::tempdir().unwrap();
+        let connector = Arc::new(RecordingConnector::default());
+        let backend = Arc::new(backend);
+
+        // No job address: a deployment without a gateway has none.
+        let mut config = JobRunnerConfig {
+            supervisor_id: Uuid::new_v4(),
+            job_address: None,
+            state_dir: tmp.path().join("state"),
+            control_socket_listen_addr: "127.0.0.1:0".parse().unwrap(),
+            start_script: None,
+            stop_script: None,
+            log_streaming: LogPublisherConfig::default(),
+        };
+        tune(tmp.path(), &mut config);
+
+        Harness {
+            runner: Arc::new(JobRunner::new(connector.clone(), backend.clone(), config)),
+            connector,
+            backend,
+            tmp,
+        }
+    }
+
+    /// Point the configuration at start and stop scripts that each append a
+    /// line to `<tmp>/<start|stop>-hook.log`, so a test can count how often
+    /// they ran (see [`hook_runs`]).
+    fn with_hooks(tmp: &Path, config: &mut JobRunnerConfig) {
+        config.start_script = Some(write_hook(tmp, "start"));
+        config.stop_script = Some(write_hook(tmp, "stop"));
+    }
+
+    /// Count the lines the named hook appended, zero if it never ran.
+    fn hook_runs(tmp: &Path, hook: &str) -> usize {
+        std::fs::read_to_string(tmp.join(format!("{hook}-hook.log")))
+            .map(|log| log.lines().count())
+            .unwrap_or(0)
+    }
+
+    /// Write a hook script appending one line to `<tmp>/<hook>-hook.log`.
+    fn write_hook(tmp: &Path, hook: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = tmp.join(format!("{hook}-hook.sh"));
+        let log = tmp.join(format!("{hook}-hook.log"));
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho ran >> {}\n", log.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    const STUB_DIGEST: &str =
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+
+    fn start_msg(job_id: Uuid) -> StartJobMessage {
+        start_msg_with_gateway(job_id, None)
+    }
+
+    /// Like [`start_msg`], for a job the coordinator dispatched with gateway
+    /// material for the supervisor to relay into it.
+    fn start_msg_with_gateway(
+        job_id: Uuid,
+        gateway: Option<JobGatewayDispatch>,
+    ) -> StartJobMessage {
+        StartJobMessage {
+            job_id,
+            image_spec: ImageSpecification::Image {
+                manifest_digest: STUB_DIGEST.parse().unwrap(),
+                locations: vec![ImageLocation {
+                    registry: "127.0.0.1:0".to_string(),
+                    repository: "treadmill/stub".to_string(),
+                }],
+            },
+            restart_policy: RestartPolicy {
+                remaining_restart_count: 0,
+            },
+            parameters: HashMap::new(),
+            log_streaming: None,
+            gateway,
+        }
+    }
+
+    async fn endpoint(runner: &Runner) -> JobControlEndpoint {
+        JobControlEndpoint::new(runner.job().await.expect("a job occupies the slot"))
+    }
+
+    async fn job_facts(runner: &Runner) -> watch::Receiver<Arc<JobFacts>> {
+        runner
+            .job()
+            .await
+            .expect("a job occupies the slot")
+            .facts_watch()
+    }
+
+    async fn idle(runner: &Runner) -> bool {
+        matches!(runner.status().await, ReportedSupervisorStatus::Idle)
+    }
+
+    async fn wait_for(
+        facts: &mut watch::Receiver<Arc<JobFacts>>,
+        reached: impl Fn(&JobFacts) -> bool,
+    ) {
+        loop {
+            if reached(&facts.borrow_and_update()) {
+                return;
+            }
+            facts
+                .changed()
+                .await
+                .expect("the job task keeps publishing its facts");
+        }
+    }
+
+    fn booting(facts: &JobFacts) -> bool {
+        matches!(facts.phase, Phase::Booting)
+    }
+
+    fn ready(facts: &JobFacts) -> bool {
+        matches!(facts.phase, Phase::Ready)
+    }
+
+    fn terminated(facts: &JobFacts) -> bool {
+        facts.phase.terminated()
+    }
+
+    async fn start_and_boot(h: &Harness, msg: StartJobMessage) -> watch::Receiver<Arc<JobFacts>> {
+        let job_id = msg.job_id;
+        h.runner.start_job(msg).await.unwrap();
+
+        let mut facts = job_facts(&h.runner).await;
+        wait_for(&mut facts, booting).await;
+
+        endpoint(&h.runner)
+            .await
+            .puppet_ready(0, Uuid::new_v4(), job_id)
+            .await;
+        wait_for(&mut facts, ready).await;
+
+        facts
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_lifecycle_transitions() {
+        let h = harness(StubBackend::default());
+
+        let job_id = Uuid::new_v4();
+        let host_id = Uuid::new_v4();
+
+        h.runner.start_job(start_msg(job_id)).await.unwrap();
+        let mut facts = job_facts(&h.runner).await;
+        wait_for(&mut facts, booting).await;
+
+        assert_eq!(
+            h.connector.labels(),
+            vec![
+                "initializing/starting",
+                "initializing/fetching_image",
+                "initializing/allocating",
+                "initializing/booting",
+            ],
+        );
+        assert_eq!(h.backend.launched(), 1);
+
+        // Puppet reports ready → the job goes Ready.
+        endpoint(&h.runner)
+            .await
+            .puppet_ready(0, host_id, job_id)
+            .await;
+        wait_for(&mut facts, ready).await;
+        assert_eq!(
+            h.connector.labels().last().map(String::as_str),
+            Some("ready")
+        );
+
+        // Terminating kills the (stub) workload and reports the terminal
+        // transition before it returns.
+        h.runner.terminate_job(job_id).await.unwrap();
+
+        let labels = h.connector.labels();
+        assert!(labels.iter().any(|l| l == "terminating"), "{labels:?}");
+        assert_eq!(labels.last().map(String::as_str), Some("terminated"));
+        assert!(h.connector.errors().is_empty());
+
+        // The record is retained until it is removed.
+        assert!(terminated(&facts.borrow_and_update()));
+        h.runner.remove_job(job_id).await.unwrap();
+        assert!(idle(&h.runner).await);
+    }
+
+    /// A supervisor configured with a job address reports it as the job starts,
+    /// so the coordinator has somewhere to point a gateway at before the job is
+    /// up. One without stays silent, and the job is reachable from nowhere.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_configured_job_address_is_reported_at_start() {
+        let address: IpAddr = "fd00::2".parse().unwrap();
+        let h = harness_with(StubBackend::default(), |_, config| {
+            config.job_address = Some(address)
+        });
+
+        assert!(h.connector.addresses().is_empty(), "nothing has started");
+
+        start_and_boot(&h, start_msg(Uuid::new_v4())).await;
+        assert_eq!(h.connector.addresses(), vec![address]);
+
+        let unconfigured = harness(StubBackend::default());
+        start_and_boot(&unconfigured, start_msg(Uuid::new_v4())).await;
+        assert!(unconfigured.connector.addresses().is_empty());
+    }
+
+    /// The puppet asks its supervisor what to validate service tokens against,
+    /// and gets back exactly what the coordinator dispatched the job with —
+    /// nothing if the job was dispatched without a gateway.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_running_job_is_told_its_gateway_material() {
+        let host_id = Uuid::new_v4();
+        let dispatched = JobGatewayDispatch {
+            issuer: "https://switchboard.example".to_string(),
+            signing_public_key: "-----BEGIN PUBLIC KEY-----\nstub\n-----END PUBLIC KEY-----\n"
+                .to_string(),
+            key_id: "wI9c-yvsF8".to_string(),
+            endpoints: vec![
+                api::switchboard_supervisor::JobGatewayEndpoint {
+                    base_domain: "gw-us-east-1.treadmillusercontent.com".to_string(),
+                    port: 443,
+                },
+                api::switchboard_supervisor::JobGatewayEndpoint {
+                    base_domain: "gw-eu-central-1.treadmillusercontent.com".to_string(),
+                    port: 4433,
+                },
+            ],
+        };
+
+        let h = harness(StubBackend::default());
+        let job_id = Uuid::new_v4();
+
+        start_and_boot(&h, start_msg_with_gateway(job_id, Some(dispatched.clone()))).await;
+        let puppet = endpoint(&h.runner).await;
+
+        // Nothing is answered for a job this endpoint does not serve.
+        assert!(puppet.gateway(host_id, Uuid::new_v4()).await.is_none());
+
+        let relayed = puppet
+            .gateway(host_id, job_id)
+            .await
+            .expect("a job dispatched with a gateway is told about it");
+        assert_eq!(relayed.issuer, dispatched.issuer);
+        assert_eq!(relayed.signing_public_key, dispatched.signing_public_key);
+        assert_eq!(relayed.key_id, dispatched.key_id);
+        assert_eq!(
+            relayed.endpoints,
+            dispatched
+                .endpoints
+                .iter()
+                .cloned()
+                .map(
+                    |api::switchboard_supervisor::JobGatewayEndpoint { base_domain, port }| {
+                        api::supervisor_puppet::JobGatewayEndpoint { base_domain, port }
+                    }
+                )
+                .collect::<Vec<_>>()
+        );
+
+        // A job dispatched without one has none to be told about.
+        let plain = harness(StubBackend::default());
+        let plain_job = Uuid::new_v4();
+        start_and_boot(&plain, start_msg(plain_job)).await;
+        assert!(
+            endpoint(&plain.runner)
+                .await
+                .gateway(host_id, plain_job)
+                .await
+                .is_none()
+        );
+    }
+
+    /// A service announcement is relayed to the coordinator as it arrives: the
+    /// supervisor stores nothing and interprets nothing. An announcement
+    /// carries a job's whole set, so a later one replaces the earlier rather
+    /// than adding to it — including an empty one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_announced_service_set_is_relayed_to_the_coordinator() {
+        let h = harness(StubBackend::default());
+
+        let job_id = Uuid::new_v4();
+        let host_id = Uuid::new_v4();
+        start_and_boot(&h, start_msg(job_id)).await;
+        assert!(h.connector.service_sets().is_empty());
+
+        let announced = vec![
+            JobService {
+                name: "webide".to_string(),
+                label: Some("Web IDE".to_string()),
+                protocol: "webapp".to_string(),
+            },
+            JobService {
+                name: "shell".to_string(),
+                label: None,
+                protocol: "sshws".to_string(),
+            },
+        ];
+        let puppet = endpoint(&h.runner).await;
+        puppet
+            .job_service_set(0, announced.clone(), host_id, job_id)
+            .await;
+        puppet.job_service_set(1, Vec::new(), host_id, job_id).await;
+
+        // Puppet events are ordered against the job's state changes, so a
+        // terminate the job has acted on proves both were relayed first.
+        h.runner.terminate_job(job_id).await.unwrap();
+        assert_eq!(h.connector.service_sets(), vec![announced, Vec::new()]);
+    }
+
+    /// A job that fails on its way up still owes the coordinator a terminal
+    /// transition (D2.2): the reported error is the *cause* of the
+    /// termination, never a substitute for it. Its record is then retained,
+    /// occupying the slot, until it is removed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_startup_failure_reports_the_error_and_then_terminated() {
+        let h = harness(StubBackend::failing(JobErrorKind::ImageInvalid));
+
+        let job_id = Uuid::new_v4();
+
+        h.runner.start_job(start_msg(job_id)).await.unwrap();
+        let mut facts = job_facts(&h.runner).await;
+        wait_for(&mut facts, terminated).await;
+
+        let errors = h.connector.errors();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            matches!(errors[0].error_kind, JobErrorKind::ImageInvalid),
+            "{:?}",
+            errors[0],
+        );
+
+        // Allocation failed before launch, and the job never reached
+        // Booting/Ready.
+        assert_eq!(h.backend.launched(), 0);
+        let labels = h.connector.labels();
+        assert!(
+            !labels
+                .iter()
+                .any(|l| l == "initializing/booting" || l == "ready"),
+            "{labels:?}",
+        );
+
+        // It did reach Terminated, exactly once.
+        assert_eq!(labels.last().map(String::as_str), Some("terminated"));
+        assert_eq!(labels.iter().filter(|l| *l == "terminated").count(), 1);
+
+        // The failed job is retained: it still holds the slot until removed.
+        let error = h
+            .runner
+            .start_job(start_msg(Uuid::new_v4()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error.error_kind, JobErrorKind::MaxConcurrentJobs),
+            "{error:?}",
+        );
+
+        h.runner.remove_job(job_id).await.unwrap();
+        assert!(idle(&h.runner).await);
+    }
+
+    /// D2.3/D2.4: the coordinator may repeat either command, or send one for a
+    /// job this supervisor never heard of. A postcondition that already holds
+    /// is not an error, and no repeat produces a second terminal transition.
+    /// Only removing a job that is still executing is refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn terminate_and_remove_are_idempotent() {
+        let h = harness(StubBackend::default());
+        let job_id = Uuid::new_v4();
+
+        // Nothing is known about this job, so both commands are satisfied.
+        h.runner.terminate_job(job_id).await.unwrap();
+        h.runner.remove_job(job_id).await.unwrap();
+
+        let mut facts = start_and_boot(&h, start_msg(job_id)).await;
+
+        // A live job must be terminated before it can be removed.
+        let error = h.runner.remove_job(job_id).await.unwrap_err();
+        assert!(
+            matches!(error.error_kind, JobErrorKind::NotTerminated),
+            "{error:?}",
+        );
+
+        h.runner.terminate_job(job_id).await.unwrap();
+        assert!(terminated(&facts.borrow_and_update()));
+
+        h.runner.terminate_job(job_id).await.unwrap();
+        h.runner.remove_job(job_id).await.unwrap();
+        h.runner.remove_job(job_id).await.unwrap();
+        assert!(idle(&h.runner).await);
+
+        let labels = h.connector.labels();
+        assert_eq!(
+            labels.iter().filter(|l| *l == "terminating").count(),
+            1,
+            "{labels:?}",
+        );
+        assert_eq!(
+            labels.iter().filter(|l| *l == "terminated").count(),
+            1,
+            "{labels:?}",
+        );
+        assert!(
+            h.connector.errors().is_empty(),
+            "{:?}",
+            h.connector.errors()
+        );
+    }
+
+    /// D2.1: this supervisor runs a single job, which occupies its slot from
+    /// `StartJob` until `RemoveJob` — a terminated-but-retained job refuses a
+    /// new one just as a live one does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_second_job_is_refused_while_one_occupies_the_slot() {
+        let h = harness(StubBackend::default());
+        let occupant = Uuid::new_v4();
+        let next = Uuid::new_v4();
+
+        start_and_boot(&h, start_msg(occupant)).await;
+
+        let error = h.runner.start_job(start_msg(occupant)).await.unwrap_err();
+        assert!(
+            matches!(error.error_kind, JobErrorKind::JobAlreadyExists),
+            "{error:?}",
+        );
+
+        let error = h.runner.start_job(start_msg(next)).await.unwrap_err();
+        assert!(
+            matches!(error.error_kind, JobErrorKind::AlreadyRunning),
+            "{error:?}",
+        );
+
+        h.runner.terminate_job(occupant).await.unwrap();
+
+        let error = h.runner.start_job(start_msg(next)).await.unwrap_err();
+        assert!(
+            matches!(error.error_kind, JobErrorKind::MaxConcurrentJobs),
+            "{error:?}",
+        );
+
+        h.runner.remove_job(occupant).await.unwrap();
+        h.runner.start_job(start_msg(next)).await.unwrap();
+    }
+
+    /// The stop hook is the start hook's counterpart: it runs once per job that
+    /// ran the start hook, and never for a job that failed before it. It is
+    /// part of releasing the job's resources, which the retention window defers
+    /// until the removal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_stop_hook_runs_once_and_only_after_the_start_hook() {
+        let h = harness_with(StubBackend::default(), with_hooks);
+        let job_id = Uuid::new_v4();
+
+        start_and_boot(&h, start_msg(job_id)).await;
+        assert_eq!(hook_runs(h.tmp.path(), "start"), 1);
+        assert_eq!(hook_runs(h.tmp.path(), "stop"), 0);
+
+        h.runner.terminate_job(job_id).await.unwrap();
+        assert_eq!(hook_runs(h.tmp.path(), "stop"), 0);
+
+        h.runner.remove_job(job_id).await.unwrap();
+        assert_eq!(hook_runs(h.tmp.path(), "start"), 1);
+        assert_eq!(hook_runs(h.tmp.path(), "stop"), 1);
+
+        // A job failing before the start hook has nothing for the stop hook to
+        // clean up after.
+        let failed = harness_with(StubBackend::failing(JobErrorKind::ImageInvalid), with_hooks);
+        let failed_job = Uuid::new_v4();
+        failed
+            .runner
+            .start_job(start_msg(failed_job))
+            .await
+            .unwrap();
+        let mut failed_facts = job_facts(&failed.runner).await;
+        wait_for(&mut failed_facts, terminated).await;
+
+        failed.runner.remove_job(failed_job).await.unwrap();
+        assert_eq!(hook_runs(failed.tmp.path(), "start"), 0);
+        assert_eq!(hook_runs(failed.tmp.path(), "stop"), 0);
+    }
+
+    /// Cancellation is structural, not polled: a stop that arrives while the
+    /// job is inside an image fetch does not wait for that fetch to finish, and
+    /// the fetch finishing afterwards does not run a second teardown.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_job_terminated_mid_fetch_is_cancelled_where_it_stands() {
+        let gate = Arc::new(Gate::default());
+        let h = harness(StubBackend::gated(gate.clone()));
+        let job_id = Uuid::new_v4();
+
+        h.runner.start_job(start_msg(job_id)).await.unwrap();
+        let mut facts = job_facts(&h.runner).await;
+        gate.entered.notified().await;
+
+        h.runner.terminate_job(job_id).await.unwrap();
+        assert!(terminated(&facts.borrow_and_update()));
+        assert_eq!(h.backend.launched(), 0);
+
+        // Releasing the fetch afterwards must not resurrect the job.
+        gate.release.notify_waiters();
+        h.runner.remove_job(job_id).await.unwrap();
+        assert!(idle(&h.runner).await);
+
+        let labels = h.connector.labels();
+        assert_eq!(
+            labels.iter().filter(|l| *l == "terminated").count(),
+            1,
+            "{labels:?}",
+        );
+        assert!(
+            h.connector.errors().is_empty(),
+            "{:?}",
+            h.connector.errors()
+        );
+    }
+
+    /// A refused `StartJob` has no acknowledgement to fail: the command loop
+    /// owes the coordinator a reported job error instead, or the refusal is
+    /// never heard. The commands are answered in the order they arrive, so the
+    /// acknowledged terminate behind them proves the refusal already happened.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refused_start_is_reported_as_a_job_error() {
+        let h = harness(StubBackend::default());
+
+        let (commands, command_rx) = mpsc::channel(COMMAND_MAILBOX_CAPACITY);
+        let runner = h.runner.clone();
+        tokio::spawn(async move { runner.run(command_rx).await });
+
+        let occupant = Uuid::new_v4();
+        let refused = Uuid::new_v4();
+        commands
+            .send(CoordCommand::StartJob(start_msg(occupant)))
+            .await
+            .unwrap();
+        commands
+            .send(CoordCommand::StartJob(start_msg(refused)))
+            .await
+            .unwrap();
+
+        let (ack, acked) = oneshot::channel();
+        commands
+            .send(CoordCommand::TerminateJob {
+                job_id: occupant,
+                ack,
+            })
+            .await
+            .unwrap();
+        acked.await.unwrap().unwrap();
+
+        let errors = h.connector.errors();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            matches!(errors[0].error_kind, JobErrorKind::AlreadyRunning),
+            "{:?}",
+            errors[0],
+        );
+    }
+}

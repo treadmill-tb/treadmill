@@ -37,6 +37,7 @@ uuid = { workspace = true }
 [dev-dependencies]
 sha2 = { workspace = true }
 tempfile = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 # Re-list tokio so tests get the runtime/macros on top of the lib's features.
 tokio = { workspace = true, features = [
   "fs",
