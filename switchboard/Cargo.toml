@@ -81,13 +81,13 @@ subtle = { workspace = true }
 rand = { workspace = true }
 # Salted hashes (argon2id, PHC string) for auth tokens and one-time
 # login-completion secrets.
-argon2 = "0.5"
+argon2 = "0.6"
 
 # OAuth2 login (GitHub). The `oauth2` crate drives the authorization-code flow;
 # `reqwest` is its async HTTP backend and is also used directly for the
 # provider's user/email API calls.
 oauth2 = "5"
-reqwest = { version = "0.12", default-features = false, features = [
+reqwest = { version = "0.13", default-features = false, features = [
   "json",
   "rustls-tls",
   "charset",
