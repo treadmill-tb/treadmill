@@ -124,6 +124,8 @@ const PUBLISHER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 
 const JOB_MAILBOX_CAPACITY: usize = 8;
 
+const COORD_MAILBOX_CAPACITY: usize = 8;
+
 #[derive(Debug, Clone)]
 pub enum Phase {
     Starting,
@@ -1074,16 +1076,42 @@ impl JobTask {
     }
 }
 
-#[async_trait]
-impl connector::Supervisor for QemuSupervisor {
-    #[instrument(skip(this, start_job_req), fields(job_id = ?start_job_req.job_id), err(Debug, level = Level::WARN))]
+impl QemuSupervisor {
+    /// Drain the coordinator's commands, one at a time.
+    ///
+    /// The commands a coordinator issues about a single job slot are inherently
+    /// sequential, and every one of them here returns as soon as the job task
+    /// has taken it on, so they are answered in the order they arrive rather
+    /// than raced against each other.
+    pub async fn run(self: &Arc<Self>, mut commands: mpsc::Receiver<connector::CoordCommand>) {
+        while let Some(command) = commands.recv().await {
+            match command {
+                connector::CoordCommand::StartJob(start_job_req) => {
+                    let job_id = start_job_req.job_id;
+                    if let Err(error) = self.start_job(start_job_req).await {
+                        self.connector.report_job_error(job_id, error).await;
+                    }
+                }
+
+                connector::CoordCommand::TerminateJob { job_id, ack } => {
+                    let _ = ack.send(self.terminate_job(job_id).await);
+                }
+
+                connector::CoordCommand::RemoveJob { job_id, ack } => {
+                    let _ = ack.send(self.remove_job(job_id).await);
+                }
+            }
+        }
+    }
+
+    #[instrument(skip(self, start_job_req), fields(job_id = ?start_job_req.job_id), err(Debug, level = Level::WARN))]
     async fn start_job(
-        this: &Arc<Self>,
+        self: &Arc<Self>,
         start_job_req: connector::StartJobMessage,
     ) -> Result<(), connector::JobError> {
         event!(Level::INFO, ?start_job_req);
 
-        let mut slot_lg = this.slot.lock().await;
+        let mut slot_lg = self.slot.lock().await;
 
         if let Some(slot) = slot_lg.as_ref() {
             let facts = slot.handle.facts();
@@ -1101,7 +1129,7 @@ impl connector::Supervisor for QemuSupervisor {
                     description: format!(
                         "Supervisor {:?} still retains the terminated job {:?}, which has to be \
                          removed before another job can be started.",
-                        this.config.base.supervisor_id, facts.job_id,
+                        self.config.base.supervisor_id, facts.job_id,
                     ),
                 }
             } else {
@@ -1109,7 +1137,7 @@ impl connector::Supervisor for QemuSupervisor {
                     error_kind: connector::JobErrorKind::AlreadyRunning,
                     description: format!(
                         "Supervisor {:?} is already running job {:?}.",
-                        this.config.base.supervisor_id, facts.job_id,
+                        self.config.base.supervisor_id, facts.job_id,
                     ),
                 }
             });
@@ -1126,7 +1154,7 @@ impl connector::Supervisor for QemuSupervisor {
         };
 
         let task = JobTask {
-            supervisor: this.clone(),
+            supervisor: self.clone(),
             start_job_req,
             handle: handle.clone(),
             facts_tx,
@@ -1142,47 +1170,45 @@ impl connector::Supervisor for QemuSupervisor {
         Ok(())
     }
 
-    #[instrument(skip(this), err(Debug, level = Level::WARN))]
-    async fn terminate_job(
-        this: &Arc<Self>,
-        msg: connector::TerminateJobMessage,
-    ) -> Result<(), connector::JobError> {
-        let handle = match this.slot.lock().await.as_ref() {
-            Some(slot) if slot.handle.job_id == msg.job_id => slot.handle.clone(),
-            _ => return Ok(()),
+    #[instrument(skip(self), err(Debug, level = Level::WARN))]
+    async fn terminate_job(&self, job_id: Uuid) -> Result<(), connector::JobError> {
+        let Some(handle) = self.occupant(job_id).await else {
+            return Ok(());
         };
 
         handle.terminate().await
     }
 
-    #[instrument(skip(this), err(Debug, level = Level::WARN))]
-    async fn remove_job(
-        this: &Arc<Self>,
-        msg: connector::RemoveJobMessage,
-    ) -> Result<(), connector::JobError> {
-        let handle = match this.slot.lock().await.as_ref() {
-            Some(slot) if slot.handle.job_id == msg.job_id => slot.handle.clone(),
-            _ => return Ok(()),
+    #[instrument(skip(self), err(Debug, level = Level::WARN))]
+    async fn remove_job(&self, job_id: Uuid) -> Result<(), connector::JobError> {
+        let Some(handle) = self.occupant(job_id).await else {
+            return Ok(());
         };
 
         if !handle.facts().phase.terminated() {
             return Err(connector::JobError {
                 error_kind: connector::JobErrorKind::NotTerminated,
                 description: format!(
-                    "Job {:?} is still executing and must be terminated before removal.",
-                    msg.job_id,
+                    "Job {job_id:?} is still executing and must be terminated before removal.",
                 ),
             });
         }
 
         handle.remove().await?;
 
-        let slot = this.slot.lock().await.take();
+        let slot = self.slot.lock().await.take();
         if let Some(slot) = slot {
             let _ = slot.task.await;
         }
 
         Ok(())
+    }
+
+    async fn occupant(&self, job_id: Uuid) -> Option<JobHandle> {
+        match self.slot.lock().await.as_ref() {
+            Some(slot) if slot.handle.job_id == job_id => Some(slot.handle.clone()),
+            _ => None,
+        }
     }
 }
 
@@ -1392,26 +1418,22 @@ async fn main() -> Result<()> {
                 "Requested WsConnector, but `ws_connector` config not present."
             ))?;
 
-            // Both the supervisor and connectors have references to each other,
-            // so we break the cyclic dependency with an initially unoccupied
-            // weak Arc reference:
-            let mut connector_opt = None;
+            let (command_tx, command_rx) = mpsc::channel(COORD_MAILBOX_CAPACITY);
 
-            let qemu_supervisor = {
-                // Shadow, to avoid moving the variable:
-                let connector_opt = &mut connector_opt;
-                Arc::new_cyclic(move |weak_supervisor| {
-                    let connector = Arc::new(treadmill_ws_connector::WsConnector::new(
-                        config.base.supervisor_id,
-                        ws_connector_config,
-                        weak_supervisor.clone(),
-                    ));
-                    *connector_opt = Some(connector.clone());
-                    QemuSupervisor::new(connector, image_store, launcher, args, config)
-                })
-            };
+            let connector = Arc::new(treadmill_ws_connector::WsConnector::new(
+                config.base.supervisor_id,
+                ws_connector_config,
+                command_tx,
+            ));
 
-            let connector = connector_opt.take().unwrap();
+            let qemu_supervisor = Arc::new(QemuSupervisor::new(
+                connector.clone(),
+                image_store,
+                launcher,
+                args,
+                config,
+            ));
+            let commands = tokio::spawn(async move { qemu_supervisor.run(command_rx).await });
 
             loop {
                 if let Err(()) = connector.run().await {
@@ -1423,10 +1445,7 @@ async fn main() -> Result<()> {
                 }
             }
 
-            // Must drop qemu_supervisor reference _after_ connector.run(), as
-            // that'll upgrade its Weak into an Arc. Otherwise we're dropping
-            // the only reference to it:
-            std::mem::drop(qemu_supervisor);
+            commands.abort();
 
             Ok(())
         }
@@ -1442,24 +1461,20 @@ async fn main() -> Result<()> {
             }
             let registry = config.oci_store.registry.clone();
 
-            // Same cyclic Arc dance as the WsConnector arm: connector and
-            // supervisor reference each other.
-            let mut connector_opt = None;
+            let (command_tx, command_rx) = mpsc::channel(COORD_MAILBOX_CAPACITY);
 
-            let qemu_supervisor = {
-                let connector_opt = &mut connector_opt;
-                Arc::new_cyclic(move |weak_supervisor| {
-                    let connector = Arc::new(treadmill_local_connector::LocalConnector::new(
-                        registry,
-                        local_job,
-                        weak_supervisor.clone(),
-                    ));
-                    *connector_opt = Some(connector.clone());
-                    QemuSupervisor::new(connector, image_store, launcher, args, config)
-                })
-            };
+            let connector = Arc::new(treadmill_local_connector::LocalConnector::new(
+                registry, local_job, command_tx,
+            ));
 
-            let connector = connector_opt.take().unwrap();
+            let qemu_supervisor = Arc::new(QemuSupervisor::new(
+                connector.clone(),
+                image_store,
+                launcher,
+                args,
+                config,
+            ));
+            let commands = tokio::spawn(async move { qemu_supervisor.run(command_rx).await });
 
             // Ctrl-C requests a graceful shutdown: stop the job and let run()
             // return. A second Ctrl-C (after run() has returned) terminates the
@@ -1478,7 +1493,7 @@ async fn main() -> Result<()> {
                 info!("Local run finished, shutting down supervisor...");
             }
 
-            std::mem::drop(qemu_supervisor);
+            commands.abort();
 
             Ok(())
         }
@@ -1507,12 +1522,7 @@ mod tests {
         ImageLocation, JobGatewayDispatch, JobService, ParameterValue, RestartPolicy,
         SupervisorEvent, SupervisorJobEvent,
     };
-    use treadmill_rs::connector::{
-        RemoveJobMessage, StartJobMessage, SupervisorConnector, TerminateJobMessage,
-    };
-    // Bring the trait methods into scope (associated fns / `puppet_ready`)
-    // without colliding on the `Supervisor` name:
-    use treadmill_rs::connector::Supervisor as _;
+    use treadmill_rs::connector::{StartJobMessage, SupervisorConnector};
     use treadmill_rs::control_socket::Supervisor as _;
 
     use oci_spec::image::ImageManifest;
@@ -1570,7 +1580,7 @@ mod tests {
             Ok(())
         }
 
-        async fn update_event(&self, event: SupervisorEvent) {
+        async fn emit(&self, event: SupervisorEvent) {
             let SupervisorEvent::JobEvent { event, .. } = event;
             match event {
                 SupervisorJobEvent::StateTransition { new_state, .. } => {
@@ -1745,7 +1755,7 @@ mod tests {
 
     async fn start_and_boot(h: &Harness, msg: StartJobMessage) -> watch::Receiver<Arc<JobFacts>> {
         let job_id = msg.job_id;
-        QemuSupervisor::start_job(&h.sup, msg).await.unwrap();
+        h.sup.start_job(msg).await.unwrap();
 
         let mut facts = job_facts(&h.sup).await;
         wait_for(&mut facts, booting).await;
@@ -1757,19 +1767,6 @@ mod tests {
         wait_for(&mut facts, ready).await;
 
         facts
-    }
-
-    async fn terminate(sup: &Arc<QemuSupervisor>, job_id: Uuid) -> Result<(), connector::JobError> {
-        <QemuSupervisor as connector::Supervisor>::terminate_job(
-            sup,
-            TerminateJobMessage { job_id },
-        )
-        .await
-    }
-
-    async fn remove(sup: &Arc<QemuSupervisor>, job_id: Uuid) -> Result<(), connector::JobError> {
-        <QemuSupervisor as connector::Supervisor>::remove_job(sup, RemoveJobMessage { job_id })
-            .await
     }
 
     /// A constructed supervisor plus the stubs wired into it, over a temp dir.
@@ -1977,9 +1974,7 @@ mod tests {
         let job_id = Uuid::new_v4();
         let host_id = Uuid::new_v4();
 
-        QemuSupervisor::start_job(&h.sup, start_msg(job_id))
-            .await
-            .unwrap();
+        h.sup.start_job(start_msg(job_id)).await.unwrap();
         let mut facts = job_facts(&h.sup).await;
         wait_for(&mut facts, booting).await;
 
@@ -2013,7 +2008,7 @@ mod tests {
 
         // Terminating kills the (stub) workload and reports the terminal
         // transition before it returns.
-        terminate(&h.sup, job_id).await.unwrap();
+        h.sup.terminate_job(job_id).await.unwrap();
 
         let labels = h.connector.labels();
         assert!(labels.iter().any(|l| l == "terminating"), "{labels:?}");
@@ -2022,7 +2017,7 @@ mod tests {
 
         // The record is retained until it is removed.
         assert!(terminated(&facts.borrow_and_update()));
-        remove(&h.sup, job_id).await.unwrap();
+        h.sup.remove_job(job_id).await.unwrap();
         assert!(h.sup.slot.lock().await.is_none());
     }
 
@@ -2146,7 +2141,7 @@ mod tests {
 
         // Puppet events are ordered against the job's state changes, so a
         // terminate the job has acted on proves both were relayed first.
-        terminate(&h.sup, job_id).await.unwrap();
+        h.sup.terminate_job(job_id).await.unwrap();
         assert_eq!(h.connector.service_sets(), vec![announced, Vec::new()]);
     }
 
@@ -2162,9 +2157,7 @@ mod tests {
 
         let job_id = Uuid::new_v4();
 
-        QemuSupervisor::start_job(&h.sup, start_msg(job_id))
-            .await
-            .unwrap();
+        h.sup.start_job(start_msg(job_id)).await.unwrap();
         let mut facts = job_facts(&h.sup).await;
         wait_for(&mut facts, terminated).await;
 
@@ -2192,7 +2185,9 @@ mod tests {
         assert_eq!(labels.iter().filter(|l| *l == "terminated").count(), 1);
 
         // The failed job is retained: it still holds the slot until removed.
-        let error = QemuSupervisor::start_job(&h.sup, start_msg(Uuid::new_v4()))
+        let error = h
+            .sup
+            .start_job(start_msg(Uuid::new_v4()))
             .await
             .unwrap_err();
         assert!(
@@ -2200,7 +2195,7 @@ mod tests {
             "{error:?}",
         );
 
-        remove(&h.sup, job_id).await.unwrap();
+        h.sup.remove_job(job_id).await.unwrap();
         assert!(h.sup.slot.lock().await.is_none());
     }
 
@@ -2215,24 +2210,24 @@ mod tests {
         let job_id = Uuid::new_v4();
 
         // Nothing is known about this job, so both commands are satisfied.
-        terminate(&h.sup, job_id).await.unwrap();
-        remove(&h.sup, job_id).await.unwrap();
+        h.sup.terminate_job(job_id).await.unwrap();
+        h.sup.remove_job(job_id).await.unwrap();
 
         let mut facts = start_and_boot(&h, start_msg(job_id)).await;
 
         // A live job must be terminated before it can be removed.
-        let error = remove(&h.sup, job_id).await.unwrap_err();
+        let error = h.sup.remove_job(job_id).await.unwrap_err();
         assert!(
             matches!(error.error_kind, connector::JobErrorKind::NotTerminated),
             "{error:?}",
         );
 
-        terminate(&h.sup, job_id).await.unwrap();
+        h.sup.terminate_job(job_id).await.unwrap();
         assert!(terminated(&facts.borrow_and_update()));
 
-        terminate(&h.sup, job_id).await.unwrap();
-        remove(&h.sup, job_id).await.unwrap();
-        remove(&h.sup, job_id).await.unwrap();
+        h.sup.terminate_job(job_id).await.unwrap();
+        h.sup.remove_job(job_id).await.unwrap();
+        h.sup.remove_job(job_id).await.unwrap();
         assert!(h.sup.slot.lock().await.is_none());
 
         let labels = h.connector.labels();
@@ -2265,36 +2260,28 @@ mod tests {
 
         start_and_boot(&h, start_msg(occupant)).await;
 
-        let error = QemuSupervisor::start_job(&h.sup, start_msg(occupant))
-            .await
-            .unwrap_err();
+        let error = h.sup.start_job(start_msg(occupant)).await.unwrap_err();
         assert!(
             matches!(error.error_kind, connector::JobErrorKind::JobAlreadyExists),
             "{error:?}",
         );
 
-        let error = QemuSupervisor::start_job(&h.sup, start_msg(next))
-            .await
-            .unwrap_err();
+        let error = h.sup.start_job(start_msg(next)).await.unwrap_err();
         assert!(
             matches!(error.error_kind, connector::JobErrorKind::AlreadyRunning),
             "{error:?}",
         );
 
-        terminate(&h.sup, occupant).await.unwrap();
+        h.sup.terminate_job(occupant).await.unwrap();
 
-        let error = QemuSupervisor::start_job(&h.sup, start_msg(next))
-            .await
-            .unwrap_err();
+        let error = h.sup.start_job(start_msg(next)).await.unwrap_err();
         assert!(
             matches!(error.error_kind, connector::JobErrorKind::MaxConcurrentJobs),
             "{error:?}",
         );
 
-        remove(&h.sup, occupant).await.unwrap();
-        QemuSupervisor::start_job(&h.sup, start_msg(next))
-            .await
-            .unwrap();
+        h.sup.remove_job(occupant).await.unwrap();
+        h.sup.start_job(start_msg(next)).await.unwrap();
     }
 
     /// The stop hook is the start hook's counterpart: it runs once per job that
@@ -2311,10 +2298,10 @@ mod tests {
         assert_eq!(hook_runs(&h.tmp, "start"), 1);
         assert_eq!(hook_runs(&h.tmp, "stop"), 0);
 
-        terminate(&h.sup, job_id).await.unwrap();
+        h.sup.terminate_job(job_id).await.unwrap();
         assert_eq!(hook_runs(&h.tmp, "stop"), 0);
 
-        remove(&h.sup, job_id).await.unwrap();
+        h.sup.remove_job(job_id).await.unwrap();
         assert_eq!(hook_runs(&h.tmp, "start"), 1);
         assert_eq!(hook_runs(&h.tmp, "stop"), 1);
 
@@ -2322,13 +2309,11 @@ mod tests {
         // clean up after.
         let failed = harness_with_hooks(8 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
         let failed_job = Uuid::new_v4();
-        QemuSupervisor::start_job(&failed.sup, start_msg(failed_job))
-            .await
-            .unwrap();
+        failed.sup.start_job(start_msg(failed_job)).await.unwrap();
         let mut failed_facts = job_facts(&failed.sup).await;
         wait_for(&mut failed_facts, terminated).await;
 
-        remove(&failed.sup, failed_job).await.unwrap();
+        failed.sup.remove_job(failed_job).await.unwrap();
         assert_eq!(hook_runs(&failed.tmp, "start"), 0);
         assert_eq!(hook_runs(&failed.tmp, "stop"), 0);
     }
@@ -2358,19 +2343,17 @@ mod tests {
         let h = harness_with_store(virtual_size, store);
         let job_id = Uuid::new_v4();
 
-        QemuSupervisor::start_job(&h.sup, start_msg(job_id))
-            .await
-            .unwrap();
+        h.sup.start_job(start_msg(job_id)).await.unwrap();
         let mut facts = job_facts(&h.sup).await;
         entered.notified().await;
 
-        terminate(&h.sup, job_id).await.unwrap();
+        h.sup.terminate_job(job_id).await.unwrap();
         assert!(terminated(&facts.borrow_and_update()));
         assert!(h.launcher.spawned.lock().unwrap().is_empty());
 
         // Releasing the fetch afterwards must not resurrect the job.
         release.notify_waiters();
-        remove(&h.sup, job_id).await.unwrap();
+        h.sup.remove_job(job_id).await.unwrap();
         assert!(h.sup.slot.lock().await.is_none());
 
         let labels = h.connector.labels();
@@ -2386,5 +2369,51 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A refused `StartJob` has no acknowledgement to fail: the command loop
+    /// owes the coordinator a reported job error instead, or the refusal is
+    /// never heard. The commands are answered in the order they arrive, so the
+    /// acknowledged terminate behind them proves the refusal already happened.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refused_start_is_reported_as_a_job_error() {
+        let virtual_size = 4u64 * 1024 * 1024 * 1024;
+        let h = harness(virtual_size, virtual_size);
+
+        let (commands, command_rx) = mpsc::channel(COORD_MAILBOX_CAPACITY);
+        let sup = h.sup.clone();
+        tokio::spawn(async move { sup.run(command_rx).await });
+
+        let occupant = Uuid::new_v4();
+        let refused = Uuid::new_v4();
+        commands
+            .send(connector::CoordCommand::StartJob(start_msg(occupant)))
+            .await
+            .unwrap();
+        commands
+            .send(connector::CoordCommand::StartJob(start_msg(refused)))
+            .await
+            .unwrap();
+
+        let (ack, acked) = oneshot::channel();
+        commands
+            .send(connector::CoordCommand::TerminateJob {
+                job_id: occupant,
+                ack,
+            })
+            .await
+            .unwrap();
+        acked.await.unwrap().unwrap();
+
+        let errors = h.connector.errors();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            matches!(
+                errors[0].error_kind,
+                connector::JobErrorKind::AlreadyRunning
+            ),
+            "{:?}",
+            errors[0],
+        );
     }
 }

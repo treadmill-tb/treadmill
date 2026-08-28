@@ -9,17 +9,16 @@
 //!
 //! Until then this binary keeps its configuration schema and connector wiring so
 //! deployments still parse and the supervisor still registers, but the job
-//! lifecycle (`start_job`/`terminate_job`/`remove_job`) is `todo!()`. The
-//! pre-cutover
-//! implementation is preserved in git history (commit `705e010`).
+//! lifecycle is `todo!()`. The pre-cutover implementation is preserved in git
+//! history (commit `705e010`).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
-use async_trait::async_trait;
 use clap::Parser;
 use serde::Deserialize;
+use tokio::sync::mpsc;
 use tracing::{Level, event, info, instrument, warn};
 
 use treadmill_rs::connector;
@@ -27,6 +26,8 @@ use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 
 use treadmill_supervisor_lib::launcher::{self, ProcessLauncher};
 use treadmill_supervisor_lib::oci_store::{ImageStore, OciStore, OciStoreConfig};
+
+const COORD_MAILBOX_CAPACITY: usize = 8;
 
 #[derive(Parser, Debug, Clone)]
 pub struct NbdNetbootSupervisorArgs {
@@ -113,35 +114,15 @@ impl NbdNetbootSupervisor {
             config,
         }
     }
-}
 
-#[async_trait]
-impl connector::Supervisor for NbdNetbootSupervisor {
-    #[instrument(skip(_this, _start_job_req))]
-    async fn start_job(
-        _this: &Arc<Self>,
-        _start_job_req: connector::StartJobMessage,
-    ) -> Result<(), connector::JobError> {
-        todo!(
-            "Phase 6.6: nbd-netboot OCI migration — runtime backing chain over \
-             qemu-storage-daemon + writeable FAT /boot (D9/D17)"
-        )
-    }
-
-    #[instrument(skip(_this))]
-    async fn terminate_job(
-        _this: &Arc<Self>,
-        _msg: connector::TerminateJobMessage,
-    ) -> Result<(), connector::JobError> {
-        todo!("Phase 6.6: nbd-netboot OCI migration")
-    }
-
-    #[instrument(skip(_this))]
-    async fn remove_job(
-        _this: &Arc<Self>,
-        _msg: connector::RemoveJobMessage,
-    ) -> Result<(), connector::JobError> {
-        todo!("Phase 6.6: nbd-netboot OCI migration")
+    #[instrument(skip(self, commands))]
+    async fn run(&self, mut commands: mpsc::Receiver<connector::CoordCommand>) {
+        while commands.recv().await.is_some() {
+            todo!(
+                "Phase 6.6: nbd-netboot OCI migration — runtime backing chain over \
+                 qemu-storage-daemon + writeable FAT /boot (D9/D17)"
+            )
+        }
     }
 }
 
@@ -174,23 +155,22 @@ async fn main() -> Result<()> {
                 "Requested WsConnector, but `ws_connector` config not present."
             ))?;
 
-            // Create the supervisor and connector with cyclical references
-            let mut connector_opt = None;
-            let nbd_supervisor = {
-                let connector_opt = &mut connector_opt;
-                Arc::new_cyclic(move |weak_supervisor| {
-                    let connector = Arc::new(treadmill_ws_connector::WsConnector::new(
-                        config.base.supervisor_id,
-                        ws_connector_config,
-                        weak_supervisor.clone(),
-                    ));
-                    *connector_opt = Some(connector.clone());
+            let (command_tx, command_rx) = mpsc::channel(COORD_MAILBOX_CAPACITY);
 
-                    NbdNetbootSupervisor::new(connector, image_store, launcher, args, config)
-                })
-            };
+            let connector = Arc::new(treadmill_ws_connector::WsConnector::new(
+                config.base.supervisor_id,
+                ws_connector_config,
+                command_tx,
+            ));
 
-            let connector = connector_opt.take().unwrap();
+            let nbd_supervisor = Arc::new(NbdNetbootSupervisor::new(
+                connector.clone(),
+                image_store,
+                launcher,
+                args,
+                config,
+            ));
+            let commands = tokio::spawn(async move { nbd_supervisor.run(command_rx).await });
 
             // === 1) SIGHUP handler => request graceful shutdown
             let mut hup_signal =
@@ -216,7 +196,7 @@ async fn main() -> Result<()> {
             }
 
             // === 3) Clean up any references and exit. ===
-            std::mem::drop(nbd_supervisor);
+            commands.abort();
 
             Ok(())
         }
