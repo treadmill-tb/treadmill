@@ -33,10 +33,6 @@ use treadmill_rs::api::switchboard_supervisor::{
 use treadmill_rs::connector::{self, CoordCommand, JobError, StartJobMessage};
 use treadmill_rs::image::Digest;
 
-/// How long to wait for the supervisor to report `Terminated` after a stop is
-/// requested before giving up and letting `run()` return anyway.
-const STOP_GRACE: Duration = Duration::from_secs(30);
-
 /// Per-job inputs for a standalone supervisor run, parsed on the command line.
 ///
 /// Each supervisor binary `#[command(flatten)]`s this into its own argument
@@ -106,9 +102,8 @@ struct Inner {
     commands: mpsc::Sender<CoordCommand>,
     /// Observed by `run()`: set to `true` by `request_shutdown`.
     shutdown_rx: watch::Receiver<bool>,
-    /// Set to `true` once the supervisor reports the job `Terminated` (or a
-    /// fatal job error, which the supervisors emit just before tearing the job
-    /// down). `run()` waits on this to complete the one-shot.
+    /// Set to `true` once the supervisor reports the job `Terminated`. `run()`
+    /// waits on this to notice a job that ended on its own.
     terminated_tx: watch::Sender<bool>,
     terminated_rx: watch::Receiver<bool>,
 }
@@ -165,10 +160,9 @@ impl connector::SupervisorConnector for LocalConnector {
                 }
             }
             SupervisorJobEvent::Error { error } => {
-                // Treat any reported error as terminal so the one-shot `run()`
-                // does not hang.
+                // The error is the cause of a termination, never a substitute
+                // for it: the terminal transition still follows.
                 event!(Level::ERROR, %job_id, ?error, "job error reported");
-                let _ = self.inner.terminated_tx.send(true);
             }
             other => {
                 event!(Level::DEBUG, %job_id, ?other, "ignoring supervisor event");
@@ -268,23 +262,15 @@ impl Inner {
             }
         }
 
-        // Graceful stop, then wait (bounded) for the supervisor to confirm
-        // teardown so we don't return while qemu is still being killed.
+        // Both commands are acknowledged once the supervisor has carried them
+        // out, so this does not return while qemu is still being killed or its
+        // resources are still being released.
         let job_id = self.job_id;
         if let Err(e) = self
             .request(|ack| CoordCommand::TerminateJob { job_id, ack })
             .await
         {
             event!(Level::WARN, error = ?e, "terminating the job returned an error");
-        }
-        if tokio::time::timeout(STOP_GRACE, terminated_rx.wait_for(|t| *t))
-            .await
-            .is_err()
-        {
-            event!(
-                Level::WARN,
-                "job did not report Terminated within the grace period; exiting anyway",
-            );
         }
         if let Err(e) = self
             .request(|ack| CoordCommand::RemoveJob { job_id, ack })
@@ -316,7 +302,9 @@ mod tests {
 
     use std::sync::Mutex;
 
-    use treadmill_rs::api::switchboard_supervisor::JobInitializingStage;
+    use treadmill_rs::api::switchboard_supervisor::{
+        JobInitializingStage, ReportedSupervisorStatus,
+    };
     use treadmill_rs::connector::SupervisorConnector;
 
     /// Stands in for the supervisor core: drains the command channel, records
@@ -330,6 +318,8 @@ mod tests {
         terminate_on_start: bool,
         calls: Arc<Mutex<Vec<&'static str>>>,
     ) {
+        let mut held: Option<(Uuid, RunningJobState)> = None;
+
         while let Some(command) = commands.recv().await {
             match command {
                 CoordCommand::StartJob(req) => {
@@ -341,11 +331,13 @@ mod tests {
                             stage: JobInitializingStage::Booting,
                         }
                     };
+                    held = Some((req.job_id, state.clone()));
                     connector.update_job_state(req.job_id, state, None).await;
                 }
 
                 CoordCommand::TerminateJob { job_id, ack } => {
                     calls.lock().unwrap().push("terminate");
+                    held = Some((job_id, RunningJobState::Terminated));
                     connector
                         .update_job_state(job_id, RunningJobState::Terminated, None)
                         .await;
@@ -354,7 +346,17 @@ mod tests {
 
                 CoordCommand::RemoveJob { job_id: _, ack } => {
                     calls.lock().unwrap().push("remove");
+                    held = None;
                     let _ = ack.send(Ok(()));
+                }
+
+                CoordCommand::StatusRequest { reply } => {
+                    let _ = reply.send(match held.clone() {
+                        None => ReportedSupervisorStatus::Idle,
+                        Some((job_id, job_state)) => {
+                            ReportedSupervisorStatus::HoldingJob { job_id, job_state }
+                        }
+                    });
                 }
             }
         }

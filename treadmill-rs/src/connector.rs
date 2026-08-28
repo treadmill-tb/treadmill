@@ -1,7 +1,9 @@
 pub use crate::api::switchboard_supervisor::JobInitializingStage;
 pub use crate::api::switchboard_supervisor::RunningJobState;
 pub use crate::api::switchboard_supervisor::StartJobMessage;
-use crate::api::switchboard_supervisor::{JobService, SupervisorEvent, SupervisorJobEvent};
+use crate::api::switchboard_supervisor::{
+    JobService, ReportedSupervisorStatus, SupervisorEvent, SupervisorJobEvent,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -85,6 +87,12 @@ pub enum CoordCommand {
     RemoveJob {
         job_id: Uuid,
         ack: oneshot::Sender<Result<(), JobError>>,
+    },
+
+    /// Report the supervisor's status: `Idle` when its job slot is empty, and
+    /// `HoldingJob` with the occupant's state while it is not.
+    StatusRequest {
+        reply: oneshot::Sender<ReportedSupervisorStatus>,
     },
 }
 

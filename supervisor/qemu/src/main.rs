@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard_supervisor::{
     ImageSpecification, JobGatewayDispatch, JobInitializingStage, JobService, LogChannel,
-    ParameterValue, RunningJobState,
+    ParameterValue, ReportedSupervisorStatus, RunningJobState,
 };
 
 use treadmill_rs::connector;
@@ -1077,12 +1077,13 @@ impl JobTask {
 }
 
 impl QemuSupervisor {
-    /// Drain the coordinator's commands, one at a time.
+    /// Drain the coordinator's commands.
     ///
-    /// The commands a coordinator issues about a single job slot are inherently
-    /// sequential, and every one of them here returns as soon as the job task
-    /// has taken it on, so they are answered in the order they arrive rather
-    /// than raced against each other.
+    /// The commands that change the job slot are inherently sequential, and
+    /// each returns as soon as the job task has taken it on, so they are
+    /// answered in the order they arrive rather than raced against each other.
+    /// A status request only reads the slot, and is answered without waiting
+    /// for them.
     pub async fn run(self: &Arc<Self>, mut commands: mpsc::Receiver<connector::CoordCommand>) {
         while let Some(command) = commands.recv().await {
             match command {
@@ -1099,6 +1100,13 @@ impl QemuSupervisor {
 
                 connector::CoordCommand::RemoveJob { job_id, ack } => {
                     let _ = ack.send(self.remove_job(job_id).await);
+                }
+
+                connector::CoordCommand::StatusRequest { reply } => {
+                    let supervisor = self.clone();
+                    tokio::spawn(async move {
+                        let _ = reply.send(supervisor.status().await);
+                    });
                 }
             }
         }
@@ -1202,6 +1210,16 @@ impl QemuSupervisor {
         }
 
         Ok(())
+    }
+
+    async fn status(&self) -> ReportedSupervisorStatus {
+        match self.slot.lock().await.as_ref() {
+            None => ReportedSupervisorStatus::Idle,
+            Some(slot) => ReportedSupervisorStatus::HoldingJob {
+                job_id: slot.handle.job_id,
+                job_state: slot.handle.facts().phase.running_job_state(),
+            },
+        }
     }
 
     async fn occupant(&self, job_id: Uuid) -> Option<JobHandle> {
