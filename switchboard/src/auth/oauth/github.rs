@@ -8,6 +8,7 @@ use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointNotSet, EndpointSet,
     RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
+use oauth2_reqwest::ReqwestClient;
 use serde::Deserialize;
 
 /// The `oauth2` client typestate once auth + token + redirect URIs are set
@@ -138,7 +139,7 @@ impl OAuthProvider for GithubProvider {
         let token = self
             .client
             .exchange_code(AuthorizationCode::new(code))
-            .request_async(&self.http)
+            .request_async(&ReqwestClient::from(self.http.clone()))
             .await
             .map_err(|e| OAuthError::Exchange(e.to_string()))?;
         Ok(OAuthAccessToken(token.access_token().secret().clone()))

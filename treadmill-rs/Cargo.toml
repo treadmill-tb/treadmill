@@ -28,9 +28,9 @@ uuid = { workspace = true, features = ["serde", "v4"] }
 # web console, an eventual CLI) can call the switchboard API and get the shared
 # types back. Off by default so the supervisor/puppet/connector crates don't
 # pull reqwest.
-reqwest = { version = "0.12", default-features = false, features = [
+reqwest = { workspace = true, default-features = false, features = [
   "json",
-  "rustls-tls",
+  "rustls",
   "charset",
   "http2",
 ], optional = true }

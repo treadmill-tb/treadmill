@@ -16,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 # `uefi`'s default features are minimal; opt into the global allocator, logger,
 # and the default `#[panic_handler]` that `helpers::init` + `println!` rely on.
-uefi = { version = "0.35", features = [
+uefi = { version = "0.40", features = [
   "alloc",
   "global_allocator",
   "logger",
