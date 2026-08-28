@@ -86,10 +86,14 @@ argon2 = "0.6"
 # OAuth2 login (GitHub). The `oauth2` crate drives the authorization-code flow;
 # `reqwest` is its async HTTP backend and is also used directly for the
 # provider's user/email API calls.
-oauth2 = "5"
-reqwest = { version = "0.13", default-features = false, features = [
+#
+# default-features = false disables the bundled reqwest 0.12, and allows using
+# the separate oauth2-reqwest crate.
+oauth2 = { version = "5", default-features = false }
+oauth2-reqwest = "0.1.0-alpha.3" # pulls in reqwest without any feature flags
+reqwest = { workspace = true, default-features = false, features = [
   "json",
-  "rustls-tls",
+  "rustls",
   "charset",
   "http2",
 ] }
@@ -154,6 +158,7 @@ indoc = "2.0.7"
 ed25519-dalek = { workspace = true, features = ["std", "pem", "zeroize"] }
 hex = { workspace = true }
 jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }
+phc = "0.6.1"
 
 [dev-dependencies]
 sqlx-cli = { version = "0.9.0", features = [

@@ -7,9 +7,8 @@
 //! a salted argon2id hash (a PHC string), so read access to the table does not
 //! yield the ability to complete anyone's login.
 
-use argon2::Argon2;
-use argon2::password_hash::rand_core::OsRng;
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use phc::Salt;
 
 use crate::auth::token::SecurityToken;
 
@@ -21,9 +20,8 @@ pub fn generate() -> String {
 
 /// Hash `secret` for storage, returning the salted argon2id PHC string.
 pub fn hash(secret: &str) -> Result<String, argon2::password_hash::Error> {
-    let salt = SaltString::generate(&mut OsRng);
     Ok(Argon2::default()
-        .hash_password(secret.as_bytes(), &salt)?
+        .hash_password_with_salt(secret.as_bytes(), &Salt::generate())?
         .to_string())
 }
 
