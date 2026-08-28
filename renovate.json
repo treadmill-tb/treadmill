@@ -7,5 +7,8 @@
       "groupName": "global-rollup",
       "schedule": ["before 5am on Monday"]
     }
-  ]
+  ],
+  "nix": {
+    "enabled": true
+  }
 }
