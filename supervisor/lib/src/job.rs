@@ -473,6 +473,29 @@ impl<B: JobBackend> JobRunner<B> {
         Ok(())
     }
 
+    /// Terminate whatever occupies the slot and wait for it to release
+    /// everything it holds, for a supervisor that is going away.
+    ///
+    /// The coordinator's own `RemoveJob` is what normally empties the slot, and
+    /// a connector that drained cleanly has already seen one. This is the path
+    /// where the supervisor exits with nobody left to send it: without it the
+    /// job's workload outlives the process and its stop hook never runs.
+    pub async fn shutdown(&self) {
+        let Some(slot) = self.slot.lock().await.take() else {
+            return;
+        };
+
+        event!(
+            Level::INFO,
+            job_id = ?slot.handle.job_id,
+            "Tearing down the job still occupying the slot",
+        );
+
+        let _ = slot.handle.terminate().await;
+        let _ = slot.handle.remove().await;
+        let _ = slot.task.await;
+    }
+
     pub async fn status(&self) -> ReportedSupervisorStatus {
         match self.slot.lock().await.as_ref() {
             None => ReportedSupervisorStatus::Idle,
@@ -1742,6 +1765,38 @@ mod tests {
 
         h.runner.remove_job(job_id).await.unwrap();
         assert!(idle(&h.runner).await);
+    }
+
+    /// A supervisor that exits with a job still in its slot has to take that
+    /// job down with it: nothing else will, and the workload would outlive the
+    /// process with its stop hook never run.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_tears_down_the_occupant() {
+        let h = harness_with(StubBackend::default(), with_hooks);
+        let job_id = Uuid::new_v4();
+
+        start_and_boot(&h, start_msg(job_id)).await;
+        assert_eq!(hook_runs(h.tmp.path(), "stop"), 0);
+
+        h.runner.shutdown().await;
+
+        assert!(idle(&h.runner).await);
+        assert_eq!(hook_runs(h.tmp.path(), "stop"), 1);
+
+        let labels = h.connector.labels();
+        assert_eq!(labels.last().map(String::as_str), Some("terminated"));
+        assert_eq!(labels.iter().filter(|l| *l == "terminated").count(), 1);
+    }
+
+    /// Shutting down an idle supervisor has nothing to take down.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_is_satisfied_by_an_empty_slot() {
+        let h = harness(StubBackend::default());
+
+        h.runner.shutdown().await;
+
+        assert!(idle(&h.runner).await);
+        assert!(h.connector.labels().is_empty());
     }
 
     /// D2.3/D2.4: the coordinator may repeat either command, or send one for a

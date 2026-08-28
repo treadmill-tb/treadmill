@@ -6,7 +6,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use clap::Parser;
 use serde::Deserialize;
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{Level, event, instrument};
 
 use treadmill_rs::api::switchboard_supervisor::ImageSpecification;
@@ -428,12 +430,52 @@ enum OnDisconnect {
     Exit,
 }
 
-/// Drive the runner off `connector` until it returns.
+/// Run `action` the first time `kind` arrives.
+///
+/// A repeat of the signal gives up and exits, so a shutdown that cannot make
+/// progress — a coordinator that never removes the job, a workload that will
+/// not die — is still escapable.
+fn on_signal(kind: SignalKind, action: impl Fn() + Send + 'static) {
+    let mut signals = match signal(kind) {
+        Ok(signals) => signals,
+        Err(e) => {
+            event!(
+                Level::WARN,
+                ?kind,
+                error = ?e,
+                "Cannot listen for this signal; it will not shut the supervisor down",
+            );
+            return;
+        }
+    };
+
+    tokio::spawn(async move {
+        let mut acted = false;
+        while signals.recv().await.is_some() {
+            if acted {
+                event!(Level::WARN, ?kind, "Received again, exiting immediately");
+                std::process::exit(128 + kind.as_raw_value());
+            }
+            acted = true;
+            event!(Level::INFO, ?kind, "Shutting the supervisor down");
+            action();
+        }
+    });
+}
+
+/// Drive the runner off `connector` until it returns or `stop` is cancelled,
+/// then take down whatever job is left.
+///
+/// A connector that returns `Ok(())` has drained: the coordinator removed the
+/// job that occupied the slot, so there is nothing left to take down. On every
+/// other path there may still be a job executing, and it is terminated and
+/// released here rather than orphaned along with the process.
 async fn serve(
     connector: Arc<dyn SupervisorConnector>,
     runner: Arc<JobRunner<QemuBackend>>,
     command_rx: mpsc::Receiver<connector::CoordCommand>,
     on_disconnect: OnDisconnect,
+    stop: CancellationToken,
 ) {
     let commands = tokio::spawn({
         let runner = runner.clone();
@@ -441,7 +483,13 @@ async fn serve(
     });
 
     loop {
-        match connector.run().await {
+        let run = tokio::select! {
+            biased;
+            _ = stop.cancelled() => break,
+            run = connector.run() => run,
+        };
+
+        match run {
             Ok(()) => {
                 event!(Level::INFO, "Connector exited, shutting down supervisor...");
                 break;
@@ -462,6 +510,7 @@ async fn serve(
     }
 
     commands.abort();
+    runner.shutdown().await;
 }
 
 #[tokio::main]
@@ -506,7 +555,23 @@ async fn main() -> Result<()> {
                 config.job_runner(),
             ));
 
-            serve(connector, runner, command_rx, OnDisconnect::Reconnect).await;
+            // SIGHUP drains: the connector keeps serving the job it holds and
+            // only returns once the switchboard has removed it, so the process
+            // exits between jobs and comes back on the new unit definition.
+            on_signal(SignalKind::hangup(), {
+                let connector = connector.clone();
+                move || connector.request_shutdown()
+            });
+
+            // SIGTERM does not wait for the switchboard: it stops serving and
+            // takes the running job down with it.
+            let stop = CancellationToken::new();
+            on_signal(SignalKind::terminate(), {
+                let stop = stop.clone();
+                move || stop.cancel()
+            });
+
+            serve(connector, runner, command_rx, OnDisconnect::Reconnect, stop).await;
 
             Ok(())
         }
@@ -533,21 +598,21 @@ async fn main() -> Result<()> {
                 config.job_runner(),
             ));
 
-            // Ctrl-C requests a graceful shutdown: stop the job and let run()
-            // return. A second Ctrl-C (after run() has returned) terminates the
-            // process the usual way.
-            let connector_for_signal = connector.clone();
-            tokio::spawn(async move {
-                if tokio::signal::ctrl_c().await.is_ok() {
-                    event!(
-                        Level::INFO,
-                        "Received Ctrl-C => requesting graceful shutdown..."
-                    );
-                    connector_for_signal.request_shutdown();
-                }
+            // Ctrl-C stops the job and lets run() return; there is no
+            // coordinator to drain against.
+            on_signal(SignalKind::interrupt(), {
+                let connector = connector.clone();
+                move || connector.request_shutdown()
             });
 
-            serve(connector, runner, command_rx, OnDisconnect::Exit).await;
+            serve(
+                connector,
+                runner,
+                command_rx,
+                OnDisconnect::Exit,
+                CancellationToken::new(),
+            )
+            .await;
 
             Ok(())
         }
