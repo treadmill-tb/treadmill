@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use clap::Parser;
 use serde::Deserialize;
@@ -427,8 +427,10 @@ async fn main() -> Result<()> {
 
     let args = QemuSupervisorArgs::parse();
 
-    let config_str = std::fs::read_to_string(&args.config_file).unwrap();
-    let config: QemuSupervisorConfig = toml::from_str(&config_str).unwrap();
+    let config_str = std::fs::read_to_string(&args.config_file)
+        .with_context(|| format!("Reading config file {:?}", args.config_file))?;
+    let config: QemuSupervisorConfig = toml::from_str(&config_str)
+        .with_context(|| format!("Parsing config file {:?}", args.config_file))?;
 
     let image_store: Arc<dyn ImageStore> = Arc::new(OciStore::new(
         config.oci_store.registry.clone(),
