@@ -13,6 +13,7 @@
 #![no_main]
 #![no_std]
 
+use core::time::Duration;
 use uefi::prelude::*;
 
 /// Sentinel printed to the console. Defaults to the base-layer tripwire so a
@@ -32,6 +33,6 @@ fn main() -> Status {
 
     // Give the serial console a moment to flush before the machine vanishes,
     // then power off. `reset` diverges, so control never returns.
-    uefi::boot::stall(500_000);
+    uefi::boot::stall(Duration::from_millis(500));
     uefi::runtime::reset(uefi::runtime::ResetType::SHUTDOWN, Status::SUCCESS, None);
 }
