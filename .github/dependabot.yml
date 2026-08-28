@@ -1,15 +1,16 @@
 version: 2
+
+multi-ecosystem-groups:
+  global-rollup:
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+
 updates:
   - package-ecosystem: "cargo"
     directory: "/" 
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 10
-    groups:
-      rust-dependencies:
-        patterns:
-          - "*"
+    multi-ecosystem-group: "global-rollup"
+
   - package-ecosystem: "nix"
     directory: "/"
-    schedule:
-      interval: "weekly"
+    multi-ecosystem-group: "global-rollup"
