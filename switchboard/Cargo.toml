@@ -156,7 +156,7 @@ indoc = "2.0.7"
 # job's services. `ed25519-dalek` turns the configured seed into the signing
 # key, its PKCS#8 encoding for `jsonwebtoken` and its SPKI PEM for the
 # gateways; `hex` decodes the seed itself.
-ed25519-dalek = { workspace = true, features = ["std", "pem", "zeroize"] }
+ed25519-dalek = { workspace = true, features = ["pem", "zeroize"] }
 hex = { workspace = true }
 jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }
 phc = "0.6.1"

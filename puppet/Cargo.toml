@@ -21,7 +21,7 @@ treadmill-tcp-control-socket-client = { workspace = true, optional = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
-ed25519-dalek = { workspace = true, features = ["std", "pem"] }
+ed25519-dalek = { workspace = true, features = ["pem"] }
 log = { workspace = true }
 nix = { version = "0.31.3", default-features = false, features = ["signal"] }
 sd-notify = "0.5.0"
