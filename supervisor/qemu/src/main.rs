@@ -311,6 +311,11 @@ impl JobBackend for QemuBackend {
         // backing chain the supervisor prepends as `-blockdev` args at launch.
         vars.insert("disk_node".to_string(), BackingChain::TOP_NODE.to_string());
 
+        vars.insert(
+            "tcp_control_socket_listen_addr".to_string(),
+            self.config.tcp_control_socket_listen_addr.to_string(),
+        );
+
         Ok(BackingChain::new(lower_paths, overlay_file))
     }
 
@@ -914,6 +919,43 @@ mod tests {
                 "-device",
                 &format!("virtio-blk-pci,drive={}", BackingChain::TOP_NODE),
             ],
+        );
+    }
+
+    /// The address the puppet's control socket is bound to is what the guest
+    /// has to be pointed at, so the invocation can template it in rather than
+    /// repeating the configured value.
+    #[tokio::test]
+    async fn the_control_socket_address_is_available_to_the_invocation() {
+        let f = fixture(
+            4 * GIB,
+            vec![
+                "-fw_cfg",
+                "name=opt/org.tockos.treadmill.tcp-ctrl-socket,string={tcp_control_socket_listen_addr}",
+            ],
+        );
+
+        let job_id = Uuid::new_v4();
+        let mut vars = runner_vars(job_id, f.tmp.path());
+        let head = digest(3);
+        let image = image(vec![base_layer(head, Some(GIB))], head);
+        let chain = f
+            .backend
+            .allocate(&start_msg(job_id), f.tmp.path(), image, &mut vars)
+            .await
+            .unwrap();
+
+        f.backend
+            .launch(&start_msg(job_id), f.tmp.path(), chain, &vars)
+            .await
+            .unwrap();
+
+        assert!(
+            f.launcher.spawned_args().contains(
+                &"name=opt/org.tockos.treadmill.tcp-ctrl-socket,string=127.0.0.1:3859".to_string()
+            ),
+            "{:?}",
+            f.launcher.spawned_args(),
         );
     }
 
