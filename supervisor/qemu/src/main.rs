@@ -515,3 +515,451 @@ async fn main() -> Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Direct drive of the QEMU backend: the backing chain it reads off an
+    //! image, the overlay it sizes against the working-disk ceiling, and the
+    //! invocation it hands to QEMU. The lifecycle these steps hang off is the
+    //! runner's, and is tested in `treadmill_supervisor_lib::job`.
+
+    use super::*;
+
+    use std::process::ExitStatus;
+
+    use oci_spec::image::ImageManifest;
+    use tempfile::TempDir;
+    use uuid::Uuid;
+
+    use treadmill_rs::api::switchboard_supervisor::{ImageLocation, ParameterValue, RestartPolicy};
+    use treadmill_supervisor_lib::launcher::{QemuImgMetadata, WorkloadProcess};
+
+    /// A distinct, well-formed digest per small integer.
+    fn digest(n: u8) -> Digest {
+        format!("sha256:{}", format!("{n:02x}").repeat(32))
+            .parse()
+            .unwrap()
+    }
+
+    /// OCI store stub: serves a canned manifest and maps each digest to its own
+    /// blob path, so the assembled chain can be read back by layer.
+    #[derive(Debug)]
+    struct StubStore {
+        root: PathBuf,
+        manifest: Option<ImageManifest>,
+    }
+
+    #[async_trait]
+    impl ImageStore for StubStore {
+        async fn ensure_present(&self, _: &Digest, _: &[Location]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn manifest(&self, _: &Digest) -> Result<ImageManifest> {
+            self.manifest
+                .clone()
+                .ok_or_else(|| anyhow!("the stub store serves no manifest"))
+        }
+
+        fn blob_path(&self, digest: &Digest) -> PathBuf {
+            self.root.join(format!("{digest}.qcow2"))
+        }
+    }
+
+    /// Launcher that records what it was asked to do instead of doing it.
+    #[derive(Debug, Default)]
+    struct StubLauncher {
+        overlays: std::sync::Mutex<Vec<(PathBuf, u64)>>,
+        spawned: std::sync::Mutex<Vec<(PathBuf, Vec<String>)>>,
+    }
+
+    impl StubLauncher {
+        fn overlays(&self) -> Vec<(PathBuf, u64)> {
+            self.overlays.lock().unwrap().clone()
+        }
+
+        fn spawned_args(&self) -> Vec<String> {
+            let spawned = self.spawned.lock().unwrap();
+            assert_eq!(spawned.len(), 1, "exactly one process was spawned");
+            spawned[0].1.clone()
+        }
+    }
+
+    struct StubProcess;
+
+    #[async_trait]
+    impl WorkloadProcess for StubProcess {
+        async fn wait(&mut self) -> std::io::Result<ExitStatus> {
+            std::future::pending::<std::io::Result<ExitStatus>>().await
+        }
+        async fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl ProcessLauncher for StubLauncher {
+        async fn qcow2_info(&self, image: &Path) -> Result<QemuImgMetadata> {
+            // Not exercised by the OCI path: the chain is read from the
+            // manifest, not from qemu-img.
+            Ok(QemuImgMetadata {
+                filename: image.to_path_buf(),
+                virtual_size: 0,
+                children: vec![],
+                encrypted: None,
+                backing_filename_format: None,
+                backing_filename: None,
+                full_backing_filename: None,
+            })
+        }
+
+        async fn create_overlay_no_backing(&self, path: &Path, size: u64) -> Result<()> {
+            self.overlays
+                .lock()
+                .unwrap()
+                .push((path.to_path_buf(), size));
+            Ok(())
+        }
+
+        async fn spawn(
+            &self,
+            program: &Path,
+            args: &[String],
+            _cwd: Option<&Path>,
+            _stdio: StdioMode,
+        ) -> Result<Box<dyn WorkloadProcess>> {
+            self.spawned
+                .lock()
+                .unwrap()
+                .push((program.to_path_buf(), args.to_vec()));
+            Ok(Box::new(StubProcess))
+        }
+    }
+
+    /// A backend over a temp dir, with the stubs it was built from.
+    struct Fixture {
+        backend: QemuBackend,
+        store: Arc<StubStore>,
+        launcher: Arc<StubLauncher>,
+        tmp: TempDir,
+    }
+
+    fn fixture(working_disk_max_bytes: u64, qemu_args: Vec<&str>) -> Fixture {
+        fixture_serving(working_disk_max_bytes, qemu_args, None)
+    }
+
+    /// Like [`fixture`], for a backend whose store serves `manifest`.
+    fn fixture_serving(
+        working_disk_max_bytes: u64,
+        qemu_args: Vec<&str>,
+        manifest: Option<ImageManifest>,
+    ) -> Fixture {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(StubStore {
+            root: tmp.path().join("blobs"),
+            manifest,
+        });
+        let launcher = Arc::new(StubLauncher::default());
+
+        let config = QemuConfig {
+            qemu_binary: PathBuf::from("/nonexistent/qemu"),
+            qemu_img_binary: PathBuf::from("/nonexistent/qemu-img"),
+            state_dir: tmp.path().join("state"),
+            qemu_args: qemu_args.into_iter().map(str::to_string).collect(),
+            working_disk_max_bytes,
+            tcp_control_socket_listen_addr: "127.0.0.1:3859".parse().unwrap(),
+            start_script: None,
+            stop_script: None,
+        };
+
+        Fixture {
+            backend: QemuBackend::new(store.clone(), launcher.clone(), config),
+            store,
+            launcher,
+            tmp,
+        }
+    }
+
+    /// A layer with no `lower`, i.e. the base of a chain.
+    fn base_layer(d: Digest, virtual_size: Option<u64>) -> ImageLayer {
+        ImageLayer {
+            digest: d,
+            size: 10,
+            media_type: "application/vnd.treadmill.disk.qcow2".to_string(),
+            role: None,
+            virtual_size,
+            lower: None,
+        }
+    }
+
+    fn over(mut layer: ImageLayer, lower: Digest) -> ImageLayer {
+        layer.lower = Some(lower);
+        layer
+    }
+
+    fn image(layers: Vec<ImageLayer>, head: Digest) -> TreadmillImage {
+        TreadmillImage {
+            layers,
+            head,
+            title: None,
+            version: None,
+            description: None,
+        }
+    }
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    /// The chain the manifest describes head→base is handed to QEMU base→head,
+    /// which is the order the `-blockdev` nodes have to be emitted in, and the
+    /// overlay is sized from the head's virtual size.
+    #[tokio::test]
+    async fn the_backing_chain_is_ordered_base_first() {
+        let f = fixture(4 * GIB, vec![]);
+        let (base, middle, head) = (digest(1), digest(2), digest(3));
+
+        // Deliberately not in chain order in the manifest.
+        let image = image(
+            vec![
+                over(base_layer(middle, Some(2 * GIB)), base),
+                base_layer(base, Some(GIB)),
+                over(base_layer(head, Some(4 * GIB)), middle),
+            ],
+            head,
+        );
+
+        let (paths, head_virtual_size) = f.backend.assemble_backing_chain(&image).unwrap();
+
+        assert_eq!(
+            paths,
+            vec![
+                f.store.blob_path(&base),
+                f.store.blob_path(&middle),
+                f.store.blob_path(&head),
+            ],
+        );
+        assert_eq!(head_virtual_size, 4 * GIB);
+    }
+
+    /// A layer whose `lower` names nothing in the manifest leaves the chain
+    /// with no base, and cannot be assembled.
+    #[tokio::test]
+    async fn a_dangling_lower_is_refused() {
+        let f = fixture(4 * GIB, vec![]);
+        let head = digest(3);
+
+        let image = image(vec![over(base_layer(head, Some(GIB)), digest(9))], head);
+
+        let error = f
+            .backend
+            .assemble_backing_chain(&image)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing layer"), "{error}");
+    }
+
+    /// `lower` references that loop would walk forever; the walk stops at the
+    /// layer it revisits.
+    #[tokio::test]
+    async fn a_cyclic_lower_is_refused() {
+        let f = fixture(4 * GIB, vec![]);
+        let (lower, head) = (digest(2), digest(3));
+
+        let image = image(
+            vec![
+                over(base_layer(head, Some(GIB)), lower),
+                over(base_layer(lower, Some(GIB)), head),
+            ],
+            head,
+        );
+
+        let error = f
+            .backend
+            .assemble_backing_chain(&image)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("cycle"), "{error}");
+    }
+
+    /// Without the head's virtual size there is nothing to check the
+    /// working-disk ceiling against, so the image is unusable even though the
+    /// chain itself is well-formed.
+    #[tokio::test]
+    async fn a_head_without_a_virtual_size_is_refused() {
+        let f = fixture(4 * GIB, vec![]);
+        let head = digest(3);
+
+        let image = image(vec![base_layer(head, None)], head);
+
+        let error = f
+            .backend
+            .assemble_backing_chain(&image)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("virtual-size"), "{error}");
+    }
+
+    async fn allocate(
+        f: &Fixture,
+        head_virtual_size: u64,
+    ) -> Result<BackingChain, connector::JobError> {
+        let head = digest(3);
+        let image = image(vec![base_layer(head, Some(head_virtual_size))], head);
+        let mut vars = JobVars::new();
+        f.backend
+            .allocate(&start_msg(Uuid::new_v4()), f.tmp.path(), image, &mut vars)
+            .await
+    }
+
+    /// The VM is exposed exactly the configured working-disk size, so an image
+    /// whose head is larger would have its tail cut off.
+    #[tokio::test]
+    async fn an_image_larger_than_the_working_disk_is_refused() {
+        let f = fixture(4 * GIB, vec![]);
+
+        let error = allocate(&f, 8 * GIB).await.unwrap_err();
+        assert!(
+            matches!(error.error_kind, connector::JobErrorKind::ImageInvalid),
+            "{error:?}",
+        );
+        assert!(f.launcher.overlays().is_empty(), "nothing was allocated");
+    }
+
+    /// The overlay is created at the ceiling rather than at the head's size, so
+    /// the guest can grow into the whole working disk.
+    #[tokio::test]
+    async fn the_overlay_is_sized_to_the_working_disk_maximum() {
+        let f = fixture(4 * GIB, vec![]);
+
+        allocate(&f, GIB).await.unwrap();
+
+        assert_eq!(
+            f.launcher.overlays(),
+            vec![(f.tmp.path().join("overlay.qcow2"), 4 * GIB)],
+        );
+    }
+
+    /// The variables the runner seeds before it calls the backend.
+    fn runner_vars(job_id: Uuid, workdir: &Path) -> JobVars {
+        JobVars::from([
+            ("job_id".to_string(), job_id.to_string()),
+            ("job_workdir".to_string(), workdir.display().to_string()),
+        ])
+    }
+
+    fn start_msg(job_id: Uuid) -> StartJobMessage {
+        StartJobMessage {
+            job_id,
+            image_spec: ImageSpecification::Image {
+                manifest_digest: digest(3),
+                locations: vec![ImageLocation {
+                    registry: "127.0.0.1:0".to_string(),
+                    repository: "treadmill/stub".to_string(),
+                }],
+            },
+            restart_policy: RestartPolicy {
+                remaining_restart_count: 0,
+            },
+            parameters: HashMap::<String, ParameterValue>::new(),
+            log_streaming: None,
+            gateway: None,
+        }
+    }
+
+    /// The configured invocation attaches the disk by node name; the nodes
+    /// assembling the chain have to be on the command line before it, and the
+    /// configured args follow verbatim once templated.
+    #[tokio::test]
+    async fn the_invocation_prepends_the_backing_chain() {
+        let f = fixture(
+            4 * GIB,
+            vec![
+                "-name",
+                "tml-{job_id}",
+                "-device",
+                "virtio-blk-pci,drive={disk_node}",
+            ],
+        );
+
+        let job_id = Uuid::new_v4();
+        let mut vars = runner_vars(job_id, f.tmp.path());
+        let head = digest(3);
+        let image = image(vec![base_layer(head, Some(GIB))], head);
+        let chain = f
+            .backend
+            .allocate(&start_msg(job_id), f.tmp.path(), image, &mut vars)
+            .await
+            .unwrap();
+        let expected_nodes = chain.blockdev_args();
+
+        f.backend
+            .launch(&start_msg(job_id), f.tmp.path(), chain, &vars)
+            .await
+            .unwrap();
+
+        let args = f.launcher.spawned_args();
+        let (nodes, configured) = args.split_at(expected_nodes.len() * 2);
+
+        assert_eq!(
+            nodes,
+            expected_nodes
+                .into_iter()
+                .flat_map(|node| ["-blockdev".to_string(), node])
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            configured,
+            [
+                "-name",
+                &format!("tml-{job_id}"),
+                "-device",
+                &format!("virtio-blk-pci,drive={}", BackingChain::TOP_NODE),
+            ],
+        );
+    }
+
+    /// An image the coordinator dispatched in a shape this supervisor cannot
+    /// boot is refused as incompatible rather than attempted.
+    #[tokio::test]
+    async fn a_non_image_specification_is_refused() {
+        let f = fixture(4 * GIB, vec![]);
+
+        let mut msg = start_msg(Uuid::new_v4());
+        msg.image_spec = ImageSpecification::ResumeJob {
+            job_id: Uuid::new_v4(),
+        };
+
+        let error = f.backend.fetch(&msg).await.unwrap_err();
+        assert!(
+            matches!(
+                error.error_kind,
+                connector::JobErrorKind::ImageNotCompatible
+            ),
+            "{error:?}",
+        );
+    }
+
+    /// A manifest that is present but not a Treadmill image is the image's
+    /// fault, not the store's.
+    #[tokio::test]
+    async fn a_manifest_that_is_not_a_treadmill_image_is_refused() {
+        let json = r#"{
+          "schemaVersion": 2,
+          "mediaType": "application/vnd.oci.image.manifest.v1+json",
+          "config": { "mediaType": "application/vnd.oci.empty.v1+json",
+                      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                      "size": 2 },
+          "layers": []
+        }"#;
+        let f = fixture_serving(4 * GIB, vec![], Some(serde_json::from_str(json).unwrap()));
+
+        let error = f
+            .backend
+            .fetch(&start_msg(Uuid::new_v4()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error.error_kind, connector::JobErrorKind::ImageInvalid),
+            "{error:?}",
+        );
+    }
+}
