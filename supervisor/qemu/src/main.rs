@@ -7,10 +7,10 @@ use async_trait::async_trait;
 use clap::Parser;
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tracing::{Level, event, info, instrument, warn};
+use tracing::{Level, event, instrument};
 
 use treadmill_rs::api::switchboard_supervisor::ImageSpecification;
-use treadmill_rs::connector::{self, StartJobMessage};
+use treadmill_rs::connector::{self, StartJobMessage, SupervisorConnector};
 use treadmill_rs::image::Digest;
 use treadmill_rs::image::blockdev::BackingChain;
 use treadmill_rs::image::parse::{self, ImageLayer, TreadmillImage};
@@ -110,6 +110,9 @@ pub struct QemuSupervisorConfig {
 }
 
 const COORD_MAILBOX_CAPACITY: usize = 8;
+
+/// How long a connector that lost its coordinator waits before retrying.
+const RECONNECT_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The QEMU half of a job: the image it boots, the disk it boots from, and the
 /// `qemu-system-*` process that boots it.
@@ -418,10 +421,51 @@ impl QemuSupervisorConfig {
     }
 }
 
+/// What to do when a connector's `run()` reports it lost its coordinator.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum OnDisconnect {
+    Reconnect,
+    Exit,
+}
+
+/// Drive the runner off `connector` until it returns.
+async fn serve(
+    connector: Arc<dyn SupervisorConnector>,
+    runner: Arc<JobRunner<QemuBackend>>,
+    command_rx: mpsc::Receiver<connector::CoordCommand>,
+    on_disconnect: OnDisconnect,
+) {
+    let commands = tokio::spawn({
+        let runner = runner.clone();
+        async move { runner.run(command_rx).await }
+    });
+
+    loop {
+        match connector.run().await {
+            Ok(()) => {
+                event!(Level::INFO, "Connector exited, shutting down supervisor...");
+                break;
+            }
+            Err(()) if on_disconnect == OnDisconnect::Reconnect => {
+                event!(
+                    Level::WARN,
+                    "Connector exited with an error, reconnecting in {:?}...",
+                    RECONNECT_DELAY,
+                );
+                tokio::time::sleep(RECONNECT_DELAY).await;
+            }
+            Err(()) => {
+                event!(Level::WARN, "Connector exited with an error.");
+                break;
+            }
+        }
+    }
+
+    commands.abort();
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    use treadmill_rs::connector::SupervisorConnector;
-
     tracing_subscriber::fmt::init();
     event!(Level::INFO, "Treadmill Qemu Supervisor, Hello World!");
 
@@ -442,7 +486,7 @@ async fn main() -> Result<()> {
     ));
 
     let backend = Arc::new(QemuBackend::new(image_store, launcher, config.qemu.clone()));
-    let runner_config = config.job_runner();
+    let (command_tx, command_rx) = mpsc::channel(COORD_MAILBOX_CAPACITY);
 
     match config.base.coord_connector {
         SupervisorCoordConnector::WsConnector => {
@@ -450,28 +494,19 @@ async fn main() -> Result<()> {
                 "Requested WsConnector, but `ws_connector` config not present."
             ))?;
 
-            let (command_tx, command_rx) = mpsc::channel(COORD_MAILBOX_CAPACITY);
-
             let connector = Arc::new(treadmill_ws_connector::WsConnector::new(
                 config.base.supervisor_id,
                 ws_connector_config,
                 command_tx,
             ));
 
-            let runner = Arc::new(JobRunner::new(connector.clone(), backend, runner_config));
-            let commands = tokio::spawn(async move { runner.run(command_rx).await });
+            let runner = Arc::new(JobRunner::new(
+                connector.clone(),
+                backend,
+                config.job_runner(),
+            ));
 
-            loop {
-                if let Err(()) = connector.run().await {
-                    warn!("Run method exited with error, trying to reconnect in 1 second...");
-                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                } else {
-                    info!("Run method exited, shutting down supervisor...");
-                    break;
-                }
-            }
-
-            commands.abort();
+            serve(connector, runner, command_rx, OnDisconnect::Reconnect).await;
 
             Ok(())
         }
@@ -485,16 +520,18 @@ async fn main() -> Result<()> {
                      --manifest-digest and --repository."
                 );
             }
-            let registry = config.oci_store.registry.clone();
-
-            let (command_tx, command_rx) = mpsc::channel(COORD_MAILBOX_CAPACITY);
 
             let connector = Arc::new(treadmill_local_connector::LocalConnector::new(
-                registry, local_job, command_tx,
+                config.oci_store.registry.clone(),
+                local_job,
+                command_tx,
             ));
 
-            let runner = Arc::new(JobRunner::new(connector.clone(), backend, runner_config));
-            let commands = tokio::spawn(async move { runner.run(command_rx).await });
+            let runner = Arc::new(JobRunner::new(
+                connector.clone(),
+                backend,
+                config.job_runner(),
+            ));
 
             // Ctrl-C requests a graceful shutdown: stop the job and let run()
             // return. A second Ctrl-C (after run() has returned) terminates the
@@ -502,18 +539,15 @@ async fn main() -> Result<()> {
             let connector_for_signal = connector.clone();
             tokio::spawn(async move {
                 if tokio::signal::ctrl_c().await.is_ok() {
-                    info!("Received Ctrl-C => requesting graceful shutdown...");
+                    event!(
+                        Level::INFO,
+                        "Received Ctrl-C => requesting graceful shutdown..."
+                    );
                     connector_for_signal.request_shutdown();
                 }
             });
 
-            if let Err(()) = connector.run().await {
-                warn!("Local run exited with an error.");
-            } else {
-                info!("Local run finished, shutting down supervisor...");
-            }
-
-            commands.abort();
+            serve(connector, runner, command_rx, OnDisconnect::Exit).await;
 
             Ok(())
         }
