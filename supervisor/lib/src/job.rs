@@ -118,6 +118,7 @@ pub enum Phase {
     Starting,
     FetchingImage,
     Allocating,
+    Provisioning,
     Booting,
     Ready,
     Terminating,
@@ -135,6 +136,9 @@ impl Phase {
             },
             Phase::Allocating => RunningJobState::Initializing {
                 stage: JobInitializingStage::Allocating,
+            },
+            Phase::Provisioning => RunningJobState::Initializing {
+                stage: JobInitializingStage::Provisioning,
             },
             Phase::Booting => RunningJobState::Initializing {
                 stage: JobInitializingStage::Booting,
@@ -642,6 +646,7 @@ impl<B: JobBackend> JobTask<B> {
             )
             .await?;
 
+        self.set_phase(Phase::Provisioning).await;
         self.run_start_job_script().await?;
 
         // Start a control socket for this job's puppet on the configured
@@ -1561,6 +1566,7 @@ mod tests {
                 "initializing/starting",
                 "initializing/fetching_image",
                 "initializing/allocating",
+                "initializing/provisioning",
                 "initializing/booting",
             ],
         );
