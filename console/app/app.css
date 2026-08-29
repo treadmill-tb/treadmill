@@ -333,12 +333,60 @@ select:focus {
   align-items: center;
 }
 
-/* Job console log (xterm mount) */
+/* Job logs: one tab per declared view */
+.log-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 0.5rem 0 0.25rem;
+}
+
+.log-tabs button[aria-selected="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.log-view-bar {
+  margin: 0 0 0.25rem;
+}
+
+/* Terminal-rendered view (xterm mount) */
 .job-log-term {
   border: 1px solid var(--border-strong);
   background: #000000;
   padding: 0.25rem;
   height: 24rem;
+}
+
+/* Text-rendered view */
+.log-text {
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  padding: 0.25rem;
+  height: 24rem;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 0.85em;
+}
+
+.log-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Error output, whichever channel carries it. */
+.log-line[data-channel$="stderr"] {
+  color: var(--danger);
+}
+
+.log-tag,
+.log-ts {
+  color: var(--fg-faint);
+  margin-right: 0.5rem;
+}
+
+.log-field {
+  color: var(--fg-muted);
 }
 
 /* Login pages */
