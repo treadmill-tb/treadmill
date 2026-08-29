@@ -113,6 +113,16 @@ impl Deref for AppState {
 pub struct ServeCommand {
     #[arg(short = 'c', long = "config", env = "TML_CFG_FILE")]
     config: Option<PathBuf>,
+
+    /// Do not apply migrations; require the schema to already match.
+    ///
+    /// For deployments that run `swx migrate` as a separate step ordered
+    /// before this one. The schema is still checked, and a mismatch is refused:
+    /// starting against a schema this binary does not understand does not fail
+    /// here, it fails per-request later, in whichever handler first touches a
+    /// column that is not there.
+    #[arg(long)]
+    skip_migrations: bool,
 }
 
 pub async fn pg_pool_from_config(db_config: &DatabaseConfig) -> Result<PgPool, sqlx::Error> {
@@ -138,12 +148,14 @@ pub async fn serve(serve_command: ServeCommand) -> anyhow::Result<()> {
     // Held for the process lifetime; dropping it flushes pending Sentry events.
     let _sentry = crate::observability::init(config.sentry.as_ref())?;
 
-    run(config).await.inspect_err(|e| {
-        sentry::integrations::anyhow::capture_anyhow(e);
-    })
+    run(config, serve_command.skip_migrations)
+        .await
+        .inspect_err(|e| {
+            sentry::integrations::anyhow::capture_anyhow(e);
+        })
 }
 
-async fn run(config: SwitchboardConfig) -> anyhow::Result<()> {
+async fn run(config: SwitchboardConfig, skip_migrations: bool) -> anyhow::Result<()> {
     // The mock OAuth provider is an unauthenticated login bypass intended only
     // for local development; warn loudly at startup if it is enabled so it can
     // never run in production unnoticed.
@@ -165,13 +177,17 @@ async fn run(config: SwitchboardConfig) -> anyhow::Result<()> {
         .await
         .context("failed to connect to database")?;
 
-    // Apply database migrations automatically. The migrations are embedded in
-    // this binary, and any changes to ./migrations (from the project root) will
-    // be picked up by the build.rs script:
-    sqlx::migrate!()
-        .run(&pg_pool)
-        .await
-        .context("failed to migrate database")?;
+    // The migrations are embedded in this binary; see `crate::migrate`.
+    //
+    // Applying them here is the legacy path, kept so a single-binary or
+    // development deployment still works with no extra step. Deployments that
+    // want an aborted migration to be a distinct, separately ordered failure
+    // pass `--skip-migrations` and run `swx migrate` as its own unit.
+    if skip_migrations {
+        crate::migrate::verify(&pg_pool).await?;
+    } else {
+        crate::migrate::apply(&pg_pool).await?;
+    }
 
     let bind_address = config.server.bind_address;
 

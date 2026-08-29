@@ -2,7 +2,9 @@
 
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
-use treadmill_switchboard::{manage::ManageCommand, routes::openapi_spec, serve::ServeCommand};
+use treadmill_switchboard::{
+    manage::ManageCommand, migrate::MigrateCommand, routes::openapi_spec, serve::ServeCommand,
+};
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
@@ -15,6 +17,7 @@ pub struct Args {
 #[command(about)]
 pub enum Command {
     Serve(ServeCommand),
+    Migrate(MigrateCommand),
     Manage(ManageCommand),
     GenerateOpenAPISpec,
 }
@@ -23,6 +26,9 @@ impl Command {
     async fn run(self) -> anyhow::Result<()> {
         match self {
             Command::Serve(serve_cmd) => treadmill_switchboard::serve::serve(serve_cmd).await,
+            Command::Migrate(migrate_cmd) => {
+                treadmill_switchboard::migrate::migrate(migrate_cmd).await
+            }
             Command::Manage(manage_cmd) => manage_cmd.run().await,
             Command::GenerateOpenAPISpec => {
                 println!("{}", serde_norway::to_string(&openapi_spec()).unwrap());

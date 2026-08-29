@@ -8,6 +8,7 @@ pub mod job_gateway;
 pub mod log_streaming;
 pub mod manage;
 pub mod matcher;
+pub mod migrate;
 pub mod observability;
 pub mod registry;
 pub mod routes;
