@@ -527,7 +527,7 @@ impl<B: JobBackend> JobRunner<B> {
 
     async fn run_stop_job_script(&self, job_id: Uuid, job_vars: &JobVars) {
         if let Some(ref stop_script) = self.config.stop_script {
-            event!(Level::DEBUG, ?stop_script, "Executing stop script");
+            event!(Level::INFO, ?stop_script, "Executing stop script");
             let stop_script_res = tokio::process::Command::new(stop_script)
                 .stdin(std::process::Stdio::null())
                 .envs(
@@ -540,11 +540,19 @@ impl<B: JobBackend> JobRunner<B> {
 
             let stop_script_res = match stop_script_res {
                 Err(e) => Err(format!("Failed to spawn stop_script: {}", e)),
-                Ok(out) if !out.status.success() => Err(format!(
-                    "stop_script exited with {}, stdout: {:?}, stderr: {:?}",
-                    out.status, out.stdout, out.stderr
-                )),
-                Ok(_out) => Ok(()),
+                Ok(out) => {
+                    echo_hook_output("stop_script", &out);
+                    if out.status.success() {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "stop_script exited with {}, stdout: {}, stderr: {}",
+                            out.status,
+                            hook_output(&out.stdout),
+                            hook_output(&out.stderr)
+                        ))
+                    }
+                }
             };
 
             if let Err(description) = stop_script_res {
@@ -559,6 +567,26 @@ impl<B: JobBackend> JobRunner<B> {
                     )
                     .await;
             }
+        }
+    }
+}
+
+/// Render a hook's captured output as text, holding back `tml-set-variable:`
+/// lines: the values they carry are reported individually at DEBUG and must not
+/// re-leak through a verbatim echo.
+fn hook_output(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    text.lines()
+        .filter(|line| !line.starts_with("tml-set-variable:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn echo_hook_output(hook: &str, out: &std::process::Output) {
+    for (stream, bytes) in [("stdout", &out.stdout), ("stderr", &out.stderr)] {
+        let text = hook_output(bytes);
+        if !text.is_empty() {
+            event!(Level::INFO, "{hook} {stream}:\n{text}");
         }
     }
 }
@@ -586,6 +614,7 @@ impl<B: JobBackend> JobTask<B> {
     }
 
     async fn set_phase(&mut self, phase: Phase) {
+        event!(Level::INFO, ?phase, "Entering phase");
         self.runner
             .connector
             .update_job_state(self.job_id(), phase.running_job_state(), None)
@@ -667,6 +696,7 @@ impl<B: JobBackend> JobTask<B> {
             error_kind: JobErrorKind::InternalError,
             description: format!("Failed to bind the control socket at {listen_addr:?}: {e:#}"),
         })?;
+        event!(Level::INFO, ?listen_addr, "Bound the job's control socket");
         self.resources.control_socket = Some(control_socket);
 
         let Workload {
@@ -735,7 +765,7 @@ impl<B: JobBackend> JobTask<B> {
             return Ok(());
         };
 
-        event!(Level::DEBUG, ?start_script, "Executing start script");
+        event!(Level::INFO, ?start_script, "Executing start script");
 
         // Even if the start_script fails to spawn or errors midway through we
         // still give the stop_script a chance to clean up resources:
@@ -754,11 +784,19 @@ impl<B: JobBackend> JobTask<B> {
 
         let start_script_out = match start_script_res {
             Err(e) => Err(format!("Failed to spawn start_script: {}", e)),
-            Ok(out) if !out.status.success() => Err(format!(
-                "start_script exited with {}, stdout: {:?}, stderr: {:?}",
-                out.status, out.stdout, out.stderr
-            )),
-            Ok(out) => Ok(out),
+            Ok(out) => {
+                echo_hook_output("start_script", &out);
+                if out.status.success() {
+                    Ok(out)
+                } else {
+                    Err(format!(
+                        "start_script exited with {}, stdout: {}, stderr: {}",
+                        out.status,
+                        hook_output(&out.stdout),
+                        hook_output(&out.stderr)
+                    ))
+                }
+            }
         }
         .map_err(|description| JobError {
             error_kind: JobErrorKind::InternalError,
@@ -2032,5 +2070,11 @@ mod tests {
             "{:?}",
             errors[0],
         );
+    }
+
+    #[test]
+    fn hook_output_holds_back_set_variable_lines() {
+        let out = hook_output(b"starting\ntml-set-variable:api_key=hunter2\ndone\n");
+        assert_eq!(out, "starting\ndone");
     }
 }

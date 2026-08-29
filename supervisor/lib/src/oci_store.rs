@@ -283,7 +283,7 @@ impl OciStore {
                 .await
                 .context("reading skopeo copy progress")?
             {
-                event!(Level::DEBUG, registry = %location.registry, %digest, "skopeo copy: {line}");
+                event!(Level::INFO, registry = %location.registry, %digest, "skopeo copy: {line}");
             }
         }
 
