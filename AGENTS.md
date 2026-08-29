@@ -180,7 +180,10 @@ formatting check.
 - One focused commit per coherent piece. Each commit should build and pass the
   flake checks on its own (apart from documented exceptions).
 - End commit messages with the co-author trailer when applicable, e.g.
-  `Co-Authored-By: A Coding Agent <some.email@example.org>`.
+  `Co-Authored-By: A Coding Agent <some.email@example.org>`. That is the only
+  agent trailer: no session/transcript links (`Claude-Session:` and the like).
+- Implementation plans under `doc/` are working documents for the person driving
+  the work, not part of the change they describe. Do not commit them.
 - For coding agents: backticks in a `git commit -m "..."` double-quoted message
   get command-substituted by the shell. Use `git commit -F <file>` for messages
   that contain backticks or code.
