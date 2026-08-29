@@ -134,13 +134,6 @@ impl WsConnector {
             shutdown_tx,
         }
     }
-
-    /// Signal that we want to shut down gracefully. We can ignore errors from `send`,
-    /// because it only errors if all receivers have dropped, which can’t really happen
-    /// here unless the process is already shutting down.
-    pub fn request_shutdown(&self) {
-        let _ = self.shutdown_tx.send(true);
-    }
 }
 
 // As mentioned above, the `connector::SupervisorConnector` implementation is not capable of
@@ -149,6 +142,12 @@ impl WsConnector {
 impl connector::SupervisorConnector for WsConnector {
     async fn run(&self) -> Result<(), ()> {
         Inner::run(&self.inner).await
+    }
+
+    /// Ignoring the send error is fine: it only fails once every receiver has
+    /// dropped, which cannot happen before `run()` has returned.
+    fn request_shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
     }
 
     async fn emit(&self, supervisor_event: SupervisorEvent) {

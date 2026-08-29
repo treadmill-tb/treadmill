@@ -126,19 +126,18 @@ impl LocalConnector {
             shutdown_tx,
         }
     }
-
-    /// Request a graceful shutdown: `run()` stops the job and returns. Wired to
-    /// a Ctrl-C / signal handler by the supervisor `main`. Ignoring the send
-    /// error is fine — it only fails if `run()` already returned.
-    pub fn request_shutdown(&self) {
-        let _ = self.shutdown_tx.send(true);
-    }
 }
 
 #[async_trait]
 impl connector::SupervisorConnector for LocalConnector {
     async fn run(&self) -> Result<(), ()> {
         Inner::run(&self.inner).await
+    }
+
+    /// `run()` stops the job and returns. Ignoring the send error is fine — it
+    /// only fails if `run()` already returned.
+    fn request_shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
     }
 
     async fn emit(&self, supervisor_event: SupervisorEvent) {

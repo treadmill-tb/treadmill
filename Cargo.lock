@@ -4872,7 +4872,6 @@ name = "treadmill-nbd-netboot-supervisor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-recursion",
  "async-trait",
  "clap",
  "serde",
@@ -4882,9 +4881,7 @@ dependencies = [
  "tracing-subscriber",
  "treadmill-rs",
  "treadmill-supervisor-lib",
- "treadmill-tcp-control-socket-server",
  "treadmill-ws-connector",
- "uuid",
 ]
 
 [[package]]

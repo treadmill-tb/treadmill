@@ -114,6 +114,14 @@ pub trait SupervisorConnector: std::fmt::Debug + Send + Sync + 'static {
     /// loop.
     async fn run(&self) -> Result<(), ()>;
 
+    /// Ask the connector to stop serving.
+    ///
+    /// `run()` returns `Ok(())` once it has, which may not be immediate: a
+    /// connector that drains against a coordinator keeps serving the job it
+    /// holds until the coordinator removes it. Idempotent, and safe to call
+    /// after `run()` has already returned.
+    fn request_shutdown(&self);
+
     async fn emit(&self, supervisor_event: SupervisorEvent);
 
     async fn update_job_state(

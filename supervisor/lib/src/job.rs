@@ -1264,6 +1264,8 @@ mod tests {
             Ok(())
         }
 
+        fn request_shutdown(&self) {}
+
         async fn emit(&self, event: SupervisorEvent) {
             let SupervisorEvent::JobEvent { event, .. } = event;
             match event {

@@ -5,9 +5,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use clap::Parser;
 use serde::Deserialize;
-use tokio::signal::unix::{SignalKind, signal};
+use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 use tracing::{Level, event, instrument};
 
 use treadmill_rs::api::switchboard_supervisor::ImageSpecification;
@@ -16,6 +15,7 @@ use treadmill_rs::image::blockdev::BackingChain;
 use treadmill_rs::image::parse::{self, ChainError, TreadmillImage};
 use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 
+use treadmill_supervisor_lib::bootstrap::{self, COORD_MAILBOX_CAPACITY, OnDisconnect};
 use treadmill_supervisor_lib::capture::SerialSocket;
 use treadmill_supervisor_lib::job::{JobBackend, JobRunner, JobRunnerConfig, JobVars, Workload};
 use treadmill_supervisor_lib::launcher::{self, ProcessLauncher, StdioMode, WorkloadProcess};
@@ -121,11 +121,6 @@ pub struct QemuSupervisorConfig {
 
     qemu: QemuConfig,
 }
-
-const COORD_MAILBOX_CAPACITY: usize = 8;
-
-/// How long a connector that lost its coordinator waits before retrying.
-const RECONNECT_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The QEMU half of the job lifecycle: what the runner calls to resolve an
 /// image, lay down the disk a job boots from, and start `qemu-system-*`.
@@ -427,98 +422,6 @@ impl QemuSupervisorConfig {
     }
 }
 
-/// What to do when a connector's `run()` reports it lost its coordinator.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum OnDisconnect {
-    Reconnect,
-    Exit,
-}
-
-/// Run `action` the first time `kind` arrives.
-///
-/// A repeat of the signal gives up and exits, so a shutdown that cannot make
-/// progress — a coordinator that never removes the job, a workload that will
-/// not die — is still escapable.
-fn on_signal(kind: SignalKind, action: impl Fn() + Send + 'static) {
-    let mut signals = match signal(kind) {
-        Ok(signals) => signals,
-        Err(e) => {
-            event!(
-                Level::WARN,
-                ?kind,
-                error = ?e,
-                "Cannot listen for this signal; it will not shut the supervisor down",
-            );
-            return;
-        }
-    };
-
-    tokio::spawn(async move {
-        let mut acted = false;
-        while signals.recv().await.is_some() {
-            if acted {
-                event!(Level::WARN, ?kind, "Received again, exiting immediately");
-                std::process::exit(128 + kind.as_raw_value());
-            }
-            acted = true;
-            event!(Level::INFO, ?kind, "Shutting the supervisor down");
-            action();
-        }
-    });
-}
-
-/// Drive the runner off `connector` until it returns or `stop` is cancelled,
-/// then take down whatever job is left.
-///
-/// `Ok(())` means the connector is done serving, not that the slot is empty:
-/// the ws connector only returns it once the switchboard has removed the job,
-/// but the local connector returns as soon as its one job reports `Terminated`,
-/// leaving the retained terminal record behind. So every path out of the loop
-/// ends in `shutdown()`, which terminates and releases whatever is still there
-/// rather than orphaning it along with the process.
-async fn serve(
-    connector: Arc<dyn SupervisorConnector>,
-    runner: Arc<JobRunner<QemuBackend>>,
-    command_rx: mpsc::Receiver<connector::CoordCommand>,
-    on_disconnect: OnDisconnect,
-    stop: CancellationToken,
-) {
-    let commands = tokio::spawn({
-        let runner = runner.clone();
-        async move { runner.run(command_rx).await }
-    });
-
-    loop {
-        let run = tokio::select! {
-            biased;
-            _ = stop.cancelled() => break,
-            run = connector.run() => run,
-        };
-
-        match run {
-            Ok(()) => {
-                event!(Level::INFO, "Connector exited, shutting down supervisor...");
-                break;
-            }
-            Err(()) if on_disconnect == OnDisconnect::Reconnect => {
-                event!(
-                    Level::WARN,
-                    "Connector exited with an error, reconnecting in {:?}...",
-                    RECONNECT_DELAY,
-                );
-                tokio::time::sleep(RECONNECT_DELAY).await;
-            }
-            Err(()) => {
-                event!(Level::WARN, "Connector exited with an error.");
-                break;
-            }
-        }
-    }
-
-    commands.abort();
-    runner.shutdown().await;
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -546,89 +449,61 @@ async fn main() -> Result<()> {
     let backend = Arc::new(QemuBackend::new(image_store, launcher, config.qemu.clone()));
     let (command_tx, command_rx) = mpsc::channel(COORD_MAILBOX_CAPACITY);
 
-    match config.base.coord_connector {
-        SupervisorCoordConnector::WsConnector => {
-            let ws_connector_config = config.ws_connector.clone().ok_or(anyhow!(
-                "Requested WsConnector, but `ws_connector` config not present."
-            ))?;
+    // The drain signal differs because what there is to drain against does:
+    // SIGHUP lets the switchboard finish with the job it dispatched, while a
+    // one-shot local run has nobody to wait for and takes Ctrl-C instead.
+    let (connector, drain_signal, on_disconnect): (Arc<dyn SupervisorConnector>, _, _) =
+        match config.base.coord_connector {
+            SupervisorCoordConnector::WsConnector => {
+                let ws_connector_config = config.ws_connector.clone().ok_or(anyhow!(
+                    "Requested WsConnector, but `ws_connector` config not present."
+                ))?;
 
-            let connector = Arc::new(treadmill_ws_connector::WsConnector::new(
-                config.base.supervisor_id,
-                ws_connector_config,
-                command_tx,
-            ));
-
-            let runner = Arc::new(JobRunner::new(
-                connector.clone(),
-                backend,
-                config.job_runner(workdirs),
-            ));
-
-            // SIGHUP drains: the connector keeps serving the job it holds and
-            // only returns once the switchboard has removed it, so the process
-            // exits between jobs and comes back on the new unit definition.
-            on_signal(SignalKind::hangup(), {
-                let connector = connector.clone();
-                move || connector.request_shutdown()
-            });
-
-            // SIGTERM does not wait for the switchboard: it stops serving and
-            // takes the running job down with it.
-            let stop = CancellationToken::new();
-            on_signal(SignalKind::terminate(), {
-                let stop = stop.clone();
-                move || stop.cancel()
-            });
-
-            serve(connector, runner, command_rx, OnDisconnect::Reconnect, stop).await;
-
-            Ok(())
-        }
-        SupervisorCoordConnector::Local => {
-            // One-shot, switchboard-less run: drive a single job from the
-            // command-line `LocalJobArgs` against the local OCI store.
-            let local_job = args.local_job.clone().unwrap_or_default();
-            if local_job.manifest_digest.is_none() || local_job.repository.is_none() {
-                bail!(
-                    "The `local` connector requires a job on the command line: both \
-                     --manifest-digest and --repository."
-                );
+                (
+                    Arc::new(treadmill_ws_connector::WsConnector::new(
+                        config.base.supervisor_id,
+                        ws_connector_config,
+                        command_tx,
+                    )),
+                    SignalKind::hangup(),
+                    OnDisconnect::Reconnect,
+                )
             }
+            SupervisorCoordConnector::Local => {
+                // One-shot, switchboard-less run: drive a single job from the
+                // command-line `LocalJobArgs` against the local OCI store.
+                let local_job = args.local_job.clone().unwrap_or_default();
+                if local_job.manifest_digest.is_none() || local_job.repository.is_none() {
+                    bail!(
+                        "The `local` connector requires a job on the command line: both \
+                         --manifest-digest and --repository."
+                    );
+                }
 
-            let connector = Arc::new(treadmill_local_connector::LocalConnector::new(
-                config.oci_store.registry.clone(),
-                local_job,
-                command_tx,
-            ));
+                (
+                    Arc::new(treadmill_local_connector::LocalConnector::new(
+                        config.oci_store.registry.clone(),
+                        local_job,
+                        command_tx,
+                    )),
+                    SignalKind::interrupt(),
+                    OnDisconnect::Exit,
+                )
+            }
+            unsupported_connector => {
+                bail!("Unsupported coord connector: {:?}", unsupported_connector);
+            }
+        };
 
-            let runner = Arc::new(JobRunner::new(
-                connector.clone(),
-                backend,
-                config.job_runner(workdirs),
-            ));
+    let runner = Arc::new(JobRunner::new(
+        connector.clone(),
+        backend,
+        config.job_runner(workdirs),
+    ));
 
-            // Ctrl-C stops the job and lets run() return; there is no
-            // coordinator to drain against.
-            on_signal(SignalKind::interrupt(), {
-                let connector = connector.clone();
-                move || connector.request_shutdown()
-            });
+    bootstrap::serve(connector, runner, command_rx, drain_signal, on_disconnect).await;
 
-            // SIGTERM stops serving and takes the running job down with it.
-            let stop = CancellationToken::new();
-            on_signal(SignalKind::terminate(), {
-                let stop = stop.clone();
-                move || stop.cancel()
-            });
-
-            serve(connector, runner, command_rx, OnDisconnect::Exit, stop).await;
-
-            Ok(())
-        }
-        unsupported_connector => {
-            bail!("Unsupported coord connector: {:?}", unsupported_connector);
-        }
-    }
+    Ok(())
 }
 
 #[cfg(test)]
