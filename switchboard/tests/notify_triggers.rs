@@ -120,7 +120,7 @@ async fn insert_job(pool: &PgPool, owner: Uuid, token: Uuid, image: Uuid) -> Uui
     sqlx::query(
         "insert into tml_switchboard.jobs \
          (job_id, owner_id, image_id, restart_policy, enqueued_by_token_id, \
-          host_tag_requirements, job_timeout, job_state, queued_at) \
+          host_tag_requirements, lease_duration, job_state, queued_at) \
          values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, $4, '{}', \
                  interval '1 hour', 'queued', now())",
     )

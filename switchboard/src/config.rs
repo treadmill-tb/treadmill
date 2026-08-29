@@ -299,9 +299,10 @@ pub struct ServiceConfig {
     /// Default lifetime of a user session token.
     #[serde(with = "human_duration")]
     pub default_token_timeout: chrono::TimeDelta,
-    /// Default per-job timeout.
+    /// Default lease duration for a new job -- how long it is guaranteed to run
+    /// before `lease_expiry_action` applies.
     #[serde(with = "human_duration")]
-    pub default_job_timeout: chrono::TimeDelta,
+    pub default_job_lease: chrono::TimeDelta,
     /// Default time a job can be queued before it may be culled.
     #[serde(with = "human_duration")]
     pub default_queue_timeout: chrono::TimeDelta,
@@ -455,7 +456,7 @@ mod tests {
             service: ServiceConfig {
                 current_tos_version: 1,
                 default_token_timeout: chrono::TimeDelta::hours(1),
-                default_job_timeout: chrono::TimeDelta::hours(1),
+                default_job_lease: chrono::TimeDelta::hours(1),
                 default_queue_timeout: chrono::TimeDelta::hours(1),
                 match_interval: chrono::TimeDelta::seconds(1),
                 host_liveness_timeout: chrono::TimeDelta::seconds(30),

@@ -7,8 +7,10 @@ use sqlx::{PgExecutor, Postgres, Transaction};
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 use treadmill_rs::api::switchboard::jobs::{
-    JobImageRef, JobInfo, JobInitializingStage as ClientJobInitializingStage, JobParameterView,
+    JobImageRef, JobInfo, JobInitializingStage as ClientJobInitializingStage,
+    JobLeaseExpiryAction as ClientLeaseExpiryAction, JobParameterView,
     JobPermission as ClientJobPermission, JobServiceView, JobSummary,
+    LeaseRejectionCode as ClientLeaseRejectionCode, LeaseSpec,
     RestartPolicy as ClientRestartPolicy, RestartPolicyState,
     TaskExitStatus as ClientTaskExitStatus,
 };
@@ -90,6 +92,7 @@ pub enum SqlTerminationReason {
     WorkloadExited,
     WorkloadSelfTerminated,
     UserTerminated,
+    Preempted,
     QueueTimeout,
     ExecutionTimeout,
     ImageError,
@@ -108,6 +111,7 @@ impl From<SqlTerminationReason> for TerminationReason {
                 TerminationReason::WorkloadSelfTerminated
             }
             SqlTerminationReason::UserTerminated => TerminationReason::UserTerminated,
+            SqlTerminationReason::Preempted => TerminationReason::Preempted,
             SqlTerminationReason::QueueTimeout => TerminationReason::QueueTimeout,
             SqlTerminationReason::ExecutionTimeout => TerminationReason::ExecutionTimeout,
             SqlTerminationReason::ImageError => TerminationReason::ImageError,
@@ -128,6 +132,7 @@ impl From<TerminationReason> for SqlTerminationReason {
                 SqlTerminationReason::WorkloadSelfTerminated
             }
             TerminationReason::UserTerminated => SqlTerminationReason::UserTerminated,
+            TerminationReason::Preempted => SqlTerminationReason::Preempted,
             TerminationReason::QueueTimeout => SqlTerminationReason::QueueTimeout,
             TerminationReason::ExecutionTimeout => SqlTerminationReason::ExecutionTimeout,
             TerminationReason::ImageError => SqlTerminationReason::ImageError,
@@ -137,6 +142,32 @@ impl From<TerminationReason> for SqlTerminationReason {
             TerminationReason::HostUnreachable => SqlTerminationReason::HostUnreachable,
             TerminationReason::ResumeFailed => SqlTerminationReason::ResumeFailed,
             TerminationReason::InternalError => SqlTerminationReason::InternalError,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, sqlx::Type)]
+#[sqlx(
+    type_name = "tml_switchboard.lease_expiry_action",
+    rename_all = "snake_case"
+)]
+pub enum SqlLeaseExpiryAction {
+    Terminate,
+    Preempt,
+}
+impl From<SqlLeaseExpiryAction> for ClientLeaseExpiryAction {
+    fn from(value: SqlLeaseExpiryAction) -> Self {
+        match value {
+            SqlLeaseExpiryAction::Terminate => ClientLeaseExpiryAction::Terminate,
+            SqlLeaseExpiryAction::Preempt => ClientLeaseExpiryAction::Preempt,
+        }
+    }
+}
+impl From<ClientLeaseExpiryAction> for SqlLeaseExpiryAction {
+    fn from(value: ClientLeaseExpiryAction) -> Self {
+        match value {
+            ClientLeaseExpiryAction::Terminate => SqlLeaseExpiryAction::Terminate,
+            ClientLeaseExpiryAction::Preempt => SqlLeaseExpiryAction::Preempt,
         }
     }
 }
@@ -195,7 +226,8 @@ pub async fn insert(
     as_job_id: Uuid,
     as_token_id: Uuid,
     owner: Option<Uuid>,
-    job_timeout: PgInterval,
+    lease_duration: PgInterval,
+    lease_expiry_action: SqlLeaseExpiryAction,
     queued_at: DateTime<Utc>,
     conn: &mut Transaction<'_, Postgres>,
 ) -> Result<(), sqlx::Error> {
@@ -270,7 +302,8 @@ pub async fn insert(
           restart_policy,
           enqueued_by_token_id,
           host_tag_requirements,
-          job_timeout,
+          lease_duration,
+          lease_expiry_action,
           job_state,
           initializing_stage,
           queued_at,
@@ -293,7 +326,8 @@ pub async fn insert(
           $7,       -- restart_policy
           $8,       -- enqueued_by_token_id
           $9,       -- host_tag_requirements
-          $10,      -- job_timeout
+          $10,      -- lease_duration
+          $14,      -- lease_expiry_action
           'queued', -- job_state
           null,     -- initializing_stage
           $11,      -- queued_at
@@ -317,10 +351,11 @@ pub async fn insert(
         } as SqlRestartPolicy,
         as_token_id,
         job_request.host_tag_requirements.as_slice(),
-        job_timeout,
+        lease_duration,
         queued_at,
         owner,
         job_request.label,
+        lease_expiry_action as SqlLeaseExpiryAction,
     )
     .execute(conn.as_mut())
     .await?;
@@ -384,7 +419,8 @@ pub struct SqlJob {
     sql_restart_policy: SqlRestartPolicy,
     enqueued_by_token_id: Uuid,
     host_tag_requirements: Vec<String>,
-    job_timeout: PgInterval,
+    lease_duration: PgInterval,
+    lease_expiry_action: SqlLeaseExpiryAction,
 
     job_state: SqlJobState,
 
@@ -399,9 +435,10 @@ pub struct SqlJob {
     started_at: Option<DateTime<Utc>>,
     dispatched_on_host_id: Option<Uuid>,
 
-    // The DB side of user-terminate: set when termination is requested,
-    // consumed by the worker's reconcile (see `switchboard_stop_reason`).
+    // Set/cleared together; consumed by the worker's reconcile (see
+    // `switchboard_stop_reason`).
     terminate_requested_at: Option<DateTime<Utc>>,
+    terminate_requested_reason: Option<SqlTerminationReason>,
 
     // The internal address the job's supervisor reports for it, retained on the
     // terminal record. Stored as `inet`, hence `IpNetwork` rather than `IpAddr`.
@@ -491,13 +528,15 @@ impl SqlJob {
     pub fn owner_id(&self) -> Option<Uuid> {
         self.owner_id
     }
-    pub fn timeout(&self) -> TimeDelta {
-        assert_eq!(
-            self.job_timeout.months, 0,
-            "invariant violation: job_timeout.months SHALL BE 0"
-        );
-        TimeDelta::microseconds(self.job_timeout.microseconds)
-            + TimeDelta::days(i64::from(self.job_timeout.days))
+    pub fn lease_duration(&self) -> TimeDelta {
+        interval_to_delta(&self.lease_duration)
+    }
+    /// When the lease expires; `None` until the job starts.
+    pub fn lease_expires_at(&self) -> Option<DateTime<Utc>> {
+        self.started_at.map(|at| at + self.lease_duration())
+    }
+    pub fn lease_expiry_action(&self) -> SqlLeaseExpiryAction {
+        self.lease_expiry_action
     }
     pub fn queued_at(&self) -> &DateTime<Utc> {
         &self.queued_at
@@ -554,9 +593,9 @@ impl SqlJob {
             })
             .collect();
 
-        // Borrows `self.job_timeout`; compute before the image match moves the
-        // fields out of `self`.
-        let timeout_secs = self.timeout().num_seconds();
+        // Borrow before the image match below moves fields out of `self`.
+        let lease_duration_secs = self.lease_duration().num_seconds();
+        let lease_expires_at = self.lease_expires_at();
 
         // Image references are stored as internal image ids; the API view
         // addresses images by digest, recovered by join (images are immortal,
@@ -591,7 +630,9 @@ impl SqlJob {
             host_tag_requirements: self.host_tag_requirements,
             target_requirements,
             parameters,
-            timeout_secs,
+            lease_duration_secs,
+            lease_expires_at,
+            lease_expiry_action: self.lease_expiry_action.into(),
             queued_at: self.queued_at,
             started_at: self.started_at,
             dispatched_on_host_id: self.dispatched_on_host_id,
@@ -605,25 +646,26 @@ impl SqlJob {
         })
     }
 
-    /// The switchboard-side reason this *assigned* job should be stopped, if any
-    /// — the convergence pre-check shared by execution-timeout and user-terminate.
+    /// The switchboard-side reason this *assigned* job should be stopped, if
+    /// any: a pending stop signal (`user_terminated` / `preempted`), else an
+    /// expired lease whose action is `terminate` (`ExecutionTimeout`). A
+    /// `preempt` lease has no deadline of its own — past expiry the job runs on
+    /// until the scheduler reclaims its host, which arrives here as a stop
+    /// signal like any other.
     ///
-    /// Re-derived from fresh DB state on every reconcile pass (never cached), so
-    /// an extended deadline or a (future) cleared terminate is honored right up to
-    /// the moment the job is actually stopped:
-    ///   - `terminate_requested_at` set                  → `UserTerminated`
-    ///   - started and past `started_at + job_timeout` → `ExecutionTimeout`
-    ///
-    /// User-terminate takes precedence over an also-expired deadline. Returns `None`
-    /// for a job that should keep running — including a not-yet-started
-    /// (`assigned`) job that is not terminated, since queue-timeout is the
-    /// scheduler's concern, not the worker's.
+    /// Re-derived from fresh DB state on every reconcile pass, never cached, so
+    /// a lease changed since the last pass is honored. Returns `None` for a
+    /// not-yet-started (`assigned`) job: queue-timeout is the scheduler's
+    /// concern, not the worker's.
     pub fn switchboard_stop_reason(&self, now: DateTime<Utc>) -> Option<SqlTerminationReason> {
-        if self.terminate_requested_at.is_some() {
-            return Some(SqlTerminationReason::UserTerminated);
+        // `terminate_request_iso` keeps this in lockstep with
+        // `terminate_requested_at`.
+        if let Some(reason) = self.terminate_requested_reason {
+            return Some(reason);
         }
-        if let Some(started_at) = self.started_at
-            && started_at + self.timeout() <= now
+        if self.lease_expiry_action == SqlLeaseExpiryAction::Terminate
+            && let Some(started_at) = self.started_at
+            && started_at + self.lease_duration() <= now
         {
             return Some(SqlTerminationReason::ExecutionTimeout);
         }
@@ -651,13 +693,15 @@ pub async fn fetch_by_job_id(
         restart_policy as "sql_restart_policy: _",
         enqueued_by_token_id,
         host_tag_requirements,
-        job_timeout,
+        lease_duration,
+        lease_expiry_action as "lease_expiry_action: _",
         queued_at,
         job_state as "job_state: _",
         initializing_stage as "initializing_stage: _",
         started_at,
         dispatched_on_host_id,
         terminate_requested_at,
+        terminate_requested_reason as "terminate_requested_reason: _",
         termination_reason as "termination_reason: _",
         task_exit_status as "task_exit_status: _",
         exit_message,
@@ -823,6 +867,8 @@ pub async fn list_visible(
           j.queued_at,
           j.started_at,
           j.terminated_at,
+          (j.started_at + j.lease_duration) as "lease_expires_at?",
+          j.lease_expiry_action as "lease_expiry_action: SqlLeaseExpiryAction",
           j.dispatched_on_host_id,
           j.termination_reason as "termination_reason: SqlTerminationReason",
           j.task_exit_status as "task_exit_status: SqlTaskExitStatus"
@@ -875,6 +921,8 @@ pub async fn list_visible(
                 dispatched_on_host_id: r.dispatched_on_host_id,
                 termination_reason: r.termination_reason.map(Into::into),
                 task_exit_status: r.task_exit_status.map(Into::into),
+                lease_expires_at: r.lease_expires_at,
+                lease_expiry_action: r.lease_expiry_action.into(),
             })
         })
         .collect()
@@ -1208,6 +1256,118 @@ pub async fn update_label(
     Ok(old)
 }
 
+fn interval_to_delta(interval: &PgInterval) -> TimeDelta {
+    assert_eq!(
+        interval.months, 0,
+        "invariant violation: lease_duration.months SHALL BE 0"
+    );
+    TimeDelta::microseconds(interval.microseconds) + TimeDelta::days(i64::from(interval.days))
+}
+
+/// A job's lease, before or after a change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeaseState {
+    pub duration: TimeDelta,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub expiry_action: SqlLeaseExpiryAction,
+}
+
+/// Outcome of [`apply_lease_change`].
+#[derive(Debug)]
+pub enum LeaseChangeOutcome {
+    Applied {
+        before: LeaseState,
+        after: LeaseState,
+    },
+    /// The change was refused; the route reports it as a `LeaseRejection`.
+    Refused(ClientLeaseRejectionCode),
+    /// The resulting lease is not representable as a Postgres interval.
+    Unrepresentable,
+}
+
+/// Apply a requested lease change to a job, within the caller's transaction.
+///
+/// Locks the row, so the read-modify-write of `lease_duration` serializes
+/// against a concurrent patch. Every form is granted today except the two the
+/// job's own state rules out: a terminating job has no lease left to change,
+/// and an absolute expiry needs a `started_at` to measure against. The
+/// remaining [`ClientLeaseRejectionCode`]s are reserved for the policy and
+/// resource-pressure limits that will gate extensions later.
+pub async fn apply_lease_change(
+    job_id: Uuid,
+    lease: Option<LeaseSpec>,
+    expiry_action: Option<SqlLeaseExpiryAction>,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<LeaseChangeOutcome, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"select job_state as "job_state: SqlJobState",
+                  started_at,
+                  lease_duration,
+                  lease_expiry_action as "lease_expiry_action: SqlLeaseExpiryAction",
+                  terminate_requested_at
+           from tml_switchboard.jobs
+           where job_id = $1
+           for update"#,
+        job_id,
+    )
+    .fetch_one(&mut **txn)
+    .await?;
+
+    if row.job_state == SqlJobState::Finalized || row.terminate_requested_at.is_some() {
+        return Ok(LeaseChangeOutcome::Refused(
+            ClientLeaseRejectionCode::JobTerminating,
+        ));
+    }
+
+    let before = LeaseState {
+        duration: interval_to_delta(&row.lease_duration),
+        expires_at: row
+            .started_at
+            .map(|at| at + interval_to_delta(&row.lease_duration)),
+        expiry_action: row.lease_expiry_action,
+    };
+
+    let duration = match lease {
+        None => before.duration,
+        Some(LeaseSpec::Set(d)) => d,
+        Some(LeaseSpec::Adjust(d)) => before.duration + d,
+        Some(LeaseSpec::ExpiresAt(t)) => match row.started_at {
+            Some(started_at) => t - started_at,
+            None => {
+                return Ok(LeaseChangeOutcome::Refused(
+                    ClientLeaseRejectionCode::NotStarted,
+                ));
+            }
+        },
+    }
+    .max(TimeDelta::zero());
+
+    let Ok(interval) = PgInterval::try_from(duration) else {
+        return Ok(LeaseChangeOutcome::Unrepresentable);
+    };
+    let expiry_action = expiry_action.unwrap_or(before.expiry_action);
+
+    sqlx::query!(
+        r#"update tml_switchboard.jobs
+           set lease_duration = $2, lease_expiry_action = $3
+           where job_id = $1"#,
+        job_id,
+        interval,
+        expiry_action as SqlLeaseExpiryAction,
+    )
+    .execute(&mut **txn)
+    .await?;
+
+    Ok(LeaseChangeOutcome::Applied {
+        before,
+        after: LeaseState {
+            duration,
+            expires_at: row.started_at.map(|at| at + duration),
+            expiry_action,
+        },
+    })
+}
+
 /// Outcome of a user-requested job termination (`DELETE /jobs/{id}`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminateOutcome {
@@ -1280,10 +1440,12 @@ pub async fn request_terminate(
         | SqlJobState::Terminating => {
             // Dispatched: leave the stop to the host's worker, which re-derives
             // `switchboard_stop_reason` each reconcile pass. Idempotent: an
-            // already-set signal is preserved.
+            // already-set signal is preserved, reason included.
             sqlx::query!(
                 r#"update tml_switchboard.jobs
-                   set terminate_requested_at = coalesce(terminate_requested_at, $2)
+                   set terminate_requested_at = coalesce(terminate_requested_at, $2),
+                       terminate_requested_reason =
+                           coalesce(terminate_requested_reason, 'user_terminated')
                    where job_id = $1"#,
                 job_id,
                 at,
@@ -1293,6 +1455,48 @@ pub async fn request_terminate(
             Ok(TerminateOutcome::SignalRequested)
         }
     }
+}
+
+/// Request the stop of the expired `preempt`-lease job on `host_id`, within the
+/// caller's transaction, returning the job it signalled.
+///
+/// Locks the host row first (host-before-job, matching the scheduler and the
+/// worker) and re-asserts under that lock that the host still holds a running
+/// job whose `preempt` lease has expired with no stop already requested;
+/// returns `None` otherwise. The job's own worker converges the stop, exactly
+/// as it does for a user-terminate.
+pub async fn request_preempt(
+    host_id: Uuid,
+    at: DateTime<Utc>,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    let current_job = sqlx::query_scalar!(
+        r#"select current_job from tml_switchboard.hosts where host_id = $1 for update"#,
+        host_id,
+    )
+    .fetch_optional(&mut **txn)
+    .await?
+    .flatten();
+    let Some(job_id) = current_job else {
+        return Ok(None);
+    };
+
+    sqlx::query_scalar!(
+        r#"update tml_switchboard.jobs
+           set terminate_requested_at = $2,
+               terminate_requested_reason = 'preempted'
+           where job_id = $1
+             and job_state <> 'finalized'
+             and terminate_requested_at is null
+             and lease_expiry_action = 'preempt'
+             and started_at is not null
+             and started_at + lease_duration <= $2
+           returning job_id"#,
+        job_id,
+        at,
+    )
+    .fetch_optional(&mut **txn)
+    .await
 }
 
 /// Finalize a job that its host's supervisor dropped, releasing the host and --
@@ -1724,15 +1928,17 @@ pub async fn finalize_dropped_and_maybe_restart(
         parameters: parameters.clone(),
         host_tag_requirements: predecessor.host_tag_requirements.clone(),
         target_requirements,
-        override_timeout: None,
+        lease_duration: None,
+        lease_expiry_action: None,
     };
     insert(
         job_request,
         successor_id,
         predecessor.enqueued_by_token_id,
-        // The successor inherits the predecessor's ownership.
+        // The successor inherits the predecessor's ownership and lease.
         predecessor.owner_id,
-        predecessor.job_timeout,
+        predecessor.lease_duration,
+        predecessor.lease_expiry_action,
         at,
         txn,
     )
@@ -1807,7 +2013,7 @@ mod tests {
         sqlx::query(
             "insert into tml_switchboard.jobs \
              (job_id, owner_id, image_id, restart_policy, enqueued_by_token_id, \
-              host_tag_requirements, job_timeout, job_state, queued_at) \
+              host_tag_requirements, lease_duration, job_state, queued_at) \
              values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, $4, '{}', \
                      interval '1 hour', 'queued', now())",
         )

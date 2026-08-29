@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tml_switchboard.jobs\n           set terminate_requested_at = $2,\n               terminate_requested_reason = 'preempted'\n           where job_id = $1\n             and job_state <> 'finalized'\n             and terminate_requested_at is null\n             and lease_expiry_action = 'preempt'\n             and started_at is not null\n             and started_at + lease_duration <= $2\n           returning job_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "job_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c4f98a4f5158a2d461c38d822f6aa7f7e1a018c9dc56bfb787b81dd869e25cf0"
+}

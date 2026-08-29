@@ -589,6 +589,8 @@ CREATE TYPE tml_switchboard.termination_reason AS enum(
     'workload_self_terminated', -- e.g., termination requested with puppet
     -- externally terminated
     'user_terminated',
+    -- reclaimed after lease expiry to place another job
+    'preempted',
     -- timeouts
     'queue_timeout',
     'execution_timeout',
@@ -602,6 +604,15 @@ CREATE TYPE tml_switchboard.termination_reason AS enum(
     'resume_failed',
     'internal_error'
 );
+
+
+-- What happens when a job's lease (`started_at + lease_duration`) expires.
+--
+--  - `terminate`  hard deadline: the job is stopped (`execution_timeout`).
+--  - `preempt`    the job keeps running unprotected and becomes reclaimable:
+--                 the scheduler may stop it (`preempted`) to place a job that
+--                 has no idle host available.
+CREATE TYPE tml_switchboard.lease_expiry_action AS enum('terminate', 'preempt');
 
 
 -- The host-reported outcome of the user's workload (its "task outcome"), as
@@ -668,8 +679,11 @@ CREATE TABLE tml_switchboard.jobs (
     -- containment against `hosts.tags`. Target (DUT) requirements live in the
     -- separate `job_target_requirements` table.
     host_tag_requirements TEXT[] NOT NULL DEFAULT '{}',
-    -- The amount of time the job can run before it is killed.
-    job_timeout interval NOT NULL,
+    -- Job lease expires at `started_at + lease_duration`. This field is mutable
+    -- to allow for changing the lease duration / extending job leases.
+    lease_duration interval NOT NULL,
+    -- What happens when the job's lease expires:
+    lease_expiry_action tml_switchboard.lease_expiry_action NOT NULL DEFAULT 'terminate',
     -- The latest known execution-lifecycle state of the job.
     job_state tml_switchboard.job_state NOT NULL,
     -- The sub-stage while `job_state = 'initializing'`; null otherwise.
@@ -694,17 +708,16 @@ CREATE TABLE tml_switchboard.jobs (
     -- the (untrusted) job. TODO: eventually, the switchboard should validate
     -- that this address is one that is within the internal deployment prefix.
     job_ip_address inet,
-    -- User-requested termination signal: the DB side of user-terminate.
-    --
-    -- When set, the assigned job's worker converges the job to `finalized` with
-    -- `termination_reason = user_terminated`. It is re-read on every reconcile
-    -- pass (alongside the execution-timeout deadline), so the decision is
-    -- always made against fresh state and composes with a later API that sets
-    -- this column.
+    -- Pending stop signal: set by user-terminate (`DELETE /jobs/{id}`) or by
+    -- the scheduler reclaiming the host. When set, the assigned job's worker
+    -- converges the job to `finalized` with `terminate_requested_reason` (to
+    -- distinguish between a job killed because its lease expired, or because it
+    -- was reclaimed).
     --
     -- NULL means no termination requested. Queued (unassigned) jobs are the
     -- scheduler/reaper's responsibility, not a worker's.
     terminate_requested_at timestamp with time zone,
+    terminate_requested_reason tml_switchboard.termination_reason,
     -- Filled out when transitioned into `finalized`.
     --
     -- `termination_reason` records *why* the job stopped; `task_exit_status`
@@ -781,6 +794,15 @@ CREATE TABLE tml_switchboard.jobs (
     -- `initializing_stage` is present exactly while `initializing`.
     CONSTRAINT initializing_stage_iso_initializing CHECK (
         (initializing_stage IS NOT NULL) = (job_state = 'initializing')
+    ),
+    -- A shortened lease floors at zero rather than going negative.
+    CONSTRAINT lease_duration_non_negative CHECK (lease_duration >= INTERVAL '0'),
+    CONSTRAINT terminate_request_iso CHECK (
+        (terminate_requested_at IS NULL) = (terminate_requested_reason IS NULL)
+    ),
+    -- The explicitly requestable subset of termination reasons.
+    CONSTRAINT terminate_requested_reason_valid CHECK (
+        terminate_requested_reason IN ('user_terminated', 'preempted')
     )
 );
 
@@ -1030,6 +1052,38 @@ WHERE
 CREATE INDEX jobs_queued_at_job_id_idx ON tml_switchboard.jobs (queued_at DESC, job_id DESC);
 
 
+-- Hosts the job owner is authorized to `start` on, ignoring occupancy, liveness
+-- and tags. Mirrors `can_access_host(owner, host, 'start')` in
+-- `src/auth/engine.rs`: the owner (evaluated over its transitive `principals()`
+-- set) is a global admin, owns the host, or holds a `start` grant on it.
+--
+-- Shared by `eligible_hosts` and `reclaimable_hosts`. A job whose `owner_id`
+-- is NULL (orphaned) matches no host.
+CREATE FUNCTION tml_switchboard.job_authorized_hosts (p_job_id uuid) returns setof uuid language sql stable AS $$
+    with owner_principals (id) as (
+        select p.id
+        from tml_switchboard.jobs j, tml_switchboard.principals(j.owner_id) p
+        where j.job_id = p_job_id
+    )
+    select h.host_id
+    from tml_switchboard.hosts h
+    where exists (
+              -- The seeded `admins` group; see `ADMINS_GROUP_ID` in engine.rs.
+              select 1 from owner_principals
+              where id = '00000000-0000-0000-0000-000000000001'
+          )
+       or exists (
+              select 1 from owner_principals op where op.id = h.owner_id
+          )
+       or exists (
+              select 1
+              from tml_switchboard.host_grants g
+              join owner_principals op on g.subject_id = op.id
+              where g.host_id = h.host_id and g.permission = 'start'
+          );
+$$;
+
+
 -- Hosts a job may be dispatched onto, by the set-based criteria SQL expresses:
 -- the host is idle (no current job), live (its worker's heartbeat
 -- `last_seen_at` is newer than the caller-supplied staleness cutoff),
@@ -1038,62 +1092,65 @@ CREATE INDEX jobs_queued_at_job_id_idx ON tml_switchboard.jobs (queued_at DESC, 
 -- no host-tag requirements matches all idle/live hosts), and -- crucially --
 -- one the job's owner is *authorized* to start on.
 --
--- Authorization mirrors `can_access_host(owner, host, 'start')` in
--- `src/auth/engine.rs`: the job's owner (evaluated over its transitive
--- `principals()` set) is a global admin, owns the host, or holds a `start`
--- grant on it. Folding it in here makes the candidate set itself the
--- authoritative gate -- an unauthorized host never becomes a scheduling
--- candidate -- so the enqueue route need not (and does not) pre-authorize a
--- host at submit time. A job whose `owner_id` is NULL (orphaned, e.g. its owner
--- was deleted while it sat queued) matches no host and so is never scheduled;
--- like a tag-unschedulable job, it ages out via the queue timeout.
+-- Including authorization here means we don't consider unauthorized hosts for
+-- scheduling, so the enqueue route need not (and does not) pre-authorize a host
+-- at submit time. Jobs that don't have an authorized host time out.
 --
--- This is still only the cheap pre-filter: the scheduler additionally applies
--- the target/DUT bipartite match and the image resolution under a row lock in
--- its dispatch transaction, and re-checks this authorization there (host
--- ownership/grants can change between this scan and the lock).
+-- The scheduler additionally applies the target/DUT bipartite match and the
+-- image resolution under a row lock in its dispatch transaction, and re-checks
+-- this authorization there (host ownership/grants can change between this scan
+-- and the lock).
 CREATE FUNCTION tml_switchboard.eligible_hosts (
     p_job_id uuid,
     p_liveness_cutoff timestamp with time zone
 ) returns setof uuid language sql stable AS $$
-    with job as (
-        select owner_id, host_tag_requirements
-        from tml_switchboard.jobs
-        where job_id = p_job_id
-    ),
-    -- The job owner's transitive principals (owner + every group it reaches),
-    -- the set every host authorization check below is tested against. NULL owner
-    -- yields a single NULL principal, which matches nothing.
-    owner_principals (id) as (
-        select p.id
-        from job, tml_switchboard.principals(job.owner_id) p
-    )
     select h.host_id
     from tml_switchboard.hosts h
+    join tml_switchboard.job_authorized_hosts(p_job_id) a on a = h.host_id
     where h.current_job is null
       and h.last_seen_at is not null
       and h.last_seen_at > p_liveness_cutoff
-      and h.tags @> (select host_tag_requirements from job)
-      and (
-          -- The owner (or a group it reaches) is a global admin.
-          exists (
-              select 1 from owner_principals
-              -- The seeded `admins` group; see `ADMINS_GROUP_ID` in engine.rs.
-              where id = '00000000-0000-0000-0000-000000000001'
-          )
-          -- The owner (via principals) owns the host.
-          or exists (
-              select 1 from owner_principals op where op.id = h.owner_id
-          )
-          -- The owner (via principals) holds a `start` grant on the host.
-          or exists (
-              select 1
-              from tml_switchboard.host_grants g
-              join owner_principals op on g.subject_id = op.id
-              where g.host_id = h.host_id and g.permission = 'start'
-          )
+      and h.tags @> (
+          select host_tag_requirements
+          from tml_switchboard.jobs
+          where job_id = p_job_id
       )
     order by h.host_id;
+$$;
+
+
+-- Occupied hosts whose current job may be reclaimed to make room for
+-- `p_job_id`: live, host-tag eligible and `start`-authorized exactly as in
+-- `eligible_hosts`, but holding a job whose `preempt` lease has expired.
+--
+-- Only *expired* leases qualify; reclamation never takes back guaranteed time.
+-- Ordered longest-unprotected first. Bounded by the host count, so expiry
+-- predicate needs no index.
+--
+-- `reclaim_pending` marks a host whose job is already stopping: its capacity is
+-- on the way, so the scheduler waits for it rather than evicting a second host
+-- for the same queued job.
+CREATE FUNCTION tml_switchboard.reclaimable_hosts (
+    p_job_id uuid,
+    p_liveness_cutoff timestamp with time zone,
+    p_now timestamp with time zone
+) returns TABLE (host_id uuid, reclaim_pending boolean) language sql stable AS $$
+    select h.host_id, v.terminate_requested_at is not null
+    from tml_switchboard.hosts h
+    join tml_switchboard.jobs v on v.job_id = h.current_job
+    join tml_switchboard.job_authorized_hosts(p_job_id) a on a = h.host_id
+    where h.last_seen_at is not null
+      and h.last_seen_at > p_liveness_cutoff
+      and h.tags @> (
+          select host_tag_requirements
+          from tml_switchboard.jobs
+          where job_id = p_job_id
+      )
+      and v.job_state <> 'finalized'
+      and v.lease_expiry_action = 'preempt'
+      and v.started_at is not null
+      and v.started_at + v.lease_duration <= p_now
+    order by v.started_at + v.lease_duration;
 $$;
 
 

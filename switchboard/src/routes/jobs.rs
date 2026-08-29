@@ -3,7 +3,7 @@ use std::time::Duration;
 use axum::Json;
 use axum::extract::Path;
 use axum::extract::{Query, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use http::StatusCode;
@@ -12,8 +12,9 @@ use sqlx::postgres::types::PgInterval;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::jobs::{
-    EnqueueJobResponse, JobInfo, JobListResponse, JobPermission as ApiJobPermission,
-    JobServiceCredentials, NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
+    EnqueueJobResponse, JobInfo, JobLeaseExpiryAction, JobListResponse,
+    JobPermission as ApiJobPermission, JobServiceCredentials, LeaseRejection, LeaseRejectionCode,
+    NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
 
@@ -281,18 +282,22 @@ pub async fn enqueue(
         _ => {}
     }
 
-    // Resolve the timeout (explicit override, else the deployment default) and
+    // Resolve the lease (explicit request, else the deployment default) and
     // reject a non-positive one.
-    let timeout = req
-        .override_timeout
-        .unwrap_or(state.config().service.default_job_timeout);
-    if timeout <= chrono::Duration::zero() {
+    let lease = req
+        .lease_duration
+        .unwrap_or(state.config().service.default_job_lease);
+    if lease <= chrono::Duration::zero() {
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
-    let job_timeout = PgInterval::try_from(timeout).map_err(|e| {
-        tracing::debug!("rejecting job with unrepresentable timeout: {e}");
+    let lease_duration = PgInterval::try_from(lease).map_err(|e| {
+        tracing::debug!("rejecting job with an unrepresentable lease: {e}");
         StatusCode::UNPROCESSABLE_ENTITY
     })?;
+    let lease_expiry_action = req
+        .lease_expiry_action
+        .unwrap_or(JobLeaseExpiryAction::Terminate)
+        .into();
 
     // Host authorization is enforced by the scheduler's `eligible_hosts` filter
     // (only hosts the job owner may `start` on become candidates), not here --
@@ -313,7 +318,8 @@ pub async fn enqueue(
         job_id,
         subject.token_id(),
         Some(owner),
-        job_timeout,
+        lease_duration,
+        lease_expiry_action,
         Utc::now(),
         &mut txn,
     )
@@ -360,15 +366,19 @@ fn label_valid(s: &str) -> bool {
 /// Axum handler for `PATCH /jobs/{id}` — update a job's mutable metadata.
 ///
 /// Only the fields [`UpdateJobRequest`] carries can be changed (a request with
-/// any other field is rejected at deserialization); today that is the display
-/// label. Gated on the caller's `manage` permission (403 for unauthorized,
-/// including a nonexistent job).
+/// any other field is rejected at deserialization): the display label and the
+/// job's lease. Gated on the caller's `manage` permission (403 for
+/// unauthorized, including a nonexistent job).
+///
+/// The patch is all-or-nothing: a refused lease change returns `409` with a
+/// [`LeaseRejection`] and applies no part of the request, so a caller never has
+/// to reason about which half landed.
 pub async fn update_job(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Path(IdPath { id: job_id }): Path<IdPath>,
     Json(req): Json<UpdateJobRequest>,
-) -> Result<StatusCode, StatusCode> {
+) -> Result<Response, StatusCode> {
     let authorized = engine::can_access_job(
         state.pool(),
         subject.user_id(),
@@ -381,11 +391,10 @@ pub async fn update_job(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    let Some(label) = req.label else {
-        // Empty patch: nothing to change.
-        return Ok(StatusCode::NO_CONTENT);
-    };
-    if let Some(label) = label.as_deref()
+    if req.label.is_none() && req.lease.is_none() && req.lease_expiry_action.is_none() {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+    if let Some(Some(label)) = req.label.as_ref()
         && !label_valid(label)
     {
         return Err(StatusCode::BAD_REQUEST);
@@ -396,29 +405,99 @@ pub async fn update_job(
         .begin()
         .await
         .or_internal(&format!("opening a transaction to update job {job_id}"))?;
-    let old_label = job::update_label(job_id, label.as_deref(), &mut txn)
-        .await
-        .or_internal(&format!("updating the label of job {job_id}"))?;
 
-    // Audit only an actual change, in the same transaction as the write.
-    if old_label != label {
-        audit::emit(
+    if req.lease.is_some() || req.lease_expiry_action.is_some() {
+        let outcome = job::apply_lease_change(
+            job_id,
+            req.lease,
+            req.lease_expiry_action.map(Into::into),
             &mut txn,
-            &events::JobLabelChanged {
-                actor: AuditSubject(subject.user_id()),
-                job: AuditJob(job_id),
-                old_label,
-                new_label: label,
-            },
         )
         .await
-        .or_internal(&format!("emitting JobLabelChanged for {job_id}"))?;
+        .or_internal(&format!("changing the lease of job {job_id}"))?;
+
+        match outcome {
+            job::LeaseChangeOutcome::Applied { before, after } if before != after => {
+                audit::emit(
+                    &mut txn,
+                    &events::JobLeaseChanged {
+                        actor: AuditSubject(subject.user_id()),
+                        job: AuditJob(job_id),
+                        old_lease_duration_secs: before.duration.num_seconds(),
+                        new_lease_duration_secs: after.duration.num_seconds(),
+                        old_lease_expiry_action: expiry_action_name(before.expiry_action),
+                        new_lease_expiry_action: expiry_action_name(after.expiry_action),
+                    },
+                )
+                .await
+                .or_internal(&format!("emitting JobLeaseChanged for {job_id}"))?;
+            }
+            job::LeaseChangeOutcome::Applied { .. } => {}
+            job::LeaseChangeOutcome::Refused(code) => {
+                tracing::debug!("refusing lease change on job {job_id}: {code:?}");
+                return Ok(lease_rejection(code).into_response());
+            }
+            job::LeaseChangeOutcome::Unrepresentable => {
+                tracing::debug!("rejecting an unrepresentable lease on job {job_id}");
+                return Err(StatusCode::BAD_REQUEST);
+            }
+        }
     }
+
+    if let Some(label) = req.label {
+        let old_label = job::update_label(job_id, label.as_deref(), &mut txn)
+            .await
+            .or_internal(&format!("updating the label of job {job_id}"))?;
+
+        if old_label != label {
+            audit::emit(
+                &mut txn,
+                &events::JobLabelChanged {
+                    actor: AuditSubject(subject.user_id()),
+                    job: AuditJob(job_id),
+                    old_label,
+                    new_label: label,
+                },
+            )
+            .await
+            .or_internal(&format!("emitting JobLabelChanged for {job_id}"))?;
+        }
+    }
+
     txn.commit()
         .await
-        .or_internal(&format!("committing the label update of job {job_id}"))?;
+        .or_internal(&format!("committing the update of job {job_id}"))?;
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+fn expiry_action_name(action: job::SqlLeaseExpiryAction) -> String {
+    match action {
+        job::SqlLeaseExpiryAction::Terminate => "terminate",
+        job::SqlLeaseExpiryAction::Preempt => "preempt",
+    }
+    .to_string()
+}
+
+/// Build the `409` body for a refused lease change. `max_lease_expires_at` and
+/// `retry_after_secs` stay null: the only refusals today are unconditional, so
+/// there is no later expiry to offer and no point retrying.
+fn lease_rejection(code: LeaseRejectionCode) -> (StatusCode, Json<LeaseRejection>) {
+    let message = match code {
+        LeaseRejectionCode::JobTerminating => "the job is finalized or already stopping",
+        LeaseRejectionCode::NotStarted => "the job has not started, so it has no lease anchor",
+        LeaseRejectionCode::PolicyLimit => "a deployment policy caps the lease below the request",
+        LeaseRejectionCode::ResourcePressure => "the resources cannot be held that long",
+    };
+    (
+        StatusCode::CONFLICT,
+        Json(LeaseRejection {
+            code,
+            message: message.to_string(),
+            max_lease_expires_at: None,
+            retry_after_secs: None,
+        }),
+    )
 }
 
 /// Map the engine's job permission to the API enum.

@@ -247,9 +247,15 @@ pub struct JobRequest {
     #[serde(default)]
     pub target_requirements: Vec<Vec<String>>,
 
+    /// The job's protected window, measured from its start. Absent, the
+    /// deployment default applies.
     #[serde(with = "crate::util::chrono::optional_duration")]
     #[schemars(with = "Option<String>")]
-    pub override_timeout: Option<chrono::Duration>,
+    pub lease_duration: Option<chrono::Duration>,
+
+    /// What happens when the lease expires. Absent, `terminate`.
+    #[serde(default)]
+    pub lease_expiry_action: Option<crate::api::switchboard::jobs::JobLeaseExpiryAction>,
 }
 
 /// Why a job terminated.
@@ -266,6 +272,8 @@ pub enum TerminationReason {
     WorkloadSelfTerminated,
     /// Externally terminated by a user.
     UserTerminated,
+    /// Reclaimed after its lease expired, to place another job.
+    Preempted,
     /// Timed out while still queued.
     QueueTimeout,
     /// Timed out while dispatched/executing.
@@ -291,6 +299,7 @@ impl Display for TerminationReason {
             TerminationReason::WorkloadExited => "workload exited",
             TerminationReason::WorkloadSelfTerminated => "workload requested termination",
             TerminationReason::UserTerminated => "terminated by user",
+            TerminationReason::Preempted => "preempted",
             TerminationReason::QueueTimeout => "timed out in queue",
             TerminationReason::ExecutionTimeout => "timed out while executing",
             TerminationReason::ImageError => "image error",

@@ -24,6 +24,141 @@ pub enum JobPermission {
     Manage,
 }
 
+/// What happens when a job's lease expires.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobLeaseExpiryAction {
+    /// Hard deadline: the job is stopped (`execution_timeout`).
+    Terminate,
+    /// The job keeps running unprotected and becomes reclaimable: the scheduler
+    /// may stop it (`preempted`) to place a job with no idle host available.
+    /// Absent that demand it runs on past its lease.
+    Preempt,
+}
+
+/// A requested change to a job's lease, carried by `PATCH /jobs/{id}`.
+///
+/// Wire form is a string in one of three shapes, each naming a different anchor:
+///
+/// | form | meaning |
+/// |---|---|
+/// | `"30m"` | set the lease to this length, measured from the job's start |
+/// | `"+30m"` | lengthen by this much; `-` shortens, floored at zero |
+/// | `"2026-08-28T14:00:00Z"` | end the lease at this instant (started jobs only) |
+///
+/// Note that `"+30m"` *compounds*: repeated on a timer it grows the lease
+/// without bound. A keepalive should send the absolute form instead, recomputed
+/// each tick, which is idempotent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaseSpec {
+    /// Set the lease length outright.
+    Set(chrono::TimeDelta),
+    /// Lengthen (or, when negative, shorten) the lease.
+    Adjust(chrono::TimeDelta),
+    /// End the lease at an absolute instant.
+    ExpiresAt(DateTime<Utc>),
+}
+
+impl std::fmt::Display for LeaseSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LeaseSpec::Set(d) => write!(f, "{}", fundu::Duration::from(*d)),
+            LeaseSpec::Adjust(d) => {
+                let sign = if *d < chrono::TimeDelta::zero() {
+                    '-'
+                } else {
+                    '+'
+                };
+                write!(f, "{sign}{}", fundu::Duration::from(d.abs()))
+            }
+            LeaseSpec::ExpiresAt(t) => write!(f, "{}", t.to_rfc3339()),
+        }
+    }
+}
+
+impl std::str::FromStr for LeaseSpec {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        fn duration(s: &str) -> Result<chrono::TimeDelta, String> {
+            fundu::DurationParser::new()
+                .parse(s)
+                .map_err(|e| e.to_string())?
+                .try_into()
+                .map_err(|_| format!("duration out of range: {s}"))
+        }
+
+        if let Some(rest) = s.strip_prefix('+') {
+            return Ok(LeaseSpec::Adjust(duration(rest)?));
+        }
+        if let Some(rest) = s.strip_prefix('-') {
+            return Ok(LeaseSpec::Adjust(-duration(rest)?));
+        }
+        if let Ok(t) = DateTime::parse_from_rfc3339(s) {
+            return Ok(LeaseSpec::ExpiresAt(t.with_timezone(&Utc)));
+        }
+        duration(s).map(LeaseSpec::Set)
+    }
+}
+
+impl Serialize for LeaseSpec {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for LeaseSpec {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(de)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl schemars::JsonSchema for LeaseSpec {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "LeaseSpec".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut schema = String::json_schema(generator);
+        schema.insert(
+            "description".into(),
+            "A lease change: `\"30m\"` (set), `\"+30m\"` / `\"-10m\"` (adjust), or an RFC 3339 timestamp (absolute expiry).".into(),
+        );
+        schema
+    }
+}
+
+/// Why a requested lease change was refused (`409 Conflict` on
+/// `PATCH /jobs/{id}`). The whole request is rejected, so a label change sent
+/// alongside a refused lease change is not applied either.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct LeaseRejection {
+    pub code: LeaseRejectionCode,
+    /// Human-readable explanation; not intended to be parsed.
+    pub message: String,
+    /// The latest expiry that would have been granted, when one exists.
+    pub max_lease_expires_at: Option<DateTime<Utc>>,
+    /// When asking again could plausibly succeed; null if never.
+    pub retry_after_secs: Option<i64>,
+}
+
+/// The machine-readable discriminant of a [`LeaseRejection`]. Clients must
+/// tolerate unknown values.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaseRejectionCode {
+    /// The job is finalized, or a stop has already been signalled for it.
+    JobTerminating,
+    /// An absolute lease end was requested for a job that has not started, so
+    /// there is no clock to measure it against.
+    NotStarted,
+    /// A deployment policy caps the lease below what was requested.
+    PolicyLimit,
+    /// The resources cannot be held for as long as requested.
+    ResourcePressure,
+}
+
 /// The fine-grained stage of a job that is still coming up, exposed as
 /// `initializing_stage` on [`JobInfo`] while its `state` is `initializing` (and
 /// null in every other state). A job advances through these stages in order as
@@ -303,8 +438,13 @@ pub struct JobInfo {
     pub target_requirements: Vec<Vec<String>>,
     /// Job parameters, keyed by name; secret values are redacted.
     pub parameters: HashMap<String, JobParameterView>,
-    /// How long the job may run before it is killed, in seconds.
-    pub timeout_secs: i64,
+    /// The job's protected window, in seconds, measured from `started_at`.
+    pub lease_duration_secs: i64,
+    /// When the lease expires (`started_at + lease_duration`); null until the
+    /// job starts.
+    pub lease_expires_at: Option<DateTime<Utc>>,
+    /// What happens when the lease expires.
+    pub lease_expiry_action: JobLeaseExpiryAction,
 
     /// When the job was enqueued.
     pub queued_at: DateTime<Utc>,
@@ -353,6 +493,14 @@ pub struct UpdateJobRequest {
     )]
     #[schemars(with = "Option<String>")]
     pub label: Option<Option<String>>,
+
+    /// A change to the job's lease. May be refused; see [`LeaseRejection`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease: Option<LeaseSpec>,
+
+    /// What should happen when the lease expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_expiry_action: Option<JobLeaseExpiryAction>,
 }
 
 /// A compact per-job row for the `GET /jobs` listing — identity, ownership,
@@ -375,6 +523,9 @@ pub struct JobSummary {
     pub dispatched_on_host_id: Option<Uuid>,
     pub termination_reason: Option<TerminationReason>,
     pub task_exit_status: Option<TaskExitStatus>,
+    /// When the lease expires; null until the job starts.
+    pub lease_expires_at: Option<DateTime<Utc>>,
+    pub lease_expiry_action: JobLeaseExpiryAction,
 }
 
 /// Response body of `GET /jobs`: a page of jobs the caller can read, newest
@@ -389,4 +540,41 @@ pub struct JobListResponse {
     pub jobs: Vec<JobSummary>,
     /// Opaque cursor for the next page, or null on the last page.
     pub next_cursor: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeDelta;
+
+    fn parse(s: &str) -> LeaseSpec {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn lease_spec_forms_parse_by_their_anchor() {
+        assert_eq!(parse("30m"), LeaseSpec::Set(TimeDelta::minutes(30)));
+        assert_eq!(parse("+30m"), LeaseSpec::Adjust(TimeDelta::minutes(30)));
+        assert_eq!(parse("-10m"), LeaseSpec::Adjust(TimeDelta::minutes(-10)));
+        assert_eq!(
+            parse("2026-08-28T14:00:00Z"),
+            LeaseSpec::ExpiresAt("2026-08-28T14:00:00Z".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn lease_spec_rejects_garbage() {
+        assert!("".parse::<LeaseSpec>().is_err());
+        assert!("later".parse::<LeaseSpec>().is_err());
+        assert!("+".parse::<LeaseSpec>().is_err());
+    }
+
+    #[test]
+    fn lease_spec_round_trips_through_json() {
+        for s in ["30m", "+30m", "-10m", "2026-08-28T14:00:00Z"] {
+            let spec = parse(s);
+            let json = serde_json::to_string(&spec).unwrap();
+            assert_eq!(serde_json::from_str::<LeaseSpec>(&json).unwrap(), spec);
+        }
+    }
 }

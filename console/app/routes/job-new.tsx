@@ -76,7 +76,8 @@ export default function JobNew() {
     }
 
     const owner = str("owner");
-    const overrideTimeout = str("override_timeout");
+    const leaseDuration = str("lease_duration");
+    const leaseExpiryAction = str("lease_expiry_action");
     const label = str("label");
     enqueue.mutate({
       body: {
@@ -87,7 +88,9 @@ export default function JobNew() {
         parameters,
         restart_policy: { max_restarts: Number(str("max_restarts") || "0") },
         owner: owner === "" ? null : owner,
-        override_timeout: overrideTimeout === "" ? null : overrideTimeout,
+        lease_duration: leaseDuration === "" ? null : leaseDuration,
+        lease_expiry_action:
+          leaseExpiryAction === "preempt" ? "preempt" : "terminate",
       },
     });
   }
@@ -225,8 +228,18 @@ export default function JobNew() {
         </label>
 
         <label className="field">
-          <span>Override timeout (e.g. “2h”; empty uses the default)</span>
-          <input name="override_timeout" />
+          <span>Lease duration (e.g. “2h”; empty uses the default)</span>
+          <input name="lease_duration" />
+        </label>
+
+        <label className="field">
+          <span>At lease expiry</span>
+          <select name="lease_expiry_action" defaultValue="terminate">
+            <option value="terminate">Terminate the job</option>
+            <option value="preempt">
+              Keep running; reclaim when a host is needed
+            </option>
+          </select>
         </label>
 
         <label className="field">

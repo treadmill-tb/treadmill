@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        select\n        job_id,\n        label,\n        owner_id,\n        resume_job_id,\n        restart_job_id,\n        image_id,\n        image_set_id,\n        image_set_generation,\n        resolved_image_id,\n        restart_policy as \"sql_restart_policy: _\",\n        enqueued_by_token_id,\n        host_tag_requirements,\n        job_timeout,\n        queued_at,\n        job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\",\n        started_at,\n        dispatched_on_host_id,\n        terminate_requested_at,\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\",\n        exit_message,\n        terminated_at,\n        job_ip_address\n        from tml_switchboard.jobs where job_id = $1;\n        ",
+  "query": "\n        select\n        job_id,\n        label,\n        owner_id,\n        resume_job_id,\n        restart_job_id,\n        image_id,\n        image_set_id,\n        image_set_generation,\n        resolved_image_id,\n        restart_policy as \"sql_restart_policy: _\",\n        enqueued_by_token_id,\n        host_tag_requirements,\n        lease_duration,\n        lease_expiry_action as \"lease_expiry_action: _\",\n        queued_at,\n        job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\",\n        started_at,\n        dispatched_on_host_id,\n        terminate_requested_at,\n        terminate_requested_reason as \"terminate_requested_reason: _\",\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\",\n        exit_message,\n        terminated_at,\n        job_ip_address\n        from tml_switchboard.jobs where job_id = $1;\n        ",
   "describe": {
     "columns": [
       {
@@ -149,17 +149,38 @@
       },
       {
         "ordinal": 12,
-        "name": "job_timeout",
+        "name": "lease_duration",
         "type_info": "Interval",
         "origin": {
           "Table": {
             "table": "tml_switchboard.jobs",
-            "name": "job_timeout"
+            "name": "lease_duration"
           }
         }
       },
       {
         "ordinal": 13,
+        "name": "lease_expiry_action: _",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.lease_expiry_action",
+            "kind": {
+              "Enum": [
+                "terminate",
+                "preempt"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "lease_expiry_action"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
         "name": "queued_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -170,7 +191,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "job_state: _",
         "type_info": {
           "Custom": {
@@ -195,7 +216,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "initializing_stage: _",
         "type_info": {
           "Custom": {
@@ -219,7 +240,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "started_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -230,7 +251,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "dispatched_on_host_id",
         "type_info": "Uuid",
         "origin": {
@@ -241,7 +262,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 19,
         "name": "terminate_requested_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -252,7 +273,39 @@
         }
       },
       {
-        "ordinal": 19,
+        "ordinal": 20,
+        "name": "terminate_requested_reason: _",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.termination_reason",
+            "kind": {
+              "Enum": [
+                "workload_exited",
+                "workload_self_terminated",
+                "user_terminated",
+                "preempted",
+                "queue_timeout",
+                "execution_timeout",
+                "image_error",
+                "host_match_error",
+                "host_start_failure",
+                "host_dropped_job",
+                "host_unreachable",
+                "resume_failed",
+                "internal_error"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "terminate_requested_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
         "name": "termination_reason: _",
         "type_info": {
           "Custom": {
@@ -262,6 +315,7 @@
                 "workload_exited",
                 "workload_self_terminated",
                 "user_terminated",
+                "preempted",
                 "queue_timeout",
                 "execution_timeout",
                 "image_error",
@@ -283,7 +337,7 @@
         }
       },
       {
-        "ordinal": 20,
+        "ordinal": 22,
         "name": "task_exit_status: _",
         "type_info": {
           "Custom": {
@@ -305,7 +359,7 @@
         }
       },
       {
-        "ordinal": 21,
+        "ordinal": 23,
         "name": "exit_message",
         "type_info": "Text",
         "origin": {
@@ -316,7 +370,7 @@
         }
       },
       {
-        "ordinal": 22,
+        "ordinal": 24,
         "name": "terminated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -327,7 +381,7 @@
         }
       },
       {
-        "ordinal": 23,
+        "ordinal": 25,
         "name": "job_ip_address",
         "type_info": "Inet",
         "origin": {
@@ -359,6 +413,8 @@
       false,
       false,
       false,
+      false,
+      true,
       true,
       true,
       true,
@@ -370,5 +426,5 @@
       true
     ]
   },
-  "hash": "f437615bc3315b5064a92a3fce804cf5fd469557c3fee97d5732c00490046aa8"
+  "hash": "9cd8be5f2f069f8b36aecf6a9cc3d61fe6977f38212901fea95ca1f6452262fd"
 }

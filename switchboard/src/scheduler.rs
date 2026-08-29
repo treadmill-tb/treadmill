@@ -16,11 +16,13 @@
 //!      containment — the set logic SQL does well);
 //!   3. attempts each candidate under a row lock in [`Scheduler::try_assign`],
 //!      which layers on the target/DUT bipartite match and the image resolution
-//!      (neither of which belongs in SQL) and commits the assignment.
+//!      (neither of which belongs in SQL) and commits the assignment;
+//!   4. failing that, tries to free a host in [`Scheduler::try_reclaim`] by
+//!      stopping an expired `preempt`-lease job on one.
 //!
 //! [`SupervisorWSWorker`]: crate::supervisor_ws_worker::SupervisorWSWorker
 
-use chrono::{TimeDelta, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use futures_util::TryStreamExt;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -143,15 +145,80 @@ impl Scheduler {
             .fetch_all(&self.pool)
             .await?;
 
+            let mut settled = false;
             for host_id in candidates {
                 match self.try_assign(job_id, host_id).await? {
-                    AssignOutcome::Assigned | AssignOutcome::JobDone => break,
+                    AssignOutcome::Assigned | AssignOutcome::JobDone => {
+                        settled = true;
+                        break;
+                    }
                     AssignOutcome::HostRejected | AssignOutcome::HostTaken => continue,
                 }
+            }
+
+            if !settled {
+                self.try_reclaim(job_id, cutoff).await?;
             }
         }
 
         Ok(())
+    }
+
+    /// Free a host for a queued job no idle host could take, by stopping the
+    /// expired `preempt`-lease job on one. Returns the job it signalled.
+    ///
+    /// The queued job is *not* held for that host: it stays queued and a later
+    /// pass places it wherever it fits once the host is released, so the
+    /// oldest-first order still decides who gets the freed capacity. What the
+    /// pass must not do is evict twice for one job, which is what
+    /// `reclaim_pending` guards -- a reclaim already in flight on a host this
+    /// job could use is capacity on the way, so we wait for it instead.
+    async fn try_reclaim(
+        &self,
+        job_id: Uuid,
+        cutoff: DateTime<Utc>,
+    ) -> anyhow::Result<Option<Uuid>> {
+        let now = Utc::now();
+        let candidates = sqlx::query!(
+            r#"select host_id as "host_id!", reclaim_pending as "reclaim_pending!"
+               from tml_switchboard.reclaimable_hosts($1, $2, $3)"#,
+            job_id,
+            cutoff,
+            now,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        if candidates.iter().any(|c| c.reclaim_pending) {
+            return Ok(None);
+        }
+        let Some(candidate) = candidates.first() else {
+            return Ok(None);
+        };
+        let host_id = candidate.host_id;
+
+        let mut txn = self.pool.begin().await?;
+        let Some(victim) = sql::job::request_preempt(host_id, now, &mut txn).await? else {
+            return Ok(None);
+        };
+        audit::emit(
+            &mut txn,
+            &events::JobPreempted {
+                actor: AuditSubject(SYSTEM_ACTOR_ID),
+                job: AuditJob(victim),
+                host: AuditHost(host_id),
+            },
+        )
+        .await?;
+        txn.commit().await?;
+
+        tracing::info!(
+            %host_id,
+            %victim,
+            %job_id,
+            "reclaiming a host with an expired lease to place a queued job"
+        );
+        Ok(Some(victim))
     }
 
     /// Attempt to place `job_id` on `host_id` in a single guarded transaction.
@@ -584,7 +651,8 @@ mod tests {
             parameters: HashMap::new(),
             host_tag_requirements: tags(host_tag_requirements),
             target_requirements: target_requirements.iter().map(|r| tags(r)).collect(),
-            override_timeout: None,
+            lease_duration: None,
+            lease_expiry_action: None,
         };
         // Mirror the enqueue route: the job is owned by the enqueuing token's
         // user. Host authorization (`eligible_hosts`) is evaluated against this
@@ -602,6 +670,7 @@ mod tests {
             token,
             Some(owner),
             PgInterval::try_from(Duration::hours(1)).unwrap(),
+            sql::job::SqlLeaseExpiryAction::Terminate,
             queued_at,
             &mut tx,
         )
@@ -1262,6 +1331,138 @@ mod tests {
             job_state(&pool, waiting).await?,
             "queued",
             "the waiting job is not placed on the busy host"
+        );
+        Ok(())
+    }
+
+    // -- reclamation of expired `preempt` leases -------------------------------
+
+    /// Put `job` on `host` as a running job whose lease started `lease_age_mins`
+    /// ago and runs for `lease_mins`, with the given expiry action.
+    async fn occupy_host(
+        pool: &PgPool,
+        host: Uuid,
+        job: Uuid,
+        lease_age_mins: i64,
+        lease_mins: i32,
+        expiry_action: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query("update tml_switchboard.hosts set current_job = $1 where host_id = $2")
+            .bind(job)
+            .bind(host)
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "update tml_switchboard.jobs \
+             set job_state = 'ready', dispatched_on_host_id = $2, started_at = $3, \
+                 lease_duration = make_interval(mins => $4), \
+                 lease_expiry_action = $5::tml_switchboard.lease_expiry_action \
+             where job_id = $1",
+        )
+        .bind(job)
+        .bind(host)
+        .bind(Utc::now() - Duration::minutes(lease_age_mins))
+        .bind(lease_mins)
+        .bind(expiry_action)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn terminate_request(pool: &PgPool, job_id: Uuid) -> anyhow::Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "select terminate_requested_reason::text from tml_switchboard.jobs where job_id = $1",
+        )
+        .bind(job_id)
+        .fetch_one(pool)
+        .await?)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn reclaims_a_host_whose_preempt_lease_expired(pool: PgPool) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let host = insert_live_host(&pool, user, &["arch=arm64"]).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
+
+        let running = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+        occupy_host(&pool, host, running, 120, 60, "preempt").await?;
+
+        let waiting = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+        scheduler(pool.clone()).tick().await?;
+
+        assert_eq!(
+            terminate_request(&pool, running).await?.as_deref(),
+            Some("preempted")
+        );
+        assert!(
+            audit_event_types_for_job(&pool, running)
+                .await?
+                .contains(&"job_preempted.v1".to_string())
+        );
+        // The queued job is not held for the host: the victim's worker has to
+        // release it first, so the job is still queued after this pass.
+        assert_eq!(job_state(&pool, waiting).await?, "queued");
+        assert_eq!(host_current_job(&pool, host).await?, Some(running));
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn does_not_reclaim_a_live_lease_or_a_terminate_lease(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let unexpired = insert_live_host(&pool, user, &["arch=arm64"]).await?;
+        let hard = insert_live_host(&pool, user, &["arch=arm64"]).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
+
+        let a = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+        occupy_host(&pool, unexpired, a, 10, 60, "preempt").await?;
+        let b = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+        occupy_host(&pool, hard, b, 120, 60, "terminate").await?;
+
+        enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+        scheduler(pool.clone()).tick().await?;
+
+        assert_eq!(terminate_request(&pool, a).await?, None);
+        assert_eq!(terminate_request(&pool, b).await?, None);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn one_queued_job_never_reclaims_two_hosts(pool: PgPool) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let first = insert_live_host(&pool, user, &["arch=arm64"]).await?;
+        let second = insert_live_host(&pool, user, &["arch=arm64"]).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
+
+        let a = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+        occupy_host(&pool, first, a, 180, 60, "preempt").await?;
+        let b = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+        occupy_host(&pool, second, b, 120, 60, "preempt").await?;
+
+        enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
+        // The victim keeps running until its worker converges, so the second
+        // pass sees the same still-queued job and must wait for the reclaim it
+        // already asked for rather than taking another host.
+        let sched = scheduler(pool.clone());
+        sched.tick().await?;
+        sched.tick().await?;
+
+        assert_eq!(
+            terminate_request(&pool, a).await?.as_deref(),
+            Some("preempted"),
+            "the longest-unprotected lease is the one reclaimed"
+        );
+        assert_eq!(
+            terminate_request(&pool, b).await?,
+            None,
+            "the second host is left alone while the first reclaim is in flight"
         );
         Ok(())
     }

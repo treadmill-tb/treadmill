@@ -77,6 +77,7 @@ export function TerminationBadge({
       break;
     case "queue_timeout":
     case "execution_timeout":
+    case "preempted":
       cls = "warn";
       break;
     case "image_error":

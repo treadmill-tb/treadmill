@@ -19,7 +19,7 @@ use std::time::Duration;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use treadmill_rs::api::switchboard::images::{ImageInfo, ImageSetGenerationInfo, ImageSetInfo};
-use treadmill_rs::api::switchboard::jobs::EnqueueJobResponse;
+use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, LeaseRejection};
 use treadmill_rs::api::switchboard::{LoginResponse, LoginStagedResponse};
 
 pub fn build_router(state: AppState) -> Router<()> {
@@ -273,7 +273,7 @@ pub fn api_router() -> ApiRouter<AppState> {
             }),
         )
         //  GET    /jobs/{id} -- fetch one job's full info
-        //  PATCH  /jobs/{id} -- update a job's mutable metadata (label)
+        //  PATCH  /jobs/{id} -- update a job's mutable metadata (label, lease)
         //  DELETE /jobs/{id} -- request termination of a job
         .api_route(
             "/jobs/{id}",
@@ -281,6 +281,11 @@ pub fn api_router() -> ApiRouter<AppState> {
                 .patch_with(jobs::update_job, |o| {
                     doc(o, "updateJob", "Jobs", "Update a job")
                         .response_with::<204, (), _>(|r| r.description("The job was updated."))
+                        .response_with::<409, Json<LeaseRejection>, _>(|r| {
+                            r.description(
+                                "The requested lease change was refused; nothing was applied.",
+                            )
+                        })
                 })
                 .delete_with(jobs::terminate, |o| {
                     doc(o, "terminateJob", "Jobs", "Terminate a job")

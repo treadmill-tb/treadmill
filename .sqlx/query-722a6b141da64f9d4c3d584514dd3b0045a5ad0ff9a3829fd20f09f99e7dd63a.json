@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tml_switchboard.jobs\n           set lease_duration = $2, lease_expiry_action = $3\n           where job_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Interval",
+        {
+          "Custom": {
+            "name": "tml_switchboard.lease_expiry_action",
+            "kind": {
+              "Enum": [
+                "terminate",
+                "preempt"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "722a6b141da64f9d4c3d584514dd3b0045a5ad0ff9a3829fd20f09f99e7dd63a"
+}

@@ -19,6 +19,19 @@ import { Tags } from "../components/tags";
 import { useResourceWatch } from "../hooks/use-resource-watch";
 import type { Route } from "./+types/job-detail";
 
+const LEASE_PROMPT =
+  'New lease: "2h" to set it, "+30m" / "-10m" to extend or shorten, ' +
+  "or an ISO timestamp to end it at a fixed instant.";
+
+function formatSeconds(secs: number): string {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  return [h && `${h}h`, m && `${m}m`, (s || !(h || m)) && `${s}s`]
+    .filter(Boolean)
+    .join(" ");
+}
+
 export default function JobDetail({ params }: Route.ComponentProps) {
   const queryClient = useQueryClient();
   useResourceWatch(`/jobs/${params.id}/watch`, ["get", "/jobs/{id}"]);
@@ -142,8 +155,58 @@ export default function JobDetail({ params }: Route.ComponentProps) {
             <dd>
               <RelTime iso={job.data.terminated_at} />
             </dd>
-            <dt>Timeout</dt>
-            <dd>{job.data.timeout_secs}s</dd>
+            <dt>Lease</dt>
+            <dd>
+              {formatSeconds(job.data.lease_duration_secs)}
+              {job.data.lease_expires_at != null && (
+                <>
+                  {" · expires "}
+                  <RelTime iso={job.data.lease_expires_at} />
+                </>
+              )}{" "}
+              {job.data.permissions.includes("manage") && (
+                <button
+                  disabled={update.isPending}
+                  onClick={() => {
+                    const lease = window.prompt(LEASE_PROMPT, "+30m");
+                    if (lease !== null && lease !== "") {
+                      update.mutate({
+                        params: { path: { id: params.id } },
+                        body: { lease },
+                      });
+                    }
+                  }}
+                >
+                  Change
+                </button>
+              )}
+            </dd>
+            <dt>At lease expiry</dt>
+            <dd>
+              {job.data.lease_expiry_action === "preempt"
+                ? "keep running; reclaim when a host is needed"
+                : "terminate"}{" "}
+              {job.data.permissions.includes("manage") && (
+                <button
+                  disabled={update.isPending}
+                  onClick={() =>
+                    update.mutate({
+                      params: { path: { id: params.id } },
+                      body: {
+                        lease_expiry_action:
+                          job.data.lease_expiry_action === "preempt"
+                            ? "terminate"
+                            : "preempt",
+                      },
+                    })
+                  }
+                >
+                  {job.data.lease_expiry_action === "preempt"
+                    ? "Terminate instead"
+                    : "Allow reclaim instead"}
+                </button>
+              )}
+            </dd>
             <dt>Restarts left</dt>
             <dd>{job.data.restart_policy.remaining_restarts}</dd>
             <dt>Host tags required</dt>

@@ -1677,7 +1677,7 @@ mod tests {
                  enqueued_by_token_id, \
                  owner_id, \
                  host_tag_requirements, \
-                 job_timeout, \
+                 lease_duration, \
                  job_state, \
                  initializing_stage, \
                  queued_at, \
@@ -1774,7 +1774,7 @@ mod tests {
                  enqueued_by_token_id, \
                  owner_id, \
                  host_tag_requirements, \
-                 job_timeout, \
+                 lease_duration, \
                  job_state, \
                  initializing_stage, \
                  queued_at, \
@@ -2388,7 +2388,9 @@ mod tests {
         }
 
         sqlx::query(
-            "update tml_switchboard.jobs set terminate_requested_at = now() where job_id = $1",
+            "update tml_switchboard.jobs \
+             set terminate_requested_at = now(), terminate_requested_reason = 'user_terminated' \
+             where job_id = $1",
         )
         .bind(job_id)
         .execute(&pool)
@@ -3508,7 +3510,7 @@ mod tests {
             "insert into tml_switchboard.jobs \
              (job_id, resume_job_id, restart_job_id, image_id, image_set_id, \
               image_set_generation, \
-              restart_policy, enqueued_by_token_id, host_tag_requirements, job_timeout, job_state, \
+              restart_policy, enqueued_by_token_id, host_tag_requirements, lease_duration, job_state, \
               initializing_stage, queued_at, started_at, dispatched_on_host_id, \
               termination_reason, task_exit_status, exit_message, terminated_at) \
              values \
@@ -4255,14 +4257,14 @@ mod tests {
         Ok(())
     }
 
-    // -- stop pre-check: execution timeout & user terminate --------------------
+    // -- stop pre-check: lease expiry & user terminate -------------------------
     //
     // These pin down reconcile's "should this assigned job stop?" pre-check,
-    // shared by execution-timeout and user-terminate. Both are re-derived from
+    // shared by lease expiry and user-terminate. Both are re-derived from
     // fresh DB state each pass (see `SqlJob::switchboard_stop_reason`).
 
-    /// Push a running job's `started_at` two hours into the past so it is over
-    /// its one-hour `job_timeout` (the value `insert_job` seeds).
+    /// Push a running job's `started_at` two hours into the past so it is past
+    /// the end of the one-hour lease `insert_job` seeds.
     async fn expire_started_at(pool: &PgPool, job_id: Uuid) -> anyhow::Result<()> {
         sqlx::query(
             "update tml_switchboard.jobs \
@@ -4274,10 +4276,12 @@ mod tests {
         Ok(())
     }
 
-    /// Set the DB-side user-terminate signal (`terminate_requested_at`).
+    /// Set the DB-side user-terminate signal.
     async fn request_terminate(pool: &PgPool, job_id: Uuid) -> anyhow::Result<()> {
         sqlx::query(
-            "update tml_switchboard.jobs set terminate_requested_at = now() where job_id = $1",
+            "update tml_switchboard.jobs \
+             set terminate_requested_at = now(), terminate_requested_reason = 'user_terminated' \
+             where job_id = $1",
         )
         .bind(job_id)
         .execute(pool)
@@ -4405,7 +4409,7 @@ mod tests {
 
     /// Within its deadline: the pre-check does not fire — the job is adopted
     /// normally and no TerminateJob is issued. This is the re-check that lets a
-    /// deadline extension (a larger `job_timeout` / later `started_at`) rescue a
+    /// lease extension (a larger `lease_duration` / later `started_at`) rescue a
     /// job: the very next pass simply sees it is no longer expired.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
