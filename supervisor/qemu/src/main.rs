@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -13,9 +12,8 @@ use tracing::{Level, event, instrument};
 
 use treadmill_rs::api::switchboard_supervisor::ImageSpecification;
 use treadmill_rs::connector::{self, StartJobMessage, SupervisorConnector};
-use treadmill_rs::image::Digest;
 use treadmill_rs::image::blockdev::BackingChain;
-use treadmill_rs::image::parse::{self, ImageLayer, TreadmillImage};
+use treadmill_rs::image::parse::{self, ChainError, TreadmillImage};
 use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 
 use treadmill_supervisor_lib::capture::SerialSocket;
@@ -161,50 +159,19 @@ impl QemuBackend {
         }
     }
 
-    /// Order the image's runtime backing chain base→head and map each layer to
-    /// its on-disk blob path in the local store.
+    /// Map the image's ordered backing chain to the blob paths the local store
+    /// holds it at, base first (ready for [`BackingChain::new`]), with the head
+    /// layer's virtual size.
     ///
-    /// The chain is read from the OCI manifest: starting at the head, we
-    /// follow each layer's `lower` annotation down to the base, guarding against
-    /// dangling references and cycles. Returns the shared read-only lower paths
-    /// **base-first** (ready for [`BackingChain::new`]) plus the head layer's
-    /// advertised virtual size, used to size the per-job overlay. The backing
-    /// paths are never baked into the shared blobs; the chain is assembled at
-    /// launch via `-blockdev` nodes.
-    #[instrument(skip(self, image), err(Debug, level = Level::WARN))]
-    fn assemble_backing_chain(&self, image: &TreadmillImage) -> Result<(Vec<PathBuf>, u64)> {
-        let by_digest: HashMap<&Digest, &ImageLayer> =
-            image.layers.iter().map(|l| (&l.digest, l)).collect();
-
-        // Walk head → base following `lower`, collecting head-first.
-        let mut head_first: Vec<&ImageLayer> = Vec::with_capacity(image.layers.len());
-        let mut seen: std::collections::HashSet<&Digest> = std::collections::HashSet::new();
-        let mut cursor = Some(&image.head);
-        while let Some(digest) = cursor {
-            let layer = by_digest
-                .get(digest)
-                .ok_or_else(|| anyhow!("backing chain references missing layer {digest}"))?;
-            if !seen.insert(digest) {
-                bail!("backing chain has a cycle at layer {digest}");
-            }
-            head_first.push(layer);
-            cursor = layer.lower.as_ref();
-        }
-
-        let head_virtual_size = head_first
-            .first()
-            .ok_or_else(|| anyhow!("backing chain has no layers"))?
-            .virtual_size
-            .ok_or_else(|| anyhow!("head layer {} has no virtual-size annotation", image.head))?;
-
-        // The shared read-only lowers, base-first, as direct store blob paths.
-        let lower_paths = head_first
-            .iter()
-            .rev()
+    /// The backing paths are never baked into the shared blobs; the chain is
+    /// assembled at launch via `-blockdev` nodes.
+    fn chain_blob_paths(&self, image: &TreadmillImage) -> Result<(Vec<PathBuf>, u64), ChainError> {
+        let (chain, head_virtual_size) = image.backing_chain()?;
+        let paths = chain
+            .into_iter()
             .map(|layer| self.image_store.blob_path(&layer.digest))
             .collect();
-
-        Ok((lower_paths, head_virtual_size))
+        Ok((paths, head_virtual_size))
     }
 }
 
@@ -286,16 +253,13 @@ impl JobBackend for QemuBackend {
         image: TreadmillImage,
         vars: &mut JobVars,
     ) -> Result<BackingChain, connector::JobError> {
-        // Order the OCI backing chain base→head and map each layer to its
-        // read-only store blob path. The head's virtual size sizes the overlay.
-        //
         // A malformed chain (dangling/cyclic lower, missing virtual size) is
         // treated as an invalid image.
         let (lower_paths, head_virtual_size) =
-            self.assemble_backing_chain(&image)
+            self.chain_blob_paths(&image)
                 .map_err(|e| connector::JobError {
                     error_kind: connector::JobErrorKind::ImageInvalid,
-                    description: format!("Invalid backing chain: {e:#}"),
+                    description: format!("Invalid backing chain: {e}"),
                 })?;
 
         // The overlay is always created at the ceiling, and the VM is exposed
@@ -676,6 +640,7 @@ mod tests {
 
     use super::*;
 
+    use std::collections::HashMap;
     use std::process::ExitStatus;
 
     use oci_spec::image::ImageManifest;
@@ -685,6 +650,8 @@ mod tests {
     use treadmill_rs::api::switchboard_supervisor::{
         ImageLocation, LogStreamingDispatch, ParameterValue, RestartPolicy,
     };
+    use treadmill_rs::image::Digest;
+    use treadmill_rs::image::parse::ImageLayer;
     use treadmill_supervisor_lib::launcher::{QemuImgMetadata, WorkloadProcess};
 
     /// The shipped example is a deployment's starting point, so it has to
@@ -876,15 +843,15 @@ mod tests {
 
     const GIB: u64 = 1024 * 1024 * 1024;
 
-    /// The chain the manifest describes head→base is handed to QEMU base→head,
-    /// which is the order the `-blockdev` nodes have to be emitted in, and the
-    /// overlay is sized from the head's virtual size.
+    /// The ordered chain is mapped to the blob paths the local store holds the
+    /// layers at, in the order the `-blockdev` nodes have to be emitted in, and
+    /// the overlay is sized from the head's virtual size. (The ordering itself
+    /// is the image's business, and is tested in `treadmill_rs::image::parse`.)
     #[tokio::test]
-    async fn the_backing_chain_is_ordered_base_first() {
+    async fn the_chain_is_mapped_to_store_blob_paths() {
         let f = fixture(4 * GIB, vec![]);
         let (base, middle, head) = (digest(1), digest(2), digest(3));
 
-        // Deliberately not in chain order in the manifest.
         let image = image(
             vec![
                 over(base_layer(middle, Some(2 * GIB)), base),
@@ -894,7 +861,7 @@ mod tests {
             head,
         );
 
-        let (paths, head_virtual_size) = f.backend.assemble_backing_chain(&image).unwrap();
+        let (paths, head_virtual_size) = f.backend.chain_blob_paths(&image).unwrap();
 
         assert_eq!(
             paths,
@@ -907,62 +874,28 @@ mod tests {
         assert_eq!(head_virtual_size, 4 * GIB);
     }
 
-    /// A layer whose `lower` names nothing in the manifest leaves the chain
-    /// with no base, and cannot be assembled.
+    /// A chain the image cannot assemble fails the job as an invalid image,
+    /// whatever is wrong with it.
     #[tokio::test]
-    async fn a_dangling_lower_is_refused() {
+    async fn a_malformed_chain_is_an_invalid_image() {
         let f = fixture(4 * GIB, vec![]);
         let head = digest(3);
 
+        // A `lower` naming nothing in the manifest: no base to stack on.
         let image = image(vec![over(base_layer(head, Some(GIB)), digest(9))], head);
 
+        let mut vars = JobVars::new();
         let error = f
             .backend
-            .assemble_backing_chain(&image)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("missing layer"), "{error}");
-    }
+            .allocate(&start_msg(Uuid::new_v4()), f.tmp.path(), image, &mut vars)
+            .await
+            .unwrap_err();
 
-    /// `lower` references that loop would walk forever; the walk stops at the
-    /// layer it revisits.
-    #[tokio::test]
-    async fn a_cyclic_lower_is_refused() {
-        let f = fixture(4 * GIB, vec![]);
-        let (lower, head) = (digest(2), digest(3));
-
-        let image = image(
-            vec![
-                over(base_layer(head, Some(GIB)), lower),
-                over(base_layer(lower, Some(GIB)), head),
-            ],
-            head,
+        assert!(
+            matches!(error.error_kind, connector::JobErrorKind::ImageInvalid),
+            "{error:?}",
         );
-
-        let error = f
-            .backend
-            .assemble_backing_chain(&image)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("cycle"), "{error}");
-    }
-
-    /// Without the head's virtual size there is nothing to check the
-    /// working-disk ceiling against, so the image is unusable even though the
-    /// chain itself is well-formed.
-    #[tokio::test]
-    async fn a_head_without_a_virtual_size_is_refused() {
-        let f = fixture(4 * GIB, vec![]);
-        let head = digest(3);
-
-        let image = image(vec![base_layer(head, None)], head);
-
-        let error = f
-            .backend
-            .assemble_backing_chain(&image)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("virtual-size"), "{error}");
+        assert!(f.launcher.overlays().is_empty(), "nothing was allocated");
     }
 
     async fn allocate(
