@@ -4,7 +4,7 @@
 //! implicitly when their first source is added: adding a source pulls the
 //! manifest from the user's registry, validates it is a well-formed Treadmill
 //! artifact via [`treadmill_rs::image::parse`], and records reference rows —
-//! never bytes (`doc/oci-image-migration-plan.md` §8.1). The image row is a
+//! never bytes. The image row is a
 //! non-owned cache of the manifest's projections; its database id never leaves
 //! the API.
 //!

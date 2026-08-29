@@ -1,7 +1,7 @@
 //! Runtime assembly of a qcow2 backing chain for `qemu-system-*` and
 //! `qemu-storage-daemon`.
 //!
-//! Treadmill never bakes backing paths into the shared qcow2 blobs (D3): the
+//! Treadmill never bakes backing paths into the shared qcow2 blobs: the
 //! chain is supplied at launch. This module turns an ordered chain — shared
 //! read-only lower layers (base first) plus the per-job writable overlay on top
 //! — into a `-blockdev` node graph ([`BackingChain::blockdev_args`]): each layer
@@ -15,10 +15,10 @@
 //! - the netboot path feeds the *same* nodes to `qemu-storage-daemon` and adds
 //!   an NBD `--export` of [`BackingChain::TOP_NODE`].
 //!
-//! This supersedes the original plan's `qemu-nbd --image-opts` form (D9):
+//! This supersedes the earlier `qemu-nbd --image-opts` form:
 //! `qemu-nbd`/`qemu-img` `--image-opts` is a single `QemuOpts` blockdev and
 //! **cannot express an inline backing node** (`qcow2` rejects `backing.driver`),
-//! so an unbaked multi-layer chain (D3) is impossible to convey that way.
+//! so an unbaked multi-layer chain is impossible to convey that way.
 //! `qemu-storage-daemon` accepts the full node graph and exports it over NBD, so
 //! both runtimes use the node-graph emitter and the per-target divergence is
 //! just the NBD server/export flags (a supervisor concern).
@@ -29,7 +29,7 @@
 //! Paths are emitted verbatim into comma-separated key/value option strings;
 //! qemu's keyval parser has no escape for `,` in a value, so this assumes blob
 //! and overlay paths contain no commas (the daemon's content-addressed store
-//! paths do not). See `doc/oci-image-migration-plan.md` §6.2/§D9.
+//! paths do not).
 
 use std::path::{Path, PathBuf};
 

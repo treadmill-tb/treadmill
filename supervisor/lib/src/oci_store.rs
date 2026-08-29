@@ -1,11 +1,11 @@
 //! Read-only client of the per-server Zot store daemon.
 //!
-//! Under the OCI image migration (`doc/oci-image-migration-plan.md` §6/§7) a
-//! single per-server **Zot daemon owns the local store** — it is the only
-//! writer. Supervisors never write its filesystem: they make a digest present
-//! through the daemon's registry API and then open the daemon's on-disk blob
-//! files **read-only**, pointing `qemu` / `qemu-nbd` straight at them. One
-//! on-disk copy, shared page cache (D7/D8).
+//! Under the OCI image migration a single per-server **Zot daemon owns the
+//! local store** — it is the only writer. Supervisors never write its
+//! filesystem: they make a digest present through the daemon's registry API
+//! and then open the daemon's on-disk blob files **read-only**, pointing
+//! `qemu` / `qemu-nbd` straight at them. One
+//! on-disk copy, shared page cache.
 //!
 //! Zot lays its storage out as one OCI image layout per repository:
 //!
@@ -25,7 +25,7 @@
 //! upstream location into the **local** daemon by digest (a registry-to-registry
 //! `skopeo copy`), landing the whole closure in the daemon's store; the
 //! supervisor then opens those files read-only. Every candidate location is
-//! tried in order so a supervisor fails over when one is unavailable (D16).
+//! tried in order so a supervisor fails over when one is unavailable.
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -56,8 +56,7 @@ pub struct OciStoreConfig {
 ///
 /// Injectable (the supervisors hold `Arc<dyn ImageStore>`) so the state machine
 /// can be driven by tests with a stub store, and so the production path uses the
-/// OCI-backed [`OciStore`]. The methods mirror [`OciStore`]'s inherent API; see
-/// `doc/oci-image-migration-plan.md` §6.
+/// OCI-backed [`OciStore`]. The methods mirror [`OciStore`]'s inherent API.
 #[async_trait]
 pub trait ImageStore: std::fmt::Debug + Send + Sync {
     /// Ensure the image manifest `digest` and its blob closure are present in
@@ -120,7 +119,7 @@ impl ImageStore for OciStore {
 /// The supervisor copies the image from this `(registry, repository)` upstream
 /// into its *local* Zot and then reads it back off disk. Multiple locations let
 /// a supervisor fail over when one is unavailable — every location serves the
-/// same digest, so any that succeeds is interchangeable (D12/D16).
+/// same digest, so any that succeeds is interchangeable.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Location {
     /// Registry authority (`host:port`) the bytes are copied from.
@@ -192,7 +191,7 @@ impl OciStore {
 
     /// Ensure the image manifest `digest` and its whole blob closure are present
     /// in the local daemon's store, trying each location in order and failing
-    /// over on error (D16).
+    /// over on error.
     ///
     /// Concurrent calls for the same digest are safe: ingest is serialized inside
     /// the daemon and is idempotent (content-addressed).
@@ -348,7 +347,7 @@ impl OciStore {
 
     /// The local daemon's manifest URL for `reference` (a tag or digest). The
     /// daemon is reached over loopback HTTP (`new` fixes the protocol to HTTP);
-    /// token-gating is D11/Phase 5.
+    /// pulls are not token-gated.
     fn manifest_url(&self, reference: &str) -> String {
         format!(
             "http://{}/v2/{LOCAL_REPOSITORY}/manifests/{}",
@@ -855,7 +854,7 @@ mod tests {
         assert!(!loopback_registry("10.0.0.1:5000"));
     }
 
-    // ---- Phase 3: leases-as-references & GC (plan §7.3–7.4) ----
+    // ---- leases-as-references & GC ----
 
     /// A process-unique string, for victim blobs that must be distinct from the
     /// fixture's content-addressed blobs.

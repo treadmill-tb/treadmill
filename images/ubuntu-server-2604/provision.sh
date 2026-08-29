@@ -1,9 +1,9 @@
 #!/bin/sh
 # Ubuntu-specific in-guest provisioning.
 #
-# Runs under `virt-customize --run` AFTER images/lib/provision-common.sh. See
-# doc/images-libguestfs-build-plan.md §7. Partitioning / UEFI / grub-install /
-# initramfs all come from the cloud image and are NOT reapplied here.
+# Runs under `virt-customize --run` AFTER images/lib/provision-common.sh.
+# Partitioning / UEFI / grub-install / initramfs all come from the cloud image
+# and are NOT reapplied here.
 set -eu
 
 # cloud-init is purged: we own growpart (expandroot), ssh host keys, and

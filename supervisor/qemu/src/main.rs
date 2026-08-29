@@ -154,13 +154,13 @@ impl QemuBackend {
     /// Order the image's runtime backing chain base→head and map each layer to
     /// its on-disk blob path in the local store.
     ///
-    /// The chain is read from the OCI manifest (D3): starting at the head, we
+    /// The chain is read from the OCI manifest: starting at the head, we
     /// follow each layer's `lower` annotation down to the base, guarding against
     /// dangling references and cycles. Returns the shared read-only lower paths
     /// **base-first** (ready for [`BackingChain::new`]) plus the head layer's
     /// advertised virtual size, used to size the per-job overlay. The backing
     /// paths are never baked into the shared blobs; the chain is assembled at
-    /// launch via `-blockdev` nodes (D9).
+    /// launch via `-blockdev` nodes.
     #[instrument(skip(self, image), err(Debug, level = Level::WARN))]
     fn assemble_backing_chain(&self, image: &TreadmillImage) -> Result<(Vec<PathBuf>, u64)> {
         let by_digest: HashMap<&Digest, &ImageLayer> =
@@ -264,7 +264,7 @@ impl JobBackend for QemuBackend {
     /// Assemble the runtime backing chain: the image's shared read-only lowers,
     /// base first, with a per-job writable overlay on top.
     ///
-    /// The overlay is created with **no baked backing** (D3): the lower layers
+    /// The overlay is created with **no baked backing**: the lower layers
     /// are supplied at launch as `-blockdev` nodes. It is sized to the
     /// configured working-disk maximum; the head's virtual size must fit within
     /// that ceiling.

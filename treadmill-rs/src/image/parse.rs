@@ -2,9 +2,9 @@
 //!
 //! OCI gives us a generic `ImageManifest` type; this module projects it onto the
 //! Treadmill-meaningful view — a backing chain of qcow2 layers for an image —
-//! while validating the invariants the rest of the system relies on (see
-//! `doc/oci-image-migration-plan.md` §5). Image *sets* are not OCI artifacts:
-//! they are mutable, generationed switchboard entities.
+//! while validating the invariants the rest of the system relies on. Image
+//! *sets* are not OCI artifacts: they are mutable, generationed switchboard
+//! entities.
 
 use std::str::FromStr;
 

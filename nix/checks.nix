@@ -184,8 +184,7 @@
               touch $out
             '';
       }
-      # Phase 0 of the OCI image migration (doc/oci-image-migration-plan.md
-      # §12.2): build the `tiny-efi` fixture and reparse its real wire-format
+      # Build the `tiny-efi` fixture and reparse its real wire-format
       # manifest through our `oci-spec`/`parse.rs` view. The `tiny_efi`
       # integration test skips when `TINY_EFI_IMAGE` is unset (so the plain
       # `nextest` check above passes it over); here we point it at the built
@@ -206,8 +205,7 @@
           }
         );
 
-        # Phase 1 of the OCI image migration (§6/§7/§12.3): drive the
-        # `oci_store` client against a real child Zot. The tests spin up Zot
+        # Drive the `oci_store` client against a real child Zot. The tests spin up Zot
         # (and a second one as a copy source) on loopback and skopeo the
         # `tiny-efi` fixture in, so the check needs zot + skopeo on PATH and the
         # built fixture in TINY_EFI_IMAGE. Like the reparse test, the oci_store
@@ -240,8 +238,7 @@
           }
         );
 
-        # Phase 3 of the OCI image migration (§7.3/§7.4/§12.3): prove the
-        # leases-as-references model against the real Zot binary. The tests pin
+        # Prove the leases-as-references model against the real Zot binary. The tests pin
         # an `inuse-<job>` reference, drive Zot's GC, and assert the pinned
         # closure is retained while an unreferenced image is collected (and that
         # releasing the lease makes the closure collectible). Same external needs
@@ -271,8 +268,7 @@
           }
         );
 
-        # Phase 2 of the OCI image migration (§6.2/§D9/§12.5): validate the
-        # backing-chain emitter against real qemu — assemble the `-blockdev`
+        # Validate the backing-chain emitter against real qemu — assemble the `-blockdev`
         # node graph with qemu-storage-daemon, export it over NBD, and read it
         # back with qemu-io. Needs the qemu tools on PATH; the test skips
         # without them so the plain `nextest` check passes it over.
@@ -292,9 +288,9 @@
           }
         );
 
-        # Log streaming (doc/log-streaming-plan.md phase 3): the live NATS
-        # round-trips that can't run in the restricted sandbox (nats-server
-        # binds a TCP port; AGENTS.md §2). Spins up a real `nats-server -js`
+        # Log streaming: the live NATS round-trips that can't run in the
+        # restricted sandbox (nats-server binds a TCP port; AGENTS.md §2).
+        # Spins up a real `nats-server -js`
         # per test on loopback and runs the two `nats_live_*` tests:
         #   - supervisor-lib: spill → ship (publish-with-headers + ack) → read,
         #     asserting subject/headers/payloads round-trip;
@@ -331,9 +327,9 @@
       # name starts with `image-`: the layouts, the per-image `image-check-*`
       # drift guards, and the `image-util` binary. Those layouts are heavy
       # distro/TCG builds that must never gate ordinary PRs or the merge queue
-      # (doc/images-libguestfs-build-plan.md §8); the dedicated
-      # `.github/workflows/images.yml` builds them explicitly instead. (The
-      # `image-util` binary is compiled by the clippy check regardless, so it
+      # the dedicated `.github/workflows/images.yml` builds them explicitly
+      # instead. (The `image-util` binary is compiled by the clippy check
+      # regardless, so it
       # stays covered.)
       // (lib.filterAttrs (name: _: !(lib.hasPrefix "image-" name)) self'.packages);
     };

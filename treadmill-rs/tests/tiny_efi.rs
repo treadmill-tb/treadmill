@@ -1,7 +1,6 @@
 //! Round-trips the committed `tiny-efi` OCI fixture through our `oci-spec` view.
 //!
-//! The fixture is built by `nix/tiny-efi.nix` (see
-//! `doc/oci-image-migration-plan.md` §12.2): a two-layer qcow2 backing chain
+//! The fixture is built by `nix/tiny-efi.nix`: a two-layer qcow2 backing chain
 //! packaged as a standard OCI image layout. This test reparses that real
 //! wire-format manifest with [`treadmill_rs::image::parse`] and asserts the
 //! Treadmill view it projects — proving the layout the fixture emits and the

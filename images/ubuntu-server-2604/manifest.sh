@@ -3,7 +3,7 @@
 # images/ubuntu-server-2604/manifest.sh — data only, sourced by build-image.sh.
 #
 # Ubuntu Server 26.04 LTS (resolute), amd64, qemu/uefi. Built from the upstream
-# cloud image (libguestfs pipeline; see doc/images-libguestfs-build-plan.md).
+# cloud image (libguestfs pipeline).
 export arch="x86_64"
 export type="disk" # whole-disk qcow2 base
 export title="Ubuntu Server 26.04"

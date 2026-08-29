@@ -4,7 +4,7 @@
 # Runs under `virt-customize --run`: the target root is mounted and the guest
 # kernel is NEVER booted (no chroot/`/mnt` prefix, no running systemd). Ports
 # the Treadmill-specific steps from the legacy images/ubuntu-2204/rootfs.nix
-# `postInstall` chroot. See doc/images-libguestfs-build-plan.md §6.
+# `postInstall` chroot.
 #
 # POSIX sh (the guest shell may be dash): no bash arrays / `[[ ]]`.
 set -eu

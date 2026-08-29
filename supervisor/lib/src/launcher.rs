@@ -5,8 +5,7 @@
 //! itself (`qemu-system-*` / `qemu-nbd`). Funnelling those through the
 //! [`ProcessLauncher`] trait lets the job state machine be driven in-process by
 //! tests with a stub launcher — observing the arguments it would have run and
-//! simulating workload exit — without spawning real binaries. See
-//! `doc/oci-image-migration-plan.md` §12 (Phase 0.5).
+//! simulating workload exit — without spawning real binaries.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -26,10 +25,9 @@ pub type BoxedAsyncRead = Box<dyn AsyncRead + Send + Unpin>;
 
 /// How a spawned workload's stdout/stderr are wired up.
 ///
-/// Log streaming (see `doc/log-streaming-plan.md`) needs qemu's stdout/stderr as
-/// readable byte streams; when streaming is disabled we keep the historical
-/// behavior of inheriting the supervisor's own fds so the operator sees output
-/// on the terminal.
+/// Log streaming needs qemu's stdout/stderr as readable byte streams; when
+/// streaming is disabled we keep the historical behavior of inheriting the
+/// supervisor's own fds so the operator sees output on the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StdioMode {
     /// stdout/stderr inherit the supervisor's fds (no capture). This is the
@@ -128,7 +126,7 @@ pub trait ProcessLauncher: std::fmt::Debug + Send + Sync {
     /// **no baked backing file** (`qemu-img create -f qcow2 <disk> <size>`).
     ///
     /// Treadmill never bakes a backing path into a per-job overlay: the backing
-    /// chain is supplied at launch via `-blockdev` nodes (D3/D9, see
+    /// chain is supplied at launch via `-blockdev` nodes (see
     /// [`treadmill_rs::image::blockdev::BackingChain`]).
     async fn create_overlay_no_backing(&self, disk: &Path, virtual_size_bytes: u64) -> Result<()>;
 

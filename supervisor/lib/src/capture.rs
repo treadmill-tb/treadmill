@@ -1,15 +1,15 @@
 //! Console-log capture plumbing shared by the supervisors.
 //!
-//! Log streaming (see `doc/log-streaming-plan.md`) captures three byte
-//! channels off a qemu workload: its stdout, its stderr, and the guest serial
-//! console. stdout/stderr are piped through the [`crate::launcher`] seam
-//! ([`StdioMode::Capture`]); the serial console is routed to a unix-domain
-//! socket the supervisor owns ([`SerialSocket`]) and read back from there.
+//! Log streaming captures three byte channels off a qemu workload: its stdout,
+//! its stderr, and the guest serial console. stdout/stderr are piped through
+//! the [`crate::launcher`] seam ([`StdioMode::Capture`]); the serial console is
+//! routed to a unix-domain socket the supervisor owns ([`SerialSocket`]) and
+//! read back from there.
 //!
-//! This module provides the capture *surface* (Phase 3a). The durable NATS
-//! publisher that consumes these streams lands in Phase 3b; until then,
-//! [`drain_to_stdio`] keeps the captured channels flowing to the supervisor's
-//! own terminal so the operator still sees output and the pipes never block.
+//! [`crate::publisher`] is what normally consumes these channels. When it
+//! cannot be reached, [`drain_to_stdio`] keeps them flowing to the
+//! supervisor's own terminal so the operator still sees output and the pipes
+//! never block.
 //!
 //! [`StdioMode::Capture`]: crate::launcher::StdioMode::Capture
 
@@ -80,15 +80,12 @@ impl SerialSocket {
     }
 }
 
-/// Phase 3a interim consumer of the captured channels.
+/// Fallback consumer of the captured channels.
 ///
 /// Drains each present channel into the supervisor's own stdout/stderr so the
 /// operator keeps seeing console output and qemu's stdout/stderr pipes never
 /// fill (an undrained pipe would block qemu). The serial connection is accepted
 /// lazily inside the spawned task so the caller is not blocked waiting on qemu.
-///
-/// Phase 3b replaces this with the durable spill/publish path; the capture
-/// surface it consumes ([`BoxedAsyncRead`] + [`SerialSocket`]) stays the same.
 pub fn drain_to_stdio(
     stdout: Option<BoxedAsyncRead>,
     stderr: Option<BoxedAsyncRead>,

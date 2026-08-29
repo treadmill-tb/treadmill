@@ -3,8 +3,8 @@
 #
 # Runs under `virt-customize --run` on a delta backed by the ubuntu-server-2604
 # BASE delta (so provision-common.sh / the tml user / puppet already exist; this
-# overlay only adds the runner units). The guest kernel is NEVER booted. See
-# doc/images-libguestfs-build-plan.md §7. Port of the legacy
+# overlay only adds the runner units). The guest kernel is NEVER booted. Port
+# of the legacy
 # images/ubuntu-2204-gha-runner/default.nix (and the raspbian gha-runner.nix
 # "download latest at first boot" pattern, which avoids pinning a stale runner).
 #

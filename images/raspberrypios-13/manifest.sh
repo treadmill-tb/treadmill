@@ -3,8 +3,8 @@
 # images/raspberrypios-13/manifest.sh — data only, sourced by build-image.sh.
 #
 # Raspberry Pi OS 13 (trixie), arm64, NBD-netboot. Built from the upstream
-# Raspberry Pi OS Lite SD image (libguestfs pipeline; see
-# doc/images-libguestfs-build-plan.md). build-image.sh's `sd` path extracts the
+# Raspberry Pi OS Lite SD image (libguestfs pipeline). build-image.sh's `sd`
+# path extracts the
 # two partitions: the FAT boot partition is edited in place (mtools) and shipped
 # as a standalone `boot` layer, the ext4 root partition becomes the lowest
 # `root` layer with our provisioning layered on as a qcow2 overlay.

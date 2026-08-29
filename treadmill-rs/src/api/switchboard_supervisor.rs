@@ -126,7 +126,7 @@ impl std::fmt::Debug for ParameterValue {
 /// `(registry, repository)` that serves those bytes. The supervisor protocol
 /// carries an ordered list of locations so a supervisor can fail over across
 /// them — every location serves the same digest, so any that succeeds is
-/// interchangeable (see `doc/oci-image-migration-plan.md` §D12/§D16).
+/// interchangeable.
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct ImageLocation {
@@ -151,7 +151,7 @@ pub enum ImageSpecification {
     /// identified by the OCI `manifest_digest` of its manifest, and
     /// `locations` is an ordered, failover list of the registry locations that
     /// serve it. Switchboard resolves human labels/sets to a concrete digest
-    /// + locations before dispatch (Phase 4).
+    /// + locations before dispatch.
     ///
     /// Note that if a job is being restarted, it will use this variant.
     Image {

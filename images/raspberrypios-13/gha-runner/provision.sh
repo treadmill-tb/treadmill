@@ -5,7 +5,7 @@
 # Runs under `virt-customize --run` on a delta backed by the raspberrypios-13
 # BASE root delta (so provision-common.sh / the tml user / puppet already exist;
 # this overlay only adds the runner units). The guest kernel is NEVER booted.
-# See doc/images-libguestfs-build-plan.md §7. Mirror of
+# Mirror of
 # images/ubuntu-server-2604/gha-runner/provision.sh; the only difference is
 # RUNNER_ARCH (the runner is still downloaded at first boot, not pinned).
 #

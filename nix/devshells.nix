@@ -82,10 +82,10 @@
         shellHook = defaultShell.shellHook + cmn.ephemeralPostgresHook;
       };
 
-      # Image-build shell: the libguestfs pipeline tooling
-      # (doc/images-libguestfs-build-plan.md). Standalone — does NOT inherit the
-      # default shell's Rust/Postgres/NATS stack, since `images/lib/build-image.sh`
-      # is plain shell and consumes the `tml-puppet` / `image-util` binaries built
+      # Image-build shell: the libguestfs pipeline tooling. Standalone — does
+      # NOT inherit the default shell's Rust/Postgres/NATS stack, since
+      # `images/lib/build-image.sh` is plain shell and consumes the
+      # `tml-puppet` / `image-util` binaries built
       # separately via `nix build`. Image builds need privileged libguestfs and
       # network (live apt), so they run outside the Nix sandbox in this shell, not
       # as a hermetic check.

@@ -1,10 +1,9 @@
 //! Fetching OCI manifests/indexes by digest for catalog registration.
 //!
-//! The switchboard catalog (see `doc/oci-image-migration-plan.md` §8.1) records
-//! only *references* to images — it never stores image bytes. To register an
-//! image or image set it must, however, pull the manifest/index **by digest**
-//! from the user's registry to validate that it is a well-formed Treadmill
-//! artifact before recording a row.
+//! The switchboard catalog records only *references* to images — it never
+//! stores image bytes. To register an image or image set it must, however,
+//! pull the manifest/index **by digest** from the user's registry to validate
+//! that it is a well-formed Treadmill artifact before recording a row.
 //!
 //! That pull is abstracted behind [`RegistryClient`] so route handlers can be
 //! exercised against a canned in-memory registry in `#[sqlx::test]`s (which have
@@ -47,9 +46,9 @@ pub trait RegistryClient: Send + Sync {
 
 /// The production [`RegistryClient`]: talks OCI Distribution to a real registry.
 ///
-/// Pull is anonymous for now (token-gating is D11/Phase 5, matching the
-/// supervisor's anonymous pull). Loopback registries are reached over plain HTTP
-/// (the dev Zot has no TLS); everything else requires HTTPS.
+/// Pull is anonymous for now, matching the supervisor's anonymous pull.
+/// Loopback registries are reached over plain HTTP (the dev Zot has no TLS);
+/// everything else requires HTTPS.
 #[derive(Default)]
 pub struct OciRegistryClient;
 

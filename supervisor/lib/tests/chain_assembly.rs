@@ -1,4 +1,4 @@
-//! Validate the backing-chain emitter against real qemu (Tier-2, plan §12.5).
+//! Validate the backing-chain emitter against real qemu.
 //!
 //! [`BackingChain::blockdev_args`] is fed to `qemu-storage-daemon`, which
 //! assembles the qcow2 node graph and exports the writable top over NBD; we then
@@ -6,9 +6,9 @@
 //! right order (an upper layer shadows a lower one; an untouched region falls
 //! through to the base) and that the top is writable. This is the same
 //! `-blockdev` graph `qemu-system-*` consumes, so it covers both runtimes
-//! without booting; the Phase 2 boot test then exercises the whole path once.
+//! without booting.
 //!
-//! (This supersedes the plan's `qemu-nbd --image-opts` check: `--image-opts`
+//! (This supersedes the earlier `qemu-nbd --image-opts` check: `--image-opts`
 //! cannot express an inline backing node, so an unbaked multi-layer chain only
 //! goes through the node graph — see `treadmill_rs::image::blockdev`.)
 //!

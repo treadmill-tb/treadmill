@@ -83,8 +83,7 @@ impl SwitchboardConfig {
 ///
 /// Supervisor console output is published to a per-job JetStream stream; the
 /// switchboard mints short-lived, per-job **bearer** user JWTs that the NATS
-/// server validates against the scope it grants. See
-/// `doc/log-streaming-plan.md`.
+/// server validates against the scope it grants.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LogStreamingConfig {
     /// NATS client URL the supervisors and read clients connect to (e.g.

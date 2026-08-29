@@ -2,7 +2,7 @@
 //!
 //! Selection axes and backing-chain structure that don't fit the standard OCI
 //! `platform`/descriptor fields are carried as annotations under the
-//! `dev.treadmill.*` namespace. See `doc/oci-image-migration-plan.md` §D2/§D3/§D4.
+//! `dev.treadmill.*` namespace.
 
 use std::fmt;
 use std::str::FromStr;

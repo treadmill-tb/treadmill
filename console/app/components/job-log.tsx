@@ -63,10 +63,10 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * A job's console channels over NATS: replays up to `replayBytes` of stored
- * history from the job's JetStream stream, then follows live
- * (doc/log-streaming-plan.md §4b). A single ordered consumer serves both the
- * backlog and the tail, so nothing is lost in between; across reconnects it
- * resumes after the last sequence already written to the terminal.
+ * history from the job's JetStream stream, then follows live. A single ordered
+ * consumer serves both the backlog and the tail, so nothing is lost in
+ * between; across reconnects it resumes after the last sequence already
+ * written to the terminal.
  * Credentials are re-requested on every (re)connect, satisfying the
  * expires_in_secs contract.
  *

@@ -146,7 +146,7 @@ sha2 = { workspace = true }
 # Log streaming over NATS/JetStream: the JetStream client used to create the
 # per-job stream at dispatch, plus per-job bearer-JWT minting (`nats-jwt` encodes
 # and signs the user claims, `nkeys` derives the account keypair from the signing
-# seed). See `doc/log-streaming-plan.md`.
+# seed).
 async-nats = { workspace = true }
 nats-jwt = { workspace = true }
 nkeys = { workspace = true }

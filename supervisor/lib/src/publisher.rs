@@ -1,4 +1,4 @@
-//! Durable per-channel log publisher (see `doc/log-streaming-plan.md` §2/§8).
+//! Durable per-channel log publisher.
 //!
 //! Each captured console channel (qemu stdout/stderr, serial) is shipped to a
 //! per-job JetStream stream with a **must-not-lose** guarantee: the supervisor

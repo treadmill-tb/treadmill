@@ -1,11 +1,10 @@
 //! NBD-netboot supervisor — **stubbed during the OCI image migration**.
 //!
-//! The OCI cutover (`doc/oci-image-migration-plan.md`) stripped the home-grown
-//! TOML image format that this supervisor's job lifecycle was built on. Its real
-//! migration — runtime backing chains served over NBD by `qemu-storage-daemon`
-//! and the writeable FAT `/boot` (D9/D17) — is **Phase 6.6**, which rewrites the
-//! boot-archive/TFTP plumbing against the final OCI shapes. Only the QEMU
-//! supervisor is migrated in Phase 2.
+//! The OCI cutover stripped the home-grown TOML image format that this
+//! supervisor's job lifecycle was built on. Its own migration — runtime backing
+//! chains served over NBD by `qemu-storage-daemon` and the writeable FAT
+//! `/boot` — still has to rewrite the boot-archive/TFTP plumbing against the
+//! final OCI shapes. Only the QEMU supervisor is migrated so far.
 //!
 //! Until then this binary keeps its configuration schema and connector wiring so
 //! deployments still parse and the supervisor still registers, but the job
@@ -37,8 +36,8 @@ pub struct NbdNetbootSupervisorArgs {
 }
 
 // The configuration schema is retained verbatim so existing deployment configs
-// still parse; the fields are consumed again when Phase 6.6 restores the job
-// lifecycle.
+// still parse; the fields are consumed again when the job lifecycle is
+// restored.
 #[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]
 pub struct NbdNetbootConfig {
@@ -86,8 +85,8 @@ pub struct NbdNetbootSupervisorConfig {
     nbd_netboot: NbdNetbootConfig,
 }
 
-// The image store and launcher seams are constructed and held so Phase 6.6 can
-// restore the lifecycle without re-plumbing `main`; unused while stubbed.
+// The image store and launcher seams are constructed and held so the lifecycle
+// can be restored without re-plumbing `main`; unused while stubbed.
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct NbdNetbootSupervisor {
@@ -119,8 +118,8 @@ impl NbdNetbootSupervisor {
     async fn run(&self, mut commands: mpsc::Receiver<connector::CoordCommand>) {
         while commands.recv().await.is_some() {
             todo!(
-                "Phase 6.6: nbd-netboot OCI migration — runtime backing chain over \
-                 qemu-storage-daemon + writeable FAT /boot (D9/D17)"
+                "nbd-netboot OCI migration — runtime backing chain over \
+                 qemu-storage-daemon + writeable FAT /boot"
             )
         }
     }

@@ -1,4 +1,4 @@
-//! The job scheduler (`doc/oci-image-migration-plan.md` §8.3).
+//! The job scheduler.
 //!
 //! A background task that periodically places `queued` jobs onto eligible hosts.
 //! It coordinates with the per-host [`SupervisorWSWorker`] **entirely through the
