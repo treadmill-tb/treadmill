@@ -638,14 +638,14 @@ async fn main() -> Result<()> {
                 move || connector.request_shutdown()
             });
 
-            serve(
-                connector,
-                runner,
-                command_rx,
-                OnDisconnect::Exit,
-                CancellationToken::new(),
-            )
-            .await;
+            // SIGTERM stops serving and takes the running job down with it.
+            let stop = CancellationToken::new();
+            on_signal(SignalKind::terminate(), {
+                let stop = stop.clone();
+                move || stop.cancel()
+            });
+
+            serve(connector, runner, command_rx, OnDisconnect::Exit, stop).await;
 
             Ok(())
         }
