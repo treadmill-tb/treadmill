@@ -23,13 +23,18 @@ store_root = "/var/lib/zot"
 # reached: `chunk_bytes` of accumulated output, or `flush_interval` since the
 # frame's first byte. The interval is the delay a console viewer sees on a
 # channel that trickles; shrinking it buys latency at the cost of
-# proportionally more, smaller messages. Both fields are optional — omit the
-# whole section to use the built-in defaults.
+# proportionally more, smaller messages. `job_log_level` is the threshold at
+# or above which this supervisor's own tracing events are forwarded to a job's
+# log stream, independent of `RUST_LOG`, which governs only this supervisor's
+# terminal. Every field is optional — omit the whole section to use the
+# built-in defaults.
 #
 # [log_streaming]
-# For example, to cut frames at 32 KiB or 100ms, whichever comes first:
+# For example, to cut frames at 32 KiB or 100ms, whichever comes first, and to
+# show a job's readers everything down to debug:
 # chunk_bytes = 32768
 # flush_interval = "100ms"
+# job_log_level = "debug"
 
 [qemu]
 qemu_binary = "qemu-kvm"

@@ -23,11 +23,13 @@ use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc;
 use tracing::{Level, event};
 
+use treadmill_rs::api::switchboard_supervisor::LogView;
 use treadmill_rs::connector::{JobError, JobErrorKind, StartJobMessage, SupervisorConnector};
 use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 
 use treadmill_supervisor_lib::bootstrap::{self, COORD_MAILBOX_CAPACITY, OnDisconnect};
 use treadmill_supervisor_lib::job::{JobBackend, JobRunner, JobRunnerConfig, JobVars, Workload};
+use treadmill_supervisor_lib::job_log;
 use treadmill_supervisor_lib::launcher::{self, ProcessLauncher};
 use treadmill_supervisor_lib::oci_store::{ImageStore, OciStore, OciStoreConfig};
 use treadmill_supervisor_lib::publisher::LogPublisherConfig;
@@ -87,6 +89,11 @@ pub struct NbdNetbootSupervisorConfig {
     /// Local OCI store (per-server Zot daemon) the supervisor pulls images from.
     oci_store: OciStoreConfig,
 
+    /// Local tuning of the console capture→publish path. Optional: omitting
+    /// the section leaves every field at its default.
+    #[serde(default)]
+    log_streaming: LogPublisherConfig,
+
     nbd_netboot: NbdNetbootConfig,
 }
 
@@ -144,19 +151,28 @@ impl JobBackend for NbdNetbootBackend {
     ) -> Result<Workload, JobError> {
         match allocation {}
     }
+
+    /// No views: this backend launches no workload, so a job it runs produces
+    /// no console channels.
+    fn log_views(&self) -> Vec<LogView> {
+        Vec::new()
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
-    event!(Level::INFO, "Treadmill NbdNetboot Supervisor, Hello World!");
-
     let args = NbdNetbootSupervisorArgs::parse();
 
     let config_str = std::fs::read_to_string(&args.config_file)
         .with_context(|| format!("Reading config file {:?}", args.config_file))?;
     let config: NbdNetbootSupervisorConfig = toml::from_str(&config_str)
         .with_context(|| format!("Parsing config file {:?}", args.config_file))?;
+
+    // The subscriber needs the configured job-log threshold, so it goes up
+    // after the config is read; anything failing before this is reported by
+    // `main` returning it.
+    let job_log = job_log::init_tracing(&config.log_streaming.job_log_level)?;
+    event!(Level::INFO, "Treadmill NbdNetboot Supervisor, Hello World!");
 
     let image_store: Arc<dyn ImageStore> = Arc::new(OciStore::new(
         config.oci_store.registry.clone(),
@@ -204,7 +220,8 @@ async fn main() -> Result<()> {
             control_socket_listen_addr: config.nbd_netboot.tcp_control_socket_listen_addr,
             start_script: Some(config.nbd_netboot.start_script.clone()),
             stop_script: Some(config.nbd_netboot.stop_script.clone()),
-            log_streaming: LogPublisherConfig::default(),
+            log_streaming: config.log_streaming.clone(),
+            job_log,
         },
     ));
 

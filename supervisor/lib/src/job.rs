@@ -13,14 +13,16 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{Level, event, instrument};
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard_supervisor::{
-    JobGatewayDispatch, JobInitializingStage, JobService, LogChannel, ParameterValue,
-    ReportedSupervisorStatus, RunningJobState,
+    JobGatewayDispatch, JobInitializingStage, JobService, LOG_VIEW_MANIFEST_VERSION, LogChannel,
+    LogFormat, LogRender, LogView, LogViewManifest, ParameterValue, ReportedSupervisorStatus,
+    RunningJobState,
 };
 use treadmill_rs::connector::{
     CoordCommand, JobError, JobErrorKind, StartJobMessage, SupervisorConnector,
@@ -30,6 +32,7 @@ use treadmill_rs::control_socket;
 use treadmill_tcp_control_socket_server::TcpControlSocket;
 
 use crate::capture::{self, SerialSocket};
+use crate::job_log::{JobLogRegistration, JobLogRegistry, channel_reader};
 use crate::launcher::WorkloadProcess;
 use crate::publisher::{LogPublisher, LogPublisherConfig};
 use crate::workdirs::JobWorkdirs;
@@ -37,6 +40,10 @@ use crate::workdirs::JobWorkdirs;
 /// How long teardown waits for the log publisher to drain before giving up on
 /// the chunks it is still holding.
 const PUBLISHER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Depth of a job's `meta` channel. Declarations are few and the publisher's
+/// drain task consumes them promptly.
+const META_CAPACITY: usize = 8;
 
 const JOB_MAILBOX_CAPACITY: usize = 8;
 
@@ -65,6 +72,10 @@ pub struct JobRunnerConfig {
     pub stop_script: Option<PathBuf>,
 
     pub log_streaming: LogPublisherConfig,
+
+    /// Where a job registers to have the supervisor's own tracing events
+    /// forwarded into its log stream.
+    pub job_log: JobLogRegistry,
 }
 
 /// The platform-specific half of a job: what it boots and how.
@@ -102,6 +113,12 @@ pub trait JobBackend: std::fmt::Debug + Send + Sync + 'static {
         allocation: Self::Allocation,
         vars: &JobVars,
     ) -> Result<Workload, JobError>;
+
+    /// How this backend's console channels are to be rendered, declared on the
+    /// job's `meta` channel once the workload is up. The runner narrows each
+    /// view to the channels the job actually produced and drops the views left
+    /// without any, so a backend may describe channels it does not always emit.
+    fn log_views(&self) -> Vec<LogView>;
 }
 
 /// A started workload, plus the console channels the runner ships to the
@@ -306,6 +323,12 @@ struct JobResources {
     control_socket: Option<TcpControlSocket<JobControlEndpoint>>,
 
     publisher: Option<LogPublisher>,
+
+    /// This job's registration for supervisor tracing events, and the sender
+    /// feeding its `meta` channel. Both are dropped before the publisher
+    /// drains, so their channels reach EOF.
+    job_log: Option<JobLogRegistration>,
+    meta: Option<mpsc::Sender<Bytes>>,
 
     workload: Option<Box<dyn WorkloadProcess>>,
 
@@ -624,6 +647,8 @@ impl<B: JobBackend> JobTask<B> {
 
     #[instrument(skip(self, cmd_rx), fields(job_id = ?self.job_id()))]
     async fn run(mut self, mut cmd_rx: mpsc::Receiver<JobCommand>) {
+        self.resources.job_log = Some(self.runner.config.job_log.register(self.job_id()));
+
         self.set_phase(Phase::Starting).await;
 
         let cancel = self.handle.cancel.clone();
@@ -649,10 +674,6 @@ impl<B: JobBackend> JobTask<B> {
     }
 
     async fn startup(&mut self) -> Result<(), JobError> {
-        self.set_phase(Phase::FetchingImage).await;
-        let image = self.runner.backend.fetch(&self.start_job_req).await?;
-
-        self.set_phase(Phase::Allocating).await;
         let job_workdir = allocate_workdir(&self.runner.config.workdirs, self.job_id()).await?;
 
         // Variables that can be produced by the start script, and used for
@@ -666,6 +687,14 @@ impl<B: JobBackend> JobTask<B> {
             .job_vars
             .insert("job_workdir".to_string(), job_workdir.display().to_string());
 
+        // Before the image fetch: that is the phase whose logs are most wanted
+        // and the one that most often fails.
+        self.connect_publisher(&job_workdir).await;
+
+        self.set_phase(Phase::FetchingImage).await;
+        let image = self.runner.backend.fetch(&self.start_job_req).await?;
+
+        self.set_phase(Phase::Allocating).await;
         let allocation = self
             .runner
             .backend
@@ -713,42 +742,7 @@ impl<B: JobBackend> JobTask<B> {
             )
             .await?;
 
-        // Ship the captured console channels to NATS (durable spill + ack +
-        // resume). Takes the stdout/stderr readers before the process is handed
-        // to `supervise`. Spill files live under the per-job workdir so they
-        // survive a supervisor restart and are retained for post-mortem after
-        // the job ends.
-        if let Some(dispatch) = self.start_job_req.log_streaming.clone() {
-            let stdout = process.take_stdout();
-            let stderr = process.take_stderr();
-            let spill_dir = job_workdir.join("logs");
-            let config = self.runner.config.log_streaming.clone();
-            match LogPublisher::connect(&dispatch, spill_dir, config).await {
-                Ok(publisher) => {
-                    if let Some(stdout) = stdout {
-                        publisher.spawn_channel(LogChannel::QemuStdout, stdout);
-                    }
-                    if let Some(stderr) = stderr {
-                        publisher.spawn_channel(LogChannel::QemuStderr, stderr);
-                    }
-                    if let Some(socket) = serial {
-                        publisher.spawn_serial(LogChannel::Serial, socket);
-                    }
-                    self.resources.publisher = Some(publisher);
-                }
-                Err(e) => {
-                    // Don't fail the job over log-streaming setup; fall back to
-                    // draining capture to our terminal so the workload's pipes
-                    // don't block and the operator still sees output.
-                    event!(
-                        Level::WARN,
-                        error = ?e,
-                        "Failed to start log publisher; draining capture to terminal instead",
-                    );
-                    capture::drain_to_stdio(stdout, stderr, serial);
-                }
-            }
-        }
+        self.attach_console_channels(&mut *process, serial).await;
 
         self.resources.workload = Some(process);
 
@@ -758,6 +752,88 @@ impl<B: JobBackend> JobTask<B> {
         self.report_job_address().await;
 
         Ok(())
+    }
+
+    /// Connect this job's log publisher and start the channels the supervisor
+    /// itself produces. A job dispatched without log streaming, or a publisher
+    /// that cannot connect, leaves the job without one: the console channels
+    /// then fall back to this terminal, and the supervisor channel's buffer
+    /// fills and drops.
+    async fn connect_publisher(&mut self, job_workdir: &Path) {
+        let Some(dispatch) = self.start_job_req.log_streaming.clone() else {
+            return;
+        };
+
+        // Spill files live under the per-job workdir so they survive a
+        // supervisor restart and are retained for post-mortem after the job
+        // ends.
+        let spill_dir = job_workdir.join("logs");
+        let config = self.runner.config.log_streaming.clone();
+        let publisher = match LogPublisher::connect(&dispatch, spill_dir, config).await {
+            Ok(publisher) => publisher,
+            Err(e) => {
+                // Don't fail the job over log-streaming setup.
+                event!(
+                    Level::WARN,
+                    error = ?e,
+                    "Failed to start log publisher; console output will be drained to the terminal instead",
+                );
+                return;
+            }
+        };
+
+        if let Some(reader) = self
+            .resources
+            .job_log
+            .as_mut()
+            .and_then(JobLogRegistration::take_reader)
+        {
+            publisher.spawn_channel(LogChannel::Supervisor, reader);
+        }
+
+        let (meta_tx, meta_rx) = mpsc::channel(META_CAPACITY);
+        publisher.spawn_channel(LogChannel::Meta, channel_reader(meta_rx));
+
+        self.resources.meta = Some(meta_tx);
+        self.resources.publisher = Some(publisher);
+
+        declare_log_views(self.resources.meta.as_ref(), vec![supervisor_log_view()]).await;
+    }
+
+    /// Ship the workload's console channels (durable spill + ack + resume) and
+    /// declare the views they feed. Takes the stdout/stderr readers before the
+    /// process is handed to `supervise`.
+    async fn attach_console_channels(
+        &mut self,
+        process: &mut dyn WorkloadProcess,
+        serial: Option<SerialSocket>,
+    ) {
+        let stdout = process.take_stdout();
+        let stderr = process.take_stderr();
+
+        let Some(publisher) = self.resources.publisher.as_ref() else {
+            // Drain capture here so the workload's pipes don't block and the
+            // operator still sees output.
+            capture::drain_to_stdio(stdout, stderr, serial);
+            return;
+        };
+
+        let mut present = Vec::new();
+        if let Some(stdout) = stdout {
+            publisher.spawn_channel(LogChannel::QemuStdout, stdout);
+            present.push(LogChannel::QemuStdout);
+        }
+        if let Some(stderr) = stderr {
+            publisher.spawn_channel(LogChannel::QemuStderr, stderr);
+            present.push(LogChannel::QemuStderr);
+        }
+        if let Some(socket) = serial {
+            publisher.spawn_serial(LogChannel::Serial, socket);
+            present.push(LogChannel::Serial);
+        }
+
+        let views = present_log_views(self.runner.backend.log_views(), &present);
+        declare_log_views(self.resources.meta.as_ref(), views).await;
     }
 
     async fn run_start_job_script(&mut self) -> Result<(), JobError> {
@@ -990,6 +1066,8 @@ impl<B: JobBackend> JobTask<B> {
         let JobResources {
             control_socket,
             publisher,
+            job_log,
+            meta,
             workload: _,
             job_vars,
             start_hook_ran,
@@ -1007,6 +1085,12 @@ impl<B: JobBackend> JobTask<B> {
                 .await;
         }
 
+        // The channels this supervisor produces end here: late enough that the
+        // stop hook's output still reaches the job's readers, and before the
+        // drain, which cannot finish until they have reached EOF.
+        drop(job_log);
+        drop(meta);
+
         if let Some(publisher) = publisher {
             publisher.drain(PUBLISHER_DRAIN_TIMEOUT).await;
         }
@@ -1015,6 +1099,56 @@ impl<B: JobBackend> JobTask<B> {
             event!(Level::WARN, error = ?e, "Failed to retire the job working directory");
         }
     }
+}
+
+/// Append one declaration to a job's `meta` channel. A job without a
+/// publisher has no channel to declare on.
+async fn declare_log_views(meta: Option<&mpsc::Sender<Bytes>>, views: Vec<LogView>) {
+    let Some(meta) = meta else {
+        return;
+    };
+
+    let manifest = LogViewManifest {
+        version: LOG_VIEW_MANIFEST_VERSION,
+        views,
+    };
+    match serde_json::to_vec(&manifest) {
+        Ok(mut line) => {
+            line.push(b'\n');
+            let _ = meta.send(Bytes::from(line)).await;
+        }
+        Err(e) => event!(
+            Level::WARN,
+            error = ?e,
+            "Failed to serialize the job's log view manifest",
+        ),
+    }
+}
+
+/// The view every supervisor has, declared as soon as the publisher exists.
+fn supervisor_log_view() -> LogView {
+    LogView {
+        id: "supervisor".to_string(),
+        label: "Supervisor".to_string(),
+        render: LogRender::Text,
+        format: LogFormat::Jsonl,
+        channels: vec![LogChannel::Supervisor],
+        order: 30,
+        default: false,
+        input: false,
+    }
+}
+
+/// Narrow declared views to the channels the job actually produced, dropping
+/// the views left without any.
+fn present_log_views(views: Vec<LogView>, present: &[LogChannel]) -> Vec<LogView> {
+    views
+        .into_iter()
+        .filter_map(|mut view| {
+            view.channels.retain(|channel| present.contains(channel));
+            (!view.channels.is_empty()).then_some(view)
+        })
+        .collect()
 }
 
 /// Create a job's working directory. One that is already there belonged to a
@@ -1420,6 +1554,10 @@ mod tests {
                 serial: None,
             })
         }
+
+        fn log_views(&self) -> Vec<LogView> {
+            Vec::new()
+        }
     }
 
     type Runner = Arc<JobRunner<StubBackend>>;
@@ -1458,6 +1596,7 @@ mod tests {
             start_script: None,
             stop_script: None,
             log_streaming: LogPublisherConfig::default(),
+            job_log: JobLogRegistry::new(),
         };
         tune(tmp.path(), &mut config);
 

@@ -9,7 +9,9 @@ use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc;
 use tracing::{Level, event, instrument};
 
-use treadmill_rs::api::switchboard_supervisor::ImageSpecification;
+use treadmill_rs::api::switchboard_supervisor::{
+    ImageSpecification, LogChannel, LogFormat, LogRender, LogView,
+};
 use treadmill_rs::connector::{self, StartJobMessage, SupervisorConnector};
 use treadmill_rs::image::blockdev::BackingChain;
 use treadmill_rs::image::parse::{self, ChainError, TreadmillImage};
@@ -18,6 +20,7 @@ use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 use treadmill_supervisor_lib::bootstrap::{self, COORD_MAILBOX_CAPACITY, OnDisconnect};
 use treadmill_supervisor_lib::capture::SerialSocket;
 use treadmill_supervisor_lib::job::{JobBackend, JobRunner, JobRunnerConfig, JobVars, Workload};
+use treadmill_supervisor_lib::job_log::{self, JobLogRegistry};
 use treadmill_supervisor_lib::launcher::{self, ProcessLauncher, StdioMode, WorkloadProcess};
 use treadmill_supervisor_lib::oci_store::{ImageStore, Location, OciStore, OciStoreConfig};
 use treadmill_supervisor_lib::publisher::LogPublisherConfig;
@@ -369,6 +372,10 @@ impl JobBackend for QemuBackend {
 
         Ok(Workload { process, serial })
     }
+
+    fn log_views(&self) -> Vec<LogView> {
+        qemu_log_views()
+    }
 }
 
 impl QemuBackend {
@@ -408,8 +415,35 @@ impl QemuBackend {
     }
 }
 
+/// The views the qemu backend's console channels feed. The runner narrows
+/// these to the channels a job actually produced.
+fn qemu_log_views() -> Vec<LogView> {
+    vec![
+        LogView {
+            id: "serial".to_string(),
+            label: "Serial console".to_string(),
+            render: LogRender::Terminal,
+            format: LogFormat::Raw,
+            channels: vec![LogChannel::Serial],
+            order: 10,
+            default: true,
+            input: true,
+        },
+        LogView {
+            id: "qemu".to_string(),
+            label: "QEMU process".to_string(),
+            render: LogRender::Text,
+            format: LogFormat::Raw,
+            channels: vec![LogChannel::QemuStdout, LogChannel::QemuStderr],
+            order: 20,
+            default: false,
+            input: false,
+        },
+    ]
+}
+
 impl QemuSupervisorConfig {
-    fn job_runner(&self, workdirs: Arc<JobWorkdirs>) -> JobRunnerConfig {
+    fn job_runner(&self, workdirs: Arc<JobWorkdirs>, job_log: JobLogRegistry) -> JobRunnerConfig {
         JobRunnerConfig {
             supervisor_id: self.base.supervisor_id,
             job_address: self.base.job_address,
@@ -418,21 +452,25 @@ impl QemuSupervisorConfig {
             start_script: self.qemu.start_script.clone(),
             stop_script: self.qemu.stop_script.clone(),
             log_streaming: self.log_streaming.clone(),
+            job_log,
         }
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
-    event!(Level::INFO, "Treadmill Qemu Supervisor, Hello World!");
-
     let args = QemuSupervisorArgs::parse();
 
     let config_str = std::fs::read_to_string(&args.config_file)
         .with_context(|| format!("Reading config file {:?}", args.config_file))?;
     let config: QemuSupervisorConfig = toml::from_str(&config_str)
         .with_context(|| format!("Parsing config file {:?}", args.config_file))?;
+
+    // The subscriber needs the configured job-log threshold, so it goes up
+    // after the config is read; anything failing before this is reported by
+    // `main` returning it.
+    let job_log = job_log::init_tracing(&config.log_streaming.job_log_level)?;
+    event!(Level::INFO, "Treadmill Qemu Supervisor, Hello World!");
 
     let image_store: Arc<dyn ImageStore> = Arc::new(OciStore::new(
         config.oci_store.registry.clone(),
@@ -498,7 +536,7 @@ async fn main() -> Result<()> {
     let runner = Arc::new(JobRunner::new(
         connector.clone(),
         backend,
-        config.job_runner(workdirs),
+        config.job_runner(workdirs, job_log),
     ));
 
     bootstrap::serve(connector, runner, command_rx, drain_signal, on_disconnect).await;

@@ -16,6 +16,15 @@ switchboard_uri = "ws://localhost:8081"
 registry = "127.0.0.1:5000"
 store_root = "/var/lib/zot"
 
+# Console capture tuning, entirely local to this supervisor; see the qemu
+# supervisor's example for what each field bounds. Optional — omit the whole
+# section to use the built-in defaults.
+#
+# [log_streaming]
+# chunk_bytes = 32768
+# flush_interval = "100ms"
+# job_log_level = "debug"
+
 [nbd_netboot]
 qemu_nbd_binary = "qemu-nbd"
 qemu_img_binary = "qemu-img"

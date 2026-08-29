@@ -70,6 +70,8 @@ use tokio_util::task::TaskTracker;
 use treadmill_rs::api::switchboard_supervisor::{LogChannel, LogStreamingDispatch};
 
 use crate::capture::SerialSocket;
+use tracing::level_filters::LevelFilter;
+
 use crate::launcher::BoxedAsyncRead;
 
 /// Spill-frame header: `ts_ns: u64-le` + `payload_len: u32-le`.
@@ -100,6 +102,13 @@ fn default_flush_interval() -> Duration {
     DEFAULT_FLUSH_INTERVAL
 }
 
+/// Default [`LogPublisherConfig::job_log_level`].
+const DEFAULT_JOB_LOG_LEVEL: LevelFilter = LevelFilter::INFO;
+
+fn default_job_log_level() -> String {
+    DEFAULT_JOB_LOG_LEVEL.to_string()
+}
+
 /// Local tuning of a supervisor's capture→publish path, exposed under
 /// `[log_streaming]` in its configuration file. Every field has a default, so
 /// the section may be omitted entirely.
@@ -123,6 +132,13 @@ pub struct LogPublisherConfig {
     /// proportionally more (and smaller) NATS messages.
     #[serde(with = "humantime_serde", default = "default_flush_interval")]
     pub flush_interval: Duration,
+
+    /// Level at or above which the supervisor's own tracing events are
+    /// forwarded to a job's log stream, as a `tracing` level filter (`off`
+    /// through `trace`). Independent of `RUST_LOG`, which governs only what
+    /// this supervisor's terminal shows.
+    #[serde(default = "default_job_log_level")]
+    pub job_log_level: String,
 }
 
 impl Default for LogPublisherConfig {
@@ -130,6 +146,7 @@ impl Default for LogPublisherConfig {
         LogPublisherConfig {
             chunk_bytes: default_chunk_bytes(),
             flush_interval: default_flush_interval(),
+            job_log_level: default_job_log_level(),
         }
     }
 }
@@ -809,28 +826,28 @@ impl LogPublisher {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
 
     /// A captured publish: the args `ship_pending` handed the sink.
     #[derive(Debug, Clone, PartialEq, Eq)]
-    struct Published {
-        channel: LogChannel,
+    pub(crate) struct Published {
+        pub(crate) channel: LogChannel,
         msg_id: String,
         ts_ns: u64,
-        payload: Vec<u8>,
+        pub(crate) payload: Vec<u8>,
     }
 
     /// Stub [`ChunkSink`] recording every publish; optionally fails once the
     /// recorded count reaches `fail_after` (to drive the resume path).
-    struct RecordingSink {
+    pub(crate) struct RecordingSink {
         published: Mutex<Vec<Published>>,
         fail_after: Option<usize>,
     }
 
     impl RecordingSink {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             RecordingSink {
                 published: Mutex::new(Vec::new()),
                 fail_after: None,
@@ -842,7 +859,7 @@ mod tests {
                 fail_after: Some(n),
             }
         }
-        fn records(&self) -> Vec<Published> {
+        pub(crate) fn records(&self) -> Vec<Published> {
             self.published.lock().unwrap().clone()
         }
     }
@@ -1072,6 +1089,7 @@ mod tests {
             LogPublisherConfig {
                 chunk_bytes: 64,
                 flush_interval: Duration::from_secs(3600),
+                ..LogPublisherConfig::default()
             },
         ));
 
@@ -1104,6 +1122,7 @@ mod tests {
             LogPublisherConfig {
                 chunk_bytes: 4096,
                 flush_interval: Duration::from_millis(50),
+                ..LogPublisherConfig::default()
             },
         ));
 
