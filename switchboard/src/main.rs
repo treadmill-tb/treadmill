@@ -1,6 +1,7 @@
 //! Switchboard runner. Run as a command-line tool.
 
 use clap::{Parser, Subcommand};
+use std::process::ExitCode;
 use treadmill_switchboard::{manage::ManageCommand, routes::openapi_spec, serve::ServeCommand};
 
 #[derive(Debug, Parser)]
@@ -32,10 +33,13 @@ impl Command {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     let cli_args = Args::parse();
 
     if let Err(e) = cli_args.command.run().await {
         eprintln!("Failed to run command:\n{e:?}");
+        return ExitCode::FAILURE;
     }
+
+    ExitCode::SUCCESS
 }
