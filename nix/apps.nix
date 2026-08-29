@@ -244,11 +244,15 @@
           pkgs.qemu
         ];
         text = ''
-          # Supervisor binary + per-arch UEFI firmware blobs, injected from Nix
-          # (empty off Linux; the script errors out cleanly then).
+          # Supervisor binary + UEFI firmware blobs, injected from Nix (the
+          # binary is empty off Linux; the script errors out cleanly then).
+          # Both guest architectures are exported, since `--arch` selects the
+          # guest independently of the host.
           export TML_SUPERVISOR_BIN="${lib.optionalString isLinux "${self'.packages.treadmill-qemu-supervisor}/bin/treadmill-qemu-supervisor"}"
-          export TML_UEFI_CODE="${archSpecific."${system}".uefi-code}"
-          export TML_UEFI_VARS="${archSpecific."${system}".uefi-vars}"
+          export TML_OVMF_CODE="${archSpecific."x86_64-linux".uefi-code}"
+          export TML_OVMF_VARS="${archSpecific."x86_64-linux".uefi-vars}"
+          export TML_UEFI_CODE="${archSpecific."aarch64-linux".uefi-code}"
+          export TML_UEFI_VARS="${archSpecific."aarch64-linux".uefi-vars}"
 
           exec ${../tools/local-supervisor.sh} "$@"
         '';
