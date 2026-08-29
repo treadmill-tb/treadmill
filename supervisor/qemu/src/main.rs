@@ -20,7 +20,7 @@ use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 
 use treadmill_supervisor_lib::capture::SerialSocket;
 use treadmill_supervisor_lib::job::{JobBackend, JobRunner, JobRunnerConfig, JobVars, Workload};
-use treadmill_supervisor_lib::launcher::{self, ProcessLauncher, StdioMode};
+use treadmill_supervisor_lib::launcher::{self, ProcessLauncher, StdioMode, WorkloadProcess};
 use treadmill_supervisor_lib::oci_store::{ImageStore, Location, OciStore, OciStoreConfig};
 use treadmill_supervisor_lib::publisher::LogPublisherConfig;
 use treadmill_supervisor_lib::workdirs::{JobWorkdirs, RetentionConfig};
@@ -354,44 +354,67 @@ impl JobBackend for QemuBackend {
         // guest serial console to a unix socket we own. When it's disabled,
         // keep the historical behavior — stdout/stderr inherit our terminal and
         // the serial console goes wherever the configured args point it.
-        let (stdio_mode, serial, capture_args) = if job.log_streaming.is_some() {
-            let serial_sock_path = workdir.join("serial.sock");
-            match SerialSocket::bind(&serial_sock_path).await {
-                Ok(socket) => {
-                    // qemu connects to our already-bound listener as the client
-                    // (`server=off`), so there is no connect race.
-                    let args = vec![
-                        "-chardev".to_string(),
-                        format!(
-                            "socket,id=tml-serial,path={},server=off",
-                            socket.path().display(),
-                        ),
-                        "-serial".to_string(),
-                        "chardev:tml-serial".to_string(),
-                    ];
-                    (StdioMode::Capture, Some(socket), args)
-                }
-                Err(e) => {
-                    // Don't fail the job over a capture-setup error; fall back
-                    // to inheriting and skip the serial channel.
-                    event!(
-                        Level::WARN,
-                        ?serial_sock_path,
-                        error = ?e,
-                        "Failed to bind serial capture socket; disabling log capture for this job",
-                    );
-                    (StdioMode::Inherit, None, Vec::new())
-                }
+        if job.log_streaming.is_none() {
+            return self
+                .spawn_qemu(chain, Vec::new(), templated_args, StdioMode::Inherit)
+                .await
+                .map(|process| Workload {
+                    process,
+                    serial: None,
+                });
+        }
+
+        // A serial socket we cannot bind costs the job its `serial` channel,
+        // but stdout/stderr are captured either way: dropping to `Inherit` here
+        // would leave the publisher with nothing to ship at all.
+        let serial_sock_path = workdir.join("serial.sock");
+        let (serial, capture_args) = match SerialSocket::bind(&serial_sock_path).await {
+            Ok(socket) => {
+                // qemu connects to our already-bound listener as the client
+                // (`server=off`), so there is no connect race.
+                let args = vec![
+                    "-chardev".to_string(),
+                    format!(
+                        "socket,id=tml-serial,path={},server=off",
+                        socket.path().display(),
+                    ),
+                    "-serial".to_string(),
+                    "chardev:tml-serial".to_string(),
+                ];
+                (Some(socket), args)
             }
-        } else {
-            (StdioMode::Inherit, None, Vec::new())
+            Err(e) => {
+                event!(
+                    Level::WARN,
+                    ?serial_sock_path,
+                    error = ?e,
+                    "Failed to bind the serial capture socket; this job ships no serial channel",
+                );
+                (None, Vec::new())
+            }
         };
 
-        // The backing-chain `-blockdev` nodes (base → … → overlay) and the
-        // capture channel go ahead of the configured invocation: the configured
-        // args attach the disk device to the writable top node via the
-        // `{disk_node}` substitution, and a `-serial` of their own takes the
-        // port after the captured one rather than displacing it.
+        let process = self
+            .spawn_qemu(chain, capture_args, templated_args, StdioMode::Capture)
+            .await?;
+
+        Ok(Workload { process, serial })
+    }
+}
+
+impl QemuBackend {
+    /// The backing-chain `-blockdev` nodes (base → … → overlay) and the capture
+    /// channel go ahead of the configured invocation: the configured args
+    /// attach the disk device to the writable top node via the `{disk_node}`
+    /// substitution, and a `-serial` of their own takes the port after the
+    /// captured one rather than displacing it.
+    async fn spawn_qemu(
+        &self,
+        chain: BackingChain,
+        capture_args: Vec<String>,
+        templated_args: Vec<String>,
+        stdio_mode: StdioMode,
+    ) -> Result<Box<dyn WorkloadProcess>, connector::JobError> {
         let mut qemu_args: Vec<String> = Vec::new();
         for node in chain.blockdev_args() {
             qemu_args.push("-blockdev".to_string());
@@ -406,16 +429,13 @@ impl JobBackend for QemuBackend {
             ?qemu_args,
             "Launching QEMU process",
         );
-        let process = self
-            .launcher
+        self.launcher
             .spawn(&self.config.qemu_binary, &qemu_args, None, stdio_mode)
             .await
             .map_err(|e| connector::JobError {
                 error_kind: connector::JobErrorKind::InternalError,
                 description: format!("Failed to launch the QEMU process: {e:#}"),
-            })?;
-
-        Ok(Workload { process, serial })
+            })
     }
 }
 
@@ -698,7 +718,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct StubLauncher {
         overlays: std::sync::Mutex<Vec<(PathBuf, u64)>>,
-        spawned: std::sync::Mutex<Vec<(PathBuf, Vec<String>)>>,
+        spawned: std::sync::Mutex<Vec<(PathBuf, Vec<String>, StdioMode)>>,
     }
 
     impl StubLauncher {
@@ -710,6 +730,12 @@ mod tests {
             let spawned = self.spawned.lock().unwrap();
             assert_eq!(spawned.len(), 1, "exactly one process was spawned");
             spawned[0].1.clone()
+        }
+
+        fn spawned_stdio(&self) -> StdioMode {
+            let spawned = self.spawned.lock().unwrap();
+            assert_eq!(spawned.len(), 1, "exactly one process was spawned");
+            spawned[0].2
         }
     }
 
@@ -754,12 +780,12 @@ mod tests {
             program: &Path,
             args: &[String],
             _cwd: Option<&Path>,
-            _stdio: StdioMode,
+            stdio: StdioMode,
         ) -> Result<Box<dyn WorkloadProcess>> {
             self.spawned
                 .lock()
                 .unwrap()
-                .push((program.to_path_buf(), args.to_vec()));
+                .push((program.to_path_buf(), args.to_vec(), stdio));
             Ok(Box::new(StubProcess))
         }
     }
@@ -1122,6 +1148,48 @@ mod tests {
             .map(|(_, value)| value)
             .collect();
         assert_eq!(serials, vec!["chardev:tml-serial", "mon:stdio"], "{args:?}");
+    }
+
+    /// A serial socket that cannot be bound costs the job its `serial` channel
+    /// and nothing else: dropping to inherited stdio would leave the publisher
+    /// with no channel at all, so the job would stream nothing.
+    #[tokio::test]
+    async fn a_serial_bind_failure_still_captures_stdout_and_stderr() {
+        let f = fixture(4 * GIB, vec![]);
+
+        let job_id = Uuid::new_v4();
+        let mut vars = runner_vars(job_id, f.tmp.path());
+        let head = digest(3);
+        let image = image(vec![base_layer(head, Some(GIB))], head);
+
+        let mut msg = start_msg(job_id);
+        msg.log_streaming = Some(LogStreamingDispatch {
+            nats_url: "nats://127.0.0.1:4222".to_string(),
+            subject_prefix: format!("logs.{job_id}"),
+            write_token: "stub".to_string(),
+            console_input_subject: None,
+            inbox_prefix: None,
+        });
+
+        let chain = f
+            .backend
+            .allocate(&msg, f.tmp.path(), image, &mut vars)
+            .await
+            .unwrap();
+
+        // A workdir that does not exist has nowhere to put the socket file.
+        let missing_workdir = f.tmp.path().join("gone");
+        f.backend
+            .launch(&msg, &missing_workdir, chain, &vars)
+            .await
+            .unwrap();
+
+        assert_eq!(f.launcher.spawned_stdio(), StdioMode::Capture);
+        let args = f.launcher.spawned_args();
+        assert!(
+            !args.iter().any(|a| a == "-chardev" || a == "-serial"),
+            "no serial channel is wired up: {args:?}",
+        );
     }
 
     /// An image the coordinator dispatched in a shape this supervisor cannot
