@@ -5010,6 +5010,7 @@ dependencies = [
  "rand 0.10.2",
  "reqwest",
  "schemars 1.2.2",
+ "sd-notify",
  "sentry",
  "serde",
  "serde_json",
