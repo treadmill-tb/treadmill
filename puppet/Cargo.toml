@@ -24,7 +24,7 @@ clap = { workspace = true, features = ["derive"] }
 ed25519-dalek = { workspace = true, features = ["pem"] }
 log = { workspace = true }
 nix = { version = "0.31.3", default-features = false, features = ["signal"] }
-sd-notify = "0.5.0"
+sd-notify = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 simplelog = "0.12.1"

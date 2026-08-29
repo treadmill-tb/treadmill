@@ -160,6 +160,7 @@ ed25519-dalek = { workspace = true, features = ["pem", "zeroize"] }
 hex = { workspace = true }
 jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }
 phc = "0.6.1"
+sd-notify = { workspace = true }
 
 [dev-dependencies]
 sqlx-cli = { version = "0.9.0", features = [

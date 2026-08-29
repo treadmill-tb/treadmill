@@ -260,6 +260,13 @@ async fn run(config: SwitchboardConfig, skip_migrations: bool) -> anyhow::Result
         .with_context(|| format!("failed to bind server to {bind_address}"))?;
     tracing::info!("Bound server to {bind_address}");
 
+    // Allow `Type=Notify` systemd units to report that the service started
+    // successfully (including config parse, DB migrations, binding to the
+    // socket, etc.).
+    if let Err(e) = sd_notify::notify(&[sd_notify::NotifyState::Ready]) {
+        tracing::warn!("failed to send readiness notification to systemd: {e}");
+    }
+
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
