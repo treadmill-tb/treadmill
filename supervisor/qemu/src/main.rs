@@ -652,7 +652,7 @@ mod tests {
     };
     use treadmill_rs::image::Digest;
     use treadmill_rs::image::parse::ImageLayer;
-    use treadmill_supervisor_lib::launcher::{QemuImgMetadata, WorkloadProcess};
+    use treadmill_supervisor_lib::launcher::WorkloadProcess;
 
     /// The shipped example is a deployment's starting point, so it has to
     /// parse as the configuration this supervisor actually reads.
@@ -732,20 +732,6 @@ mod tests {
 
     #[async_trait]
     impl ProcessLauncher for StubLauncher {
-        async fn qcow2_info(&self, image: &Path) -> Result<QemuImgMetadata> {
-            // Not exercised by the OCI path: the chain is read from the
-            // manifest, not from qemu-img.
-            Ok(QemuImgMetadata {
-                filename: image.to_path_buf(),
-                virtual_size: 0,
-                children: vec![],
-                encrypted: None,
-                backing_filename_format: None,
-                backing_filename: None,
-                full_backing_filename: None,
-            })
-        }
-
         async fn create_overlay_no_backing(&self, path: &Path, size: u64) -> Result<()> {
             self.overlays
                 .lock()
