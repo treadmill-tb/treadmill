@@ -12,9 +12,6 @@ ALTER TABLE "tml_switchboard"."jobs"
 ADD COLUMN "lease_expiry_action" "tml_switchboard"."lease_expiry_action" NOT NULL DEFAULT 'terminate',
 ADD COLUMN "terminate_requested_reason" "tml_switchboard"."termination_reason" NULL,
 ADD CONSTRAINT "lease_duration_non_negative" CHECK (lease_duration >= '00:00:00'::interval),
-ADD CONSTRAINT "terminate_request_iso" CHECK (
-    (terminate_requested_at IS NULL) = (terminate_requested_reason IS NULL)
-),
 ADD CONSTRAINT "terminate_requested_reason_valid" CHECK (
     terminate_requested_reason = ANY (
         ARRAY[
@@ -31,6 +28,12 @@ SET
     "terminate_requested_reason" = 'user_terminated'
 WHERE
     "terminate_requested_at" IS NOT NULL;
+
+
+ALTER TABLE "tml_switchboard"."jobs"
+ADD CONSTRAINT "terminate_request_iso" CHECK (
+    (terminate_requested_at IS NULL) = (terminate_requested_reason IS NULL)
+);
 
 
 -- Functions (atlas community does not diff these).
