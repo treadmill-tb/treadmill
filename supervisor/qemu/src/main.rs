@@ -544,12 +544,8 @@ async fn main() -> Result<()> {
         config.qemu.qemu_img_binary.clone(),
     ));
 
-    let workdirs = Arc::new(JobWorkdirs::open(
-        &config.qemu.state_dir,
-        config.qemu.job_retention.clone(),
-    )?);
-    workdirs.sweep().await?;
-    workdirs.spawn_reaper();
+    let workdirs =
+        JobWorkdirs::start(&config.qemu.state_dir, config.qemu.job_retention.clone()).await?;
 
     let backend = Arc::new(QemuBackend::new(image_store, launcher, config.qemu.clone()));
     let (command_tx, command_rx) = mpsc::channel(COORD_MAILBOX_CAPACITY);

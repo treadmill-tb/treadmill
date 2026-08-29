@@ -69,6 +69,16 @@ pub struct JobWorkdirs {
 }
 
 impl JobWorkdirs {
+    /// Take `state_dir` over for this supervisor: retire what a previous
+    /// process left behind in it, and collect retired working directories for
+    /// as long as this one lives.
+    pub async fn start(state_dir: &Path, retention: RetentionConfig) -> Result<Arc<Self>> {
+        let workdirs = Arc::new(Self::open(state_dir, retention)?);
+        workdirs.sweep().await?;
+        workdirs.spawn_reaper();
+        Ok(workdirs)
+    }
+
     /// Take exclusive ownership of `state_dir`, failing if another supervisor
     /// process holds it.
     pub fn open(state_dir: &Path, retention: RetentionConfig) -> Result<Self> {
@@ -336,6 +346,24 @@ mod tests {
         // A zero grace period makes the next collection delete it.
         wd.collect().await.unwrap();
         assert!(retired_entries(tmp.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn starting_takes_over_the_state_dir_in_one_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job_id = Uuid::new_v4();
+
+        let previous = workdirs(tmp.path(), Duration::ZERO);
+        previous.create(job_id).await.unwrap();
+        drop(previous);
+
+        let wd = JobWorkdirs::start(tmp.path(), RetentionConfig::default())
+            .await
+            .unwrap();
+
+        assert!(!wd.path(job_id).exists());
+        assert!(retired_entries(tmp.path())[0].ends_with(&job_id.to_string()));
+        assert!(JobWorkdirs::open(tmp.path(), RetentionConfig::default()).is_err());
     }
 
     fn retired_entries(state_dir: &Path) -> Vec<String> {
