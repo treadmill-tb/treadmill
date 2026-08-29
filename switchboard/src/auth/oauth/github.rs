@@ -40,7 +40,7 @@ impl GithubProvider {
             AuthUrl::new(s.to_string()).map_err(|e| OAuthError::Config(format!("{what}: {e}")))
         };
         let client = BasicClient::new(ClientId::new(cfg.client_id.clone()))
-            .set_client_secret(ClientSecret::new(cfg.client_secret.clone()))
+            .set_client_secret(ClientSecret::new(cfg.client_secret.expose().clone()))
             .set_auth_uri(mkurl(&cfg.auth_url, "auth_url")?)
             .set_token_uri(
                 TokenUrl::new(cfg.token_url.clone())
@@ -191,13 +191,14 @@ impl OAuthProvider for GithubProvider {
 mod tests {
     use super::*;
     use crate::config::GitHubOAuthConfig;
+    use treadmill_rs::util::Secret;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn config(api_base_url: &str) -> GitHubOAuthConfig {
         GitHubOAuthConfig {
             client_id: "test-client".to_string(),
-            client_secret: "test-secret".to_string(),
+            client_secret: Secret::new("test-secret".to_string()),
             redirect_url: "http://localhost/api/v1/auth/github/callback".to_string(),
             auth_url: "https://github.com/login/oauth/authorize".to_string(),
             token_url: "https://github.com/login/oauth/access_token".to_string(),

@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
+use treadmill_rs::util::Secret;
 use treadmill_rs::util::chrono::duration as human_duration;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -190,7 +191,7 @@ pub struct GitHubOAuthConfig {
     /// OAuth app client id.
     pub client_id: String,
     /// OAuth app client secret.
-    pub client_secret: String,
+    pub client_secret: Secret<String>,
     /// Absolute URL the provider redirects back to (must match the OAuth app's
     /// configured callback), e.g. `https://switchboard.example/api/v1/auth/github/callback`.
     pub redirect_url: String,

@@ -702,7 +702,7 @@ impl LogPublisher {
     ) -> Result<Self> {
         let client = bearer_connect(
             &dispatch.nats_url,
-            &dispatch.write_token,
+            dispatch.write_token.expose(),
             dispatch.inbox_prefix.as_deref(),
         )
         .await?;

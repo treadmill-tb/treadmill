@@ -527,6 +527,7 @@ mod tests {
     };
     use treadmill_rs::image::Digest;
     use treadmill_rs::image::parse::ImageLayer;
+    use treadmill_rs::util::Secret;
     use treadmill_supervisor_lib::launcher::WorkloadProcess;
 
     /// The shipped example is a deployment's starting point, so it has to
@@ -931,7 +932,7 @@ mod tests {
         msg.log_streaming = Some(LogStreamingDispatch {
             nats_url: "nats://127.0.0.1:4222".to_string(),
             subject_prefix: format!("logs.{job_id}"),
-            write_token: "stub".to_string(),
+            write_token: Secret::new("stub".to_string()),
             console_input_subject: None,
             inbox_prefix: None,
         });
@@ -972,7 +973,7 @@ mod tests {
         msg.log_streaming = Some(LogStreamingDispatch {
             nats_url: "nats://127.0.0.1:4222".to_string(),
             subject_prefix: format!("logs.{job_id}"),
-            write_token: "stub".to_string(),
+            write_token: Secret::new("stub".to_string()),
             console_input_subject: None,
             inbox_prefix: None,
         });

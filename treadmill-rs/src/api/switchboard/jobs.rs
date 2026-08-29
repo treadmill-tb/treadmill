@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::api::switchboard::{JobState, TerminationReason};
 use crate::image::Digest;
+use crate::util::Secret;
 
 /// A permission on a job. `permissions` on [`JobInfo`] reports which of these
 /// the viewer holds (an owner or global admin holds all of them).
@@ -291,7 +292,7 @@ pub struct NatsLogStreamCredentials {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jetstream_domain: Option<String>,
     /// Bearer user JWT authorizing the scope described above.
-    pub token: String,
+    pub token: Secret<String>,
     /// Seconds until the token's `exp`; re-request credentials after this
     /// elapses (only needed to open a *new* connection).
     pub expires_in_secs: u64,
@@ -325,7 +326,7 @@ pub struct NatsConsoleInputCredentials {
     /// The subject to publish typed input to: `console-in.<job-id>`.
     pub subject: String,
     /// Bearer user JWT authorizing publish to `subject`.
-    pub token: String,
+    pub token: Secret<String>,
     /// Seconds until the token's `exp`; re-request credentials after this
     /// elapses (only needed to open a *new* connection).
     pub expires_in_secs: u64,
@@ -354,7 +355,7 @@ pub struct JobServiceCredentials {
     /// the host of `url` for any of these.
     pub endpoints: Vec<JobServiceEndpoint>,
     /// The signed token admitting the caller to this one service.
-    pub token: String,
+    pub token: Secret<String>,
     /// When the token stops being accepted. Minting again yields a fresh one;
     /// an already-minted token is not invalidated before this by anything,
     /// including the job ending or the caller's access being revoked.

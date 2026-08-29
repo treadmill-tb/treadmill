@@ -240,7 +240,7 @@
         },
         "write_token": {
           "description": "Bearer user JWT scoped to this job's subjects (see the sibling fields).",
-          "type": "string"
+          "$ref": "#/$defs/Secret"
         }
       },
       "required": [
@@ -347,6 +347,10 @@
       "required": [
         "remaining_restart_count"
       ]
+    },
+    "Secret": {
+      "description": "A value that must not appear in logs.\n\nThe wrapper is transparent on the wire — these types exist to be sent, and\nserialize as the bare inner value — and redacts only [`Debug`], which is\nwhat tracing and `{:?}` reach for. There is deliberately no `Display`,\n`Deref`, `AsRef` or `PartialEq`: every read is a visible\n[`expose`](Self::expose), and no comparison silently picks up a\nnon-constant-time `==`.",
+      "type": "string"
     },
     "StartJobMessage": {
       "type": "object",

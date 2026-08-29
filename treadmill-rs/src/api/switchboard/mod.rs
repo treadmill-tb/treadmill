@@ -8,6 +8,7 @@ pub mod users;
 
 use crate::api::switchboard::jobs::{JobParameter, RestartPolicy};
 use crate::image::Digest;
+use crate::util::Secret;
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,7 @@ use subtle::{Choice, ConstantTimeEq};
 use uuid::Uuid;
 
 #[serde_as]
-#[derive(schemars::JsonSchema, Debug, Serialize, Deserialize, Eq, Copy, Clone)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Eq, Copy, Clone)]
 // Use `serde_with::serde_as` since `serde` by itself doesn't support arrays larger than 32 items,
 // and also because `serde_with` has builtin base64-encoding support.
 pub struct AuthToken(
@@ -29,6 +30,12 @@ pub struct AuthToken(
 impl AuthToken {
     pub fn encode_for_http(self) -> String {
         base64::prelude::BASE64_STANDARD.encode(self.0)
+    }
+}
+/// Redacted: an [`AuthToken`] is a bearer credential and must not reach a log.
+impl std::fmt::Debug for AuthToken {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AuthToken(<redacted>)")
     }
 }
 impl ConstantTimeEq for AuthToken {
@@ -84,7 +91,7 @@ pub struct LoginStagedResponse {
     pub staged_id: Uuid,
     /// Single-use secret that `/auth/login/complete` exchanges for an auth
     /// token.
-    pub staged_secret: String,
+    pub staged_secret: Secret<String>,
     /// The ToS version the user is being asked to accept (if `required`
     /// contains `"tos"`), echoed back on completion so consent is recorded
     /// against the text actually shown.
@@ -108,7 +115,7 @@ pub struct LoginCompleteRequest {
     /// The staged login, from [`LoginStagedResponse::staged_id`].
     pub staged_id: Uuid,
     /// Its one-time secret, from [`LoginStagedResponse::staged_secret`].
-    pub staged_secret: String,
+    pub staged_secret: Secret<String>,
     /// The ToS version the user was shown and accepted (only mandatory if
     /// `required` contained `"tos"`). Must match the version currently in
     /// force, so a concurrent ToS bump cannot record consent to text the user

@@ -30,6 +30,7 @@
 
 use crate::connector::JobError;
 use crate::image::Digest;
+use crate::util::Secret;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
@@ -244,7 +245,7 @@ pub struct LogStreamingDispatch {
     /// is appended as `<subject_prefix>.<channel>` (see [`LogChannel`]).
     pub subject_prefix: String,
     /// Bearer user JWT scoped to this job's subjects (see the sibling fields).
-    pub write_token: String,
+    pub write_token: Secret<String>,
     /// Subject carrying user-typed console input for this job
     /// (`console-in.<job-id>`); the supervisor subscribes and writes each
     /// message's payload to the workload's serial console. Additive and
