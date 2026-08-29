@@ -45,7 +45,7 @@ pub struct QemuConfig {
     /// `qemu-img` binary, to work with qcow2 files.
     qemu_img_binary: PathBuf,
 
-    /// Directory to keep state:
+    /// Directory this supervisor keeps its per-job working directories in.
     state_dir: PathBuf,
 
     /// List of arguments to pass to the QEMU binary.
@@ -65,8 +65,16 @@ pub struct QemuConfig {
     ///   configured args should attach the disk device by referencing this
     ///   node, e.g. `-device virtio-blk-device,drive={disk_node}`.
     ///
-    /// - `tcp_control_socket_listen_addr`: full socket address, with an IPv6
-    ///   address enclosed in square brackets, e.g. `[::1]:8080`
+    /// - `tcp_control_socket_listen_addr`: the address the per-job control
+    ///   socket is **bound** to, with an IPv6 address enclosed in square
+    ///   brackets, e.g. `[::1]:8080`. This is the supervisor's listen address,
+    ///   not necessarily one the guest can reach: under QEMU's user networking
+    ///   the guest has to be pointed at `10.0.2.2` instead.
+    ///
+    /// Any variable the start script emits (`tml-set-variable:<key>=<value>`)
+    /// can be substituted too, since the hook runs before the arguments are
+    /// templated. A literal brace in an argument must be doubled (`{{`/`}}`);
+    /// a `{name}` naming no variable fails the job at launch.
     qemu_args: Vec<String>,
 
     /// Maximum "working" disk image to be allocated for a job, in bytes.
@@ -121,8 +129,10 @@ const COORD_MAILBOX_CAPACITY: usize = 8;
 /// How long a connector that lost its coordinator waits before retrying.
 const RECONNECT_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// The QEMU half of a job: the image it boots, the disk it boots from, and the
-/// `qemu-system-*` process that boots it.
+/// The QEMU half of the job lifecycle: what the runner calls to resolve an
+/// image, lay down the disk a job boots from, and start `qemu-system-*`.
+///
+/// Holds no per-job state — one backend serves every job this supervisor runs.
 #[derive(Debug)]
 pub struct QemuBackend {
     /// Read-only client of the local OCI store daemon (per-server Zot). We ask
@@ -288,9 +298,9 @@ impl JobBackend for QemuBackend {
                     description: format!("Invalid backing chain: {e:#}"),
                 })?;
 
-        // The per-job overlay backs onto the head at launch, so it must be at
-        // least as large as the head's virtual size, and no larger than the
-        // configured working-disk ceiling (the VM is exposed exactly this size).
+        // The overlay is always created at the ceiling, and the VM is exposed
+        // exactly that size, so a head larger than the ceiling would have its
+        // tail cut off once the chain is stacked underneath.
         if head_virtual_size > self.config.working_disk_max_bytes {
             return Err(connector::JobError {
                 error_kind: connector::JobErrorKind::ImageInvalid,
@@ -496,10 +506,12 @@ fn on_signal(kind: SignalKind, action: impl Fn() + Send + 'static) {
 /// Drive the runner off `connector` until it returns or `stop` is cancelled,
 /// then take down whatever job is left.
 ///
-/// A connector that returns `Ok(())` has drained: the coordinator removed the
-/// job that occupied the slot, so there is nothing left to take down. On every
-/// other path there may still be a job executing, and it is terminated and
-/// released here rather than orphaned along with the process.
+/// `Ok(())` means the connector is done serving, not that the slot is empty:
+/// the ws connector only returns it once the switchboard has removed the job,
+/// but the local connector returns as soon as its one job reports `Terminated`,
+/// leaving the retained terminal record behind. So every path out of the loop
+/// ends in `shutdown()`, which terminates and releases whatever is still there
+/// rather than orphaning it along with the process.
 async fn serve(
     connector: Arc<dyn SupervisorConnector>,
     runner: Arc<JobRunner<QemuBackend>>,
@@ -1072,9 +1084,9 @@ mod tests {
         );
     }
 
-    /// The address the puppet's control socket is bound to is what the guest
-    /// has to be pointed at, so the invocation can template it in rather than
-    /// repeating the configured value.
+    /// The address the control socket is bound to is available to the
+    /// invocation, so a configuration that can use it verbatim -- one bound to
+    /// an address the guest can reach -- need not repeat the value.
     #[tokio::test]
     async fn the_control_socket_address_is_available_to_the_invocation() {
         let f = fixture(
