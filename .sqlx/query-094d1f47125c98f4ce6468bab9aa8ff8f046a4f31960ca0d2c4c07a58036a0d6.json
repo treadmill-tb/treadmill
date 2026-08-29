@@ -26,6 +26,7 @@
                 "workload_exited",
                 "workload_self_terminated",
                 "user_terminated",
+                "preempted",
                 "queue_timeout",
                 "execution_timeout",
                 "image_error",

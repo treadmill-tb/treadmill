@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tml_switchboard.jobs\n                   set terminate_requested_at = coalesce(terminate_requested_at, $2),\n                       terminate_requested_reason =\n                           coalesce(terminate_requested_reason, 'user_terminated')\n                   where job_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ef3ea91924bd84f516e61522a7c4b47b907cff220490be4fff2502099fc97a14"
+}

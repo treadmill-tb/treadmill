@@ -325,7 +325,7 @@ cors_allowed_origins = $cors_origins_toml
 
 [service]
 default_token_timeout = "7d"
-default_job_timeout = "30m"
+default_job_lease = "30m"
 default_queue_timeout = "30m"
 match_interval = "10s"
 host_liveness_timeout = "30s"

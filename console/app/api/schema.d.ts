@@ -1040,6 +1040,19 @@ export interface components {
             /** @description The user-provided display label, if any. */
             label?: string | null;
             /**
+             * Format: int64
+             * @description The job's protected window, in seconds, measured from `started_at`.
+             */
+            lease_duration_secs: number;
+            /**
+             * Format: date-time
+             * @description When the lease expires (`started_at + lease_duration`); null until the
+             *     job starts.
+             */
+            lease_expires_at?: string | null;
+            /** @description What happens when the lease expires. */
+            lease_expiry_action: components["schemas"]["JobLeaseExpiryAction"];
+            /**
              * Format: uuid
              * @description Owning subject (user or group); null if the owner was deleted
              *     (orphaned).
@@ -1088,11 +1101,6 @@ export interface components {
             terminated_at?: string | null;
             /** @description Why the job terminated; null until finalized. */
             termination_reason?: components["schemas"]["TerminationReason"] | null;
-            /**
-             * Format: int64
-             * @description How long the job may run before it is killed, in seconds.
-             */
-            timeout_secs: number;
         };
         JobInitSpec: {
             /** Format: uuid */
@@ -1127,6 +1135,8 @@ export interface components {
          *     and boots, before it becomes `ready`.
          */
         JobInitializingStage: "starting" | "fetching_image" | "allocating" | "provisioning" | "booting";
+        /** @description What happens when a job's lease expires. */
+        JobLeaseExpiryAction: "terminate" | "preempt";
         /**
          * @description Response body of `GET /jobs`: a page of jobs the caller can read, newest
          *     first.
@@ -1192,7 +1202,16 @@ export interface components {
              * @default null
              */
             label: string | null;
-            override_timeout?: string | null;
+            /**
+             * @description The job's protected window, measured from its start. Absent, the
+             *     deployment default applies.
+             */
+            lease_duration?: string | null;
+            /**
+             * @description What happens when the lease expires. Absent, `terminate`.
+             * @default null
+             */
+            lease_expiry_action: components["schemas"]["JobLeaseExpiryAction"] | null;
             /**
              * Format: uuid
              * @description The subject (user or group) to own the enqueued job. Must be the caller
@@ -1303,6 +1322,12 @@ export interface components {
             /** @description The user-provided display label, if any. */
             label?: string | null;
             /**
+             * Format: date-time
+             * @description When the lease expires; null until the job starts.
+             */
+            lease_expires_at?: string | null;
+            lease_expiry_action: components["schemas"]["JobLeaseExpiryAction"];
+            /**
              * Format: uuid
              * @description Owning subject (user or group); null if orphaned.
              */
@@ -1317,6 +1342,33 @@ export interface components {
             terminated_at?: string | null;
             termination_reason?: components["schemas"]["TerminationReason"] | null;
         };
+        /**
+         * @description Why a requested lease change was refused (`409 Conflict` on
+         *     `PATCH /jobs/{id}`). The whole request is rejected, so a label change sent
+         *     alongside a refused lease change is not applied either.
+         */
+        LeaseRejection: {
+            code: components["schemas"]["LeaseRejectionCode"];
+            /**
+             * Format: date-time
+             * @description The latest expiry that would have been granted, when one exists.
+             */
+            max_lease_expires_at?: string | null;
+            /** @description Human-readable explanation; not intended to be parsed. */
+            message: string;
+            /**
+             * Format: int64
+             * @description When asking again could plausibly succeed; null if never.
+             */
+            retry_after_secs?: number | null;
+        };
+        /**
+         * @description The machine-readable discriminant of a [`LeaseRejection`]. Clients must
+         *     tolerate unknown values.
+         */
+        LeaseRejectionCode: "job_terminating" | "not_started" | "policy_limit" | "resource_pressure";
+        /** @description A lease change: `"30m"` (set), `"+30m"` / `"-10m"` (adjust), or an RFC 3339 timestamp (absolute expiry). */
+        LeaseSpec: string;
         /** @description A linked GitHub identity, reduced to the fields safe to expose publicly. */
         LinkedGitHub: {
             /** @description The user's current GitHub login/handle. */
@@ -1689,7 +1741,7 @@ export interface components {
          *     This records *why* a job stopped and is orthogonal to the `task_exit_status`
          *     (the success/failure of the user's workload) and to any `exit_message`.
          */
-        TerminationReason: "workload_exited" | "workload_self_terminated" | "user_terminated" | "queue_timeout" | "execution_timeout" | "image_error" | "host_match_error" | "host_start_failure" | "host_dropped_job" | "host_unreachable" | "resume_failed" | "internal_error";
+        TerminationReason: "workload_exited" | "workload_self_terminated" | "user_terminated" | "preempted" | "queue_timeout" | "execution_timeout" | "image_error" | "host_match_error" | "host_start_failure" | "host_dropped_job" | "host_unreachable" | "resume_failed" | "internal_error";
         /** @description The `{token_id}` segment of a token route. */
         TokenIdPath: {
             /**
@@ -1728,6 +1780,10 @@ export interface components {
              *     unique.
              */
             label?: string | null;
+            /** @description A change to the job's lease. May be refused; see [`LeaseRejection`]. */
+            lease?: components["schemas"]["LeaseSpec"] | null;
+            /** @description What should happen when the lease expires. */
+            lease_expiry_action?: components["schemas"]["JobLeaseExpiryAction"] | null;
         };
         /**
          * @description A patch to the caller's own profile. Omitting a field leaves it unchanged.
@@ -2486,6 +2542,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description The requested lease change was refused; nothing was applied. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeaseRejection"];
+                };
             };
             /** @description Expected request with `Content-Type: application/json` */
             415: {

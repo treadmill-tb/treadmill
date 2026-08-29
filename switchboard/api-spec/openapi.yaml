@@ -586,6 +586,12 @@ paths:
                 type: string
         '204':
           description: The job was updated.
+        '409':
+          description: The requested lease change was refused; nothing was applied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaseRejection'
       security:
       - token: []
   /hosts:
@@ -2272,6 +2278,22 @@ components:
           type:
           - string
           - 'null'
+        lease_duration_secs:
+          description: The job's protected window, in seconds, measured from `started_at`.
+          type: integer
+          format: int64
+        lease_expires_at:
+          description: |-
+            When the lease expires (`started_at + lease_duration`); null until the
+            job starts.
+          type:
+          - string
+          - 'null'
+          format: date-time
+        lease_expiry_action:
+          description: What happens when the lease expires.
+          allOf:
+          - $ref: '#/components/schemas/JobLeaseExpiryAction'
         owner_id:
           description: |-
             Owning subject (user or group); null if the owner was deleted
@@ -2345,10 +2367,6 @@ components:
           anyOf:
           - $ref: '#/components/schemas/TerminationReason'
           - type: 'null'
-        timeout_secs:
-          description: How long the job may run before it is killed, in seconds.
-          type: integer
-          format: int64
       required:
       - job_id
       - state
@@ -2357,7 +2375,8 @@ components:
       - host_tag_requirements
       - target_requirements
       - parameters
-      - timeout_secs
+      - lease_duration_secs
+      - lease_expiry_action
       - queued_at
       - services
       - permissions
@@ -2450,6 +2469,18 @@ components:
       - description: The host is booting; the job becomes `ready` once it is up.
         type: string
         const: booting
+    JobLeaseExpiryAction:
+      description: What happens when a job's lease expires.
+      oneOf:
+      - description: 'Hard deadline: the job is stopped (`execution_timeout`).'
+        type: string
+        const: terminate
+      - description: |-
+          The job keeps running unprotected and becomes reclaimable: the scheduler
+          may stop it (`preempted`) to place a job with no idle host available.
+          Absent that demand it runs on past its lease.
+        type: string
+        const: preempt
     JobListResponse:
       description: |-
         Response body of `GET /jobs`: a page of jobs the caller can read, newest
@@ -2552,10 +2583,19 @@ components:
           - string
           - 'null'
           default: null
-        override_timeout:
+        lease_duration:
+          description: |-
+            The job's protected window, measured from its start. Absent, the
+            deployment default applies.
           type:
           - string
           - 'null'
+        lease_expiry_action:
+          description: What happens when the lease expires. Absent, `terminate`.
+          anyOf:
+          - $ref: '#/components/schemas/JobLeaseExpiryAction'
+          - type: 'null'
+          default: null
         owner:
           description: |-
             The subject (user or group) to own the enqueued job. Must be the caller
@@ -2724,6 +2764,14 @@ components:
           type:
           - string
           - 'null'
+        lease_expires_at:
+          description: When the lease expires; null until the job starts.
+          type:
+          - string
+          - 'null'
+          format: date-time
+        lease_expiry_action:
+          $ref: '#/components/schemas/JobLeaseExpiryAction'
         owner_id:
           description: Owning subject (user or group); null if orphaned.
           type:
@@ -2758,6 +2806,56 @@ components:
       - state
       - image
       - queued_at
+      - lease_expiry_action
+    LeaseRejection:
+      description: |-
+        Why a requested lease change was refused (`409 Conflict` on
+        `PATCH /jobs/{id}`). The whole request is rejected, so a label change sent
+        alongside a refused lease change is not applied either.
+      type: object
+      properties:
+        code:
+          $ref: '#/components/schemas/LeaseRejectionCode'
+        max_lease_expires_at:
+          description: The latest expiry that would have been granted, when one exists.
+          type:
+          - string
+          - 'null'
+          format: date-time
+        message:
+          description: Human-readable explanation; not intended to be parsed.
+          type: string
+        retry_after_secs:
+          description: When asking again could plausibly succeed; null if never.
+          type:
+          - integer
+          - 'null'
+          format: int64
+      required:
+      - code
+      - message
+    LeaseRejectionCode:
+      description: |-
+        The machine-readable discriminant of a [`LeaseRejection`]. Clients must
+        tolerate unknown values.
+      oneOf:
+      - description: The job is finalized, or a stop has already been signalled for it.
+        type: string
+        const: job_terminating
+      - description: |-
+          An absolute lease end was requested for a job that has not started, so
+          there is no clock to measure it against.
+        type: string
+        const: not_started
+      - description: A deployment policy caps the lease below what was requested.
+        type: string
+        const: policy_limit
+      - description: The resources cannot be held for as long as requested.
+        type: string
+        const: resource_pressure
+    LeaseSpec:
+      description: 'A lease change: `"30m"` (set), `"+30m"` / `"-10m"` (adjust), or an RFC 3339 timestamp (absolute expiry).'
+      type: string
     LinkedGitHub:
       description: A linked GitHub identity, reduced to the fields safe to expose publicly.
       type: object
@@ -3305,6 +3403,9 @@ components:
       - description: Externally terminated by a user.
         type: string
         const: user_terminated
+      - description: Reclaimed after its lease expired, to place another job.
+        type: string
+        const: preempted
       - description: Timed out while still queued.
         type: string
         const: queue_timeout
@@ -3384,6 +3485,16 @@ components:
           type:
           - string
           - 'null'
+        lease:
+          description: A change to the job's lease. May be refused; see [`LeaseRejection`].
+          anyOf:
+          - $ref: '#/components/schemas/LeaseSpec'
+          - type: 'null'
+        lease_expiry_action:
+          description: What should happen when the lease expires.
+          anyOf:
+          - $ref: '#/components/schemas/JobLeaseExpiryAction'
+          - type: 'null'
       additionalProperties: false
     UpdateProfileRequest:
       description: |-

@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select host_id as \"host_id!\", reclaim_pending as \"reclaim_pending!\"\n               from tml_switchboard.reclaimable_hosts($1, $2, $3)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "host_id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "reclaim_pending!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "d9dbdba8305e775f16dd5e78a52f33f3e8e0cb171adfd9c850ed88a96a5e3c3f"
+}

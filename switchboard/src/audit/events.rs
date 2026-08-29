@@ -370,6 +370,36 @@ define_event! {
 }
 
 define_event! {
+    /// The scheduler reclaimed a host by stopping the expired `preempt`-lease
+    /// job on it, to make room for a job no idle host could take. Visible to
+    /// anyone who can read the preempted job; the job that gains the host is
+    /// not named, since its reader and the victim's need not overlap.
+    JobPreempted v1 {
+        actor: Subject,
+        job: Job @ view(Read),
+        host: Host @ view(Read),
+    }
+    event_type = "job_preempted";
+    render = "reclaimed the host for a queued job";
+}
+
+define_event! {
+    /// A user changed a job's lease (`PATCH /jobs/{id}`) -- its duration, what
+    /// happens when it expires, or both. Visible to anyone who can read the
+    /// job; carries the prior and new values.
+    JobLeaseChanged v1 {
+        actor: Subject,
+        job: Job @ view(Read),
+        old_lease_duration_secs: i64,
+        new_lease_duration_secs: i64,
+        old_lease_expiry_action: String,
+        new_lease_expiry_action: String,
+    }
+    event_type = "job_lease_changed";
+    render = "changed the job lease";
+}
+
+define_event! {
     /// A user was issued a console-input token for a job
     /// (`POST /jobs/{id}/nats-console-input-token`), authorizing them to type
     /// into the job's serial console until `expires_at` (re-minted on every

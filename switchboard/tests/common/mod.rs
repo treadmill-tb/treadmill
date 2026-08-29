@@ -47,7 +47,7 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
         service: ServiceConfig {
             current_tos_version: 1,
             default_token_timeout: chrono::Duration::hours(1),
-            default_job_timeout: chrono::Duration::hours(1),
+            default_job_lease: chrono::Duration::hours(1),
             default_queue_timeout: chrono::Duration::hours(1),
             match_interval: chrono::Duration::seconds(1),
             host_liveness_timeout: chrono::Duration::seconds(30),

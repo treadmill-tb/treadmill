@@ -22,9 +22,9 @@ use uuid::Uuid;
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{
-    EnqueueJobResponse, JobImageRef, JobInfo, JobListResponse, JobPermission,
-    JobServiceCredentials, JobServiceEndpoint, NatsConsoleInputCredentials,
-    NatsLogStreamCredentials,
+    EnqueueJobResponse, JobImageRef, JobInfo, JobLeaseExpiryAction, JobListResponse, JobPermission,
+    JobServiceCredentials, JobServiceEndpoint, LeaseRejection, LeaseRejectionCode,
+    NatsConsoleInputCredentials, NatsLogStreamCredentials,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, WhoAmIResponse};
 use treadmill_rs::image::Digest;
@@ -207,7 +207,7 @@ async fn seed_job(pool: &PgPool, owner: Uuid, token: Uuid, params: &[(&str, &str
     sqlx::query(
         "insert into tml_switchboard.jobs \
            (job_id, owner_id, image_id, restart_policy, \
-            enqueued_by_token_id, host_tag_requirements, job_timeout, \
+            enqueued_by_token_id, host_tag_requirements, lease_duration, \
             job_state, queued_at) \
          values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, \
             $4, '{}', interval '1 hour', 'queued', now())",
@@ -249,7 +249,7 @@ async fn seed_job_at(
     sqlx::query(
         "insert into tml_switchboard.jobs \
            (job_id, owner_id, image_id, restart_policy, \
-            enqueued_by_token_id, host_tag_requirements, job_timeout, \
+            enqueued_by_token_id, host_tag_requirements, lease_duration, \
             job_state, queued_at) \
          values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, \
             $4, '{}', interval '1 hour', 'queued', $5)",
@@ -466,7 +466,7 @@ async fn enqueue_and_cancel_emit_audit_events(pool: PgPool) {
 fn image_job_request(
     owner: Option<Uuid>,
     init_spec: JobInitSpec,
-    override_timeout: Option<chrono::Duration>,
+    lease_duration: Option<chrono::Duration>,
 ) -> JobRequest {
     JobRequest {
         init_spec,
@@ -476,7 +476,8 @@ fn image_job_request(
         parameters: HashMap::new(),
         host_tag_requirements: vec![],
         target_requirements: vec![],
-        override_timeout,
+        lease_duration,
+        lease_expiry_action: None,
     }
 }
 
@@ -511,7 +512,7 @@ async fn enqueue_creates_a_queued_job_owned_by_caller(pool: PgPool) {
     let job_id = resp.json::<EnqueueJobResponse>().await.unwrap().job_id;
 
     // The enqueuer owns the job and can read it back: queued, owned by the
-    // caller, with the deployment default timeout (1h in the mock config).
+    // caller, with the deployment default lease (1h in the mock config).
     let info: JobInfo = client
         .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
         .bearer_auth(&token)
@@ -523,7 +524,12 @@ async fn enqueue_creates_a_queued_job_owned_by_caller(pool: PgPool) {
         .unwrap();
     assert_eq!(info.owner_id, Some(bob));
     assert_eq!(info.state, JobState::Queued);
-    assert_eq!(info.timeout_secs, 3600);
+    assert_eq!(info.lease_duration_secs, 3600);
+    assert_eq!(info.lease_expires_at, None);
+    assert_eq!(
+        info.lease_expiry_action,
+        treadmill_rs::api::switchboard::jobs::JobLeaseExpiryAction::Terminate
+    );
 }
 
 #[sqlx::test]
@@ -630,6 +636,211 @@ async fn job_label_is_set_at_enqueue_and_mutable_via_patch(pool: PgPool) {
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 }
 
+/// Enqueue a default-lease job owned by `bob` and return `(token, job_id)`.
+async fn enqueue_for_lease_test(pool: &PgPool, addr: SocketAddr) -> (String, Uuid) {
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let token = mock_login_token(pool, &client, addr, "bob", true).await;
+    let (_, image) = register_image(pool).await;
+    let req = image_job_request(
+        None,
+        JobInitSpec::Image {
+            manifest_digest: image,
+        },
+        None,
+    );
+    let resp = client
+        .post(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(&token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    (
+        token,
+        resp.json::<EnqueueJobResponse>().await.unwrap().job_id,
+    )
+}
+
+/// Move a queued job to `ready` on a freshly-inserted host, so it has a
+/// `started_at` for the lease to be anchored on.
+async fn mark_running(pool: &PgPool, job_id: Uuid, started_at: chrono::DateTime<chrono::Utc>) {
+    let host_id = Uuid::new_v4();
+    sqlx::query(
+        "insert into tml_switchboard.hosts (host_id, name, auth_token, tags) \
+         values ($1, $2, $3, '{}')",
+    )
+    .bind(host_id)
+    .bind(format!("host-{host_id}"))
+    .bind(vec![0u8; 32])
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "update tml_switchboard.jobs \
+         set job_state = 'ready', dispatched_on_host_id = $2, started_at = $3 \
+         where job_id = $1",
+    )
+    .bind(job_id)
+    .bind(host_id)
+    .bind(started_at)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn get_job(client: &reqwest::Client, addr: SocketAddr, token: &str, job_id: Uuid) -> JobInfo {
+    client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn lease_patch_sets_adjusts_and_floors_the_duration(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let (token, job_id) = enqueue_for_lease_test(&pool, addr).await;
+
+    let patch = async |body: serde_json::Value| {
+        client
+            .patch(format!("http://{addr}/api/v1/jobs/{job_id}"))
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+    };
+
+    // `+`/`-` move the existing lease; a bare duration replaces it.
+    assert_eq!(
+        patch(serde_json::json!({ "lease": "+30m" })).await.status(),
+        reqwest::StatusCode::NO_CONTENT
+    );
+    let info = get_job(&client, addr, &token, job_id).await;
+    assert_eq!(info.lease_duration_secs, 5400);
+    assert_eq!(info.lease_expires_at, None);
+
+    // Shortening past zero floors rather than going negative.
+    assert_eq!(
+        patch(serde_json::json!({ "lease": "-4h" })).await.status(),
+        reqwest::StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get_job(&client, addr, &token, job_id)
+            .await
+            .lease_duration_secs,
+        0
+    );
+
+    assert_eq!(
+        patch(serde_json::json!({ "lease": "2h" })).await.status(),
+        reqwest::StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get_job(&client, addr, &token, job_id)
+            .await
+            .lease_duration_secs,
+        2 * 3600
+    );
+
+    // The absolute form has nothing to measure against until the job starts.
+    let resp = patch(serde_json::json!({ "lease": "2126-08-28T14:00:00Z" })).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+    let rejection: LeaseRejection = resp.json().await.unwrap();
+    assert_eq!(rejection.code, LeaseRejectionCode::NotStarted);
+
+    // A caller without `manage` cannot touch the lease.
+    let stranger = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let resp = client
+        .patch(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&stranger)
+        .json(&serde_json::json!({ "lease": "+1h" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn lease_patch_anchors_an_absolute_expiry_on_started_at(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let (token, job_id) = enqueue_for_lease_test(&pool, addr).await;
+
+    let started_at: chrono::DateTime<chrono::Utc> = "2126-08-28T12:00:00Z".parse().unwrap();
+    mark_running(&pool, job_id, started_at).await;
+
+    let target: chrono::DateTime<chrono::Utc> = "2126-08-28T14:00:00Z".parse().unwrap();
+    let resp = client
+        .patch(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "lease": target.to_rfc3339(),
+            "lease_expiry_action": "preempt",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+
+    let info = get_job(&client, addr, &token, job_id).await;
+    assert_eq!(info.lease_duration_secs, 2 * 3600);
+    assert_eq!(info.lease_expires_at, Some(target));
+    assert_eq!(info.lease_expiry_action, JobLeaseExpiryAction::Preempt);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn lease_patch_on_a_terminating_job_applies_nothing(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let (token, job_id) = enqueue_for_lease_test(&pool, addr).await;
+
+    let resp = client
+        .delete(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+
+    let resp = client
+        .patch(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "lease": "+1h", "label": "still here" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+    let rejection: LeaseRejection = resp.json().await.unwrap();
+    assert_eq!(rejection.code, LeaseRejectionCode::JobTerminating);
+
+    // The whole patch was refused, so the label alongside it did not land.
+    let info = get_job(&client, addr, &token, job_id).await;
+    assert_eq!(info.lease_duration_secs, 3600);
+    assert_eq!(info.label, None);
+}
+
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn enqueue_under_a_group_the_caller_belongs_to(pool: PgPool) {
@@ -734,7 +945,7 @@ async fn restarting_a_job_without_manage_is_forbidden(pool: PgPool) {
 
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-async fn enqueue_honors_an_override_timeout(pool: PgPool) {
+async fn enqueue_honors_a_requested_lease_duration(pool: PgPool) {
     let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
     let client = reqwest::Client::builder()
         .redirect(Policy::none())
@@ -770,7 +981,7 @@ async fn enqueue_honors_an_override_timeout(pool: PgPool) {
         .json()
         .await
         .unwrap();
-    assert_eq!(info.timeout_secs, 2 * 3600);
+    assert_eq!(info.lease_duration_secs, 2 * 3600);
 }
 
 /// A job's `(job_state, termination_reason)` as enum text.

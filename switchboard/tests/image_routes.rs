@@ -256,7 +256,8 @@ async fn enqueue_set(
         parameters: HashMap::new(),
         host_tag_requirements: vec![],
         target_requirements: vec![],
-        override_timeout: None,
+        lease_duration: None,
+        lease_expiry_action: None,
     };
     client
         .post(format!("{base}/jobs"))
@@ -310,7 +311,8 @@ async fn enqueue_image_job(
         parameters: HashMap::new(),
         host_tag_requirements: vec![],
         target_requirements: vec![],
-        override_timeout: None,
+        lease_duration: None,
+        lease_expiry_action: None,
     };
     client
         .post(format!("{base}/jobs"))

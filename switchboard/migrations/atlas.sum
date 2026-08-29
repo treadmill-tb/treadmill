@@ -1,4 +1,4 @@
-h1:OvHcIrzPl15C9j7AyneS343dhXcEpe0yU4KYfx0m7Ts=
+h1:KQQiaL34zNmcC7OyRD6S6GFPNRUtDLcG8V6UMfwOS9c=
 00000000000001_base.sql h1:7OodY/qoessjRRoCAAX04fthKHTDNzzloQ4srKlxs+o=
 20260704040624_add_login_admission.sql h1:hYEzBBXagVmDVTtFsA1uosdNLKUi8JvitaMOFw/4jbk=
 20260708035542_everyone_subject.sql h1:eshPaeCj4UtkHWVuGTZHzsESVxK09Vy8ys5+ywA09pU=
@@ -14,3 +14,6 @@ h1:OvHcIrzPl15C9j7AyneS343dhXcEpe0yU4KYfx0m7Ts=
 20260713214508_job_valid_label_constr.sql h1:EmIPVJoi/cpLmUUuSpimPEFfSsMtsQRLT+zAe0JHPtM=
 20260802075717_remove_job_ssh.sql h1:fZlTCIF7g/Ro3DTs34xsjWU/J1IDmq4XPIrndg7PIm4=
 20260802220453_job_gateway_services.sql h1:43NqZ5x99//htzrWScV0B1/lZaUvwzFb+e6SL/RyIxs=
+20260828234928_job_lease_preempted_reason.sql h1:tBx3rfcJAp8EOuOI+8QZQclBsrLOFwV8XUX7TAy0M7k=
+20260828234929_job_lease.sql h1:SYydp7muZ80FF/AeRE4I43iCmDFTc/SkK0JKJpe/S2c=
+20260828234930_job_reclaimable_hosts.sql h1:M9CwIHT1tvZDikSNTAP8Vz9m6qc8+ZTs6c/IdnUHwUU=
