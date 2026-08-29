@@ -78,3 +78,14 @@ working_disk_max_bytes = 34359738368
 start_script = "./nix_ovmf-vars_start_script.sh"
 # Optional stop script (might run even if the start script didn't)
 #stop_script = "./foobar"
+
+# When the switchboard removes a job, its working directory
+# (`<state_dir>/jobs/<job_id>`) is moved to `<state_dir>/retired`, from where
+# the next sweep deletes it once it is older than `grace_period`. Working
+# directories left behind by a crashed supervisor are retired the same way on
+# startup. Both fields are optional; omit the section to use the built-in
+# defaults.
+#
+# [qemu.job_retention]
+# grace_period = "24h"
+# sweep_interval = "1h"

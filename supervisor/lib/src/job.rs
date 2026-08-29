@@ -32,6 +32,7 @@ use treadmill_tcp_control_socket_server::TcpControlSocket;
 use crate::capture::{self, SerialSocket};
 use crate::launcher::WorkloadProcess;
 use crate::publisher::{LogPublisher, LogPublisherConfig};
+use crate::workdirs::JobWorkdirs;
 
 /// How long teardown waits for the log publisher to drain before giving up on
 /// the chunks it is still holding.
@@ -53,8 +54,9 @@ pub struct JobRunnerConfig {
     /// the `job_ip_address` variable.
     pub job_address: Option<IpAddr>,
 
-    /// Directory the per-job working directories are created under.
-    pub state_dir: PathBuf,
+    /// Per-job working directories, and the lock over the state directory they
+    /// live in.
+    pub workdirs: Arc<JobWorkdirs>,
 
     /// Address the per-job puppet control socket listens on.
     pub control_socket_listen_addr: SocketAddr,
@@ -622,7 +624,7 @@ impl<B: JobBackend> JobTask<B> {
         let image = self.runner.backend.fetch(&self.start_job_req).await?;
 
         self.set_phase(Phase::Allocating).await;
-        let job_workdir = allocate_workdir(&self.runner.config.state_dir, self.job_id()).await?;
+        let job_workdir = allocate_workdir(&self.runner.config.workdirs, self.job_id()).await?;
 
         // Variables that can be produced by the start script, and used for
         // templating the workload's arguments or setting other job-specific
@@ -970,37 +972,31 @@ impl<B: JobBackend> JobTask<B> {
         if let Some(publisher) = publisher {
             publisher.drain(PUBLISHER_DRAIN_TIMEOUT).await;
         }
+
+        if let Err(e) = self.runner.config.workdirs.retire(self.job_id()).await {
+            event!(Level::WARN, error = ?e, "Failed to retire the job working directory");
+        }
     }
 }
 
-/// Create a job's working directory under the configured state dir. A
-/// directory that is already there belonged to a job of the same id.
-async fn allocate_workdir(state_dir: &Path, job_id: Uuid) -> Result<PathBuf, JobError> {
-    let jobs_dir = state_dir.join("jobs");
-    let job_dir = jobs_dir.join(job_id.to_string());
-
-    event!(Level::DEBUG, ?job_dir, "Creating job state dir");
-
-    tokio::fs::create_dir_all(&jobs_dir)
+/// Create a job's working directory. One that is already there belonged to a
+/// job of the same id.
+async fn allocate_workdir(workdirs: &JobWorkdirs, job_id: Uuid) -> Result<PathBuf, JobError> {
+    workdirs
+        .create(job_id)
         .await
-        .map_err(|io_err| JobError {
-            error_kind: JobErrorKind::InternalError,
-            description: format!("Failed to create state dir for job {job_id}: {io_err:?}"),
-        })?;
-
-    match tokio::fs::create_dir(&job_dir).await {
-        Ok(()) => Ok(job_dir),
-
-        Err(io_err) if io_err.kind() == std::io::ErrorKind::AlreadyExists => Err(JobError {
-            error_kind: JobErrorKind::JobAlreadyExists,
-            description: format!("A job with {job_id:?} was previously started on this supervisor",),
-        }),
-
-        Err(io_err) => Err(JobError {
-            error_kind: JobErrorKind::InternalError,
-            description: format!("Failed to create state dir for job {job_id}: {io_err:?}"),
-        }),
-    }
+        .map_err(|io_err| match io_err.kind() {
+            std::io::ErrorKind::AlreadyExists => JobError {
+                error_kind: JobErrorKind::JobAlreadyExists,
+                description: format!(
+                    "A job with {job_id:?} was previously started on this supervisor"
+                ),
+            },
+            _ => JobError {
+                error_kind: JobErrorKind::InternalError,
+                description: format!("Failed to create state dir for job {job_id}: {io_err:?}"),
+            },
+        })
 }
 
 /// The puppet-facing view of one job, served by that job's control socket.
@@ -1198,6 +1194,8 @@ mod tests {
     //! ordering — without spawning a single real binary.
 
     use super::*;
+
+    use crate::workdirs::RetentionConfig;
 
     use std::process::ExitStatus;
 
@@ -1413,7 +1411,9 @@ mod tests {
         let mut config = JobRunnerConfig {
             supervisor_id: Uuid::new_v4(),
             job_address: None,
-            state_dir: tmp.path().join("state"),
+            workdirs: Arc::new(
+                JobWorkdirs::open(&tmp.path().join("state"), RetentionConfig::default()).unwrap(),
+            ),
             control_socket_listen_addr: "127.0.0.1:0".parse().unwrap(),
             start_script: None,
             stop_script: None,
@@ -1803,6 +1803,36 @@ mod tests {
 
         assert!(idle(&h.runner).await);
         assert!(h.connector.labels().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removal_retires_the_job_working_directory() {
+        let h = harness(StubBackend::default());
+        let job_id = Uuid::new_v4();
+
+        start_and_boot(&h, start_msg(job_id)).await;
+        let workdir = h
+            .tmp
+            .path()
+            .join("state")
+            .join("jobs")
+            .join(job_id.to_string());
+        assert!(workdir.is_dir());
+
+        h.runner.terminate_job(job_id).await.unwrap();
+
+        // The record is retained with its resources until it is removed.
+        assert!(workdir.is_dir());
+
+        h.runner.remove_job(job_id).await.unwrap();
+        assert!(!workdir.exists());
+
+        let retired: Vec<_> = std::fs::read_dir(h.tmp.path().join("state").join("retired"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(retired.len(), 1, "{retired:?}");
+        assert!(retired[0].ends_with(&job_id.to_string()), "{retired:?}");
     }
 
     /// D2.3/D2.4: the coordinator may repeat either command, or send one for a

@@ -23,6 +23,7 @@ use treadmill_supervisor_lib::job::{JobBackend, JobRunner, JobRunnerConfig, JobV
 use treadmill_supervisor_lib::launcher::{self, ProcessLauncher, StdioMode};
 use treadmill_supervisor_lib::oci_store::{ImageStore, Location, OciStore, OciStoreConfig};
 use treadmill_supervisor_lib::publisher::LogPublisherConfig;
+use treadmill_supervisor_lib::workdirs::{JobWorkdirs, RetentionConfig};
 
 #[derive(Parser, Debug, Clone)]
 pub struct QemuSupervisorArgs {
@@ -82,6 +83,10 @@ pub struct QemuConfig {
     working_disk_max_bytes: u64,
 
     tcp_control_socket_listen_addr: std::net::SocketAddr,
+
+    /// Retention of the working directories of removed jobs.
+    #[serde(default)]
+    job_retention: RetentionConfig,
 
     start_script: Option<PathBuf>,
 
@@ -415,11 +420,11 @@ impl JobBackend for QemuBackend {
 }
 
 impl QemuSupervisorConfig {
-    fn job_runner(&self) -> JobRunnerConfig {
+    fn job_runner(&self, workdirs: Arc<JobWorkdirs>) -> JobRunnerConfig {
         JobRunnerConfig {
             supervisor_id: self.base.supervisor_id,
             job_address: self.base.job_address,
-            state_dir: self.qemu.state_dir.clone(),
+            workdirs,
             control_socket_listen_addr: self.qemu.tcp_control_socket_listen_addr,
             start_script: self.qemu.start_script.clone(),
             stop_script: self.qemu.stop_script.clone(),
@@ -539,6 +544,13 @@ async fn main() -> Result<()> {
         config.qemu.qemu_img_binary.clone(),
     ));
 
+    let workdirs = Arc::new(JobWorkdirs::open(
+        &config.qemu.state_dir,
+        config.qemu.job_retention.clone(),
+    )?);
+    workdirs.sweep().await?;
+    workdirs.spawn_reaper();
+
     let backend = Arc::new(QemuBackend::new(image_store, launcher, config.qemu.clone()));
     let (command_tx, command_rx) = mpsc::channel(COORD_MAILBOX_CAPACITY);
 
@@ -557,7 +569,7 @@ async fn main() -> Result<()> {
             let runner = Arc::new(JobRunner::new(
                 connector.clone(),
                 backend,
-                config.job_runner(),
+                config.job_runner(workdirs),
             ));
 
             // SIGHUP drains: the connector keeps serving the job it holds and
@@ -600,7 +612,7 @@ async fn main() -> Result<()> {
             let runner = Arc::new(JobRunner::new(
                 connector.clone(),
                 backend,
-                config.job_runner(),
+                config.job_runner(workdirs),
             ));
 
             // Ctrl-C stops the job and lets run() return; there is no
@@ -788,6 +800,7 @@ mod tests {
             qemu_args: qemu_args.into_iter().map(str::to_string).collect(),
             working_disk_max_bytes,
             tcp_control_socket_listen_addr: "127.0.0.1:3859".parse().unwrap(),
+            job_retention: RetentionConfig::default(),
             start_script: None,
             stop_script: None,
         };
