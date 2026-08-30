@@ -58,6 +58,24 @@ pub async fn list_readable(
     .await
 }
 
+/// One host's operational fields, or `None` if no such host exists.
+///
+/// The caller has already authorized the read; this does not filter.
+pub async fn fetch_listing(
+    host_id: Uuid,
+    conn: impl PgExecutor<'_>,
+) -> Result<Option<SqlHostListing>, sqlx::Error> {
+    sqlx::query_as!(
+        SqlHostListing,
+        r#"select host_id, name, maintenance, last_seen_at
+           from tml_switchboard.hosts
+           where host_id = $1"#,
+        host_id,
+    )
+    .fetch_optional(conn)
+    .await
+}
+
 pub async fn insert(
     host_id: Uuid,
     name: String,

@@ -9,7 +9,7 @@ mod users;
 use crate::config::ServerConfig;
 use crate::serve::AppState;
 use aide::axum::ApiRouter;
-use aide::axum::routing::{delete_with, get_with, patch_with, post_with};
+use aide::axum::routing::{delete_with, get_with, post_with, put_with};
 use aide::transform::TransformOperation;
 use axum::Json;
 use axum::Router;
@@ -309,24 +309,65 @@ pub fn api_router() -> ApiRouter<AppState> {
         //  DELETE /supervisors/{id}/current-job
         //  POST /supervisors/new
         //  DELETE /supervisors/{id}
-        //  GET /hosts -- read-only listing of hosts (+ tags, targets, liveness)
+        //  GET /hosts -- hosts the caller may read, each with its spec
+        //  POST /hosts -- admit a host to the fleet (global admin only)
         .api_route(
             "/hosts",
             get_with(hosts::list, |o| {
                 doc(o, "listHosts", "Hosts", "List hosts").description(NOT_PAGINATED)
+            })
+            .post_with(hosts::create, |o| {
+                doc(o, "createHost", "Hosts", "Create a host")
+                    .description(
+                        "Writes the host row and revision 1 of its spec in one transaction, \
+                         and returns the supervisor credential. The credential is not \
+                         retrievable afterwards.",
+                    )
+                    .response_with::<403, (), _>(|r| {
+                        r.description("The caller is not a global admin.")
+                    })
+                    .response_with::<409, (), _>(|r| {
+                        r.description("A host with the spec's `id` already exists.")
+                    })
             }),
         )
         //  GET /hosts/{id}/events
+        //  GET /hosts/{id} -- one host with its spec
         //  PATCH /hosts/{id} -- change a host's operational state
         .api_route(
             "/hosts/{id}",
-            patch_with(hosts::update, |o| {
+            get_with(hosts::get, |o| {
+                doc(o, "getHost", "Hosts", "Get a host").response_with::<403, (), _>(|r| {
+                    r.description("The caller lacks `read` on the host, or it does not exist.")
+                })
+            })
+            .patch_with(hosts::update, |o| {
                 doc(o, "updateHost", "Hosts", "Update a host")
                     .response_with::<204, (), _>(|r| {
                         r.description("Applied, or the request changed nothing.")
                     })
                     .response_with::<403, (), _>(|r| {
                         r.description("The caller lacks `manage` on the host.")
+                    })
+            }),
+        )
+        //  PUT /hosts/{id}/spec -- store a new revision of a host's spec
+        .api_route(
+            "/hosts/{id}/spec",
+            put_with(hosts::put_spec, |o| {
+                doc(o, "putHostSpec", "Hosts", "Replace a host's spec")
+                    .description(
+                        "Conditional on an `If-Match` request header carrying the \
+                         `spec_revision` the caller last read.",
+                    )
+                    .response_with::<403, (), _>(|r| {
+                        r.description("The caller lacks `manage` on the host.")
+                    })
+                    .response_with::<412, (), _>(|r| {
+                        r.description("`If-Match` does not name the current revision.")
+                    })
+                    .response_with::<428, (), _>(|r| {
+                        r.description("The request carried no usable `If-Match`.")
                     })
             }),
         )

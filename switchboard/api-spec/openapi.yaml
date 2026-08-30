@@ -616,7 +616,79 @@ paths:
                   $ref: '#/components/schemas/HostInfo'
       security:
       - token: []
+    post:
+      tags:
+      - Hosts
+      summary: Create a host
+      description: Writes the host row and revision 1 of its spec in one transaction, and returns the supervisor credential. The credential is not retrievable afterwards.
+      operationId: createHost
+      requestBody:
+        description: |-
+          A new host (`POST /hosts`): the `hosts` row and revision 1 of its spec are
+          written in one transaction, so a host is never in an undescribed state.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostCreateRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The caller is not a global admin.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '409':
+          description: A host with the spec's `id` already exists.
+      security:
+      - token: []
   /hosts/{id}:
+    get:
+      tags:
+      - Hosts
+      summary: Get a host
+      operationId: getHost
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The caller lacks `read` on the host, or it does not exist.
+        '200':
+          description: |-
+            A host as returned by `GET /hosts` and `GET /hosts/{id}`: its operational
+            state plus the admin-authored spec describing what it is.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostInfo'
+      security:
+      - token: []
     patch:
       tags:
       - Hosts
@@ -668,6 +740,64 @@ paths:
                 type: string
         '204':
           description: Applied, or the request changed nothing.
+      security:
+      - token: []
+  /hosts/{id}/spec:
+    put:
+      tags:
+      - Hosts
+      summary: Replace a host's spec
+      description: Conditional on an `If-Match` request header carrying the `spec_revision` the caller last read.
+      operationId: putHostSpec
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        description: |-
+          A new revision of a host's spec (`PUT /hosts/{id}/spec`).
+
+          The write is conditional on an `If-Match` header carrying the revision the
+          caller last read, so two admins editing one host cannot silently clobber
+          each other.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostSpecUpdateRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The caller lacks `manage` on the host.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '412':
+          description: '`If-Match` does not name the current revision.'
+        '428':
+          description: The request carried no usable `If-Match`.
       security:
       - token: []
   /hosts/{id}/events:
@@ -2085,6 +2215,23 @@ components:
       - name
       - source
       - source_ref
+    HostCreateRequest:
+      description: |-
+        A new host (`POST /hosts`): the `hosts` row and revision 1 of its spec are
+        written in one transaction, so a host is never in an undescribed state.
+      type: object
+      properties:
+        spec:
+          description: |-
+            The host's spec. Its `id` becomes the host's id: the client supplies the
+            UUID so a spec is a self-contained document that can live in a git repo
+            and be applied. Rejected with a [`HostSpecRejection`] naming the
+            offending field if it does not validate.
+          allOf:
+          - $ref: '#/components/schemas/HostSpec'
+      additionalProperties: false
+      required:
+      - spec
     HostInfo:
       description: |-
         A host as returned by `GET /hosts` and `GET /hosts/{id}`: its operational
@@ -2144,6 +2291,22 @@ components:
         the document root, which an internally-tagged enum cannot do.
       anyOf:
       - $ref: '#/components/schemas/HostSpecV1'
+    HostSpecUpdateRequest:
+      description: |-
+        A new revision of a host's spec (`PUT /hosts/{id}/spec`).
+
+        The write is conditional on an `If-Match` header carrying the revision the
+        caller last read, so two admins editing one host cannot silently clobber
+        each other.
+      type: object
+      properties:
+        spec:
+          description: The replacement spec. Its `id` must be the host being written.
+          allOf:
+          - $ref: '#/components/schemas/HostSpec'
+      additionalProperties: false
+      required:
+      - spec
     HostSpecV1:
       description: Version 1 of the host spec.
       type: object

@@ -121,3 +121,22 @@ pub async fn insert_revision(
     .await
     .map(|_| ())
 }
+
+/// The revision of a host's current spec, or `None` if it has never been
+/// described (or does not exist).
+///
+/// Read by the conditional write path to compare against `If-Match`. It takes
+/// no row lock: the primary key is the compare-and-swap, so a writer that
+/// slips in between this read and the insert loses on the unique violation
+/// rather than on a lock.
+pub async fn current_revision(
+    host_id: Uuid,
+    conn: impl PgExecutor<'_>,
+) -> Result<Option<i32>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"select max(revision) from tml_switchboard.host_specs where host_id = $1"#,
+        host_id,
+    )
+    .fetch_one(conn)
+    .await
+}

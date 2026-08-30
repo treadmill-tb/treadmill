@@ -15,7 +15,9 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::WhoAmIResponse;
-use treadmill_rs::api::switchboard::hosts::HostInfo;
+use treadmill_rs::api::switchboard::hosts::{
+    HostCreateResponse, HostInfo, HostSpecRejection, HostSpecUpdateResponse,
+};
 use treadmill_rs::host_spec::HostSpec;
 use treadmill_switchboard::events::EventBus;
 use treadmill_switchboard::registry::OciRegistryClient;
@@ -474,4 +476,359 @@ async fn listing_reports_maintenance(pool: PgPool) {
 
     let host = hosts.iter().find(|h| h.host_id == host_id).unwrap();
     assert!(host.maintenance);
+}
+
+// -- host creation and spec writes ----------------------------------------
+
+/// A valid v1 spec document for `host_id`, as an admin would hand-write it.
+fn spec_document(host_id: Uuid, name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "spec_version": "v1",
+        "id": host_id,
+        "name": name,
+        "description": null,
+        "site": "cambridge",
+        "location": null,
+        "platform": {
+            "kind": "virtual", "arch": "x86_64",
+            "profiles": ["q35-virtio-uefi"], "hypervisor": "qemu"
+        },
+        "resources": { "cpu_cores": 8, "memory_mb": 16384, "storage_gb": 200 },
+        "labels": {},
+        "duts": []
+    })
+}
+
+fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+}
+
+/// `POST /hosts` writes the row and revision 1 together, so a host is never in
+/// an undescribed state, and hands back the supervisor credential once.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn create_host_writes_the_row_and_its_first_spec(pool: PgPool) {
+    use base64::Engine as _;
+
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+
+    let host_id = Uuid::new_v4();
+    let resp = client
+        .post(format!("http://{addr}/api/v1/hosts"))
+        .bearer_auth(&admin)
+        .json(&serde_json::json!({ "spec": spec_document(host_id, "cam-qemu-04") }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    let created: HostCreateResponse = resp.json().await.unwrap();
+    assert_eq!(created.host_id, host_id);
+    assert_eq!(created.spec_revision, 1);
+
+    // The returned credential is the one the supervisor will present.
+    let stored: Vec<u8> =
+        sqlx::query_scalar("select auth_token from tml_switchboard.hosts where host_id = $1")
+            .bind(host_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let presented = base64::engine::general_purpose::STANDARD
+        .decode(&created.auth_token)
+        .expect("the token is base64");
+    assert_eq!(presented, stored);
+
+    // The spec comes back through the single-host route.
+    let host: HostInfo = client
+        .get(format!("http://{addr}/api/v1/hosts/{host_id}"))
+        .bearer_auth(&admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(host.spec_revision, Some(1));
+    let HostSpec::V1(spec) = host.spec.expect("the host is described");
+    assert_eq!(spec.name, "cam-qemu-04");
+    assert_eq!(spec.platform.profiles(), ["q35-virtio-uefi"]);
+
+    // The id is the client's to choose, so reusing it is a conflict.
+    let again = client
+        .post(format!("http://{addr}/api/v1/hosts"))
+        .bearer_auth(&admin)
+        .json(&serde_json::json!({ "spec": spec_document(host_id, "cam-qemu-04") }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(again.status(), reqwest::StatusCode::CONFLICT);
+}
+
+/// Creating a host mints a supervisor credential and puts a machine into
+/// scheduling, so it is global-admin only.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn create_host_requires_a_global_admin(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let bob = mock_login_token(&pool, &client, addr, "bob", true).await;
+
+    let resp = client
+        .post(format!("http://{addr}/api/v1/hosts"))
+        .bearer_auth(&bob)
+        .json(&serde_json::json!({ "spec": spec_document(Uuid::new_v4(), "nope") }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+/// A spec is hand-edited, so a rejection names the offending field rather than
+/// a byte offset.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn create_host_rejects_a_bad_spec_with_a_field_path(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+
+    let post = async |spec: serde_json::Value| {
+        let resp = client
+            .post(format!("http://{addr}/api/v1/hosts"))
+            .bearer_auth(&admin)
+            .json(&serde_json::json!({ "spec": spec }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+        resp.json::<HostSpecRejection>().await.unwrap()
+    };
+
+    // A typo deep inside a DUT is reported at its own path, which is the whole
+    // reason validation does not go through the untagged `HostSpec`.
+    let mut spec = spec_document(Uuid::new_v4(), "cam-qemu-04");
+    spec["duts"] = serde_json::json!([{
+        "name": null, "serial": null, "vendor": "SEGGER", "board": "nrf52840dk",
+        "arch": [], "connectivity": [], "console": null, "labels": {},
+        "debug": { "protocol": "swd", "probe": {
+            "vendor": "SEGGER", "model": "J-Link OB", "serail": "000683012345"
+        } }
+    }]);
+    let rejection = post(spec).await;
+    assert_eq!(rejection.path, "duts[0].debug.probe.serail");
+    assert!(rejection.message.contains("unknown field"), "{rejection:?}");
+
+    // An unknown version is refused at the discriminant, not the root.
+    let mut spec = spec_document(Uuid::new_v4(), "cam-qemu-04");
+    spec["spec_version"] = "v99".into();
+    assert_eq!(post(spec).await.path, "spec_version");
+}
+
+/// Spec writes are append-only and conditional: `If-Match` names the revision
+/// the caller read, so two admins editing one host cannot clobber each other.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn put_spec_appends_a_revision_under_if_match(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+
+    let host_id = Uuid::new_v4();
+    client
+        .post(format!("http://{addr}/api/v1/hosts"))
+        .bearer_auth(&admin)
+        .json(&serde_json::json!({ "spec": spec_document(host_id, "cam-qemu-04") }))
+        .send()
+        .await
+        .unwrap();
+
+    let put = async |if_match: Option<&str>, spec: serde_json::Value| {
+        let mut req = client
+            .put(format!("http://{addr}/api/v1/hosts/{host_id}/spec"))
+            .bearer_auth(&admin)
+            .json(&serde_json::json!({ "spec": spec }));
+        if let Some(value) = if_match {
+            req = req.header("if-match", value);
+        }
+        req.send().await.unwrap()
+    };
+
+    // No precondition at all: refused rather than silently clobbering.
+    let mut edited = spec_document(host_id, "cam-qemu-04");
+    edited["site"] = "oxford".into();
+    assert_eq!(
+        put(None, edited.clone()).await.status(),
+        reqwest::StatusCode::PRECONDITION_REQUIRED
+    );
+
+    // The current revision: accepted, and stored as the next one.
+    let resp = put(Some("\"1\""), edited.clone()).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        resp.json::<HostSpecUpdateResponse>()
+            .await
+            .unwrap()
+            .spec_revision,
+        2
+    );
+
+    // Replaying the same precondition is now stale.
+    assert_eq!(
+        put(Some("1"), edited.clone()).await.status(),
+        reqwest::StatusCode::PRECONDITION_FAILED
+    );
+    // As is inventing one that does not exist yet.
+    assert_eq!(
+        put(Some("7"), edited.clone()).await.status(),
+        reqwest::StatusCode::PRECONDITION_FAILED
+    );
+
+    // The read reflects the newest revision, and the history is intact.
+    let host: HostInfo = client
+        .get(format!("http://{addr}/api/v1/hosts/{host_id}"))
+        .bearer_auth(&admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(host.spec_revision, Some(2));
+    let HostSpec::V1(spec) = host.spec.expect("the host is described");
+    assert_eq!(spec.site, "oxford");
+
+    let revisions: Vec<i32> = sqlx::query_scalar(
+        "select revision from tml_switchboard.host_specs where host_id = $1 order by revision",
+    )
+    .bind(host_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(revisions, vec![1, 2], "revision 1 is kept, not replaced");
+}
+
+/// A spec names the host it describes, and the write route says so with a
+/// field path rather than letting the table CHECK surface as a 500.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn put_spec_rejects_a_document_for_another_host(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+
+    let host_id = Uuid::new_v4();
+    client
+        .post(format!("http://{addr}/api/v1/hosts"))
+        .bearer_auth(&admin)
+        .json(&serde_json::json!({ "spec": spec_document(host_id, "cam-qemu-04") }))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .put(format!("http://{addr}/api/v1/hosts/{host_id}/spec"))
+        .bearer_auth(&admin)
+        .header("if-match", "1")
+        .json(&serde_json::json!({ "spec": spec_document(Uuid::new_v4(), "someone-else") }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(resp.json::<HostSpecRejection>().await.unwrap().path, "id");
+}
+
+/// Describing a host is a `manage` operation, like its operational state; a
+/// plain reader cannot write one.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn put_spec_requires_manage(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let bob = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob_id = whoami(&client, addr, &bob).await;
+
+    let host_id = Uuid::new_v4();
+    client
+        .post(format!("http://{addr}/api/v1/hosts"))
+        .bearer_auth(&admin)
+        .json(&serde_json::json!({ "spec": spec_document(host_id, "cam-qemu-04") }))
+        .send()
+        .await
+        .unwrap();
+    // `read` is enough to see the spec, and deliberately not enough to write it.
+    sqlx::query(
+        "insert into tml_switchboard.host_grants (host_id, subject_id, permission) \
+         values ($1, $2, 'read')",
+    )
+    .bind(host_id)
+    .bind(bob_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = client
+        .put(format!("http://{addr}/api/v1/hosts/{host_id}/spec"))
+        .bearer_auth(&bob)
+        .header("if-match", "1")
+        .json(&serde_json::json!({ "spec": spec_document(host_id, "cam-qemu-04") }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // ... but reading it is fine.
+    let read = client
+        .get(format!("http://{addr}/api/v1/hosts/{host_id}"))
+        .bearer_auth(&bob)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(read.status(), reqwest::StatusCode::OK);
+}
+
+/// `GET /hosts/{id}` is scoped to `read`, and an unreadable host is refused
+/// rather than reported missing, so the route does not leak which ids exist.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn get_host_is_scoped_to_read(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let bob = mock_login_token(&pool, &client, addr, "bob", true).await;
+
+    let host_id = Uuid::new_v4();
+    client
+        .post(format!("http://{addr}/api/v1/hosts"))
+        .bearer_auth(&admin)
+        .json(&serde_json::json!({ "spec": spec_document(host_id, "cam-qemu-04") }))
+        .send()
+        .await
+        .unwrap();
+
+    for (token, expected) in [
+        (&bob, reqwest::StatusCode::FORBIDDEN),
+        (&admin, reqwest::StatusCode::OK),
+    ] {
+        let resp = client
+            .get(format!("http://{addr}/api/v1/hosts/{host_id}"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), expected);
+    }
+
+    // A host that does not exist is the same 403, for the same reason.
+    let resp = client
+        .get(format!("http://{addr}/api/v1/hosts/{}", Uuid::new_v4()))
+        .bearer_auth(&bob)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 }

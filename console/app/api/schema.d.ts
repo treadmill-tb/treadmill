@@ -276,7 +276,11 @@ export interface paths {
          */
         get: operations["listHosts"];
         put?: never;
-        post?: never;
+        /**
+         * Create a host
+         * @description Writes the host row and revision 1 of its spec in one transaction, and returns the supervisor credential. The credential is not retrievable afterwards.
+         */
+        post: operations["createHost"];
         delete?: never;
         options?: never;
         head?: never;
@@ -290,7 +294,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Get a host */
+        get: operations["getHost"];
         put?: never;
         post?: never;
         delete?: never;
@@ -298,6 +303,26 @@ export interface paths {
         head?: never;
         /** Update a host */
         patch: operations["updateHost"];
+        trace?: never;
+    };
+    "/hosts/{id}/spec": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Replace a host's spec
+         * @description Conditional on an `If-Match` request header carrying the `spec_revision` the caller last read.
+         */
+        put: operations["putHostSpec"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/hosts/{id}/events": {
@@ -926,6 +951,19 @@ export interface components {
             source_ref: string;
         };
         /**
+         * @description A new host (`POST /hosts`): the `hosts` row and revision 1 of its spec are
+         *     written in one transaction, so a host is never in an undescribed state.
+         */
+        HostCreateRequest: {
+            /**
+             * @description The host's spec. Its `id` becomes the host's id: the client supplies the
+             *     UUID so a spec is a self-contained document that can live in a git repo
+             *     and be applied. Rejected with a [`HostSpecRejection`] naming the
+             *     offending field if it does not validate.
+             */
+            spec: components["schemas"]["HostSpec"];
+        };
+        /**
          * @description A host as returned by `GET /hosts` and `GET /hosts/{id}`: its operational
          *     state plus the admin-authored spec describing what it is.
          */
@@ -970,6 +1008,17 @@ export interface components {
          *     the document root, which an internally-tagged enum cannot do.
          */
         HostSpec: components["schemas"]["HostSpecV1"];
+        /**
+         * @description A new revision of a host's spec (`PUT /hosts/{id}/spec`).
+         *
+         *     The write is conditional on an `If-Match` header carrying the revision the
+         *     caller last read, so two admins editing one host cannot silently clobber
+         *     each other.
+         */
+        HostSpecUpdateRequest: {
+            /** @description The replacement spec. Its `id` must be the host being written. */
+            spec: components["schemas"]["HostSpec"];
+        };
         /** @description Version 1 of the host spec. */
         HostSpecV1: {
             /** @description What this host is, in prose. */
@@ -2802,6 +2851,113 @@ export interface operations {
             };
         };
     };
+    createHost: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description A new host (`POST /hosts`): the `hosts` row and revision 1 of its spec are
+         *     written in one transaction, so a host is never in an undescribed state.
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HostCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller is not a global admin. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A host with the spec's `id` already exists. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Failed to deserialize the JSON body into the target type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getHost: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description A host as returned by `GET /hosts` and `GET /hosts/{id}`: its operational
+             *     state plus the admin-authored spec describing what it is.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostInfo"];
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller lacks `read` on the host, or it does not exist. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     updateHost: {
         parameters: {
             query?: never;
@@ -2871,6 +3027,86 @@ export interface operations {
                 content: {
                     "text/plain": string;
                 };
+            };
+        };
+    };
+    putHostSpec: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * @description A new revision of a host's spec (`PUT /hosts/{id}/spec`).
+         *
+         *     The write is conditional on an `If-Match` header carrying the revision the
+         *     caller last read, so two admins editing one host cannot silently clobber
+         *     each other.
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HostSpecUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller lacks `manage` on the host. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `If-Match` does not name the current revision. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Failed to deserialize the JSON body into the target type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The request carried no usable `If-Match`. */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

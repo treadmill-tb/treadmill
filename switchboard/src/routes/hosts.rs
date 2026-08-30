@@ -4,8 +4,11 @@ use axum::extract::Query;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use treadmill_rs::api::switchboard::hosts::{HostInfo, HostUpdateRequest};
-use treadmill_rs::host_spec::HostSpec;
+use treadmill_rs::api::switchboard::hosts::{
+    HostCreateRequest, HostCreateResponse, HostInfo, HostSpecRejection, HostSpecUpdateRequest,
+    HostSpecUpdateResponse, HostUpdateRequest,
+};
+use treadmill_rs::host_spec::{HostSpec, HostSpecV1};
 
 /// Axum handler for the `/hosts/{id}/events` path.
 pub async fn list_events(
@@ -121,6 +124,314 @@ pub async fn update(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// Validate a submitted spec document.
+///
+/// The version is probed first and each version deserialized as its own type:
+/// going through the untagged [`HostSpec`] would report every failure at the
+/// document root. `serde_path_to_error` then names the offending field rather
+/// than a byte offset, which for a hand-edited document is the difference
+/// between a usable error and a puzzle.
+fn validate_spec(document: serde_json::Value) -> Result<HostSpecV1, HostSpecRejection> {
+    let rejection = |path: &str, message: String| HostSpecRejection {
+        path: path.to_string(),
+        message,
+    };
+    match document.get("spec_version").and_then(|v| v.as_str()) {
+        Some("v1") => serde_path_to_error::deserialize::<_, HostSpecV1>(document).map_err(|e| {
+            HostSpecRejection {
+                path: e.path().to_string(),
+                message: e.into_inner().to_string(),
+            }
+        }),
+        Some(other) => Err(rejection(
+            "spec_version",
+            format!("unknown spec version `{other}`"),
+        )),
+        None => Err(rejection("spec_version", "missing".to_string())),
+    }
+}
+
+fn refuse(rejection: HostSpecRejection) -> Response {
+    (StatusCode::UNPROCESSABLE_ENTITY, Json(rejection)).into_response()
+}
+
+/// Axum handler for `POST /hosts` — admit a host to the fleet.
+///
+/// Global-admin only: this mints a supervisor credential and puts a machine
+/// into scheduling. The `hosts` row and revision 1 of its spec are written in
+/// one transaction, which is what makes "every host has a spec" hold — SQL
+/// cannot require a child row.
+///
+/// The client supplies the host's UUID as the spec's `id`, so a spec is a
+/// self-contained document; the switchboard enforces uniqueness.
+pub async fn create(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Json(req): Json<HostCreateRequest>,
+) -> Result<Response, StatusCode> {
+    use crate::audit::model::{Host as AuditHost, Subject as AuditSubject};
+    use crate::audit::{self, events};
+    use crate::auth::engine;
+
+    let admin = engine::is_admin(state.pool(), subject.user_id())
+        .await
+        .or_internal("checking admin for host creation")?;
+    if !admin {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let spec = match validate_spec(req.spec) {
+        Ok(spec) => spec,
+        Err(rejection) => return Ok(refuse(rejection)),
+    };
+    let host_id = spec.id;
+    let name = spec.name.clone();
+
+    let auth_token = SecurityToken::generate();
+    let presented = auth_token.to_string();
+
+    let mut txn = state
+        .pool()
+        .begin()
+        .await
+        .or_internal("opening a transaction to create a host")?;
+
+    match sql::host::insert(host_id, name.clone(), auth_token, &mut *txn).await {
+        Ok(()) => {}
+        // The id or the generated token collided; only the former is plausible.
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            tracing::debug!("refusing to create host {host_id}: already exists");
+            return Ok(StatusCode::CONFLICT.into_response());
+        }
+        Err(e) => return Err(crate::http_error::internal(e)),
+    }
+    sql::host_spec::insert_revision(
+        host_id,
+        FIRST_SPEC_REVISION,
+        &HostSpec::V1(spec),
+        Some(subject.user_id()),
+        &mut *txn,
+    )
+    .await
+    .or_internal(&format!("writing the first spec of host {host_id}"))?;
+    audit::emit(
+        &mut txn,
+        &events::HostCreated {
+            actor: AuditSubject(subject.user_id()),
+            host: AuditHost(host_id),
+            name,
+        },
+    )
+    .await
+    .or_internal("recording a host creation")?;
+    txn.commit()
+        .await
+        .or_internal(&format!("committing the creation of host {host_id}"))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(HostCreateResponse {
+            host_id,
+            auth_token: presented,
+            spec_revision: FIRST_SPEC_REVISION,
+        }),
+    )
+        .into_response())
+}
+
+/// The revision a host's first spec is written at.
+const FIRST_SPEC_REVISION: i32 = 1;
+
+/// Axum handler for `PUT /hosts/{id}/spec` — store a new revision of a host's
+/// spec.
+///
+/// Requires `manage`, the same meta-permission that governs the host's
+/// operational state. Conditional on `If-Match` carrying the revision the
+/// caller last read: two admins editing one host must not silently clobber
+/// each other. The primary key is the compare-and-swap — the write inserts at
+/// `expected + 1`, so a racing writer that computed the same number takes a
+/// unique violation rather than overwriting.
+pub async fn put_spec(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(IdPath { id: host_id }): Path<IdPath>,
+    headers: HeaderMap,
+    Json(req): Json<HostSpecUpdateRequest>,
+) -> Result<Response, StatusCode> {
+    use crate::audit::model::{Host as AuditHost, Subject as AuditSubject};
+    use crate::audit::{self, events};
+    use crate::auth::engine::{self, HostPermission};
+
+    let authorized = engine::can_access_host(
+        state.pool(),
+        subject.user_id(),
+        host_id,
+        HostPermission::Manage,
+    )
+    .await
+    .or_internal("checking host manage access for a spec write")?;
+    if !authorized {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let Some(expected) = if_match_revision(&headers) else {
+        tracing::debug!("refusing an unconditional spec write for host {host_id}");
+        return Ok(StatusCode::PRECONDITION_REQUIRED.into_response());
+    };
+
+    let spec = match validate_spec(req.spec) {
+        Ok(spec) => spec,
+        Err(rejection) => return Ok(refuse(rejection)),
+    };
+    // Also a table constraint; checked here so the caller gets a field path
+    // instead of a 500 from a violated CHECK.
+    if spec.id != host_id {
+        return Ok(refuse(HostSpecRejection {
+            path: "id".to_string(),
+            message: format!("must be the host being written, {host_id}"),
+        }));
+    }
+
+    let mut txn = state
+        .pool()
+        .begin()
+        .await
+        .or_internal("opening a transaction to write a host spec")?;
+
+    let current = sql::host_spec::current_revision(host_id, &mut *txn)
+        .await
+        .or_internal(&format!("reading the current spec revision of {host_id}"))?;
+    // Catches a stale reader and a caller inventing a future revision alike;
+    // the unique violation below catches the race this check cannot see.
+    if current != Some(expected) {
+        tracing::debug!(
+            "refusing a spec write for host {host_id}: If-Match {expected}, current {current:?}"
+        );
+        return Ok(StatusCode::PRECONDITION_FAILED.into_response());
+    }
+
+    let revision = expected + 1;
+    match sql::host_spec::insert_revision(
+        host_id,
+        revision,
+        &HostSpec::V1(spec),
+        Some(subject.user_id()),
+        &mut *txn,
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            tracing::debug!("lost a spec write race for host {host_id} at revision {revision}");
+            return Ok(StatusCode::PRECONDITION_FAILED.into_response());
+        }
+        Err(e) => return Err(crate::http_error::internal(e)),
+    }
+    audit::emit(
+        &mut txn,
+        &events::HostSpecUpdated {
+            actor: AuditSubject(subject.user_id()),
+            host: AuditHost(host_id),
+            revision,
+        },
+    )
+    .await
+    .or_internal("recording a host spec write")?;
+    txn.commit()
+        .await
+        .or_internal(&format!("committing spec revision {revision} of {host_id}"))?;
+
+    Ok(Json(HostSpecUpdateResponse {
+        spec_revision: revision,
+    })
+    .into_response())
+}
+
+/// The revision an `If-Match` header names, or `None` if it is absent or not a
+/// revision.
+///
+/// Revisions are integers, so the entity tag is the number, optionally quoted
+/// as `ETag` syntax proper. A weak validator (`W/"3"`) is not accepted: this is
+/// a compare-and-swap, and weak comparison is explicitly not that.
+fn if_match_revision(headers: &HeaderMap) -> Option<i32> {
+    headers
+        .get(http::header::IF_MATCH)?
+        .to_str()
+        .ok()?
+        .trim()
+        .trim_matches('"')
+        .parse()
+        .ok()
+}
+
+/// Axum handler for `GET /hosts/{id}` — one host with its spec.
+///
+/// Scoped to `read`, like the listing. A host the caller cannot read is a 403
+/// rather than a 404, so the route does not leak which ids exist.
+pub async fn get(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(IdPath { id: host_id }): Path<IdPath>,
+) -> Result<Json<HostInfo>, StatusCode> {
+    use crate::auth::engine::{self, HostPermission};
+
+    let authorized = engine::can_access_host(
+        state.pool(),
+        subject.user_id(),
+        host_id,
+        HostPermission::Read,
+    )
+    .await
+    .or_internal("checking host read access")?;
+    if !authorized {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let host = sql::host::fetch_listing(host_id, state.pool())
+        .await
+        .or_internal(&format!("reading host {host_id}"))?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let spec = match sql::host_spec::current_for_host(host_id, state.pool())
+        .await
+        .or_internal(&format!("reading the spec of host {host_id}"))?
+    {
+        Some(Ok(stored)) => Some((stored.revision, stored.spec)),
+        // A document this build cannot read is reported as no spec rather than
+        // failing the whole request; the listing does the same.
+        Some(Err(e)) => {
+            tracing::error!("omitting host spec: {e}");
+            None
+        }
+        None => None,
+    };
+
+    Ok(Json(host_info(host, spec, &state)))
+}
+
+/// Assemble the client view of a host from its row and current spec.
+fn host_info(
+    host: sql::host::SqlHostListing,
+    spec: Option<(i32, HostSpec)>,
+    state: &AppState,
+) -> HostInfo {
+    let cutoff = chrono::Utc::now() - state.config().service.host_liveness_timeout;
+    let (spec_revision, spec) = match spec {
+        // Normalize on read: nothing downstream sees an old version.
+        Some((revision, spec)) => (Some(revision), Some(HostSpec::V1(spec.into_latest()))),
+        None => (None, None),
+    };
+    HostInfo {
+        live: host.last_seen_at.is_some_and(|t| t > cutoff),
+        host_id: host.host_id,
+        name: host.name,
+        maintenance: host.maintenance,
+        last_seen_at: host.last_seen_at,
+        spec,
+        spec_revision,
+    }
+}
+
 /// Axum handler for `GET /hosts` — the hosts the caller may read, each with
 /// its spec.
 ///
@@ -151,24 +462,11 @@ pub async fn list(
             })
             .collect();
 
-    let cutoff = chrono::Utc::now() - state.config().service.host_liveness_timeout;
     let out = hosts
         .into_iter()
         .map(|h| {
-            let (spec_revision, spec) = match specs.remove(&h.host_id) {
-                // Normalize on read: nothing downstream sees an old version.
-                Some((revision, spec)) => (Some(revision), Some(HostSpec::V1(spec.into_latest()))),
-                None => (None, None),
-            };
-            HostInfo {
-                live: h.last_seen_at.is_some_and(|t| t > cutoff),
-                host_id: h.host_id,
-                name: h.name,
-                maintenance: h.maintenance,
-                last_seen_at: h.last_seen_at,
-                spec,
-                spec_revision,
-            }
+            let spec = specs.remove(&h.host_id);
+            host_info(h, spec, &state)
         })
         .collect();
 
