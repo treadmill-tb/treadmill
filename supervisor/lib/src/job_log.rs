@@ -1,11 +1,4 @@
 //! Forwarding the supervisor's own tracing events into a job's log stream.
-//!
-//! A [`tracing_subscriber::Layer`] sits beside the terminal `fmt` layer and
-//! routes each event to the job whose span it was emitted in. **Only events
-//! emitted inside a `job_id` span are forwarded**, which is the security
-//! boundary: connector authentication, config parsing and process-level
-//! credentials are emitted outside any job span and cannot reach a job's
-//! stream however they are formatted.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -30,16 +23,15 @@ use uuid::Uuid;
 use crate::launcher::BoxedAsyncRead;
 
 /// How many serialized events a job's channel buffers before the layer starts
-/// dropping them. Sized to cover the window between a job's registration and
-/// its publisher being attached.
+/// dropping them.
 const JOB_LOG_CAPACITY: usize = 256;
 
 /// The live per-job senders the [`Layer`] routes events to.
 ///
-/// Keyed by the *formatted* job id: both `?value` and `%value` reach a field
-/// visitor through `record_debug`, and `Uuid`'s `Debug` and `Display` agree,
-/// so this works whichever sigil an `#[instrument]` attribute uses and costs
-/// no parse per event.
+/// Keyed by the formatted job id: both `?value` and `%value` reach a field
+/// visitor through `record_debug`, and `Uuid`'s `Debug` and `Display` agree, so
+/// this works whichever sigil an `#[instrument]` attribute uses and costs no
+/// parse per event.
 #[derive(Clone, Default)]
 pub struct JobLogRegistry {
     jobs: Arc<Mutex<HashMap<String, mpsc::Sender<Bytes>>>>,
@@ -56,9 +48,9 @@ impl JobLogRegistry {
         Self::default()
     }
 
-    /// Start forwarding this job's events. Events are buffered until the
-    /// reader is attached to a publisher, and dropped once the buffer fills —
-    /// which is what happens for a job dispatched without log streaming.
+    /// Start forwarding this job's events. Events are buffered until the reader
+    /// is attached to a publisher, and dropped once the buffer fills, which is
+    /// what happens for a job dispatched without log streaming.
     pub fn register(&self, job_id: Uuid) -> JobLogRegistration {
         let (tx, rx) = mpsc::channel(JOB_LOG_CAPACITY);
         let key = job_id.to_string();
@@ -106,12 +98,12 @@ pub fn channel_reader(rx: mpsc::Receiver<Bytes>) -> BoxedAsyncRead {
     ))
 }
 
-/// Install the process's tracing subscriber: the terminal `fmt` layer, plus
-/// the layer forwarding job-scoped events into the returned registry.
+/// Install the process's tracing subscriber: the terminal `fmt` layer, plus the
+/// layer forwarding job-scoped events into the returned registry.
 ///
 /// The two are filtered independently — `RUST_LOG` (or, unset, INFO) governs
-/// the terminal, `job_log_level` governs what a job's readers see — so
-/// operator verbosity and user-visible verbosity are decoupled.
+/// the terminal, `job_log_level` governs what a job's readers see — so operator
+/// verbosity and user-visible verbosity are decoupled.
 pub fn init_tracing(job_log_level: &str) -> Result<JobLogRegistry> {
     let job_log_level: LevelFilter = job_log_level
         .parse()

@@ -61,34 +61,37 @@ pub struct QemuConfig {
     /// - `job_workdir`: per-job state directory
     ///
     /// - `disk_node`: `node-name` of the writable top of the runtime backing
-    ///   chain ([`BackingChain::TOP_NODE`]). The supervisor prepends the
-    ///   `-blockdev` nodes assembling the chain to the invocation, so the
-    ///   configured args should attach the disk device by referencing this
-    ///   node, e.g. `-device virtio-blk-device,drive={disk_node}`.
+    ///   chain ([`BackingChain::TOP_NODE`]).
+    ///
+    ///   The supervisor internally prepends the `-blockdev` nodes assembling
+    ///   the chain to the invocation, so the configured args should attach the
+    ///   disk device by referencing this node, e.g. `-device
+    ///   virtio-blk-device,drive={disk_node}`.
     ///
     /// - `tcp_control_socket_listen_addr`: the address the per-job control
-    ///   socket is **bound** to, with an IPv6 address enclosed in square
-    ///   brackets, e.g. `[::1]:8080`. This is the supervisor's listen address,
-    ///   not necessarily one the guest can reach: under QEMU's user networking
-    ///   the guest has to be pointed at `10.0.2.2` instead.
+    ///   socket is bound to, with an IPv6 address enclosed in square brackets,
+    ///   e.g. `[::1]:8080`.
+    ///
+    ///   This is the supervisor's listen address, not necessarily one the guest
+    ///   can reach (e.g., it might be bound to the "any interface IP" `0.0.0.0`).
     ///
     /// Any variable the start script emits (`tml-set-variable:<key>=<value>`)
-    /// can be substituted too, since the hook runs before the arguments are
-    /// templated. A literal brace in an argument must be doubled (`{{`/`}}`);
-    /// a `{name}` naming no variable fails the job at launch.
+    /// can be substituted too; the hook runs before the arguments are
+    /// templated.
+    ///
+    /// A literal brace in an argument must be doubled (`{{`/`}}`); a `{name}`
+    /// referencing a variable that is not set causes a job launch error.
     qemu_args: Vec<String>,
 
     /// Maximum "working" disk image to be allocated for a job, in bytes.
     ///
-    /// These are thinly provisioned qcow2 CoW files, and so don't necessarily
-    /// take up this much space. However, all images will be extended to this
-    /// size, and the virtual machine can then resize its internal partitions
-    /// accordingly.
+    /// The image top layers are thinly provisioned qcow2 CoW images. This sets
+    /// their top-level size, which has to be at least as large as the next
+    /// lower layer. This space will not be directly allocated, but is usable by
+    /// the VMs.
     ///
-    /// The runner will be unable to execute any images that have a disk image
-    /// with a size larger than this limit (even though the sparse qcow2 file
-    /// may be smaller), as otherwise the image exposed to the VM may cut off a
-    /// part of the image at the end.
+    /// Launching jobs with images that have a top-most layer larger than this
+    /// value will fail.
     working_disk_max_bytes: u64,
 
     tcp_control_socket_listen_addr: std::net::SocketAddr,
@@ -109,36 +112,27 @@ pub struct QemuSupervisorConfig {
     /// Base configuration, identical across all supervisors:
     base: SupervisorBaseConfig,
 
-    /// Configurations for individual connector implementations. All are
-    /// optional, and not all of them have to be supported:
+    /// Configuration of the web-socket connector. Required only if used.
     ws_connector: Option<treadmill_ws_connector::WsConnectorConfig>,
 
     /// Local OCI store (per-server Zot daemon) the supervisor pulls images from
     /// and reads blob files out of directly.
     oci_store: OciStoreConfig,
 
-    /// Local tuning of the console capture→publish path. Optional: omitting
-    /// the section leaves every field at its default.
+    /// Configuration of the log-streaming subsystem.
     #[serde(default)]
     log_streaming: LogPublisherConfig,
 
     qemu: QemuConfig,
 }
 
-/// The QEMU half of the job lifecycle: what the runner calls to resolve an
-/// image, lay down the disk a job boots from, and start `qemu-system-*`.
-///
-/// Holds no per-job state — one backend serves every job this supervisor runs.
 #[derive(Debug)]
 pub struct QemuBackend {
-    /// Read-only client of the local OCI store daemon (per-server Zot). We ask
-    /// it to make a digest present, then open its on-disk blob files directly
-    /// to assemble the backing chain. Injectable so the job state machine can
-    /// be driven by tests with a stub store.
+    /// Read-only client of the local OCI store daemon (per-server Zot).
     image_store: Arc<dyn ImageStore>,
 
-    /// Seam for the `qemu-img`/`qemu` subprocess operations, injectable so the
-    /// job state machine can be driven by tests without spawning real binaries.
+    /// Swappable process launcher, such that the supervisor can be unit-tested
+    /// without starting real QEMU binaries:
     launcher: Arc<dyn ProcessLauncher>,
 
     config: QemuConfig,
@@ -157,12 +151,9 @@ impl QemuBackend {
         }
     }
 
-    /// Map the image's ordered backing chain to the blob paths the local store
-    /// holds it at, base first (ready for [`BackingChain::new`]), with the head
+    /// Map the image's ordered backing chain to the blob paths in the local OCI
+    /// store. Base first (ready for [`BackingChain::new`]), with the head
     /// layer's virtual size.
-    ///
-    /// The backing paths are never baked into the shared blobs; the chain is
-    /// assembled at launch via `-blockdev` nodes.
     fn chain_blob_paths(&self, image: &TreadmillImage) -> Result<(Vec<PathBuf>, u64), ChainError> {
         let (chain, head_virtual_size) = image.backing_chain()?;
         let paths = chain
@@ -178,10 +169,6 @@ impl JobBackend for QemuBackend {
     type Image = TreadmillImage;
     type Allocation = BackingChain;
 
-    /// Resolve the dispatched image into the local OCI store: ask it to make
-    /// the manifest digest present — a copy from one of the dispatched
-    /// locations, or a cache hit — then read+parse its manifest into the
-    /// Treadmill backing-chain view.
     async fn fetch(&self, job: &StartJobMessage) -> Result<TreadmillImage, connector::JobError> {
         let (manifest_digest, locations) = match &job.image_spec {
             ImageSpecification::Image {
@@ -236,13 +223,6 @@ impl JobBackend for QemuBackend {
         })
     }
 
-    /// Assemble the runtime backing chain: the image's shared read-only lowers,
-    /// base first, with a per-job writable overlay on top.
-    ///
-    /// The overlay is created with **no baked backing**: the lower layers
-    /// are supplied at launch as `-blockdev` nodes. It is sized to the
-    /// configured working-disk maximum; the head's virtual size must fit within
-    /// that ceiling.
     #[instrument(skip(self, _job, image, vars), err(Debug, level = Level::WARN))]
     async fn allocate(
         &self,
@@ -260,9 +240,9 @@ impl JobBackend for QemuBackend {
                     description: format!("Invalid backing chain: {e}"),
                 })?;
 
-        // The overlay is always created at the ceiling, and the VM is exposed
-        // exactly that size, so a head larger than the ceiling would have its
-        // tail cut off once the chain is stacked underneath.
+        // The overlay is always created with exactly `working_disk_max_bytes`.
+        // Fail if the backing image's head layer is smaller than this. If we'd
+        // clamp it, we'd risk silently cutting off referenced data.
         if head_virtual_size > self.config.working_disk_max_bytes {
             return Err(connector::JobError {
                 error_kind: connector::JobErrorKind::ImageInvalid,
@@ -321,11 +301,14 @@ impl JobBackend for QemuBackend {
                 ),
             })?;
 
-        // When the dispatch enabled log streaming, capture qemu's console
+        // When the dispatch enables log streaming, capture qemu's console
         // output: pipe stdout/stderr (read back by the runner) and route the
-        // guest serial console to a unix socket we own. When it's disabled,
-        // keep the historical behavior — stdout/stderr inherit our terminal and
-        // the serial console goes wherever the configured args point it.
+        // guest serial console to a unix socket.
+        //
+        // TODO: currently, when log streaming is disabled, this attaches this
+        // process' stdout + stderr to QEMU. Presumably this is not what we
+        // want, but we want to keep the logs somewhere. File in the job state
+        // dir, maybe?
         if job.log_streaming.is_none() {
             return self
                 .spawn_qemu(chain, Vec::new(), templated_args, StdioMode::Inherit)
@@ -336,9 +319,6 @@ impl JobBackend for QemuBackend {
                 });
         }
 
-        // A serial socket we cannot bind costs the job its `serial` channel,
-        // but stdout/stderr are captured either way: dropping to `Inherit` here
-        // would leave the publisher with nothing to ship at all.
         let serial_sock_path = workdir.join("serial.sock");
         let (serial, capture_args) = match SerialSocket::bind(&serial_sock_path).await {
             Ok(socket) => {
@@ -379,11 +359,6 @@ impl JobBackend for QemuBackend {
 }
 
 impl QemuBackend {
-    /// The backing-chain `-blockdev` nodes (base → … → overlay) and the capture
-    /// channel go ahead of the configured invocation: the configured args
-    /// attach the disk device to the writable top node via the `{disk_node}`
-    /// substitution, and a `-serial` of their own takes the port after the
-    /// captured one rather than displacing it.
     async fn spawn_qemu(
         &self,
         chain: BackingChain,
@@ -415,8 +390,11 @@ impl QemuBackend {
     }
 }
 
-/// The views the qemu backend's console channels feed. The runner narrows
-/// these to the channels a job actually produced.
+/// The possible log streaming views that the QEMU runner can produce.
+///
+/// It's OK if this ends up referencing streams that are never allocated /
+/// produced (like the serial console, when we fail to bind to the socket). The
+/// runner filters these by the channels actually produced.
 fn qemu_log_views() -> Vec<LogView> {
     vec![
         LogView {
@@ -487,9 +465,12 @@ async fn main() -> Result<()> {
     let backend = Arc::new(QemuBackend::new(image_store, launcher, config.qemu.clone()));
     let (command_tx, command_rx) = mpsc::channel(COORD_MAILBOX_CAPACITY);
 
-    // The drain signal differs because what there is to drain against does:
-    // SIGHUP lets the switchboard finish with the job it dispatched, while a
-    // one-shot local run has nobody to wait for and takes Ctrl-C instead.
+    // SIGHUP lets the switchboard finish with the job it dispatched. This
+    // allows for the supervisor to be gracefully updated after finishing a job,
+    // without interrupting it.
+    //
+    // A one-shot local job there is nobody to wait for and it is terminated &
+    // removed when getting a SIGINT / Ctrl-C instead.
     let (connector, drain_signal, on_disconnect): (Arc<dyn SupervisorConnector>, _, _) =
         match config.base.coord_connector {
             SupervisorCoordConnector::WsConnector => {
@@ -568,8 +549,6 @@ mod tests {
     use treadmill_rs::util::Secret;
     use treadmill_supervisor_lib::launcher::WorkloadProcess;
 
-    /// The shipped example is a deployment's starting point, so it has to
-    /// parse as the configuration this supervisor actually reads.
     #[test]
     fn the_example_config_parses() {
         toml::from_str::<QemuSupervisorConfig>(include_str!("../config.example.toml")).unwrap();

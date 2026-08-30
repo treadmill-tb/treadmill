@@ -1,10 +1,4 @@
-//! The job lifecycle every supervisor runs, independent of what it boots.
-//!
-//! A [`JobRunner`] owns a single job slot and drains the coordinator's
-//! [`CoordCommand`]s into it. One task owns the job that occupies the slot: it
-//! brings the job up through its [`JobBackend`], supervises the workload,
-//! makes the one terminal transition, retains the terminal record until it is
-//! removed, and then releases everything the job took.
+//! The lifecycle of jobs running on hosts under a supervisor.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -41,28 +35,36 @@ use crate::workdirs::JobWorkdirs;
 /// the chunks it is still holding.
 const PUBLISHER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Depth of a job's `meta` channel. Declarations are few and the publisher's
-/// drain task consumes them promptly.
+/// Depth of a job's `meta` channel.
+///
+/// Multiple `meta` messages can be published to announce new log channels as
+/// they appear. Declarations are few and the publisher's drain task consumes
+/// them promptly.
 const META_CAPACITY: usize = 8;
 
+/// Capacity of command channel joing to job backend.
+///
+/// Most messages should be handled promptly, so `8` should be plently. If we go
+/// beyond that, we might risk blocking the connector, which might tear down its
+/// upstream switchboard connection.
 const JOB_MAILBOX_CAPACITY: usize = 8;
 
 /// Variables describing a job, seeded by the runner and its backend, extended
 /// by the start hook, and handed to the workload and the stop hook.
 pub type JobVars = HashMap<String, String>;
 
-/// What a supervisor needs to know to run a job, whatever it boots.
+/// What a supervisor needs to know to run a job.
 #[derive(Debug, Clone)]
 pub struct JobRunnerConfig {
     pub supervisor_id: Uuid,
 
-    /// Statically configured address of the host a job runs on, reported to
-    /// the coordinator when set. Without it, the start hook may supply one as
-    /// the `job_ip_address` variable.
+    /// Statically configured address of the host a job runs on, reported to the
+    /// coordinator when set.
+    ///
+    /// The start hook may supply one as the `job_ip_address` variable.
     pub job_address: Option<IpAddr>,
 
-    /// Per-job working directories, and the lock over the state directory they
-    /// live in.
+    /// Per-job working directories and state directory lock.
     pub workdirs: Arc<JobWorkdirs>,
 
     /// Address the per-job puppet control socket listens on.
@@ -73,17 +75,16 @@ pub struct JobRunnerConfig {
 
     pub log_streaming: LogPublisherConfig,
 
-    /// Where a job registers to have the supervisor's own tracing events
-    /// forwarded into its log stream.
+    /// Registry to forward the supervisor's tracing events into the log stream.
     pub job_log: JobLogRegistry,
 }
 
-/// The platform-specific half of a job: what it boots and how.
+/// The platform-specific job runner implementation.
 ///
-/// The runner drives these in order, reporting the matching phase before each
-/// and running the start hook between [`allocate`](JobBackend::allocate) and
-/// [`launch`](JobBackend::launch), so the hook can still influence the job
-/// variables the workload is templated from.
+/// Methods are driven in order. It logs the matching phase before each and runs
+/// the start hook between [`allocate`](JobBackend::allocate) and
+/// [`launch`](JobBackend::launch). This allows the start hook to influence the
+/// job templating variables.
 #[async_trait]
 pub trait JobBackend: std::fmt::Debug + Send + Sync + 'static {
     /// The image, resolved into whatever the backend needs to allocate from.
@@ -95,8 +96,8 @@ pub trait JobBackend: std::fmt::Debug + Send + Sync + 'static {
     /// Resolve the dispatched image specification.
     async fn fetch(&self, job: &StartJobMessage) -> Result<Self::Image, JobError>;
 
-    /// Allocate what the job boots from, inside its working directory, and
-    /// seed the variables the hooks and the workload see.
+    /// Allocate what the job boots from, inside its working directory, and seed
+    /// the variables the hooks and the workload see.
     async fn allocate(
         &self,
         job: &StartJobMessage,
@@ -114,10 +115,12 @@ pub trait JobBackend: std::fmt::Debug + Send + Sync + 'static {
         vars: &JobVars,
     ) -> Result<Workload, JobError>;
 
-    /// How this backend's console channels are to be rendered, declared on the
-    /// job's `meta` channel once the workload is up. The runner narrows each
-    /// view to the channels the job actually produced and drops the views left
-    /// without any, so a backend may describe channels it does not always emit.
+    /// How this backend's console channels are to be rendered.
+    ///
+    /// Declared on the job's `meta` channel once the workload is up. The runner
+    /// narrows each view to the channels the job actually produces and drops
+    /// the views left without any, so a backend may describe channels it does
+    /// not always emit.
     fn log_views(&self) -> Vec<LogView>;
 }
 
@@ -126,8 +129,9 @@ pub trait JobBackend: std::fmt::Debug + Send + Sync + 'static {
 pub struct Workload {
     pub process: Box<dyn WorkloadProcess>,
 
-    /// The guest's serial console, when the backend routed it somewhere the
-    /// runner can read.
+    /// The guest's serial console.
+    ///
+    /// Set if the backend routes it somewhere the runner can read.
     pub serial: Option<SerialSocket>,
 }
 
@@ -211,8 +215,7 @@ impl Outcome {
     }
 }
 
-/// A lock-free snapshot of a job, published by its task and read by everyone
-/// else.
+/// A lock-free snapshot of a job.
 #[derive(Debug, Clone)]
 pub struct JobFacts {
     pub job_id: Uuid,
@@ -249,8 +252,8 @@ pub enum JobCommand {
     PuppetServiceSet(Vec<JobService>),
 }
 
-/// The only external reference to a running job: a command mailbox, a
-/// lock-free facts snapshot, and a cancellation token.
+/// The only external reference to a running job: a command mailbox, a lock-free
+/// facts snapshot, and a cancellation token.
 #[derive(Debug, Clone)]
 pub struct JobHandle {
     pub job_id: Uuid,
@@ -535,8 +538,8 @@ impl<B: JobBackend> JobRunner<B> {
         }
     }
 
-    /// A handle to the job occupying the slot, whether it is still executing
-    /// or a retained terminal record.
+    /// A handle to the job occupying the slot, whether it is still executing or
+    /// a retained terminal record.
     pub async fn job(&self) -> Option<JobHandle> {
         self.slot.lock().await.as_ref().map(|s| s.handle.clone())
     }

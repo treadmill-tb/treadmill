@@ -1,12 +1,5 @@
 //! Read-only client of the per-server Zot store daemon.
 //!
-//! Under the OCI image migration a single per-server **Zot daemon owns the
-//! local store** — it is the only writer. Supervisors never write its
-//! filesystem: they make a digest present through the daemon's registry API
-//! and then open the daemon's on-disk blob files **read-only**, pointing
-//! `qemu` / `qemu-nbd` straight at them. One
-//! on-disk copy, shared page cache.
-//!
 //! Zot lays its storage out as one OCI image layout per repository:
 //!
 //! ```text
@@ -14,18 +7,17 @@
 //! <store_root>/<repository>/{index.json, oci-layout}
 //! ```
 //!
-//! Every image lives under the single local repository [`LOCAL_REPOSITORY`]:
-//! upstream-supplied repository names never become local paths, and a blob
-//! already fetched for any earlier image is skipped when a later image shares
-//! it (`skopeo`'s per-repository blob existence check). Ingest, dedup, and GC
-//! are the daemon's serialized concern; this type only drives a copy and then
-//! reads files.
+//! Every image lives under the single local repository [`LOCAL_REPOSITORY`]
+//! (upstream repository names are not stored), and a blob already fetched for
+//! any earlier image is skipped when a later image shares it (`skopeo`'s
+//! per-repository blob existence check).
 //!
 //! "Making a digest present" copies the image from the switchboard-provided
-//! upstream location into the **local** daemon by digest (a registry-to-registry
-//! `skopeo copy`), landing the whole closure in the daemon's store; the
-//! supervisor then opens those files read-only. Every candidate location is
-//! tried in order so a supervisor fails over when one is unavailable.
+//! upstream location into the local Zot daemon by digest (a
+//! registry-to-registry `skopeo copy`), landing the whole closure in the
+//! daemon's store; the supervisor then opens those files read-only. Every
+//! candidate location is tried in order so a supervisor fails over when one is
+//! unavailable.
 
 use std::path::PathBuf;
 use std::process::Stdio;

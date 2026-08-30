@@ -1,11 +1,4 @@
-//! Injectable seam for the supervisors' subprocess operations.
-//!
-//! The QEMU and NBD-netboot supervisors drive a small set of external
-//! processes: `qemu-img` to inspect and allocate qcow2 images, and the workload
-//! itself (`qemu-system-*` / `qemu-nbd`). Funnelling those through the
-//! [`ProcessLauncher`] trait lets the job state machine be driven in-process by
-//! tests with a stub launcher — observing the arguments it would have run and
-//! simulating workload exit — without spawning real binaries.
+//! Unit testing layer for external system commands.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
