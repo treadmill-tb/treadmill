@@ -461,6 +461,19 @@ define_event! {
 }
 
 define_event! {
+    /// An operator withheld a host from scheduling, or returned it to service
+    /// (`PATCH /hosts/{id}`). Visible to host viewers. Only emitted when the
+    /// flag actually changed.
+    HostMaintenanceChanged v1 {
+        actor: Subject,
+        host: Host @ view(Read),
+        maintenance: bool,
+    }
+    event_type = "host_maintenance_changed";
+    render = "changed host maintenance to {maintenance}";
+}
+
+define_event! {
     /// A supervisor opened (and authenticated) a WebSocket for its host, which
     /// the switchboard then marks live. Visible to host viewers.
     SupervisorConnected v1 {

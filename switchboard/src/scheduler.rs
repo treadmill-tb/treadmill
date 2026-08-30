@@ -12,8 +12,9 @@
 //! Each pass:
 //!   1. streams `queued` jobs oldest-first;
 //!   2. for each, asks the DB for eligible hosts via
-//!      [`tml_switchboard.eligible_hosts`](../../SCHEMA.sql) (idle + live + host-tag
-//!      containment — the set logic SQL does well);
+//!      [`tml_switchboard.eligible_hosts`](../../SCHEMA.sql) (idle + live + not in
+//!      maintenance + host-tag containment — the set logic SQL does well), then
+//!      drops the candidates whose host spec fails the job's CEL predicate;
 //!   3. attempts each candidate under a row lock in [`Scheduler::try_assign`],
 //!      which layers on the target/DUT bipartite match and the image resolution
 //!      (neither of which belongs in SQL) and commits the assignment;
@@ -22,9 +23,13 @@
 //!
 //! [`SupervisorWSWorker`]: crate::supervisor_ws_worker::SupervisorWSWorker
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, TimeDelta, Utc};
 use futures_util::TryStreamExt;
 use sqlx::PgPool;
+use treadmill_rs::api::switchboard::DEFAULT_HOST_CEL_PREDICATE;
+use treadmill_rs::host_spec::HostSpecV1;
 use uuid::Uuid;
 
 use crate::audit::model::{Host as AuditHost, Job as AuditJob, Subject as AuditSubject};
@@ -32,6 +37,7 @@ use crate::audit::{self, SYSTEM_ACTOR_ID, events};
 use crate::auth::engine::{self, HostPermission};
 use crate::events::{Debounced, EventBus, EventFilter};
 use crate::matcher::{self, TargetCandidate};
+use crate::predicate::{CelEngine, Engine};
 use crate::sql;
 use crate::sql::job::{ImageResolveError, SqlJobState};
 
@@ -116,11 +122,12 @@ impl Scheduler {
     /// One scheduling pass: stream queued jobs oldest-first and try to place each.
     async fn tick(&self) -> anyhow::Result<()> {
         let cutoff = Utc::now() - self.host_liveness_timeout;
+        let specs = self.host_specs().await?;
 
         // Stream (rather than collect) the queue: the cursor holds one pooled
         // connection while per-job work below borrows others.
         let mut queued = sqlx::query!(
-            r#"select job_id
+            r#"select job_id, host_cel_predicate
                from tml_switchboard.jobs
                where job_state = 'queued'
                order by queued_at"#
@@ -145,6 +152,9 @@ impl Scheduler {
             .fetch_all(&self.pool)
             .await?;
 
+            let candidates =
+                admitted_by_predicate(job_id, &row.host_cel_predicate, candidates, &specs);
+
             let mut settled = false;
             for host_id in candidates {
                 match self.try_assign(job_id, host_id).await? {
@@ -162,6 +172,26 @@ impl Scheduler {
         }
 
         Ok(())
+    }
+
+    /// Every host's current spec, normalized, read once per pass rather than
+    /// once per (job, host) pair.
+    ///
+    /// A row that does not deserialize is dropped with a log line rather than
+    /// failing the pass: one corrupt document must not stop the fleet from
+    /// scheduling.
+    async fn host_specs(&self) -> anyhow::Result<HashMap<Uuid, HostSpecV1>> {
+        let rows = sql::host_spec::current_for_all_hosts(&self.pool).await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| match row {
+                Ok(stored) => Some((stored.host_id, stored.normalize())),
+                Err(e) => {
+                    tracing::error!("skipping host spec in scheduling pass: {e}");
+                    None
+                }
+            })
+            .collect())
     }
 
     /// Free a host for a queued job no idle host could take, by stopping the
@@ -389,6 +419,46 @@ impl Scheduler {
         );
         Ok(AssignOutcome::Assigned)
     }
+}
+
+/// Drop the candidates whose spec does not satisfy the job's CEL predicate.
+///
+/// Per the evaluation contract an error means *this host* does not match, never
+/// that the job fails; the same holds for a predicate that no longer compiles,
+/// which simply admits nothing and leaves the job queued.
+///
+/// A host with no spec row yet is admitted only by the default predicate. That
+/// is the coexistence rule while tags and specs both exist: such a host is
+/// matched on tags alone, and any real predicate declines it.
+fn admitted_by_predicate(
+    job_id: Uuid,
+    source: &str,
+    candidates: Vec<Uuid>,
+    specs: &HashMap<Uuid, HostSpecV1>,
+) -> Vec<Uuid> {
+    // Compiling and evaluating the default would be correct but pointless.
+    if source == DEFAULT_HOST_CEL_PREDICATE {
+        return candidates;
+    }
+
+    let compiled = match CelEngine.compile(source) {
+        Ok(compiled) => compiled,
+        Err(e) => {
+            tracing::warn!("job {job_id} has an uncompilable host predicate: {e}");
+            return Vec::new();
+        }
+    };
+
+    candidates
+        .into_iter()
+        .filter(|host_id| match specs.get(host_id) {
+            Some(spec) => compiled.eval(spec).unwrap_or_else(|e| {
+                tracing::debug!("job {job_id} predicate errored on host {host_id}: {e}");
+                false
+            }),
+            None => false,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -639,6 +709,7 @@ mod tests {
         token: Uuid,
         init_spec: JobInitSpec,
         host_tag_requirements: &[&str],
+        host_cel_predicate: &str,
         target_requirements: &[&[&str]],
         queued_at: DateTime<Utc>,
     ) -> anyhow::Result<Uuid> {
@@ -650,6 +721,7 @@ mod tests {
             restart_policy: RestartPolicy { max_restarts: 0 },
             parameters: HashMap::new(),
             host_tag_requirements: tags(host_tag_requirements),
+            host_cel_predicate: host_cel_predicate.to_string(),
             target_requirements: target_requirements.iter().map(|r| tags(r)).collect(),
             lease_duration: None,
             lease_expiry_action: None,
@@ -694,6 +766,7 @@ mod tests {
                 manifest_digest: image,
             },
             host_tag_requirements,
+            DEFAULT_HOST_CEL_PREDICATE,
             target_requirements,
             Utc::now(),
         )
@@ -785,6 +858,66 @@ mod tests {
                 .fetch_all(pool)
                 .await?,
         )
+    }
+
+    /// Write revision 1 of a host's spec: a virtual host at `site` with the
+    /// given memory and DUT boards, enough to exercise predicates at both
+    /// levels.
+    async fn describe_host(
+        pool: &PgPool,
+        host_id: Uuid,
+        site: &str,
+        memory_mb: u32,
+        dut_boards: &[&str],
+    ) -> anyhow::Result<()> {
+        use treadmill_rs::host_spec::{
+            Dut, HostSpec, HostSpecV1, Platform, Resources, SpecVersionV1,
+        };
+
+        let spec = HostSpec::V1(HostSpecV1 {
+            spec_version: SpecVersionV1::V1,
+            id: host_id,
+            name: format!("host-{host_id}"),
+            description: None,
+            site: site.to_string(),
+            location: None,
+            platform: Platform::Virtual {
+                arch: "x86_64".into(),
+                profiles: vec!["q35-virtio-uefi".into()],
+                hypervisor: "qemu".into(),
+            },
+            resources: Resources {
+                cpu_cores: 4,
+                memory_mb,
+                storage_gb: 64,
+            },
+            labels: Default::default(),
+            duts: dut_boards
+                .iter()
+                .map(|board| Dut {
+                    name: None,
+                    serial: None,
+                    vendor: "ACME".into(),
+                    board: (*board).to_string(),
+                    arch: vec![],
+                    connectivity: vec![],
+                    debug: None,
+                    console: None,
+                    labels: Default::default(),
+                })
+                .collect(),
+        });
+        sql::host_spec::insert_revision(host_id, 1, &spec, None, pool).await?;
+        Ok(())
+    }
+
+    async fn set_maintenance(pool: &PgPool, host_id: Uuid, on: bool) -> anyhow::Result<()> {
+        sqlx::query("update tml_switchboard.hosts set maintenance = $2 where host_id = $1")
+            .bind(host_id)
+            .bind(on)
+            .execute(pool)
+            .await?;
+        Ok(())
     }
 
     // -- eligible_hosts SQL function ----------------------------------------
@@ -1036,6 +1169,7 @@ mod tests {
                 generation: None,
             },
             &["arch=arm64"],
+            DEFAULT_HOST_CEL_PREDICATE,
             &[],
             Utc::now(),
         )
@@ -1127,6 +1261,7 @@ mod tests {
                 manifest_digest: img,
             },
             &["arch=arm64"],
+            DEFAULT_HOST_CEL_PREDICATE,
             &[],
             now - Duration::seconds(10),
         )
@@ -1138,6 +1273,7 @@ mod tests {
                 manifest_digest: img,
             },
             &["arch=arm64"],
+            DEFAULT_HOST_CEL_PREDICATE,
             &[],
             now,
         )
@@ -1463,6 +1599,201 @@ mod tests {
             terminate_request(&pool, b).await?,
             None,
             "the second host is left alone while the first reclaim is in flight"
+        );
+        Ok(())
+    }
+
+    // -- CEL host predicate --------------------------------------------------
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn predicate_selects_among_eligible_hosts(pool: PgPool) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
+
+        let small = insert_live_host(&pool, user, &[]).await?;
+        let big = insert_live_host(&pool, user, &[]).await?;
+        describe_host(&pool, small, "cambridge", 4096, &[]).await?;
+        describe_host(&pool, big, "cambridge", 16384, &[]).await?;
+
+        let job = enqueue(
+            &pool,
+            token,
+            JobInitSpec::Image {
+                manifest_digest: img,
+            },
+            &[],
+            "host.resources.memory_mb >= 16384",
+            &[],
+            Utc::now(),
+        )
+        .await?;
+
+        // Both hosts clear the SQL filter; only the predicate separates them.
+        assert_eq!(
+            eligible(&pool, job, Utc::now() - Duration::seconds(60))
+                .await?
+                .len(),
+            2
+        );
+        scheduler(pool.clone()).tick().await?;
+        assert_eq!(host_current_job(&pool, big).await?, Some(job));
+        assert_eq!(host_current_job(&pool, small).await?, None);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn predicate_reaches_into_duts(pool: PgPool) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
+
+        let wrong = insert_live_host(&pool, user, &[]).await?;
+        let right = insert_live_host(&pool, user, &[]).await?;
+        describe_host(&pool, wrong, "cambridge", 4096, &["stm32f4discovery"]).await?;
+        describe_host(&pool, right, "cambridge", 4096, &["nrf52840dk"]).await?;
+
+        let job = enqueue(
+            &pool,
+            token,
+            JobInitSpec::Image {
+                manifest_digest: img,
+            },
+            &[],
+            "host.duts.exists(d, d.board == 'nrf52840dk')",
+            &[],
+            Utc::now(),
+        )
+        .await?;
+        scheduler(pool.clone()).tick().await?;
+        assert_eq!(host_current_job(&pool, right).await?, Some(job));
+        assert_eq!(host_current_job(&pool, wrong).await?, None);
+        Ok(())
+    }
+
+    /// An evaluation error is a host rejection, not a job failure: the job
+    /// stays queued rather than being finalized.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn predicate_error_leaves_the_job_queued(pool: PgPool) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
+
+        let host = insert_live_host(&pool, user, &[]).await?;
+        describe_host(&pool, host, "cambridge", 4096, &[]).await?;
+
+        let job = enqueue(
+            &pool,
+            token,
+            JobInitSpec::Image {
+                manifest_digest: img,
+            },
+            &[],
+            // No such field: errors on every host.
+            "host.definitely_not_a_field == 1",
+            &[],
+            Utc::now(),
+        )
+        .await?;
+        scheduler(pool.clone()).tick().await?;
+        assert_eq!(host_current_job(&pool, host).await?, None);
+        assert_eq!(job_state(&pool, job).await?, "queued");
+        Ok(())
+    }
+
+    /// Coexistence rule for the tags-and-specs window: an undescribed host is
+    /// still placed by the default predicate, and declined by any other.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn host_without_a_spec_takes_only_the_default_predicate(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
+        let host = insert_live_host(&pool, user, &[]).await?;
+
+        let picky = enqueue(
+            &pool,
+            token,
+            JobInitSpec::Image {
+                manifest_digest: img,
+            },
+            &[],
+            "host.site == 'cambridge'",
+            &[],
+            Utc::now(),
+        )
+        .await?;
+        scheduler(pool.clone()).tick().await?;
+        assert_eq!(host_current_job(&pool, host).await?, None);
+
+        let plain = enqueue_image(&pool, token, img, &[], &[]).await?;
+        scheduler(pool.clone()).tick().await?;
+        assert_eq!(host_current_job(&pool, host).await?, Some(plain));
+        assert_eq!(job_state(&pool, picky).await?, "queued");
+        Ok(())
+    }
+
+    // -- maintenance ---------------------------------------------------------
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn maintenance_hosts_are_not_eligible(pool: PgPool) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
+        let host = insert_live_host(&pool, user, &[]).await?;
+        let job = enqueue_image(&pool, token, img, &[], &[]).await?;
+
+        set_maintenance(&pool, host, true).await?;
+        assert!(
+            eligible(&pool, job, Utc::now() - Duration::seconds(60))
+                .await?
+                .is_empty()
+        );
+        scheduler(pool.clone()).tick().await?;
+        assert_eq!(host_current_job(&pool, host).await?, None);
+
+        set_maintenance(&pool, host, false).await?;
+        scheduler(pool.clone()).tick().await?;
+        assert_eq!(host_current_job(&pool, host).await?, Some(job));
+        Ok(())
+    }
+
+    /// A host in maintenance must not be preempted either, or a running job is
+    /// killed to free capacity nothing can use.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn maintenance_hosts_are_not_reclaimable(pool: PgPool) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let host = insert_live_host(&pool, user, &[]).await?;
+        let (_, img) = register_image(&pool, user, 1, true).await?;
+
+        let running = enqueue_image(&pool, token, img, &[], &[]).await?;
+        occupy_host(&pool, host, running, 120, 60, "preempt").await?;
+        let waiting = enqueue_image(&pool, token, img, &[], &[]).await?;
+
+        set_maintenance(&pool, host, true).await?;
+        scheduler(pool.clone()).tick().await?;
+        assert_eq!(
+            terminate_request(&pool, running).await?,
+            None,
+            "a host in maintenance must not be preempted"
+        );
+        assert_eq!(job_state(&pool, waiting).await?, "queued");
+
+        // Out of maintenance the same host is reclaimable again, so the test
+        // above is about maintenance and not about some other missing condition.
+        set_maintenance(&pool, host, false).await?;
+        scheduler(pool.clone()).tick().await?;
+        assert_eq!(
+            terminate_request(&pool, running).await?.as_deref(),
+            Some("preempted")
         );
         Ok(())
     }

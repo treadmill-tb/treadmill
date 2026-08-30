@@ -421,3 +421,71 @@ async fn bulk_update_folds_into_one_keyless_event(pool: PgPool) {
     let event = next_event(&mut listener).await;
     assert_eq!(key_values(&event, "host_id"), vec![hosts[0].to_string()]);
 }
+
+/// Spec writes never touch `hosts`, so `host_specs` carries its own trigger:
+/// without it neither the scheduler nor a host watch would wake on a new
+/// revision.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn host_spec_revisions_wake_the_host(pool: PgPool) {
+    let user = insert_user(&pool).await;
+    let host = insert_host(&pool, user).await;
+
+    let mut listener = listen(&pool).await;
+    let spec = serde_json::json!({
+        "spec_version": "v1",
+        "id": host,
+        "name": "cam-rpi4-01",
+        "description": null,
+        "site": "cambridge",
+        "location": null,
+        "platform": {
+            "kind": "virtual", "arch": "x86_64",
+            "profiles": ["q35-virtio-uefi"], "hypervisor": "qemu"
+        },
+        "resources": { "cpu_cores": 4, "memory_mb": 8192, "storage_gb": 64 },
+        "labels": {},
+        "duts": []
+    });
+    sqlx::query(
+        "insert into tml_switchboard.host_specs (host_id, revision, spec, spec_version) \
+         values ($1, 1, $2, 'v1')",
+    )
+    .bind(host)
+    .bind(&spec)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let event = next_event(&mut listener).await;
+    assert_eq!(event["table"], "host_specs");
+    assert_eq!(key_values(&event, "host_id"), vec![host.to_string()]);
+
+    // Append-only: a revision is immutable once written.
+    let update = sqlx::query("update tml_switchboard.host_specs set spec_version = 'v2'")
+        .execute(&pool)
+        .await;
+    assert!(update.is_err(), "host_specs must reject UPDATE");
+    let delete = sqlx::query("delete from tml_switchboard.host_specs")
+        .execute(&pool)
+        .await;
+    assert!(delete.is_err(), "host_specs must reject DELETE");
+}
+
+/// The document must name the host it describes.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn host_spec_id_must_match_the_host(pool: PgPool) {
+    let user = insert_user(&pool).await;
+    let host = insert_host(&pool, user).await;
+
+    let result = sqlx::query(
+        "insert into tml_switchboard.host_specs (host_id, revision, spec, spec_version) \
+         values ($1, 1, $2, 'v1')",
+    )
+    .bind(host)
+    .bind(serde_json::json!({ "id": Uuid::new_v4() }))
+    .execute(&pool)
+    .await;
+    assert!(result.is_err(), "spec_id_matches must reject a foreign id");
+}

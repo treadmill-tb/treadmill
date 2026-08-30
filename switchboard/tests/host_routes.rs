@@ -281,3 +281,114 @@ async fn watch_requires_read_access(pool: PgPool) {
     assert_eq!(granted.status(), reqwest::StatusCode::OK);
     next_change(&mut granted).await;
 }
+
+/// `PATCH /hosts/{id}` requires `manage`, which the host's owner holds
+/// implicitly; a non-owner is refused and the flag is untouched.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn patch_host_maintenance(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let owner_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let owner = whoami(&client, addr, &owner_token).await;
+    let host_id = seed_host_owned(&pool, "cam-rpi4-01", owner).await;
+
+    let patch = |token: String, body: serde_json::Value| {
+        let client = client.clone();
+        async move {
+            client
+                .patch(format!("http://{addr}/api/v1/hosts/{host_id}"))
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    let maintenance = || async {
+        sqlx::query_scalar::<_, bool>(
+            "select maintenance from tml_switchboard.hosts where host_id = $1",
+        )
+        .bind(host_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+
+    assert!(!maintenance().await);
+
+    let stranger_token = mock_login_token(&pool, &client, addr, "carol", true).await;
+    assert_eq!(
+        patch(stranger_token, serde_json::json!({ "maintenance": true })).await,
+        reqwest::StatusCode::FORBIDDEN
+    );
+    assert!(!maintenance().await, "a refused request changes nothing");
+
+    assert_eq!(
+        patch(
+            owner_token.clone(),
+            serde_json::json!({ "maintenance": true })
+        )
+        .await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+    assert!(maintenance().await);
+
+    // An empty patch, and one already in force, are both no-ops.
+    assert_eq!(
+        patch(owner_token.clone(), serde_json::json!({})).await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        patch(
+            owner_token.clone(),
+            serde_json::json!({ "maintenance": true })
+        )
+        .await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+    assert!(maintenance().await);
+
+    assert_eq!(
+        patch(owner_token, serde_json::json!({ "maintenance": false })).await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+    assert!(!maintenance().await);
+}
+
+/// The listing reports the flag, so an operator can see which hosts are held
+/// out of service.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn listing_reports_maintenance(pool: PgPool) {
+    let host_id = seed_live_host(&pool, "cam-rpi4-01", &[], &[]).await;
+    sqlx::query("update tml_switchboard.hosts set maintenance = true where host_id = $1")
+        .bind(host_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let hosts: Vec<HostInfo> = client
+        .get(format!("http://{addr}/api/v1/hosts"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let host = hosts.iter().find(|h| h.host_id == host_id).unwrap();
+    assert!(host.maintenance);
+}

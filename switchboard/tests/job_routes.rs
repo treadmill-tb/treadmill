@@ -26,7 +26,9 @@ use treadmill_rs::api::switchboard::jobs::{
     JobServiceCredentials, JobServiceEndpoint, LeaseRejection, LeaseRejectionCode,
     NatsConsoleInputCredentials, NatsLogStreamCredentials,
 };
-use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, WhoAmIResponse};
+use treadmill_rs::api::switchboard::{
+    DEFAULT_HOST_CEL_PREDICATE, JobInitSpec, JobRequest, JobState, WhoAmIResponse,
+};
 use treadmill_rs::image::Digest;
 
 /// The built-in admins group subject (`engine::ADMINS_GROUP_ID`). `alice` is a
@@ -475,6 +477,7 @@ fn image_job_request(
         restart_policy: RestartPolicy { max_restarts: 0 },
         parameters: HashMap::new(),
         host_tag_requirements: vec![],
+        host_cel_predicate: DEFAULT_HOST_CEL_PREDICATE.to_string(),
         target_requirements: vec![],
         lease_duration,
         lease_expiry_action: None,

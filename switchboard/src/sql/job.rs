@@ -302,6 +302,7 @@ pub async fn insert(
           restart_policy,
           enqueued_by_token_id,
           host_tag_requirements,
+          host_cel_predicate,
           lease_duration,
           lease_expiry_action,
           job_state,
@@ -326,6 +327,7 @@ pub async fn insert(
           $7,       -- restart_policy
           $8,       -- enqueued_by_token_id
           $9,       -- host_tag_requirements
+          $15,      -- host_cel_predicate
           $10,      -- lease_duration
           $14,      -- lease_expiry_action
           'queued', -- job_state
@@ -356,6 +358,7 @@ pub async fn insert(
         owner,
         job_request.label,
         lease_expiry_action as SqlLeaseExpiryAction,
+        job_request.host_cel_predicate,
     )
     .execute(conn.as_mut())
     .await?;
@@ -419,6 +422,7 @@ pub struct SqlJob {
     sql_restart_policy: SqlRestartPolicy,
     enqueued_by_token_id: Uuid,
     host_tag_requirements: Vec<String>,
+    host_cel_predicate: String,
     lease_duration: PgInterval,
     lease_expiry_action: SqlLeaseExpiryAction,
 
@@ -522,6 +526,9 @@ impl SqlJob {
     }
     pub fn host_tag_requirements(&self) -> &[String] {
         &self.host_tag_requirements
+    }
+    pub fn host_cel_predicate(&self) -> &str {
+        &self.host_cel_predicate
     }
     /// The owning subject, or `None` if the job is orphaned (its owner was
     /// deleted; the FK is `on delete set null`).
@@ -628,6 +635,7 @@ impl SqlJob {
             resolved_image_digest,
             restart_policy: self.sql_restart_policy.into(),
             host_tag_requirements: self.host_tag_requirements,
+            host_cel_predicate: self.host_cel_predicate,
             target_requirements,
             parameters,
             lease_duration_secs,
@@ -693,6 +701,7 @@ pub async fn fetch_by_job_id(
         restart_policy as "sql_restart_policy: _",
         enqueued_by_token_id,
         host_tag_requirements,
+        host_cel_predicate,
         lease_duration,
         lease_expiry_action as "lease_expiry_action: _",
         queued_at,
@@ -1927,6 +1936,7 @@ pub async fn finalize_dropped_and_maybe_restart(
         },
         parameters: parameters.clone(),
         host_tag_requirements: predecessor.host_tag_requirements.clone(),
+        host_cel_predicate: predecessor.host_cel_predicate.clone(),
         target_requirements,
         lease_duration: None,
         lease_expiry_action: None,

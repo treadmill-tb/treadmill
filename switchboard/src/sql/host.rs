@@ -29,6 +29,7 @@ pub struct SqlHostListing {
     pub host_id: Uuid,
     pub name: String,
     pub tags: Vec<String>,
+    pub maintenance: bool,
     pub last_seen_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -47,7 +48,7 @@ pub async fn list_for_listing(
 ) -> Result<Vec<SqlHostListing>, sqlx::Error> {
     sqlx::query_as!(
         SqlHostListing,
-        r#"select host_id, name, tags, last_seen_at
+        r#"select host_id, name, tags, maintenance, last_seen_at
            from tml_switchboard.hosts
            order by name, host_id"#,
     )
@@ -337,4 +338,46 @@ pub async fn lock_and_get_current_worker(
     .fetch_one(&mut **txn)
     .await
     .map(|record| record.worker_instance_id)
+}
+
+/// Read a host's maintenance flag under a row lock, or `None` if no such host
+/// exists.
+///
+/// Paired with [`set_maintenance`] in one transaction so the audit event
+/// records the value actually replaced.
+pub async fn lock_maintenance(
+    host_id: Uuid,
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<Option<bool>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"select maintenance
+           from tml_switchboard.hosts
+           where host_id = $1
+           for update"#,
+        host_id,
+    )
+    .fetch_optional(&mut **txn)
+    .await
+}
+
+/// Set a host's maintenance flag.
+///
+/// Maintenance is operational state on the `hosts` row rather than a spec
+/// field, so toggling it neither writes a spec revision nor requires one to
+/// exist.
+pub async fn set_maintenance(
+    host_id: Uuid,
+    maintenance: bool,
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"update tml_switchboard.hosts
+           set maintenance = $2
+           where host_id = $1"#,
+        host_id,
+        maintenance,
+    )
+    .execute(&mut **txn)
+    .await
+    .map(|_| ())
 }

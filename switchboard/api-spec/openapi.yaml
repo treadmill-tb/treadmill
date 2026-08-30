@@ -616,6 +616,60 @@ paths:
                   $ref: '#/components/schemas/HostInfo'
       security:
       - token: []
+  /hosts/{id}:
+    patch:
+      tags:
+      - Hosts
+      summary: Update a host
+      operationId: updateHost
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        description: |-
+          A change to a host's operational state, carried by `PATCH /hosts/{id}`.
+
+          Only the fields present are changed. Host *description* is not editable
+          here: it lives in the host's spec, which is versioned separately.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostUpdateRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The caller lacks `manage` on the host.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '204':
+          description: Applied, or the request changed nothing.
+      security:
+      - token: []
   /hosts/{id}/events:
     get:
       tags:
@@ -1932,6 +1986,11 @@ components:
             Whether the host's supervisor has heartbeat recently enough to be
             considered schedulable, computed with the deployment's liveness window.
           type: boolean
+        maintenance:
+          description: |-
+            Whether an operator has withheld this host from scheduling. A host in
+            maintenance is neither dispatched onto nor preempted to free capacity.
+          type: boolean
         name:
           type: string
         tags:
@@ -1952,6 +2011,7 @@ components:
       - tags
       - live
       - targets
+      - maintenance
     HostTarget:
       description: One target (DUT) attached to a host, as exposed by `GET /hosts`.
       type: object
@@ -1967,6 +2027,19 @@ components:
       required:
       - name
       - tags
+    HostUpdateRequest:
+      description: |-
+        A change to a host's operational state, carried by `PATCH /hosts/{id}`.
+
+        Only the fields present are changed. Host *description* is not editable
+        here: it lives in the host's spec, which is versioned separately.
+      type: object
+      properties:
+        maintenance:
+          description: Withhold the host from scheduling, or return it to service.
+          type:
+          - boolean
+          - 'null'
     IdPath:
       description: A single `{id}` UUID segment.
       type: object
@@ -2248,6 +2321,9 @@ components:
           type:
           - string
           - 'null'
+        host_cel_predicate:
+          description: The CEL expression this job's host had to satisfy, as submitted.
+          type: string
         host_tag_requirements:
           description: |-
             Host eligibility tags this job requires (superset match against a host's
@@ -2373,6 +2449,7 @@ components:
       - image
       - restart_policy
       - host_tag_requirements
+      - host_cel_predicate
       - target_requirements
       - parameters
       - lease_duration_secs
@@ -2561,6 +2638,17 @@ components:
     JobRequest:
       type: object
       properties:
+        host_cel_predicate:
+          description: |-
+            Host eligibility as a single CEL expression, evaluated with the
+            candidate host's spec bound as `host`; the host runs the job only if it
+            evaluates true. `host.duts` is in scope, so one expression covers both
+            the host and its attached DUTs.
+
+            An evaluation error means that host does not match — never a job
+            failure. Absent, defaults to `true`, matching every host.
+          type: string
+          default: 'true'
         host_tag_requirements:
           description: |-
             Host eligibility: the set of tags the chosen host must carry (as a

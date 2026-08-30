@@ -9,7 +9,7 @@ mod users;
 use crate::config::ServerConfig;
 use crate::serve::AppState;
 use aide::axum::ApiRouter;
-use aide::axum::routing::{delete_with, get_with, post_with};
+use aide::axum::routing::{delete_with, get_with, patch_with, post_with};
 use aide::transform::TransformOperation;
 use axum::Json;
 use axum::Router;
@@ -317,6 +317,19 @@ pub fn api_router() -> ApiRouter<AppState> {
             }),
         )
         //  GET /hosts/{id}/events
+        //  PATCH /hosts/{id} -- change a host's operational state
+        .api_route(
+            "/hosts/{id}",
+            patch_with(hosts::update, |o| {
+                doc(o, "updateHost", "Hosts", "Update a host")
+                    .response_with::<204, (), _>(|r| {
+                        r.description("Applied, or the request changed nothing.")
+                    })
+                    .response_with::<403, (), _>(|r| {
+                        r.description("The caller lacks `manage` on the host.")
+                    })
+            }),
+        )
         .api_route(
             "/hosts/{id}/events",
             get_with(hosts::list_events, |o| {

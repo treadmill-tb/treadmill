@@ -247,6 +247,16 @@ pub struct JobRequest {
     #[serde(default)]
     pub host_tag_requirements: Vec<String>,
 
+    /// Host eligibility as a single CEL expression, evaluated with the
+    /// candidate host's spec bound as `host`; the host runs the job only if it
+    /// evaluates true. `host.duts` is in scope, so one expression covers both
+    /// the host and its attached DUTs.
+    ///
+    /// An evaluation error means that host does not match — never a job
+    /// failure. Absent, defaults to `true`, matching every host.
+    #[serde(default = "default_host_cel_predicate")]
+    pub host_cel_predicate: String,
+
     /// Target (DUT) eligibility: an ordered array of requested targets, each a
     /// set of tags an attached DUT must carry (as a superset). The scheduler
     /// assigns each entry to a distinct attached target (DUT) on the chosen
@@ -263,6 +273,14 @@ pub struct JobRequest {
     /// What happens when the lease expires. Absent, `terminate`.
     #[serde(default)]
     pub lease_expiry_action: Option<crate::api::switchboard::jobs::JobLeaseExpiryAction>,
+}
+
+/// The [`JobRequest::host_cel_predicate`] of a job that named none: matches
+/// every host. Mirrored by the column default in `SCHEMA.sql`.
+pub const DEFAULT_HOST_CEL_PREDICATE: &str = "true";
+
+fn default_host_cel_predicate() -> String {
+    DEFAULT_HOST_CEL_PREDICATE.to_string()
 }
 
 /// Why a job terminated.

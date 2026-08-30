@@ -213,6 +213,10 @@ export default function JobDetail({ params }: Route.ComponentProps) {
             <dd>
               <Tags tags={job.data.host_tag_requirements} />
             </dd>
+            <dt>Host predicate</dt>
+            <dd>
+              <code>{job.data.host_cel_predicate}</code>
+            </dd>
             <dt>Target requirements</dt>
             <dd>
               {job.data.target_requirements.length === 0 ? (

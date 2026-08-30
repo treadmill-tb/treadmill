@@ -434,6 +434,8 @@ pub struct JobInfo {
     /// Host eligibility tags this job requires (superset match against a host's
     /// tags).
     pub host_tag_requirements: Vec<String>,
+    /// The CEL expression this job's host had to satisfy, as submitted.
+    pub host_cel_predicate: String,
     /// Target (DUT) eligibility: one tag set per requested target, in submission
     /// order.
     pub target_requirements: Vec<Vec<String>>,

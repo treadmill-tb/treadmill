@@ -84,6 +84,7 @@ export default function JobNew() {
         init_spec,
         label: label === "" ? null : label,
         host_tag_requirements: words(str("host_tags")),
+        host_cel_predicate: str("host_cel_predicate") || "true",
         target_requirements: lines(str("target_reqs")).map(words),
         parameters,
         restart_policy: { max_restarts: Number(str("max_restarts") || "0") },
@@ -145,6 +146,18 @@ export default function JobNew() {
         <label className="field">
           <span>Required host tags (whitespace-separated)</span>
           <input name="host_tags" className="mono" />
+        </label>
+
+        <label className="field">
+          <span>
+            Host predicate (CEL) — evaluated against the candidate host&rsquo;s
+            spec bound as <code>host</code>; empty matches any host
+          </span>
+          <input
+            name="host_cel_predicate"
+            className="mono"
+            placeholder="host.site == 'cambridge' &amp;&amp; host.resources.memory_mb >= 4096"
+          />
         </label>
 
         <label className="field">

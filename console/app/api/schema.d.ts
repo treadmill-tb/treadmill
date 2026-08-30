@@ -283,6 +283,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/hosts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update a host */
+        patch: operations["updateHost"];
+        trace?: never;
+    };
     "/hosts/{id}/events": {
         parameters: {
             query?: never;
@@ -860,6 +877,11 @@ export interface components {
              *     considered schedulable, computed with the deployment's liveness window.
              */
             live: boolean;
+            /**
+             * @description Whether an operator has withheld this host from scheduling. A host in
+             *     maintenance is neither dispatched onto nor preempted to free capacity.
+             */
+            maintenance: boolean;
             name: string;
             /**
              * @description Opaque host tags; a job's `host_tag_requirements` match a host whose
@@ -875,6 +897,16 @@ export interface components {
             name: string;
             /** @description Opaque tag set (same convention as host tags). */
             tags: string[];
+        };
+        /**
+         * @description A change to a host's operational state, carried by `PATCH /hosts/{id}`.
+         *
+         *     Only the fields present are changed. Host *description* is not editable
+         *     here: it lives in the host's spec, which is versioned separately.
+         */
+        HostUpdateRequest: {
+            /** @description Withhold the host from scheduling, or return it to service. */
+            maintenance?: boolean | null;
         };
         /** @description A single `{id}` UUID segment. */
         IdPath: {
@@ -1021,6 +1053,8 @@ export interface components {
             dispatched_on_host_id?: string | null;
             /** @description A human-readable detail accompanying termination, if any. */
             exit_message?: string | null;
+            /** @description The CEL expression this job's host had to satisfy, as submitted. */
+            host_cel_predicate: string;
             /**
              * @description Host eligibility tags this job requires (superset match against a host's
              *     tags).
@@ -1186,6 +1220,17 @@ export interface components {
          */
         JobPermission: "read" | "stop" | "manage";
         JobRequest: {
+            /**
+             * @description Host eligibility as a single CEL expression, evaluated with the
+             *     candidate host's spec bound as `host`; the host runs the job only if it
+             *     evaluates true. `host.duts` is in scope, so one expression covers both
+             *     the host and its attached DUTs.
+             *
+             *     An evaluation error means that host does not match — never a job
+             *     failure. Absent, defaults to `true`, matching every host.
+             * @default true
+             */
+            host_cel_predicate: string;
             /**
              * @description Host eligibility: the set of tags the chosen host must carry (as a
              *     superset) for this job to be assigned to it. Tags are opaque strings
@@ -2613,6 +2658,78 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    updateHost: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * @description A change to a host's operational state, carried by `PATCH /hosts/{id}`.
+         *
+         *     Only the fields present are changed. Host *description* is not editable
+         *     here: it lives in the host's spec, which is versioned separately.
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HostUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Applied, or the request changed nothing. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller lacks `manage` on the host. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Failed to deserialize the JSON body into the target type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
             };
         };
     };

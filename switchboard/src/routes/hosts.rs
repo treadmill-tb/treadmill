@@ -4,7 +4,7 @@ use axum::extract::Query;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use treadmill_rs::api::switchboard::hosts::{HostInfo, HostTarget};
+use treadmill_rs::api::switchboard::hosts::{HostInfo, HostTarget, HostUpdateRequest};
 
 /// Axum handler for the `/hosts/{id}/events` path.
 pub async fn list_events(
@@ -50,6 +50,76 @@ pub async fn watch(
     Ok(crate::routes::sse::response(sub, &state.config().service))
 }
 
+/// Axum handler for `PATCH /hosts/{id}` — change a host's operational state.
+///
+/// Requires `manage` on the host, the meta-permission its owner holds
+/// implicitly. A request that changes nothing (absent field, or the value
+/// already in force) is a no-op: no write, no audit event, and no change
+/// notification for watchers.
+pub async fn update(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(IdPath { id: host_id }): Path<IdPath>,
+    Json(req): Json<HostUpdateRequest>,
+) -> Result<Response, StatusCode> {
+    use crate::audit::model::{Host as AuditHost, Subject as AuditSubject};
+    use crate::audit::{self, events};
+    use crate::auth::engine::{self, HostPermission};
+
+    let authorized = engine::can_access_host(
+        state.pool(),
+        subject.user_id(),
+        host_id,
+        HostPermission::Manage,
+    )
+    .await
+    .or_internal("checking host manage access for update")?;
+    if !authorized {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let Some(maintenance) = req.maintenance else {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    };
+
+    let mut txn = state
+        .pool()
+        .begin()
+        .await
+        .or_internal(&format!("opening a transaction to update host {host_id}"))?;
+
+    let previous = sql::host::lock_maintenance(host_id, &mut txn)
+        .await
+        .or_internal(&format!("reading maintenance of host {host_id}"))?;
+    // `can_access_host` already refused an unreadable host, so a missing row
+    // here means it was deleted in between.
+    let Some(previous) = previous else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    if previous == maintenance {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+
+    sql::host::set_maintenance(host_id, maintenance, &mut txn)
+        .await
+        .or_internal(&format!("setting maintenance on host {host_id}"))?;
+    audit::emit(
+        &mut txn,
+        &events::HostMaintenanceChanged {
+            actor: AuditSubject(subject.user_id()),
+            host: AuditHost(host_id),
+            maintenance,
+        },
+    )
+    .await
+    .or_internal("recording a host maintenance change")?;
+    txn.commit()
+        .await
+        .or_internal(&format!("committing the update of host {host_id}"))?;
+
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 /// Axum handler for `GET /hosts` — a read-only listing of every host with its
 /// opaque tags, attached targets (DUTs), and liveness, ordered by name.
 ///
@@ -89,6 +159,7 @@ pub async fn list(
             host_id: h.host_id,
             name: h.name,
             tags: h.tags,
+            maintenance: h.maintenance,
             last_seen_at: h.last_seen_at,
         })
         .collect();

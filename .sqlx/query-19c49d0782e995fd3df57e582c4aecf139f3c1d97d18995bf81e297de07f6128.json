@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select host_id, name, tags, last_seen_at\n           from tml_switchboard.hosts\n           order by name, host_id",
+  "query": "select host_id, name, tags, maintenance, last_seen_at\n           from tml_switchboard.hosts\n           order by name, host_id",
   "describe": {
     "columns": [
       {
@@ -38,6 +38,17 @@
       },
       {
         "ordinal": 3,
+        "name": "maintenance",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.hosts",
+            "name": "maintenance"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "last_seen_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -55,8 +66,9 @@
       false,
       false,
       false,
+      false,
       true
     ]
   },
-  "hash": "0085554c8f66dd8450ea80e7a6bdadf06c9b164fe1fedcb24605a636df766dc5"
+  "hash": "19c49d0782e995fd3df57e582c4aecf139f3c1d97d18995bf81e297de07f6128"
 }

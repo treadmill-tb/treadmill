@@ -28,7 +28,9 @@ use treadmill_rs::api::switchboard::images::{
 };
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, JobImageRef, JobInfo};
-use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, WhoAmIResponse};
+use treadmill_rs::api::switchboard::{
+    DEFAULT_HOST_CEL_PREDICATE, JobInitSpec, JobRequest, WhoAmIResponse,
+};
 use treadmill_rs::image::Digest;
 use treadmill_switchboard::registry::{RegistryClient, RegistryError};
 use treadmill_switchboard::serve::AppState;
@@ -255,6 +257,7 @@ async fn enqueue_set(
         restart_policy: RestartPolicy { max_restarts: 0 },
         parameters: HashMap::new(),
         host_tag_requirements: vec![],
+        host_cel_predicate: DEFAULT_HOST_CEL_PREDICATE.to_string(),
         target_requirements: vec![],
         lease_duration: None,
         lease_expiry_action: None,
@@ -310,6 +313,7 @@ async fn enqueue_image_job(
         restart_policy: RestartPolicy { max_restarts: 0 },
         parameters: HashMap::new(),
         host_tag_requirements: vec![],
+        host_cel_predicate: DEFAULT_HOST_CEL_PREDICATE.to_string(),
         target_requirements: vec![],
         lease_duration: None,
         lease_expiry_action: None,
