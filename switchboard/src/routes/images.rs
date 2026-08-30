@@ -314,7 +314,6 @@ async fn generation_info(
                 .unwrap_or((false, false));
             Ok(GenerationMemberInfo {
                 manifest_digest: m.manifest_digest.parse().map_err(internal)?,
-                required_host_tags: m.required_host_tags,
                 platform_profile: m.platform_profile,
                 predicate: m.predicate,
                 index: m.index as u32,
@@ -368,7 +367,6 @@ pub async fn create_generation(
         }
         members.push(image::NewSetMember {
             image_id: rec.id,
-            required_host_tags: m.required_host_tags.clone(),
             platform_profile: m.platform_profile.clone(),
             predicate: m.predicate.clone(),
             index: index as i32,

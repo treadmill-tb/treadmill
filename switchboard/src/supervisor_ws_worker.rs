@@ -1399,7 +1399,6 @@ mod tests {
     use super::*;
     use crate::auth::token::SecurityToken;
     use crate::config;
-    use std::collections::BTreeSet;
     use std::pin::Pin;
     use std::task::{Context as TaskContext, Poll};
     use treadmill_rs::api::switchboard_supervisor::{
@@ -1539,7 +1538,6 @@ mod tests {
             host_id,
             format!("test-host-{host_id}"),
             SecurityToken::generate(),
-            &BTreeSet::new(),
             pool,
         )
         .await?;
@@ -1676,7 +1674,6 @@ mod tests {
                  restart_policy, \
                  enqueued_by_token_id, \
                  owner_id, \
-                 host_tag_requirements, \
                  lease_duration, \
                  job_state, \
                  initializing_stage, \
@@ -1706,7 +1703,6 @@ mod tests {
                      where \
                      token_id = $4 \
                  ), \
-                 '{}'::text[], \
                  interval '1 hour', \
                  $5::tml_switchboard.job_state, \
                  null, \
@@ -1773,7 +1769,6 @@ mod tests {
                  restart_policy, \
                  enqueued_by_token_id, \
                  owner_id, \
-                 host_tag_requirements, \
                  lease_duration, \
                  job_state, \
                  initializing_stage, \
@@ -1803,7 +1798,6 @@ mod tests {
                      where \
                      token_id = $3 \
                  ), \
-                 '{}'::text[], \
                  interval '1 hour', \
                  'finalized', \
                  null, \
@@ -2373,7 +2367,7 @@ mod tests {
         probe.changed().await;
         loop {
             sqlx::query(
-                "update tml_switchboard.hosts set tags = array[md5(random()::text)] \
+                "update tml_switchboard.hosts set name = md5(random()::text) \
                  where host_id = $1",
             )
             .bind(probe_host)
@@ -3510,12 +3504,12 @@ mod tests {
             "insert into tml_switchboard.jobs \
              (job_id, resume_job_id, restart_job_id, image_id, image_set_id, \
               image_set_generation, \
-              restart_policy, enqueued_by_token_id, host_tag_requirements, lease_duration, job_state, \
+              restart_policy, enqueued_by_token_id, lease_duration, job_state, \
               initializing_stage, queued_at, started_at, dispatched_on_host_id, \
               termination_reason, task_exit_status, exit_message, terminated_at) \
              values \
              ($1, $2, null, null, null, null, row(0)::tml_switchboard.restart_policy, \
-              $3, '{}'::text[], interval '1 hour', 'queued', null, now(), null, null, null, \
+              $3, interval '1 hour', 'queued', null, now(), null, null, null, \
               null, null, null)",
         )
         .bind(resume_job)

@@ -4,7 +4,8 @@ use axum::extract::Query;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use treadmill_rs::api::switchboard::hosts::{HostInfo, HostTarget, HostUpdateRequest};
+use treadmill_rs::api::switchboard::hosts::{HostInfo, HostUpdateRequest};
+use treadmill_rs::host_spec::HostSpec;
 
 /// Axum handler for the `/hosts/{id}/events` path.
 pub async fn list_events(
@@ -120,47 +121,54 @@ pub async fn update(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-/// Axum handler for `GET /hosts` — a read-only listing of every host with its
-/// opaque tags, attached targets (DUTs), and liveness, ordered by name.
+/// Axum handler for `GET /hosts` — the hosts the caller may read, each with
+/// its spec.
 ///
-/// This exists so a frontend can populate a host picker; it exposes only the
-/// host's user-facing view (no supervisor credentials or worker bookkeeping).
-/// Any authenticated subject may list. Liveness is computed against the same
-/// heartbeat window the scheduler uses (`host_liveness_timeout`).
+/// Scoped to `read`: a spec is visible to anyone who can read its host, so the
+/// listing cannot show every host the way the tag view did. Liveness is
+/// computed against the same heartbeat window the scheduler uses
+/// (`host_liveness_timeout`).
 pub async fn list(
     State(state): State<AppState>,
-    _subject: crate::auth::Subject,
+    subject: crate::auth::Subject,
 ) -> Result<Json<Vec<HostInfo>>, StatusCode> {
-    let hosts = crate::sql::host::list_for_listing(state.pool())
+    let hosts = crate::sql::host::list_readable(subject.user_id(), state.pool())
         .await
         .or_internal("listing hosts")?;
-    let targets = crate::sql::host::list_all_targets(state.pool())
-        .await
-        .or_internal("listing host targets")?;
 
-    // Group targets by host in one pass (both queries are ordered by host_id).
-    let mut targets_by_host: HashMap<Uuid, Vec<HostTarget>> = HashMap::new();
-    for t in targets {
-        targets_by_host
-            .entry(t.host_id)
-            .or_default()
-            .push(HostTarget {
-                name: t.name,
-                tags: t.tags,
-            });
-    }
+    // One query for every current spec, rather than one per host.
+    let mut specs: HashMap<Uuid, (i32, HostSpec)> =
+        crate::sql::host_spec::current_for_all_hosts(state.pool())
+            .await
+            .or_internal("listing host specs")?
+            .into_iter()
+            .filter_map(|row| match row {
+                Ok(stored) => Some((stored.host_id, (stored.revision, stored.spec))),
+                Err(e) => {
+                    tracing::error!("omitting host spec from listing: {e}");
+                    None
+                }
+            })
+            .collect();
 
     let cutoff = chrono::Utc::now() - state.config().service.host_liveness_timeout;
     let out = hosts
         .into_iter()
-        .map(|h| HostInfo {
-            live: h.last_seen_at.is_some_and(|t| t > cutoff),
-            targets: targets_by_host.remove(&h.host_id).unwrap_or_default(),
-            host_id: h.host_id,
-            name: h.name,
-            tags: h.tags,
-            maintenance: h.maintenance,
-            last_seen_at: h.last_seen_at,
+        .map(|h| {
+            let (spec_revision, spec) = match specs.remove(&h.host_id) {
+                // Normalize on read: nothing downstream sees an old version.
+                Some((revision, spec)) => (Some(revision), Some(HostSpec::V1(spec.into_latest()))),
+                None => (None, None),
+            };
+            HostInfo {
+                live: h.last_seen_at.is_some_and(|t| t > cutoff),
+                host_id: h.host_id,
+                name: h.name,
+                maintenance: h.maintenance,
+                last_seen_at: h.last_seen_at,
+                spec,
+                spec_revision,
+            }
         })
         .collect();
 

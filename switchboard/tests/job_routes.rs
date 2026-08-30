@@ -209,10 +209,10 @@ async fn seed_job(pool: &PgPool, owner: Uuid, token: Uuid, params: &[(&str, &str
     sqlx::query(
         "insert into tml_switchboard.jobs \
            (job_id, owner_id, image_id, restart_policy, \
-            enqueued_by_token_id, host_tag_requirements, lease_duration, \
+            enqueued_by_token_id, lease_duration, \
             job_state, queued_at) \
          values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, \
-            $4, '{}', interval '1 hour', 'queued', now())",
+            $4, interval '1 hour', 'queued', now())",
     )
     .bind(job_id)
     .bind(owner)
@@ -251,10 +251,10 @@ async fn seed_job_at(
     sqlx::query(
         "insert into tml_switchboard.jobs \
            (job_id, owner_id, image_id, restart_policy, \
-            enqueued_by_token_id, host_tag_requirements, lease_duration, \
+            enqueued_by_token_id, lease_duration, \
             job_state, queued_at) \
          values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, \
-            $4, '{}', interval '1 hour', 'queued', $5)",
+            $4, interval '1 hour', 'queued', $5)",
     )
     .bind(job_id)
     .bind(owner)
@@ -476,9 +476,7 @@ fn image_job_request(
         owner,
         restart_policy: RestartPolicy { max_restarts: 0 },
         parameters: HashMap::new(),
-        host_tag_requirements: vec![],
         host_cel_predicate: DEFAULT_HOST_CEL_PREDICATE.to_string(),
-        target_requirements: vec![],
         lease_duration,
         lease_expiry_action: None,
     }
@@ -673,8 +671,8 @@ async fn enqueue_for_lease_test(pool: &PgPool, addr: SocketAddr) -> (String, Uui
 async fn mark_running(pool: &PgPool, job_id: Uuid, started_at: chrono::DateTime<chrono::Utc>) {
     let host_id = Uuid::new_v4();
     sqlx::query(
-        "insert into tml_switchboard.hosts (host_id, name, auth_token, tags) \
-         values ($1, $2, $3, '{}')",
+        "insert into tml_switchboard.hosts (host_id, name, auth_token) \
+         values ($1, $2, $3)",
     )
     .bind(host_id)
     .bind(format!("host-{host_id}"))

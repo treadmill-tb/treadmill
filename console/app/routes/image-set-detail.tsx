@@ -8,12 +8,10 @@ import { Digest } from "../components/digest";
 import { EntityLink } from "../components/entity-link";
 import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
-import { Tags } from "../components/tags";
 import type { Route } from "./+types/image-set-detail";
 
 type MemberRow = {
   manifest_digest: string;
-  tags: string;
   platform_profile: string;
   predicate: string;
 };
@@ -60,8 +58,7 @@ function NewGenerationForm({
           .filter((r) => r.manifest_digest.trim() !== "")
           .map((r) => ({
             manifest_digest: r.manifest_digest.trim(),
-            required_host_tags: r.tags.split(/[\s,]+/).filter((t) => t !== ""),
-            platform_profile: r.platform_profile.trim() || null,
+            platform_profile: r.platform_profile.trim(),
             predicate: r.predicate.trim() || null,
           })),
       },
@@ -114,18 +111,6 @@ function NewGenerationForm({
               )
             }
           />
-          <input
-            placeholder="required host tags"
-            className="mono"
-            value={row.tags}
-            onChange={(e) =>
-              setRows(
-                rows.map((r, j) =>
-                  j === i ? { ...r, tags: e.target.value } : r,
-                ),
-              )
-            }
-          />
           <button
             type="button"
             onClick={() => setRows(rows.filter((_, j) => j !== i))}
@@ -142,7 +127,6 @@ function NewGenerationForm({
               ...rows,
               {
                 manifest_digest: "",
-                tags: "",
                 platform_profile: "",
                 predicate: "",
               },
@@ -336,8 +320,7 @@ export default function ImageSetDetail({ params }: Route.ComponentProps) {
               seed={
                 generation.data?.members.map((m) => ({
                   manifest_digest: m.manifest_digest,
-                  tags: m.required_host_tags.join(" "),
-                  platform_profile: m.platform_profile ?? "",
+                  platform_profile: m.platform_profile,
                   predicate: m.predicate ?? "",
                 })) ?? []
               }
@@ -482,8 +465,7 @@ export function GenerationMembers({
   members: {
     index: number;
     manifest_digest: string;
-    required_host_tags: string[];
-    platform_profile?: string | null;
+    platform_profile: string;
     predicate?: string | null;
     usable: boolean;
     usable_by_grantees: boolean;
@@ -510,7 +492,6 @@ export function GenerationMembers({
             <th>Digest</th>
             <th>Platform profile</th>
             <th>Refinement</th>
-            <th>Required host tags</th>
             <th>Usability</th>
           </tr>
         </thead>
@@ -526,14 +507,9 @@ export function GenerationMembers({
               <td>
                 <Digest digest={m.manifest_digest} />
               </td>
-              <td className="mono">
-                {m.platform_profile || <span className="muted">—</span>}
-              </td>
+              <td className="mono">{m.platform_profile}</td>
               <td className="mono">
                 {m.predicate || <span className="muted">—</span>}
-              </td>
-              <td>
-                <Tags tags={m.required_host_tags} />
               </td>
               <td>
                 {!m.usable ? (

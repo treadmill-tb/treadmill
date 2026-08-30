@@ -2,7 +2,6 @@ import { $api } from "../api/client";
 import { LiveBadge } from "../components/badges";
 import { EntityLink } from "../components/entity-link";
 import { RelTime } from "../components/rel-time";
-import { Tags } from "../components/tags";
 
 export default function Hosts() {
   const hosts = $api.useQuery("get", "/hosts");
@@ -21,8 +20,6 @@ export default function Hosts() {
               <tr>
                 <th>Name</th>
                 <th>Liveness</th>
-                <th>Tags</th>
-                <th>Targets</th>
                 <th>Last seen</th>
               </tr>
             </thead>
@@ -38,20 +35,6 @@ export default function Hosts() {
                   </td>
                   <td>
                     <LiveBadge live={host.live} />
-                  </td>
-                  <td>
-                    <Tags tags={host.tags} />
-                  </td>
-                  <td>
-                    {host.targets.length === 0 ? (
-                      <span className="muted">—</span>
-                    ) : (
-                      host.targets.map((t) => (
-                        <span key={t.name} className="tag">
-                          {t.name}
-                        </span>
-                      ))
-                    )}
                   </td>
                   <td>
                     <RelTime iso={host.last_seen_at} />

@@ -96,16 +96,10 @@ pub struct GenerationMemberSpec {
     /// Image to include; must already be registered (have at least one source,
     /// `POST /images/{digest}/sources`).
     pub manifest_digest: Digest,
-    /// Host tags a host must carry (as a superset) for this member to be
-    /// selectable on it. Legacy: consulted only for a generation in which no
-    /// member declares a `platform_profile`.
-    #[serde(default)]
-    pub required_host_tags: Vec<String>,
     /// The machine configuration this image is built for, e.g.
     /// `q35-virtio-uefi`, `rpi4-uboot-sd`. Matched by equality against the
     /// host spec's `platform.profiles`.
-    #[serde(default)]
-    pub platform_profile: Option<String>,
+    pub platform_profile: String,
     /// Optional CEL refinement narrowing this member within its profile, e.g.
     /// `host.resources.memory_mb >= 16384`. Parsed when the generation is
     /// created; a host it errors on simply does not select this member.
@@ -139,8 +133,7 @@ pub struct ImageSetInfo {
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationMemberInfo {
     pub manifest_digest: Digest,
-    pub required_host_tags: Vec<String>,
-    pub platform_profile: Option<String>,
+    pub platform_profile: String,
     pub predicate: Option<String>,
     pub index: u32,
     /// Whether the viewer may use some source of this member image. A set grant

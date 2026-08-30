@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            host_id,\n            name,\n            tags,\n            current_job,\n            worker_instance_id\n        FROM\n            tml_switchboard.hosts\n        ",
+  "query": "\n        SELECT\n            host_id,\n            name,\n            current_job,\n            worker_instance_id\n        FROM\n            tml_switchboard.hosts\n        ",
   "describe": {
     "columns": [
       {
@@ -27,17 +27,6 @@
       },
       {
         "ordinal": 2,
-        "name": "tags",
-        "type_info": "TextArray",
-        "origin": {
-          "Table": {
-            "table": "tml_switchboard.hosts",
-            "name": "tags"
-          }
-        }
-      },
-      {
-        "ordinal": 3,
         "name": "current_job",
         "type_info": "Uuid",
         "origin": {
@@ -48,7 +37,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 3,
         "name": "worker_instance_id",
         "type_info": "Int8",
         "origin": {
@@ -65,10 +54,9 @@
     "nullable": [
       false,
       false,
-      false,
       true,
       false
     ]
   },
-  "hash": "4b44777c24e6a9e710418d17776cd08700feaacbe24144ebb8f695a3eb5eede8"
+  "hash": "199cc7affa7b4e72d2504d14e5f41802568575535aa4471b0944d6395d4dc254"
 }

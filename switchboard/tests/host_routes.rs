@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::WhoAmIResponse;
 use treadmill_rs::api::switchboard::hosts::HostInfo;
+use treadmill_rs::host_spec::HostSpec;
 use treadmill_switchboard::events::EventBus;
 use treadmill_switchboard::registry::OciRegistryClient;
 use treadmill_switchboard::serve::AppState;
@@ -34,12 +35,10 @@ fn test_state(pool: PgPool) -> AppState {
     )
 }
 
-/// Insert a live host (heartbeat now) with `tags`, plus one target `dut0` with
-/// `target_tags`. Returns the host id. Uses the runtime query API, so no
-/// `.sqlx` entry is needed.
-async fn seed_live_host(pool: &PgPool, name: &str, tags: &[&str], target_tags: &[&str]) -> Uuid {
+/// Insert a live host (heartbeat now) and describe it, so the listing has a
+/// spec to return. Uses the runtime query API, so no `.sqlx` entry is needed.
+async fn seed_live_host(pool: &PgPool, name: &str, owner: Uuid) -> Uuid {
     let host_id = Uuid::new_v4();
-    let tags: Vec<String> = tags.iter().map(|s| s.to_string()).collect();
     // A unique 32-byte auth token (the column is `unique`); the first bytes
     // encode the host id so concurrent seeds in one test never collide.
     let mut auth_token = vec![0u8; 32];
@@ -47,50 +46,66 @@ async fn seed_live_host(pool: &PgPool, name: &str, tags: &[&str], target_tags: &
 
     sqlx::query(
         "insert into tml_switchboard.hosts \
-           (host_id, name, auth_token, tags, last_seen_at) \
-         values ($1, $2, $3, $4, now())",
+           (host_id, name, auth_token, last_seen_at, owner_id) \
+         values ($1, $2, $3, now(), $4)",
     )
     .bind(host_id)
     .bind(name)
     .bind(auth_token)
-    .bind(&tags)
+    .bind(owner)
     .execute(pool)
     .await
     .unwrap();
 
-    let target_tags: Vec<String> = target_tags.iter().map(|s| s.to_string()).collect();
-    sqlx::query(
-        "insert into tml_switchboard.host_targets (target_id, host_id, name, tags) \
-         values ($1, $2, 'dut0', $3)",
-    )
-    .bind(Uuid::new_v4())
-    .bind(host_id)
-    .bind(&target_tags)
-    .execute(pool)
-    .await
-    .unwrap();
-
+    seed_spec(pool, host_id, name).await;
     host_id
+}
+
+/// Write revision 1 of a host's spec, with one DUT so the listing exercises a
+/// non-trivial document.
+async fn seed_spec(pool: &PgPool, host_id: Uuid, name: &str) {
+    let spec = serde_json::json!({
+        "spec_version": "v1",
+        "id": host_id,
+        "name": name,
+        "description": "bring-up bench",
+        "site": "cambridge",
+        "location": null,
+        "platform": {
+            "kind": "physical", "arch": "aarch64",
+            "profiles": ["rpi4-uboot-sd"],
+            "vendor": "Raspberry Pi Ltd", "model": "Raspberry Pi 4 Model B"
+        },
+        "resources": { "cpu_cores": 4, "memory_mb": 8192, "storage_gb": 64 },
+        "labels": { "bench": "nordic-bringup" },
+        "duts": [{
+            "name": "dut0", "serial": null, "vendor": "Nordic Semiconductor",
+            "board": "nrf52840dk", "arch": ["cortex-m4"],
+            "connectivity": ["ble"], "debug": null, "console": null, "labels": {}
+        }]
+    });
+    sqlx::query(
+        "insert into tml_switchboard.host_specs (host_id, revision, spec, spec_version) \
+         values ($1, 1, $2, 'v1')",
+    )
+    .bind(host_id)
+    .bind(&spec)
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-async fn lists_hosts_with_tags_targets_and_liveness(pool: PgPool) {
-    let host_id = seed_live_host(
-        &pool,
-        "rpi-lab-03",
-        &["arch=arm64", "board=rpi4"],
-        &["dut=nrf52"],
-    )
-    .await;
-
+async fn lists_hosts_with_their_specs(pool: PgPool) {
     let addr = spawn_server(test_state(pool.clone())).await;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    // Any authenticated user may list; `bob` is a plain (non-admin) user.
     let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let owner = whoami(&client, addr, &token).await;
+    let host_id = seed_live_host(&pool, "rpi-lab-03", owner).await;
 
     let resp = client
         .get(format!("http://{addr}/api/v1/hosts"))
@@ -107,12 +122,80 @@ async fn lists_hosts_with_tags_targets_and_liveness(pool: PgPool) {
         .expect("seeded host present in listing");
 
     assert_eq!(host.name, "rpi-lab-03");
-    assert_eq!(host.tags, vec!["arch=arm64", "board=rpi4"]);
     assert!(host.live, "a host with a fresh heartbeat is live");
     assert!(host.last_seen_at.is_some());
-    assert_eq!(host.targets.len(), 1);
-    assert_eq!(host.targets[0].name, "dut0");
-    assert_eq!(host.targets[0].tags, vec!["dut=nrf52"]);
+    assert!(!host.maintenance);
+    assert_eq!(host.spec_revision, Some(1));
+
+    // The spec comes back normalized and whole, DUTs included.
+    let HostSpec::V1(spec) = host.spec.clone().expect("host has a spec");
+    assert_eq!(spec.id, host_id);
+    assert_eq!(spec.site, "cambridge");
+    assert_eq!(spec.platform.profiles(), ["rpi4-uboot-sd"]);
+    assert_eq!(spec.resources.memory_mb, 8192);
+    assert_eq!(spec.duts.len(), 1);
+    assert_eq!(spec.duts[0].board, "nrf52840dk");
+    assert_eq!(
+        spec.labels.get("bench").map(String::as_str),
+        Some("nordic-bringup")
+    );
+}
+
+/// A spec is visible to anyone who can read its host, so the listing is scoped
+/// to `read` rather than showing the whole fleet.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn listing_is_scoped_to_readable_hosts(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &bob_token).await;
+    let bobs_host = seed_live_host(&pool, "bobs-host", bob).await;
+
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let carol = whoami(&client, addr, &carol_token).await;
+    let carols_host = seed_live_host(&pool, "carols-host", carol).await;
+
+    let listing = |token: String| {
+        let client = client.clone();
+        async move {
+            client
+                .get(format!("http://{addr}/api/v1/hosts"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap()
+                .json::<Vec<HostInfo>>()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|h| h.host_id)
+                .collect::<Vec<_>>()
+        }
+    };
+
+    assert_eq!(listing(bob_token.clone()).await, vec![bobs_host]);
+    assert_eq!(listing(carol_token).await, vec![carols_host]);
+
+    // A `read` grant brings carol's host into bob's listing.
+    sqlx::query(
+        "insert into tml_switchboard.host_grants (host_id, subject_id, permission) \
+         values ($1, $2, 'read')",
+    )
+    .bind(carols_host)
+    .bind(bob)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut seen = listing(bob_token).await;
+    seen.sort();
+    let mut expected = vec![bobs_host, carols_host];
+    expected.sort();
+    assert_eq!(seen, expected);
 }
 
 #[sqlx::test]
@@ -166,8 +249,8 @@ async fn seed_host_owned(pool: &PgPool, name: &str, owner: Uuid) -> Uuid {
     auth_token[..16].copy_from_slice(host_id.as_bytes());
     sqlx::query(
         "insert into tml_switchboard.hosts \
-           (host_id, name, auth_token, tags, worker_instance_id, owner_id) \
-         values ($1, $2, $3, '{}', 0, $4)",
+           (host_id, name, auth_token, worker_instance_id, owner_id) \
+         values ($1, $2, $3, 0, $4)",
     )
     .bind(host_id)
     .bind(name)
@@ -366,19 +449,19 @@ async fn patch_host_maintenance(pool: PgPool) {
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn listing_reports_maintenance(pool: PgPool) {
-    let host_id = seed_live_host(&pool, "cam-rpi4-01", &[], &[]).await;
-    sqlx::query("update tml_switchboard.hosts set maintenance = true where host_id = $1")
-        .bind(host_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-
     let addr = spawn_server(test_state(pool.clone())).await;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
     let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let owner = whoami(&client, addr, &token).await;
+    let host_id = seed_live_host(&pool, "cam-rpi4-01", owner).await;
+    sqlx::query("update tml_switchboard.hosts set maintenance = true where host_id = $1")
+        .bind(host_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     let hosts: Vec<HostInfo> = client
         .get(format!("http://{addr}/api/v1/hosts"))
         .bearer_auth(token)

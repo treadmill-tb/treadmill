@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select m.image_id, i.manifest_digest, m.required_host_tags,\n                  m.platform_profile, m.predicate, m.\"index\"\n           from tml_switchboard.image_set_members m\n           join tml_switchboard.images i on i.id = m.image_id\n           where m.set_id = $1 and m.generation = $2\n           order by m.\"index\"",
+  "query": "select m.image_id, i.manifest_digest,\n                  m.platform_profile, m.predicate, m.\"index\"\n           from tml_switchboard.image_set_members m\n           join tml_switchboard.images i on i.id = m.image_id\n           where m.set_id = $1 and m.generation = $2\n           order by m.\"index\"",
   "describe": {
     "columns": [
       {
@@ -27,17 +27,6 @@
       },
       {
         "ordinal": 2,
-        "name": "required_host_tags",
-        "type_info": "TextArray",
-        "origin": {
-          "Table": {
-            "table": "tml_switchboard.image_set_members",
-            "name": "required_host_tags"
-          }
-        }
-      },
-      {
-        "ordinal": 3,
         "name": "platform_profile",
         "type_info": "Text",
         "origin": {
@@ -48,7 +37,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 3,
         "name": "predicate",
         "type_info": "Text",
         "origin": {
@@ -59,7 +48,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 4,
         "name": "index",
         "type_info": "Int4",
         "origin": {
@@ -81,9 +70,8 @@
       false,
       false,
       true,
-      true,
       false
     ]
   },
-  "hash": "fbc26743a1619eeb6fe3f7923c3c8d8b7c83a9182a7ad1f456da15bea8246215"
+  "hash": "fa6db856887d11e6e679c8c82cf7213d1065a8ca53234b15d5808accd725b35e"
 }

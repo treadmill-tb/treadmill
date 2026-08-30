@@ -15,7 +15,6 @@ import { JobLog, parseReplayBytes } from "../components/job-log";
 import { JobServices } from "../components/job-services";
 import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
-import { Tags } from "../components/tags";
 import { useResourceWatch } from "../hooks/use-resource-watch";
 import type { Route } from "./+types/job-detail";
 
@@ -209,25 +208,9 @@ export default function JobDetail({ params }: Route.ComponentProps) {
             </dd>
             <dt>Restarts left</dt>
             <dd>{job.data.restart_policy.remaining_restarts}</dd>
-            <dt>Host tags required</dt>
-            <dd>
-              <Tags tags={job.data.host_tag_requirements} />
-            </dd>
             <dt>Host predicate</dt>
             <dd>
               <code>{job.data.host_cel_predicate}</code>
-            </dd>
-            <dt>Target requirements</dt>
-            <dd>
-              {job.data.target_requirements.length === 0 ? (
-                <span className="muted">—</span>
-              ) : (
-                job.data.target_requirements.map((tags, i) => (
-                  <div key={i}>
-                    target {i}: <Tags tags={tags} />
-                  </div>
-                ))
-              )}
             </dd>
             <dt>Outcome</dt>
             <dd>

@@ -83,8 +83,8 @@ async fn insert_host(pool: &PgPool, owner: Uuid) -> Uuid {
     auth_token[..16].copy_from_slice(id.as_bytes());
     sqlx::query(
         "insert into tml_switchboard.hosts \
-         (host_id, name, auth_token, tags, worker_instance_id, owner_id) \
-         values ($1, $2, $3, '{}', 0, $4)",
+         (host_id, name, auth_token, worker_instance_id, owner_id) \
+         values ($1, $2, $3, 0, $4)",
     )
     .bind(id)
     .bind(format!("host-{id}"))
@@ -120,8 +120,8 @@ async fn insert_job(pool: &PgPool, owner: Uuid, token: Uuid, image: Uuid) -> Uui
     sqlx::query(
         "insert into tml_switchboard.jobs \
          (job_id, owner_id, image_id, restart_policy, enqueued_by_token_id, \
-          host_tag_requirements, lease_duration, job_state, queued_at) \
-         values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, $4, '{}', \
+          lease_duration, job_state, queued_at) \
+         values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, $4, \
                  interval '1 hour', 'queued', now())",
     )
     .bind(id)
@@ -314,7 +314,7 @@ async fn host_heartbeats_stay_silent(pool: PgPool) {
 
     // A statement touching a notifying column without changing the row is
     // equally silent.
-    sqlx::query("update tml_switchboard.hosts set tags = tags where host_id = $1")
+    sqlx::query("update tml_switchboard.hosts set name = name where host_id = $1")
         .bind(host)
         .execute(&pool)
         .await
@@ -355,7 +355,7 @@ async fn event_bus_listener_delivers_wakes(pool: PgPool) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         sqlx::query(
-            "update tml_switchboard.hosts set tags = array[md5(random()::text)] where host_id = $1",
+            "update tml_switchboard.hosts set name = md5(random()::text) where host_id = $1",
         )
         .bind(host)
         .execute(&pool)
@@ -392,7 +392,7 @@ async fn bulk_update_folds_into_one_keyless_event(pool: PgPool) {
         .execute(&mut *txn)
         .await
         .unwrap();
-    sqlx::query("update tml_switchboard.hosts set tags = array['bulk']")
+    sqlx::query("update tml_switchboard.hosts set name = 'bulk'")
         .execute(&mut *txn)
         .await
         .unwrap();
@@ -413,7 +413,7 @@ async fn bulk_update_folds_into_one_keyless_event(pool: PgPool) {
 
     // A marker write must be the very next event: the bulk transaction
     // produced nothing further.
-    sqlx::query("update tml_switchboard.hosts set tags = array['marker'] where host_id = $1")
+    sqlx::query("update tml_switchboard.hosts set name = 'marker' where host_id = $1")
         .bind(hosts[0])
         .execute(&pool)
         .await

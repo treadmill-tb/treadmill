@@ -70,14 +70,11 @@ pub struct SetRecord {
 /// One member of a generation, as consumed by the matcher. `platform_profile`
 /// plus the optional `predicate` are the member's eligibility; `index` is its
 /// explicit array position, which is also the selection order.
-/// `required_host_tags` is the legacy form, used only where no member of the
-/// generation declares a profile.
 #[derive(Debug, Clone)]
 pub struct SetMemberRecord {
     pub image_id: Uuid,
     pub manifest_digest: String,
-    pub required_host_tags: Vec<String>,
-    pub platform_profile: Option<String>,
+    pub platform_profile: String,
     pub predicate: Option<String>,
     pub index: i32,
 }
@@ -479,8 +476,7 @@ pub async fn latest_generation(
 #[derive(Debug, Clone)]
 pub struct NewSetMember {
     pub image_id: Uuid,
-    pub required_host_tags: Vec<String>,
-    pub platform_profile: Option<String>,
+    pub platform_profile: String,
     pub predicate: Option<String>,
     pub index: i32,
 }
@@ -528,13 +524,11 @@ pub async fn create_generation(
     for m in members {
         sqlx::query!(
             r#"insert into tml_switchboard.image_set_members
-                 (set_id, generation, image_id, required_host_tags,
-                  platform_profile, predicate, "index")
-               values ($1, $2, $3, $4, $5, $6, $7)"#,
+                 (set_id, generation, image_id, platform_profile, predicate, "index")
+               values ($1, $2, $3, $4, $5, $6)"#,
             set_id,
             next,
             m.image_id,
-            m.required_host_tags.as_slice(),
             m.platform_profile,
             m.predicate,
             m.index,
@@ -573,7 +567,7 @@ pub async fn members_for_generation(
 ) -> Result<Vec<SetMemberRecord>, sqlx::Error> {
     sqlx::query_as!(
         SetMemberRecord,
-        r#"select m.image_id, i.manifest_digest, m.required_host_tags,
+        r#"select m.image_id, i.manifest_digest,
                   m.platform_profile, m.predicate, m."index"
            from tml_switchboard.image_set_members m
            join tml_switchboard.images i on i.id = m.image_id

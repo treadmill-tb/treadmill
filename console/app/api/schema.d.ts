@@ -736,6 +736,19 @@ export interface components {
             code: string;
             state: string;
         };
+        /** @description The board's console, as the host sees it. */
+        Console: {
+            /** Format: uint32 */
+            baud: number;
+            /**
+             * @description The host-side device node. Prefer a stable `/dev/serial/by-id/...`
+             *     path over a `/dev/ttyACM*` name, which is enumeration-order
+             *     dependent.
+             */
+            device: string;
+            /** @constant */
+            kind: "uart";
+        };
         /**
          * @description `POST /image-sets/{id}/generations`: append a new, immutable
          *     full-replacement generation of a set's membership.
@@ -757,6 +770,24 @@ export interface components {
             /** @description The stable, globally-unique moving-target handle a job references (by id). */
             name: string;
         };
+        /** @description How the board is programmed and debugged. */
+        DebugAccess: {
+            probe: components["schemas"]["DebugProbe"];
+            /**
+             * @description The wire protocol, e.g. `swd`, `jtag`. Governed by convention, not a
+             *     registry.
+             */
+            protocol: string;
+        };
+        /** @description The debug probe attached to a board. */
+        DebugProbe: {
+            /** @description e.g. `J-Link OB`, `ST-LINK/V2-1`. */
+            model: string;
+            /** @description The probe's own serial, which is how a host-side tool addresses it. */
+            serial?: string | null;
+            /** @description e.g. `SEGGER`, `STMicroelectronics`. */
+            vendor: string;
+        };
         /**
          * @description A content-addressable OCI digest over 32 bytes of SHA-256.
          *
@@ -767,6 +798,32 @@ export interface components {
         DigestPath: {
             /** @description The image's OCI manifest digest (`sha256:<hex>`). */
             digest: string;
+        };
+        /** @description One device under test wired to a host. */
+        Dut: {
+            /**
+             * @description The architectures of the board's cores, e.g. `cortex-m4`. An array
+             *     because a heterogeneous-core part has more than one. May be empty.
+             */
+            arch: string[];
+            /** @description The board this is, e.g. `nrf52840dk`. */
+            board: string;
+            /**
+             * @description What the board can talk over, e.g. `ble`, `ieee802154`, `usb`, `wifi`,
+             *     `ethernet`, `can`. Governed by convention, not a registry. May be empty.
+             */
+            connectivity: string[];
+            console?: components["schemas"]["Console"] | null;
+            debug?: components["schemas"]["DebugAccess"] | null;
+            /** @description As [`HostSpecV1::labels`], scoped to this DUT. */
+            labels: {
+                [key: string]: string;
+            };
+            /** @description Display label, e.g. `nRF52840-DK #1`. */
+            name?: string | null;
+            /** @description The board's **own** serial number, not its debug probe's. */
+            serial?: string | null;
+            vendor: string;
         };
         /** @description Response body of `POST /jobs`: the id assigned to the freshly enqueued job. */
         EnqueueJobResponse: {
@@ -783,9 +840,8 @@ export interface components {
             /** Format: uint32 */
             index: number;
             manifest_digest: components["schemas"]["Digest"];
-            platform_profile?: string | null;
+            platform_profile: string;
             predicate?: string | null;
-            required_host_tags: string[];
             /**
              * @description Whether the viewer may use some source of this member image. A set grant
              *     is necessary but not sufficient: `false` means the member has no source the
@@ -815,9 +871,8 @@ export interface components {
              * @description The machine configuration this image is built for, e.g.
              *     `q35-virtio-uefi`, `rpi4-uboot-sd`. Matched by equality against the
              *     host spec's `platform.profiles`.
-             * @default null
              */
-            platform_profile: string | null;
+            platform_profile: string;
             /**
              * @description Optional CEL refinement narrowing this member within its profile, e.g.
              *     `host.resources.memory_mb >= 16384`. Parsed when the generation is
@@ -825,13 +880,6 @@ export interface components {
              * @default null
              */
             predicate: string | null;
-            /**
-             * @description Host tags a host must carry (as a superset) for this member to be
-             *     selectable on it. Legacy: consulted only for a generation in which no
-             *     member declares a `platform_profile`.
-             * @default []
-             */
-            required_host_tags: string[];
         };
         /** @description The `{id}/generations/{n}` segments of an image-set generation route. */
         GenerationPath: {
@@ -878,8 +926,8 @@ export interface components {
             source_ref: string;
         };
         /**
-         * @description A host in the `GET /hosts` listing: its identity, opaque tags, attached
-         *     targets, and liveness.
+         * @description A host as returned by `GET /hosts` and `GET /hosts/{id}`: its operational
+         *     state plus the admin-authored spec describing what it is.
          */
         HostInfo: {
             /** Format: uuid */
@@ -902,19 +950,62 @@ export interface components {
             maintenance: boolean;
             name: string;
             /**
-             * @description Opaque host tags; a job's `host_tag_requirements` match a host whose
-             *     `tags` are a superset.
+             * @description The host's current spec, normalized to the latest version. Null only for
+             *     a host that has never been described.
              */
-            tags: string[];
-            /** @description The targets (DUTs) wired to this host, in stable order. */
-            targets: components["schemas"]["HostTarget"][];
+            spec?: components["schemas"]["HostSpec"] | null;
+            /**
+             * Format: int32
+             * @description The revision `spec` was read at, for `If-Match` on a spec write. Null
+             *     exactly when `spec` is.
+             */
+            spec_revision?: number | null;
         };
-        /** @description One target (DUT) attached to a host, as exposed by `GET /hosts`. */
-        HostTarget: {
-            /** @description Stable per-host label for the DUT (e.g. `"dut0"`). */
+        /**
+         * @description A host spec at whatever version it was written under.
+         *
+         *     Untagged because each version type carries its own `spec_version` field:
+         *     that keeps the discriminant inside the document being validated, so a
+         *     rejection names the offending path (`duts[2].debug.probe.serail`) instead of
+         *     the document root, which an internally-tagged enum cannot do.
+         */
+        HostSpec: components["schemas"]["HostSpecV1"];
+        /** @description Version 1 of the host spec. */
+        HostSpecV1: {
+            /** @description What this host is, in prose. */
+            description?: string | null;
+            /**
+             * @description The devices under test wired to this host, in the order the operator
+             *     listed them. May be empty.
+             */
+            duts: components["schemas"]["Dut"][];
+            /**
+             * Format: uuid
+             * @description Must equal the `host_id` of the host this document describes.
+             */
+            id: string;
+            /**
+             * @description Operator-defined labels. CEL map indexing errors on an absent key, so
+             *     predicates guard with `'key' in host.labels`.
+             */
+            labels: {
+                [key: string]: string;
+            };
+            /** @description Where in the site, e.g. `rack4/shelf2`. Free text. */
+            location?: string | null;
+            /**
+             * @description Display handle, e.g. `cam-rpi4-01`. Deliberately not unique; nothing
+             *     routes on it.
+             */
             name: string;
-            /** @description Opaque tag set (same convention as host tags). */
-            tags: string[];
+            platform: components["schemas"]["Platform"];
+            resources: components["schemas"]["Resources"];
+            /**
+             * @description The site the host lives at, e.g. `cambridge`. Flat, so a predicate reads
+             *     `host.site == 'cambridge'`.
+             */
+            site: string;
+            spec_version: components["schemas"]["SpecVersionV1"];
         };
         /**
          * @description A change to a host's operational state, carried by `PATCH /hosts/{id}`.
@@ -1071,13 +1162,12 @@ export interface components {
             dispatched_on_host_id?: string | null;
             /** @description A human-readable detail accompanying termination, if any. */
             exit_message?: string | null;
-            /** @description The CEL expression this job's host had to satisfy, as submitted. */
-            host_cel_predicate: string;
             /**
              * @description Host eligibility tags this job requires (superset match against a host's
              *     tags).
+             *     The CEL expression this job's host had to satisfy, as submitted.
              */
-            host_tag_requirements: string[];
+            host_cel_predicate: string;
             /** @description What the job is based off. */
             image: components["schemas"]["JobImageRef"];
             /** @description The sub-stage while `state` is `initializing`; null otherwise. */
@@ -1136,11 +1226,6 @@ export interface components {
             started_at?: string | null;
             /** @description Where the job is in its lifecycle. */
             state: components["schemas"]["JobState"];
-            /**
-             * @description Target (DUT) eligibility: one tag set per requested target, in submission
-             *     order.
-             */
-            target_requirements: string[][];
             /**
              * @description The user workload's success/failure outcome, orthogonal to
              *     `termination_reason`; null if never reported.
@@ -1249,14 +1334,6 @@ export interface components {
              * @default true
              */
             host_cel_predicate: string;
-            /**
-             * @description Host eligibility: the set of tags the chosen host must carry (as a
-             *     superset) for this job to be assigned to it. Tags are opaque strings
-             *     (`key=value` pairs or bare flags, by convention only), matched by
-             *     containment against the host's tags.
-             * @default []
-             */
-            host_tag_requirements: string[];
             /** @description What kind of job this is. */
             init_spec: components["schemas"]["JobInitSpec"];
             /**
@@ -1292,14 +1369,6 @@ export interface components {
                 [key: string]: components["schemas"]["JobParameter"];
             };
             restart_policy: components["schemas"]["RestartPolicy"];
-            /**
-             * @description Target (DUT) eligibility: an ordered array of requested targets, each a
-             *     set of tags an attached DUT must carry (as a superset). The scheduler
-             *     assigns each entry to a distinct attached target (DUT) on the chosen
-             *     host. Empty requests no DUTs. Target tags do not affect image selection.
-             * @default []
-             */
-            target_requirements: string[][];
         };
         /**
          * @description Access credentials for one of a job's announced services, returned by
@@ -1651,6 +1720,40 @@ export interface components {
             /** @description Stable provider key, e.g. `"github"`. */
             name: string;
         };
+        /** @description The machine a host is, and the images it can boot. */
+        Platform: {
+            /**
+             * @description The host's own CPU architecture, e.g. `aarch64`, `x86_64`.
+             *
+             *     Redundant — a profile implies it — but kept so "any aarch64 host"
+             *     does not require enumerating profiles. Nothing enforces consistency
+             *     between the two.
+             */
+            arch: string;
+            /** @constant */
+            kind: "physical";
+            model: string;
+            /**
+             * @description The whole machine configurations this host can boot, e.g.
+             *     `rpi4-uboot-sd`, `q35-virtio-uefi`, `q35-virtio-bios`,
+             *     `netboot-nbd`. A profile names a complete configuration the way a
+             *     target triple does; an image set member matches one by equality.
+             *
+             *     An array because one host may genuinely serve several. Governed by
+             *     convention, not a registry.
+             */
+            profiles: string[];
+            vendor: string;
+        } | {
+            /** @description The architecture the guest is presented with. */
+            arch: string;
+            /** @description e.g. `qemu`. */
+            hypervisor: string;
+            /** @constant */
+            kind: "virtual";
+            /** @description As [`Platform::Physical::profiles`]. */
+            profiles: string[];
+        };
         /** @description The `{provider}` segment of an OAuth login route. */
         ProviderPath: {
             /** @description The login provider's name (e.g. `github`). */
@@ -1685,6 +1788,21 @@ export interface components {
             event_id: string;
             event_type: string;
             message: string;
+        };
+        /**
+         * @description The ceiling available to a single job on this host.
+         *
+         *     Unsigned, so CEL sees these as `uint`: comparisons against a plain literal
+         *     work (`host.resources.memory_mb >= 4096`), but arithmetic needs an unsigned
+         *     literal (`host.resources.memory_mb / 1024u >= 8`).
+         */
+        Resources: {
+            /** Format: uint32 */
+            cpu_cores: number;
+            /** Format: uint32 */
+            memory_mb: number;
+            /** Format: uint32 */
+            storage_gb: number;
         };
         /**
          * @description How many times a job may be **automatically restarted** after it is dropped
@@ -1798,6 +1916,11 @@ export interface components {
              */
             source_id: string;
         };
+        /**
+         * @description The `spec_version` discriminant of a [`HostSpecV1`] document.
+         * @enum {string}
+         */
+        SpecVersionV1: "v1";
         /**
          * @description The user workload's success/failure outcome, exposed as `task_exit_status`
          *     on [`JobInfo`]/[`JobSummary`].

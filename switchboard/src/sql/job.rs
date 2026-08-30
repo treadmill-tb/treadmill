@@ -4,7 +4,6 @@ use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
 use sqlx::types::ipnetwork::IpNetwork;
 use sqlx::{PgExecutor, Postgres, Transaction};
-use std::collections::BTreeSet;
 use std::net::IpAddr;
 use treadmill_rs::api::switchboard::jobs::{
     JobImageRef, JobInfo, JobInitializingStage as ClientJobInitializingStage,
@@ -302,7 +301,6 @@ pub async fn insert(
           image_set_generation,
           restart_policy,
           enqueued_by_token_id,
-          host_tag_requirements,
           host_cel_predicate,
           lease_duration,
           lease_expiry_action,
@@ -318,8 +316,8 @@ pub async fn insert(
         )
         values (
           $1,       -- job_id
-          $12,      -- owner_id
-          $13,      -- label
+          $11,      -- owner_id
+          $12,      -- label
           $2,       -- resume_job_id
           $3,       -- restart_job_id
           $4,       -- image_id
@@ -327,13 +325,12 @@ pub async fn insert(
           $6,       -- image_set_generation
           $7,       -- restart_policy
           $8,       -- enqueued_by_token_id
-          $9,       -- host_tag_requirements
-          $15,      -- host_cel_predicate
-          $10,      -- lease_duration
-          $14,      -- lease_expiry_action
+          $14,      -- host_cel_predicate
+          $9,       -- lease_duration
+          $13,      -- lease_expiry_action
           'queued', -- job_state
           null,     -- initializing_stage
-          $11,      -- queued_at
+          $10,      -- queued_at
           null,     -- started_at
           null,     -- dispatched_on_host_id
           null,     -- termination_reason
@@ -353,7 +350,6 @@ pub async fn insert(
                 .unwrap(),
         } as SqlRestartPolicy,
         as_token_id,
-        job_request.host_tag_requirements.as_slice(),
         lease_duration,
         queued_at,
         owner,
@@ -364,40 +360,7 @@ pub async fn insert(
     .execute(conn.as_mut())
     .await?;
 
-    // Record the requested targets (DUTs), one row per requested target,
-    // numbered by position in the submitted array.
-    for (req_index, tags) in job_request.target_requirements.iter().enumerate() {
-        sqlx::query!(
-            r#"insert into tml_switchboard.job_target_requirements
-                 (job_id, req_index, tags)
-               values ($1, $2, $3)"#,
-            as_job_id,
-            i32::try_from(req_index).expect("more than i32::MAX target requirements"),
-            tags.as_slice(),
-        )
-        .execute(conn.as_mut())
-        .await?;
-    }
-
     Ok(())
-}
-
-/// The ordered target (DUT) requirements of a job: one tag set per requested
-/// target, in submission order (`req_index`).
-pub async fn target_requirements_for_job(
-    job_id: Uuid,
-    conn: impl PgExecutor<'_>,
-) -> Result<Vec<Vec<String>>, sqlx::Error> {
-    let rows = sqlx::query!(
-        r#"select tags
-           from tml_switchboard.job_target_requirements
-           where job_id = $1
-           order by req_index"#,
-        job_id,
-    )
-    .fetch_all(conn)
-    .await?;
-    Ok(rows.into_iter().map(|r| r.tags).collect())
 }
 
 #[allow(dead_code)]
@@ -422,7 +385,6 @@ pub struct SqlJob {
 
     sql_restart_policy: SqlRestartPolicy,
     enqueued_by_token_id: Uuid,
-    host_tag_requirements: Vec<String>,
     host_cel_predicate: String,
     lease_duration: PgInterval,
     lease_expiry_action: SqlLeaseExpiryAction,
@@ -474,11 +436,11 @@ impl SqlJob {
     /// concrete image, the manifest digest is paired with its catalog locations.
     /// For an image *set*, the chosen host selects the concrete member of the
     /// frozen generation (the matcher) whose digest + locations are then
-    /// dispatched. `host_tags` and `host_spec` are ignored for the non-set
-    /// variants; `host_spec` is `None` for a host that has never been described.
+    /// dispatched. `host_spec` is ignored for the non-set variants, and is
+    /// `None` for a host that has never been described — which matches no
+    /// member, since such a host advertises no platform profiles.
     pub async fn resolve_image_spec(
         &self,
-        host_tags: &BTreeSet<String>,
         host_spec: Option<&HostSpecV1>,
         conn: &mut sqlx::PgConnection,
     ) -> Result<(ImageSpecification, Option<Uuid>), ImageResolveError> {
@@ -509,11 +471,10 @@ impl SqlJob {
                     handle: (m.image_id, m.manifest_digest),
                     platform_profile: m.platform_profile,
                     predicate: m.predicate,
-                    required_host_tags: m.required_host_tags,
                 })
                 .collect();
-            let chosen = select_member(&candidates, host_tags, host_spec)
-                .ok_or(ImageResolveError::NoMatchingMember)?;
+            let chosen =
+                select_member(&candidates, host_spec).ok_or(ImageResolveError::NoMatchingMember)?;
             let (image_id, manifest_digest) = &chosen.handle;
             let spec = concrete_image_spec(*image_id, manifest_digest, self.owner_id, conn).await?;
             return Ok((spec, Some(*image_id)));
@@ -528,9 +489,6 @@ impl SqlJob {
     }
     pub fn enqueued_by_token_id(&self) -> Uuid {
         self.enqueued_by_token_id
-    }
-    pub fn host_tag_requirements(&self) -> &[String] {
-        &self.host_tag_requirements
     }
     pub fn host_cel_predicate(&self) -> &str {
         &self.host_cel_predicate
@@ -581,7 +539,6 @@ impl SqlJob {
         conn: &mut sqlx::PgConnection,
         permissions: Vec<ClientJobPermission>,
     ) -> Result<JobInfo, JobInfoError> {
-        let target_requirements = target_requirements_for_job(self.job_id, &mut *conn).await?;
         let parameters = parameters::fetch_by_job_id(self.job_id, &mut *conn)
             .await?
             .into_iter()
@@ -639,9 +596,7 @@ impl SqlJob {
             image,
             resolved_image_digest,
             restart_policy: self.sql_restart_policy.into(),
-            host_tag_requirements: self.host_tag_requirements,
             host_cel_predicate: self.host_cel_predicate,
-            target_requirements,
             parameters,
             lease_duration_secs,
             lease_expires_at,
@@ -705,7 +660,6 @@ pub async fn fetch_by_job_id(
         resolved_image_id,
         restart_policy as "sql_restart_policy: _",
         enqueued_by_token_id,
-        host_tag_requirements,
         host_cel_predicate,
         lease_duration,
         lease_expiry_action as "lease_expiry_action: _",
@@ -1929,7 +1883,6 @@ pub async fn finalize_dropped_and_maybe_restart(
     // another job, so its id should index with the same insert locality.
     let successor_id = Uuid::now_v7();
     let parameters = parameters::fetch_by_job_id(job_id, &mut **txn).await?;
-    let target_requirements = target_requirements_for_job(job_id, &mut **txn).await?;
     let job_request = JobRequest {
         init_spec: JobInitSpec::Restart { job_id },
         label: predecessor.label.clone(),
@@ -1940,9 +1893,7 @@ pub async fn finalize_dropped_and_maybe_restart(
             max_restarts: u32::try_from(remaining - 1).unwrap_or(0),
         },
         parameters: parameters.clone(),
-        host_tag_requirements: predecessor.host_tag_requirements.clone(),
         host_cel_predicate: predecessor.host_cel_predicate.clone(),
-        target_requirements,
         lease_duration: None,
         lease_expiry_action: None,
     };
@@ -2028,8 +1979,8 @@ mod tests {
         sqlx::query(
             "insert into tml_switchboard.jobs \
              (job_id, owner_id, image_id, restart_policy, enqueued_by_token_id, \
-              host_tag_requirements, lease_duration, job_state, queued_at) \
-             values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, $4, '{}', \
+              lease_duration, job_state, queued_at) \
+             values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, $4, \
                      interval '1 hour', 'queued', now())",
         )
         .bind(job_id)

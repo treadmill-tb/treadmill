@@ -215,18 +215,6 @@ button.danger {
   color: var(--danger);
 }
 
-/* Tag chips */
-.tag {
-  display: inline-block;
-  padding: 0 0.3rem;
-  margin: 0 0.15rem 0.15rem 0;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  font-family: var(--mono);
-  font-size: 0.85em;
-  white-space: nowrap;
-}
-
 /* Misc */
 .footer {
   max-width: 72rem;

@@ -1,5 +1,4 @@
 use sqlx::PgExecutor;
-use std::collections::BTreeSet;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
@@ -9,81 +8,51 @@ use crate::auth::token::SecurityToken;
 pub struct SqlHost {
     pub host_id: Uuid,
     pub name: String,
-    pub tags: Vec<String>,
     pub current_job: Option<Uuid>,
     pub worker_instance_id: i64,
 }
 
-/// One target (DUT) attached to a host, with its opaque tag set.
-#[derive(Debug)]
-pub struct SqlHostTarget {
-    pub target_id: Uuid,
-    pub tags: Vec<String>,
-}
-
-/// A host's user-facing fields for the `GET /hosts` listing: identity, opaque
-/// tags, and liveness heartbeat. Excludes supervisor credentials and worker
-/// bookkeeping carried on the row.
+/// A host's operational fields for the `GET /hosts` listing. What the host *is*
+/// comes from its spec; this excludes supervisor credentials and worker
+/// bookkeeping.
 #[derive(Debug)]
 pub struct SqlHostListing {
     pub host_id: Uuid,
     pub name: String,
-    pub tags: Vec<String>,
     pub maintenance: bool,
     pub last_seen_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// A target (DUT) row carrying its owning host, for assembling the per-host
-/// target lists of the `GET /hosts` listing in one query.
-#[derive(Debug)]
-pub struct SqlHostTargetListing {
-    pub host_id: Uuid,
-    pub name: String,
-    pub tags: Vec<String>,
-}
-
-/// List all hosts' user-facing fields, ordered by name for a stable picker.
-pub async fn list_for_listing(
+/// The hosts `subject` may `read`, with their operational fields, ordered by
+/// `(name, host_id)`: `name` is free-form and non-unique, so it needs a
+/// tiebreak to paginate stably.
+///
+/// Mirrors `can_access_host(subject, host, 'read')` in `src/auth/engine.rs`,
+/// evaluated set-wise so the listing stays one query. A spec is readable by
+/// anyone who can read its host, which is why the filter has to be here rather
+/// than left to the caller.
+pub async fn list_readable(
+    subject_id: Uuid,
     conn: impl PgExecutor<'_>,
 ) -> Result<Vec<SqlHostListing>, sqlx::Error> {
     sqlx::query_as!(
         SqlHostListing,
-        r#"select host_id, name, tags, maintenance, last_seen_at
-           from tml_switchboard.hosts
+        r#"with principals (id) as (
+               select id from tml_switchboard.principals($1::uuid)
+           )
+           select host_id, name, maintenance, last_seen_at
+           from tml_switchboard.hosts h
+           where exists (select 1 from principals where id = $2::uuid)
+              or exists (select 1 from principals p where p.id = h.owner_id)
+              or exists (
+                     select 1
+                     from tml_switchboard.host_grants g
+                     join principals p on g.subject_id = p.id
+                     where g.host_id = h.host_id and g.permission = 'read'
+                 )
            order by name, host_id"#,
-    )
-    .fetch_all(conn)
-    .await
-}
-
-/// All targets (DUTs) across every host, ordered by `(host_id, name)` so a
-/// caller can group them into per-host lists in a single pass.
-pub async fn list_all_targets(
-    conn: impl PgExecutor<'_>,
-) -> Result<Vec<SqlHostTargetListing>, sqlx::Error> {
-    sqlx::query_as!(
-        SqlHostTargetListing,
-        r#"select host_id, name, tags
-           from tml_switchboard.host_targets
-           order by host_id, name"#,
-    )
-    .fetch_all(conn)
-    .await
-}
-
-/// All targets (DUTs) wired to a host, for the scheduler's DUT-requirement
-/// match. Ordered by `target_id` for deterministic matching.
-pub async fn targets_for_host(
-    host_id: Uuid,
-    conn: impl PgExecutor<'_>,
-) -> Result<Vec<SqlHostTarget>, sqlx::Error> {
-    sqlx::query_as!(
-        SqlHostTarget,
-        r#"select target_id, tags
-           from tml_switchboard.host_targets
-           where host_id = $1
-           order by target_id"#,
-        host_id,
+        subject_id,
+        crate::auth::engine::ADMINS_GROUP_ID,
     )
     .fetch_all(conn)
     .await
@@ -93,33 +62,14 @@ pub async fn insert(
     host_id: Uuid,
     name: String,
     auth_token: SecurityToken,
-    tag_set: &BTreeSet<String>,
     conn: impl PgExecutor<'_>,
 ) -> Result<(), sqlx::Error> {
-    let tag_vec: Vec<String> = tag_set.iter().cloned().collect();
-
     sqlx::query!(
-        r#"
-        INSERT INTO
-            tml_switchboard.hosts
-        (
-            host_id,
-            name,
-            auth_token,
-            tags
-        )
-        VALUES
-        (
-            $1,
-            $2,
-            $3,
-            $4
-        );
-        "#,
+        r#"insert into tml_switchboard.hosts (host_id, name, auth_token)
+           values ($1, $2, $3)"#,
         host_id,
         name,
         auth_token.as_bytes(),
-        tag_vec.as_slice(),
     )
     .execute(conn)
     .await
@@ -133,7 +83,6 @@ pub async fn fetch_all_hosts(conn: impl PgExecutor<'_>) -> Result<Vec<SqlHost>, 
         SELECT
             host_id,
             name,
-            tags,
             current_job,
             worker_instance_id
         FROM

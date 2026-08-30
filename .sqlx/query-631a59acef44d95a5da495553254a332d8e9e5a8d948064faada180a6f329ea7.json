@@ -1,0 +1,49 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        insert into tml_switchboard.jobs\n        (\n          job_id,\n          owner_id,\n          label,\n          resume_job_id,\n          restart_job_id,\n          image_id,\n          image_set_id,\n          image_set_generation,\n          restart_policy,\n          enqueued_by_token_id,\n          host_cel_predicate,\n          lease_duration,\n          lease_expiry_action,\n          job_state,\n          initializing_stage,\n          queued_at,\n          started_at,\n          dispatched_on_host_id,\n          termination_reason,\n          task_exit_status,\n          exit_message,\n          terminated_at\n        )\n        values (\n          $1,       -- job_id\n          $11,      -- owner_id\n          $12,      -- label\n          $2,       -- resume_job_id\n          $3,       -- restart_job_id\n          $4,       -- image_id\n          $5,       -- image_set_id\n          $6,       -- image_set_generation\n          $7,       -- restart_policy\n          $8,       -- enqueued_by_token_id\n          $14,      -- host_cel_predicate\n          $9,       -- lease_duration\n          $13,      -- lease_expiry_action\n          'queued', -- job_state\n          null,     -- initializing_stage\n          $10,      -- queued_at\n          null,     -- started_at\n          null,     -- dispatched_on_host_id\n          null,     -- termination_reason\n          null,     -- task_exit_status\n          null,     -- exit_message\n          null      -- terminated_at\n        )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int4",
+        {
+          "Custom": {
+            "name": "tml_switchboard.restart_policy",
+            "kind": {
+              "Composite": [
+                [
+                  "remaining_restart_count",
+                  "Int4"
+                ]
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "Interval",
+        "Timestamptz",
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "tml_switchboard.lease_expiry_action",
+            "kind": {
+              "Enum": [
+                "terminate",
+                "preempt"
+              ]
+            }
+          }
+        },
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "631a59acef44d95a5da495553254a332d8e9e5a8d948064faada180a6f329ea7"
+}

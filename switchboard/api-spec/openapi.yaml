@@ -1792,6 +1792,29 @@ components:
       required:
       - code
       - state
+    Console:
+      description: The board's console, as the host sees it.
+      oneOf:
+      - type: object
+        properties:
+          baud:
+            type: integer
+            format: uint32
+            minimum: 0
+          device:
+            description: |-
+              The host-side device node. Prefer a stable `/dev/serial/by-id/...`
+              path over a `/dev/ttyACM*` name, which is enumeration-order
+              dependent.
+            type: string
+          kind:
+            type: string
+            const: uart
+        additionalProperties: false
+        required:
+        - kind
+        - device
+        - baud
     CreateGenerationRequest:
       description: |-
         `POST /image-sets/{id}/generations`: append a new, immutable
@@ -1822,6 +1845,40 @@ components:
           type: string
       required:
       - name
+    DebugAccess:
+      description: How the board is programmed and debugged.
+      type: object
+      properties:
+        probe:
+          $ref: '#/components/schemas/DebugProbe'
+        protocol:
+          description: |-
+            The wire protocol, e.g. `swd`, `jtag`. Governed by convention, not a
+            registry.
+          type: string
+      additionalProperties: false
+      required:
+      - protocol
+      - probe
+    DebugProbe:
+      description: The debug probe attached to a board.
+      type: object
+      properties:
+        model:
+          description: e.g. `J-Link OB`, `ST-LINK/V2-1`.
+          type: string
+        serial:
+          description: The probe's own serial, which is how a host-side tool addresses it.
+          type:
+          - string
+          - 'null'
+        vendor:
+          description: e.g. `SEGGER`, `STMicroelectronics`.
+          type: string
+      additionalProperties: false
+      required:
+      - vendor
+      - model
     Digest:
       description: |-
         A content-addressable OCI digest over 32 bytes of SHA-256.
@@ -1837,6 +1894,59 @@ components:
           type: string
       required:
       - digest
+    Dut:
+      description: One device under test wired to a host.
+      type: object
+      properties:
+        arch:
+          description: |-
+            The architectures of the board's cores, e.g. `cortex-m4`. An array
+            because a heterogeneous-core part has more than one. May be empty.
+          type: array
+          items:
+            type: string
+        board:
+          description: The board this is, e.g. `nrf52840dk`.
+          type: string
+        connectivity:
+          description: |-
+            What the board can talk over, e.g. `ble`, `ieee802154`, `usb`, `wifi`,
+            `ethernet`, `can`. Governed by convention, not a registry. May be empty.
+          type: array
+          items:
+            type: string
+        console:
+          anyOf:
+          - $ref: '#/components/schemas/Console'
+          - type: 'null'
+        debug:
+          anyOf:
+          - $ref: '#/components/schemas/DebugAccess'
+          - type: 'null'
+        labels:
+          description: As [`HostSpecV1::labels`], scoped to this DUT.
+          type: object
+          additionalProperties:
+            type: string
+        name:
+          description: 'Display label, e.g. `nRF52840-DK #1`.'
+          type:
+          - string
+          - 'null'
+        serial:
+          description: The board's **own** serial number, not its debug probe's.
+          type:
+          - string
+          - 'null'
+        vendor:
+          type: string
+      additionalProperties: false
+      required:
+      - vendor
+      - board
+      - arch
+      - connectivity
+      - labels
     EnqueueJobResponse:
       description: 'Response body of `POST /jobs`: the id assigned to the freshly enqueued job.'
       type: object
@@ -1861,17 +1971,11 @@ components:
         manifest_digest:
           $ref: '#/components/schemas/Digest'
         platform_profile:
-          type:
-          - string
-          - 'null'
+          type: string
         predicate:
           type:
           - string
           - 'null'
-        required_host_tags:
-          type: array
-          items:
-            type: string
         usable:
           description: |-
             Whether the viewer may use some source of this member image. A set grant
@@ -1888,7 +1992,7 @@ components:
           type: boolean
       required:
       - manifest_digest
-      - required_host_tags
+      - platform_profile
       - index
       - usable
       - usable_by_grantees
@@ -1909,10 +2013,7 @@ components:
             The machine configuration this image is built for, e.g.
             `q35-virtio-uefi`, `rpi4-uboot-sd`. Matched by equality against the
             host spec's `platform.profiles`.
-          type:
-          - string
-          - 'null'
-          default: null
+          type: string
         predicate:
           description: |-
             Optional CEL refinement narrowing this member within its profile, e.g.
@@ -1922,17 +2023,9 @@ components:
           - string
           - 'null'
           default: null
-        required_host_tags:
-          description: |-
-            Host tags a host must carry (as a superset) for this member to be
-            selectable on it. Legacy: consulted only for a generation in which no
-            member declares a `platform_profile`.
-          type: array
-          default: []
-          items:
-            type: string
       required:
       - manifest_digest
+      - platform_profile
     GenerationPath:
       description: The `{id}/generations/{n}` segments of an image-set generation route.
       type: object
@@ -1994,8 +2087,8 @@ components:
       - source_ref
     HostInfo:
       description: |-
-        A host in the `GET /hosts` listing: its identity, opaque tags, attached
-        targets, and liveness.
+        A host as returned by `GET /hosts` and `GET /hosts/{id}`: its operational
+        state plus the admin-authored spec describing what it is.
       type: object
       properties:
         host_id:
@@ -2021,40 +2114,94 @@ components:
           type: boolean
         name:
           type: string
-        tags:
+        spec:
           description: |-
-            Opaque host tags; a job's `host_tag_requirements` match a host whose
-            `tags` are a superset.
-          type: array
-          items:
-            type: string
-        targets:
-          description: The targets (DUTs) wired to this host, in stable order.
-          type: array
-          items:
-            $ref: '#/components/schemas/HostTarget'
+            The host's current spec, normalized to the latest version. Null only for
+            a host that has never been described.
+          anyOf:
+          - $ref: '#/components/schemas/HostSpec'
+          - type: 'null'
+        spec_revision:
+          description: |-
+            The revision `spec` was read at, for `If-Match` on a spec write. Null
+            exactly when `spec` is.
+          type:
+          - integer
+          - 'null'
+          format: int32
       required:
       - host_id
       - name
-      - tags
       - live
-      - targets
       - maintenance
-    HostTarget:
-      description: One target (DUT) attached to a host, as exposed by `GET /hosts`.
+    HostSpec:
+      description: |-
+        A host spec at whatever version it was written under.
+
+        Untagged because each version type carries its own `spec_version` field:
+        that keeps the discriminant inside the document being validated, so a
+        rejection names the offending path (`duts[2].debug.probe.serail`) instead of
+        the document root, which an internally-tagged enum cannot do.
+      anyOf:
+      - $ref: '#/components/schemas/HostSpecV1'
+    HostSpecV1:
+      description: Version 1 of the host spec.
       type: object
       properties:
-        name:
-          description: Stable per-host label for the DUT (e.g. `"dut0"`).
-          type: string
-        tags:
-          description: Opaque tag set (same convention as host tags).
+        description:
+          description: What this host is, in prose.
+          type:
+          - string
+          - 'null'
+        duts:
+          description: |-
+            The devices under test wired to this host, in the order the operator
+            listed them. May be empty.
           type: array
           items:
+            $ref: '#/components/schemas/Dut'
+        id:
+          description: Must equal the `host_id` of the host this document describes.
+          type: string
+          format: uuid
+        labels:
+          description: |-
+            Operator-defined labels. CEL map indexing errors on an absent key, so
+            predicates guard with `'key' in host.labels`.
+          type: object
+          additionalProperties:
             type: string
+        location:
+          description: Where in the site, e.g. `rack4/shelf2`. Free text.
+          type:
+          - string
+          - 'null'
+        name:
+          description: |-
+            Display handle, e.g. `cam-rpi4-01`. Deliberately not unique; nothing
+            routes on it.
+          type: string
+        platform:
+          $ref: '#/components/schemas/Platform'
+        resources:
+          $ref: '#/components/schemas/Resources'
+        site:
+          description: |-
+            The site the host lives at, e.g. `cambridge`. Flat, so a predicate reads
+            `host.site == 'cambridge'`.
+          type: string
+        spec_version:
+          $ref: '#/components/schemas/SpecVersionV1'
+      additionalProperties: false
       required:
+      - spec_version
+      - id
       - name
-      - tags
+      - site
+      - platform
+      - resources
+      - labels
+      - duts
     HostUpdateRequest:
       description: |-
         A change to a host's operational state, carried by `PATCH /hosts/{id}`.
@@ -2350,15 +2497,11 @@ components:
           - string
           - 'null'
         host_cel_predicate:
-          description: The CEL expression this job's host had to satisfy, as submitted.
-          type: string
-        host_tag_requirements:
           description: |-
             Host eligibility tags this job requires (superset match against a host's
             tags).
-          type: array
-          items:
-            type: string
+            The CEL expression this job's host had to satisfy, as submitted.
+          type: string
         image:
           description: What the job is based off.
           allOf:
@@ -2444,15 +2587,6 @@ components:
           description: Where the job is in its lifecycle.
           allOf:
           - $ref: '#/components/schemas/JobState'
-        target_requirements:
-          description: |-
-            Target (DUT) eligibility: one tag set per requested target, in submission
-            order.
-          type: array
-          items:
-            type: array
-            items:
-              type: string
         task_exit_status:
           description: |-
             The user workload's success/failure outcome, orthogonal to
@@ -2476,9 +2610,7 @@ components:
       - state
       - image
       - restart_policy
-      - host_tag_requirements
       - host_cel_predicate
-      - target_requirements
       - parameters
       - lease_duration_secs
       - lease_expiry_action
@@ -2677,16 +2809,6 @@ components:
             failure. Absent, defaults to `true`, matching every host.
           type: string
           default: 'true'
-        host_tag_requirements:
-          description: |-
-            Host eligibility: the set of tags the chosen host must carry (as a
-            superset) for this job to be assigned to it. Tags are opaque strings
-            (`key=value` pairs or bare flags, by convention only), matched by
-            containment against the host's tags.
-          type: array
-          default: []
-          items:
-            type: string
         init_spec:
           description: What kind of job this is.
           allOf:
@@ -2732,18 +2854,6 @@ components:
             $ref: '#/components/schemas/JobParameter'
         restart_policy:
           $ref: '#/components/schemas/RestartPolicy'
-        target_requirements:
-          description: |-
-            Target (DUT) eligibility: an ordered array of requested targets, each a
-            set of tags an attached DUT must carry (as a superset). The scheduler
-            assigns each entry to a distinct attached target (DUT) on the chosen
-            host. Empty requests no DUTs. Target tags do not affect image selection.
-          type: array
-          default: []
-          items:
-            type: array
-            items:
-              type: string
       required:
       - init_spec
       - restart_policy
@@ -3266,6 +3376,67 @@ components:
       - name
       - display_name
       - login_path
+    Platform:
+      description: The machine a host is, and the images it can boot.
+      oneOf:
+      - type: object
+        properties:
+          arch:
+            description: |-
+              The host's own CPU architecture, e.g. `aarch64`, `x86_64`.
+
+              Redundant — a profile implies it — but kept so "any aarch64 host"
+              does not require enumerating profiles. Nothing enforces consistency
+              between the two.
+            type: string
+          kind:
+            type: string
+            const: physical
+          model:
+            type: string
+          profiles:
+            description: |-
+              The whole machine configurations this host can boot, e.g.
+              `rpi4-uboot-sd`, `q35-virtio-uefi`, `q35-virtio-bios`,
+              `netboot-nbd`. A profile names a complete configuration the way a
+              target triple does; an image set member matches one by equality.
+
+              An array because one host may genuinely serve several. Governed by
+              convention, not a registry.
+            type: array
+            items:
+              type: string
+          vendor:
+            type: string
+        additionalProperties: false
+        required:
+        - kind
+        - arch
+        - profiles
+        - vendor
+        - model
+      - type: object
+        properties:
+          arch:
+            description: The architecture the guest is presented with.
+            type: string
+          hypervisor:
+            description: e.g. `qemu`.
+            type: string
+          kind:
+            type: string
+            const: virtual
+          profiles:
+            description: As [`Platform::Physical::profiles`].
+            type: array
+            items:
+              type: string
+        additionalProperties: false
+        required:
+        - kind
+        - arch
+        - profiles
+        - hypervisor
     ProviderPath:
       description: The `{provider}` segment of an OAuth login route.
       type: object
@@ -3330,6 +3501,32 @@ components:
       - created_at
       - actor_id
       - message
+    Resources:
+      description: |-
+        The ceiling available to a single job on this host.
+
+        Unsigned, so CEL sees these as `uint`: comparisons against a plain literal
+        work (`host.resources.memory_mb >= 4096`), but arithmetic needs an unsigned
+        literal (`host.resources.memory_mb / 1024u >= 8`).
+      type: object
+      properties:
+        cpu_cores:
+          type: integer
+          format: uint32
+          minimum: 0
+        memory_mb:
+          type: integer
+          format: uint32
+          minimum: 0
+        storage_gb:
+          type: integer
+          format: uint32
+          minimum: 0
+      additionalProperties: false
+      required:
+      - cpu_cores
+      - memory_mb
+      - storage_gb
     RestartPolicy:
       description: |-
         How many times a job may be **automatically restarted** after it is dropped
@@ -3497,6 +3694,11 @@ components:
       required:
       - digest
       - source_id
+    SpecVersionV1:
+      description: The `spec_version` discriminant of a [`HostSpecV1`] document.
+      type: string
+      enum:
+      - v1
     TaskExitStatus:
       description: |-
         The user workload's success/failure outcome, exposed as `task_exit_status`
