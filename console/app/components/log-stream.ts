@@ -29,6 +29,11 @@ export type LogView = {
 /** Manifest version this client reads; a line declaring another is skipped. */
 const MANIFEST_VERSION = 1;
 
+/** The reserved channel carrying the view declarations. Its bytes are the
+ * manifest itself, not job output, so it feeds the tab set rather than
+ * becoming a tab. */
+export const META_CHANNEL = "meta";
+
 /** Lines a text view keeps, mirroring the terminal's scrollback. */
 export const LINE_CAP = 10_000;
 
@@ -123,6 +128,28 @@ export function resolveViews(
 
 function byOrder(a: LogView, b: LogView): number {
   return a.order - b.order || a.id.localeCompare(b.id);
+}
+
+/**
+ * A channel's frames, split into lines.
+ *
+ * The supervisor's publisher batches reads into frames bounded by a size and a
+ * flush interval, so one frame carries whatever accumulated in that window:
+ * several lines, or a line ending mid-way — possibly mid-UTF-8-sequence. Both
+ * the decoder and the trailing partial line therefore have to survive from one
+ * frame to the next.
+ */
+export class LineSplitter {
+  private decoder = new TextDecoder();
+  private partial = "";
+
+  /** The lines this frame completes; the remainder is held for the next. */
+  push(data: Uint8Array): string[] {
+    this.partial += this.decoder.decode(data, { stream: true });
+    const lines = this.partial.split("\n");
+    this.partial = lines.pop() ?? "";
+    return lines;
+  }
 }
 
 export type Frame = { channel: string; data: Uint8Array };
