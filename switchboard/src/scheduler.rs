@@ -157,7 +157,10 @@ impl Scheduler {
 
             let mut settled = false;
             for host_id in candidates {
-                match self.try_assign(job_id, host_id).await? {
+                match self
+                    .try_assign(job_id, host_id, specs.get(&host_id))
+                    .await?
+                {
                     AssignOutcome::Assigned | AssignOutcome::JobDone => {
                         settled = true;
                         break;
@@ -259,7 +262,12 @@ impl Scheduler {
     /// the assignment with `WHERE current_job IS NULL` / `WHERE job_state =
     /// 'queued'` guards. A lost race against another scheduler is therefore a
     /// clean no-op, which is what makes this safe to run in multiple processes.
-    async fn try_assign(&self, job_id: Uuid, host_id: Uuid) -> anyhow::Result<AssignOutcome> {
+    async fn try_assign(
+        &self,
+        job_id: Uuid,
+        host_id: Uuid,
+        host_spec: Option<&HostSpecV1>,
+    ) -> anyhow::Result<AssignOutcome> {
         let cutoff = Utc::now() - self.host_liveness_timeout;
         let mut txn = self.pool.begin().await?;
 
@@ -338,7 +346,10 @@ impl Scheduler {
         // The resolved spec itself is rebuilt at dispatch from the recorded
         // `resolved_image_id`; here we only need resolution to succeed (validating
         // the image / picking the set member) and the id to pin.
-        let (_spec, resolved_image_id) = match job.resolve_image_spec(&host_tags, &mut txn).await {
+        let (_spec, resolved_image_id) = match job
+            .resolve_image_spec(&host_tags, host_spec, &mut txn)
+            .await
+        {
             Ok(resolved) => resolved,
             // No set member matches this host: a different host might, so this
             // is a host rejection, not a job failure.
@@ -695,7 +706,69 @@ mod tests {
                 Some(owner),
             )
             .await?;
-            member_rows.push((img_id, tags(req_tags), index as i32));
+            member_rows.push(sql::image::NewSetMember {
+                image_id: img_id,
+                required_host_tags: tags(req_tags),
+                platform_profile: None,
+                predicate: None,
+                index: index as i32,
+            });
+            member_digests.push(md);
+        }
+        sql::image::create_generation(&mut tx, gid, owner, &member_rows).await?;
+        tx.commit().await?;
+        Ok((gid, member_digests))
+    }
+
+    /// Register a set whose one generation carries profile-form members,
+    /// `(seed, platform_profile, predicate)`, in selection order.
+    async fn register_profile_set(
+        pool: &PgPool,
+        owner: Uuid,
+        name_seed: u8,
+        members: &[(u8, &str, Option<&str>)],
+    ) -> anyhow::Result<(Uuid, Vec<Digest>)> {
+        let gid = Uuid::new_v4();
+        let mut tx = pool.begin().await?;
+        sql::image::create_set(&mut *tx, gid, &format!("set-{name_seed}"), owner, None).await?;
+        let mut member_rows = Vec::new();
+        let mut member_digests = Vec::new();
+        for (index, (seed, profile, predicate)) in members.iter().enumerate() {
+            let md = digest(*seed);
+            // Two members may name the same image (one build serving several
+            // profiles), so register it only the first time it appears.
+            let img_id = match sql::image::fetch_by_digest(&mut *tx, &md.encoded()).await? {
+                Some(existing) => existing.id,
+                None => {
+                    let img_id = Uuid::new_v4();
+                    sql::image::insert(
+                        &mut *tx,
+                        img_id,
+                        &md.encoded(),
+                        media_types::IMAGE_ARTIFACT_TYPE,
+                        None,
+                    )
+                    .await?;
+                    sql::image::insert_source(
+                        &mut *tx,
+                        Uuid::new_v4(),
+                        img_id,
+                        "reg.example:5000",
+                        "repo",
+                        "external",
+                        Some(owner),
+                    )
+                    .await?;
+                    img_id
+                }
+            };
+            member_rows.push(sql::image::NewSetMember {
+                image_id: img_id,
+                required_host_tags: vec![],
+                platform_profile: Some((*profile).to_string()),
+                predicate: predicate.map(str::to_string),
+                index: index as i32,
+            });
             member_digests.push(md);
         }
         sql::image::create_generation(&mut tx, gid, owner, &member_rows).await?;
@@ -911,6 +984,52 @@ mod tests {
         Ok(())
     }
 
+    /// Describe a host advertising exactly one platform profile.
+    async fn describe_host_with_profile(
+        pool: &PgPool,
+        host_id: Uuid,
+        profile: &str,
+        memory_mb: u32,
+    ) -> anyhow::Result<()> {
+        use treadmill_rs::host_spec::{HostSpec, HostSpecV1, Platform, Resources, SpecVersionV1};
+
+        let spec = HostSpec::V1(HostSpecV1 {
+            spec_version: SpecVersionV1::V1,
+            id: host_id,
+            name: format!("host-{host_id}"),
+            description: None,
+            site: "cambridge".into(),
+            location: None,
+            platform: Platform::Virtual {
+                arch: "x86_64".into(),
+                profiles: vec![profile.to_string()],
+                hypervisor: "qemu".into(),
+            },
+            resources: Resources {
+                cpu_cores: 4,
+                memory_mb,
+                storage_gb: 64,
+            },
+            labels: Default::default(),
+            duts: vec![],
+        });
+        sql::host_spec::insert_revision(host_id, 1, &spec, None, pool).await?;
+        Ok(())
+    }
+
+    /// The concrete image the scheduler pinned onto a job, by digest.
+    async fn resolved_digest(pool: &PgPool, job_id: Uuid) -> anyhow::Result<Digest> {
+        let encoded: String = sqlx::query_scalar(
+            "select i.manifest_digest from tml_switchboard.jobs j \
+             join tml_switchboard.images i on i.id = j.resolved_image_id \
+             where j.job_id = $1",
+        )
+        .bind(job_id)
+        .fetch_one(pool)
+        .await?;
+        Ok(encoded.parse()?)
+    }
+
     async fn set_maintenance(pool: &PgPool, host_id: Uuid, on: bool) -> anyhow::Result<()> {
         sqlx::query("update tml_switchboard.hosts set maintenance = $2 where host_id = $1")
             .bind(host_id)
@@ -1108,7 +1227,9 @@ mod tests {
         let (_, img) = register_image(&pool, owner, 1, true).await?;
         let job = enqueue_image(&pool, token, img, &["arch=arm64"], &[]).await?;
 
-        let outcome = scheduler(pool.clone()).try_assign(job, foreign).await?;
+        let outcome = scheduler(pool.clone())
+            .try_assign(job, foreign, None)
+            .await?;
         assert_eq!(outcome, AssignOutcome::HostRejected);
         assert_eq!(job_state(&pool, job).await?, "queued");
         assert_eq!(host_current_job(&pool, foreign).await?, None);
@@ -1735,6 +1856,136 @@ mod tests {
         scheduler(pool.clone()).tick().await?;
         assert_eq!(host_current_job(&pool, host).await?, Some(plain));
         assert_eq!(job_state(&pool, picky).await?, "queued");
+        Ok(())
+    }
+
+    // -- image-set platform profiles -----------------------------------------
+
+    /// The host's advertised profiles pick the member, and the first
+    /// admissible one in author order wins.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn image_set_selects_by_platform_profile(pool: PgPool) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let (set, digests) = register_profile_set(
+            &pool,
+            user,
+            9,
+            &[
+                (
+                    1,
+                    "q35-virtio-uefi",
+                    Some("host.resources.memory_mb >= 16384"),
+                ),
+                (2, "q35-virtio-uefi", None),
+                (3, "rpi4-uboot-sd", None),
+            ],
+        )
+        .await?;
+
+        // A big UEFI host takes the refined member; a small one falls through
+        // to the catch-all behind it; an SD-boot host takes the third.
+        for (memory_mb, profile, expected) in [
+            (16384, "q35-virtio-uefi", &digests[0]),
+            (4096, "q35-virtio-uefi", &digests[1]),
+            (4096, "rpi4-uboot-sd", &digests[2]),
+        ] {
+            let host = insert_live_host(&pool, user, &[]).await?;
+            describe_host_with_profile(&pool, host, profile, memory_mb).await?;
+            let job = enqueue(
+                &pool,
+                token,
+                JobInitSpec::ImageSet {
+                    set_id: set,
+                    generation: None,
+                },
+                &[],
+                DEFAULT_HOST_CEL_PREDICATE,
+                &[],
+                Utc::now(),
+            )
+            .await?;
+            scheduler(pool.clone()).tick().await?;
+            assert_eq!(host_current_job(&pool, host).await?, Some(job));
+            assert_eq!(&resolved_digest(&pool, job).await?, expected);
+        }
+        Ok(())
+    }
+
+    /// No member for the host's profiles is a host rejection, not a job
+    /// failure: the job stays queued for a host that does match.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn no_member_for_profile_leaves_the_job_queued(pool: PgPool) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let (set, _) = register_profile_set(&pool, user, 9, &[(1, "rpi4-uboot-sd", None)]).await?;
+
+        let host = insert_live_host(&pool, user, &[]).await?;
+        describe_host_with_profile(&pool, host, "q35-virtio-uefi", 4096).await?;
+        let job = enqueue(
+            &pool,
+            token,
+            JobInitSpec::ImageSet {
+                set_id: set,
+                generation: None,
+            },
+            &[],
+            DEFAULT_HOST_CEL_PREDICATE,
+            &[],
+            Utc::now(),
+        )
+        .await?;
+
+        scheduler(pool.clone()).tick().await?;
+        assert_eq!(host_current_job(&pool, host).await?, None);
+        assert_eq!(job_state(&pool, job).await?, "queued");
+
+        // A host that does advertise the profile takes it.
+        let arm = insert_live_host(&pool, user, &[]).await?;
+        describe_host_with_profile(&pool, arm, "rpi4-uboot-sd", 4096).await?;
+        scheduler(pool.clone()).tick().await?;
+        assert_eq!(host_current_job(&pool, arm).await?, Some(job));
+        Ok(())
+    }
+
+    /// One image may serve several profiles now that the primary key is
+    /// (set_id, generation, index) rather than keyed on the image.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn one_image_may_appear_under_several_profiles(pool: PgPool) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+
+        // Both members name the same seed, hence the same image.
+        let (set, digests) = register_profile_set(
+            &pool,
+            user,
+            9,
+            &[(1, "q35-virtio-uefi", None), (1, "q35-virtio-bios", None)],
+        )
+        .await?;
+        assert_eq!(digests[0], digests[1]);
+
+        let host = insert_live_host(&pool, user, &[]).await?;
+        describe_host_with_profile(&pool, host, "q35-virtio-bios", 4096).await?;
+        let job = enqueue(
+            &pool,
+            token,
+            JobInitSpec::ImageSet {
+                set_id: set,
+                generation: None,
+            },
+            &[],
+            DEFAULT_HOST_CEL_PREDICATE,
+            &[],
+            Utc::now(),
+        )
+        .await?;
+        scheduler(pool.clone()).tick().await?;
+        assert_eq!(host_current_job(&pool, host).await?, Some(job));
+        assert_eq!(resolved_digest(&pool, job).await?, digests[0]);
         Ok(())
     }
 

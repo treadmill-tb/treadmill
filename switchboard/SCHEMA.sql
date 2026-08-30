@@ -1379,22 +1379,49 @@ CREATE TABLE tml_switchboard.image_set_generations (
 
 -- The members of ONE generation (full replacement per generation).
 --
--- A member's eligibility is a set of required host tags: the member is
--- admissible for a host iff `hosts.tags` is a superset of `required_host_tags`.
+-- A member declares the machine configuration it is built for
+-- (`platform_profile`, matched by equality against the host spec's
+-- `platform.profiles`) plus an optional CEL `predicate` refining that. The
+-- member is admissible for a host iff the profile is one the host advertises
+-- and the refinement, if any, evaluates true; the FIRST admissible member in
+-- `index` order wins.
 --
--- Among admissible members the most specific (largest required set) wins, ties
--- broken by `index` (the member's explicit array position in the
--- create-generation request). Image selection uses HOST tags only; target/DUT
--- tags are irrelevant here. `image_id` references an immortal `images` row (no
--- cascade: images are never deleted).
+-- Profiles rather than pure CEL because compatibility is a hard contract and
+-- should be an equality, not an expression someone can get subtly wrong; the
+-- refinement covers what is not a compatibility question ("the big-memory
+-- variant"). CEL expresses user intent, profiles express machine
+-- compatibility.
+--
+-- First-match-wins because with arbitrary predicates there is no specificity
+-- order to infer -- `site == 'x' || site == 'y'` is neither stronger nor weaker
+-- than `memory_mb >= 4096`. Author order IS the ranking, stated rather than
+-- derived, and it reads like a routing table. A trailing member with no
+-- refinement is the explicit catch-all; omitting one deliberately narrows where
+-- the set's jobs can run.
+--
+-- `platform_profile` is nullable only while host tags still exist: a member
+-- without one falls back to `required_host_tags` containment. Both go together.
+--
+-- The primary key is (set_id, generation, index) rather than
+-- (set_id, generation, image_id) so the SAME image may appear under several
+-- profiles -- one build serving both `q35-virtio-uefi` and `q35-virtio-bios`
+-- is two members, not a conflict. `image_id` references an immortal `images`
+-- row (no cascade: images are never deleted).
 CREATE TABLE tml_switchboard.image_set_members (
     set_id uuid NOT NULL,
     generation int NOT NULL,
     image_id uuid NOT NULL REFERENCES tml_switchboard.images (id),
     required_host_tags TEXT[] NOT NULL DEFAULT '{}',
+    -- The machine configuration this member is built for, e.g.
+    -- `q35-virtio-uefi`, `rpi4-uboot-sd`. Convention, not a registry.
+    platform_profile text,
+    -- Optional CEL refinement, evaluated with the host spec bound as `host`.
+    -- Parsed (not evaluated) when the generation is created, so a malformed
+    -- expression is rejected at authoring time rather than silently matching
+    -- nothing at dispatch.
+    predicate text,
     index int NOT NULL,
-    PRIMARY KEY (set_id, generation, image_id),
-    UNIQUE (set_id, generation, index),
+    PRIMARY KEY (set_id, generation, index),
     FOREIGN key (set_id, generation) REFERENCES tml_switchboard.image_set_generations (set_id, generation) ON DELETE CASCADE
 );
 

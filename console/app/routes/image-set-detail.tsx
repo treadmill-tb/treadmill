@@ -11,7 +11,12 @@ import { RelTime } from "../components/rel-time";
 import { Tags } from "../components/tags";
 import type { Route } from "./+types/image-set-detail";
 
-type MemberRow = { manifest_digest: string; tags: string };
+type MemberRow = {
+  manifest_digest: string;
+  tags: string;
+  platform_profile: string;
+  predicate: string;
+};
 
 /// The well-known `everyone` subject (see switchboard `SCHEMA.sql`). Granting it
 /// `use` on a set or image source makes the entity public; there is no
@@ -56,6 +61,8 @@ function NewGenerationForm({
           .map((r) => ({
             manifest_digest: r.manifest_digest.trim(),
             required_host_tags: r.tags.split(/[\s,]+/).filter((t) => t !== ""),
+            platform_profile: r.platform_profile.trim() || null,
+            predicate: r.predicate.trim() || null,
           })),
       },
     });
@@ -65,7 +72,9 @@ function NewGenerationForm({
     <form className="form card" onSubmit={onSubmit}>
       <span className="muted">
         A generation replaces the set's whole membership; earlier members are
-        pre-filled. Order is the tie-break among equally-specific members.
+        pre-filled. A member applies to a host advertising its platform profile
+        and satisfying its refinement; the first matching member in this order
+        wins, so put the most specific first and a catch-all last.
       </span>
       {rows.map((row, i) => (
         <div className="field-row" key={i}>
@@ -77,6 +86,30 @@ function NewGenerationForm({
               setRows(
                 rows.map((r, j) =>
                   j === i ? { ...r, manifest_digest: e.target.value } : r,
+                ),
+              )
+            }
+          />
+          <input
+            placeholder="platform profile (e.g. q35-virtio-uefi)"
+            className="mono"
+            value={row.platform_profile}
+            onChange={(e) =>
+              setRows(
+                rows.map((r, j) =>
+                  j === i ? { ...r, platform_profile: e.target.value } : r,
+                ),
+              )
+            }
+          />
+          <input
+            placeholder="refinement (CEL, optional)"
+            className="mono"
+            value={row.predicate}
+            onChange={(e) =>
+              setRows(
+                rows.map((r, j) =>
+                  j === i ? { ...r, predicate: e.target.value } : r,
                 ),
               )
             }
@@ -104,7 +137,17 @@ function NewGenerationForm({
       <div>
         <button
           type="button"
-          onClick={() => setRows([...rows, { manifest_digest: "", tags: "" }])}
+          onClick={() =>
+            setRows([
+              ...rows,
+              {
+                manifest_digest: "",
+                tags: "",
+                platform_profile: "",
+                predicate: "",
+              },
+            ])
+          }
         >
           Add member
         </button>
@@ -294,6 +337,8 @@ export default function ImageSetDetail({ params }: Route.ComponentProps) {
                 generation.data?.members.map((m) => ({
                   manifest_digest: m.manifest_digest,
                   tags: m.required_host_tags.join(" "),
+                  platform_profile: m.platform_profile ?? "",
+                  predicate: m.predicate ?? "",
                 })) ?? []
               }
               onDone={() => setShowGenerationForm(false)}
@@ -438,6 +483,8 @@ export function GenerationMembers({
     index: number;
     manifest_digest: string;
     required_host_tags: string[];
+    platform_profile?: string | null;
+    predicate?: string | null;
     usable: boolean;
     usable_by_grantees: boolean;
   }[];
@@ -461,6 +508,8 @@ export function GenerationMembers({
             <th>#</th>
             <th>Image</th>
             <th>Digest</th>
+            <th>Platform profile</th>
+            <th>Refinement</th>
             <th>Required host tags</th>
             <th>Usability</th>
           </tr>
@@ -476,6 +525,12 @@ export function GenerationMembers({
               </td>
               <td>
                 <Digest digest={m.manifest_digest} />
+              </td>
+              <td className="mono">
+                {m.platform_profile || <span className="muted">—</span>}
+              </td>
+              <td className="mono">
+                {m.predicate || <span className="muted">—</span>}
               </td>
               <td>
                 <Tags tags={m.required_host_tags} />

@@ -4,18 +4,24 @@
 //! host, pick the single set member appropriate for that host. The candidate
 //! set is the membership of the job's **frozen generation** (the
 //! `image_set_members` rows of the generation pinned onto the job at enqueue).
-//! Selection is by **host tags only**: each member carries a set of
-//! `required_host_tags` (supplied when the generation is created), and a member
-//! is admissible for a host iff the host's tags are a superset of that set.
-//! Target (DUT) tags play no part in image selection.
 //!
-//! Among the admissible members the most *specific* one wins — the one requiring
-//! the largest tag set — so a host that satisfies a more constrained member gets
-//! it in preference to a looser fallback. Ties on specificity resolve to the
-//! earliest member (the member's `index` within the generation), so the choice
-//! is always deterministic.
+//! A member declares the machine configuration it is built for
+//! (`platform_profile`) and, optionally, a CEL refinement of it. It is
+//! admissible for a host iff the host's spec advertises that profile and the
+//! refinement evaluates true; the **first** admissible member in `index` order
+//! wins. Author order is the ranking, because arbitrary predicates admit no
+//! specificity order to infer.
+//!
+//! Members with no profile are the legacy host-tag form, kept only while tags
+//! still exist: a generation whose members all lack one is ranked the old way,
+//! most-specific-tag-set first with ties going to the earliest member. That
+//! branch goes when tags do.
 
 use std::collections::BTreeSet;
+
+use treadmill_rs::host_spec::HostSpecV1;
+
+use crate::predicate::{CelEngine, Engine};
 
 /// Collect a host's tags into a set for containment queries. Tags are opaque
 /// strings; duplicates collapse.
@@ -28,11 +34,40 @@ pub fn host_tag_set(tags: &[String]) -> BTreeSet<String> {
 pub struct GroupMember<T> {
     /// The caller's handle for the selected member (e.g. an image id or digest).
     pub handle: T,
-    /// Host tags a host must carry (as a superset) for this member to apply.
+    /// The machine configuration this member is built for, matched by equality
+    /// against the host spec's `platform.profiles`.
+    pub platform_profile: Option<String>,
+    /// Optional CEL refinement, evaluated with the host spec bound as `host`.
+    pub predicate: Option<String>,
+    /// Legacy: host tags a host must carry (as a superset) for this member to
+    /// apply. Consulted only for a generation whose members carry no profile.
     pub required_host_tags: Vec<String>,
 }
 
 impl<T> GroupMember<T> {
+    /// Whether this member is admissible for `host`: the host advertises the
+    /// member's profile, and the refinement (if any) evaluates true.
+    ///
+    /// A refinement that errors or fails to compile makes the member
+    /// inadmissible rather than failing the job, matching how a job's own
+    /// predicate treats a host it cannot evaluate against.
+    fn admissible_for_spec(&self, host: &HostSpecV1) -> bool {
+        let Some(profile) = self.platform_profile.as_deref() else {
+            return false;
+        };
+        if !host.platform.profiles().iter().any(|p| p == profile) {
+            return false;
+        }
+        match self.predicate.as_deref() {
+            None => true,
+            Some(source) => CelEngine
+                .compile(source)
+                .ok()
+                .and_then(|p| p.eval(host).ok())
+                .unwrap_or(false),
+        }
+    }
+
     /// Whether this member is admissible for a host with `host_tags`: every
     /// required tag must be present.
     fn admissible_for(&self, host_tags: &BTreeSet<String>) -> bool {
@@ -48,16 +83,24 @@ impl<T> GroupMember<T> {
     }
 }
 
-/// Select the set member for a host with `host_tags`, preferring the most
-/// specific admissible match. Returns `None` when no member is admissible.
+/// Select the set member to dispatch onto a host. Returns `None` when no member
+/// is admissible, which is a *host* rejection: another host may match.
 ///
-/// Ties on specificity resolve to the earliest member in `members`, so a
-/// deterministic choice is always made (callers pass members in registration
-/// order).
+/// Members must be supplied in `index` order. When any member declares a
+/// platform profile the choice is first-match-wins over those; otherwise the
+/// generation is the legacy tag-only form and the most specific admissible
+/// member wins, ties going to the earliest.
 pub fn select_member<'a, T>(
     members: &'a [GroupMember<T>],
     host_tags: &BTreeSet<String>,
+    host: Option<&HostSpecV1>,
 ) -> Option<&'a GroupMember<T>> {
+    if members.iter().any(|m| m.platform_profile.is_some()) {
+        // An undescribed host advertises no profiles, so it admits nothing here.
+        let host = host?;
+        return members.iter().find(|m| m.admissible_for_spec(host));
+    }
+
     members
         .iter()
         .filter(|m| m.admissible_for(host_tags))
@@ -161,7 +204,45 @@ mod tests {
     fn member(handle: &str, required: &[&str]) -> GroupMember<String> {
         GroupMember {
             handle: handle.to_string(),
+            platform_profile: None,
+            predicate: None,
             required_host_tags: required.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// A member in the profile form: a required profile plus an optional CEL
+    /// refinement.
+    fn profile_member(handle: &str, profile: &str, predicate: Option<&str>) -> GroupMember<String> {
+        GroupMember {
+            handle: handle.to_string(),
+            platform_profile: Some(profile.to_string()),
+            predicate: predicate.map(str::to_string),
+            required_host_tags: vec![],
+        }
+    }
+
+    /// A virtual host advertising `profiles` with `memory_mb` of RAM.
+    fn spec(profiles: &[&str], memory_mb: u32) -> HostSpecV1 {
+        use treadmill_rs::host_spec::{Platform, Resources, SpecVersionV1};
+        HostSpecV1 {
+            spec_version: SpecVersionV1::V1,
+            id: uuid::Uuid::nil(),
+            name: "h".into(),
+            description: None,
+            site: "cambridge".into(),
+            location: None,
+            platform: Platform::Virtual {
+                arch: "x86_64".into(),
+                profiles: profiles.iter().map(|p| p.to_string()).collect(),
+                hypervisor: "qemu".into(),
+            },
+            resources: Resources {
+                cpu_cores: 4,
+                memory_mb,
+                storage_gb: 64,
+            },
+            labels: Default::default(),
+            duts: vec![],
         }
     }
 
@@ -176,7 +257,7 @@ mod tests {
             member("arm", &["arch=arm64"]),
         ];
         let h = host(&["arch=arm64", "os=linux"]);
-        assert_eq!(select_member(&members, &h).unwrap().handle, "arm");
+        assert_eq!(select_member(&members, &h, None).unwrap().handle, "arm");
     }
 
     #[test]
@@ -186,14 +267,14 @@ mod tests {
             member("rpi4", &["arch=arm64", "raspberrypi-4"]),
         ];
         let h = host(&["arch=arm64", "raspberrypi-4", "os=linux"]);
-        assert_eq!(select_member(&members, &h).unwrap().handle, "rpi4");
+        assert_eq!(select_member(&members, &h, None).unwrap().handle, "rpi4");
     }
 
     #[test]
     fn unconstrained_member_is_admissible_anywhere() {
         let members = vec![member("any", &[])];
         assert_eq!(
-            select_member(&members, &host(&["whatever"]))
+            select_member(&members, &host(&["whatever"]), None)
                 .unwrap()
                 .handle,
             "any"
@@ -204,14 +285,14 @@ mod tests {
     fn host_missing_a_required_tag_is_not_admissible() {
         let members = vec![member("rpi4", &["arch=arm64", "raspberrypi-4"])];
         let h = host(&["arch=arm64"]);
-        assert!(select_member(&members, &h).is_none());
+        assert!(select_member(&members, &h, None).is_none());
     }
 
     #[test]
     fn no_match_when_nothing_admissible() {
         let members = vec![member("arm", &["arch=arm64"])];
         let h = host(&["arch=amd64"]);
-        assert!(select_member(&members, &h).is_none());
+        assert!(select_member(&members, &h, None).is_none());
     }
 
     #[test]
@@ -220,7 +301,115 @@ mod tests {
         // order) wins.
         let members = vec![member("first", &["x"]), member("second", &["y"])];
         let h = host(&["x", "y"]);
-        assert_eq!(select_member(&members, &h).unwrap().handle, "first");
+        assert_eq!(select_member(&members, &h, None).unwrap().handle, "first");
+    }
+
+    // -- profile-based selection ---------------------------------------------
+
+    #[test]
+    fn first_admissible_profile_member_wins() {
+        // Author order is the ranking: index 0 is more constrained, index 1 is
+        // the catch-all for the same profile.
+        let members = vec![
+            profile_member(
+                "big",
+                "q35-virtio-uefi",
+                Some("host.resources.memory_mb >= 16384"),
+            ),
+            profile_member("plain", "q35-virtio-uefi", None),
+            profile_member("bios", "q35-virtio-bios", None),
+        ];
+        let tags = host(&[]);
+
+        let big = spec(&["q35-virtio-uefi"], 16384);
+        assert_eq!(
+            select_member(&members, &tags, Some(&big)).unwrap().handle,
+            "big"
+        );
+
+        // Same profile, too little memory: the refinement fails and the
+        // catch-all behind it takes over.
+        let small = spec(&["q35-virtio-uefi"], 4096);
+        assert_eq!(
+            select_member(&members, &tags, Some(&small)).unwrap().handle,
+            "plain"
+        );
+
+        // A host advertising only the other profile skips both of the above.
+        let bios = spec(&["q35-virtio-bios"], 16384);
+        assert_eq!(
+            select_member(&members, &tags, Some(&bios)).unwrap().handle,
+            "bios"
+        );
+    }
+
+    #[test]
+    fn no_member_for_the_hosts_profiles_is_a_rejection() {
+        let members = vec![profile_member("arm", "rpi4-uboot-sd", None)];
+        let h = spec(&["q35-virtio-uefi"], 8192);
+        assert!(select_member(&members, &host(&[]), Some(&h)).is_none());
+    }
+
+    /// A host with no spec advertises no profiles, so it admits no member of a
+    /// profile-carrying generation.
+    #[test]
+    fn undescribed_host_admits_no_profile_member() {
+        let members = vec![profile_member("any", "q35-virtio-uefi", None)];
+        assert!(select_member(&members, &host(&["whatever"]), None).is_none());
+    }
+
+    /// A refinement that errors on this host (or does not compile) makes the
+    /// member inadmissible; it never fails the job.
+    #[test]
+    fn broken_refinement_skips_the_member() {
+        let members = vec![
+            profile_member("typo", "q35-virtio-uefi", Some("host.no_such_field == 1")),
+            profile_member("bad-syntax", "q35-virtio-uefi", Some("host.site ==")),
+            profile_member("ok", "q35-virtio-uefi", None),
+        ];
+        let h = spec(&["q35-virtio-uefi"], 8192);
+        assert_eq!(
+            select_member(&members, &host(&[]), Some(&h))
+                .unwrap()
+                .handle,
+            "ok"
+        );
+    }
+
+    /// The same image under two profiles is two members, which is what the
+    /// primary key change permits.
+    #[test]
+    fn one_image_may_serve_several_profiles() {
+        let members = vec![
+            profile_member("img", "q35-virtio-uefi", None),
+            profile_member("img", "q35-virtio-bios", None),
+        ];
+        for profile in ["q35-virtio-uefi", "q35-virtio-bios"] {
+            let h = spec(&[profile], 8192);
+            assert_eq!(
+                select_member(&members, &host(&[]), Some(&h))
+                    .unwrap()
+                    .handle,
+                "img"
+            );
+        }
+    }
+
+    /// A mixed generation ignores the tag-only members: any profile present
+    /// means the generation is read the new way.
+    #[test]
+    fn profile_members_take_precedence_over_tag_members() {
+        let members = vec![
+            member("legacy", &["arch=amd64"]),
+            profile_member("modern", "q35-virtio-uefi", None),
+        ];
+        let h = spec(&["q35-virtio-uefi"], 8192);
+        assert_eq!(
+            select_member(&members, &host(&["arch=amd64"]), Some(&h))
+                .unwrap()
+                .handle,
+            "modern"
+        );
     }
 
     // -- DUT (target) matching ---------------------------------------------

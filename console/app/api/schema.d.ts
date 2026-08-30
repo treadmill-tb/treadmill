@@ -775,13 +775,16 @@ export interface components {
         };
         /**
          * @description One member of a generation, as returned by the inspect route. A member is
-         *     admissible for a host iff the host's tags are a superset of
-         *     `required_host_tags`.
+         *     admissible for a host iff the host advertises its `platform_profile` and its
+         *     `predicate` (if any) holds; the first admissible member in `index` order is
+         *     selected.
          */
         GenerationMemberInfo: {
             /** Format: uint32 */
             index: number;
             manifest_digest: components["schemas"]["Digest"];
+            platform_profile?: string | null;
+            predicate?: string | null;
             required_host_tags: string[];
             /**
              * @description Whether the viewer may use some source of this member image. A set grant
@@ -809,8 +812,23 @@ export interface components {
              */
             manifest_digest: components["schemas"]["Digest"];
             /**
+             * @description The machine configuration this image is built for, e.g.
+             *     `q35-virtio-uefi`, `rpi4-uboot-sd`. Matched by equality against the
+             *     host spec's `platform.profiles`.
+             * @default null
+             */
+            platform_profile: string | null;
+            /**
+             * @description Optional CEL refinement narrowing this member within its profile, e.g.
+             *     `host.resources.memory_mb >= 16384`. Parsed when the generation is
+             *     created; a host it errors on simply does not select this member.
+             * @default null
+             */
+            predicate: string | null;
+            /**
              * @description Host tags a host must carry (as a superset) for this member to be
-             *     selectable on it.
+             *     selectable on it. Legacy: consulted only for a generation in which no
+             *     member declares a `platform_profile`.
              * @default []
              */
             required_host_tags: string[];

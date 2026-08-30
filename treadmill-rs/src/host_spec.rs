@@ -124,6 +124,16 @@ pub enum Platform {
     },
 }
 
+impl Platform {
+    /// The machine configurations this host can boot, whichever variant it is.
+    /// An image set member matches one of these by equality.
+    pub fn profiles(&self) -> &[String] {
+        match self {
+            Platform::Physical { profiles, .. } | Platform::Virtual { profiles, .. } => profiles,
+        }
+    }
+}
+
 /// The ceiling available to a single job on this host.
 ///
 /// Unsigned, so CEL sees these as `uint`: comparisons against a plain literal

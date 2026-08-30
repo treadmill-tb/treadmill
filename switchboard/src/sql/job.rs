@@ -20,6 +20,7 @@ use treadmill_rs::api::switchboard_supervisor::{
     RestartPolicy, RunningJobState, StartJobMessage, TaskExitStatus,
 };
 use treadmill_rs::connector::JobErrorKind;
+use treadmill_rs::host_spec::HostSpecV1;
 use treadmill_rs::image::Digest;
 use uuid::Uuid;
 
@@ -471,12 +472,14 @@ impl SqlJob {
     ///
     /// For a resume job this is simply [`ImageSpecification::ResumeJob`]. For a
     /// concrete image, the manifest digest is paired with its catalog locations.
-    /// For an image *set*, the chosen host's `host_tags` select the concrete
-    /// member of the frozen generation (the matcher) whose digest + locations are
-    /// then dispatched. `host_tags` is ignored for the non-set variants.
+    /// For an image *set*, the chosen host selects the concrete member of the
+    /// frozen generation (the matcher) whose digest + locations are then
+    /// dispatched. `host_tags` and `host_spec` are ignored for the non-set
+    /// variants; `host_spec` is `None` for a host that has never been described.
     pub async fn resolve_image_spec(
         &self,
         host_tags: &BTreeSet<String>,
+        host_spec: Option<&HostSpecV1>,
         conn: &mut sqlx::PgConnection,
     ) -> Result<(ImageSpecification, Option<Uuid>), ImageResolveError> {
         if let Some(resume_job_id) = self.resume_job_id {
@@ -504,11 +507,13 @@ impl SqlJob {
                 .into_iter()
                 .map(|m| GroupMember {
                     handle: (m.image_id, m.manifest_digest),
+                    platform_profile: m.platform_profile,
+                    predicate: m.predicate,
                     required_host_tags: m.required_host_tags,
                 })
                 .collect();
-            let chosen =
-                select_member(&candidates, host_tags).ok_or(ImageResolveError::NoMatchingMember)?;
+            let chosen = select_member(&candidates, host_tags, host_spec)
+                .ok_or(ImageResolveError::NoMatchingMember)?;
             let (image_id, manifest_digest) = &chosen.handle;
             let spec = concrete_image_spec(*image_id, manifest_digest, self.owner_id, conn).await?;
             return Ok((spec, Some(*image_id)));

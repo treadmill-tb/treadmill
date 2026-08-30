@@ -67,14 +67,18 @@ pub struct SetRecord {
     pub created_at: DateTime<Utc>,
 }
 
-/// One member of a generation, as consumed by the matcher. `required_host_tags`
-/// is the member's host-tag eligibility set; `index` is its explicit array
-/// position (for deterministic tie-breaks).
+/// One member of a generation, as consumed by the matcher. `platform_profile`
+/// plus the optional `predicate` are the member's eligibility; `index` is its
+/// explicit array position, which is also the selection order.
+/// `required_host_tags` is the legacy form, used only where no member of the
+/// generation declares a profile.
 #[derive(Debug, Clone)]
 pub struct SetMemberRecord {
     pub image_id: Uuid,
     pub manifest_digest: String,
     pub required_host_tags: Vec<String>,
+    pub platform_profile: Option<String>,
+    pub predicate: Option<String>,
     pub index: i32,
 }
 
@@ -471,18 +475,28 @@ pub async fn latest_generation(
     Ok(max.map(|g| g as u32))
 }
 
+/// A member to write into a new generation.
+#[derive(Debug, Clone)]
+pub struct NewSetMember {
+    pub image_id: Uuid,
+    pub required_host_tags: Vec<String>,
+    pub platform_profile: Option<String>,
+    pub predicate: Option<String>,
+    pub index: i32,
+}
+
 /// Append a new full-replacement generation to a set, returning its number.
 ///
 /// Allocation is serialized per-set by a transaction-scoped advisory lock
 /// (mirrors `group_members_no_cycle`), so concurrent creators cannot collide on
-/// the same `max+1`. `members` are `(image_id, required_host_tags, index)`; the
-/// caller assigns `index` from request array order. Must run inside a transaction
-/// (the advisory lock is `xact`-scoped).
+/// the same `max+1`. The caller assigns each member's `index` from request
+/// array order, which is also the order selection walks. Must run inside a
+/// transaction (the advisory lock is `xact`-scoped).
 pub async fn create_generation(
     tx: &mut sqlx::PgConnection,
     set_id: Uuid,
     created_by: Uuid,
-    members: &[(Uuid, Vec<String>, i32)],
+    members: &[NewSetMember],
 ) -> Result<u32, sqlx::Error> {
     sqlx::query!(
         r#"select pg_advisory_xact_lock(hashtext('image_set_gen:' || $1::text))"#,
@@ -511,16 +525,19 @@ pub async fn create_generation(
     .execute(&mut *tx)
     .await?;
 
-    for (image_id, required_host_tags, index) in members {
+    for m in members {
         sqlx::query!(
             r#"insert into tml_switchboard.image_set_members
-                 (set_id, generation, image_id, required_host_tags, "index")
-               values ($1, $2, $3, $4, $5)"#,
+                 (set_id, generation, image_id, required_host_tags,
+                  platform_profile, predicate, "index")
+               values ($1, $2, $3, $4, $5, $6, $7)"#,
             set_id,
             next,
-            image_id,
-            required_host_tags.as_slice(),
-            index,
+            m.image_id,
+            m.required_host_tags.as_slice(),
+            m.platform_profile,
+            m.predicate,
+            m.index,
         )
         .execute(&mut *tx)
         .await?;
@@ -556,8 +573,8 @@ pub async fn members_for_generation(
 ) -> Result<Vec<SetMemberRecord>, sqlx::Error> {
     sqlx::query_as!(
         SetMemberRecord,
-        r#"select m.image_id, i.manifest_digest,
-                  m.required_host_tags, m."index"
+        r#"select m.image_id, i.manifest_digest, m.required_host_tags,
+                  m.platform_profile, m.predicate, m."index"
            from tml_switchboard.image_set_members m
            join tml_switchboard.images i on i.id = m.image_id
            where m.set_id = $1 and m.generation = $2

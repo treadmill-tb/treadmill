@@ -1,4 +1,4 @@
-h1:b0H57ox3cYgdfosXTateU8eUeGadb3I10mXVOON19Kw=
+h1:k8hw3GzFHJlOZSjvn6UWJZBXDn5wZGopqrggbp25P2Q=
 00000000000001_base.sql h1:7OodY/qoessjRRoCAAX04fthKHTDNzzloQ4srKlxs+o=
 20260704040624_add_login_admission.sql h1:hYEzBBXagVmDVTtFsA1uosdNLKUi8JvitaMOFw/4jbk=
 20260708035542_everyone_subject.sql h1:eshPaeCj4UtkHWVuGTZHzsESVxK09Vy8ys5+ywA09pU=
@@ -18,3 +18,4 @@ h1:b0H57ox3cYgdfosXTateU8eUeGadb3I10mXVOON19Kw=
 20260828234929_job_lease.sql h1:p+X5VNgJYuRMosmsqVsn39cFrWjo5IiOUCXSywQLkEc=
 20260828234930_job_reclaimable_hosts.sql h1:IpXl2RIntog+lkyEwAOMICAZiJjUp72ksDFhd1Xbdxo=
 20260830193110_host_spec_predicate_maintenance.sql h1:wj+0zkTCIAggc1EpDZ7N/EXrzxRSautWQET64TO51LE=
+20260830201123_image_set_platform_profiles.sql h1:xdBOF3RYCVTrwqHJSyAF3Y/y2XJOG/6fypWs36qqMxw=
