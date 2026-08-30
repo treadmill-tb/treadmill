@@ -80,7 +80,16 @@ The Nix flake provides multiple convenience dev apps:
     -r          re-hash migrations/atlas.sum after a manual edit
 
   As we're using the community version of Atlas, certain things like functions
-  and triggers may not be migrated and must be manually added.
+  and triggers may not be migrated and must be manually added. Redefinitions
+  must precede the DDL that depends on them (e.g. replace a function that reads
+  a column before dropping that column).
+
+  `treefmt` formats the generated migration SQL, so **`-r` has to run after
+  `nix fmt`, not before**: re-hashing first leaves `atlas.sum` describing the
+  unformatted file, and the checksum no longer matches. The order when
+  authoring a migration is therefore
+
+      -c <name> -> hand-edit -> nix fmt -> -r -> -v
 
   The `switchboard-migrations-consistency` flake check enforces that the SCHEMA
   and migrations are consistent.
@@ -174,6 +183,10 @@ nix fmt -- path/a.rs path/b.rs   # format only specific files (preferred)
 
 Each commit must be properly formatted, the Nix flake checks also include a
 formatting check.
+
+Formatting reaches generated files too: if the commit touches
+`switchboard/migrations/`, re-hash `atlas.sum` **after** running `nix fmt`
+(see §2).
 
 ## 6. Commit & change conventions
 
