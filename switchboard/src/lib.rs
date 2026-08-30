@@ -10,6 +10,7 @@ pub mod manage;
 pub mod matcher;
 pub mod migrate;
 pub mod observability;
+pub mod predicate;
 pub mod registry;
 pub mod routes;
 pub mod scheduler;

@@ -21,6 +21,7 @@ url = "2"
 # renderable just by being linked in.
 linkme = "0.3"
 chrono = { workspace = true, features = ["serde"] }
+cel = { workspace = true }
 # because cookie-rs has an unavoidable hard dependency on time::Duration
 time = "0.3.47"
 
