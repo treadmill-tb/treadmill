@@ -1,0 +1,332 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HostSpec",
+  "description": "A host spec at whatever version it was written under.\n\nUntagged because each version type carries its own `spec_version` field:\nthat keeps the discriminant inside the document being validated, so a\nrejection names the offending path (`duts[2].debug.probe.serail`) instead of\nthe document root, which an internally-tagged enum cannot do.",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/HostSpecV1"
+    }
+  ],
+  "$defs": {
+    "Console": {
+      "description": "The board's console, as the host sees it.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "baud": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "device": {
+              "description": "The host-side device node. Prefer a stable `/dev/serial/by-id/...`\npath over a `/dev/ttyACM*` name, which is enumeration-order\ndependent.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "uart"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "device",
+            "baud"
+          ]
+        }
+      ]
+    },
+    "DebugAccess": {
+      "description": "How the board is programmed and debugged.",
+      "type": "object",
+      "properties": {
+        "probe": {
+          "$ref": "#/$defs/DebugProbe"
+        },
+        "protocol": {
+          "description": "The wire protocol, e.g. `swd`, `jtag`. Governed by convention, not a\nregistry.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "probe"
+      ]
+    },
+    "DebugProbe": {
+      "description": "The debug probe attached to a board.",
+      "type": "object",
+      "properties": {
+        "model": {
+          "description": "e.g. `J-Link OB`, `ST-LINK/V2-1`.",
+          "type": "string"
+        },
+        "serial": {
+          "description": "The probe's own serial, which is how a host-side tool addresses it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vendor": {
+          "description": "e.g. `SEGGER`, `STMicroelectronics`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "vendor",
+        "model"
+      ]
+    },
+    "Dut": {
+      "description": "One device under test wired to a host.",
+      "type": "object",
+      "properties": {
+        "arch": {
+          "description": "The architectures of the board's cores, e.g. `cortex-m4`. An array\nbecause a heterogeneous-core part has more than one. May be empty.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "board": {
+          "description": "The board this is, e.g. `nrf52840dk`.",
+          "type": "string"
+        },
+        "connectivity": {
+          "description": "What the board can talk over, e.g. `ble`, `ieee802154`, `usb`, `wifi`,\n`ethernet`, `can`. Governed by convention, not a registry. May be empty.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "console": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Console"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "debug": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DebugAccess"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "labels": {
+          "description": "As [`HostSpecV1::labels`], scoped to this DUT.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Display label, e.g. `nRF52840-DK #1`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "serial": {
+          "description": "The board's **own** serial number, not its debug probe's.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vendor": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "vendor",
+        "board",
+        "arch",
+        "connectivity",
+        "labels"
+      ]
+    },
+    "HostSpecV1": {
+      "description": "Version 1 of the host spec.",
+      "type": "object",
+      "properties": {
+        "description": {
+          "description": "What this host is, in prose.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "duts": {
+          "description": "The devices under test wired to this host, in the order the operator\nlisted them. May be empty.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Dut"
+          }
+        },
+        "id": {
+          "description": "Must equal the `host_id` of the host this document describes.",
+          "type": "string",
+          "format": "uuid"
+        },
+        "labels": {
+          "description": "Operator-defined labels. CEL map indexing errors on an absent key, so\npredicates guard with `'key' in host.labels`.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "location": {
+          "description": "Where in the site, e.g. `rack4/shelf2`. Free text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Display handle, e.g. `cam-rpi4-01`. Deliberately not unique; nothing\nroutes on it.",
+          "type": "string"
+        },
+        "platform": {
+          "$ref": "#/$defs/Platform"
+        },
+        "resources": {
+          "$ref": "#/$defs/Resources"
+        },
+        "site": {
+          "description": "The site the host lives at, e.g. `cambridge`. Flat, so a predicate reads\n`host.site == 'cambridge'`.",
+          "type": "string"
+        },
+        "spec_version": {
+          "$ref": "#/$defs/SpecVersionV1"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "spec_version",
+        "id",
+        "name",
+        "site",
+        "platform",
+        "resources",
+        "labels",
+        "duts"
+      ]
+    },
+    "Platform": {
+      "description": "The machine a host is, and the images it can boot.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "arch": {
+              "description": "The host's own CPU architecture, e.g. `aarch64`, `x86_64`.\n\nRedundant — a profile implies it — but kept so \"any aarch64 host\"\ndoes not require enumerating profiles. Nothing enforces consistency\nbetween the two.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "physical"
+            },
+            "model": {
+              "type": "string"
+            },
+            "profiles": {
+              "description": "The whole machine configurations this host can boot, e.g.\n`rpi4-uboot-sd`, `q35-virtio-uefi`, `q35-virtio-bios`,\n`netboot-nbd`. A profile names a complete configuration the way a\ntarget triple does; an image set member matches one by equality.\n\nAn array because one host may genuinely serve several. Governed by\nconvention, not a registry.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "vendor": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "arch",
+            "profiles",
+            "vendor",
+            "model"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "arch": {
+              "description": "The architecture the guest is presented with.",
+              "type": "string"
+            },
+            "hypervisor": {
+              "description": "e.g. `qemu`.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "virtual"
+            },
+            "profiles": {
+              "description": "As [`Platform::Physical::profiles`].",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "arch",
+            "profiles",
+            "hypervisor"
+          ]
+        }
+      ]
+    },
+    "Resources": {
+      "description": "The ceiling available to a single job on this host.\n\nUnsigned, so CEL sees these as `uint`: comparisons against a plain literal\nwork (`host.resources.memory_mb >= 4096`), but arithmetic needs an unsigned\nliteral (`host.resources.memory_mb / 1024u >= 8`).",
+      "type": "object",
+      "properties": {
+        "cpu_cores": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "memory_mb": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "storage_gb": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "cpu_cores",
+        "memory_mb",
+        "storage_gb"
+      ]
+    },
+    "SpecVersionV1": {
+      "description": "The `spec_version` discriminant of a [`HostSpecV1`] document.",
+      "type": "string",
+      "enum": [
+        "v1"
+      ]
+    }
+  }
+}

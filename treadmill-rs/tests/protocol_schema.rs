@@ -18,6 +18,7 @@ use schemars::schema_for;
 use treadmill_rs::api::switchboard_supervisor::{
     ServerHello, SupervisorToSwitchboard, SwitchboardToSupervisor,
 };
+use treadmill_rs::host_spec::HostSpec;
 
 fn snapshot_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("protocol-schema")
@@ -76,4 +77,12 @@ fn supervisor_to_switchboard_schema() {
 #[test]
 fn server_hello_schema() {
     check_schema("server_hello", pretty::<ServerHello>());
+}
+
+/// The host spec is a wire type twice over: the switchboard publishes this
+/// schema at `GET /host-spec/schema` for the console to render from, and hands
+/// a host its own spec in [`ServerHello`].
+#[test]
+fn host_spec_schema() {
+    check_schema("host_spec", pretty::<HostSpec>());
 }
