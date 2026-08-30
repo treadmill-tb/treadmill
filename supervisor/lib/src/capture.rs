@@ -1,17 +1,4 @@
 //! Console-log capture plumbing shared by the supervisors.
-//!
-//! Log streaming (see `doc/log-streaming-plan.md`) captures three byte
-//! channels off a qemu workload: its stdout, its stderr, and the guest serial
-//! console. stdout/stderr are piped through the [`crate::launcher`] seam
-//! ([`StdioMode::Capture`]); the serial console is routed to a unix-domain
-//! socket the supervisor owns ([`SerialSocket`]) and read back from there.
-//!
-//! This module provides the capture *surface* (Phase 3a). The durable NATS
-//! publisher that consumes these streams lands in Phase 3b; until then,
-//! [`drain_to_stdio`] keeps the captured channels flowing to the supervisor's
-//! own terminal so the operator still sees output and the pipes never block.
-//!
-//! [`StdioMode::Capture`]: crate::launcher::StdioMode::Capture
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -20,21 +7,24 @@ use tokio::net::{UnixListener, UnixStream};
 
 use crate::launcher::BoxedAsyncRead;
 
-/// How long to wait for qemu to connect back to the serial socket before giving
-/// up on the `serial` channel. qemu connects within milliseconds of launch;
-/// this is a generous ceiling so a misconfigured invocation fails loudly
-/// instead of hanging a capture task forever.
+/// How long to wait for a process (e.g., QEMU) to connect back to the serial
+/// socket before giving up on the `serial` channel.
+///
+/// qemu connects within milliseconds of launch. This value exists to
+/// deliberately fail if no process binds, instead of silently hanging the task.
 const SERIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A unix-domain socket the supervisor listens on for qemu's serial console.
+/// A unix-domain socket the supervisor listens on for the job's serial console
+/// (to then be attached to later, e.g. by QEMU).
 ///
-/// The supervisor binds the listener **before** launching qemu, then passes
-/// qemu a matching `-chardev socket,...,server=off` (qemu connects as the
-/// client). After launch, [`accept`](SerialSocket::accept) yields the single
-/// qemu connection as a readable byte stream — the `serial` log channel.
+/// The supervisor binds the listener before launching the job. For QEMU, it
+/// will then passes qemu a matching `-chardev socket,...,server=off` (QEMU
+/// connects as the client). After launch, [`accept`](SerialSocket::accept)
+/// yields the single qemu connection as a readable byte stream, fed into the `serial`
+/// log channel.
 ///
-/// Unix sockets are local I/O (unlike a TCP-binding daemon), so this works in
-/// the restricted sandbox.
+/// TODO: how much of this is actually specific to the QEMU supervisor, and
+/// should be moved there?
 #[derive(Debug)]
 pub struct SerialSocket {
     listener: UnixListener,
@@ -42,8 +32,8 @@ pub struct SerialSocket {
 }
 
 impl SerialSocket {
-    /// Bind a fresh serial socket at `path`, removing any stale socket file left
-    /// behind by a prior run first.
+    /// Bind a fresh serial socket at `path`, removing any stale socket file
+    /// left behind by a prior run first.
     pub async fn bind(path: impl Into<PathBuf>) -> std::io::Result<Self> {
         let path = path.into();
         // A leftover socket file from a previous (crashed) run would make
@@ -57,8 +47,9 @@ impl SerialSocket {
         Ok(SerialSocket { listener, path })
     }
 
-    /// Filesystem path of the bound socket — embed this in qemu's
-    /// `-chardev socket,...,path=<...>` argument.
+    /// Filesystem path of the bound socket.
+    ///
+    /// Embed this in qemu's `-chardev socket,...,path=<...>` argument.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -80,15 +71,17 @@ impl SerialSocket {
     }
 }
 
-/// Phase 3a interim consumer of the captured channels.
+/// Fallback consumer of the captured channels.
 ///
 /// Drains each present channel into the supervisor's own stdout/stderr so the
 /// operator keeps seeing console output and qemu's stdout/stderr pipes never
 /// fill (an undrained pipe would block qemu). The serial connection is accepted
 /// lazily inside the spawned task so the caller is not blocked waiting on qemu.
 ///
-/// Phase 3b replaces this with the durable spill/publish path; the capture
-/// surface it consumes ([`BoxedAsyncRead`] + [`SerialSocket`]) stays the same.
+/// TODO: this is probably never something we actually want. Instead, logs
+/// should be written to a local file, or entirely discarded, when no log
+/// streaming option is present. The job's output shouldn't be able to pollute
+/// the host's journal. Refactor accordingly.
 pub fn drain_to_stdio(
     stdout: Option<BoxedAsyncRead>,
     stderr: Option<BoxedAsyncRead>,

@@ -2,8 +2,8 @@ name: treadmill-images
 env:
   TERM: xterm # Makes tput work in actions output
 
-# Producer-side image builds via the libguestfs pipeline
-# (doc/images-libguestfs-build-plan.md). Each image *family* builds on its own
+# Producer-side image builds via the libguestfs pipeline. Each image *family*
+# builds on its own
 # hosted runner with a matched host architecture (KVM-accelerated libguestfs):
 # Ubuntu on x86_64, Raspberry Pi OS on aarch64. The dispatch checkboxes select
 # which families to actually build; the `prepare` job turns them into the build

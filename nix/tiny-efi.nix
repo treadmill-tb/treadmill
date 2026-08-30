@@ -102,7 +102,7 @@
         name = "rev1";
         sentinel = "TREADMILL_OK rev=1";
       };
-      # Kept available for the Phase 5 add-a-layer test (rev=2 overlay).
+      # Kept available for an add-a-layer test (rev=2 overlay).
       efiRev2 = mkEfiApp {
         name = "rev2";
         sentinel = "TREADMILL_OK rev=2";
@@ -159,7 +159,7 @@
       # (the rewritten BOOT*.EFI plus the FAT/dir metadata that moves with
       # it). `convert -B` writes just the differences against the base; the
       # `rebase -u -b ""` then strips the baked backing reference so the shared
-      # blob names no path — the chain is supplied at runtime (D3). Read alone
+      # blob names no path — the chain is supplied at runtime. Read alone
       # the overlay is an incomplete FAT (a tripwire for a missing base); only
       # stacked over the base does it yield the rev=1 ESP.
       overlayQcow2 =

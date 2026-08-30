@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
+use treadmill_rs::util::Secret;
 use treadmill_rs::util::chrono::duration as human_duration;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -83,8 +84,7 @@ impl SwitchboardConfig {
 ///
 /// Supervisor console output is published to a per-job JetStream stream; the
 /// switchboard mints short-lived, per-job **bearer** user JWTs that the NATS
-/// server validates against the scope it grants. See
-/// `doc/log-streaming-plan.md`.
+/// server validates against the scope it grants.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LogStreamingConfig {
     /// NATS client URL the supervisors and read clients connect to (e.g.
@@ -191,7 +191,7 @@ pub struct GitHubOAuthConfig {
     /// OAuth app client id.
     pub client_id: String,
     /// OAuth app client secret.
-    pub client_secret: String,
+    pub client_secret: Secret<String>,
     /// Absolute URL the provider redirects back to (must match the OAuth app's
     /// configured callback), e.g. `https://switchboard.example/api/v1/auth/github/callback`.
     pub redirect_url: String,

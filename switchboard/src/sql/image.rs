@@ -4,8 +4,8 @@
 //!
 //! The catalog stores only references for concrete images — a content-addressed
 //! digest and the `{registry, repository}` sources that serve it — never image
-//! bytes (see `doc/oci-image-migration-plan.md` §5.3/§8). An image is a non-owned
-//! manifest identity; the *sources* behind it are the ownable, grantable entity.
+//! bytes. An image is a non-owned manifest identity; the *sources* behind it
+//! are the ownable, grantable entity.
 //! Image *sets* are mutable, named, generationed entities. These helpers back
 //! the registration/list routes ([`crate::routes::images`]) and the
 //! dispatch-time image resolver ([`crate::sql::job`]).

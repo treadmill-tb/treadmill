@@ -24,6 +24,7 @@ use nats_jwt::{KeyPair, Token};
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard_supervisor::LogStreamingDispatch;
+use treadmill_rs::util::Secret;
 
 use crate::config::LogStreamingConfig;
 
@@ -228,7 +229,7 @@ pub fn build_dispatch(
     Ok(LogStreamingDispatch {
         nats_url: config.nats_url.clone(),
         subject_prefix: subject_prefix(job_id),
-        write_token,
+        write_token: Secret::new(write_token),
         console_input_subject: Some(console_input_subject(job_id)),
         inbox_prefix: Some(supervisor_inbox_prefix(job_id)),
     })
@@ -636,7 +637,7 @@ mod tests {
             Some(console_input_subject(job_id))
         );
         assert_eq!(dispatch.inbox_prefix, Some(supervisor_inbox_prefix(job_id)));
-        let claims = decode_claims(&dispatch.write_token);
+        let claims = decode_claims(dispatch.write_token.expose());
         assert_eq!(allow(&claims, "pub"), vec![subject_scope(job_id)]);
         assert_eq!(
             allow(&claims, "sub"),

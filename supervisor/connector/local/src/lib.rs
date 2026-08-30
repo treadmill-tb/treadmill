@@ -8,20 +8,21 @@
 //! reports its lifecycle to the terminal, and tears down on guest exit or
 //! Ctrl-C. No Postgres, NATS, or switchboard is involved.
 //!
-//! The connector is generic over [`connector::Supervisor`], so it works with
-//! any supervisor that wires it in (the QEMU supervisor today; the nbd-netboot
-//! supervisor once its job core lands). The per-job inputs are parsed by the
-//! reusable [`LocalJobArgs`] (a [`clap::Args`] each supervisor `main` can
+//! The connector drives the supervisor through a [`connector::CoordCommand`]
+//! channel, so it works with any supervisor that wires it in (the QEMU
+//! supervisor today; the nbd-netboot supervisor once its job core lands). The
+//! per-job inputs are parsed by the reusable [`LocalJobArgs`] (a
+//! [`clap::Args`] each supervisor `main` can
 //! `#[command(flatten)]`), keeping the supervisor protocol digest-addressed:
 //! registry concerns (tag→digest resolution, pulling into the local store) are
 //! the launcher's responsibility, not this connector's.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{Level, event};
 use uuid::Uuid;
 
@@ -29,12 +30,8 @@ use treadmill_rs::api::switchboard_supervisor::{
     ImageLocation, ImageSpecification, ParameterValue, RestartPolicy, RunningJobState,
     SupervisorEvent, SupervisorJobEvent,
 };
-use treadmill_rs::connector::{self, RemoveJobMessage, StartJobMessage, TerminateJobMessage};
+use treadmill_rs::connector::{self, CoordCommand, JobError, StartJobMessage};
 use treadmill_rs::image::Digest;
-
-/// How long to wait for the supervisor to report `Terminated` after a stop is
-/// requested before giving up and letting `run()` return anyway.
-const STOP_GRACE: Duration = Duration::from_secs(30);
 
 /// Per-job inputs for a standalone supervisor run, parsed on the command line.
 ///
@@ -88,36 +85,31 @@ fn parse_param(s: &str) -> Result<(String, String), String> {
 }
 
 /// A switchboard-less connector that drives a supervisor through a single job.
-///
-/// Like [`treadmill_ws_connector::WsConnector`], the connector and the
-/// supervisor hold references to each other, so the supervisor is held as a
-/// [`Weak`] (broken cyclically with [`Arc::new_cyclic`] at construction).
 #[derive(Debug)]
-pub struct LocalConnector<S: connector::Supervisor> {
-    inner: Arc<Inner<S>>,
+pub struct LocalConnector {
+    inner: Arc<Inner>,
     shutdown_tx: watch::Sender<bool>,
 }
 
 #[derive(Debug)]
-struct Inner<S: connector::Supervisor> {
+struct Inner {
     /// Local OCI store authority (`host:port`) advertised as the image
     /// location; mirrors `[oci_store].registry` in the supervisor config.
     registry: String,
     args: LocalJobArgs,
     /// The job id this run drives (from `--job-id`, or freshly generated).
     job_id: Uuid,
-    supervisor: Weak<S>,
+    commands: mpsc::Sender<CoordCommand>,
     /// Observed by `run()`: set to `true` by `request_shutdown`.
     shutdown_rx: watch::Receiver<bool>,
-    /// Set to `true` once the supervisor reports the job `Terminated` (or a
-    /// fatal job error, which the supervisors emit just before tearing the job
-    /// down). `run()` waits on this to complete the one-shot.
+    /// Set to `true` once the supervisor reports the job `Terminated`. `run()`
+    /// waits on this to notice a job that ended on its own.
     terminated_tx: watch::Sender<bool>,
     terminated_rx: watch::Receiver<bool>,
 }
 
-impl<S: connector::Supervisor> LocalConnector<S> {
-    pub fn new(registry: String, args: LocalJobArgs, supervisor: Weak<S>) -> Self {
+impl LocalConnector {
+    pub fn new(registry: String, args: LocalJobArgs, commands: mpsc::Sender<CoordCommand>) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (terminated_tx, terminated_rx) = watch::channel(false);
         let job_id = args.job_id.unwrap_or_else(Uuid::new_v4);
@@ -126,7 +118,7 @@ impl<S: connector::Supervisor> LocalConnector<S> {
                 registry,
                 args,
                 job_id,
-                supervisor,
+                commands,
                 shutdown_rx,
                 terminated_tx,
                 terminated_rx,
@@ -134,22 +126,21 @@ impl<S: connector::Supervisor> LocalConnector<S> {
             shutdown_tx,
         }
     }
-
-    /// Request a graceful shutdown: `run()` stops the job and returns. Wired to
-    /// a Ctrl-C / signal handler by the supervisor `main`. Ignoring the send
-    /// error is fine — it only fails if `run()` already returned.
-    pub fn request_shutdown(&self) {
-        let _ = self.shutdown_tx.send(true);
-    }
 }
 
 #[async_trait]
-impl<S: connector::Supervisor> connector::SupervisorConnector for LocalConnector<S> {
+impl connector::SupervisorConnector for LocalConnector {
     async fn run(&self) -> Result<(), ()> {
         Inner::run(&self.inner).await
     }
 
-    async fn update_event(&self, supervisor_event: SupervisorEvent) {
+    /// `run()` stops the job and returns. Ignoring the send error is fine — it
+    /// only fails if `run()` already returned.
+    fn request_shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
+    }
+
+    async fn emit(&self, supervisor_event: SupervisorEvent) {
         let SupervisorEvent::JobEvent { job_id, event } = supervisor_event;
         match event {
             SupervisorJobEvent::StateTransition {
@@ -168,12 +159,9 @@ impl<S: connector::Supervisor> connector::SupervisorConnector for LocalConnector
                 }
             }
             SupervisorJobEvent::Error { error } => {
-                // The supervisors report an error and then tear the job down;
-                // some failure paths (e.g. image fetch) never reach
-                // `Terminated`. Treat any reported error as terminal so the
-                // one-shot `run()` does not hang.
+                // The error is the cause of a termination, never a substitute
+                // for it: the terminal transition still follows.
                 event!(Level::ERROR, %job_id, ?error, "job error reported");
-                let _ = self.inner.terminated_tx.send(true);
             }
             other => {
                 event!(Level::DEBUG, %job_id, ?other, "ignoring supervisor event");
@@ -182,16 +170,8 @@ impl<S: connector::Supervisor> connector::SupervisorConnector for LocalConnector
     }
 }
 
-impl<S: connector::Supervisor> Inner<S> {
+impl Inner {
     async fn run(self: &Arc<Self>) -> Result<(), ()> {
-        let Some(supervisor) = self.supervisor.upgrade() else {
-            event!(
-                Level::ERROR,
-                "supervisor dropped before run(); cannot start job"
-            );
-            return Err(());
-        };
-
         // The image fields are `Option` for flattening (see [`LocalJobArgs`]),
         // but a job cannot start without them.
         let (Some(manifest_digest), Some(repository)) =
@@ -244,8 +224,15 @@ impl<S: connector::Supervisor> Inner<S> {
             repository,
             "starting one-shot local job",
         );
-        if let Err(e) = connector::Supervisor::start_job(&supervisor, start).await {
-            event!(Level::ERROR, error = ?e, "failed to start job");
+        // A start failure has no acknowledgement: the supervisor reports it as
+        // a job error, which `emit` folds into `terminated_tx` below.
+        if self
+            .commands
+            .send(CoordCommand::StartJob(start))
+            .await
+            .is_err()
+        {
+            event!(Level::ERROR, "supervisor is not accepting commands");
             return Err(());
         }
 
@@ -274,38 +261,37 @@ impl<S: connector::Supervisor> Inner<S> {
             }
         }
 
-        // Graceful stop, then wait (bounded) for the supervisor to confirm
-        // teardown so we don't return while qemu is still being killed.
-        if let Err(e) = connector::Supervisor::terminate_job(
-            &supervisor,
-            TerminateJobMessage {
-                job_id: self.job_id,
-            },
-        )
-        .await
-        {
-            event!(Level::WARN, error = ?e, "terminate_job returned an error");
-        }
-        if tokio::time::timeout(STOP_GRACE, terminated_rx.wait_for(|t| *t))
+        // Both commands are acknowledged once the supervisor has carried them
+        // out, so this does not return while qemu is still being killed or its
+        // resources are still being released.
+        let job_id = self.job_id;
+        if let Err(e) = self
+            .request(|ack| CoordCommand::TerminateJob { job_id, ack })
             .await
-            .is_err()
         {
-            event!(
-                Level::WARN,
-                "job did not report Terminated within the grace period; exiting anyway",
-            );
+            event!(Level::WARN, error = ?e, "terminating the job returned an error");
         }
-        if let Err(e) = connector::Supervisor::remove_job(
-            &supervisor,
-            RemoveJobMessage {
-                job_id: self.job_id,
-            },
-        )
-        .await
+        if let Err(e) = self
+            .request(|ack| CoordCommand::RemoveJob { job_id, ack })
+            .await
         {
-            event!(Level::WARN, error = ?e, "remove_job returned an error");
+            event!(Level::WARN, error = ?e, "removing the job returned an error");
         }
         Ok(())
+    }
+
+    /// Issue one acknowledged command and wait for the supervisor's answer. A
+    /// supervisor that is gone can no longer be holding the job, so its silence
+    /// satisfies the command.
+    async fn request(
+        &self,
+        command: impl FnOnce(oneshot::Sender<Result<(), JobError>>) -> CoordCommand,
+    ) -> Result<(), JobError> {
+        let (ack, acked) = oneshot::channel();
+        if self.commands.send(command(ack)).await.is_err() {
+            return Ok(());
+        }
+        acked.await.unwrap_or(Ok(()))
     }
 }
 
@@ -315,60 +301,69 @@ mod tests {
 
     use std::sync::Mutex;
 
-    use treadmill_rs::api::switchboard_supervisor::JobInitializingStage;
-    use treadmill_rs::connector::{JobError, Supervisor, SupervisorConnector};
+    use treadmill_rs::api::switchboard_supervisor::{
+        JobInitializingStage, ReportedSupervisorStatus,
+    };
+    use treadmill_rs::connector::SupervisorConnector;
 
-    /// A stub supervisor that records the start/stop calls it receives and
-    /// reports lifecycle events back through its connector. When
-    /// `terminate_on_start` is set it reports `Terminated` immediately (a job
-    /// that ends on its own); otherwise it reaches `Booting` and only reports
-    /// `Terminated` in response to `terminate_job`.
-    #[derive(Debug)]
-    struct StubSupervisor {
-        connector: Arc<LocalConnector<StubSupervisor>>,
+    /// Stands in for the supervisor core: drains the command channel, records
+    /// what it was asked to do, and reports the lifecycle back through the
+    /// connector. With `terminate_on_start` it reports `Terminated` right away
+    /// (a job that ends on its own); otherwise it reaches `Booting` and only
+    /// terminates when asked to.
+    async fn serve(
+        connector: Arc<LocalConnector>,
+        mut commands: mpsc::Receiver<CoordCommand>,
         terminate_on_start: bool,
-        calls: Mutex<Vec<&'static str>>,
-    }
+        calls: Arc<Mutex<Vec<&'static str>>>,
+    ) {
+        let mut held: Option<(Uuid, RunningJobState)> = None;
 
-    #[async_trait]
-    impl Supervisor for StubSupervisor {
-        async fn start_job(this: &Arc<Self>, req: StartJobMessage) -> Result<(), JobError> {
-            this.calls.lock().unwrap().push("start");
-            if this.terminate_on_start {
-                this.connector
-                    .update_job_state(req.job_id, RunningJobState::Terminated, None)
-                    .await;
-            } else {
-                this.connector
-                    .update_job_state(
-                        req.job_id,
+        while let Some(command) = commands.recv().await {
+            match command {
+                CoordCommand::StartJob(req) => {
+                    calls.lock().unwrap().push("start");
+                    let state = if terminate_on_start {
+                        RunningJobState::Terminated
+                    } else {
                         RunningJobState::Initializing {
                             stage: JobInitializingStage::Booting,
-                        },
-                        None,
-                    )
-                    .await;
+                        }
+                    };
+                    held = Some((req.job_id, state.clone()));
+                    connector.update_job_state(req.job_id, state, None).await;
+                }
+
+                CoordCommand::TerminateJob { job_id, ack } => {
+                    calls.lock().unwrap().push("terminate");
+                    held = Some((job_id, RunningJobState::Terminated));
+                    connector
+                        .update_job_state(job_id, RunningJobState::Terminated, None)
+                        .await;
+                    let _ = ack.send(Ok(()));
+                }
+
+                CoordCommand::RemoveJob { job_id: _, ack } => {
+                    calls.lock().unwrap().push("remove");
+                    held = None;
+                    let _ = ack.send(Ok(()));
+                }
+
+                CoordCommand::StatusRequest { reply } => {
+                    let _ = reply.send(match held.clone() {
+                        None => ReportedSupervisorStatus::Idle,
+                        Some((job_id, job_state)) => {
+                            ReportedSupervisorStatus::HoldingJob { job_id, job_state }
+                        }
+                    });
+                }
             }
-            Ok(())
-        }
-
-        async fn terminate_job(this: &Arc<Self>, req: TerminateJobMessage) -> Result<(), JobError> {
-            this.calls.lock().unwrap().push("terminate");
-            this.connector
-                .update_job_state(req.job_id, RunningJobState::Terminated, None)
-                .await;
-            Ok(())
-        }
-
-        async fn remove_job(this: &Arc<Self>, _req: RemoveJobMessage) -> Result<(), JobError> {
-            this.calls.lock().unwrap().push("remove");
-            Ok(())
         }
     }
 
-    fn build(
-        terminate_on_start: bool,
-    ) -> (Arc<StubSupervisor>, Arc<LocalConnector<StubSupervisor>>) {
+    /// A connector with a stub supervisor draining its commands, plus the log
+    /// of the commands that supervisor received.
+    fn build(terminate_on_start: bool) -> (Arc<LocalConnector>, Arc<Mutex<Vec<&'static str>>>) {
         let args = LocalJobArgs {
             manifest_digest: Some(
                 "sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -381,36 +376,34 @@ mod tests {
             job_id: Some(Uuid::new_v4()),
         };
 
-        let mut connector_opt = None;
-        let supervisor = {
-            let connector_opt = &mut connector_opt;
-            Arc::new_cyclic(move |weak| {
-                let connector = Arc::new(LocalConnector::new(
-                    "127.0.0.1:5000".to_string(),
-                    args,
-                    weak.clone(),
-                ));
-                *connector_opt = Some(connector.clone());
-                StubSupervisor {
-                    connector,
-                    terminate_on_start,
-                    calls: Mutex::new(vec![]),
-                }
-            })
-        };
-        (supervisor, connector_opt.take().unwrap())
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let connector = Arc::new(LocalConnector::new(
+            "127.0.0.1:5000".to_string(),
+            args,
+            command_tx,
+        ));
+        let calls = Arc::new(Mutex::new(vec![]));
+
+        tokio::spawn(serve(
+            connector.clone(),
+            command_rx,
+            terminate_on_start,
+            calls.clone(),
+        ));
+
+        (connector, calls)
     }
 
-    async fn wait_for_calls(sup: &Arc<StubSupervisor>, expected: &[&str]) {
+    async fn wait_for_calls(calls: &Mutex<Vec<&'static str>>, expected: &[&str]) {
         for _ in 0..200 {
-            if sup.calls.lock().unwrap().as_slice() == expected {
+            if calls.lock().unwrap().as_slice() == expected {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         panic!(
             "calls {:?} never reached {expected:?}",
-            sup.calls.lock().unwrap()
+            calls.lock().unwrap()
         );
     }
 
@@ -418,33 +411,29 @@ mod tests {
     /// the job and return `Ok`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shutdown_stops_running_job() {
-        let (sup, connector) = build(false);
+        let (connector, calls) = build(false);
         let run = {
             let connector = connector.clone();
             tokio::spawn(async move { connector.run().await })
         };
 
         // The job started and reached Booting; it is now running.
-        wait_for_calls(&sup, &["start"]).await;
+        wait_for_calls(&calls, &["start"]).await;
 
         connector.request_shutdown();
         assert_eq!(run.await.unwrap(), Ok(()));
         assert_eq!(
-            sup.calls.lock().unwrap().as_slice(),
+            calls.lock().unwrap().as_slice(),
             &["start", "terminate", "remove"]
         );
-
-        // Keep the supervisor alive until after run() upgraded its Weak.
-        drop(sup);
     }
 
     /// Self-termination path: a job that ends on its own makes `run()` return
     /// without ever issuing a terminate.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn self_termination_exits_without_stop() {
-        let (sup, connector) = build(true);
+        let (connector, calls) = build(true);
         assert_eq!(connector.run().await, Ok(()));
-        assert_eq!(sup.calls.lock().unwrap().as_slice(), &["start"]);
-        drop(sup);
+        assert_eq!(calls.lock().unwrap().as_slice(), &["start"]);
     }
 }

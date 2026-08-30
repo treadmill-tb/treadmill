@@ -1,10 +1,9 @@
 //! OCI content digests.
 //!
-//! Under the OCI migration (see `doc/oci-image-migration-plan.md`), every blob,
-//! image manifest, and image index is addressed by its OCI digest. Treadmill
-//! only ever emits and accepts **SHA-256** digests, the universally-supported
-//! OCI algorithm — other algorithms are rejected at parse time rather than
-//! silently mishandled.
+//! Under the OCI migration, every blob, image manifest, and image index is
+//! addressed by its OCI digest. Treadmill only ever emits and accepts
+//! **SHA-256** digests, the universally-supported OCI algorithm — other
+//! algorithms are rejected at parse time rather than silently mishandled.
 //!
 //! The canonical string form is `sha256:<64 lower-case hex chars>`. Use
 //! [`Digest::hex`] for the bare hex (e.g. to build a `blobs/sha256/<hex>` store

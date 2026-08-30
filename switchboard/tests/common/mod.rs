@@ -16,6 +16,7 @@ use tokio::net::TcpListener;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::{LoginResponse, LoginStagedResponse, WhoAmIResponse};
+use treadmill_rs::util::Secret;
 use treadmill_switchboard::auth::engine::ADMINS_GROUP_ID;
 use treadmill_switchboard::config::{
     DatabaseConfig, GitHubOAuthConfig, MockOAuthConfig, OAuthConfig, ServerConfig, ServiceConfig,
@@ -63,7 +64,7 @@ pub fn test_config(gh_uri: &str) -> SwitchboardConfig {
         oauth: OAuthConfig {
             github: Some(GitHubOAuthConfig {
                 client_id: "test-client".to_string(),
-                client_secret: "test-secret".to_string(),
+                client_secret: Secret::new("test-secret".to_string()),
                 redirect_url: "http://localhost/api/v1/auth/github/callback".to_string(),
                 auth_url: "http://localhost/login/oauth/authorize".to_string(),
                 token_url: format!("{gh_uri}/login/oauth/access_token"),

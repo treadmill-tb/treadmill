@@ -5,8 +5,7 @@
 # qcow2 differential overlay (`virt-customize`, no guest boot), finalizes the
 # delta, then assembles + validates an OCI image layout via `image-util`.
 #
-# See doc/images-libguestfs-build-plan.md §5. Two image types, and a base variant
-# plus any number of overlay variants:
+# Two image types, and a base variant plus any number of overlay variants:
 #
 #   type=disk  (manifest)  the cloud image IS a whole-disk qcow2 (Ubuntu): it is
 #                          the verbatim lowest root layer; our delta overlays it.

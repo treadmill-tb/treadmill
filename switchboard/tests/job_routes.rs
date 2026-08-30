@@ -1295,10 +1295,14 @@ async fn admin_gets_a_read_token_for_any_job(pool: PgPool) {
     assert_eq!(creds.inbox_prefix, format!("_INBOX.logs-{job_id}"));
     assert_eq!(creds.jetstream_domain, None);
     assert_eq!(creds.expires_in_secs, 300);
-    assert!(!creds.token.is_empty(), "a token must be issued");
+    assert!(!creds.token.expose().is_empty(), "a token must be issued");
     // Sanity: a JWT has three dot-separated segments. (The token's scope/shape
     // is asserted exhaustively in the log_streaming unit tests.)
-    assert_eq!(creds.token.split('.').count(), 3, "token looks like a JWT");
+    assert_eq!(
+        creds.token.expose().split('.').count(),
+        3,
+        "token looks like a JWT"
+    );
 }
 
 #[sqlx::test]
@@ -1398,7 +1402,7 @@ async fn owner_gets_a_console_input_token_provisioned_and_audited(pool: PgPool) 
 
     // The token is a bearer JWT that may publish to exactly the input subject,
     // subscribe to nothing, and expires.
-    let claims = decode_jwt_claims(&creds.token);
+    let claims = decode_jwt_claims(creds.token.expose());
     assert_eq!(claims["nats"]["bearer_token"], true);
     assert_eq!(
         claims["nats"]["pub"]["allow"],
@@ -1727,7 +1731,7 @@ async fn owner_gets_a_service_token_audited(pool: PgPool) {
 
     // The token names exactly this job's service, at the address a gateway is
     // to dial, on behalf of the caller.
-    let claims = decode_jwt_claims(&creds.token);
+    let claims = decode_jwt_claims(creds.token.expose());
     assert_eq!(claims["iss"], GATEWAY_ISSUER);
     assert_eq!(claims["sub"], bob.to_string());
     assert_eq!(claims["aud"], format!("webide-{job_id}"));

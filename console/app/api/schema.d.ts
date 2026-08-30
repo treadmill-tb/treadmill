@@ -1260,7 +1260,7 @@ export interface components {
              */
             expires_at: string;
             /** @description The signed token admitting the caller to this one service. */
-            token: string;
+            token: components["schemas"]["Secret"];
         };
         /** @description An endpoint under which a job's announced service can be reached. */
         JobServiceEndpoint: {
@@ -1398,7 +1398,7 @@ export interface components {
              */
             staged_id: string;
             /** @description Its one-time secret, from [`LoginStagedResponse::staged_secret`]. */
-            staged_secret: string;
+            staged_secret: components["schemas"]["Secret"];
             /**
              * Format: int32
              * @description The ToS version the user was shown and accepted (only mandatory if
@@ -1457,7 +1457,7 @@ export interface components {
              * @description Single-use secret that `/auth/login/complete` exchanges for an auth
              *     token.
              */
-            staged_secret: string;
+            staged_secret: components["schemas"]["Secret"];
             /**
              * Format: int32
              * @description The ToS version the user is being asked to accept (if `required`
@@ -1508,7 +1508,7 @@ export interface components {
             /** @description The subject to publish typed input to: `console-in.<job-id>`. */
             subject: string;
             /** @description Bearer user JWT authorizing publish to `subject`. */
-            token: string;
+            token: components["schemas"]["Secret"];
             /**
              * @description NATS **WebSocket** URL (e.g. `wss://nats.example:443`), for browser
              *     clients, which cannot speak the plain TCP protocol. Absent when the
@@ -1567,7 +1567,7 @@ export interface components {
              */
             subject: string;
             /** @description Bearer user JWT authorizing the scope described above. */
-            token: string;
+            token: components["schemas"]["Secret"];
             /**
              * @description NATS **WebSocket** URL (e.g. `wss://nats.example:443`), for browser
              *     clients, which cannot speak the plain TCP protocol. Absent when the
@@ -1653,6 +1653,17 @@ export interface components {
              */
             remaining_restarts: number;
         };
+        /**
+         * @description A value that must not appear in logs.
+         *
+         *     The wrapper is transparent on the wire — these types exist to be sent, and
+         *     serialize as the bare inner value — and redacts only [`Debug`], which is
+         *     what tracing and `{:?}` reach for. There is deliberately no `Display`,
+         *     `Deref`, `AsRef` or `PartialEq`: every read is a visible
+         *     [`expose`](Self::expose), and no comparison silently picks up a
+         *     non-constant-time `==`.
+         */
+        Secret: string;
         /**
          * @description The owner's full view of their own profile: the public subset plus the
          *     private additions only the account holder may see.

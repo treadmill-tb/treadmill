@@ -4,8 +4,7 @@
 //! identity with one *location* — a `(registry, repository)` that serves the
 //! bytes. The same digest may be reachable through many `ImageRef`s (registry
 //! redundancy, promotion to a canonical location); any of them is interchangeable
-//! because a pull is always verified against the digest. See
-//! `doc/oci-image-migration-plan.md` §5/§D16.
+//! because a pull is always verified against the digest.
 //!
 //! The canonical string form is `registry/repository@sha256:<hex>`, where
 //! `repository` may itself contain `/`.

@@ -95,7 +95,7 @@
       "type": "string"
     },
     "ImageLocation": {
-      "description": "One registry location an image can be pulled from.\n\nAn image's *identity* is its `manifest_digest`; a location is a\n`(registry, repository)` that serves those bytes. The supervisor protocol\ncarries an ordered list of locations so a supervisor can fail over across\nthem — every location serves the same digest, so any that succeeds is\ninterchangeable (see `doc/oci-image-migration-plan.md` §D12/§D16).",
+      "description": "One registry location an image can be pulled from.\n\nAn image's *identity* is its `manifest_digest`; a location is a\n`(registry, repository)` that serves those bytes. The supervisor protocol\ncarries an ordered list of locations so a supervisor can fail over across\nthem — every location serves the same digest, so any that succeeds is\ninterchangeable.",
       "type": "object",
       "properties": {
         "registry": {
@@ -133,7 +133,7 @@
           ]
         },
         {
-          "description": "Which image to base this job off. If the image is not locally cached\nat the supervisor, it will be fetched (from one of `locations`) prior\nto executing the job.\n\nThe supervisor protocol is always **content-addressed**: an image is\nidentified by the OCI `manifest_digest` of its manifest, and\n`locations` is an ordered, failover list of the registry locations that\nserve it. Switchboard resolves human labels/sets to a concrete digest\n+ locations before dispatch (Phase 4).\n\nNote that if a job is being restarted, it will use this variant.",
+          "description": "Which image to base this job off. If the image is not locally cached\nat the supervisor, it will be fetched (from one of `locations`) prior\nto executing the job.\n\nThe supervisor protocol is always **content-addressed**: an image is\nidentified by the OCI `manifest_digest` of its manifest, and\n`locations` is an ordered, failover list of the registry locations that\nserve it. Switchboard resolves human labels/sets to a concrete digest\n+ locations before dispatch.\n\nNote that if a job is being restarted, it will use this variant.",
           "type": "object",
           "properties": {
             "locations": {
@@ -240,7 +240,7 @@
         },
         "write_token": {
           "description": "Bearer user JWT scoped to this job's subjects (see the sibling fields).",
-          "type": "string"
+          "$ref": "#/$defs/Secret"
         }
       },
       "required": [
@@ -347,6 +347,10 @@
       "required": [
         "remaining_restart_count"
       ]
+    },
+    "Secret": {
+      "description": "A value that must not appear in logs.\n\nThe wrapper is transparent on the wire — these types exist to be sent, and\nserialize as the bare inner value — and redacts only [`Debug`], which is\nwhat tracing and `{:?}` reach for. There is deliberately no `Display`,\n`Deref`, `AsRef` or `PartialEq`: every read is a visible\n[`expose`](Self::expose), and no comparison silently picks up a\nnon-constant-time `==`.",
+      "type": "string"
     },
     "StartJobMessage": {
       "type": "object",

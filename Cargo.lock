@@ -4593,6 +4593,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",
@@ -4871,19 +4872,15 @@ name = "treadmill-nbd-netboot-supervisor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-recursion",
  "async-trait",
  "clap",
  "serde",
  "tokio",
  "toml 1.1.3+spec-1.1.0",
  "tracing",
- "tracing-subscriber",
  "treadmill-rs",
  "treadmill-supervisor-lib",
- "treadmill-tcp-control-socket-server",
  "treadmill-ws-connector",
- "uuid",
 ]
 
 [[package]]
@@ -4920,13 +4917,12 @@ dependencies = [
  "strfmt",
  "tempfile",
  "tokio",
+ "tokio-util",
  "toml 1.1.3+spec-1.1.0",
  "tracing",
- "tracing-subscriber",
  "treadmill-local-connector",
  "treadmill-rs",
  "treadmill-supervisor-lib",
- "treadmill-tcp-control-socket-server",
  "treadmill-ws-connector",
  "uuid",
 ]
@@ -4948,6 +4944,7 @@ dependencies = [
  "serde_with",
  "subtle",
  "thiserror 2.0.19",
+ "tokio",
  "tracing",
  "uuid",
 ]
@@ -4960,6 +4957,7 @@ dependencies = [
  "async-nats",
  "async-trait",
  "bytes",
+ "chrono",
  "futures-util",
  "humantime-serde",
  "oci-client",
@@ -4970,9 +4968,14 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tokio",
+ "tokio-stream",
+ "tokio-util",
  "toml 1.1.3+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
  "treadmill-rs",
+ "treadmill-tcp-control-socket-server",
+ "uuid",
 ]
 
 [[package]]

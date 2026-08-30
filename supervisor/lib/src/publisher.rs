@@ -1,4 +1,4 @@
-//! Durable per-channel log publisher (see `doc/log-streaming-plan.md` §2/§8).
+//! Durable per-channel log publisher.
 //!
 //! Each captured console channel (qemu stdout/stderr, serial) is shipped to a
 //! per-job JetStream stream with a **must-not-lose** guarantee: the supervisor
@@ -51,6 +51,7 @@
 //! run `nats-server`).
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -64,10 +65,13 @@ use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::sync::Notify;
+use tokio_util::task::TaskTracker;
 
 use treadmill_rs::api::switchboard_supervisor::{LogChannel, LogStreamingDispatch};
 
 use crate::capture::SerialSocket;
+use tracing::level_filters::LevelFilter;
+
 use crate::launcher::BoxedAsyncRead;
 
 /// Spill-frame header: `ts_ns: u64-le` + `payload_len: u32-le`.
@@ -98,6 +102,13 @@ fn default_flush_interval() -> Duration {
     DEFAULT_FLUSH_INTERVAL
 }
 
+/// Default [`LogPublisherConfig::job_log_level`].
+const DEFAULT_JOB_LOG_LEVEL: LevelFilter = LevelFilter::INFO;
+
+fn default_job_log_level() -> String {
+    DEFAULT_JOB_LOG_LEVEL.to_string()
+}
+
 /// Local tuning of a supervisor's capture→publish path, exposed under
 /// `[log_streaming]` in its configuration file. Every field has a default, so
 /// the section may be omitted entirely.
@@ -121,6 +132,13 @@ pub struct LogPublisherConfig {
     /// proportionally more (and smaller) NATS messages.
     #[serde(with = "humantime_serde", default = "default_flush_interval")]
     pub flush_interval: Duration,
+
+    /// Level at or above which the supervisor's own tracing events are
+    /// forwarded to a job's log stream, as a `tracing` level filter (`off`
+    /// through `trace`). Independent of `RUST_LOG`, which governs only what
+    /// this supervisor's terminal shows.
+    #[serde(default = "default_job_log_level")]
+    pub job_log_level: String,
 }
 
 impl Default for LogPublisherConfig {
@@ -128,6 +146,7 @@ impl Default for LogPublisherConfig {
         LogPublisherConfig {
             chunk_bytes: default_chunk_bytes(),
             flush_interval: default_flush_interval(),
+            job_log_level: default_job_log_level(),
         }
     }
 }
@@ -664,6 +683,7 @@ struct Inner {
     spill_dir: PathBuf,
     config: LogPublisherConfig,
     console_input: Option<ConsoleInput>,
+    tasks: TaskTracker,
 }
 
 /// Spawns the durable capture publisher for a job's log channels.
@@ -675,6 +695,14 @@ struct Inner {
 #[derive(Clone)]
 pub struct LogPublisher {
     inner: Arc<Inner>,
+}
+
+impl fmt::Debug for LogPublisher {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("LogPublisher")
+            .field("spill_dir", &self.inner.spill_dir)
+            .finish_non_exhaustive()
+    }
 }
 
 impl LogPublisher {
@@ -691,7 +719,7 @@ impl LogPublisher {
     ) -> Result<Self> {
         let client = bearer_connect(
             &dispatch.nats_url,
-            &dispatch.write_token,
+            dispatch.write_token.expose(),
             dispatch.inbox_prefix.as_deref(),
         )
         .await?;
@@ -713,6 +741,7 @@ impl LogPublisher {
                 spill_dir: spill_dir.into(),
                 config,
                 console_input,
+                tasks: TaskTracker::new(),
             }),
         })
     }
@@ -730,6 +759,7 @@ impl LogPublisher {
                 spill_dir: spill_dir.into(),
                 config,
                 console_input: None,
+                tasks: TaskTracker::new(),
             }),
         }
     }
@@ -738,7 +768,7 @@ impl LogPublisher {
     /// stdout/stderr).
     pub fn spawn_channel(&self, channel: LogChannel, reader: BoxedAsyncRead) {
         let inner = self.inner.clone();
-        tokio::spawn(async move {
+        self.inner.tasks.spawn(async move {
             if let Err(e) = run_channel(inner, channel, reader).await {
                 tracing::error!(
                     channel = channel.as_subject_token(),
@@ -755,7 +785,7 @@ impl LogPublisher {
     /// input from the input subject to the write half.
     pub fn spawn_serial(&self, channel: LogChannel, socket: SerialSocket) {
         let inner = self.inner.clone();
-        tokio::spawn(async move {
+        self.inner.tasks.spawn(async move {
             match socket.accept().await {
                 Ok(stream) => {
                     let reader: BoxedAsyncRead = match &inner.console_input {
@@ -780,31 +810,44 @@ impl LogPublisher {
             }
         });
     }
+
+    pub async fn drain(&self, timeout: Duration) {
+        self.inner.tasks.close();
+        if tokio::time::timeout(timeout, self.inner.tasks.wait())
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                unfinished_channels = self.inner.tasks.len(),
+                "log publisher drain timed out; dropping what those channels had left",
+            );
+        }
+    }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
 
     /// A captured publish: the args `ship_pending` handed the sink.
     #[derive(Debug, Clone, PartialEq, Eq)]
-    struct Published {
-        channel: LogChannel,
+    pub(crate) struct Published {
+        pub(crate) channel: LogChannel,
         msg_id: String,
         ts_ns: u64,
-        payload: Vec<u8>,
+        pub(crate) payload: Vec<u8>,
     }
 
     /// Stub [`ChunkSink`] recording every publish; optionally fails once the
     /// recorded count reaches `fail_after` (to drive the resume path).
-    struct RecordingSink {
+    pub(crate) struct RecordingSink {
         published: Mutex<Vec<Published>>,
         fail_after: Option<usize>,
     }
 
     impl RecordingSink {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             RecordingSink {
                 published: Mutex::new(Vec::new()),
                 fail_after: None,
@@ -816,7 +859,7 @@ mod tests {
                 fail_after: Some(n),
             }
         }
-        fn records(&self) -> Vec<Published> {
+        pub(crate) fn records(&self) -> Vec<Published> {
             self.published.lock().unwrap().clone()
         }
     }
@@ -1029,6 +1072,7 @@ mod tests {
             spill_dir: spill_dir.to_path_buf(),
             config,
             console_input: None,
+            tasks: TaskTracker::new(),
         }
     }
 
@@ -1045,6 +1089,7 @@ mod tests {
             LogPublisherConfig {
                 chunk_bytes: 64,
                 flush_interval: Duration::from_secs(3600),
+                ..LogPublisherConfig::default()
             },
         ));
 
@@ -1077,6 +1122,7 @@ mod tests {
             LogPublisherConfig {
                 chunk_bytes: 4096,
                 flush_interval: Duration::from_millis(50),
+                ..LogPublisherConfig::default()
             },
         ));
 
@@ -1379,6 +1425,7 @@ mod tests {
                     client: client.clone(),
                     subject: subject.clone(),
                 }),
+                tasks: TaskTracker::new(),
             }),
         };
         publisher.spawn_serial(LogChannel::Serial, socket);

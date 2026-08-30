@@ -17,6 +17,7 @@ use treadmill_rs::api::switchboard::jobs::{
     NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
+use treadmill_rs::util::Secret;
 
 use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_entity};
 use crate::audit::model::{Job as AuditJob, Subject as AuditSubject};
@@ -696,7 +697,7 @@ pub async fn nats_log_token(
         stream: log_streaming::stream_name(job_id),
         inbox_prefix: log_streaming::inbox_prefix(job_id),
         jetstream_domain: log_streaming.config.jetstream_domain.clone(),
-        token,
+        token: Secret::new(token),
         expires_in_secs: READ_TOKEN_TTL.as_secs(),
     }))
 }
@@ -780,7 +781,7 @@ pub async fn nats_console_input_token(
         nats_url: Some(log_streaming.config.nats_url.clone()),
         websocket_url: log_streaming.config.websocket_url.clone(),
         subject: log_streaming::console_input_subject(job_id),
-        token,
+        token: Secret::new(token),
         expires_in_secs: CONSOLE_INPUT_TOKEN_TTL.as_secs(),
     }))
 }
@@ -869,7 +870,7 @@ pub async fn service_token(
             .iter()
             .map(|ep| service_endpoint(job_id, &service, &ep.base_domain, ep.port))
             .collect(),
-        token: minted.token,
+        token: Secret::new(minted.token),
         expires_at: minted.expires_at,
     }))
 }

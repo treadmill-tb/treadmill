@@ -3595,6 +3595,7 @@ mod tests {
         // when empty but have no serde default).
         let payload = dispatch
             .write_token
+            .expose()
             .split('.')
             .nth(1)
             .expect("jwt has a payload segment");

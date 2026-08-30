@@ -30,6 +30,7 @@
 
 use crate::connector::JobError;
 use crate::image::Digest;
+use crate::util::Secret;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
@@ -126,7 +127,7 @@ impl std::fmt::Debug for ParameterValue {
 /// `(registry, repository)` that serves those bytes. The supervisor protocol
 /// carries an ordered list of locations so a supervisor can fail over across
 /// them — every location serves the same digest, so any that succeeds is
-/// interchangeable (see `doc/oci-image-migration-plan.md` §D12/§D16).
+/// interchangeable.
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct ImageLocation {
@@ -151,7 +152,7 @@ pub enum ImageSpecification {
     /// identified by the OCI `manifest_digest` of its manifest, and
     /// `locations` is an ordered, failover list of the registry locations that
     /// serve it. Switchboard resolves human labels/sets to a concrete digest
-    /// + locations before dispatch (Phase 4).
+    /// + locations before dispatch.
     ///
     /// Note that if a job is being restarted, it will use this variant.
     Image {
@@ -199,8 +200,14 @@ pub struct StartJobMessage {
     pub gateway: Option<JobGatewayDispatch>,
 }
 
-/// A supervisor console-output channel, used as the final token of a log
-/// stream's NATS subject (`logs.<job-id>.<channel>`).
+/// A subject token within a job's log stream — the final element of the NATS
+/// subject `logs.<job-id>.<channel>`.
+///
+/// Closed on purpose: it keeps the token vocabulary and the supervisor's spill
+/// filenames safe by construction, at the cost of one line here when a
+/// supervisor grows a channel. A consumer that meets a token it cannot parse
+/// skips it rather than failing — the data is still in the stream, it merely
+/// lacks a view.
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum LogChannel {
@@ -210,6 +217,10 @@ pub enum LogChannel {
     QemuStderr,
     /// The workload's serial console (qemu routes it to a `-chardev socket`).
     Serial,
+    /// The supervisor's own tracing events for this job, as JSONL.
+    Supervisor,
+    /// This job's view declarations (see [`LogViewManifest`]), as JSONL.
+    Meta,
 }
 
 impl LogChannel {
@@ -220,8 +231,84 @@ impl LogChannel {
             LogChannel::QemuStdout => "qemu-stdout",
             LogChannel::QemuStderr => "qemu-stderr",
             LogChannel::Serial => "serial",
+            LogChannel::Supervisor => "supervisor",
+            LogChannel::Meta => "meta",
         }
     }
+}
+
+/// The manifest version this crate emits and understands.
+pub const LOG_VIEW_MANIFEST_VERSION: u32 = 1;
+
+/// One line of a job's [`Meta`](LogChannel::Meta) channel: the supervisor
+/// declaring what views the job's log stream offers and how to render them.
+///
+/// **Declarations are cumulative.** A client keeps a map of views keyed by
+/// [`LogView::id`]; a later declaration replaces an earlier one with the same
+/// id, and a view is never removed. That is what lets a supervisor announce
+/// each view the moment it knows the channel exists, instead of waiting for a
+/// point where every channel is known — and it means a backend never has to
+/// predeclare a channel it may not end up producing.
+///
+/// [`version`](Self::version) is per line, so a client skips a line whose
+/// version it does not understand. Everything added within a version is
+/// optional (`#[serde(default)]`).
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct LogViewManifest {
+    /// Declaration format version; see [`LOG_VIEW_MANIFEST_VERSION`].
+    pub version: u32,
+    /// The views this line declares.
+    pub views: Vec<LogView>,
+}
+
+/// One view over a job's log output — a tab in a console, fed by one or more
+/// [`LogChannel`]s.
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct LogView {
+    /// Stable identity of this view. A later declaration carrying the same id
+    /// replaces this one.
+    pub id: String,
+    /// What to call the view in a user interface.
+    pub label: String,
+    /// How to render the view's bytes.
+    pub render: LogRender,
+    /// How to interpret the view's bytes.
+    pub format: LogFormat,
+    /// The channels feeding this view, in the order their bytes should be
+    /// merged when more than one does.
+    pub channels: Vec<LogChannel>,
+    /// Sort key among a job's views, ascending.
+    pub order: i32,
+    /// Whether a client with no other preference should open this view first.
+    /// At most one view of a job declares it.
+    #[serde(default)]
+    pub default: bool,
+    /// Whether this view accepts typed input (the job's console-input
+    /// subject).
+    #[serde(default)]
+    pub input: bool,
+}
+
+/// How a [`LogView`]'s bytes are rendered.
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LogRender {
+    /// A terminal emulator: the bytes carry ANSI control sequences.
+    Terminal,
+    /// A scrolling list of lines.
+    Text,
+}
+
+/// How a [`LogView`]'s bytes are interpreted.
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LogFormat {
+    /// Whatever the workload wrote, verbatim.
+    Raw,
+    /// One JSON document per line.
+    Jsonl,
 }
 
 /// Per-job log-streaming destination handed to a supervisor in
@@ -244,7 +331,7 @@ pub struct LogStreamingDispatch {
     /// is appended as `<subject_prefix>.<channel>` (see [`LogChannel`]).
     pub subject_prefix: String,
     /// Bearer user JWT scoped to this job's subjects (see the sibling fields).
-    pub write_token: String,
+    pub write_token: Secret<String>,
     /// Subject carrying user-typed console input for this job
     /// (`console-in.<job-id>`); the supervisor subscribes and writes each
     /// message's payload to the workload's serial console. Additive and

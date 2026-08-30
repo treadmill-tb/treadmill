@@ -1,13 +1,13 @@
 pub use crate::api::switchboard_supervisor::JobInitializingStage;
-pub use crate::api::switchboard_supervisor::RemoveJobMessage;
 pub use crate::api::switchboard_supervisor::RunningJobState;
 pub use crate::api::switchboard_supervisor::StartJobMessage;
-pub use crate::api::switchboard_supervisor::TerminateJobMessage;
-use crate::api::switchboard_supervisor::{JobService, SupervisorEvent, SupervisorJobEvent};
+use crate::api::switchboard_supervisor::{
+    JobService, ReportedSupervisorStatus, SupervisorEvent, SupervisorJobEvent,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
-use std::sync::Arc;
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
@@ -58,58 +58,50 @@ pub struct JobError {
     pub description: String,
 }
 
-/// Supervisor interface for coordinator connectors.
+/// A command the coordinator issues to a supervisor.
 ///
-/// A supervisor interacts with a coordinator through a
-/// [_connector_](SupervisorConnector). These connectors expect to be passed an
-/// instance of [`Supervisor`] to deliver requests and events.
-#[async_trait]
-pub trait Supervisor: std::fmt::Debug + Send + Sync + 'static {
-    /// Start a new job, based on the parameters supplied in the
-    /// `StartJobRequest`.
-    ///
-    /// This method should avoid blocking on long-running operations that should
-    /// be able to be interrupted by other requests (such as stopping a job
-    /// during an image download).
-    ///
-    /// A successful return (`Ok(())`) from this method does not imply that the
-    /// job was started successfully, but merely that there is not an error to
-    /// return at this point. Even after returning from this method, errors can
-    /// be reported through [`SupervisorConnector::report_job_error`].
-    ///
-    /// Implementations should use [`SupervisorConnector::update_job_state`] to
-    /// report on progress while starting or stopping a job, or performing
-    /// similar actions.
-    async fn start_job(this: &Arc<Self>, request: StartJobMessage) -> Result<(), JobError>;
+/// Connectors translate the messages they receive into these and push them into
+/// the supervisor's command channel; the supervisor core owns the loop that
+/// drains it. A connector never holds a reference to the supervisor.
+///
+/// [`CoordCommand::StartJob`] carries no acknowledgement: the supervisor
+/// reports a start failure as a [`SupervisorJobEvent::Error`], which is the
+/// only error channel for it.
+#[derive(Debug)]
+pub enum CoordCommand {
+    StartJob(StartJobMessage),
 
     /// Stop the execution of a job. The job's record and resources stay
-    /// allocated until [`remove_job`](Self::remove_job).
+    /// allocated until [`CoordCommand::RemoveJob`].
     ///
-    /// Succeeds on an already-terminated or unknown job.
-    ///
-    /// A successful return (`Ok(())`) from this method does not imply that the
-    /// job was stopped successfully, but merely that there is not an error to
-    /// return at this point. Even after returning from this method, errors can
-    /// be reported through [`SupervisorConnector::report_job_error`].
-    ///
-    /// Implementations should use [`SupervisorConnector::update_job_state`] to
-    /// report on progress while starting or stopping a job, or performing
-    /// similar actions.
-    async fn terminate_job(this: &Arc<Self>, request: TerminateJobMessage) -> Result<(), JobError>;
+    /// Acknowledged with `Ok(())` on an already-terminated or unknown job.
+    TerminateJob {
+        job_id: Uuid,
+        ack: oneshot::Sender<Result<(), JobError>>,
+    },
 
     /// Free a terminated job's record and the resources it retains.
     ///
-    /// Fails with [`JobErrorKind::NotTerminated`] on a job that is still
-    /// executing; succeeds on an unknown job.
-    async fn remove_job(this: &Arc<Self>, request: RemoveJobMessage) -> Result<(), JobError>;
+    /// Acknowledged with [`JobErrorKind::NotTerminated`] on a job that is still
+    /// executing, and with `Ok(())` on an unknown job.
+    RemoveJob {
+        job_id: Uuid,
+        ack: oneshot::Sender<Result<(), JobError>>,
+    },
+
+    /// Report the supervisor's status: `Idle` when its job slot is empty, and
+    /// `HoldingJob` with the occupant's state while it is not.
+    StatusRequest {
+        reply: oneshot::Sender<ReportedSupervisorStatus>,
+    },
 }
 
 /// Connector to a coordinator.
 ///
 /// This interface is implemented by all "connectors" that facilitate
-/// interactions between supervisors and coordinators. It allows supervisors
-/// (implementing the [`Supervisor`] trait) to deliver events and issue requests
-/// to a coordinator, for instance to report their current status.
+/// interactions between supervisors and coordinators. It allows supervisors to
+/// deliver events and issue requests to a coordinator, for instance to report
+/// their current status.
 #[async_trait]
 pub trait SupervisorConnector: std::fmt::Debug + Send + Sync + 'static {
     /// Start the connector's main loop.
@@ -122,7 +114,15 @@ pub trait SupervisorConnector: std::fmt::Debug + Send + Sync + 'static {
     /// loop.
     async fn run(&self) -> Result<(), ()>;
 
-    async fn update_event(&self, supervisor_event: SupervisorEvent);
+    /// Ask the connector to stop serving.
+    ///
+    /// `run()` returns `Ok(())` once it has, which may not be immediate: a
+    /// connector that drains against a coordinator keeps serving the job it
+    /// holds until the coordinator removes it. Idempotent, and safe to call
+    /// after `run()` has already returned.
+    fn request_shutdown(&self);
+
+    async fn emit(&self, supervisor_event: SupervisorEvent);
 
     async fn update_job_state(
         &self,
@@ -130,7 +130,7 @@ pub trait SupervisorConnector: std::fmt::Debug + Send + Sync + 'static {
         job_state: RunningJobState,
         status_message: Option<String>,
     ) {
-        self.update_event(SupervisorEvent::JobEvent {
+        self.emit(SupervisorEvent::JobEvent {
             job_id,
             event: SupervisorJobEvent::StateTransition {
                 new_state: job_state,
@@ -140,21 +140,21 @@ pub trait SupervisorConnector: std::fmt::Debug + Send + Sync + 'static {
         .await
     }
     async fn report_job_error(&self, job_id: Uuid, error: JobError) {
-        self.update_event(SupervisorEvent::JobEvent {
+        self.emit(SupervisorEvent::JobEvent {
             job_id,
             event: SupervisorJobEvent::Error { error },
         })
         .await
     }
     async fn report_job_network_address(&self, job_id: Uuid, address: IpAddr) {
-        self.update_event(SupervisorEvent::JobEvent {
+        self.emit(SupervisorEvent::JobEvent {
             job_id,
             event: SupervisorJobEvent::JobNetworkAddress { address },
         })
         .await
     }
     async fn report_job_service_set(&self, job_id: Uuid, services: Vec<JobService>) {
-        self.update_event(SupervisorEvent::JobEvent {
+        self.emit(SupervisorEvent::JobEvent {
             job_id,
             event: SupervisorJobEvent::JobServiceSet { services },
         })

@@ -5,12 +5,12 @@ use serde::Deserialize;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::sync::watch;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::{
     self,
@@ -27,7 +27,7 @@ use treadmill_rs::api::switchboard_supervisor::{
     ServerHello, SupervisorEvent, SupervisorJobEvent, SupervisorToSwitchboard,
     SwitchboardToSupervisor, TaskExitStatus, websocket::TREADMILL_WEBSOCKET_PROTOCOL,
 };
-use treadmill_rs::connector::{self, JobError, RunningJobState};
+use treadmill_rs::connector::{self, CoordCommand, JobError, RunningJobState};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -89,32 +89,34 @@ pub enum WsConnectorError {
 // it can only use `&self`. Therefore, it is most convenient to use an `Arc` over an inner type
 // since this allows us to get `self: &Arc<Self>` which has 'static.
 #[derive(Debug)]
-pub struct WsConnector<S: connector::Supervisor> {
-    inner: Arc<Inner<S>>,
+pub struct WsConnector {
+    inner: Arc<Inner>,
     shutdown_tx: watch::Sender<bool>,
 }
 #[derive(Debug)]
-struct Inner<S: connector::Supervisor> {
+struct Inner {
     supervisor_id: Uuid,
     config: WsConnectorConfig,
-    /// A reference to the supervisor is needed to actualise incoming messages into actual
-    /// invocations on the supervisor. Since the supervisor is expected to have an
-    /// `Arc<dyn SupervisorConnector>`, this ends up being a [`Weak`] ref.
-    supervisor: Weak<S>,
+    /// Incoming messages are translated into [`CoordCommand`]s and pushed into
+    /// the supervisor's command channel. The connector holds no reference to
+    /// the supervisor itself.
+    commands: mpsc::Sender<CoordCommand>,
     /// To receive from an [`tokio::mpsc::UnboundedReceiver`], an `&mut` reference is necessary.
     /// This cannot be accomplished through the [`Arc`] around [`Inner`], so we use a [`Mutex`] for
     /// interior mutability.
     update_rx: Mutex<mpsc::UnboundedReceiver<SupervisorToSwitchboard>>,
     /// This acts as an interior conduit from the `update_*` methods to the `run()` method.
     update_tx: mpsc::UnboundedSender<SupervisorToSwitchboard>,
-    /// The most recent status that was received from the supervisor.
-    last_updated_status: Mutex<ReportedSupervisorStatus>,
 
     shutdown_rx: watch::Receiver<bool>,
 }
 
-impl<S: connector::Supervisor> WsConnector<S> {
-    pub fn new(supervisor_id: Uuid, config: WsConnectorConfig, supervisor: Weak<S>) -> Self {
+impl WsConnector {
+    pub fn new(
+        supervisor_id: Uuid,
+        config: WsConnectorConfig,
+        commands: mpsc::Sender<CoordCommand>,
+    ) -> Self {
         let (update_tx, update_rx) = mpsc::unbounded_channel();
 
         // Create a watch channel with an initial value of `false` (i.e., not shutting down yet)
@@ -124,33 +126,31 @@ impl<S: connector::Supervisor> WsConnector<S> {
             inner: Arc::new(Inner {
                 supervisor_id,
                 config,
-                supervisor,
+                commands,
                 update_rx: Mutex::new(update_rx),
                 update_tx,
-                last_updated_status: Mutex::new(ReportedSupervisorStatus::Idle),
                 shutdown_rx,
             }),
             shutdown_tx,
         }
-    }
-
-    /// Signal that we want to shut down gracefully. We can ignore errors from `send`,
-    /// because it only errors if all receivers have dropped, which can’t really happen
-    /// here unless the process is already shutting down.
-    pub fn request_shutdown(&self) {
-        let _ = self.shutdown_tx.send(true);
     }
 }
 
 // As mentioned above, the `connector::SupervisorConnector` implementation is not capable of
 // implementing the functionality, so we forward to `Inner`, which is.
 #[async_trait]
-impl<S: connector::Supervisor> connector::SupervisorConnector for WsConnector<S> {
+impl connector::SupervisorConnector for WsConnector {
     async fn run(&self) -> Result<(), ()> {
         Inner::run(&self.inner).await
     }
 
-    async fn update_event(&self, supervisor_event: SupervisorEvent) {
+    /// Ignoring the send error is fine: it only fails once every receiver has
+    /// dropped, which cannot happen before `run()` has returned.
+    fn request_shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
+    }
+
+    async fn emit(&self, supervisor_event: SupervisorEvent) {
         match supervisor_event {
             SupervisorEvent::JobEvent { job_id, event } => match event {
                 SupervisorJobEvent::StateTransition {
@@ -186,12 +186,11 @@ fn assure_crypto_provider() -> Result<(), WsConnectorError> {
     Ok(())
 }
 
-impl<S: connector::Supervisor> Inner<S> {
+impl Inner {
     /// Try to connect with the switchboard using the configuration specified to
     /// [`WsConnector::new`].
-    // Unfortunately, the constructor cannot be async, since the constructor is called inside
-    // [`Arc::new_cyclic`], so we have a separate connect() function that is called at the beginning
-    // of run().
+    // Unfortunately, the constructor cannot be async, so we have a separate
+    // connect() function that is called at the beginning of run().
     #[instrument(skip(self))]
     async fn connect(
         &self,
@@ -337,56 +336,63 @@ impl<S: connector::Supervisor> Inner<S> {
     }
 
     /// Handle a message received from the switchboard.
-    async fn handle(&self, message: SwitchboardToSupervisor) {
+    ///
+    /// Commands enter the supervisor's channel in the order they arrived on the
+    /// socket; only the wait for an acknowledgement is detached, so a slow
+    /// teardown does not hold up the socket's keepalive.
+    async fn handle(self: &Arc<Self>, message: SwitchboardToSupervisor) {
         match message {
             SwitchboardToSupervisor::StartJob(start_job_request) => {
-                let job_id = start_job_request.job_id;
-                if let Some(supervisor) = self.supervisor.upgrade() {
-                    // TODO: timeout
-                    if let Err(error) =
-                        connector::Supervisor::start_job(&supervisor, start_job_request).await
-                    {
-                        self.report_job_error(job_id, error).await;
-                    }
-                }
+                self.command(CoordCommand::StartJob(start_job_request))
+                    .await;
             }
             SwitchboardToSupervisor::TerminateJob(terminate_job_request) => {
                 let job_id = terminate_job_request.job_id;
-                // TODO: timeout
-                if let Some(supervisor) = self.supervisor.upgrade()
-                    && let Err(error) =
-                        connector::Supervisor::terminate_job(&supervisor, terminate_job_request)
-                            .await
-                {
-                    self.report_job_error(job_id, error).await;
-                }
+                let (ack, acked) = oneshot::channel();
+                self.command(CoordCommand::TerminateJob { job_id, ack })
+                    .await;
+
+                let this = Arc::clone(self);
+                tokio::spawn(async move {
+                    if let Ok(Err(error)) = acked.await {
+                        this.report_job_error(job_id, error).await;
+                    }
+                });
             }
             SwitchboardToSupervisor::RemoveJob(remove_job_request) => {
                 let job_id = remove_job_request.job_id;
-                // TODO: timeout
-                if let Some(supervisor) = self.supervisor.upgrade()
-                    && let Err(error) =
-                        connector::Supervisor::remove_job(&supervisor, remove_job_request).await
-                {
-                    self.report_job_error(job_id, error).await;
-                    return;
-                }
-                // The supervisor does not retain terminal records yet, so the
-                // status fold here is the only record of the removed job: drop
-                // it so the next status report is `Idle`.
-                *self.last_updated_status.lock().await = ReportedSupervisorStatus::Idle;
+                let (ack, acked) = oneshot::channel();
+                self.command(CoordCommand::RemoveJob { job_id, ack }).await;
+
+                let this = Arc::clone(self);
+                tokio::spawn(async move {
+                    if let Ok(Err(error)) = acked.await {
+                        this.report_job_error(job_id, error).await;
+                    }
+                });
             }
             SwitchboardToSupervisor::StatusRequest(switchboard_supervisor::Request {
                 request_id,
                 message: (),
             }) => {
-                let status = self.last_updated_status.lock().await.clone();
-                self.update_tx
-                    .send(SupervisorToSwitchboard::StatusResponse(Response {
-                        response_to_request_id: request_id,
-                        message: status,
-                    }))
-                    .unwrap();
+                let (reply, replied) = oneshot::channel();
+                self.command(CoordCommand::StatusRequest { reply }).await;
+
+                let this = Arc::clone(self);
+                tokio::spawn(async move {
+                    let Ok(status) = replied.await else {
+                        return;
+                    };
+                    if let Err(e) =
+                        this.update_tx
+                            .send(SupervisorToSwitchboard::StatusResponse(Response {
+                                response_to_request_id: request_id,
+                                message: status,
+                            }))
+                    {
+                        tracing::error!("failed to send status response to runloop: {e}");
+                    }
+                });
             }
             SwitchboardToSupervisor::ProtocolError(err) => {
                 // Diagnostic only: the switchboard SHOULD follow this with a
@@ -400,14 +406,18 @@ impl<S: connector::Supervisor> Inner<S> {
             }
         }
     }
+
+    async fn command(&self, command: CoordCommand) {
+        if self.commands.send(command).await.is_err() {
+            tracing::error!("Supervisor stopped accepting coordinator commands.");
+        }
+    }
 }
 
-impl<S: connector::Supervisor> Inner<S> {
+impl Inner {
     // This function returns `Ok(())` when a shutdown was explicitly requested,
     // and an error otherwise. Reconnection must be handled externally.
     async fn run(self: &Arc<Self>) -> Result<(), ()> {
-        use futures_util::FutureExt;
-
         let (mut socket, server_hello) = match self.connect().await {
             Ok(s) => s,
             Err(e) => {
@@ -438,23 +448,19 @@ impl<S: connector::Supervisor> Inner<S> {
         let mut shutdown_channel_dropped = false;
 
         loop {
-            let is_idle: bool = self.is_idle().await;
+            if !shutdown_channel_dropped && *shutdown_rx.borrow() && self.is_idle().await {
+                tracing::info!(
+                    "Supervisor connector is idle and shutdown was requested, exiting run() loop."
+                );
+                return Ok(());
+            }
 
             #[rustfmt::skip]
             tokio::select! {
-                // We get lifetime errors when trying to leak the returned
-                // reference into the result of awaiting this future, thus
-                // .map() it away:
-                wait_for_res = shutdown_rx
-                    .wait_for(|shutdown_req| *shutdown_req)
-                    .map(|res| res.map(|_|())), if is_idle && !shutdown_channel_dropped =>
-                {
-                    if let Err(recv_error) = wait_for_res {
+                changed = shutdown_rx.changed(), if !shutdown_channel_dropped => {
+                    if let Err(recv_error) = changed {
                         warn!("Supervisor connector shutdown channel was closed, it will be impossible to shutdown the supervisor: {:?}", recv_error);
                         shutdown_channel_dropped = true;
-                    } else {
-                        tracing::info!("Supervisor connector is idle and shutdown was requested, exiting run() loop.");
-                        return Ok(());
                     }
                 },
 
@@ -512,18 +518,15 @@ impl<S: connector::Supervisor> Inner<S> {
                                 }
                             };
                             // This is the reason we have separate WsConnector and Inner
-                            // types: Supervisor wants to have a <dyn SupervisorConnector>
-                            // (because the SupervisorConnectors right now take
-                            // <S: Supervisor>, and we need to avoid recursive types), so
-                            // we need something that is object-safe; however, if we want to
-                            // be able to serve a status request while a job is being
-                            // started, we need to tokio::spawn. For lifetime reasons, then,
-                            // we need self to be 'static.
+                            // types: the supervisor holds a <dyn SupervisorConnector>, so
+                            // we need something that is object-safe; however, to detach the
+                            // wait for a command acknowledgement, `handle` needs to
+                            // tokio::spawn, and for lifetime reasons self must then be
+                            // 'static.
                             // However, to be object-safe, it won't work for
                             // SupervisorConnector::run to take self:&Arc<Self>; therefore
                             // we have an interior type that lives inside an Arc.
-                            let this = Arc::clone(self);
-                            let _jh = tokio::spawn(async move { this.handle(msg).await });
+                            self.handle(msg).await;
                         }
                         tungstenite::Message::Binary(_) => {
                             tracing::error!("Received binary message from switchboard");
@@ -558,9 +561,15 @@ impl<S: connector::Supervisor> Inner<S> {
         // unreachable
     }
 
+    /// Whether the supervisor is holding a job, asked of the supervisor itself.
+    /// A supervisor that no longer answers cannot be holding one.
     async fn is_idle(&self) -> bool {
-        let st = self.last_updated_status.lock().await;
-        matches!(*st, ReportedSupervisorStatus::Idle)
+        let (reply, replied) = oneshot::channel();
+        self.command(CoordCommand::StatusRequest { reply }).await;
+        !matches!(
+            replied.await,
+            Ok(ReportedSupervisorStatus::HoldingJob { .. })
+        )
     }
 
     async fn update_job_state(&self, job_id: Uuid, job_state: RunningJobState) {
@@ -569,18 +578,6 @@ impl<S: connector::Supervisor> Inner<S> {
             job_id,
             job_state
         );
-        // First, update the supervisor status based on the job state. A
-        // `Terminated` state is retained (not folded to `Idle`) so that, if the
-        // switchboard reconnects before acknowledging it, the supervisor still
-        // reports the terminal outcome instead of looking like a dropped job.
-        // The switchboard acks with `RemoveJob`, which drops it (see `handle`).
-        {
-            let mut lus_lg = self.last_updated_status.lock().await;
-            *lus_lg = ReportedSupervisorStatus::HoldingJob {
-                job_id,
-                job_state: job_state.clone(),
-            };
-        }
         // Send the update to the run() loop, which will forward it to the switchboard
         if let Err(e) = self
             .update_tx
@@ -628,13 +625,6 @@ impl<S: connector::Supervisor> Inner<S> {
             job_id,
             error,
         );
-        // Set the supervisor status
-        {
-            // An error occurred. Errors (in the supervisor) are always fatal to the job.
-            // 'Error' is not a state, but 'Idle' is.
-            let mut lus_lg = self.last_updated_status.lock().await;
-            *lus_lg = ReportedSupervisorStatus::Idle;
-        }
         // Send the error to the run() loop, which will forward it to the switchboard
         if let Err(e) = self
             .update_tx

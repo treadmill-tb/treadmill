@@ -8,7 +8,6 @@ edition.workspace = true
 treadmill-rs = { workspace = true }
 treadmill-supervisor-lib = { workspace = true }
 treadmill-local-connector = { workspace = true }
-treadmill-tcp-control-socket-server = { workspace = true }
 treadmill-ws-connector = { workspace = true }
 
 anyhow = { workspace = true }
@@ -22,9 +21,9 @@ tokio = { workspace = true, features = [
   "fs",
   "signal",
 ] }
+tokio-util = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

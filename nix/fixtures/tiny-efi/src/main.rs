@@ -8,8 +8,6 @@
 //! - the **base** layer's `BOOTAA64.EFI` prints `BASE-ONLY` (a tripwire: seeing
 //!   it means the backing chain was assembled without the overlay), and
 //! - the **overlay** layer's `BOOTAA64.EFI` prints `TREADMILL_OK rev=1`.
-//!
-//! See `doc/oci-image-migration-plan.md` §12.2.
 #![no_main]
 #![no_std]
 

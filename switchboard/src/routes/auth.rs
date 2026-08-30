@@ -56,6 +56,7 @@ use treadmill_rs::api::switchboard::{
     AuthProvidersResponse, AuthToken, LoginCompleteRequest, LoginResponse, LoginStagedResponse,
     MockIdentityInfo, OAuthProviderInfo, TosInfoResponse, WhoAmIResponse,
 };
+use treadmill_rs::util::Secret;
 use uuid::Uuid;
 
 /// How long a started login flow's CSRF state remains valid before the callback
@@ -559,7 +560,7 @@ async fn stage_login_row(
     return_to: Option<&str>,
     ctx: &ClientContext,
     lifetime_minutes: i64,
-) -> Result<(Uuid, String), StatusCode> {
+) -> Result<(Uuid, Secret<String>), StatusCode> {
     let staged_id = Uuid::new_v4();
     let staged_secret = staged_secret::generate();
     let secret_hash =
@@ -582,7 +583,7 @@ async fn stage_login_row(
     )
     .await
     .or_internal("persisting the staged login")?;
-    Ok((staged_id, staged_secret))
+    Ok((staged_id, Secret::new(staged_secret)))
 }
 
 /// Hand a staged pair to the client: a 302 to `redirect_to` with the
@@ -594,7 +595,7 @@ fn staged_response(
     redirect_to: Option<&str>,
     status: StatusCode,
     staged_id: Uuid,
-    staged_secret: String,
+    staged_secret: Secret<String>,
     required: Vec<String>,
     tos_version: Option<i32>,
 ) -> Result<Response, StatusCode> {
@@ -604,7 +605,7 @@ fn staged_response(
                 .or_internal(&format!("parsing allowlisted return_to {target:?}"))?;
             url.query_pairs_mut()
                 .append_pair("staged_id", &staged_id.to_string())
-                .append_pair("staged_secret", &staged_secret);
+                .append_pair("staged_secret", staged_secret.expose());
             Ok(Redirect::to(url.as_str()).into_response())
         }
         None => Ok((
@@ -796,10 +797,13 @@ pub async fn login_complete(
 
     // Consume-once: an unknown id, a wrong secret, or an expired/already-used
     // row is uniformly a 410 (no oracle distinguishing them).
-    let Some(staged) =
-        sql::staged_login::consume_staged(&mut tx, request.staged_id, &request.staged_secret)
-            .await
-            .or_internal("consuming the staged registration")?
+    let Some(staged) = sql::staged_login::consume_staged(
+        &mut tx,
+        request.staged_id,
+        request.staged_secret.expose(),
+    )
+    .await
+    .or_internal("consuming the staged registration")?
     else {
         return Err(StatusCode::GONE);
     };

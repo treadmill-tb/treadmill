@@ -723,10 +723,10 @@ pub enum ImageResolveError {
     /// The referenced image/set digest is not in the catalog (e.g. it was
     /// deregistered after the job was queued).
     NotRegistered(String),
-    /// The image is registered but has no location to pull it from (D16: a
+    /// The image is registered but has no location to pull it from (e.g. a
     /// user's only external registry became unavailable).
     NoLocations(String),
-    /// No set member matched the chosen host's attributes (§8.3).
+    /// No set member matched the chosen host's attributes.
     NoMatchingMember,
     /// The job row violated `valid_init_spec` (neither image nor set pinned on a
     /// non-resume job). Should be impossible given the DB constraint.
@@ -1501,7 +1501,7 @@ pub async fn request_preempt(
 
 /// Finalize a job that its host's supervisor dropped, releasing the host and --
 /// if the restart policy permits -- enqueuing a successor, all in one
-/// transaction. Backs reconciliation cases 3 and 5 (`Phase 5`): the switchboard
+/// transaction. Backs reconciliation cases 3 and 5: the switchboard
 /// believed `job_id` was assigned to `host_id`, but the supervisor no longer
 /// reports running it.
 ///

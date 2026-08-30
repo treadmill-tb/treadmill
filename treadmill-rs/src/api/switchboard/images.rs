@@ -1,9 +1,9 @@
 //! Shared request/response types for the image-catalog REST API.
 //!
-//! These mirror the switchboard's `images` / `image-sets` routes (see
-//! `doc/oci-image-migration-plan.md` §8.1). The catalog stores only references:
-//! a content-addressed digest plus the `{registry, repository}` sources that
-//! serve it — never image bytes. An image is a non-owned manifest identity; the
+//! These mirror the switchboard's `images` / `image-sets` routes. The catalog
+//! stores only references: a content-addressed digest plus the
+//! `{registry, repository}` sources that serve it — never image bytes. An
+//! image is a non-owned manifest identity; the
 //! *sources* behind it are the ownable, grantable entity.
 
 use chrono::{DateTime, Utc};

@@ -6,11 +6,13 @@ edition.workspace = true
 
 [dependencies]
 treadmill-rs = { workspace = true }
+treadmill-tcp-control-socket-server = { workspace = true }
 
 anyhow = { workspace = true }
 async-nats = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+chrono = { workspace = true }
 futures-util = { workspace = true }
 humantime-serde = { workspace = true }
 oci-client = { workspace = true }
@@ -24,14 +26,22 @@ tokio = { workspace = true, features = [
   "net",
   "io-util",
   "io-std",
+  "rt",
+  "signal",
+  "sync",
   "time",
 ] }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true, features = ["io", "rt"] }
 toml = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid = { workspace = true }
 
 [dev-dependencies]
 sha2 = { workspace = true }
 tempfile = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 # Re-list tokio so tests get the runtime/macros on top of the lib's features.
 tokio = { workspace = true, features = [
   "fs",
@@ -40,7 +50,9 @@ tokio = { workspace = true, features = [
   "io-util",
   "io-std",
   "macros",
+  "rt",
   "rt-multi-thread",
+  "sync",
   "time",
 ] }
 

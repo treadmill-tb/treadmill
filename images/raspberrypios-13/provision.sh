@@ -3,8 +3,8 @@
 # partition is edited host-side in build-image.sh).
 #
 # Runs under `virt-customize --run` AFTER images/lib/provision-common.sh, on the
-# extracted ext4 root partition. The guest kernel is NEVER booted. See
-# doc/images-libguestfs-build-plan.md §7. The legacy DTB-merge /
+# extracted ext4 root partition. The guest kernel is NEVER booted. The legacy
+# DTB-merge /
 # qemu-system-aarch64 customize-boot / sysrq / 7z surgery / /boot/firmware-mock
 # machinery is gone: libguestfs mounts the root directly, and at runtime
 # /boot/firmware is the real TFTP FAT.
