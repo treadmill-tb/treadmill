@@ -277,7 +277,9 @@ export default function JobDetail({ params }: Route.ComponentProps) {
           />
 
           <JobLog
+            key={`${params.id} ${replayBytes}`}
             jobId={params.id}
+            dispatched={job.data.dispatched_on_host_id != null}
             replayBytes={replayBytes}
             canSendInput={
               job.data.permissions.includes("manage") &&

@@ -1,6 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { LINE_CAP, type ChannelBus, type LogView } from "./log-stream";
+import {
+  LINE_CAP,
+  LineSplitter,
+  type ChannelBus,
+  type LogView,
+} from "./log-stream";
 
 /** One rendered line, tagged with the channel it came from. */
 type Line = { channel: string; text: string };
@@ -48,10 +53,9 @@ export function LogTextView({
   // renders one set and its state never needs resetting.
   const channels = view.channels.join(" ");
   useEffect(() => {
-    // One decoder and one partial line per channel: both carry state across
-    // frames, and a multi-byte character may straddle a frame boundary.
-    const decoders = new Map<string, TextDecoder>();
-    const partial = new Map<string, string>();
+    // One splitter per channel: a frame boundary falls anywhere, so each
+    // channel carries its own partial line and decoder state across frames.
+    const splitters = new Map<string, LineSplitter>();
 
     const flush = () => {
       flushRef.current = null;
@@ -68,18 +72,13 @@ export function LogTextView({
 
     const unsubscribe = channels.split(" ").map((channel) =>
       bus.subscribe(channel, (frame) => {
-        let decoder = decoders.get(channel);
-        if (decoder === undefined) {
-          decoder = new TextDecoder();
-          decoders.set(channel, decoder);
+        let splitter = splitters.get(channel);
+        if (splitter === undefined) {
+          splitter = new LineSplitter();
+          splitters.set(channel, splitter);
         }
-        const text =
-          (partial.get(channel) ?? "") +
-          decoder.decode(frame.data, { stream: true });
-        const parts = text.split("\n");
-        partial.set(channel, parts.pop() ?? "");
-        for (const part of parts) {
-          pendingRef.current.push({ channel, text: part.replace(/\r/g, "") });
+        for (const line of splitter.push(frame.data)) {
+          pendingRef.current.push({ channel, text: line.replace(/\r/g, "") });
         }
         // Coalesce a burst of frames into one render.
         if (flushRef.current === null) {
