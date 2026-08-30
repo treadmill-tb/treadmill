@@ -1077,13 +1077,16 @@ CREATE INDEX jobs_queued_at_job_id_idx ON tml_switchboard.jobs (queued_at DESC, 
 -- `src/auth/engine.rs`: the owner (evaluated over its transitive `principals()`
 -- set) is a global admin, owns the host, or holds a `start` grant on it.
 --
--- Shared by `eligible_hosts` and `reclaimable_hosts`. A job whose `owner_id`
--- is NULL (orphaned) matches no host.
-CREATE FUNCTION tml_switchboard.job_authorized_hosts (p_job_id uuid) returns setof uuid language sql stable AS $$
+-- Hosts `p_subject_id` may `start` jobs on: it is an admin, it owns the host,
+-- or it holds a `start` grant. A NULL subject matches no host.
+--
+-- Factored out of `job_authorized_hosts` because the enqueue-time and dry-run
+-- host-matching diagnostics count over exactly this set and have no job to key
+-- on. Sharing one definition is load-bearing: were the diagnostic to compute a
+-- wider set, its counts would report on hosts the caller cannot see.
+CREATE FUNCTION tml_switchboard.subject_authorized_hosts (p_subject_id uuid) returns setof uuid language sql stable AS $$
     with owner_principals (id) as (
-        select p.id
-        from tml_switchboard.jobs j, tml_switchboard.principals(j.owner_id) p
-        where j.job_id = p_job_id
+        select p.id from tml_switchboard.principals(p_subject_id) p
     )
     select h.host_id
     from tml_switchboard.hosts h
@@ -1101,6 +1104,20 @@ CREATE FUNCTION tml_switchboard.job_authorized_hosts (p_job_id uuid) returns set
               join owner_principals op on g.subject_id = op.id
               where g.host_id = h.host_id and g.permission = 'start'
           );
+$$;
+
+
+-- Shared by `eligible_hosts` and `reclaimable_hosts`. A job whose `owner_id`
+-- is NULL (orphaned) matches no host.
+CREATE FUNCTION tml_switchboard.job_authorized_hosts (p_job_id uuid) returns setof uuid language sql stable AS $$
+    -- Cross join rather than a scalar subquery on `owner_id`: a job that does
+    -- not exist must yield no hosts, and `principals(NULL)` is not empty (it
+    -- still carries the `everyone` subject), so feeding it a NULL owner read
+    -- from nowhere would admit whatever `everyone` was granted `start` on.
+    select h.host_id
+    from tml_switchboard.jobs j
+    cross join lateral tml_switchboard.subject_authorized_hosts(j.owner_id) as h (host_id)
+    where j.job_id = p_job_id;
 $$;
 
 

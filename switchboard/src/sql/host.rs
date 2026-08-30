@@ -23,6 +23,13 @@ pub struct SqlHostListing {
     pub last_seen_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// A host reduced to what a matching report needs to name it.
+#[derive(Debug)]
+pub struct SqlHostName {
+    pub host_id: Uuid,
+    pub name: String,
+}
+
 /// The hosts `subject` may `read`, with their operational fields, ordered by
 /// `(name, host_id)`: `name` is free-form and non-unique, so it needs a
 /// tiebreak to paginate stably.
@@ -73,6 +80,30 @@ pub async fn fetch_listing(
         host_id,
     )
     .fetch_optional(conn)
+    .await
+}
+
+/// The hosts `subject` may `start` jobs on, with their names, ordered as the
+/// listing is.
+///
+/// Backed by the same `subject_authorized_hosts` SQL function the scheduler's
+/// `eligible_hosts` reaches through, so the matching diagnostics count over
+/// exactly the set that will be considered — a wider set here would report on
+/// hosts the caller cannot see.
+pub async fn authorized_for_subject(
+    subject_id: Uuid,
+    conn: impl PgExecutor<'_>,
+) -> Result<Vec<SqlHostName>, sqlx::Error> {
+    sqlx::query_as!(
+        SqlHostName,
+        r#"select h.host_id, h.name
+           from tml_switchboard.hosts h
+           join tml_switchboard.subject_authorized_hosts($1) a (host_id)
+             on a.host_id = h.host_id
+           order by h.name, h.host_id"#,
+        subject_id,
+    )
+    .fetch_all(conn)
     .await
 }
 

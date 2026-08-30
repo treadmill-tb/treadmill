@@ -4,9 +4,11 @@ use axum::extract::Query;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
+use treadmill_rs::api::switchboard::JobInitSpec;
 use treadmill_rs::api::switchboard::hosts::{
-    HostCreateRequest, HostCreateResponse, HostInfo, HostSpecRejection, HostSpecUpdateRequest,
-    HostSpecUpdateResponse, HostUpdateRequest,
+    HostCreateRequest, HostCreateResponse, HostInfo, HostRequirementsReport,
+    HostRequirementsRequest, HostSpecRejection, HostSpecUpdateRequest, HostSpecUpdateResponse,
+    HostUpdateRequest,
 };
 use treadmill_rs::host_spec::{HostSpec, HostSpecV1};
 
@@ -122,6 +124,76 @@ pub async fn update(
         .or_internal(&format!("committing the update of host {host_id}"))?;
 
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Axum handler for `GET /host-spec/schema` — the JSON Schema of a host spec.
+///
+/// The same artifact as the committed `host_spec.schema.json` snapshot, served
+/// so the console can render an editor and a field reference from it instead
+/// of vendoring a copy that would drift. schemars lifts the Rust type's
+/// rustdoc into `description`, which makes the type the single source for the
+/// validator, the CEL environment and the UI copy alike.
+pub async fn spec_schema() -> Json<serde_json::Value> {
+    static SCHEMA: std::sync::LazyLock<serde_json::Value> = std::sync::LazyLock::new(|| {
+        serde_json::to_value(schemars::schema_for!(HostSpec)).expect("the spec schema serializes")
+    });
+    Json(SCHEMA.clone())
+}
+
+/// Axum handler for `POST /host-requirements/validate` — a dry run of a job's
+/// host requirements.
+///
+/// Reports over the hosts the *caller* may start on. An owner cannot be named
+/// the way enqueue allows: the caller's own authorization is what bounds the
+/// counts, and letting it be widened is exactly how this would become a probe
+/// for hosts the caller cannot see.
+pub async fn validate_requirements(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Json(req): Json<HostRequirementsRequest>,
+) -> Result<Json<HostRequirementsReport>, StatusCode> {
+    use crate::auth::engine::{self, ImageSetPermission};
+
+    // Resolve the image set exactly as enqueue does, so the report describes
+    // the membership an actual submission would freeze.
+    let image_set = match req.init_spec {
+        Some(JobInitSpec::ImageSet { set_id, generation }) => {
+            let may_use = engine::can_access_image_set(
+                state.pool(),
+                subject.user_id(),
+                set_id,
+                ImageSetPermission::Use,
+            )
+            .await
+            .or_internal(&format!("checking `use` on image set {set_id}"))?;
+            if !may_use {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            let resolved = match generation {
+                Some(g) => Some(g),
+                None => crate::sql::image::latest_generation(state.pool(), set_id)
+                    .await
+                    .or_internal(&format!("resolving latest generation of set {set_id}"))?,
+            };
+            // A set with no generation has nothing to select from, which is a
+            // property of the request rather than a server fault.
+            Some((set_id, resolved.ok_or(StatusCode::BAD_REQUEST)?))
+        }
+        // A concrete image constrains no host, and resume/restart inherit the
+        // predecessor's image; in both cases only the predicate is evaluated.
+        _ => None,
+    };
+
+    let report = crate::host_requirements::evaluate(
+        state.pool(),
+        subject.user_id(),
+        &req.host_cel_predicate,
+        image_set,
+    )
+    .await
+    .or_internal("evaluating host requirements")?;
+
+    Ok(Json(report))
 }
 
 /// Validate a submitted spec document.

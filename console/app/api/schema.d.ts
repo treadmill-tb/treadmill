@@ -305,6 +305,46 @@ export interface paths {
         patch: operations["updateHost"];
         trace?: never;
     };
+    "/host-spec/schema": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the host spec schema
+         * @description The same artifact as the committed `host_spec.schema.json` snapshot.
+         */
+        get: operations["getHostSpecSchema"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/host-requirements/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dry-run a job's host requirements
+         * @description Counts over the hosts the caller may start on, so a job that would never be placed says so before it is submitted.
+         */
+        post: operations["validateHostRequirements"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/hosts/{id}/spec": {
         parameters: {
             query?: never;
@@ -852,6 +892,13 @@ export interface components {
         };
         /** @description Response body of `POST /jobs`: the id assigned to the freshly enqueued job. */
         EnqueueJobResponse: {
+            /**
+             * @description How the job's host requirements met the fleet at submission. A job with
+             *     `schedulable == 0` was still accepted — the fleet may change — but will
+             *     sit queued until it does, which is otherwise indistinguishable from
+             *     waiting for a busy host.
+             */
+            host_requirements: components["schemas"]["HostRequirementsReport"];
             /** Format: uuid */
             job_id: string;
         };
@@ -998,6 +1045,80 @@ export interface components {
              *     exactly when `spec` is.
              */
             spec_revision?: number | null;
+        };
+        /** @description One host the predicate could not be evaluated against. */
+        HostPredicateError: {
+            /** Format: uuid */
+            host_id: string;
+            /** @description The evaluator's own diagnostic, e.g. `no such key: model`. */
+            message: string;
+            /** @description The host's name, so a report reads without a second lookup. */
+            name: string;
+        };
+        /**
+         * @description How a job's host requirements meet the fleet right now.
+         *
+         *     Counts cover only the hosts the job's owner may `start` on, the same set
+         *     the scheduler considers, so a caller cannot probe hosts it has no access to
+         *     by submitting expressions and reading counts back.
+         */
+        HostRequirementsReport: {
+            /**
+             * Format: uint32
+             * @description Hosts the owner may start jobs on at all. A zero here is a permissions
+             *     problem, not a query problem.
+             */
+            authorized: number;
+            /**
+             * @description Set when the predicate does not compile, in which case nothing was
+             *     evaluated and every match count is zero.
+             */
+            compile_error?: string | null;
+            /**
+             * Format: uint32
+             * @description Hosts whose evaluation errored, which counts as not matching. A
+             *     forgotten `has()` guard otherwise looks exactly like an empty fleet, so
+             *     these are surfaced rather than folded into the miss count.
+             */
+            errored: number;
+            /** @description The first few evaluation errors, for diagnosis; `errored` is the total. */
+            errors: components["schemas"]["HostPredicateError"][];
+            /**
+             * Format: uint32
+             * @description Of those, how many carry an admissible image-set member. Evaluated over
+             *     the whole authorized set rather than only the predicate's matches, so
+             *     the two failure modes stay distinguishable. Null when the request named
+             *     no image set (a concrete image places no constraint on the host).
+             */
+            image_matched?: number | null;
+            /**
+             * Format: uint32
+             * @description Of those, how many the predicate admits.
+             */
+            predicate_matched: number;
+            /**
+             * Format: uint32
+             * @description Hosts admitted by both: the ones that could actually run the job.
+             */
+            schedulable: number;
+        };
+        /**
+         * @description A dry run of a job's host requirements (`POST /host-requirements/validate`).
+         *
+         *     Answers the question a queued job cannot: *would this ever be placed?*
+         */
+        HostRequirementsRequest: {
+            /** @description The predicate to evaluate, as `JobRequest::host_cel_predicate`. */
+            host_cel_predicate: string;
+            /**
+             * @description The image the job would run, evaluated exactly as an enqueue would
+             *     resolve it. Supplying it separates the two ways a job goes unplaced —
+             *     the predicate matched nothing, or no image-set member admits the hosts
+             *     it did match — which look identical from a job sitting queued. Omitted,
+             *     only the predicate is evaluated.
+             * @default null
+             */
+            init_spec: components["schemas"]["JobInitSpec"] | null;
         };
         /**
          * @description A host spec at whatever version it was written under.
@@ -3004,6 +3125,101 @@ export interface operations {
                 content?: never;
             };
             /** @description The caller lacks `manage` on the host. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Failed to deserialize the JSON body into the target type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getHostSpecSchema: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    validateHostRequirements: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description A dry run of a job's host requirements (`POST /host-requirements/validate`).
+         *
+         *     Answers the question a queued job cannot: *would this ever be placed?*
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HostRequirementsRequest"];
+            };
+        };
+        responses: {
+            /**
+             * @description How a job's host requirements meet the fleet right now.
+             *
+             *     Counts cover only the hosts the job's owner may `start` on, the same set
+             *     the scheduler considers, so a caller cannot probe hosts it has no access to
+             *     by submitting expressions and reading counts back.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostRequirementsReport"];
+                };
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller lacks `use` on the named image set. */
             403: {
                 headers: {
                     [name: string]: unknown;

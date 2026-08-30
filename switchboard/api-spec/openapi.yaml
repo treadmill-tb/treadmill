@@ -742,6 +742,72 @@ paths:
           description: Applied, or the request changed nothing.
       security:
       - token: []
+  /host-spec/schema:
+    get:
+      tags:
+      - Hosts
+      summary: Get the host spec schema
+      description: The same artifact as the committed `host_spec.schema.json` snapshot.
+      operationId: getHostSpecSchema
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema: true
+  /host-requirements/validate:
+    post:
+      tags:
+      - Hosts
+      summary: Dry-run a job's host requirements
+      description: Counts over the hosts the caller may start on, so a job that would never be placed says so before it is submitted.
+      operationId: validateHostRequirements
+      requestBody:
+        description: |-
+          A dry run of a job's host requirements (`POST /host-requirements/validate`).
+
+          Answers the question a queued job cannot: *would this ever be placed?*
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostRequirementsRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The caller lacks `use` on the named image set.
+        '200':
+          description: |-
+            How a job's host requirements meet the fleet right now.
+
+            Counts cover only the hosts the job's owner may `start` on, the same set
+            the scheduler considers, so a caller cannot probe hosts it has no access to
+            by submitting expressions and reading counts back.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostRequirementsReport'
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+      security:
+      - token: []
   /hosts/{id}/spec:
     put:
       tags:
@@ -2081,11 +2147,20 @@ components:
       description: 'Response body of `POST /jobs`: the id assigned to the freshly enqueued job.'
       type: object
       properties:
+        host_requirements:
+          description: |-
+            How the job's host requirements met the fleet at submission. A job with
+            `schedulable == 0` was still accepted — the fleet may change — but will
+            sit queued until it does, which is otherwise indistinguishable from
+            waiting for a busy host.
+          allOf:
+          - $ref: '#/components/schemas/HostRequirementsReport'
         job_id:
           type: string
           format: uuid
       required:
       - job_id
+      - host_requirements
     GenerationMemberInfo:
       description: |-
         One member of a generation, as returned by the inspect route. A member is
@@ -2281,6 +2356,110 @@ components:
       - name
       - live
       - maintenance
+    HostPredicateError:
+      description: One host the predicate could not be evaluated against.
+      type: object
+      properties:
+        host_id:
+          type: string
+          format: uuid
+        message:
+          description: 'The evaluator''s own diagnostic, e.g. `no such key: model`.'
+          type: string
+        name:
+          description: The host's name, so a report reads without a second lookup.
+          type: string
+      required:
+      - host_id
+      - name
+      - message
+    HostRequirementsReport:
+      description: |-
+        How a job's host requirements meet the fleet right now.
+
+        Counts cover only the hosts the job's owner may `start` on, the same set
+        the scheduler considers, so a caller cannot probe hosts it has no access to
+        by submitting expressions and reading counts back.
+      type: object
+      properties:
+        authorized:
+          description: |-
+            Hosts the owner may start jobs on at all. A zero here is a permissions
+            problem, not a query problem.
+          type: integer
+          format: uint32
+          minimum: 0
+        compile_error:
+          description: |-
+            Set when the predicate does not compile, in which case nothing was
+            evaluated and every match count is zero.
+          type:
+          - string
+          - 'null'
+        errored:
+          description: |-
+            Hosts whose evaluation errored, which counts as not matching. A
+            forgotten `has()` guard otherwise looks exactly like an empty fleet, so
+            these are surfaced rather than folded into the miss count.
+          type: integer
+          format: uint32
+          minimum: 0
+        errors:
+          description: The first few evaluation errors, for diagnosis; `errored` is the total.
+          type: array
+          items:
+            $ref: '#/components/schemas/HostPredicateError'
+        image_matched:
+          description: |-
+            Of those, how many carry an admissible image-set member. Evaluated over
+            the whole authorized set rather than only the predicate's matches, so
+            the two failure modes stay distinguishable. Null when the request named
+            no image set (a concrete image places no constraint on the host).
+          type:
+          - integer
+          - 'null'
+          format: uint32
+          minimum: 0
+        predicate_matched:
+          description: Of those, how many the predicate admits.
+          type: integer
+          format: uint32
+          minimum: 0
+        schedulable:
+          description: 'Hosts admitted by both: the ones that could actually run the job.'
+          type: integer
+          format: uint32
+          minimum: 0
+      required:
+      - authorized
+      - predicate_matched
+      - schedulable
+      - errored
+      - errors
+    HostRequirementsRequest:
+      description: |-
+        A dry run of a job's host requirements (`POST /host-requirements/validate`).
+
+        Answers the question a queued job cannot: *would this ever be placed?*
+      type: object
+      properties:
+        host_cel_predicate:
+          description: The predicate to evaluate, as `JobRequest::host_cel_predicate`.
+          type: string
+        init_spec:
+          description: |-
+            The image the job would run, evaluated exactly as an enqueue would
+            resolve it. Supplying it separates the two ways a job goes unplaced —
+            the predicate matched nothing, or no image-set member admits the hosts
+            it did match — which look identical from a job sitting queued. Omitted,
+            only the predicate is evaluated.
+          anyOf:
+          - $ref: '#/components/schemas/JobInitSpec'
+          - type: 'null'
+          default: null
+      additionalProperties: false
+      required:
+      - host_cel_predicate
     HostSpec:
       description: |-
         A host spec at whatever version it was written under.

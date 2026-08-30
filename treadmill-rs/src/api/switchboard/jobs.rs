@@ -475,6 +475,11 @@ pub struct JobInfo {
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct EnqueueJobResponse {
     pub job_id: Uuid,
+    /// How the job's host requirements met the fleet at submission. A job with
+    /// `schedulable == 0` was still accepted — the fleet may change — but will
+    /// sit queued until it does, which is otherwise indistinguishable from
+    /// waiting for a busy host.
+    pub host_requirements: crate::api::switchboard::hosts::HostRequirementsReport,
 }
 
 /// A patch to a job (`PATCH /jobs/{id}`). Only the fields listed here are

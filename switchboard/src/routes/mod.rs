@@ -351,6 +351,34 @@ pub fn api_router() -> ApiRouter<AppState> {
                     })
             }),
         )
+        //  GET /host-spec/schema -- the JSON Schema a spec is validated against
+        .api_route(
+            "/host-spec/schema",
+            get_with(hosts::spec_schema, |o| {
+                doc(o, "getHostSpecSchema", "Hosts", "Get the host spec schema").description(
+                    "The same artifact as the committed `host_spec.schema.json` snapshot.",
+                )
+            }),
+        )
+        //  POST /host-requirements/validate -- dry-run a job's host requirements
+        .api_route(
+            "/host-requirements/validate",
+            post_with(hosts::validate_requirements, |o| {
+                doc(
+                    o,
+                    "validateHostRequirements",
+                    "Hosts",
+                    "Dry-run a job's host requirements",
+                )
+                .description(
+                    "Counts over the hosts the caller may start on, so a job that would \
+                     never be placed says so before it is submitted.",
+                )
+                .response_with::<403, (), _>(|r| {
+                    r.description("The caller lacks `use` on the named image set.")
+                })
+            }),
+        )
         //  PUT /hosts/{id}/spec -- store a new revision of a host's spec
         .api_route(
             "/hosts/{id}/spec",

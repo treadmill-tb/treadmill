@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::WhoAmIResponse;
 use treadmill_rs::api::switchboard::hosts::{
-    HostCreateResponse, HostInfo, HostSpecRejection, HostSpecUpdateResponse,
+    HostCreateResponse, HostInfo, HostRequirementsReport, HostSpecRejection, HostSpecUpdateResponse,
 };
 use treadmill_rs::host_spec::HostSpec;
 use treadmill_switchboard::events::EventBus;
@@ -831,4 +831,360 @@ async fn get_host_is_scoped_to_read(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+// -- the host-matching diagnostic -----------------------------------------
+
+/// Create a host through the API and return its id.
+async fn create_host(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    admin: &str,
+    spec: serde_json::Value,
+) -> Uuid {
+    let resp = client
+        .post(format!("http://{addr}/api/v1/hosts"))
+        .bearer_auth(admin)
+        .json(&serde_json::json!({ "spec": spec }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    resp.json::<HostCreateResponse>().await.unwrap().host_id
+}
+
+/// A spec advertising `profile`, with `memory_mb` of RAM.
+fn spec_with(host_id: Uuid, name: &str, profile: &str, memory_mb: u32) -> serde_json::Value {
+    let mut spec = spec_document(host_id, name);
+    spec["platform"]["profiles"] = serde_json::json!([profile]);
+    spec["resources"]["memory_mb"] = memory_mb.into();
+    spec
+}
+
+async fn validate(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    body: serde_json::Value,
+) -> HostRequirementsReport {
+    let resp = client
+        .post(format!("http://{addr}/api/v1/host-requirements/validate"))
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    resp.json().await.unwrap()
+}
+
+/// The served schema is the committed snapshot, not a second copy of it: the
+/// console renders from this, and a drifting copy would mislead an author
+/// about what the switchboard actually accepts.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn spec_schema_is_the_committed_artifact(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+
+    let served: serde_json::Value = client
+        .get(format!("http://{addr}/api/v1/host-spec/schema"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let snapshot = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../treadmill-rs/protocol-schema/host_spec.schema.json"
+    ))
+    .expect("the committed snapshot exists");
+    let committed: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+    assert_eq!(served, committed);
+}
+
+/// The counts answer the question a queued job cannot: is this predicate ever
+/// going to be placed?
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn validate_counts_predicate_matches(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+
+    create_host(
+        &client,
+        addr,
+        &admin,
+        spec_with(Uuid::new_v4(), "small", "q35-virtio-uefi", 4096),
+    )
+    .await;
+    create_host(
+        &client,
+        addr,
+        &admin,
+        spec_with(Uuid::new_v4(), "big", "q35-virtio-uefi", 16384),
+    )
+    .await;
+
+    let report = validate(
+        &client,
+        addr,
+        &admin,
+        serde_json::json!({ "host_cel_predicate": "host.resources.memory_mb >= 16384" }),
+    )
+    .await;
+    assert_eq!(report.authorized, 2);
+    assert_eq!(report.predicate_matched, 1);
+    assert_eq!(report.schedulable, 1);
+    // No image set named, so nothing to report on the image side.
+    assert_eq!(report.image_matched, None);
+    assert_eq!(report.errored, 0);
+    assert_eq!(report.compile_error, None);
+
+    // A predicate nothing satisfies is reported as such, not as an error.
+    let report = validate(
+        &client,
+        addr,
+        &admin,
+        serde_json::json!({ "host_cel_predicate": "host.site == 'atlantis'" }),
+    )
+    .await;
+    assert_eq!(report.authorized, 2);
+    assert_eq!(report.predicate_matched, 0);
+    assert_eq!(report.errored, 0);
+}
+
+/// A predicate that does not compile is reported as such: nothing is
+/// evaluated, so an empty match count would be misleading.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn validate_reports_a_compile_error(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+    create_host(
+        &client,
+        addr,
+        &admin,
+        spec_with(Uuid::new_v4(), "one", "q35-virtio-uefi", 4096),
+    )
+    .await;
+
+    let report = validate(
+        &client,
+        addr,
+        &admin,
+        serde_json::json!({ "host_cel_predicate": "host.site ==" }),
+    )
+    .await;
+    assert!(report.compile_error.is_some(), "{report:?}");
+    assert_eq!(report.authorized, 1, "the fleet is still counted");
+    assert_eq!(report.predicate_matched, 0);
+    assert_eq!(report.schedulable, 0);
+}
+
+/// An unguarded reach into a variant's field errors per host. Those are
+/// surfaced rather than folded into the miss count: a forgotten `has()` guard
+/// otherwise looks exactly like an empty fleet.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn validate_surfaces_evaluation_errors(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let host_id = create_host(
+        &client,
+        addr,
+        &admin,
+        spec_with(Uuid::new_v4(), "cam-qemu-04", "q35-virtio-uefi", 4096),
+    )
+    .await;
+
+    // `model` exists only on the physical variant; the seeded host is virtual.
+    let report = validate(
+        &client,
+        addr,
+        &admin,
+        serde_json::json!({ "host_cel_predicate": "host.platform.model == 'rpi4'" }),
+    )
+    .await;
+    assert_eq!(report.predicate_matched, 0);
+    assert_eq!(report.errored, 1);
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(report.errors[0].host_id, host_id);
+    assert_eq!(report.errors[0].name, "cam-qemu-04");
+    assert!(report.errors[0].message.contains("model"), "{report:?}");
+
+    // The guarded form is a clean non-match, not an error.
+    let report = validate(
+        &client,
+        addr,
+        &admin,
+        serde_json::json!({
+            "host_cel_predicate": "has(host.platform.model) && host.platform.model == 'rpi4'"
+        }),
+    )
+    .await;
+    assert_eq!(report.errored, 0);
+    assert_eq!(report.predicate_matched, 0);
+}
+
+/// The diagnostic deliberately does not short-circuit the way the scheduler
+/// does: both filters run over the whole authorized set, so "your query
+/// matches nothing" stays distinguishable from "your image has no member for
+/// the hosts it matched". From a queued job the two look identical.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn validate_separates_predicate_misses_from_image_misses(pool: PgPool) {
+    use treadmill_rs::image::{Digest, media_types};
+    use treadmill_switchboard::sql;
+
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let admin_id = whoami(&client, addr, &admin).await;
+
+    // Two hosts, both `q35-virtio-uefi`, differing only in memory.
+    create_host(
+        &client,
+        addr,
+        &admin,
+        spec_with(Uuid::new_v4(), "small", "q35-virtio-uefi", 4096),
+    )
+    .await;
+    create_host(
+        &client,
+        addr,
+        &admin,
+        spec_with(Uuid::new_v4(), "big", "q35-virtio-uefi", 16384),
+    )
+    .await;
+
+    // A set whose only member is built for a profile neither host advertises.
+    let set_id = Uuid::new_v4();
+    let image_id = Uuid::new_v4();
+    let digest = Digest::from_sha256([7u8; 32]);
+    let mut txn = pool.begin().await.unwrap();
+    sql::image::create_set(&mut *txn, set_id, "rpi-only", admin_id, None)
+        .await
+        .unwrap();
+    sql::image::insert(
+        &mut *txn,
+        image_id,
+        &digest.encoded(),
+        media_types::IMAGE_ARTIFACT_TYPE,
+        None,
+    )
+    .await
+    .unwrap();
+    sql::image::insert_source(
+        &mut *txn,
+        Uuid::new_v4(),
+        image_id,
+        "reg.example:5000",
+        "repo",
+        "external",
+        Some(admin_id),
+    )
+    .await
+    .unwrap();
+    sql::image::create_generation(
+        &mut txn,
+        set_id,
+        admin_id,
+        &[sql::image::NewSetMember {
+            image_id,
+            platform_profile: "rpi4-uboot-sd".to_string(),
+            predicate: None,
+            index: 0,
+        }],
+    )
+    .await
+    .unwrap();
+    txn.commit().await.unwrap();
+
+    let body = |predicate: &str| {
+        serde_json::json!({
+            "host_cel_predicate": predicate,
+            "init_spec": { "type": "image_set", "set_id": set_id, "generation": null }
+        })
+    };
+
+    // The predicate matches everything; the image matches nothing. Without the
+    // split this would read as a query problem.
+    let report = validate(&client, addr, &admin, body("true")).await;
+    assert_eq!(report.authorized, 2);
+    assert_eq!(report.predicate_matched, 2, "the predicate is fine");
+    assert_eq!(
+        report.image_matched,
+        Some(0),
+        "the image set is the problem"
+    );
+    assert_eq!(report.schedulable, 0);
+
+    // The mirror image: the predicate is the problem, and the image side is
+    // still reported over the whole set rather than over what survived.
+    let report = validate(&client, addr, &admin, body("host.site == 'atlantis'")).await;
+    assert_eq!(report.predicate_matched, 0);
+    assert_eq!(report.image_matched, Some(0));
+    assert_eq!(report.schedulable, 0);
+}
+
+/// Counts cover only hosts the caller may start on, so the endpoint cannot be
+/// used to probe the existence or properties of hosts it cannot reach.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn validate_counts_only_authorized_hosts(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let bob = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob_id = whoami(&client, addr, &bob).await;
+
+    let host_id = create_host(
+        &client,
+        addr,
+        &admin,
+        spec_with(Uuid::new_v4(), "cam-qemu-04", "q35-virtio-uefi", 16384),
+    )
+    .await;
+
+    let query = serde_json::json!({ "host_cel_predicate": "true" });
+    // Admin sees the fleet; bob has no grant on anything.
+    assert_eq!(
+        validate(&client, addr, &admin, query.clone())
+            .await
+            .authorized,
+        1
+    );
+    let report = validate(&client, addr, &bob, query.clone()).await;
+    assert_eq!(report.authorized, 0);
+    assert_eq!(report.predicate_matched, 0);
+
+    // `read` is not `start`, so it does not bring the host into bob's counts.
+    for permission in ["read", "start"] {
+        sqlx::query(
+            "insert into tml_switchboard.host_grants (host_id, subject_id, permission) \
+             values ($1, $2, $3::tml_switchboard.host_permission)",
+        )
+        .bind(host_id)
+        .bind(bob_id)
+        .bind(permission)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let expected = u32::from(permission == "start");
+        assert_eq!(
+            validate(&client, addr, &bob, query.clone())
+                .await
+                .authorized,
+            expected,
+            "after granting {permission}"
+        );
+    }
 }

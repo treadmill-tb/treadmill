@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::api::switchboard::JobInitSpec;
 use crate::host_spec::HostSpec;
 
 /// A host as returned by `GET /hosts` and `GET /hosts/{id}`: its operational
@@ -98,5 +99,62 @@ pub struct HostSpecRejection {
     /// Empty when the fault is the document as a whole.
     pub path: String,
     /// Human-readable explanation; not intended to be parsed.
+    pub message: String,
+}
+
+/// A dry run of a job's host requirements (`POST /host-requirements/validate`).
+///
+/// Answers the question a queued job cannot: *would this ever be placed?*
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostRequirementsRequest {
+    /// The predicate to evaluate, as `JobRequest::host_cel_predicate`.
+    pub host_cel_predicate: String,
+    /// The image the job would run, evaluated exactly as an enqueue would
+    /// resolve it. Supplying it separates the two ways a job goes unplaced —
+    /// the predicate matched nothing, or no image-set member admits the hosts
+    /// it did match — which look identical from a job sitting queued. Omitted,
+    /// only the predicate is evaluated.
+    #[serde(default)]
+    pub init_spec: Option<JobInitSpec>,
+}
+
+/// How a job's host requirements meet the fleet right now.
+///
+/// Counts cover only the hosts the job's owner may `start` on, the same set
+/// the scheduler considers, so a caller cannot probe hosts it has no access to
+/// by submitting expressions and reading counts back.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct HostRequirementsReport {
+    /// Hosts the owner may start jobs on at all. A zero here is a permissions
+    /// problem, not a query problem.
+    pub authorized: u32,
+    /// Of those, how many the predicate admits.
+    pub predicate_matched: u32,
+    /// Of those, how many carry an admissible image-set member. Evaluated over
+    /// the whole authorized set rather than only the predicate's matches, so
+    /// the two failure modes stay distinguishable. Null when the request named
+    /// no image set (a concrete image places no constraint on the host).
+    pub image_matched: Option<u32>,
+    /// Hosts admitted by both: the ones that could actually run the job.
+    pub schedulable: u32,
+    /// Hosts whose evaluation errored, which counts as not matching. A
+    /// forgotten `has()` guard otherwise looks exactly like an empty fleet, so
+    /// these are surfaced rather than folded into the miss count.
+    pub errored: u32,
+    /// The first few evaluation errors, for diagnosis; `errored` is the total.
+    pub errors: Vec<HostPredicateError>,
+    /// Set when the predicate does not compile, in which case nothing was
+    /// evaluated and every match count is zero.
+    pub compile_error: Option<String>,
+}
+
+/// One host the predicate could not be evaluated against.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct HostPredicateError {
+    pub host_id: Uuid,
+    /// The host's name, so a report reads without a second lookup.
+    pub name: String,
+    /// The evaluator's own diagnostic, e.g. `no such key: model`.
     pub message: String,
 }

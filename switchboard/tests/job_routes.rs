@@ -510,7 +510,18 @@ async fn enqueue_creates_a_queued_job_owned_by_caller(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
-    let job_id = resp.json::<EnqueueJobResponse>().await.unwrap().job_id;
+    let enqueued = resp.json::<EnqueueJobResponse>().await.unwrap();
+    let job_id = enqueued.job_id;
+
+    // The enqueue reports how the job's requirements met the fleet. There is no
+    // host here at all, so the job is accepted and will simply sit queued --
+    // which is exactly the outcome the report exists to make visible.
+    let report = &enqueued.host_requirements;
+    assert_eq!(report.authorized, 0);
+    assert_eq!(report.schedulable, 0);
+    assert_eq!(report.compile_error, None);
+    // A concrete image constrains no host, so there is no image side to report.
+    assert_eq!(report.image_matched, None);
 
     // The enqueuer owns the job and can read it back: queued, owned by the
     // caller, with the deployment default lease (1h in the mock config).

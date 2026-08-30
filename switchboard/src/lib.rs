@@ -3,6 +3,7 @@ pub mod auth;
 pub mod client_addr;
 pub mod config;
 pub mod events;
+pub mod host_requirements;
 pub(crate) mod http_error;
 pub mod job_gateway;
 pub mod log_streaming;

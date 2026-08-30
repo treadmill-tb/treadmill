@@ -309,6 +309,17 @@ pub async fn enqueue(
     // job ids sort by creation time (see also the `queued_at` listing order).
     let job_id = Uuid::now_v7();
     let parameters = req.parameters.clone();
+    // `req` is moved into `job::insert`; the report below needs these. The
+    // generation is the one frozen above, so the report describes the exact
+    // membership the job pinned.
+    let reported_image_set = match req.init_spec {
+        JobInitSpec::ImageSet {
+            set_id,
+            generation: Some(g),
+        } => Some((set_id, g)),
+        _ => None,
+    };
+    let host_cel_predicate = req.host_cel_predicate.clone();
     let mut txn = state
         .pool()
         .begin()
@@ -346,7 +357,25 @@ pub async fn enqueue(
         .await
         .or_internal(&format!("committing enqueued job {job_id}"))?;
 
-    Ok((StatusCode::CREATED, Json(EnqueueJobResponse { job_id })))
+    // Reported, not enforced: the fleet changes, and a job that matches nothing
+    // today may be placed tomorrow. Computed after the commit so the diagnostic
+    // never holds the enqueue transaction open.
+    let host_requirements = crate::host_requirements::evaluate(
+        state.pool(),
+        owner,
+        &host_cel_predicate,
+        reported_image_set,
+    )
+    .await
+    .or_internal(&format!("reporting host requirements for job {job_id}"))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(EnqueueJobResponse {
+            job_id,
+            host_requirements,
+        }),
+    ))
 }
 
 /// A job label must be printable ASCII, non-empty, start & end with an
