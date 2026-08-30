@@ -87,6 +87,15 @@ pub struct ServerHello {
     pub protocol: ProtocolVersion,
     #[serde(default)]
     pub features: BTreeSet<String>,
+    /// The host's own spec, normalized to the latest version — the admin's
+    /// description of the machine this supervisor drives, rather than anything
+    /// the switchboard derived.
+    ///
+    /// Null only for a host that has never been described, which since host
+    /// creation writes a spec means one predating that route. Absent entirely
+    /// from an older switchboard's hello, hence `default`.
+    #[serde(default)]
+    pub host_spec: Option<crate::host_spec::HostSpec>,
 }
 
 // -- StartJobRequest ------------------------------------------------------------------------------

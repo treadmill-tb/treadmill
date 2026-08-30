@@ -706,17 +706,171 @@ pub async fn connect(
                 });
             });
 
-    let server_hello_json = serde_json::to_string(&ServerHello {
+    // The host's own description, handed back as the admin wrote it. Read
+    // outside the upgrade closure because the hello travels in a response
+    // header, which is fixed before the socket exists.
+    let host_spec = match sql::host_spec::current_for_host(host_id, state.pool()).await {
+        Ok(Some(Ok(stored))) => Some(HostSpec::V1(stored.normalize())),
+        Ok(None) => None,
+        Ok(Some(Err(e))) => {
+            tracing::error!("host {host_id} connecting with an unreadable spec: {e}");
+            None
+        }
+        Err(e) => {
+            tracing::error!("failed to read the spec of connecting host {host_id}: {e}");
+            None
+        }
+    };
+
+    let hello = ServerHello {
         protocol: ProtocolVersion::CURRENT,
         features: Default::default(),
-    })
-    .expect("Failed to serialize ServerHello");
-    response.headers_mut().insert(
-        TREADMILL_WEBSOCKET_CONFIG,
-        server_hello_json
-            .parse()
-            .expect("Failed to parse serialized socket configuration into HTTP header value"),
-    );
+        host_spec,
+    };
+    let (header, spec_dropped) = socket_config_header(hello);
+    if spec_dropped {
+        tracing::error!(
+            "host {host_id}: its spec does not fit the socket-config header budget; \
+             connecting without it"
+        );
+    }
+    match header {
+        Some(value) => {
+            response
+                .headers_mut()
+                .insert(TREADMILL_WEBSOCKET_CONFIG, value);
+        }
+        // Unreachable: a spec-less hello is a short ASCII document.
+        None => tracing::error!("host {host_id}: could not encode a socket config header"),
+    }
 
     response
+}
+
+/// Budget for the serialized [`ServerHello`], which travels in a response
+/// header.
+///
+/// `HeaderValue` itself imposes no length limit, so nothing below this line
+/// would reject an oversized document — but hyper caps a whole header block at
+/// 16 KiB by default, and intermediaries cap lower. Exceeding that makes the
+/// handshake response unreadable, and a supervisor that cannot read it cannot
+/// connect at all. A spec is admin-authored and unbounded (a host may list
+/// arbitrarily many DUTs), so the ceiling has to be enforced here.
+const MAX_SOCKET_CONFIG_BYTES: usize = 8 * 1024;
+
+/// Encode a hello for the socket-config header, dropping the spec if the full
+/// document exceeds [`MAX_SOCKET_CONFIG_BYTES`].
+///
+/// Returns whether the spec had to be dropped. Connecting without a
+/// description is how the supervisor behaved before the field existed, and is
+/// a far better outcome than refusing the connection.
+fn socket_config_header(hello: ServerHello) -> (Option<HeaderValue>, bool) {
+    fn encode(hello: &ServerHello) -> Option<HeaderValue> {
+        let json = serde_json::to_string(hello).ok()?;
+        if json.len() > MAX_SOCKET_CONFIG_BYTES {
+            return None;
+        }
+        json.parse().ok()
+    }
+
+    if hello.host_spec.is_some()
+        && let Some(value) = encode(&hello)
+    {
+        return (Some(value), false);
+    }
+    let dropped = hello.host_spec.is_some();
+    (
+        encode(&ServerHello {
+            host_spec: None,
+            ..hello
+        }),
+        dropped,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use treadmill_rs::host_spec::{Dut, HostSpecV1, Platform, Resources, SpecVersionV1};
+
+    use super::*;
+
+    fn hello(duts: usize) -> ServerHello {
+        ServerHello {
+            protocol: ProtocolVersion::CURRENT,
+            features: Default::default(),
+            host_spec: Some(HostSpec::V1(HostSpecV1 {
+                spec_version: SpecVersionV1::V1,
+                id: Uuid::nil(),
+                name: "cam-rpi4-01".into(),
+                description: None,
+                site: "cambridge".into(),
+                location: None,
+                platform: Platform::Physical {
+                    arch: "aarch64".into(),
+                    profiles: vec!["rpi4-uboot-sd".into()],
+                    vendor: "Raspberry Pi Ltd".into(),
+                    model: "Raspberry Pi 4 Model B".into(),
+                },
+                resources: Resources {
+                    cpu_cores: 4,
+                    memory_mb: 8192,
+                    storage_gb: 64,
+                },
+                labels: Default::default(),
+                duts: (0..duts)
+                    .map(|i| Dut {
+                        name: Some(format!("nRF52840-DK #{i}")),
+                        serial: Some(format!("10501234{i:02}")),
+                        vendor: "Nordic Semiconductor".into(),
+                        board: "nrf52840dk".into(),
+                        arch: vec!["cortex-m4".into()],
+                        connectivity: vec!["ble".into(), "usb".into()],
+                        debug: None,
+                        console: None,
+                        labels: Default::default(),
+                    })
+                    .collect(),
+            })),
+        }
+    }
+
+    fn decode(value: &HeaderValue) -> ServerHello {
+        serde_json::from_str(value.to_str().expect("the header is text"))
+            .expect("the header is a hello")
+    }
+
+    #[test]
+    fn a_realistic_spec_travels_in_the_header() {
+        let (header, dropped) = socket_config_header(hello(4));
+        assert!(!dropped);
+        let decoded = decode(&header.expect("encodes"));
+        let HostSpec::V1(spec) = decoded.host_spec.expect("the spec is carried");
+        assert_eq!(spec.site, "cambridge");
+        assert_eq!(spec.duts.len(), 4);
+    }
+
+    /// The handshake must survive a spec too large for a header: a supervisor
+    /// that cannot read the response cannot connect at all.
+    #[test]
+    fn an_oversized_spec_is_dropped_rather_than_breaking_the_handshake() {
+        let (header, dropped) = socket_config_header(hello(500));
+        assert!(dropped);
+        let header = header.expect("a spec-less hello still encodes");
+        assert!(header.len() <= MAX_SOCKET_CONFIG_BYTES);
+        let decoded = decode(&header);
+        assert!(decoded.host_spec.is_none());
+        // The rest of the handshake is intact, so negotiation still works.
+        assert_eq!(decoded.protocol, ProtocolVersion::CURRENT);
+    }
+
+    /// An undescribed host is not an error path; it just carries no spec.
+    #[test]
+    fn a_host_without_a_spec_reports_nothing_dropped() {
+        let (header, dropped) = socket_config_header(ServerHello {
+            host_spec: None,
+            ..hello(0)
+        });
+        assert!(!dropped);
+        assert!(decode(&header.expect("encodes")).host_spec.is_none());
+    }
 }

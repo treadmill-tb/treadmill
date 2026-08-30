@@ -20,6 +20,9 @@ export default function Hosts() {
               <tr>
                 <th>Name</th>
                 <th>Liveness</th>
+                <th>Site</th>
+                <th>Platform profiles</th>
+                <th>DUTs</th>
                 <th>Last seen</th>
               </tr>
             </thead>
@@ -35,7 +38,29 @@ export default function Hosts() {
                   </td>
                   <td>
                     <LiveBadge live={host.live} />
+                    {host.maintenance && (
+                      <span className="badge warn">maintenance</span>
+                    )}
                   </td>
+                  {/* An undescribed host has nothing to show and cannot be
+                      scheduled onto; say so rather than showing blanks. */}
+                  {host.spec == null ? (
+                    <td colSpan={3} className="muted">
+                      no spec
+                    </td>
+                  ) : (
+                    <>
+                      <td>{host.spec.site}</td>
+                      <td>
+                        {host.spec.platform.profiles.map((p) => (
+                          <span key={p} className="chip mono">
+                            {p}
+                          </span>
+                        ))}
+                      </td>
+                      <td>{host.spec.duts.length}</td>
+                    </>
+                  )}
                   <td>
                     <RelTime iso={host.last_seen_at} />
                   </td>
