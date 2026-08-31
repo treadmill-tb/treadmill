@@ -1,3 +1,5 @@
+import { Link } from "react-router";
+
 import { $api } from "../api/client";
 import { LiveBadge } from "../components/badges";
 import { AuditLog } from "../components/audit-log";
@@ -45,6 +47,13 @@ export default function HostDetail({ params }: Route.ComponentProps) {
 
           <section>
             <h2>Spec</h2>
+            {host.data.permissions.includes("manage") && (
+              <div className="toolbar">
+                <Link className="btn" to={`/hosts/${params.id}/spec`}>
+                  {host.data.spec == null ? "Write a spec" : "Edit spec"}
+                </Link>
+              </div>
+            )}
             {host.data.spec == null ? (
               <p className="muted">
                 This host has no spec. Nothing can be scheduled onto it: there

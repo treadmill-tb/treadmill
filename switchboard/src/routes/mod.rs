@@ -18,6 +18,7 @@ use http::{HeaderValue, Method, StatusCode, header};
 use std::time::Duration;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
+use treadmill_rs::api::switchboard::hosts::{HostSpecRejection, HostSpecUpdateResponse};
 use treadmill_rs::api::switchboard::images::{ImageInfo, ImageSetGenerationInfo, ImageSetInfo};
 use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, LeaseRejection};
 use treadmill_rs::api::switchboard::{LoginResponse, LoginStagedResponse};
@@ -386,8 +387,23 @@ pub fn api_router() -> ApiRouter<AppState> {
                 doc(o, "putHostSpec", "Hosts", "Replace a host's spec")
                     .description(
                         "Appends a revision; the history keeps every one, and the \
-                         newest is the spec in force.",
+                         newest is the spec in force. `?validate_only=true` runs \
+                         the same checks and stops before the write.",
                     )
+                    .response_with::<200, Json<HostSpecUpdateResponse>, _>(|r| {
+                        r.description("The revision the document was stored at.")
+                    })
+                    .response_with::<204, (), _>(|r| {
+                        r.description(
+                            "`validate_only=true`: the document is valid, and nothing was written.",
+                        )
+                    })
+                    .response_with::<422, Json<HostSpecRejection>, _>(|r| {
+                        r.description(
+                            "The document does not describe this host, or does not \
+                             validate; the body names the offending field.",
+                        )
+                    })
                     .response_with::<403, (), _>(|r| {
                         r.description("The caller lacks `manage` on the host.")
                     })

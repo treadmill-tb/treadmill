@@ -813,7 +813,7 @@ paths:
       tags:
       - Hosts
       summary: Replace a host's spec
-      description: Appends a revision; the history keeps every one, and the newest is the spec in force.
+      description: Appends a revision; the history keeps every one, and the newest is the spec in force. `?validate_only=true` runs the same checks and stops before the write.
       operationId: putHostSpec
       parameters:
       - in: path
@@ -825,6 +825,17 @@ paths:
           type: string
           format: uuid
         style: simple
+      - in: query
+        name: validate_only
+        description: |-
+          Validate the document and report what a write would refuse, without
+          appending a revision. Anything other than `true` or `false` is refused.
+        schema:
+          description: |-
+            Validate the document and report what a write would refuse, without
+            appending a revision. Anything other than `true` or `false` is refused.
+          type: boolean
+        style: form
       requestBody:
         description: A new revision of a host's spec (`PUT /hosts/{id}/spec`).
         content:
@@ -850,11 +861,19 @@ paths:
               schema:
                 type: string
         '422':
-          description: Failed to deserialize the JSON body into the target type
+          description: The document does not describe this host, or does not validate; the body names the offending field.
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/HostSpecRejection'
+        '200':
+          description: The revision the document was stored at.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostSpecUpdateResponse'
+        '204':
+          description: '`validate_only=true`: the document is valid, and nothing was written.'
       security:
       - token: []
   /hosts/{id}/events:
@@ -2233,6 +2252,11 @@ components:
           type: boolean
         name:
           type: string
+        permissions:
+          description: The viewer's permissions on this host.
+          type: array
+          items:
+            $ref: '#/components/schemas/HostPermission'
         spec:
           description: |-
             The host's current spec, normalized to the latest version, as a document
@@ -2253,6 +2277,7 @@ components:
       - name
       - live
       - maintenance
+      - permissions
     HostListEntry:
       description: |-
         A host as returned by `GET /hosts`: its operational state plus a projection
@@ -2299,6 +2324,23 @@ components:
       - name
       - live
       - maintenance
+    HostPermission:
+      description: |-
+        A permission on a host. `permissions` on [`HostInfo`] reports which of these
+        the viewer holds (an owner or global admin holds all of them).
+      oneOf:
+      - description: May read the host (its info, listing, and spec).
+        type: string
+        const: read
+      - description: May enqueue jobs that run on the host.
+        type: string
+        const: start
+      - description: |-
+          May perform privileged operations on the host, such as changing its
+          operational state or writing a new spec revision (owner holds this
+          implicitly).
+        type: string
+        const: manage
     HostPredicateError:
       description: One host the predicate could not be evaluated against.
       type: object
@@ -2407,6 +2449,25 @@ components:
       additionalProperties: false
       required:
       - host_cel_predicate
+    HostSpecRejection:
+      description: |-
+        Why a submitted host spec was refused (`422 Unprocessable Entity`).
+
+        Specs are hand-edited documents, so a rejection names the offending field
+        rather than a byte offset.
+      type: object
+      properties:
+        message:
+          description: Human-readable explanation; not intended to be parsed.
+          type: string
+        path:
+          description: |-
+            Dotted path to the offending field, e.g. `duts[0].debug.probe.serial`.
+            Empty when the fault is the document as a whole.
+          type: string
+      required:
+      - path
+      - message
     HostSpecUpdateRequest:
       description: A new revision of a host's spec (`PUT /hosts/{id}/spec`).
       type: object
@@ -2420,6 +2481,16 @@ components:
       additionalProperties: false
       required:
       - spec
+    HostSpecUpdateResponse:
+      description: The outcome of a spec write.
+      type: object
+      properties:
+        spec_revision:
+          description: The revision the document was stored at.
+          type: integer
+          format: int32
+      required:
+      - spec_revision
     HostSummary:
       description: |-
         What a listing shows of a host's spec: everything flat, and the identity of
@@ -3912,6 +3983,17 @@ components:
       required:
       - digest
       - source_id
+    SpecWriteQuery:
+      description: Query parameters for `PUT /hosts/{id}/spec`.
+      type: object
+      properties:
+        validate_only:
+          description: |-
+            Validate the document and report what a write would refuse, without
+            appending a revision. Anything other than `true` or `false` is refused.
+          type:
+          - boolean
+          - 'null'
     TaskExitStatus:
       description: |-
         The user workload's success/failure outcome, exposed as `task_exit_status`

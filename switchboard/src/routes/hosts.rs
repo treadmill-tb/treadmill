@@ -6,9 +6,10 @@ use std::net::SocketAddr;
 
 use treadmill_rs::api::switchboard::JobInitSpec;
 use treadmill_rs::api::switchboard::hosts::{
-    HostCreateRequest, HostCreateResponse, HostInfo, HostListEntry, HostRequirementsReport,
-    HostRequirementsRequest, HostSpecRejection, HostSpecUpdateRequest, HostSpecUpdateResponse,
-    HostSummary, HostUpdateRequest,
+    HostCreateRequest, HostCreateResponse, HostInfo, HostListEntry,
+    HostPermission as ApiHostPermission, HostRequirementsReport, HostRequirementsRequest,
+    HostSpecRejection, HostSpecUpdateRequest, HostSpecUpdateResponse, HostSummary,
+    HostUpdateRequest,
 };
 use treadmill_rs::host_spec::{HostSpec, HostSpecV1};
 
@@ -227,6 +228,23 @@ fn refuse(rejection: HostSpecRejection) -> Response {
     (StatusCode::UNPROCESSABLE_ENTITY, Json(rejection)).into_response()
 }
 
+fn host_perm_to_api(p: crate::auth::engine::HostPermission) -> ApiHostPermission {
+    use crate::auth::engine::HostPermission;
+    match p {
+        HostPermission::Read => ApiHostPermission::Read,
+        HostPermission::Start => ApiHostPermission::Start,
+        HostPermission::Manage => ApiHostPermission::Manage,
+    }
+}
+
+/// Query parameters for `PUT /hosts/{id}/spec`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub(crate) struct SpecWriteQuery {
+    /// Validate the document and report what a write would refuse, without
+    /// appending a revision. Anything other than `true` or `false` is refused.
+    validate_only: Option<bool>,
+}
+
 /// Axum handler for `POST /hosts` — admit a host to the fleet.
 ///
 /// Global-admin only: this mints a supervisor credential and puts a machine
@@ -317,10 +335,14 @@ pub async fn create(
 /// operational state. The write is unconditional: revisions are append-only, so
 /// two admins editing one host both land in the history and the later write is
 /// the one in force.
+///
+/// `?validate_only=true` runs the same checks and stops before the write, so an
+/// editor can offer a dry run that cannot disagree with the real one.
 pub async fn put_spec(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Path(IdPath { id: host_id }): Path<IdPath>,
+    Query(query): Query<SpecWriteQuery>,
     Json(req): Json<HostSpecUpdateRequest>,
 ) -> Result<Response, StatusCode> {
     use crate::audit::model::{Host as AuditHost, Subject as AuditSubject};
@@ -350,6 +372,10 @@ pub async fn put_spec(
             path: "id".to_string(),
             message: format!("must be the host being written, {host_id}"),
         }));
+    }
+
+    if query.validate_only == Some(true) {
+        return Ok(StatusCode::NO_CONTENT.into_response());
     }
 
     let mut txn = state
@@ -428,13 +454,21 @@ pub async fn get(
         None => None,
     };
 
-    Ok(Json(host_info(host, spec, &state)))
+    let permissions = engine::host_permissions(state.pool(), subject.user_id(), host_id)
+        .await
+        .or_internal(&format!("enumerating permissions on host {host_id}"))?
+        .into_iter()
+        .map(host_perm_to_api)
+        .collect();
+
+    Ok(Json(host_info(host, spec, permissions, &state)))
 }
 
 /// Assemble the client view of a host from its row and current spec.
 fn host_info(
     host: sql::host::SqlHostListing,
     spec: Option<(i32, HostSpec)>,
+    permissions: Vec<ApiHostPermission>,
     state: &AppState,
 ) -> HostInfo {
     let (spec_revision, spec) = match spec {
@@ -450,6 +484,7 @@ fn host_info(
         last_seen_at: host.last_seen_at,
         spec,
         spec_revision,
+        permissions,
     }
 }
 

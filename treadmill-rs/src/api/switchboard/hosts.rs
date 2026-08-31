@@ -21,6 +21,21 @@ use crate::host_spec::{HostSpec, HostSpecV1, PlatformKind, Resources};
 /// switchboard and back, and never interpret it.
 type SpecDocument = serde_json::Map<String, serde_json::Value>;
 
+/// A permission on a host. `permissions` on [`HostInfo`] reports which of these
+/// the viewer holds (an owner or global admin holds all of them).
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostPermission {
+    /// May read the host (its info, listing, and spec).
+    Read,
+    /// May enqueue jobs that run on the host.
+    Start,
+    /// May perform privileged operations on the host, such as changing its
+    /// operational state or writing a new spec revision (owner holds this
+    /// implicitly).
+    Manage,
+}
+
 /// A host as returned by `GET /hosts/{id}`: its operational state plus the
 /// whole admin-authored spec describing what it is.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +58,8 @@ pub struct HostInfo {
     pub spec: Option<HostSpec>,
     /// The revision `spec` was read at. Null exactly when `spec` is.
     pub spec_revision: Option<i32>,
+    /// The viewer's permissions on this host.
+    pub permissions: Vec<HostPermission>,
 }
 
 /// A host as returned by `GET /hosts`: its operational state plus a projection

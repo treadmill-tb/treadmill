@@ -16,8 +16,8 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::WhoAmIResponse;
 use treadmill_rs::api::switchboard::hosts::{
-    HostCreateResponse, HostInfo, HostListEntry, HostRequirementsReport, HostSpecRejection,
-    HostSpecUpdateResponse,
+    HostCreateResponse, HostInfo, HostListEntry, HostPermission, HostRequirementsReport,
+    HostSpecRejection, HostSpecUpdateResponse,
 };
 use treadmill_rs::host_spec::{HostSpec, PlatformKind};
 use treadmill_switchboard::events::EventBus;
@@ -1184,4 +1184,135 @@ async fn validate_counts_only_authorized_hosts(pool: PgPool) {
             "after granting {permission}"
         );
     }
+}
+
+/// `?validate_only=true` runs the same checks as a write and stops before it,
+/// so an editor's dry run cannot disagree with the write it precedes.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn put_spec_validate_only_checks_without_writing(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+
+    let host_id = Uuid::new_v4();
+    client
+        .post(format!("http://{addr}/api/v1/hosts"))
+        .bearer_auth(&admin)
+        .json(&serde_json::json!({ "spec": spec_document(host_id, "cam-qemu-04") }))
+        .send()
+        .await
+        .unwrap();
+
+    let put = async |query: &str, spec: serde_json::Value| {
+        client
+            .put(format!("http://{addr}/api/v1/hosts/{host_id}/spec{query}"))
+            .bearer_auth(&admin)
+            .json(&serde_json::json!({ "spec": spec }))
+            .send()
+            .await
+            .unwrap()
+    };
+
+    let mut edited = spec_document(host_id, "cam-qemu-04");
+    edited["site"] = "oxford".into();
+    let resp = put("?validate_only=true", edited.clone()).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+
+    let mut broken = spec_document(host_id, "cam-qemu-04");
+    broken["spec_version"] = "v99".into();
+    let resp = put("?validate_only=true", broken.clone()).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        resp.json::<HostSpecRejection>().await.unwrap().path,
+        "spec_version"
+    );
+
+    let resp = put(
+        "?validate_only=true",
+        spec_document(Uuid::new_v4(), "elsewhere"),
+    )
+    .await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(resp.json::<HostSpecRejection>().await.unwrap().path, "id");
+
+    for query in ["?validate_only=foo", "?validate_only=1", "?validate_only="] {
+        let resp = put(query, edited.clone()).await;
+        assert_eq!(
+            resp.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "{query} is not a boolean"
+        );
+    }
+    for query in ["", "?validate_only=false"] {
+        assert_eq!(
+            put(query, edited.clone()).await.status(),
+            reqwest::StatusCode::OK,
+            "{query} writes"
+        );
+    }
+
+    let revisions: Vec<i32> = sqlx::query_scalar(
+        "select revision from tml_switchboard.host_specs where host_id = $1 order by revision",
+    )
+    .bind(host_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(revisions, vec![1, 2, 3], "only the two writes appended");
+}
+
+/// `GET /hosts/{id}` reports the viewer's own permissions, so a console can
+/// offer the actions the caller may actually take.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn get_host_reports_the_viewers_permissions(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let bob = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob_id = whoami(&client, addr, &bob).await;
+
+    let host_id = Uuid::new_v4();
+    client
+        .post(format!("http://{addr}/api/v1/hosts"))
+        .bearer_auth(&admin)
+        .json(&serde_json::json!({ "spec": spec_document(host_id, "cam-qemu-04") }))
+        .send()
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into tml_switchboard.host_grants (host_id, subject_id, permission) \
+         values ($1, $2, 'read')",
+    )
+    .bind(host_id)
+    .bind(bob_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let permissions = async |token: &str| {
+        client
+            .get(format!("http://{addr}/api/v1/hosts/{host_id}"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .json::<HostInfo>()
+            .await
+            .unwrap()
+            .permissions
+    };
+
+    let mut admin_perms = permissions(&admin).await;
+    admin_perms.sort_by_key(|p| format!("{p:?}"));
+    assert_eq!(
+        admin_perms,
+        vec![
+            HostPermission::Manage,
+            HostPermission::Read,
+            HostPermission::Start
+        ]
+    );
+    assert_eq!(permissions(&bob).await, vec![HostPermission::Read]);
 }

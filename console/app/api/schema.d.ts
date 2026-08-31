@@ -355,7 +355,7 @@ export interface paths {
         get?: never;
         /**
          * Replace a host's spec
-         * @description Appends a revision; the history keeps every one, and the newest is the spec in force.
+         * @description Appends a revision; the history keeps every one, and the newest is the spec in force. `?validate_only=true` runs the same checks and stops before the write.
          */
         put: operations["putHostSpec"];
         post?: never;
@@ -986,6 +986,8 @@ export interface components {
              */
             maintenance: boolean;
             name: string;
+            /** @description The viewer's permissions on this host. */
+            permissions: components["schemas"]["HostPermission"][];
             /**
              * @description The host's current spec, normalized to the latest version, as a document
              *     conforming to the schema at `GET /hosts/spec-schema`. Null only for a
@@ -1033,6 +1035,11 @@ export interface components {
              */
             spec_revision?: number | null;
         };
+        /**
+         * @description A permission on a host. `permissions` on [`HostInfo`] reports which of these
+         *     the viewer holds (an owner or global admin holds all of them).
+         */
+        HostPermission: "read" | "start" | "manage";
         /** @description One host the predicate could not be evaluated against. */
         HostPredicateError: {
             /** Format: uuid */
@@ -1108,6 +1115,21 @@ export interface components {
              */
             init_spec: components["schemas"]["JobInitSpec"] | null;
         };
+        /**
+         * @description Why a submitted host spec was refused (`422 Unprocessable Entity`).
+         *
+         *     Specs are hand-edited documents, so a rejection names the offending field
+         *     rather than a byte offset.
+         */
+        HostSpecRejection: {
+            /** @description Human-readable explanation; not intended to be parsed. */
+            message: string;
+            /**
+             * @description Dotted path to the offending field, e.g. `duts[0].debug.probe.serial`.
+             *     Empty when the fault is the document as a whole.
+             */
+            path: string;
+        };
         /** @description A new revision of a host's spec (`PUT /hosts/{id}/spec`). */
         HostSpecUpdateRequest: {
             /**
@@ -1117,6 +1139,14 @@ export interface components {
             spec: {
                 [key: string]: unknown;
             };
+        };
+        /** @description The outcome of a spec write. */
+        HostSpecUpdateResponse: {
+            /**
+             * Format: int32
+             * @description The revision the document was stored at.
+             */
+            spec_revision: number;
         };
         /**
          * @description What a listing shows of a host's spec: everything flat, and the identity of
@@ -2025,6 +2055,14 @@ export interface components {
              * @description The source's unique identifier.
              */
             source_id: string;
+        };
+        /** @description Query parameters for `PUT /hosts/{id}/spec`. */
+        SpecWriteQuery: {
+            /**
+             * @description Validate the document and report what a write would refuse, without
+             *     appending a revision. Anything other than `true` or `false` is refused.
+             */
+            validate_only?: boolean | null;
         };
         /**
          * @description The user workload's success/failure outcome, exposed as `task_exit_status`
@@ -3183,7 +3221,13 @@ export interface operations {
     };
     putHostSpec: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Validate the document and report what a write would refuse, without
+                 *     appending a revision. Anything other than `true` or `false` is refused.
+                 */
+                validate_only?: boolean;
+            };
             header?: never;
             path: {
                 /** @description The resource's unique identifier. */
@@ -3198,6 +3242,22 @@ export interface operations {
             };
         };
         responses: {
+            /** @description The revision the document was stored at. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostSpecUpdateResponse"];
+                };
+            };
+            /** @description `validate_only=true`: the document is valid, and nothing was written. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Failed to parse the request body as JSON */
             400: {
                 headers: {
@@ -3230,13 +3290,13 @@ export interface operations {
                     "text/plain": string;
                 };
             };
-            /** @description Failed to deserialize the JSON body into the target type */
+            /** @description The document does not describe this host, or does not validate; the body names the offending field. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/plain": string;
+                    "application/json": components["schemas"]["HostSpecRejection"];
                 };
             };
         };
