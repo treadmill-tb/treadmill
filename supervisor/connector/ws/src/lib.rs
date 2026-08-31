@@ -332,18 +332,6 @@ impl Inner {
             "Negotiated protocol minor with switchboard."
         );
 
-        match &server_hello.host_spec {
-            Some(spec) => {
-                let treadmill_rs::host_spec::HostSpec::V1(v1) = spec;
-                tracing::info!(
-                    site = %v1.site,
-                    duts = v1.duts.len(),
-                    "Switchboard described this host."
-                );
-            }
-            None => tracing::info!("Switchboard sent no spec for this host."),
-        }
-
         Ok((ws, server_hello))
     }
 

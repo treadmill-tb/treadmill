@@ -186,7 +186,7 @@ function Fields({
  * blanking the page.
  */
 export function HostSpecView({ spec }: { spec: unknown }) {
-  const schema = $api.useQuery("get", "/host-spec/schema");
+  const schema = $api.useQuery("get", "/hosts/spec-schema");
   const root: Schema = isSchema(schema.data) ? schema.data : {};
   return (
     <Fields value={spec} schema={forValue(root, spec, root)} root={root} />

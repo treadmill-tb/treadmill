@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.host_specs\n             (host_id, revision, spec, spec_version, written_by)\n           select $1, coalesce(max(revision), 0) + 1, $2, $3, $4\n           from tml_switchboard.host_specs\n           where host_id = $1\n           returning revision",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "revision",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.host_specs",
+            "name": "revision"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6ccd843b3476d29286269eac7d53965671b7efa4cca95a1014aad8c32fc50e71"
+}

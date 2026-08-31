@@ -28,7 +28,6 @@ use std::collections::HashMap;
 use chrono::{DateTime, TimeDelta, Utc};
 use futures_util::TryStreamExt;
 use sqlx::PgPool;
-use treadmill_rs::api::switchboard::DEFAULT_HOST_CEL_PREDICATE;
 use treadmill_rs::host_spec::HostSpecV1;
 use uuid::Uuid;
 
@@ -417,15 +416,6 @@ fn admitted_by_predicate(
     candidates: Vec<Uuid>,
     specs: &HashMap<Uuid, HostSpecV1>,
 ) -> Vec<Uuid> {
-    // Compiling and evaluating the default would be correct but pointless; it
-    // still requires a spec, since an undescribed host is not dispatchable.
-    if source == DEFAULT_HOST_CEL_PREDICATE {
-        return candidates
-            .into_iter()
-            .filter(|host_id| specs.contains_key(host_id))
-            .collect();
-    }
-
     let compiled = match CelEngine.compile(source) {
         Ok(compiled) => compiled,
         Err(e) => {
@@ -463,7 +453,7 @@ mod tests {
     use sqlx::postgres::types::PgInterval;
     use std::collections::HashMap;
     use treadmill_rs::api::switchboard::jobs::RestartPolicy;
-    use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
+    use treadmill_rs::api::switchboard::{DEFAULT_HOST_CEL_PREDICATE, JobInitSpec, JobRequest};
     use treadmill_rs::image::{Digest, media_types};
 
     fn scheduler(pool: PgPool) -> Scheduler {
@@ -878,22 +868,9 @@ mod tests {
                 })
                 .collect(),
         });
-        let next = next_revision(pool, host_id).await?;
-        sql::host_spec::insert_revision(host_id, next, &spec, None, pool).await?;
+        let mut conn = pool.acquire().await?;
+        sql::host_spec::append(host_id, &spec, None, &mut conn).await?;
         Ok(())
-    }
-
-    /// The revision a new spec for `host_id` should be written at. Specs are
-    /// append-only, so re-describing a host adds a revision rather than
-    /// replacing one.
-    async fn next_revision(pool: &PgPool, host_id: Uuid) -> anyhow::Result<i32> {
-        let max: Option<i32> = sqlx::query_scalar(
-            "select max(revision) from tml_switchboard.host_specs where host_id = $1",
-        )
-        .bind(host_id)
-        .fetch_one(pool)
-        .await?;
-        Ok(max.unwrap_or(0) + 1)
     }
 
     /// Describe a host advertising exactly one platform profile.
@@ -925,8 +902,8 @@ mod tests {
             labels: Default::default(),
             duts: vec![],
         });
-        let next = next_revision(pool, host_id).await?;
-        sql::host_spec::insert_revision(host_id, next, &spec, None, pool).await?;
+        let mut conn = pool.acquire().await?;
+        sql::host_spec::append(host_id, &spec, None, &mut conn).await?;
         Ok(())
     }
 

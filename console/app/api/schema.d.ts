@@ -305,7 +305,7 @@ export interface paths {
         patch: operations["updateHost"];
         trace?: never;
     };
-    "/host-spec/schema": {
+    "/hosts/spec-schema": {
         parameters: {
             query?: never;
             header?: never;
@@ -325,7 +325,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/host-requirements/validate": {
+    "/hosts/match": {
         parameters: {
             query?: never;
             header?: never;
@@ -335,10 +335,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Dry-run a job's host requirements
-         * @description Counts over the hosts the caller may start on, so a job that would never be placed says so before it is submitted.
+         * Match hosts against a job's requirements
+         * @description Evaluated over the hosts the caller may start on, so a job that would never be placed says so before it is submitted.
          */
-        post: operations["validateHostRequirements"];
+        post: operations["matchHosts"];
         delete?: never;
         options?: never;
         head?: never;
@@ -355,7 +355,7 @@ export interface paths {
         get?: never;
         /**
          * Replace a host's spec
-         * @description Conditional on an `If-Match` request header carrying the `spec_revision` the caller last read.
+         * @description Appends a revision; the history keeps every one, and the newest is the spec in force.
          */
         put: operations["putHostSpec"];
         post?: never;
@@ -890,6 +890,12 @@ export interface components {
             serial?: string | null;
             vendor: string;
         };
+        /** @description One attached DUT, as a listing names it. */
+        DutSummary: {
+            board: string;
+            name?: string | null;
+            vendor: string;
+        };
         /** @description Response body of `POST /jobs`: the id assigned to the freshly enqueued job. */
         EnqueueJobResponse: {
             /**
@@ -1011,8 +1017,8 @@ export interface components {
             spec: components["schemas"]["HostSpec"];
         };
         /**
-         * @description A host as returned by `GET /hosts` and `GET /hosts/{id}`: its operational
-         *     state plus the admin-authored spec describing what it is.
+         * @description A host as returned by `GET /hosts/{id}`: its operational state plus the
+         *     whole admin-authored spec describing what it is.
          */
         HostInfo: {
             /** Format: uuid */
@@ -1041,8 +1047,40 @@ export interface components {
             spec?: components["schemas"]["HostSpec"] | null;
             /**
              * Format: int32
-             * @description The revision `spec` was read at, for `If-Match` on a spec write. Null
-             *     exactly when `spec` is.
+             * @description The revision `spec` was read at. Null exactly when `spec` is.
+             */
+            spec_revision?: number | null;
+        };
+        /**
+         * @description A host as returned by `GET /hosts`: its operational state plus a projection
+         *     of its spec.
+         *
+         *     A listing carries one row per host and a spec is unbounded — a host may list
+         *     arbitrarily many DUTs, each with its debug probe and console wiring — so a
+         *     row carries what a fleet view is scanned and filtered by, and the whole
+         *     document is served by `GET /hosts/{id}` alone.
+         */
+        HostListEntry: {
+            /** Format: uuid */
+            host_id: string;
+            /**
+             * Format: date-time
+             * @description As [`HostInfo::last_seen_at`].
+             */
+            last_seen_at?: string | null;
+            /** @description As [`HostInfo::live`]. */
+            live: boolean;
+            /** @description As [`HostInfo::maintenance`]. */
+            maintenance: boolean;
+            name: string;
+            /**
+             * @description The projection of the host's current spec. Null only for a host that has
+             *     never been described.
+             */
+            spec?: components["schemas"]["HostSummary"] | null;
+            /**
+             * Format: int32
+             * @description The revision `spec` was projected from. Null exactly when `spec` is.
              */
             spec_revision?: number | null;
         };
@@ -1097,13 +1135,14 @@ export interface components {
              */
             predicate_matched: number;
             /**
-             * Format: uint32
-             * @description Hosts admitted by both: the ones that could actually run the job.
+             * @description The hosts admitted by both: the ones that could actually run the job,
+             *     named rather than counted so an author can see *which* fleet a query
+             *     selected. Bounded by `authorized`, since nothing else is evaluated.
              */
-            schedulable: number;
+            schedulable: string[];
         };
         /**
-         * @description A dry run of a job's host requirements (`POST /host-requirements/validate`).
+         * @description A dry run of a job's host requirements (`POST /hosts/match`).
          *
          *     Answers the question a queued job cannot: *would this ever be placed?*
          */
@@ -1129,13 +1168,7 @@ export interface components {
          *     the document root, which an internally-tagged enum cannot do.
          */
         HostSpec: components["schemas"]["HostSpecV1"];
-        /**
-         * @description A new revision of a host's spec (`PUT /hosts/{id}/spec`).
-         *
-         *     The write is conditional on an `If-Match` header carrying the revision the
-         *     caller last read, so two admins editing one host cannot silently clobber
-         *     each other.
-         */
+        /** @description A new revision of a host's spec (`PUT /hosts/{id}/spec`). */
         HostSpecUpdateRequest: {
             /** @description The replacement spec. Its `id` must be the host being written. */
             spec: components["schemas"]["HostSpec"];
@@ -1176,6 +1209,25 @@ export interface components {
              */
             site: string;
             spec_version: components["schemas"]["SpecVersionV1"];
+        };
+        /**
+         * @description What a listing shows of a host's spec: everything flat, and the identity of
+         *     what is attached.
+         */
+        HostSummary: {
+            description?: string | null;
+            /**
+             * @description The attached DUTs in spec order. Their serials, debug probes, consoles,
+             *     architectures, connectivity and labels are in the full spec.
+             */
+            duts: components["schemas"]["DutSummary"][];
+            labels: {
+                [key: string]: string;
+            };
+            location?: string | null;
+            platform: components["schemas"]["PlatformSummary"];
+            resources: components["schemas"]["Resources"];
+            site: string;
         };
         /**
          * @description A change to a host's operational state, carried by `PATCH /hosts/{id}`.
@@ -1922,6 +1974,20 @@ export interface components {
             /** @constant */
             kind: "virtual";
             /** @description As [`Platform::Physical::profiles`]. */
+            profiles: string[];
+        };
+        /**
+         * @description Which [`Platform`] variant a host is, without its variant-specific fields.
+         * @enum {string}
+         */
+        PlatformKind: "physical" | "virtual";
+        /**
+         * @description A [`Platform`](crate::host_spec::Platform) without its variant-specific
+         *     fields — vendor and model, or hypervisor.
+         */
+        PlatformSummary: {
+            arch: string;
+            kind: components["schemas"]["PlatformKind"];
             profiles: string[];
         };
         /** @description The `{provider}` segment of an OAuth login route. */
@@ -2953,7 +3019,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HostInfo"][];
+                    "application/json": components["schemas"]["HostListEntry"][];
                 };
             };
             /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
@@ -3052,8 +3118,8 @@ export interface operations {
         requestBody?: never;
         responses: {
             /**
-             * @description A host as returned by `GET /hosts` and `GET /hosts/{id}`: its operational
-             *     state plus the admin-authored spec describing what it is.
+             * @description A host as returned by `GET /hosts/{id}`: its operational state plus the
+             *     whole admin-authored spec describing what it is.
              */
             200: {
                 headers: {
@@ -3170,7 +3236,7 @@ export interface operations {
             };
         };
     };
-    validateHostRequirements: {
+    matchHosts: {
         parameters: {
             query?: never;
             header?: never;
@@ -3178,7 +3244,7 @@ export interface operations {
             cookie?: never;
         };
         /**
-         * @description A dry run of a job's host requirements (`POST /host-requirements/validate`).
+         * @description A dry run of a job's host requirements (`POST /hosts/match`).
          *
          *     Answers the question a queued job cannot: *would this ever be placed?*
          */
@@ -3256,13 +3322,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        /**
-         * @description A new revision of a host's spec (`PUT /hosts/{id}/spec`).
-         *
-         *     The write is conditional on an `If-Match` header carrying the revision the
-         *     caller last read, so two admins editing one host cannot silently clobber
-         *     each other.
-         */
+        /** @description A new revision of a host's spec (`PUT /hosts/{id}/spec`). */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["HostSpecUpdateRequest"];
@@ -3292,13 +3352,6 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description `If-Match` does not name the current revision. */
-            412: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
             /** @description Expected request with `Content-Type: application/json` */
             415: {
                 headers: {
@@ -3316,13 +3369,6 @@ export interface operations {
                 content: {
                     "text/plain": string;
                 };
-            };
-            /** @description The request carried no usable `If-Match`. */
-            428: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };

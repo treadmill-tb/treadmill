@@ -58,7 +58,23 @@ export default function Hosts() {
                           </span>
                         ))}
                       </td>
-                      <td>{host.spec.duts.length}</td>
+                      <td>
+                        {host.spec.duts.length === 0 ? (
+                          <span className="muted">none</span>
+                        ) : (
+                          host.spec.duts.map((dut, i) => (
+                            <span
+                              key={i}
+                              className="chip mono"
+                              title={[dut.vendor, dut.name]
+                                .filter(Boolean)
+                                .join(" — ")}
+                            >
+                              {dut.board}
+                            </span>
+                          ))
+                        )}
+                      </td>
                     </>
                   )}
                   <td>

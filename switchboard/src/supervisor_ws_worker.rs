@@ -402,10 +402,15 @@ async fn resolve_assigned_or_running(
         // Assigned + Idle: the supervisor hasn't picked it up yet — (re)dispatch
         // it. No DB change; the next pass adopts the reported running state.
         (SqlJobState::Assigned, ReportedSupervisorStatus::Idle) => {
-            let msg =
-                sql::job::build_start_job_message(job, txn, log_streaming_config, job_gateway)
-                    .await
-                    .context("building StartJob message in reconcile")?;
+            let msg = sql::job::build_start_job_message(
+                job,
+                host_id,
+                txn,
+                log_streaming_config,
+                job_gateway,
+            )
+            .await
+            .context("building StartJob message in reconcile")?;
             Some(SwitchboardToSupervisor::StartJob(msg))
         }
 
@@ -3473,7 +3478,7 @@ mod tests {
         )
         .await?;
         let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
-        let msg = sql::job::build_start_job_message(&job, &mut conn, None, None)
+        let msg = sql::job::build_start_job_message(&job, host_id, &mut conn, None, None)
             .await
             .expect("concrete-image StartJob should build");
         assert_eq!(msg.job_id, job_id);
@@ -3518,7 +3523,7 @@ mod tests {
         .execute(&pool)
         .await?;
         let rjob = sql::job::fetch_by_job_id(resume_job, &pool).await?;
-        let rmsg = sql::job::build_start_job_message(&rjob, &mut conn, None, None)
+        let rmsg = sql::job::build_start_job_message(&rjob, host_id, &mut conn, None, None)
             .await
             .expect("resume StartJob should build");
         match rmsg.image_spec {
@@ -3562,9 +3567,10 @@ mod tests {
             account_seed: account.seed().expect("account seed"),
         };
 
-        let msg = sql::job::build_start_job_message(&job, &mut conn, Some(&ls_config), None)
-            .await
-            .expect("StartJob should build with log streaming");
+        let msg =
+            sql::job::build_start_job_message(&job, host_id, &mut conn, Some(&ls_config), None)
+                .await
+                .expect("StartJob should build with log streaming");
 
         let dispatch = msg
             .log_streaming
@@ -3620,7 +3626,7 @@ mod tests {
         );
 
         // Disabled (None) leaves the field unset.
-        let plain = sql::job::build_start_job_message(&job, &mut conn, None, None)
+        let plain = sql::job::build_start_job_message(&job, host_id, &mut conn, None, None)
             .await
             .expect("StartJob should build without log streaming");
         assert!(plain.log_streaming.is_none());
@@ -3665,7 +3671,7 @@ mod tests {
         })
         .expect("gateway configuration is usable");
 
-        let msg = sql::job::build_start_job_message(&job, &mut conn, None, Some(&gateway))
+        let msg = sql::job::build_start_job_message(&job, host_id, &mut conn, None, Some(&gateway))
             .await
             .expect("StartJob should build with a gateway");
 
@@ -3698,10 +3704,72 @@ mod tests {
         );
 
         // Disabled (None) leaves the field unset.
-        let plain = sql::job::build_start_job_message(&job, &mut conn, None, None)
+        let plain = sql::job::build_start_job_message(&job, host_id, &mut conn, None, None)
             .await
             .expect("StartJob should build without a gateway");
         assert!(plain.gateway.is_none());
+
+        Ok(())
+    }
+
+    /// A dispatch carries the host's description as an opaque document, read at
+    /// dispatch rather than at connect: a supervisor's connection outlives any
+    /// number of spec edits, and a job should see the one in force when it was
+    /// placed.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn build_start_job_message_carries_the_host_spec(pool: PgPool) -> anyhow::Result<()> {
+        use treadmill_rs::host_spec::{HostSpec, HostSpecV1, Platform, Resources, SpecVersionV1};
+
+        let host_id = insert_host(&pool).await?;
+        let user_id = insert_user(&pool).await?;
+        let token_id = insert_token(&pool, user_id).await?;
+        let mut conn = pool.acquire().await?;
+
+        let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
+        register_resolved_image(&pool, job_id).await?;
+        let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
+
+        // Undescribed until a spec is written, and dispatchable either way.
+        let bare = sql::job::build_start_job_message(&job, host_id, &mut conn, None, None)
+            .await
+            .expect("StartJob should build for an undescribed host");
+        assert!(bare.host_spec.is_none());
+
+        let describe = |site: &str| {
+            HostSpec::V1(HostSpecV1 {
+                spec_version: SpecVersionV1::V1,
+                id: host_id,
+                name: format!("host-{host_id}"),
+                description: None,
+                site: site.to_string(),
+                location: None,
+                platform: Platform::Virtual {
+                    arch: "x86_64".into(),
+                    profiles: vec!["q35-virtio-uefi".into()],
+                    hypervisor: "qemu".into(),
+                },
+                resources: Resources {
+                    cpu_cores: 4,
+                    memory_mb: 8192,
+                    storage_gb: 64,
+                },
+                labels: Default::default(),
+                duts: vec![],
+            })
+        };
+        sql::host_spec::append(host_id, &describe("cambridge"), None, &mut conn).await?;
+        sql::host_spec::append(host_id, &describe("oxford"), None, &mut conn).await?;
+
+        let msg = sql::job::build_start_job_message(&job, host_id, &mut conn, None, None)
+            .await
+            .expect("StartJob should build for a described host");
+        let document = msg.host_spec.expect("the dispatch carries the spec");
+        assert_eq!(
+            document["site"], "oxford",
+            "the newest revision is in force"
+        );
+        assert_eq!(document["id"], serde_json::json!(host_id));
 
         Ok(())
     }

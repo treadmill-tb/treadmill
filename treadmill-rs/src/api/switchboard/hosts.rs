@@ -6,13 +6,14 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use crate::api::switchboard::JobInitSpec;
-use crate::host_spec::HostSpec;
+use crate::host_spec::{HostSpec, HostSpecV1, PlatformKind, Resources};
 
-/// A host as returned by `GET /hosts` and `GET /hosts/{id}`: its operational
-/// state plus the admin-authored spec describing what it is.
+/// A host as returned by `GET /hosts/{id}`: its operational state plus the
+/// whole admin-authored spec describing what it is.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct HostInfo {
     pub host_id: Uuid,
@@ -29,9 +30,90 @@ pub struct HostInfo {
     /// The host's current spec, normalized to the latest version. Null only for
     /// a host that has never been described.
     pub spec: Option<HostSpec>,
-    /// The revision `spec` was read at, for `If-Match` on a spec write. Null
-    /// exactly when `spec` is.
+    /// The revision `spec` was read at. Null exactly when `spec` is.
     pub spec_revision: Option<i32>,
+}
+
+/// A host as returned by `GET /hosts`: its operational state plus a projection
+/// of its spec.
+///
+/// A listing carries one row per host and a spec is unbounded — a host may list
+/// arbitrarily many DUTs, each with its debug probe and console wiring — so a
+/// row carries what a fleet view is scanned and filtered by, and the whole
+/// document is served by `GET /hosts/{id}` alone.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct HostListEntry {
+    pub host_id: Uuid,
+    pub name: String,
+    /// As [`HostInfo::live`].
+    pub live: bool,
+    /// As [`HostInfo::last_seen_at`].
+    pub last_seen_at: Option<DateTime<Utc>>,
+    /// As [`HostInfo::maintenance`].
+    pub maintenance: bool,
+    /// The projection of the host's current spec. Null only for a host that has
+    /// never been described.
+    pub spec: Option<HostSummary>,
+    /// The revision `spec` was projected from. Null exactly when `spec` is.
+    pub spec_revision: Option<i32>,
+}
+
+/// What a listing shows of a host's spec: everything flat, and the identity of
+/// what is attached.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct HostSummary {
+    pub description: Option<String>,
+    pub site: String,
+    pub location: Option<String>,
+    pub platform: PlatformSummary,
+    pub resources: Resources,
+    pub labels: BTreeMap<String, String>,
+    /// The attached DUTs in spec order. Their serials, debug probes, consoles,
+    /// architectures, connectivity and labels are in the full spec.
+    pub duts: Vec<DutSummary>,
+}
+
+/// A [`Platform`](crate::host_spec::Platform) without its variant-specific
+/// fields — vendor and model, or hypervisor.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformSummary {
+    pub kind: PlatformKind,
+    pub arch: String,
+    pub profiles: Vec<String>,
+}
+
+/// One attached DUT, as a listing names it.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct DutSummary {
+    pub name: Option<String>,
+    pub vendor: String,
+    pub board: String,
+}
+
+impl From<HostSpecV1> for HostSummary {
+    fn from(spec: HostSpecV1) -> Self {
+        HostSummary {
+            description: spec.description,
+            site: spec.site,
+            location: spec.location,
+            platform: PlatformSummary {
+                kind: spec.platform.kind(),
+                arch: spec.platform.arch().to_string(),
+                profiles: spec.platform.profiles().to_vec(),
+            },
+            resources: spec.resources,
+            labels: spec.labels,
+            duts: spec
+                .duts
+                .into_iter()
+                .map(|dut| DutSummary {
+                    name: dut.name,
+                    vendor: dut.vendor,
+                    board: dut.board,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// A change to a host's operational state, carried by `PATCH /hosts/{id}`.
@@ -70,10 +152,6 @@ pub struct HostCreateResponse {
 }
 
 /// A new revision of a host's spec (`PUT /hosts/{id}/spec`).
-///
-/// The write is conditional on an `If-Match` header carrying the revision the
-/// caller last read, so two admins editing one host cannot silently clobber
-/// each other.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostSpecUpdateRequest {
@@ -85,7 +163,7 @@ pub struct HostSpecUpdateRequest {
 /// The outcome of a spec write.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct HostSpecUpdateResponse {
-    /// The revision the document was stored at; the next write's `If-Match`.
+    /// The revision the document was stored at.
     pub spec_revision: i32,
 }
 
@@ -102,7 +180,7 @@ pub struct HostSpecRejection {
     pub message: String,
 }
 
-/// A dry run of a job's host requirements (`POST /host-requirements/validate`).
+/// A dry run of a job's host requirements (`POST /hosts/match`).
 ///
 /// Answers the question a queued job cannot: *would this ever be placed?*
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
@@ -136,8 +214,10 @@ pub struct HostRequirementsReport {
     /// the two failure modes stay distinguishable. Null when the request named
     /// no image set (a concrete image places no constraint on the host).
     pub image_matched: Option<u32>,
-    /// Hosts admitted by both: the ones that could actually run the job.
-    pub schedulable: u32,
+    /// The hosts admitted by both: the ones that could actually run the job,
+    /// named rather than counted so an author can see *which* fleet a query
+    /// selected. Bounded by `authorized`, since nothing else is evaluated.
+    pub schedulable: Vec<Uuid>,
     /// Hosts whose evaluation errored, which counts as not matching. A
     /// forgotten `has()` guard otherwise looks exactly like an empty fleet, so
     /// these are surfaced rather than folded into the miss count.

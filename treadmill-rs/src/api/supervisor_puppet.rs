@@ -218,6 +218,13 @@ pub struct JobInfo {
     pub job_id: Uuid,
     pub host_id: Uuid,
     pub gateway: Option<JobGatewayInfo>,
+    /// The admin-authored description of the host this job runs on, as the
+    /// switchboard dispatched it: a [`HostSpec`](crate::host_spec::HostSpec)
+    /// document, relayed verbatim rather than typed (see
+    /// [`StartJobMessage::host_spec`](crate::api::switchboard_supervisor::StartJobMessage::host_spec)).
+    /// `None` for a host that has never been described, or a supervisor that
+    /// does not relay one.
+    pub host_spec: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

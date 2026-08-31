@@ -16,9 +16,10 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::WhoAmIResponse;
 use treadmill_rs::api::switchboard::hosts::{
-    HostCreateResponse, HostInfo, HostRequirementsReport, HostSpecRejection, HostSpecUpdateResponse,
+    HostCreateResponse, HostInfo, HostListEntry, HostRequirementsReport, HostSpecRejection,
+    HostSpecUpdateResponse,
 };
-use treadmill_rs::host_spec::HostSpec;
+use treadmill_rs::host_spec::{HostSpec, PlatformKind};
 use treadmill_switchboard::events::EventBus;
 use treadmill_switchboard::registry::OciRegistryClient;
 use treadmill_switchboard::serve::AppState;
@@ -99,7 +100,7 @@ async fn seed_spec(pool: &PgPool, host_id: Uuid, name: &str) {
 
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-async fn lists_hosts_with_their_specs(pool: PgPool) {
+async fn lists_hosts_with_a_spec_projection(pool: PgPool) {
     let addr = spawn_server(test_state(pool.clone())).await;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -117,7 +118,7 @@ async fn lists_hosts_with_their_specs(pool: PgPool) {
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
 
-    let hosts: Vec<HostInfo> = resp.json().await.unwrap();
+    let hosts: Vec<HostListEntry> = resp.json().await.unwrap();
     let host = hosts
         .iter()
         .find(|h| h.host_id == host_id)
@@ -129,18 +130,32 @@ async fn lists_hosts_with_their_specs(pool: PgPool) {
     assert!(!host.maintenance);
     assert_eq!(host.spec_revision, Some(1));
 
-    // The spec comes back normalized and whole, DUTs included.
-    let HostSpec::V1(spec) = host.spec.clone().expect("host has a spec");
-    assert_eq!(spec.id, host_id);
+    // What a fleet view is scanned by: the flat fields, and the identity of
+    // what is attached.
+    let spec = host.spec.clone().expect("host has a spec");
     assert_eq!(spec.site, "cambridge");
-    assert_eq!(spec.platform.profiles(), ["rpi4-uboot-sd"]);
+    assert_eq!(spec.description.as_deref(), Some("bring-up bench"));
+    assert_eq!(spec.platform.kind, PlatformKind::Physical);
+    assert_eq!(spec.platform.arch, "aarch64");
+    assert_eq!(spec.platform.profiles, ["rpi4-uboot-sd"]);
     assert_eq!(spec.resources.memory_mb, 8192);
     assert_eq!(spec.duts.len(), 1);
     assert_eq!(spec.duts[0].board, "nrf52840dk");
+    assert_eq!(spec.duts[0].vendor, "Nordic Semiconductor");
     assert_eq!(
         spec.labels.get("bench").map(String::as_str),
         Some("nordic-bringup")
     );
+
+    // The rest of the document is the detail view's, so a listing does not grow
+    // with what is wired to each host.
+    let listed = serde_json::to_value(host).unwrap();
+    for dropped in ["serial", "connectivity", "debug", "console", "model"] {
+        assert!(
+            !listed.to_string().contains(dropped),
+            "the listing must not carry `{dropped}`"
+        );
+    }
 }
 
 /// A spec is visible to anyone who can read its host, so the listing is scoped
@@ -171,7 +186,7 @@ async fn listing_is_scoped_to_readable_hosts(pool: PgPool) {
                 .send()
                 .await
                 .unwrap()
-                .json::<Vec<HostInfo>>()
+                .json::<Vec<HostListEntry>>()
                 .await
                 .unwrap()
                 .into_iter()
@@ -464,7 +479,7 @@ async fn listing_reports_maintenance(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    let hosts: Vec<HostInfo> = client
+    let hosts: Vec<HostListEntry> = client
         .get(format!("http://{addr}/api/v1/hosts"))
         .bearer_auth(token)
         .send()
@@ -628,11 +643,11 @@ async fn create_host_rejects_a_bad_spec_with_a_field_path(pool: PgPool) {
     assert_eq!(post(spec).await.path, "spec_version");
 }
 
-/// Spec writes are append-only and conditional: `If-Match` names the revision
-/// the caller read, so two admins editing one host cannot clobber each other.
+/// Spec writes are append-only: a write adds a revision, the newest is the one
+/// in force, and the one it replaced is still in the history.
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-async fn put_spec_appends_a_revision_under_if_match(pool: PgPool) {
+async fn put_spec_appends_a_revision(pool: PgPool) {
     let addr = spawn_server(test_state(pool.clone())).await;
     let client = client();
     let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
@@ -646,27 +661,19 @@ async fn put_spec_appends_a_revision_under_if_match(pool: PgPool) {
         .await
         .unwrap();
 
-    let put = async |if_match: Option<&str>, spec: serde_json::Value| {
-        let mut req = client
+    let put = async |spec: serde_json::Value| {
+        client
             .put(format!("http://{addr}/api/v1/hosts/{host_id}/spec"))
             .bearer_auth(&admin)
-            .json(&serde_json::json!({ "spec": spec }));
-        if let Some(value) = if_match {
-            req = req.header("if-match", value);
-        }
-        req.send().await.unwrap()
+            .json(&serde_json::json!({ "spec": spec }))
+            .send()
+            .await
+            .unwrap()
     };
 
-    // No precondition at all: refused rather than silently clobbering.
     let mut edited = spec_document(host_id, "cam-qemu-04");
     edited["site"] = "oxford".into();
-    assert_eq!(
-        put(None, edited.clone()).await.status(),
-        reqwest::StatusCode::PRECONDITION_REQUIRED
-    );
-
-    // The current revision: accepted, and stored as the next one.
-    let resp = put(Some("\"1\""), edited.clone()).await;
+    let resp = put(edited.clone()).await;
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     assert_eq!(
         resp.json::<HostSpecUpdateResponse>()
@@ -674,17 +681,6 @@ async fn put_spec_appends_a_revision_under_if_match(pool: PgPool) {
             .unwrap()
             .spec_revision,
         2
-    );
-
-    // Replaying the same precondition is now stale.
-    assert_eq!(
-        put(Some("1"), edited.clone()).await.status(),
-        reqwest::StatusCode::PRECONDITION_FAILED
-    );
-    // As is inventing one that does not exist yet.
-    assert_eq!(
-        put(Some("7"), edited.clone()).await.status(),
-        reqwest::StatusCode::PRECONDITION_FAILED
     );
 
     // The read reflects the newest revision, and the history is intact.
@@ -868,7 +864,7 @@ async fn validate(
     body: serde_json::Value,
 ) -> HostRequirementsReport {
     let resp = client
-        .post(format!("http://{addr}/api/v1/host-requirements/validate"))
+        .post(format!("http://{addr}/api/v1/hosts/match"))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -889,7 +885,7 @@ async fn spec_schema_is_the_committed_artifact(pool: PgPool) {
     let token = mock_login_token(&pool, &client, addr, "bob", true).await;
 
     let served: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/host-spec/schema"))
+        .get(format!("http://{addr}/api/v1/hosts/spec-schema"))
         .bearer_auth(&token)
         .send()
         .await
@@ -923,7 +919,7 @@ async fn validate_counts_predicate_matches(pool: PgPool) {
         spec_with(Uuid::new_v4(), "small", "q35-virtio-uefi", 4096),
     )
     .await;
-    create_host(
+    let big = create_host(
         &client,
         addr,
         &admin,
@@ -940,7 +936,8 @@ async fn validate_counts_predicate_matches(pool: PgPool) {
     .await;
     assert_eq!(report.authorized, 2);
     assert_eq!(report.predicate_matched, 1);
-    assert_eq!(report.schedulable, 1);
+    // Named, not counted: the report says *which* host a query selected.
+    assert_eq!(report.schedulable, vec![big]);
     // No image set named, so nothing to report on the image side.
     assert_eq!(report.image_matched, None);
     assert_eq!(report.errored, 0);
@@ -985,7 +982,7 @@ async fn validate_reports_a_compile_error(pool: PgPool) {
     assert!(report.compile_error.is_some(), "{report:?}");
     assert_eq!(report.authorized, 1, "the fleet is still counted");
     assert_eq!(report.predicate_matched, 0);
-    assert_eq!(report.schedulable, 0);
+    assert!(report.schedulable.is_empty());
 }
 
 /// An unguarded reach into a variant's field errors per host. Those are
@@ -1125,14 +1122,14 @@ async fn validate_separates_predicate_misses_from_image_misses(pool: PgPool) {
         Some(0),
         "the image set is the problem"
     );
-    assert_eq!(report.schedulable, 0);
+    assert!(report.schedulable.is_empty());
 
     // The mirror image: the predicate is the problem, and the image side is
     // still reported over the whole set rather than over what survived.
     let report = validate(&client, addr, &admin, body("host.site == 'atlantis'")).await;
     assert_eq!(report.predicate_matched, 0);
     assert_eq!(report.image_matched, Some(0));
-    assert_eq!(report.schedulable, 0);
+    assert!(report.schedulable.is_empty());
 }
 
 /// Counts cover only hosts the caller may start on, so the endpoint cannot be

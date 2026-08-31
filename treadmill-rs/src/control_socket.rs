@@ -58,6 +58,15 @@ pub trait Supervisor: Send + Sync + 'static {
         None
     }
 
+    /// The host spec the coordinator dispatched this job with, relayed
+    /// verbatim.
+    ///
+    /// Returning `None` means the job carries no description of its host, and
+    /// is the default.
+    async fn host_spec(&self, _host_id: Uuid, _job_id: Uuid) -> Option<serde_json::Value> {
+        None
+    }
+
     /// Generic request handler.
     ///
     /// The default implementation of this method calls out to the other methods
@@ -77,6 +86,7 @@ pub trait Supervisor: Send + Sync + 'static {
                 job_id,
                 host_id,
                 gateway: self.gateway(host_id, job_id).await,
+                host_spec: self.host_spec(host_id, job_id).await,
             }),
 
             PuppetReq::Parameters => self

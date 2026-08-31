@@ -518,7 +518,7 @@ async fn enqueue_creates_a_queued_job_owned_by_caller(pool: PgPool) {
     // which is exactly the outcome the report exists to make visible.
     let report = &enqueued.host_requirements;
     assert_eq!(report.authorized, 0);
-    assert_eq!(report.schedulable, 0);
+    assert!(report.schedulable.is_empty());
     assert_eq!(report.compile_error, None);
     // A concrete image constrains no host, so there is no image side to report.
     assert_eq!(report.image_matched, None);

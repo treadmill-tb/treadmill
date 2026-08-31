@@ -6,9 +6,9 @@ use std::net::SocketAddr;
 
 use treadmill_rs::api::switchboard::JobInitSpec;
 use treadmill_rs::api::switchboard::hosts::{
-    HostCreateRequest, HostCreateResponse, HostInfo, HostRequirementsReport,
+    HostCreateRequest, HostCreateResponse, HostInfo, HostListEntry, HostRequirementsReport,
     HostRequirementsRequest, HostSpecRejection, HostSpecUpdateRequest, HostSpecUpdateResponse,
-    HostUpdateRequest,
+    HostSummary, HostUpdateRequest,
 };
 use treadmill_rs::host_spec::{HostSpec, HostSpecV1};
 
@@ -126,7 +126,7 @@ pub async fn update(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-/// Axum handler for `GET /host-spec/schema` — the JSON Schema of a host spec.
+/// Axum handler for `GET /hosts/spec-schema` — the JSON Schema of a host spec.
 ///
 /// The same artifact as the committed `host_spec.schema.json` snapshot, served
 /// so the console can render an editor and a field reference from it instead
@@ -140,14 +140,14 @@ pub async fn spec_schema() -> Json<serde_json::Value> {
     Json(SCHEMA.clone())
 }
 
-/// Axum handler for `POST /host-requirements/validate` — a dry run of a job's
-/// host requirements.
+/// Axum handler for `POST /hosts/match` — a dry run of a job's host
+/// requirements.
 ///
 /// Reports over the hosts the *caller* may start on. An owner cannot be named
 /// the way enqueue allows: the caller's own authorization is what bounds the
-/// counts, and letting it be widened is exactly how this would become a probe
+/// report, and letting it be widened is exactly how this would become a probe
 /// for hosts the caller cannot see.
-pub async fn validate_requirements(
+pub async fn match_hosts(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Json(req): Json<HostRequirementsRequest>,
@@ -277,12 +277,11 @@ pub async fn create(
         }
         Err(e) => return Err(crate::http_error::internal(e)),
     }
-    sql::host_spec::insert_revision(
+    let spec_revision = sql::host_spec::append(
         host_id,
-        FIRST_SPEC_REVISION,
         &HostSpec::V1(spec),
         Some(subject.user_id()),
-        &mut *txn,
+        &mut txn,
     )
     .await
     .or_internal(&format!("writing the first spec of host {host_id}"))?;
@@ -305,29 +304,23 @@ pub async fn create(
         Json(HostCreateResponse {
             host_id,
             auth_token: presented,
-            spec_revision: FIRST_SPEC_REVISION,
+            spec_revision,
         }),
     )
         .into_response())
 }
 
-/// The revision a host's first spec is written at.
-const FIRST_SPEC_REVISION: i32 = 1;
-
 /// Axum handler for `PUT /hosts/{id}/spec` — store a new revision of a host's
 /// spec.
 ///
 /// Requires `manage`, the same meta-permission that governs the host's
-/// operational state. Conditional on `If-Match` carrying the revision the
-/// caller last read: two admins editing one host must not silently clobber
-/// each other. The primary key is the compare-and-swap — the write inserts at
-/// `expected + 1`, so a racing writer that computed the same number takes a
-/// unique violation rather than overwriting.
+/// operational state. The write is unconditional: revisions are append-only, so
+/// two admins editing one host both land in the history and the later write is
+/// the one in force.
 pub async fn put_spec(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Path(IdPath { id: host_id }): Path<IdPath>,
-    headers: HeaderMap,
     Json(req): Json<HostSpecUpdateRequest>,
 ) -> Result<Response, StatusCode> {
     use crate::audit::model::{Host as AuditHost, Subject as AuditSubject};
@@ -345,11 +338,6 @@ pub async fn put_spec(
     if !authorized {
         return Err(StatusCode::FORBIDDEN);
     }
-
-    let Some(expected) = if_match_revision(&headers) else {
-        tracing::debug!("refusing an unconditional spec write for host {host_id}");
-        return Ok(StatusCode::PRECONDITION_REQUIRED.into_response());
-    };
 
     let spec = match validate_spec(req.spec) {
         Ok(spec) => spec,
@@ -370,35 +358,14 @@ pub async fn put_spec(
         .await
         .or_internal("opening a transaction to write a host spec")?;
 
-    let current = sql::host_spec::current_revision(host_id, &mut *txn)
-        .await
-        .or_internal(&format!("reading the current spec revision of {host_id}"))?;
-    // Catches a stale reader and a caller inventing a future revision alike;
-    // the unique violation below catches the race this check cannot see.
-    if current != Some(expected) {
-        tracing::debug!(
-            "refusing a spec write for host {host_id}: If-Match {expected}, current {current:?}"
-        );
-        return Ok(StatusCode::PRECONDITION_FAILED.into_response());
-    }
-
-    let revision = expected + 1;
-    match sql::host_spec::insert_revision(
+    let revision = sql::host_spec::append(
         host_id,
-        revision,
         &HostSpec::V1(spec),
         Some(subject.user_id()),
-        &mut *txn,
+        &mut txn,
     )
     .await
-    {
-        Ok(()) => {}
-        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
-            tracing::debug!("lost a spec write race for host {host_id} at revision {revision}");
-            return Ok(StatusCode::PRECONDITION_FAILED.into_response());
-        }
-        Err(e) => return Err(crate::http_error::internal(e)),
-    }
+    .or_internal(&format!("writing a new spec revision of host {host_id}"))?;
     audit::emit(
         &mut txn,
         &events::HostSpecUpdated {
@@ -417,23 +384,6 @@ pub async fn put_spec(
         spec_revision: revision,
     })
     .into_response())
-}
-
-/// The revision an `If-Match` header names, or `None` if it is absent or not a
-/// revision.
-///
-/// Revisions are integers, so the entity tag is the number, optionally quoted
-/// as `ETag` syntax proper. A weak validator (`W/"3"`) is not accepted: this is
-/// a compare-and-swap, and weak comparison is explicitly not that.
-fn if_match_revision(headers: &HeaderMap) -> Option<i32> {
-    headers
-        .get(http::header::IF_MATCH)?
-        .to_str()
-        .ok()?
-        .trim()
-        .trim_matches('"')
-        .parse()
-        .ok()
 }
 
 /// Axum handler for `GET /hosts/{id}` — one host with its spec.
@@ -487,14 +437,13 @@ fn host_info(
     spec: Option<(i32, HostSpec)>,
     state: &AppState,
 ) -> HostInfo {
-    let cutoff = chrono::Utc::now() - state.config().service.host_liveness_timeout;
     let (spec_revision, spec) = match spec {
         // Normalize on read: nothing downstream sees an old version.
         Some((revision, spec)) => (Some(revision), Some(HostSpec::V1(spec.into_latest()))),
         None => (None, None),
     };
     HostInfo {
-        live: host.last_seen_at.is_some_and(|t| t > cutoff),
+        live: is_live(&host, state),
         host_id: host.host_id,
         name: host.name,
         maintenance: host.maintenance,
@@ -504,8 +453,37 @@ fn host_info(
     }
 }
 
-/// Axum handler for `GET /hosts` — the hosts the caller may read, each with
-/// its spec.
+/// Assemble one listing row from a host's row and current spec.
+fn host_entry(
+    host: sql::host::SqlHostListing,
+    spec: Option<(i32, HostSpec)>,
+    state: &AppState,
+) -> HostListEntry {
+    let (spec_revision, spec) = match spec {
+        // Normalized first, then projected: a row shows what a fleet view is
+        // scanned by, and `GET /hosts/{id}` serves the whole document.
+        Some((revision, spec)) => (Some(revision), Some(HostSummary::from(spec.into_latest()))),
+        None => (None, None),
+    };
+    HostListEntry {
+        live: is_live(&host, state),
+        host_id: host.host_id,
+        name: host.name,
+        maintenance: host.maintenance,
+        last_seen_at: host.last_seen_at,
+        spec,
+        spec_revision,
+    }
+}
+
+/// Whether a host has heartbeat within the window the scheduler uses.
+fn is_live(host: &sql::host::SqlHostListing, state: &AppState) -> bool {
+    let cutoff = chrono::Utc::now() - state.config().service.host_liveness_timeout;
+    host.last_seen_at.is_some_and(|t| t > cutoff)
+}
+
+/// Axum handler for `GET /hosts` — the hosts the caller may read, each with a
+/// projection of its spec.
 ///
 /// Scoped to `read`: a spec is visible to anyone who can read its host, so the
 /// listing cannot show every host the way the tag view did. Liveness is
@@ -514,14 +492,16 @@ fn host_info(
 pub async fn list(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-) -> Result<Json<Vec<HostInfo>>, StatusCode> {
+) -> Result<Json<Vec<HostListEntry>>, StatusCode> {
     let hosts = crate::sql::host::list_readable(subject.user_id(), state.pool())
         .await
         .or_internal("listing hosts")?;
 
-    // One query for every current spec, rather than one per host.
+    // One query for the specs of exactly the hosts being served, rather than
+    // one per host.
+    let ids: Vec<Uuid> = hosts.iter().map(|h| h.host_id).collect();
     let mut specs: HashMap<Uuid, (i32, HostSpec)> =
-        crate::sql::host_spec::current_for_all_hosts(state.pool())
+        crate::sql::host_spec::current_for_hosts(&ids, state.pool())
             .await
             .or_internal("listing host specs")?
             .into_iter()
@@ -538,7 +518,7 @@ pub async fn list(
         .into_iter()
         .map(|h| {
             let spec = specs.remove(&h.host_id);
-            host_info(h, spec, &state)
+            host_entry(h, spec, &state)
         })
         .collect();
 
@@ -706,171 +686,17 @@ pub async fn connect(
                 });
             });
 
-    // The host's own description, handed back as the admin wrote it. Read
-    // outside the upgrade closure because the hello travels in a response
-    // header, which is fixed before the socket exists.
-    let host_spec = match sql::host_spec::current_for_host(host_id, state.pool()).await {
-        Ok(Some(Ok(stored))) => Some(HostSpec::V1(stored.normalize())),
-        Ok(None) => None,
-        Ok(Some(Err(e))) => {
-            tracing::error!("host {host_id} connecting with an unreadable spec: {e}");
-            None
-        }
-        Err(e) => {
-            tracing::error!("failed to read the spec of connecting host {host_id}: {e}");
-            None
-        }
-    };
-
-    let hello = ServerHello {
+    let server_hello_json = serde_json::to_string(&ServerHello {
         protocol: ProtocolVersion::CURRENT,
         features: Default::default(),
-        host_spec,
-    };
-    let (header, spec_dropped) = socket_config_header(hello);
-    if spec_dropped {
-        tracing::error!(
-            "host {host_id}: its spec does not fit the socket-config header budget; \
-             connecting without it"
-        );
-    }
-    match header {
-        Some(value) => {
-            response
-                .headers_mut()
-                .insert(TREADMILL_WEBSOCKET_CONFIG, value);
-        }
-        // Unreachable: a spec-less hello is a short ASCII document.
-        None => tracing::error!("host {host_id}: could not encode a socket config header"),
-    }
+    })
+    .expect("Failed to serialize ServerHello");
+    response.headers_mut().insert(
+        TREADMILL_WEBSOCKET_CONFIG,
+        server_hello_json
+            .parse()
+            .expect("Failed to parse serialized socket configuration into HTTP header value"),
+    );
 
     response
-}
-
-/// Budget for the serialized [`ServerHello`], which travels in a response
-/// header.
-///
-/// `HeaderValue` itself imposes no length limit, so nothing below this line
-/// would reject an oversized document — but hyper caps a whole header block at
-/// 16 KiB by default, and intermediaries cap lower. Exceeding that makes the
-/// handshake response unreadable, and a supervisor that cannot read it cannot
-/// connect at all. A spec is admin-authored and unbounded (a host may list
-/// arbitrarily many DUTs), so the ceiling has to be enforced here.
-const MAX_SOCKET_CONFIG_BYTES: usize = 8 * 1024;
-
-/// Encode a hello for the socket-config header, dropping the spec if the full
-/// document exceeds [`MAX_SOCKET_CONFIG_BYTES`].
-///
-/// Returns whether the spec had to be dropped. Connecting without a
-/// description is how the supervisor behaved before the field existed, and is
-/// a far better outcome than refusing the connection.
-fn socket_config_header(hello: ServerHello) -> (Option<HeaderValue>, bool) {
-    fn encode(hello: &ServerHello) -> Option<HeaderValue> {
-        let json = serde_json::to_string(hello).ok()?;
-        if json.len() > MAX_SOCKET_CONFIG_BYTES {
-            return None;
-        }
-        json.parse().ok()
-    }
-
-    if hello.host_spec.is_some()
-        && let Some(value) = encode(&hello)
-    {
-        return (Some(value), false);
-    }
-    let dropped = hello.host_spec.is_some();
-    (
-        encode(&ServerHello {
-            host_spec: None,
-            ..hello
-        }),
-        dropped,
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use treadmill_rs::host_spec::{Dut, HostSpecV1, Platform, Resources, SpecVersionV1};
-
-    use super::*;
-
-    fn hello(duts: usize) -> ServerHello {
-        ServerHello {
-            protocol: ProtocolVersion::CURRENT,
-            features: Default::default(),
-            host_spec: Some(HostSpec::V1(HostSpecV1 {
-                spec_version: SpecVersionV1::V1,
-                id: Uuid::nil(),
-                name: "cam-rpi4-01".into(),
-                description: None,
-                site: "cambridge".into(),
-                location: None,
-                platform: Platform::Physical {
-                    arch: "aarch64".into(),
-                    profiles: vec!["rpi4-uboot-sd".into()],
-                    vendor: "Raspberry Pi Ltd".into(),
-                    model: "Raspberry Pi 4 Model B".into(),
-                },
-                resources: Resources {
-                    cpu_cores: 4,
-                    memory_mb: 8192,
-                    storage_gb: 64,
-                },
-                labels: Default::default(),
-                duts: (0..duts)
-                    .map(|i| Dut {
-                        name: Some(format!("nRF52840-DK #{i}")),
-                        serial: Some(format!("10501234{i:02}")),
-                        vendor: "Nordic Semiconductor".into(),
-                        board: "nrf52840dk".into(),
-                        arch: vec!["cortex-m4".into()],
-                        connectivity: vec!["ble".into(), "usb".into()],
-                        debug: None,
-                        console: None,
-                        labels: Default::default(),
-                    })
-                    .collect(),
-            })),
-        }
-    }
-
-    fn decode(value: &HeaderValue) -> ServerHello {
-        serde_json::from_str(value.to_str().expect("the header is text"))
-            .expect("the header is a hello")
-    }
-
-    #[test]
-    fn a_realistic_spec_travels_in_the_header() {
-        let (header, dropped) = socket_config_header(hello(4));
-        assert!(!dropped);
-        let decoded = decode(&header.expect("encodes"));
-        let HostSpec::V1(spec) = decoded.host_spec.expect("the spec is carried");
-        assert_eq!(spec.site, "cambridge");
-        assert_eq!(spec.duts.len(), 4);
-    }
-
-    /// The handshake must survive a spec too large for a header: a supervisor
-    /// that cannot read the response cannot connect at all.
-    #[test]
-    fn an_oversized_spec_is_dropped_rather_than_breaking_the_handshake() {
-        let (header, dropped) = socket_config_header(hello(500));
-        assert!(dropped);
-        let header = header.expect("a spec-less hello still encodes");
-        assert!(header.len() <= MAX_SOCKET_CONFIG_BYTES);
-        let decoded = decode(&header);
-        assert!(decoded.host_spec.is_none());
-        // The rest of the handshake is intact, so negotiation still works.
-        assert_eq!(decoded.protocol, ProtocolVersion::CURRENT);
-    }
-
-    /// An undescribed host is not an error path; it just carries no spec.
-    #[test]
-    fn a_host_without_a_spec_reports_nothing_dropped() {
-        let (header, dropped) = socket_config_header(ServerHello {
-            host_spec: None,
-            ..hello(0)
-        });
-        assert!(!dropped);
-        assert!(decode(&header.expect("encodes")).host_spec.is_none());
-    }
 }

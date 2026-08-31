@@ -55,7 +55,7 @@ pub async fn evaluate(
         authorized: hosts.len() as u32,
         predicate_matched: 0,
         image_matched: None,
-        schedulable: 0,
+        schedulable: Vec::new(),
         errored: 0,
         errors: Vec::new(),
         compile_error: None,
@@ -116,7 +116,7 @@ pub async fn evaluate(
 
         let Some(members) = members.as_deref() else {
             if admitted {
-                report.schedulable += 1;
+                report.schedulable.push(host.host_id);
             }
             continue;
         };
@@ -125,7 +125,7 @@ pub async fn evaluate(
             report.image_matched = Some(report.image_matched.unwrap_or(0) + 1);
         }
         if admitted && has_member {
-            report.schedulable += 1;
+            report.schedulable.push(host.host_id);
         }
     }
 

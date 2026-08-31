@@ -74,6 +74,30 @@ pub async fn current_for_all_hosts(
         .collect())
 }
 
+/// The current spec of each of `host_ids` that has one.
+///
+/// The listing's read: scoped to the hosts being served rather than the whole
+/// fleet, so a caller is not made to pay for specs it may not read.
+pub async fn current_for_hosts(
+    host_ids: &[Uuid],
+    conn: impl PgExecutor<'_>,
+) -> Result<Vec<Result<StoredSpec, MalformedSpec>>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"select distinct on (host_id) host_id, revision, spec
+           from tml_switchboard.host_specs
+           where host_id = any($1)
+           order by host_id, revision desc"#,
+        host_ids,
+    )
+    .fetch_all(conn)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| decode(r.host_id, r.revision, r.spec))
+        .collect())
+}
+
 /// One host's current spec, or `None` if it has never been described.
 pub async fn current_for_host(
     host_id: Uuid,
@@ -93,50 +117,38 @@ pub async fn current_for_host(
     Ok(row.map(|r| decode(host_id, r.revision, r.spec)))
 }
 
-/// Append `spec` as `revision`, attributed to `written_by`.
+/// Append `spec` as the host's next revision, attributed to `written_by`.
 ///
-/// The caller supplies the revision it expects to create, which makes the
-/// primary key the compare-and-swap: a racing writer that computed the same
-/// number takes a unique violation instead of overwriting. `spec` is stored
-/// exactly as submitted.
-pub async fn insert_revision(
+/// Takes a row lock on the host, which serializes spec writes: the revision is
+/// `max + 1`, and two concurrent writers would otherwise compute the same
+/// number and one would lose on the primary key. `spec` is stored exactly as
+/// submitted.
+pub async fn append(
     host_id: Uuid,
-    revision: i32,
     spec: &HostSpec,
     written_by: Option<Uuid>,
-    conn: impl PgExecutor<'_>,
-) -> Result<(), sqlx::Error> {
+    txn: &mut sqlx::PgConnection,
+) -> Result<i32, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"select 1 from tml_switchboard.hosts where host_id = $1 for update"#,
+        host_id,
+    )
+    .fetch_optional(&mut *txn)
+    .await?;
+
     let document = serde_json::to_value(spec).expect("host spec serializes");
-    sqlx::query!(
+    sqlx::query_scalar!(
         r#"insert into tml_switchboard.host_specs
              (host_id, revision, spec, spec_version, written_by)
-           values ($1, $2, $3, $4, $5)"#,
+           select $1, coalesce(max(revision), 0) + 1, $2, $3, $4
+           from tml_switchboard.host_specs
+           where host_id = $1
+           returning revision"#,
         host_id,
-        revision,
         document,
         spec.version(),
         written_by,
     )
-    .execute(conn)
-    .await
-    .map(|_| ())
-}
-
-/// The revision of a host's current spec, or `None` if it has never been
-/// described (or does not exist).
-///
-/// Read by the conditional write path to compare against `If-Match`. It takes
-/// no row lock: the primary key is the compare-and-swap, so a writer that
-/// slips in between this read and the insert loses on the unique violation
-/// rather than on a lock.
-pub async fn current_revision(
-    host_id: Uuid,
-    conn: impl PgExecutor<'_>,
-) -> Result<Option<i32>, sqlx::Error> {
-    sqlx::query_scalar!(
-        r#"select max(revision) from tml_switchboard.host_specs where host_id = $1"#,
-        host_id,
-    )
-    .fetch_one(conn)
+    .fetch_one(txn)
     .await
 }

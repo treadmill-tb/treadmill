@@ -1,4 +1,4 @@
-use super::image;
+use super::{host_spec, image};
 use crate::matcher::{GroupMember, select_member};
 use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
@@ -19,7 +19,7 @@ use treadmill_rs::api::switchboard_supervisor::{
     RestartPolicy, RunningJobState, StartJobMessage, TaskExitStatus,
 };
 use treadmill_rs::connector::JobErrorKind;
-use treadmill_rs::host_spec::HostSpecV1;
+use treadmill_rs::host_spec::{HostSpec, HostSpecV1};
 use treadmill_rs::image::Digest;
 use uuid::Uuid;
 
@@ -1115,9 +1115,14 @@ impl std::error::Error for BuildStartJobError {}
 /// validates service tokens with (see [`crate::job_gateway`]), `None` leaves the
 /// field unset and the job's services unreachable from outside.
 ///
+/// `host_id`'s current spec is read here rather than at connect, so a job sees
+/// the description in force when it was dispatched even though the supervisor's
+/// connection outlives any number of spec edits.
+///
 /// Read-only; safe to call inside the worker's `with_txn` (it issues no writes).
 pub async fn build_start_job_message(
     job: &SqlJob,
+    host_id: Uuid,
     conn: &mut sqlx::PgConnection,
     log_streaming: Option<&crate::config::LogStreamingConfig>,
     gateway: Option<&crate::job_gateway::JobGateway>,
@@ -1160,6 +1165,22 @@ pub async fn build_start_job_message(
         .map(|cfg| crate::log_streaming::build_dispatch(cfg, job.job_id))
         .transpose()?;
 
+    // The description in force at dispatch, normalized and serialized here: the
+    // supervisor and the puppet relay it verbatim, so the document's shape stays
+    // the switchboard's concern. An unreadable one is dropped rather than
+    // failing the dispatch — the job's placement did not depend on it, and a
+    // host that cannot start jobs is the worse outcome.
+    let host_spec = match host_spec::current_for_host(host_id, &mut *conn).await? {
+        Some(Ok(stored)) => Some(
+            serde_json::to_value(HostSpec::V1(stored.normalize())).expect("host spec serializes"),
+        ),
+        Some(Err(e)) => {
+            tracing::error!("dispatching job {} without a host spec: {e}", job.job_id);
+            None
+        }
+        None => None,
+    };
+
     Ok(StartJobMessage {
         job_id: job.job_id,
         image_spec,
@@ -1167,6 +1188,7 @@ pub async fn build_start_job_message(
         parameters,
         log_streaming,
         gateway: gateway.map(crate::job_gateway::build_dispatch),
+        host_spec,
     })
 }
 

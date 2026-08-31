@@ -308,10 +308,9 @@ pub async fn enqueue(
     // Time-ordered (v7) so the primary-key index inserts with good locality and
     // job ids sort by creation time (see also the `queued_at` listing order).
     let job_id = Uuid::now_v7();
+    // `req` is moved into `job::insert` below. The generation is the one frozen
+    // above, so the report describes the exact membership the job pinned.
     let parameters = req.parameters.clone();
-    // `req` is moved into `job::insert`; the report below needs these. The
-    // generation is the one frozen above, so the report describes the exact
-    // membership the job pinned.
     let reported_image_set = match req.init_spec {
         JobInitSpec::ImageSet {
             set_id,
@@ -319,7 +318,22 @@ pub async fn enqueue(
         } => Some((set_id, g)),
         _ => None,
     };
-    let host_cel_predicate = req.host_cel_predicate.clone();
+
+    // Reported, not enforced: the fleet changes, and a job that matches nothing
+    // today may be placed tomorrow. Nothing the caller submits can fail this —
+    // a predicate that does not compile is reported in the response — but a
+    // database fault would, and running it before the insert means such a
+    // failure leaves no job behind for a retry to duplicate. It is also outside
+    // the transaction, which it must not hold open.
+    let host_requirements = crate::host_requirements::evaluate(
+        state.pool(),
+        owner,
+        &req.host_cel_predicate,
+        reported_image_set,
+    )
+    .await
+    .or_internal(&format!("reporting host requirements for job {job_id}"))?;
+
     let mut txn = state
         .pool()
         .begin()
@@ -356,18 +370,6 @@ pub async fn enqueue(
     txn.commit()
         .await
         .or_internal(&format!("committing enqueued job {job_id}"))?;
-
-    // Reported, not enforced: the fleet changes, and a job that matches nothing
-    // today may be placed tomorrow. Computed after the commit so the diagnostic
-    // never holds the enqueue transaction open.
-    let host_requirements = crate::host_requirements::evaluate(
-        state.pool(),
-        owner,
-        &host_cel_predicate,
-        reported_image_set,
-    )
-    .await
-    .or_internal(&format!("reporting host requirements for job {job_id}"))?;
 
     Ok((
         StatusCode::CREATED,

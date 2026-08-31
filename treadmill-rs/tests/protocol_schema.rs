@@ -80,8 +80,9 @@ fn server_hello_schema() {
 }
 
 /// The host spec is a wire type twice over: the switchboard publishes this
-/// schema at `GET /host-spec/schema` for the console to render from, and hands
-/// a host its own spec in [`ServerHello`].
+/// schema at `GET /hosts/spec-schema` for the console to render from, and hands
+/// a job the spec of the host it runs on in
+/// [`StartJobMessage`](treadmill_rs::api::switchboard_supervisor::StartJobMessage).
 #[test]
 fn host_spec_schema() {
     check_schema("host_spec", pretty::<HostSpec>());

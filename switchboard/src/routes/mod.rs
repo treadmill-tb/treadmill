@@ -351,28 +351,28 @@ pub fn api_router() -> ApiRouter<AppState> {
                     })
             }),
         )
-        //  GET /host-spec/schema -- the JSON Schema a spec is validated against
+        //  GET /hosts/spec-schema -- the JSON Schema a spec is validated against
         .api_route(
-            "/host-spec/schema",
+            "/hosts/spec-schema",
             get_with(hosts::spec_schema, |o| {
                 doc(o, "getHostSpecSchema", "Hosts", "Get the host spec schema").description(
                     "The same artifact as the committed `host_spec.schema.json` snapshot.",
                 )
             }),
         )
-        //  POST /host-requirements/validate -- dry-run a job's host requirements
+        //  POST /hosts/match -- which hosts meet a job's requirements
         .api_route(
-            "/host-requirements/validate",
-            post_with(hosts::validate_requirements, |o| {
+            "/hosts/match",
+            post_with(hosts::match_hosts, |o| {
                 doc(
                     o,
-                    "validateHostRequirements",
+                    "matchHosts",
                     "Hosts",
-                    "Dry-run a job's host requirements",
+                    "Match hosts against a job's requirements",
                 )
                 .description(
-                    "Counts over the hosts the caller may start on, so a job that would \
-                     never be placed says so before it is submitted.",
+                    "Evaluated over the hosts the caller may start on, so a job that \
+                     would never be placed says so before it is submitted.",
                 )
                 .response_with::<403, (), _>(|r| {
                     r.description("The caller lacks `use` on the named image set.")
@@ -385,17 +385,11 @@ pub fn api_router() -> ApiRouter<AppState> {
             put_with(hosts::put_spec, |o| {
                 doc(o, "putHostSpec", "Hosts", "Replace a host's spec")
                     .description(
-                        "Conditional on an `If-Match` request header carrying the \
-                         `spec_revision` the caller last read.",
+                        "Appends a revision; the history keeps every one, and the \
+                         newest is the spec in force.",
                     )
                     .response_with::<403, (), _>(|r| {
                         r.description("The caller lacks `manage` on the host.")
-                    })
-                    .response_with::<412, (), _>(|r| {
-                        r.description("`If-Match` does not name the current revision.")
-                    })
-                    .response_with::<428, (), _>(|r| {
-                        r.description("The request carried no usable `If-Match`.")
                     })
             }),
         )

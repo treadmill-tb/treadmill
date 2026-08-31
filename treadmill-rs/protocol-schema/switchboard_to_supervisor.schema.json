@@ -367,6 +367,10 @@
           ],
           "default": null
         },
+        "host_spec": {
+          "description": "The admin's description of the machine this job runs on, normalized to\nthe latest version by the switchboard — a\n[`HostSpec`](crate::host_spec::HostSpec) document, carried opaquely.\n\nOpaque because the supervisor only relays it to the puppet, which writes\nit out as a file: typing it here would make every new spec version a\nchange to this protocol and a supervisor that must be rebuilt to pass\nthrough a document it never reads.\n\nCarried per job rather than per connection because a spec is edited\nwhile a supervisor stays connected, and what a job should see is the\ndescription in force when it was dispatched. `None` for a host that has\nnever been described.",
+          "default": null
+        },
         "image_spec": {
           "$ref": "#/$defs/ImageSpecification"
         },

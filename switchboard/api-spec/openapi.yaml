@@ -613,7 +613,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/HostInfo'
+                  $ref: '#/components/schemas/HostListEntry'
       security:
       - token: []
     post:
@@ -681,8 +681,8 @@ paths:
           description: The caller lacks `read` on the host, or it does not exist.
         '200':
           description: |-
-            A host as returned by `GET /hosts` and `GET /hosts/{id}`: its operational
-            state plus the admin-authored spec describing what it is.
+            A host as returned by `GET /hosts/{id}`: its operational state plus the
+            whole admin-authored spec describing what it is.
           content:
             application/json:
               schema:
@@ -742,7 +742,7 @@ paths:
           description: Applied, or the request changed nothing.
       security:
       - token: []
-  /host-spec/schema:
+  /hosts/spec-schema:
     get:
       tags:
       - Hosts
@@ -755,16 +755,16 @@ paths:
           content:
             application/json:
               schema: true
-  /host-requirements/validate:
+  /hosts/match:
     post:
       tags:
       - Hosts
-      summary: Dry-run a job's host requirements
-      description: Counts over the hosts the caller may start on, so a job that would never be placed says so before it is submitted.
-      operationId: validateHostRequirements
+      summary: Match hosts against a job's requirements
+      description: Evaluated over the hosts the caller may start on, so a job that would never be placed says so before it is submitted.
+      operationId: matchHosts
       requestBody:
         description: |-
-          A dry run of a job's host requirements (`POST /host-requirements/validate`).
+          A dry run of a job's host requirements (`POST /hosts/match`).
 
           Answers the question a queued job cannot: *would this ever be placed?*
         content:
@@ -813,7 +813,7 @@ paths:
       tags:
       - Hosts
       summary: Replace a host's spec
-      description: Conditional on an `If-Match` request header carrying the `spec_revision` the caller last read.
+      description: Appends a revision; the history keeps every one, and the newest is the spec in force.
       operationId: putHostSpec
       parameters:
       - in: path
@@ -826,12 +826,7 @@ paths:
           format: uuid
         style: simple
       requestBody:
-        description: |-
-          A new revision of a host's spec (`PUT /hosts/{id}/spec`).
-
-          The write is conditional on an `If-Match` header carrying the revision the
-          caller last read, so two admins editing one host cannot silently clobber
-          each other.
+        description: A new revision of a host's spec (`PUT /hosts/{id}/spec`).
         content:
           application/json:
             schema:
@@ -860,10 +855,6 @@ paths:
             text/plain:
               schema:
                 type: string
-        '412':
-          description: '`If-Match` does not name the current revision.'
-        '428':
-          description: The request carried no usable `If-Match`.
       security:
       - token: []
   /hosts/{id}/events:
@@ -2143,6 +2134,21 @@ components:
       - arch
       - connectivity
       - labels
+    DutSummary:
+      description: One attached DUT, as a listing names it.
+      type: object
+      properties:
+        board:
+          type: string
+        name:
+          type:
+          - string
+          - 'null'
+        vendor:
+          type: string
+      required:
+      - vendor
+      - board
     EnqueueJobResponse:
       description: 'Response body of `POST /jobs`: the id assigned to the freshly enqueued job.'
       type: object
@@ -2309,8 +2315,8 @@ components:
       - spec
     HostInfo:
       description: |-
-        A host as returned by `GET /hosts` and `GET /hosts/{id}`: its operational
-        state plus the admin-authored spec describing what it is.
+        A host as returned by `GET /hosts/{id}`: its operational state plus the
+        whole admin-authored spec describing what it is.
       type: object
       properties:
         host_id:
@@ -2344,9 +2350,53 @@ components:
           - $ref: '#/components/schemas/HostSpec'
           - type: 'null'
         spec_revision:
+          description: The revision `spec` was read at. Null exactly when `spec` is.
+          type:
+          - integer
+          - 'null'
+          format: int32
+      required:
+      - host_id
+      - name
+      - live
+      - maintenance
+    HostListEntry:
+      description: |-
+        A host as returned by `GET /hosts`: its operational state plus a projection
+        of its spec.
+
+        A listing carries one row per host and a spec is unbounded — a host may list
+        arbitrarily many DUTs, each with its debug probe and console wiring — so a
+        row carries what a fleet view is scanned and filtered by, and the whole
+        document is served by `GET /hosts/{id}` alone.
+      type: object
+      properties:
+        host_id:
+          type: string
+          format: uuid
+        last_seen_at:
+          description: As [`HostInfo::last_seen_at`].
+          type:
+          - string
+          - 'null'
+          format: date-time
+        live:
+          description: As [`HostInfo::live`].
+          type: boolean
+        maintenance:
+          description: As [`HostInfo::maintenance`].
+          type: boolean
+        name:
+          type: string
+        spec:
           description: |-
-            The revision `spec` was read at, for `If-Match` on a spec write. Null
-            exactly when `spec` is.
+            The projection of the host's current spec. Null only for a host that has
+            never been described.
+          anyOf:
+          - $ref: '#/components/schemas/HostSummary'
+          - type: 'null'
+        spec_revision:
+          description: The revision `spec` was projected from. Null exactly when `spec` is.
           type:
           - integer
           - 'null'
@@ -2426,10 +2476,14 @@ components:
           format: uint32
           minimum: 0
         schedulable:
-          description: 'Hosts admitted by both: the ones that could actually run the job.'
-          type: integer
-          format: uint32
-          minimum: 0
+          description: |-
+            The hosts admitted by both: the ones that could actually run the job,
+            named rather than counted so an author can see *which* fleet a query
+            selected. Bounded by `authorized`, since nothing else is evaluated.
+          type: array
+          items:
+            type: string
+            format: uuid
       required:
       - authorized
       - predicate_matched
@@ -2438,7 +2492,7 @@ components:
       - errors
     HostRequirementsRequest:
       description: |-
-        A dry run of a job's host requirements (`POST /host-requirements/validate`).
+        A dry run of a job's host requirements (`POST /hosts/match`).
 
         Answers the question a queued job cannot: *would this ever be placed?*
       type: object
@@ -2471,12 +2525,7 @@ components:
       anyOf:
       - $ref: '#/components/schemas/HostSpecV1'
     HostSpecUpdateRequest:
-      description: |-
-        A new revision of a host's spec (`PUT /hosts/{id}/spec`).
-
-        The write is conditional on an `If-Match` header carrying the revision the
-        caller last read, so two admins editing one host cannot silently clobber
-        each other.
+      description: A new revision of a host's spec (`PUT /hosts/{id}/spec`).
       type: object
       properties:
         spec:
@@ -2539,6 +2588,43 @@ components:
       - spec_version
       - id
       - name
+      - site
+      - platform
+      - resources
+      - labels
+      - duts
+    HostSummary:
+      description: |-
+        What a listing shows of a host's spec: everything flat, and the identity of
+        what is attached.
+      type: object
+      properties:
+        description:
+          type:
+          - string
+          - 'null'
+        duts:
+          description: |-
+            The attached DUTs in spec order. Their serials, debug probes, consoles,
+            architectures, connectivity and labels are in the full spec.
+          type: array
+          items:
+            $ref: '#/components/schemas/DutSummary'
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        location:
+          type:
+          - string
+          - 'null'
+        platform:
+          $ref: '#/components/schemas/PlatformSummary'
+        resources:
+          $ref: '#/components/schemas/Resources'
+        site:
+          type: string
+      required:
       - site
       - platform
       - resources
@@ -3779,6 +3865,30 @@ components:
         - arch
         - profiles
         - hypervisor
+    PlatformKind:
+      description: Which [`Platform`] variant a host is, without its variant-specific fields.
+      type: string
+      enum:
+      - physical
+      - virtual
+    PlatformSummary:
+      description: |-
+        A [`Platform`](crate::host_spec::Platform) without its variant-specific
+        fields — vendor and model, or hypervisor.
+      type: object
+      properties:
+        arch:
+          type: string
+        kind:
+          $ref: '#/components/schemas/PlatformKind'
+        profiles:
+          type: array
+          items:
+            type: string
+      required:
+      - kind
+      - arch
+      - profiles
     ProviderPath:
       description: The `{provider}` segment of an OAuth login route.
       type: object

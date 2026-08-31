@@ -132,6 +132,29 @@ impl Platform {
             Platform::Physical { profiles, .. } | Platform::Virtual { profiles, .. } => profiles,
         }
     }
+
+    /// The variant discriminant, as a predicate spells it.
+    pub fn kind(&self) -> PlatformKind {
+        match self {
+            Platform::Physical { .. } => PlatformKind::Physical,
+            Platform::Virtual { .. } => PlatformKind::Virtual,
+        }
+    }
+
+    /// The architecture, whichever variant it is.
+    pub fn arch(&self) -> &str {
+        match self {
+            Platform::Physical { arch, .. } | Platform::Virtual { arch, .. } => arch,
+        }
+    }
+}
+
+/// Which [`Platform`] variant a host is, without its variant-specific fields.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlatformKind {
+    Physical,
+    Virtual,
 }
 
 /// The ceiling available to a single job on this host.
