@@ -461,6 +461,47 @@ define_event! {
 }
 
 define_event! {
+    /// A host was created (`POST /hosts`): its row and revision 1 of its spec,
+    /// in one transaction. Visible to host viewers. The supervisor credential
+    /// minted alongside it is handed to the creator once and never recorded
+    /// here.
+    HostCreated v1 {
+        actor: Subject,
+        host: Host @ view(Read),
+        name: String,
+    }
+    event_type = "host_created";
+    render = "created host {name}";
+}
+
+define_event! {
+    /// A new revision of a host's spec was stored (`PUT /hosts/{id}/spec`).
+    /// Visible to host viewers. Points at the revision rather than embedding
+    /// the document: `host_specs` is append-only, so the row is the record and
+    /// a copy here could only drift from it.
+    HostSpecUpdated v1 {
+        actor: Subject,
+        host: Host @ view(Read),
+        revision: i32,
+    }
+    event_type = "host_spec_updated";
+    render = "stored host spec revision {revision}";
+}
+
+define_event! {
+    /// An operator withheld a host from scheduling, or returned it to service
+    /// (`PATCH /hosts/{id}`). Visible to host viewers. Only emitted when the
+    /// flag actually changed.
+    HostMaintenanceChanged v1 {
+        actor: Subject,
+        host: Host @ view(Read),
+        maintenance: bool,
+    }
+    event_type = "host_maintenance_changed";
+    render = "changed host maintenance to {maintenance}";
+}
+
+define_event! {
     /// A supervisor opened (and authenticated) a WebSocket for its host, which
     /// the switchboard then marks live. Visible to host viewers.
     SupervisorConnected v1 {

@@ -215,16 +215,40 @@ button.danger {
   color: var(--danger);
 }
 
-/* Tag chips */
-.tag {
+/* Host spec rendering (components/host-spec.tsx) */
+.chip {
   display: inline-block;
   padding: 0 0.3rem;
   margin: 0 0.15rem 0.15rem 0;
   background: var(--bg);
   border: 1px solid var(--border);
-  font-family: var(--mono);
   font-size: 0.85em;
   white-space: nowrap;
+}
+
+/* Nested field lists indent so the document's shape stays readable. */
+dl.spec-fields {
+  margin: 0;
+}
+
+dl.spec-fields dl.spec-fields {
+  margin-left: 1rem;
+  border-left: 1px solid var(--border);
+  padding-left: 0.75rem;
+}
+
+.spec-item {
+  margin: 0.5rem 0;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+}
+
+/* Marks a field carrying documentation from the published schema. */
+.spec-hint {
+  margin-left: 0.25rem;
+  cursor: help;
+  color: var(--fg-faint);
+  font-size: 0.8em;
 }
 
 /* Misc */

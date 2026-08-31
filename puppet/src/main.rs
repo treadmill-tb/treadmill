@@ -262,6 +262,19 @@ async fn update_job_info_files(args: &PuppetDaemonArgs, job_info: JobInfo) -> Re
             .context("Writing gateway endpoints to file")?;
     }
 
+    // The admin's description of the machine this job runs on, as a document
+    // rather than one file per field: it is nested, and a job reads it with
+    // `jq` or a JSON parser.
+    if let Some(host_spec) = job_info.host_spec {
+        let host_spec_path = job_info_dir.join("host-spec.json");
+        info!("Writing host spec to file {host_spec_path:?}");
+        let document =
+            serde_json::to_vec_pretty(&host_spec).context("Serializing the host spec")?;
+        tokio::fs::write(host_spec_path, document)
+            .await
+            .context("Writing host spec to file")?;
+    }
+
     Ok(())
 }
 

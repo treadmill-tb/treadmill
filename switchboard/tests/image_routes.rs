@@ -28,7 +28,9 @@ use treadmill_rs::api::switchboard::images::{
 };
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, JobImageRef, JobInfo};
-use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, WhoAmIResponse};
+use treadmill_rs::api::switchboard::{
+    DEFAULT_HOST_CEL_PREDICATE, JobInitSpec, JobRequest, WhoAmIResponse,
+};
 use treadmill_rs::image::Digest;
 use treadmill_switchboard::registry::{RegistryClient, RegistryError};
 use treadmill_switchboard::serve::AppState;
@@ -228,7 +230,7 @@ async fn add_generation(
         .post(format!("{base}/image-sets/{set}/generations"))
         .bearer_auth(token)
         .json(&serde_json::json!({ "members": [
-            { "manifest_digest": image.encoded(), "required_host_tags": [] },
+            { "manifest_digest": image.encoded(), "platform_profile": "q35-virtio-uefi" },
         ] }))
         .send()
         .await
@@ -254,8 +256,7 @@ async fn enqueue_set(
         owner: None,
         restart_policy: RestartPolicy { max_restarts: 0 },
         parameters: HashMap::new(),
-        host_tag_requirements: vec![],
-        target_requirements: vec![],
+        host_cel_predicate: DEFAULT_HOST_CEL_PREDICATE.to_string(),
         lease_duration: None,
         lease_expiry_action: None,
     };
@@ -309,8 +310,7 @@ async fn enqueue_image_job(
         owner: None,
         restart_policy: RestartPolicy { max_restarts: 0 },
         parameters: HashMap::new(),
-        host_tag_requirements: vec![],
-        target_requirements: vec![],
+        host_cel_predicate: DEFAULT_HOST_CEL_PREDICATE.to_string(),
         lease_duration: None,
         lease_expiry_action: None,
     };
@@ -470,8 +470,9 @@ async fn create_group_append_generations_and_inspect(pool: PgPool) {
         .post(format!("{base}/image-sets/{}/generations", set.id))
         .bearer_auth(&token)
         .json(&serde_json::json!({ "members": [
-            { "manifest_digest": m0.encoded(), "required_host_tags": ["arch=arm64"] },
-            { "manifest_digest": m1.encoded(), "required_host_tags": ["arch=arm64", "raspberrypi-4"] },
+            { "manifest_digest": m0.encoded(), "platform_profile": "rpi4-uboot-sd" },
+            { "manifest_digest": m1.encoded(), "platform_profile": "rpi4-uboot-sd",
+              "predicate": "host.resources.memory_mb >= 8192" },
         ] }))
         .send()
         .await
@@ -483,15 +484,14 @@ async fn create_group_append_generations_and_inspect(pool: PgPool) {
     // Members come back in array (index) order.
     assert_eq!(gen1.members[0].index, 0);
     assert_eq!(gen1.members[0].manifest_digest, m0);
-    assert_eq!(
-        gen1.members[0].required_host_tags,
-        vec!["arch=arm64".to_string()]
-    );
+    assert_eq!(gen1.members[0].platform_profile, "rpi4-uboot-sd");
+    assert_eq!(gen1.members[0].predicate, None);
     assert_eq!(gen1.members[1].index, 1);
     assert_eq!(gen1.members[1].manifest_digest, m1);
+    assert_eq!(gen1.members[1].platform_profile, "rpi4-uboot-sd");
     assert_eq!(
-        gen1.members[1].required_host_tags,
-        vec!["arch=arm64".to_string(), "raspberrypi-4".to_string()]
+        gen1.members[1].predicate.as_deref(),
+        Some("host.resources.memory_mb >= 8192")
     );
 
     // The set now reports its latest generation.
@@ -512,7 +512,7 @@ async fn create_group_append_generations_and_inspect(pool: PgPool) {
         .post(format!("{base}/image-sets/{}/generations", set.id))
         .bearer_auth(&token)
         .json(&serde_json::json!({ "members": [
-            { "manifest_digest": m1.encoded(), "required_host_tags": [] },
+            { "manifest_digest": m1.encoded(), "platform_profile": "q35-virtio-uefi" },
         ] }))
         .send()
         .await
@@ -561,7 +561,7 @@ async fn create_generation_rejects_an_unregistered_image(pool: PgPool) {
         .post(format!("{base}/image-sets/{}/generations", set.id))
         .bearer_auth(&token)
         .json(&serde_json::json!({ "members": [
-            { "manifest_digest": unregistered.encoded(), "required_host_tags": [] },
+            { "manifest_digest": unregistered.encoded(), "platform_profile": "q35-virtio-uefi" },
         ] }))
         .send()
         .await

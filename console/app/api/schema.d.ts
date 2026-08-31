@@ -276,6 +276,88 @@ export interface paths {
          */
         get: operations["listHosts"];
         put?: never;
+        /**
+         * Create a host
+         * @description Writes the host row and revision 1 of its spec in one transaction, and returns the supervisor credential. The credential is not retrievable afterwards.
+         */
+        post: operations["createHost"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/hosts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a host */
+        get: operations["getHost"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update a host */
+        patch: operations["updateHost"];
+        trace?: never;
+    };
+    "/hosts/spec-schema": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the host spec schema
+         * @description The same artifact as the committed `host_spec.schema.json` snapshot.
+         */
+        get: operations["getHostSpecSchema"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/hosts/match": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Match hosts against a job's requirements
+         * @description Evaluated over the hosts the caller may start on, so a job that would never be placed says so before it is submitted.
+         */
+        post: operations["matchHosts"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/hosts/{id}/spec": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Replace a host's spec
+         * @description Appends a revision; the history keeps every one, and the newest is the spec in force.
+         */
+        put: operations["putHostSpec"];
         post?: never;
         delete?: never;
         options?: never;
@@ -751,21 +833,36 @@ export interface components {
             /** @description The image's OCI manifest digest (`sha256:<hex>`). */
             digest: string;
         };
+        /** @description One attached DUT, as a listing names it. */
+        DutSummary: {
+            board: string;
+            name?: string | null;
+            vendor: string;
+        };
         /** @description Response body of `POST /jobs`: the id assigned to the freshly enqueued job. */
         EnqueueJobResponse: {
+            /**
+             * @description How the job's host requirements met the fleet at submission. A job with
+             *     `schedulable == 0` was still accepted — the fleet may change — but will
+             *     sit queued until it does, which is otherwise indistinguishable from
+             *     waiting for a busy host.
+             */
+            host_requirements: components["schemas"]["HostRequirementsReport"];
             /** Format: uuid */
             job_id: string;
         };
         /**
          * @description One member of a generation, as returned by the inspect route. A member is
-         *     admissible for a host iff the host's tags are a superset of
-         *     `required_host_tags`.
+         *     admissible for a host iff the host advertises its `platform_profile` and its
+         *     `predicate` (if any) holds; the first admissible member in `index` order is
+         *     selected.
          */
         GenerationMemberInfo: {
             /** Format: uint32 */
             index: number;
             manifest_digest: components["schemas"]["Digest"];
-            required_host_tags: string[];
+            platform_profile: string;
+            predicate?: string | null;
             /**
              * @description Whether the viewer may use some source of this member image. A set grant
              *     is necessary but not sufficient: `false` means the member has no source the
@@ -792,11 +889,18 @@ export interface components {
              */
             manifest_digest: components["schemas"]["Digest"];
             /**
-             * @description Host tags a host must carry (as a superset) for this member to be
-             *     selectable on it.
-             * @default []
+             * @description The machine configuration this image is built for, e.g.
+             *     `q35-virtio-uefi`, `rpi4-uboot-sd`. Matched by equality against the
+             *     host spec's `platform.profiles`.
              */
-            required_host_tags: string[];
+            platform_profile: string;
+            /**
+             * @description Optional CEL refinement narrowing this member within its profile, e.g.
+             *     `host.resources.memory_mb >= 16384`. Parsed when the generation is
+             *     created; a host it errors on simply does not select this member.
+             * @default null
+             */
+            predicate: string | null;
         };
         /** @description The `{id}/generations/{n}` segments of an image-set generation route. */
         GenerationPath: {
@@ -843,8 +947,24 @@ export interface components {
             source_ref: string;
         };
         /**
-         * @description A host in the `GET /hosts` listing: its identity, opaque tags, attached
-         *     targets, and liveness.
+         * @description A new host (`POST /hosts`): the `hosts` row and revision 1 of its spec are
+         *     written in one transaction, so a host is never in an undescribed state.
+         */
+        HostCreateRequest: {
+            /**
+             * @description The host's spec, conforming to the schema at `GET /hosts/spec-schema`.
+             *     Its `id` becomes the host's id: the client supplies the UUID so a spec is
+             *     a self-contained document that can live in a git repo and be applied.
+             *     Rejected with a [`HostSpecRejection`] naming the offending field if it
+             *     does not validate.
+             */
+            spec: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * @description A host as returned by `GET /hosts/{id}`: its operational state plus the
+         *     whole admin-authored spec describing what it is.
          */
         HostInfo: {
             /** Format: uuid */
@@ -860,21 +980,172 @@ export interface components {
              *     considered schedulable, computed with the deployment's liveness window.
              */
             live: boolean;
+            /**
+             * @description Whether an operator has withheld this host from scheduling. A host in
+             *     maintenance is neither dispatched onto nor preempted to free capacity.
+             */
+            maintenance: boolean;
             name: string;
             /**
-             * @description Opaque host tags; a job's `host_tag_requirements` match a host whose
-             *     `tags` are a superset.
+             * @description The host's current spec, normalized to the latest version, as a document
+             *     conforming to the schema at `GET /hosts/spec-schema`. Null only for a
+             *     host that has never been described.
              */
-            tags: string[];
-            /** @description The targets (DUTs) wired to this host, in stable order. */
-            targets: components["schemas"]["HostTarget"][];
+            spec?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Format: int32
+             * @description The revision `spec` was read at. Null exactly when `spec` is.
+             */
+            spec_revision?: number | null;
         };
-        /** @description One target (DUT) attached to a host, as exposed by `GET /hosts`. */
-        HostTarget: {
-            /** @description Stable per-host label for the DUT (e.g. `"dut0"`). */
+        /**
+         * @description A host as returned by `GET /hosts`: its operational state plus a projection
+         *     of its spec.
+         *
+         *     A listing carries one row per host and a spec is unbounded — a host may list
+         *     arbitrarily many DUTs, each with its debug probe and console wiring — so a
+         *     row carries what a fleet view is scanned and filtered by, and the whole
+         *     document is served by `GET /hosts/{id}` alone.
+         */
+        HostListEntry: {
+            /** Format: uuid */
+            host_id: string;
+            /**
+             * Format: date-time
+             * @description As [`HostInfo::last_seen_at`].
+             */
+            last_seen_at?: string | null;
+            /** @description As [`HostInfo::live`]. */
+            live: boolean;
+            /** @description As [`HostInfo::maintenance`]. */
+            maintenance: boolean;
             name: string;
-            /** @description Opaque tag set (same convention as host tags). */
-            tags: string[];
+            /**
+             * @description The projection of the host's current spec. Null only for a host that has
+             *     never been described.
+             */
+            spec?: components["schemas"]["HostSummary"] | null;
+            /**
+             * Format: int32
+             * @description The revision `spec` was projected from. Null exactly when `spec` is.
+             */
+            spec_revision?: number | null;
+        };
+        /** @description One host the predicate could not be evaluated against. */
+        HostPredicateError: {
+            /** Format: uuid */
+            host_id: string;
+            /** @description The evaluator's own diagnostic, e.g. `no such key: model`. */
+            message: string;
+            /** @description The host's name, so a report reads without a second lookup. */
+            name: string;
+        };
+        /**
+         * @description How a job's host requirements meet the fleet right now.
+         *
+         *     Counts cover only the hosts the job's owner may `start` on, the same set
+         *     the scheduler considers, so a caller cannot probe hosts it has no access to
+         *     by submitting expressions and reading counts back.
+         */
+        HostRequirementsReport: {
+            /**
+             * Format: uint32
+             * @description Hosts the owner may start jobs on at all. A zero here is a permissions
+             *     problem, not a query problem.
+             */
+            authorized: number;
+            /**
+             * @description Set when the predicate does not compile, in which case nothing was
+             *     evaluated and every match count is zero.
+             */
+            compile_error?: string | null;
+            /**
+             * Format: uint32
+             * @description Hosts whose evaluation errored, which counts as not matching. A
+             *     forgotten `has()` guard otherwise looks exactly like an empty fleet, so
+             *     these are surfaced rather than folded into the miss count.
+             */
+            errored: number;
+            /** @description The first few evaluation errors, for diagnosis; `errored` is the total. */
+            errors: components["schemas"]["HostPredicateError"][];
+            /**
+             * Format: uint32
+             * @description Of those, how many carry an admissible image-set member. Evaluated over
+             *     the whole authorized set rather than only the predicate's matches, so
+             *     the two failure modes stay distinguishable. Null when the request named
+             *     no image set (a concrete image places no constraint on the host).
+             */
+            image_matched?: number | null;
+            /**
+             * Format: uint32
+             * @description Of those, how many the predicate admits.
+             */
+            predicate_matched: number;
+            /**
+             * @description The hosts admitted by both: the ones that could actually run the job,
+             *     named rather than counted so an author can see *which* fleet a query
+             *     selected. Bounded by `authorized`, since nothing else is evaluated.
+             */
+            schedulable: string[];
+        };
+        /**
+         * @description A dry run of a job's host requirements (`POST /hosts/match`).
+         *
+         *     Answers the question a queued job cannot: *would this ever be placed?*
+         */
+        HostRequirementsRequest: {
+            /** @description The predicate to evaluate, as `JobRequest::host_cel_predicate`. */
+            host_cel_predicate: string;
+            /**
+             * @description The image the job would run, evaluated exactly as an enqueue would
+             *     resolve it. Supplying it separates the two ways a job goes unplaced —
+             *     the predicate matched nothing, or no image-set member admits the hosts
+             *     it did match — which look identical from a job sitting queued. Omitted,
+             *     only the predicate is evaluated.
+             * @default null
+             */
+            init_spec: components["schemas"]["JobInitSpec"] | null;
+        };
+        /** @description A new revision of a host's spec (`PUT /hosts/{id}/spec`). */
+        HostSpecUpdateRequest: {
+            /**
+             * @description The replacement spec, conforming to the schema at
+             *     `GET /hosts/spec-schema`. Its `id` must be the host being written.
+             */
+            spec: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * @description What a listing shows of a host's spec: everything flat, and the identity of
+         *     what is attached.
+         */
+        HostSummary: {
+            description?: string | null;
+            /**
+             * @description The attached DUTs in spec order. Their serials, debug probes, consoles,
+             *     architectures, connectivity and labels are in the full spec.
+             */
+            duts: components["schemas"]["DutSummary"][];
+            labels: {
+                [key: string]: string;
+            };
+            location?: string | null;
+            platform: components["schemas"]["PlatformSummary"];
+            resources: components["schemas"]["Resources"];
+            site: string;
+        };
+        /**
+         * @description A change to a host's operational state, carried by `PATCH /hosts/{id}`.
+         *
+         *     Only the fields present are changed. Host *description* is not editable
+         *     here: it lives in the host's spec, which is versioned separately.
+         */
+        HostUpdateRequest: {
+            /** @description Withhold the host from scheduling, or return it to service. */
+            maintenance?: boolean | null;
         };
         /** @description A single `{id}` UUID segment. */
         IdPath: {
@@ -1024,8 +1295,9 @@ export interface components {
             /**
              * @description Host eligibility tags this job requires (superset match against a host's
              *     tags).
+             *     The CEL expression this job's host had to satisfy, as submitted.
              */
-            host_tag_requirements: string[];
+            host_cel_predicate: string;
             /** @description What the job is based off. */
             image: components["schemas"]["JobImageRef"];
             /** @description The sub-stage while `state` is `initializing`; null otherwise. */
@@ -1084,11 +1356,6 @@ export interface components {
             started_at?: string | null;
             /** @description Where the job is in its lifecycle. */
             state: components["schemas"]["JobState"];
-            /**
-             * @description Target (DUT) eligibility: one tag set per requested target, in submission
-             *     order.
-             */
-            target_requirements: string[][];
             /**
              * @description The user workload's success/failure outcome, orthogonal to
              *     `termination_reason`; null if never reported.
@@ -1187,13 +1454,16 @@ export interface components {
         JobPermission: "read" | "stop" | "manage";
         JobRequest: {
             /**
-             * @description Host eligibility: the set of tags the chosen host must carry (as a
-             *     superset) for this job to be assigned to it. Tags are opaque strings
-             *     (`key=value` pairs or bare flags, by convention only), matched by
-             *     containment against the host's tags.
-             * @default []
+             * @description Host eligibility as a single CEL expression, evaluated with the
+             *     candidate host's spec bound as `host`; the host runs the job only if it
+             *     evaluates true. `host.duts` is in scope, so one expression covers both
+             *     the host and its attached DUTs.
+             *
+             *     An evaluation error means that host does not match — never a job
+             *     failure. Absent, defaults to `true`, matching every host.
+             * @default true
              */
-            host_tag_requirements: string[];
+            host_cel_predicate: string;
             /** @description What kind of job this is. */
             init_spec: components["schemas"]["JobInitSpec"];
             /**
@@ -1229,14 +1499,6 @@ export interface components {
                 [key: string]: components["schemas"]["JobParameter"];
             };
             restart_policy: components["schemas"]["RestartPolicy"];
-            /**
-             * @description Target (DUT) eligibility: an ordered array of requested targets, each a
-             *     set of tags an attached DUT must carry (as a superset). The scheduler
-             *     assigns each entry to a distinct attached target (DUT) on the chosen
-             *     host. Empty requests no DUTs. Target tags do not affect image selection.
-             * @default []
-             */
-            target_requirements: string[][];
         };
         /**
          * @description Access credentials for one of a job's announced services, returned by
@@ -1588,6 +1850,20 @@ export interface components {
             /** @description Stable provider key, e.g. `"github"`. */
             name: string;
         };
+        /**
+         * @description Which [`Platform`] variant a host is, without its variant-specific fields.
+         * @enum {string}
+         */
+        PlatformKind: "physical" | "virtual";
+        /**
+         * @description A [`Platform`](crate::host_spec::Platform) without its variant-specific
+         *     fields — vendor and model, or hypervisor.
+         */
+        PlatformSummary: {
+            arch: string;
+            kind: components["schemas"]["PlatformKind"];
+            profiles: string[];
+        };
         /** @description The `{provider}` segment of an OAuth login route. */
         ProviderPath: {
             /** @description The login provider's name (e.g. `github`). */
@@ -1622,6 +1898,21 @@ export interface components {
             event_id: string;
             event_type: string;
             message: string;
+        };
+        /**
+         * @description The ceiling available to a single job on this host.
+         *
+         *     Unsigned, so CEL sees these as `uint`: comparisons against a plain literal
+         *     work (`host.resources.memory_mb >= 4096`), but arithmetic needs an unsigned
+         *     literal (`host.resources.memory_mb / 1024u >= 8`).
+         */
+        Resources: {
+            /** Format: uint32 */
+            cpu_cores: number;
+            /** Format: uint32 */
+            memory_mb: number;
+            /** Format: uint32 */
+            storage_gb: number;
         };
         /**
          * @description How many times a job may be **automatically restarted** after it is dropped
@@ -2597,7 +2888,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HostInfo"][];
+                    "application/json": components["schemas"]["HostListEntry"][];
                 };
             };
             /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
@@ -2613,6 +2904,340 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    createHost: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description A new host (`POST /hosts`): the `hosts` row and revision 1 of its spec are
+         *     written in one transaction, so a host is never in an undescribed state.
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HostCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller is not a global admin. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A host with the spec's `id` already exists. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Failed to deserialize the JSON body into the target type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getHost: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description A host as returned by `GET /hosts/{id}`: its operational state plus the
+             *     whole admin-authored spec describing what it is.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostInfo"];
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller lacks `read` on the host, or it does not exist. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateHost: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * @description A change to a host's operational state, carried by `PATCH /hosts/{id}`.
+         *
+         *     Only the fields present are changed. Host *description* is not editable
+         *     here: it lives in the host's spec, which is versioned separately.
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HostUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Applied, or the request changed nothing. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller lacks `manage` on the host. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Failed to deserialize the JSON body into the target type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getHostSpecSchema: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    matchHosts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description A dry run of a job's host requirements (`POST /hosts/match`).
+         *
+         *     Answers the question a queued job cannot: *would this ever be placed?*
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HostRequirementsRequest"];
+            };
+        };
+        responses: {
+            /**
+             * @description How a job's host requirements meet the fleet right now.
+             *
+             *     Counts cover only the hosts the job's owner may `start` on, the same set
+             *     the scheduler considers, so a caller cannot probe hosts it has no access to
+             *     by submitting expressions and reading counts back.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostRequirementsReport"];
+                };
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller lacks `use` on the named image set. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Failed to deserialize the JSON body into the target type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    putHostSpec: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description A new revision of a host's spec (`PUT /hosts/{id}/spec`). */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HostSpecUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller lacks `manage` on the host. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Failed to deserialize the JSON body into the target type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
             };
         };
     };

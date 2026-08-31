@@ -9,7 +9,7 @@ mod users;
 use crate::config::ServerConfig;
 use crate::serve::AppState;
 use aide::axum::ApiRouter;
-use aide::axum::routing::{delete_with, get_with, post_with};
+use aide::axum::routing::{delete_with, get_with, post_with, put_with};
 use aide::transform::TransformOperation;
 use axum::Json;
 use axum::Router;
@@ -309,14 +309,90 @@ pub fn api_router() -> ApiRouter<AppState> {
         //  DELETE /supervisors/{id}/current-job
         //  POST /supervisors/new
         //  DELETE /supervisors/{id}
-        //  GET /hosts -- read-only listing of hosts (+ tags, targets, liveness)
+        //  GET /hosts -- hosts the caller may read, each with its spec
+        //  POST /hosts -- admit a host to the fleet (global admin only)
         .api_route(
             "/hosts",
             get_with(hosts::list, |o| {
                 doc(o, "listHosts", "Hosts", "List hosts").description(NOT_PAGINATED)
+            })
+            .post_with(hosts::create, |o| {
+                doc(o, "createHost", "Hosts", "Create a host")
+                    .description(
+                        "Writes the host row and revision 1 of its spec in one transaction, \
+                         and returns the supervisor credential. The credential is not \
+                         retrievable afterwards.",
+                    )
+                    .response_with::<403, (), _>(|r| {
+                        r.description("The caller is not a global admin.")
+                    })
+                    .response_with::<409, (), _>(|r| {
+                        r.description("A host with the spec's `id` already exists.")
+                    })
             }),
         )
         //  GET /hosts/{id}/events
+        //  GET /hosts/{id} -- one host with its spec
+        //  PATCH /hosts/{id} -- change a host's operational state
+        .api_route(
+            "/hosts/{id}",
+            get_with(hosts::get, |o| {
+                doc(o, "getHost", "Hosts", "Get a host").response_with::<403, (), _>(|r| {
+                    r.description("The caller lacks `read` on the host, or it does not exist.")
+                })
+            })
+            .patch_with(hosts::update, |o| {
+                doc(o, "updateHost", "Hosts", "Update a host")
+                    .response_with::<204, (), _>(|r| {
+                        r.description("Applied, or the request changed nothing.")
+                    })
+                    .response_with::<403, (), _>(|r| {
+                        r.description("The caller lacks `manage` on the host.")
+                    })
+            }),
+        )
+        //  GET /hosts/spec-schema -- the JSON Schema a spec is validated against
+        .api_route(
+            "/hosts/spec-schema",
+            get_with(hosts::spec_schema, |o| {
+                doc(o, "getHostSpecSchema", "Hosts", "Get the host spec schema").description(
+                    "The same artifact as the committed `host_spec.schema.json` snapshot.",
+                )
+            }),
+        )
+        //  POST /hosts/match -- which hosts meet a job's requirements
+        .api_route(
+            "/hosts/match",
+            post_with(hosts::match_hosts, |o| {
+                doc(
+                    o,
+                    "matchHosts",
+                    "Hosts",
+                    "Match hosts against a job's requirements",
+                )
+                .description(
+                    "Evaluated over the hosts the caller may start on, so a job that \
+                     would never be placed says so before it is submitted.",
+                )
+                .response_with::<403, (), _>(|r| {
+                    r.description("The caller lacks `use` on the named image set.")
+                })
+            }),
+        )
+        //  PUT /hosts/{id}/spec -- store a new revision of a host's spec
+        .api_route(
+            "/hosts/{id}/spec",
+            put_with(hosts::put_spec, |o| {
+                doc(o, "putHostSpec", "Hosts", "Replace a host's spec")
+                    .description(
+                        "Appends a revision; the history keeps every one, and the \
+                         newest is the spec in force.",
+                    )
+                    .response_with::<403, (), _>(|r| {
+                        r.description("The caller lacks `manage` on the host.")
+                    })
+            }),
+        )
         .api_route(
             "/hosts/{id}/events",
             get_with(hosts::list_events, |o| {

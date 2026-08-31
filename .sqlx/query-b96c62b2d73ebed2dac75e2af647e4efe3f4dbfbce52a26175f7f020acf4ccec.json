@@ -1,32 +1,43 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select current_job, tags, last_seen_at\n               from tml_switchboard.hosts\n               where host_id = $1\n               for update",
+  "query": "select host_id, name, maintenance, last_seen_at\n           from tml_switchboard.hosts\n           where host_id = $1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "current_job",
+        "name": "host_id",
         "type_info": "Uuid",
         "origin": {
           "Table": {
             "table": "tml_switchboard.hosts",
-            "name": "current_job"
+            "name": "host_id"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "tags",
-        "type_info": "TextArray",
+        "name": "name",
+        "type_info": "Text",
         "origin": {
           "Table": {
             "table": "tml_switchboard.hosts",
-            "name": "tags"
+            "name": "name"
           }
         }
       },
       {
         "ordinal": 2,
+        "name": "maintenance",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.hosts",
+            "name": "maintenance"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "last_seen_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -43,10 +54,11 @@
       ]
     },
     "nullable": [
-      true,
+      false,
+      false,
       false,
       true
     ]
   },
-  "hash": "90c40002dfd64393a5192df72e9f8d0d36980cccc51563f7ddf685152b953201"
+  "hash": "b96c62b2d73ebed2dac75e2af647e4efe3f4dbfbce52a26175f7f020acf4ccec"
 }

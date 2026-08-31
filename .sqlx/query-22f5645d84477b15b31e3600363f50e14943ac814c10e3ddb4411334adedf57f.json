@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select current_job, last_seen_at\n               from tml_switchboard.hosts\n               where host_id = $1\n               for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "current_job",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.hosts",
+            "name": "current_job"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.hosts",
+            "name": "last_seen_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "22f5645d84477b15b31e3600363f50e14943ac814c10e3ddb4411334adedf57f"
+}

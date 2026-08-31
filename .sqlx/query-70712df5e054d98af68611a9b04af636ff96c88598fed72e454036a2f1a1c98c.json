@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select h.host_id, h.name\n           from tml_switchboard.hosts h\n           join tml_switchboard.subject_authorized_hosts($1) a (host_id)\n             on a.host_id = h.host_id\n           order by h.name, h.host_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "host_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.hosts",
+            "name": "host_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.hosts",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "70712df5e054d98af68611a9b04af636ff96c88598fed72e454036a2f1a1c98c"
+}

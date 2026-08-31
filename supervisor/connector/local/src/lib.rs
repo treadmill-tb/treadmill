@@ -215,6 +215,8 @@ impl Inner {
             // supervisor inherits stdio when this is `None`); no NATS needed.
             log_streaming: None,
             gateway: None,
+            // A local run has no switchboard to describe the host.
+            host_spec: None,
         };
 
         event!(

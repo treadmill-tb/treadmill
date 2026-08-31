@@ -613,7 +613,248 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/HostInfo'
+                  $ref: '#/components/schemas/HostListEntry'
+      security:
+      - token: []
+    post:
+      tags:
+      - Hosts
+      summary: Create a host
+      description: Writes the host row and revision 1 of its spec in one transaction, and returns the supervisor credential. The credential is not retrievable afterwards.
+      operationId: createHost
+      requestBody:
+        description: |-
+          A new host (`POST /hosts`): the `hosts` row and revision 1 of its spec are
+          written in one transaction, so a host is never in an undescribed state.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostCreateRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The caller is not a global admin.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '409':
+          description: A host with the spec's `id` already exists.
+      security:
+      - token: []
+  /hosts/{id}:
+    get:
+      tags:
+      - Hosts
+      summary: Get a host
+      operationId: getHost
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The caller lacks `read` on the host, or it does not exist.
+        '200':
+          description: |-
+            A host as returned by `GET /hosts/{id}`: its operational state plus the
+            whole admin-authored spec describing what it is.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostInfo'
+      security:
+      - token: []
+    patch:
+      tags:
+      - Hosts
+      summary: Update a host
+      operationId: updateHost
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        description: |-
+          A change to a host's operational state, carried by `PATCH /hosts/{id}`.
+
+          Only the fields present are changed. Host *description* is not editable
+          here: it lives in the host's spec, which is versioned separately.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostUpdateRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The caller lacks `manage` on the host.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '204':
+          description: Applied, or the request changed nothing.
+      security:
+      - token: []
+  /hosts/spec-schema:
+    get:
+      tags:
+      - Hosts
+      summary: Get the host spec schema
+      description: The same artifact as the committed `host_spec.schema.json` snapshot.
+      operationId: getHostSpecSchema
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema: true
+  /hosts/match:
+    post:
+      tags:
+      - Hosts
+      summary: Match hosts against a job's requirements
+      description: Evaluated over the hosts the caller may start on, so a job that would never be placed says so before it is submitted.
+      operationId: matchHosts
+      requestBody:
+        description: |-
+          A dry run of a job's host requirements (`POST /hosts/match`).
+
+          Answers the question a queued job cannot: *would this ever be placed?*
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostRequirementsRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The caller lacks `use` on the named image set.
+        '200':
+          description: |-
+            How a job's host requirements meet the fleet right now.
+
+            Counts cover only the hosts the job's owner may `start` on, the same set
+            the scheduler considers, so a caller cannot probe hosts it has no access to
+            by submitting expressions and reading counts back.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostRequirementsReport'
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+      security:
+      - token: []
+  /hosts/{id}/spec:
+    put:
+      tags:
+      - Hosts
+      summary: Replace a host's spec
+      description: Appends a revision; the history keeps every one, and the newest is the spec in force.
+      operationId: putHostSpec
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        description: A new revision of a host's spec (`PUT /hosts/{id}/spec`).
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostSpecUpdateRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The caller lacks `manage` on the host.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
       security:
       - token: []
   /hosts/{id}/events:
@@ -1783,20 +2024,45 @@ components:
           type: string
       required:
       - digest
+    DutSummary:
+      description: One attached DUT, as a listing names it.
+      type: object
+      properties:
+        board:
+          type: string
+        name:
+          type:
+          - string
+          - 'null'
+        vendor:
+          type: string
+      required:
+      - vendor
+      - board
     EnqueueJobResponse:
       description: 'Response body of `POST /jobs`: the id assigned to the freshly enqueued job.'
       type: object
       properties:
+        host_requirements:
+          description: |-
+            How the job's host requirements met the fleet at submission. A job with
+            `schedulable == 0` was still accepted — the fleet may change — but will
+            sit queued until it does, which is otherwise indistinguishable from
+            waiting for a busy host.
+          allOf:
+          - $ref: '#/components/schemas/HostRequirementsReport'
         job_id:
           type: string
           format: uuid
       required:
       - job_id
+      - host_requirements
     GenerationMemberInfo:
       description: |-
         One member of a generation, as returned by the inspect route. A member is
-        admissible for a host iff the host's tags are a superset of
-        `required_host_tags`.
+        admissible for a host iff the host advertises its `platform_profile` and its
+        `predicate` (if any) holds; the first admissible member in `index` order is
+        selected.
       type: object
       properties:
         index:
@@ -1805,10 +2071,12 @@ components:
           minimum: 0
         manifest_digest:
           $ref: '#/components/schemas/Digest'
-        required_host_tags:
-          type: array
-          items:
-            type: string
+        platform_profile:
+          type: string
+        predicate:
+          type:
+          - string
+          - 'null'
         usable:
           description: |-
             Whether the viewer may use some source of this member image. A set grant
@@ -1825,7 +2093,7 @@ components:
           type: boolean
       required:
       - manifest_digest
-      - required_host_tags
+      - platform_profile
       - index
       - usable
       - usable_by_grantees
@@ -1841,16 +2109,24 @@ components:
             `POST /images/{digest}/sources`).
           allOf:
           - $ref: '#/components/schemas/Digest'
-        required_host_tags:
+        platform_profile:
           description: |-
-            Host tags a host must carry (as a superset) for this member to be
-            selectable on it.
-          type: array
-          default: []
-          items:
-            type: string
+            The machine configuration this image is built for, e.g.
+            `q35-virtio-uefi`, `rpi4-uboot-sd`. Matched by equality against the
+            host spec's `platform.profiles`.
+          type: string
+        predicate:
+          description: |-
+            Optional CEL refinement narrowing this member within its profile, e.g.
+            `host.resources.memory_mb >= 16384`. Parsed when the generation is
+            created; a host it errors on simply does not select this member.
+          type:
+          - string
+          - 'null'
+          default: null
       required:
       - manifest_digest
+      - platform_profile
     GenerationPath:
       description: The `{id}/generations/{n}` segments of an image-set generation route.
       type: object
@@ -1910,10 +2186,28 @@ components:
       - name
       - source
       - source_ref
+    HostCreateRequest:
+      description: |-
+        A new host (`POST /hosts`): the `hosts` row and revision 1 of its spec are
+        written in one transaction, so a host is never in an undescribed state.
+      type: object
+      properties:
+        spec:
+          description: |-
+            The host's spec, conforming to the schema at `GET /hosts/spec-schema`.
+            Its `id` becomes the host's id: the client supplies the UUID so a spec is
+            a self-contained document that can live in a git repo and be applied.
+            Rejected with a [`HostSpecRejection`] naming the offending field if it
+            does not validate.
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+      required:
+      - spec
     HostInfo:
       description: |-
-        A host in the `GET /hosts` listing: its identity, opaque tags, attached
-        targets, and liveness.
+        A host as returned by `GET /hosts/{id}`: its operational state plus the
+        whole admin-authored spec describing what it is.
       type: object
       properties:
         host_id:
@@ -1932,41 +2226,250 @@ components:
             Whether the host's supervisor has heartbeat recently enough to be
             considered schedulable, computed with the deployment's liveness window.
           type: boolean
+        maintenance:
+          description: |-
+            Whether an operator has withheld this host from scheduling. A host in
+            maintenance is neither dispatched onto nor preempted to free capacity.
+          type: boolean
         name:
           type: string
-        tags:
+        spec:
           description: |-
-            Opaque host tags; a job's `host_tag_requirements` match a host whose
-            `tags` are a superset.
-          type: array
-          items:
-            type: string
-        targets:
-          description: The targets (DUTs) wired to this host, in stable order.
-          type: array
-          items:
-            $ref: '#/components/schemas/HostTarget'
+            The host's current spec, normalized to the latest version, as a document
+            conforming to the schema at `GET /hosts/spec-schema`. Null only for a
+            host that has never been described.
+          type:
+          - object
+          - 'null'
+          additionalProperties: true
+        spec_revision:
+          description: The revision `spec` was read at. Null exactly when `spec` is.
+          type:
+          - integer
+          - 'null'
+          format: int32
       required:
       - host_id
       - name
-      - tags
       - live
-      - targets
-    HostTarget:
-      description: One target (DUT) attached to a host, as exposed by `GET /hosts`.
+      - maintenance
+    HostListEntry:
+      description: |-
+        A host as returned by `GET /hosts`: its operational state plus a projection
+        of its spec.
+
+        A listing carries one row per host and a spec is unbounded — a host may list
+        arbitrarily many DUTs, each with its debug probe and console wiring — so a
+        row carries what a fleet view is scanned and filtered by, and the whole
+        document is served by `GET /hosts/{id}` alone.
       type: object
       properties:
-        name:
-          description: Stable per-host label for the DUT (e.g. `"dut0"`).
+        host_id:
           type: string
-        tags:
-          description: Opaque tag set (same convention as host tags).
+          format: uuid
+        last_seen_at:
+          description: As [`HostInfo::last_seen_at`].
+          type:
+          - string
+          - 'null'
+          format: date-time
+        live:
+          description: As [`HostInfo::live`].
+          type: boolean
+        maintenance:
+          description: As [`HostInfo::maintenance`].
+          type: boolean
+        name:
+          type: string
+        spec:
+          description: |-
+            The projection of the host's current spec. Null only for a host that has
+            never been described.
+          anyOf:
+          - $ref: '#/components/schemas/HostSummary'
+          - type: 'null'
+        spec_revision:
+          description: The revision `spec` was projected from. Null exactly when `spec` is.
+          type:
+          - integer
+          - 'null'
+          format: int32
+      required:
+      - host_id
+      - name
+      - live
+      - maintenance
+    HostPredicateError:
+      description: One host the predicate could not be evaluated against.
+      type: object
+      properties:
+        host_id:
+          type: string
+          format: uuid
+        message:
+          description: 'The evaluator''s own diagnostic, e.g. `no such key: model`.'
+          type: string
+        name:
+          description: The host's name, so a report reads without a second lookup.
+          type: string
+      required:
+      - host_id
+      - name
+      - message
+    HostRequirementsReport:
+      description: |-
+        How a job's host requirements meet the fleet right now.
+
+        Counts cover only the hosts the job's owner may `start` on, the same set
+        the scheduler considers, so a caller cannot probe hosts it has no access to
+        by submitting expressions and reading counts back.
+      type: object
+      properties:
+        authorized:
+          description: |-
+            Hosts the owner may start jobs on at all. A zero here is a permissions
+            problem, not a query problem.
+          type: integer
+          format: uint32
+          minimum: 0
+        compile_error:
+          description: |-
+            Set when the predicate does not compile, in which case nothing was
+            evaluated and every match count is zero.
+          type:
+          - string
+          - 'null'
+        errored:
+          description: |-
+            Hosts whose evaluation errored, which counts as not matching. A
+            forgotten `has()` guard otherwise looks exactly like an empty fleet, so
+            these are surfaced rather than folded into the miss count.
+          type: integer
+          format: uint32
+          minimum: 0
+        errors:
+          description: The first few evaluation errors, for diagnosis; `errored` is the total.
+          type: array
+          items:
+            $ref: '#/components/schemas/HostPredicateError'
+        image_matched:
+          description: |-
+            Of those, how many carry an admissible image-set member. Evaluated over
+            the whole authorized set rather than only the predicate's matches, so
+            the two failure modes stay distinguishable. Null when the request named
+            no image set (a concrete image places no constraint on the host).
+          type:
+          - integer
+          - 'null'
+          format: uint32
+          minimum: 0
+        predicate_matched:
+          description: Of those, how many the predicate admits.
+          type: integer
+          format: uint32
+          minimum: 0
+        schedulable:
+          description: |-
+            The hosts admitted by both: the ones that could actually run the job,
+            named rather than counted so an author can see *which* fleet a query
+            selected. Bounded by `authorized`, since nothing else is evaluated.
           type: array
           items:
             type: string
+            format: uuid
       required:
-      - name
-      - tags
+      - authorized
+      - predicate_matched
+      - schedulable
+      - errored
+      - errors
+    HostRequirementsRequest:
+      description: |-
+        A dry run of a job's host requirements (`POST /hosts/match`).
+
+        Answers the question a queued job cannot: *would this ever be placed?*
+      type: object
+      properties:
+        host_cel_predicate:
+          description: The predicate to evaluate, as `JobRequest::host_cel_predicate`.
+          type: string
+        init_spec:
+          description: |-
+            The image the job would run, evaluated exactly as an enqueue would
+            resolve it. Supplying it separates the two ways a job goes unplaced —
+            the predicate matched nothing, or no image-set member admits the hosts
+            it did match — which look identical from a job sitting queued. Omitted,
+            only the predicate is evaluated.
+          anyOf:
+          - $ref: '#/components/schemas/JobInitSpec'
+          - type: 'null'
+          default: null
+      additionalProperties: false
+      required:
+      - host_cel_predicate
+    HostSpecUpdateRequest:
+      description: A new revision of a host's spec (`PUT /hosts/{id}/spec`).
+      type: object
+      properties:
+        spec:
+          description: |-
+            The replacement spec, conforming to the schema at
+            `GET /hosts/spec-schema`. Its `id` must be the host being written.
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+      required:
+      - spec
+    HostSummary:
+      description: |-
+        What a listing shows of a host's spec: everything flat, and the identity of
+        what is attached.
+      type: object
+      properties:
+        description:
+          type:
+          - string
+          - 'null'
+        duts:
+          description: |-
+            The attached DUTs in spec order. Their serials, debug probes, consoles,
+            architectures, connectivity and labels are in the full spec.
+          type: array
+          items:
+            $ref: '#/components/schemas/DutSummary'
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        location:
+          type:
+          - string
+          - 'null'
+        platform:
+          $ref: '#/components/schemas/PlatformSummary'
+        resources:
+          $ref: '#/components/schemas/Resources'
+        site:
+          type: string
+      required:
+      - site
+      - platform
+      - resources
+      - labels
+      - duts
+    HostUpdateRequest:
+      description: |-
+        A change to a host's operational state, carried by `PATCH /hosts/{id}`.
+
+        Only the fields present are changed. Host *description* is not editable
+        here: it lives in the host's spec, which is versioned separately.
+      type: object
+      properties:
+        maintenance:
+          description: Withhold the host from scheduling, or return it to service.
+          type:
+          - boolean
+          - 'null'
     IdPath:
       description: A single `{id}` UUID segment.
       type: object
@@ -2248,13 +2751,12 @@ components:
           type:
           - string
           - 'null'
-        host_tag_requirements:
+        host_cel_predicate:
           description: |-
             Host eligibility tags this job requires (superset match against a host's
             tags).
-          type: array
-          items:
-            type: string
+            The CEL expression this job's host had to satisfy, as submitted.
+          type: string
         image:
           description: What the job is based off.
           allOf:
@@ -2340,15 +2842,6 @@ components:
           description: Where the job is in its lifecycle.
           allOf:
           - $ref: '#/components/schemas/JobState'
-        target_requirements:
-          description: |-
-            Target (DUT) eligibility: one tag set per requested target, in submission
-            order.
-          type: array
-          items:
-            type: array
-            items:
-              type: string
         task_exit_status:
           description: |-
             The user workload's success/failure outcome, orthogonal to
@@ -2372,8 +2865,7 @@ components:
       - state
       - image
       - restart_policy
-      - host_tag_requirements
-      - target_requirements
+      - host_cel_predicate
       - parameters
       - lease_duration_secs
       - lease_expiry_action
@@ -2561,16 +3053,17 @@ components:
     JobRequest:
       type: object
       properties:
-        host_tag_requirements:
+        host_cel_predicate:
           description: |-
-            Host eligibility: the set of tags the chosen host must carry (as a
-            superset) for this job to be assigned to it. Tags are opaque strings
-            (`key=value` pairs or bare flags, by convention only), matched by
-            containment against the host's tags.
-          type: array
-          default: []
-          items:
-            type: string
+            Host eligibility as a single CEL expression, evaluated with the
+            candidate host's spec bound as `host`; the host runs the job only if it
+            evaluates true. `host.duts` is in scope, so one expression covers both
+            the host and its attached DUTs.
+
+            An evaluation error means that host does not match — never a job
+            failure. Absent, defaults to `true`, matching every host.
+          type: string
+          default: 'true'
         init_spec:
           description: What kind of job this is.
           allOf:
@@ -2616,18 +3109,6 @@ components:
             $ref: '#/components/schemas/JobParameter'
         restart_policy:
           $ref: '#/components/schemas/RestartPolicy'
-        target_requirements:
-          description: |-
-            Target (DUT) eligibility: an ordered array of requested targets, each a
-            set of tags an attached DUT must carry (as a superset). The scheduler
-            assigns each entry to a distinct attached target (DUT) on the chosen
-            host. Empty requests no DUTs. Target tags do not affect image selection.
-          type: array
-          default: []
-          items:
-            type: array
-            items:
-              type: string
       required:
       - init_spec
       - restart_policy
@@ -3150,6 +3631,30 @@ components:
       - name
       - display_name
       - login_path
+    PlatformKind:
+      description: Which [`Platform`] variant a host is, without its variant-specific fields.
+      type: string
+      enum:
+      - physical
+      - virtual
+    PlatformSummary:
+      description: |-
+        A [`Platform`](crate::host_spec::Platform) without its variant-specific
+        fields — vendor and model, or hypervisor.
+      type: object
+      properties:
+        arch:
+          type: string
+        kind:
+          $ref: '#/components/schemas/PlatformKind'
+        profiles:
+          type: array
+          items:
+            type: string
+      required:
+      - kind
+      - arch
+      - profiles
     ProviderPath:
       description: The `{provider}` segment of an OAuth login route.
       type: object
@@ -3214,6 +3719,32 @@ components:
       - created_at
       - actor_id
       - message
+    Resources:
+      description: |-
+        The ceiling available to a single job on this host.
+
+        Unsigned, so CEL sees these as `uint`: comparisons against a plain literal
+        work (`host.resources.memory_mb >= 4096`), but arithmetic needs an unsigned
+        literal (`host.resources.memory_mb / 1024u >= 8`).
+      type: object
+      properties:
+        cpu_cores:
+          type: integer
+          format: uint32
+          minimum: 0
+        memory_mb:
+          type: integer
+          format: uint32
+          minimum: 0
+        storage_gb:
+          type: integer
+          format: uint32
+          minimum: 0
+      additionalProperties: false
+      required:
+      - cpu_cores
+      - memory_mb
+      - storage_gb
     RestartPolicy:
       description: |-
         How many times a job may be **automatically restarted** after it is dropped

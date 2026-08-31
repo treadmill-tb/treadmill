@@ -8,6 +8,7 @@ pub mod api;
 mod config;
 pub mod connector;
 pub mod control_socket;
+pub mod host_spec;
 pub mod image;
 pub mod supervisor;
 pub mod util;

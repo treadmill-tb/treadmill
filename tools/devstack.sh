@@ -78,6 +78,11 @@ admins_group_id="00000000-0000-0000-0000-000000000001"
 host_token_bearer="OCkrhbDMiUG7rY1LlSfywBvgkqb1CyOt0djIgos9QDw="
 api_token_bearer="B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15c="
 
+# The machine configuration the supervisor's qemu_args below build, named in
+# the host's spec and matched by equality against an image set member's
+# platform_profile. The two must agree or nothing is selectable on this host.
+host_platform_profile="q35-virtio-uefi"
+
 pg_dir="$state_dir/pg"
 sock_dir="$state_dir/pg-sockets"
 cfg_dir="$state_dir/config"
@@ -386,6 +391,31 @@ TOML
 # plus an API token used by the smoke stage. The host auth_token matches
 # the supervisor ws token below. `on conflict do nothing` keeps re-apply
 # safe.
+#
+# The host gets revision 1 of its spec in the same seed: a host with no spec
+# is never dispatched onto, not even by a job carrying the default `true`
+# predicate. `POST /hosts` would write both, but it mints the auth token
+# itself, and the supervisor's ws_connector token is fixed above.
+# The resources mirror what the supervisor's qemu_args below actually give a
+# guest, so a predicate written against them means something.
+host_spec_json="{
+  \"spec_version\": \"v1\",
+  \"id\": \"$host_id\",
+  \"name\": \"dev-qemu-supervisor\",
+  \"description\": \"QEMU/KVM host of the local dev stack\",
+  \"site\": \"devstack\",
+  \"location\": null,
+  \"platform\": {
+    \"kind\": \"virtual\",
+    \"arch\": \"x86_64\",
+    \"profiles\": [\"$host_platform_profile\"],
+    \"hypervisor\": \"qemu\"
+  },
+  \"resources\": { \"cpu_cores\": 1, \"memory_mb\": 1024, \"storage_gb\": 10 },
+  \"labels\": {},
+  \"duts\": []
+}"
+
 seed_sql="$cfg_dir/dev-seed.sql"
 cat > "$seed_sql" <<SQL
 insert into tml_switchboard.subjects (subject_id, kind)
@@ -401,12 +431,14 @@ insert into tml_switchboard.group_members (group_id, member_id, source, source_r
 insert into tml_switchboard.login_allowlist (provider, kind, external_id)
   values ('mock', 'user', 'bob'), ('mock', 'user', 'carol');
 insert into tml_switchboard.hosts
-  (host_id, name, auth_token, tags, owner_id, current_job)
+  (host_id, name, auth_token, owner_id, current_job)
   values (
     '$host_id', 'dev-qemu-supervisor',
     '\x38292b85b0cc8941bbad8d4b9527f2c01be092a6f50b23add1d8c8828b3d403c',
-    '{"host:$host_id"}', '$dev_user_id', null
+    '$dev_user_id', null
   ) on conflict do nothing;
+insert into tml_switchboard.host_specs (host_id, revision, spec, spec_version)
+  values ('$host_id', 1, '$host_spec_json', 'v1') on conflict do nothing;
 insert into tml_switchboard.api_tokens
   (token_id, token, user_id, revoked, created_at, expires_at)
   values (
@@ -588,8 +620,8 @@ if [ "$enable_supervisor" = 1 ]; then
     # Wrap the fixture image in a public image set so jobs can target a
     # stable moving-target handle (`tiny-efi`) rather than a concrete
     # digest. The set is public, so any mock identity holds `use` on it
-    # without an explicit grant; its single generation has one member with
-    # no required host tags (selectable on every host).
+    # without an explicit grant; its single generation has one member,
+    # selectable on any host advertising the dev profile.
     echo "Creating tiny-efi image set"
     if GRP="$(\
       curl -fsS -X POST "http://127.0.0.1:$sb_port/api/v1/image-sets" \
@@ -603,7 +635,7 @@ if [ "$enable_supervisor" = 1 ]; then
         -X POST "http://127.0.0.1:$sb_port/api/v1/image-sets/$tiny_efi_set_id/generations" \
         -H "Authorization: Bearer $api_token_bearer" \
         -H 'content-type: application/json' \
-        -d "{\"members\":[{\"manifest_digest\":\"$manifest_digest\",\"required_host_tags\":[]}]}"; then
+        -d "{\"members\":[{\"manifest_digest\":\"$manifest_digest\",\"platform_profile\":\"$host_platform_profile\"}]}"; then
         echo "  added generation with member $manifest_digest"
       else
         echo "  ! generation creation failed (continuing)" >&2

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select host_id, name, tags, last_seen_at\n           from tml_switchboard.hosts\n           order by name, host_id",
+  "query": "with principals (id) as (\n               select id from tml_switchboard.principals($1::uuid)\n           )\n           select host_id, name, maintenance, last_seen_at\n           from tml_switchboard.hosts h\n           where exists (select 1 from principals where id = $2::uuid)\n              or exists (select 1 from principals p where p.id = h.owner_id)\n              or exists (\n                     select 1\n                     from tml_switchboard.host_grants g\n                     join principals p on g.subject_id = p.id\n                     where g.host_id = h.host_id and g.permission = 'read'\n                 )\n           order by name, host_id",
   "describe": {
     "columns": [
       {
@@ -27,12 +27,12 @@
       },
       {
         "ordinal": 2,
-        "name": "tags",
-        "type_info": "TextArray",
+        "name": "maintenance",
+        "type_info": "Bool",
         "origin": {
           "Table": {
             "table": "tml_switchboard.hosts",
-            "name": "tags"
+            "name": "maintenance"
           }
         }
       },
@@ -49,7 +49,10 @@
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
     },
     "nullable": [
       false,
@@ -58,5 +61,5 @@
       true
     ]
   },
-  "hash": "0085554c8f66dd8450ea80e7a6bdadf06c9b164fe1fedcb24605a636df766dc5"
+  "hash": "040d691283c50cbc464c99d9a6e29c82938bab36a7aef443567bb66b71ce3a41"
 }

@@ -222,6 +222,7 @@ pub struct JobFacts {
     pub phase: Phase,
     pub parameters: Arc<HashMap<String, ParameterValue>>,
     pub gateway: Arc<Option<JobGatewayDispatch>>,
+    pub host_spec: Arc<Option<serde_json::Value>>,
     pub hostname: Arc<str>,
     pub network_address: Option<IpAddr>,
 }
@@ -234,6 +235,7 @@ impl JobFacts {
             phase: Phase::Starting,
             parameters: Arc::new(start_job_req.parameters.clone()),
             gateway: Arc::new(start_job_req.gateway.clone()),
+            host_spec: Arc::new(start_job_req.host_spec.clone()),
             hostname: format!("job-{}", format!("{job_id}").split_at(10).0).into(),
             network_address: None,
         }
@@ -1275,6 +1277,12 @@ impl control_socket::Supervisor for JobControlEndpoint {
     }
 
     #[instrument(skip(self))]
+    async fn host_spec(&self, _host_id: Uuid, tgt_job_id: Uuid) -> Option<serde_json::Value> {
+        let facts = self.facts(tgt_job_id)?;
+        facts.host_spec.as_ref().clone()
+    }
+
+    #[instrument(skip(self))]
     async fn puppet_ready(&self, _puppet_event_id: u64, _host_id: Uuid, job_id: Uuid) {
         event!(Level::INFO, "Received puppet ready event");
 
@@ -1669,6 +1677,7 @@ mod tests {
             parameters: HashMap::new(),
             log_streaming: None,
             gateway,
+            host_spec: None,
         }
     }
 

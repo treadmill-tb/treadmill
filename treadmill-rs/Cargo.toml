@@ -19,6 +19,7 @@ http = { workspace = true }
 oci-spec = { workspace = true }
 schemars = { workspace = true, features = ["chrono04", "uuid1"] }
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["hex", "base64"] }
 subtle = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
@@ -40,9 +41,6 @@ thiserror = { workspace = true, optional = true }
 [features]
 # A typed HTTP client for the switchboard REST API (see api::switchboard::client).
 client = ["dep:reqwest", "dep:thiserror"]
-
-[dev-dependencies]
-serde_json = { workspace = true }
 
 [lints]
 workspace = true

@@ -198,6 +198,22 @@ pub struct StartJobMessage {
     /// into the job (see [`JobGatewayDispatch`]).
     #[serde(default)]
     pub gateway: Option<JobGatewayDispatch>,
+
+    /// The admin's description of the machine this job runs on, normalized to
+    /// the latest version by the switchboard — a
+    /// [`HostSpec`](crate::host_spec::HostSpec) document, carried opaquely.
+    ///
+    /// Opaque because the supervisor only relays it to the puppet, which writes
+    /// it out as a file: typing it here would make every new spec version a
+    /// change to this protocol and a supervisor that must be rebuilt to pass
+    /// through a document it never reads.
+    ///
+    /// Carried per job rather than per connection because a spec is edited
+    /// while a supervisor stays connected, and what a job should see is the
+    /// description in force when it was dispatched. `None` for a host that has
+    /// never been described.
+    #[serde(default)]
+    pub host_spec: Option<serde_json::Value>,
 }
 
 /// A subject token within a job's log stream — the final element of the NATS

@@ -433,10 +433,8 @@ pub struct JobInfo {
     pub restart_policy: RestartPolicyState,
     /// Host eligibility tags this job requires (superset match against a host's
     /// tags).
-    pub host_tag_requirements: Vec<String>,
-    /// Target (DUT) eligibility: one tag set per requested target, in submission
-    /// order.
-    pub target_requirements: Vec<Vec<String>>,
+    /// The CEL expression this job's host had to satisfy, as submitted.
+    pub host_cel_predicate: String,
     /// Job parameters, keyed by name; secret values are redacted.
     pub parameters: HashMap<String, JobParameterView>,
     /// The job's protected window, in seconds, measured from `started_at`.
@@ -477,6 +475,11 @@ pub struct JobInfo {
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct EnqueueJobResponse {
     pub job_id: Uuid,
+    /// How the job's host requirements met the fleet at submission. A job with
+    /// `schedulable == 0` was still accepted — the fleet may change — but will
+    /// sit queued until it does, which is otherwise indistinguishable from
+    /// waiting for a busy host.
+    pub host_requirements: crate::api::switchboard::hosts::HostRequirementsReport,
 }
 
 /// A patch to a job (`PATCH /jobs/{id}`). Only the fields listed here are

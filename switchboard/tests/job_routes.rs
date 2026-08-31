@@ -26,7 +26,9 @@ use treadmill_rs::api::switchboard::jobs::{
     JobServiceCredentials, JobServiceEndpoint, LeaseRejection, LeaseRejectionCode,
     NatsConsoleInputCredentials, NatsLogStreamCredentials,
 };
-use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, WhoAmIResponse};
+use treadmill_rs::api::switchboard::{
+    DEFAULT_HOST_CEL_PREDICATE, JobInitSpec, JobRequest, JobState, WhoAmIResponse,
+};
 use treadmill_rs::image::Digest;
 
 /// The built-in admins group subject (`engine::ADMINS_GROUP_ID`). `alice` is a
@@ -207,10 +209,10 @@ async fn seed_job(pool: &PgPool, owner: Uuid, token: Uuid, params: &[(&str, &str
     sqlx::query(
         "insert into tml_switchboard.jobs \
            (job_id, owner_id, image_id, restart_policy, \
-            enqueued_by_token_id, host_tag_requirements, lease_duration, \
+            enqueued_by_token_id, lease_duration, \
             job_state, queued_at) \
          values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, \
-            $4, '{}', interval '1 hour', 'queued', now())",
+            $4, interval '1 hour', 'queued', now())",
     )
     .bind(job_id)
     .bind(owner)
@@ -249,10 +251,10 @@ async fn seed_job_at(
     sqlx::query(
         "insert into tml_switchboard.jobs \
            (job_id, owner_id, image_id, restart_policy, \
-            enqueued_by_token_id, host_tag_requirements, lease_duration, \
+            enqueued_by_token_id, lease_duration, \
             job_state, queued_at) \
          values ($1, $2, $3, row(0)::tml_switchboard.restart_policy, \
-            $4, '{}', interval '1 hour', 'queued', $5)",
+            $4, interval '1 hour', 'queued', $5)",
     )
     .bind(job_id)
     .bind(owner)
@@ -474,8 +476,7 @@ fn image_job_request(
         owner,
         restart_policy: RestartPolicy { max_restarts: 0 },
         parameters: HashMap::new(),
-        host_tag_requirements: vec![],
-        target_requirements: vec![],
+        host_cel_predicate: DEFAULT_HOST_CEL_PREDICATE.to_string(),
         lease_duration,
         lease_expiry_action: None,
     }
@@ -509,7 +510,18 @@ async fn enqueue_creates_a_queued_job_owned_by_caller(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
-    let job_id = resp.json::<EnqueueJobResponse>().await.unwrap().job_id;
+    let enqueued = resp.json::<EnqueueJobResponse>().await.unwrap();
+    let job_id = enqueued.job_id;
+
+    // The enqueue reports how the job's requirements met the fleet. There is no
+    // host here at all, so the job is accepted and will simply sit queued --
+    // which is exactly the outcome the report exists to make visible.
+    let report = &enqueued.host_requirements;
+    assert_eq!(report.authorized, 0);
+    assert!(report.schedulable.is_empty());
+    assert_eq!(report.compile_error, None);
+    // A concrete image constrains no host, so there is no image side to report.
+    assert_eq!(report.image_matched, None);
 
     // The enqueuer owns the job and can read it back: queued, owned by the
     // caller, with the deployment default lease (1h in the mock config).
@@ -670,8 +682,8 @@ async fn enqueue_for_lease_test(pool: &PgPool, addr: SocketAddr) -> (String, Uui
 async fn mark_running(pool: &PgPool, job_id: Uuid, started_at: chrono::DateTime<chrono::Utc>) {
     let host_id = Uuid::new_v4();
     sqlx::query(
-        "insert into tml_switchboard.hosts (host_id, name, auth_token, tags) \
-         values ($1, $2, $3, '{}')",
+        "insert into tml_switchboard.hosts (host_id, name, auth_token) \
+         values ($1, $2, $3)",
     )
     .bind(host_id)
     .bind(format!("host-{host_id}"))

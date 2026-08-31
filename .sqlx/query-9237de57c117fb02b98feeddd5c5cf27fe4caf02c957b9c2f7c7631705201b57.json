@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select revision, spec\n           from tml_switchboard.host_specs\n           where host_id = $1\n           order by revision desc\n           limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "revision",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.host_specs",
+            "name": "revision"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "spec",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.host_specs",
+            "name": "spec"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "9237de57c117fb02b98feeddd5c5cf27fe4caf02c957b9c2f7c7631705201b57"
+}

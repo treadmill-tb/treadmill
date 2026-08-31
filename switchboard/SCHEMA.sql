@@ -473,9 +473,10 @@ CREATE TABLE tml_switchboard.staged_logins (
 -- supervisor is the software process that drives it and is the WebSocket peer
 -- of the switchboard.
 --
--- The `hosts` table carries both the host's user-facing properties (name, tags,
--- owner) and the credentials/state of the supervisor authorized to drive it
--- (auth_token, worker_instance_id).
+-- The `hosts` table carries only operational and relational state -- ownership,
+-- liveness, maintenance, job assignment -- and the credentials of the
+-- supervisor authorized to drive it (auth_token, worker_instance_id). What the
+-- host *is* lives entirely in `host_specs`; there is zero description here.
 --
 -- The auth_token field authenticates the host's supervisor: a 32-byte random
 -- string uniquely identifying the supervisor on connect.
@@ -483,8 +484,6 @@ CREATE TABLE tml_switchboard.hosts (
     host_id uuid NOT NULL PRIMARY KEY,
     name text NOT NULL,
     auth_token bytea NOT NULL UNIQUE,
-    -- Host-specific tags, separate from target (DUT) tags.
-    tags TEXT[] NOT NULL,
     -- Owning subject (user or group).
     --
     -- NULL means orphaned: the resource has no owner and is manageable only by
@@ -534,6 +533,15 @@ CREATE TABLE tml_switchboard.hosts (
     -- The scheduler uses this field when filtering for supervisors eligible for
     -- scheduling a given job.
     last_seen_at timestamp with time zone,
+    -- Operator-set: the host is withheld from scheduling without being deleted
+    -- or losing its description. Excluded from `eligible_hosts` AND
+    -- `reclaimable_hosts` -- a host in maintenance must not be a preemption
+    -- target either, or a running job is killed to free capacity nobody can
+    -- use.
+    --
+    -- A column rather than a host_specs field: it is operational, it changes
+    -- often, and every toggle would otherwise write a spec-history row.
+    maintenance bool NOT NULL DEFAULT FALSE,
     CHECK (octet_length(auth_token) = 32),
     CHECK (worker_instance_id >= 0)
 );
@@ -674,11 +682,15 @@ CREATE TABLE tml_switchboard.jobs (
     -- Token the job was enqueued by. Used to determine which hosts a job can
     -- run on, based on the subject that the token belongs to.
     enqueued_by_token_id uuid NOT NULL REFERENCES tml_switchboard.api_tokens (token_id) ON DELETE NO ACTION,
-    -- Host eligibility: the set of tags a host must carry (as a superset) for
-    -- this job to be schedulable onto it. Opaque strings, matched by
-    -- containment against `hosts.tags`. Target (DUT) requirements live in the
-    -- separate `job_target_requirements` table.
-    host_tag_requirements TEXT[] NOT NULL DEFAULT '{}',
+    -- Host eligibility, expressed as a single CEL predicate evaluated with the
+    -- host's normalized spec bound as `host` (see `src/predicate.rs`). The
+    -- default matches every host. There is no separate DUT requirement list:
+    -- `host.duts` is in scope, so one expression covers both the host and its
+    -- attached devices.
+    --
+    -- The source is stored and re-parsed on read, so there is exactly one
+    -- representation. Evaluation happens in the application, not here.
+    host_cel_predicate text NOT NULL DEFAULT 'true',
     -- Job lease expires at `started_at + lease_duration`. This field is mutable
     -- to allow for changing the lease duration / extending job leases.
     lease_duration interval NOT NULL,
@@ -818,38 +830,65 @@ WHERE
     current_job IS NOT NULL;
 
 
--- Host tags are opaque strings (`key=value` pairs or bare flags, by convention
--- only -- the matcher never parses them). A job requests a host whose tags are
--- a superset of the job's `host_tag_requirements`; the GIN index backs that
--- containment (`tags @> required`) lookup over the host pool.
-CREATE INDEX hosts_tags_gin ON tml_switchboard.hosts USING gin (tags);
-
-
 -- =============================================================================
--- HOST TARGETS (DUTs)
+-- HOST SPECS
 -- =============================================================================
 --
--- A host drives one or more attached targets (devices under test). Each target
--- carries its own opaque tag set (e.g. `board=nrf52840dk`, `ble`, `gpio`),
--- independent of the host's tags. A job requests an array of targets, each by a
--- required tag subset; the scheduler assigns each requested target to a
--- distinct DUT whose tags satisfy it (a bipartite match, done in the
--- application). Target tags do NOT participate in image selection -- that is
--- host-tag-only (see `image_set_members`).
-CREATE TABLE tml_switchboard.host_targets (
-    target_id uuid NOT NULL PRIMARY KEY,
+-- The admin-authored description of what a host *is* -- its site, chassis,
+-- bootable machine profiles and attached DUTs -- as one versioned JSON document
+-- (`treadmill_rs::host_spec`). This table is the sole store: `hosts` carries
+-- only operational and relational state, so no denormalized copy exists to
+-- drift from it.
+--
+-- Append-only, same pattern as `audit_events` / `image_set_generations`. The
+-- highest `revision` for a host is its current spec; reads take the newest per
+-- host, which the primary key already backs as a backward index scan, so there
+-- is no separate current-value column to fall out of step with the history.
+--
+-- The primary key doubles as the compare-and-swap for concurrent edits: a
+-- writer inserts at `revision = expected + 1`, so two admins racing on the same
+-- next revision means one takes a unique violation rather than silently
+-- clobbering the other.
+--
+-- `spec` is stored raw as submitted -- normalizing on write would lose what the
+-- admin actually wrote, which is the point of a history -- with the version it
+-- was written under lifted into a column, so the spread across current
+-- revisions is queryable without unpacking every document.
+--
+-- SQL cannot require a child row, so "every host has a spec" is not
+-- declarative: it rests on host creation inserting the `hosts` row and its
+-- revision 1 in one transaction.
+CREATE TABLE tml_switchboard.host_specs (
     host_id uuid NOT NULL REFERENCES tml_switchboard.hosts (host_id) ON DELETE CASCADE,
-    -- Stable per-host label for the DUT (e.g. "dut0").
-    name text NOT NULL,
-    -- Opaque tag set, same convention as host tags.
-    tags TEXT[] NOT NULL DEFAULT '{}',
-    UNIQUE (host_id, name)
+    revision int NOT NULL,
+    spec jsonb NOT NULL,
+    spec_version text NOT NULL,
+    -- Who wrote this revision; NULL once that subject is deleted.
+    written_by uuid REFERENCES tml_switchboard.subjects (subject_id) ON DELETE SET NULL,
+    written_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (host_id, revision),
+    CONSTRAINT revision_positive CHECK (revision >= 1),
+    -- A spec names the host it describes. The write route enforces this too;
+    -- here it also covers anything reaching the table another way.
+    CONSTRAINT spec_id_matches CHECK (((spec ->> 'id')::uuid) = host_id)
 );
 
 
--- Backs the per-target containment (`tags @> required`) match during
--- scheduling.
-CREATE INDEX host_targets_tags_gin ON tml_switchboard.host_targets USING gin (tags);
+-- Append-only enforcement: a revision is immutable once written (every edit
+-- appends a new one). Same pattern as `deny_audit_event_change`, duplicated so
+-- this section does not forward-reference the AUDIT LOG section.
+CREATE OR REPLACE FUNCTION tml_switchboard.deny_host_spec_change () returns trigger language plpgsql AS $$
+begin
+    raise exception 'host specs are append-only (% on %.%)',
+        TG_OP, TG_TABLE_SCHEMA, TG_TABLE_NAME;
+end;
+$$;
+
+
+CREATE TRIGGER host_specs_append_only before
+UPDATE
+OR delete ON tml_switchboard.host_specs FOR each ROW
+EXECUTE function tml_switchboard.deny_host_spec_change ();
 
 
 -- =============================================================================
@@ -982,25 +1021,6 @@ CREATE TABLE tml_switchboard.job_parameters (
 
 
 -- =============================================================================
--- JOB TARGET REQUIREMENTS
--- =============================================================================
---
--- The ordered array of targets (DUTs) a job requests. One row per requested
--- target; `req_index` is its position in the submitted array (so a job asking
--- for two identical DUTs is two rows). Each carries a required tag subset that
--- the assigned `host_targets` row must satisfy by containment. A job with no
--- rows requests no DUTs (e.g. a pure-VM job). The concrete DUT chosen for each
--- requirement is recorded at schedule time (a future `job_assigned_targets`
--- table, added with the scheduler).
-CREATE TABLE tml_switchboard.job_target_requirements (
-    job_id uuid NOT NULL REFERENCES tml_switchboard.jobs (job_id) ON DELETE CASCADE,
-    req_index int NOT NULL,
-    tags TEXT[] NOT NULL DEFAULT '{}',
-    PRIMARY KEY (job_id, req_index)
-);
-
-
--- =============================================================================
 -- JOB SERVICES
 -- =============================================================================
 --
@@ -1052,18 +1072,21 @@ WHERE
 CREATE INDEX jobs_queued_at_job_id_idx ON tml_switchboard.jobs (queued_at DESC, job_id DESC);
 
 
--- Hosts the job owner is authorized to `start` on, ignoring occupancy, liveness
--- and tags. Mirrors `can_access_host(owner, host, 'start')` in
+-- Hosts the job owner is authorized to `start` on, ignoring occupancy,
+-- liveness and eligibility. Mirrors `can_access_host(owner, host, 'start')` in
 -- `src/auth/engine.rs`: the owner (evaluated over its transitive `principals()`
 -- set) is a global admin, owns the host, or holds a `start` grant on it.
 --
--- Shared by `eligible_hosts` and `reclaimable_hosts`. A job whose `owner_id`
--- is NULL (orphaned) matches no host.
-CREATE FUNCTION tml_switchboard.job_authorized_hosts (p_job_id uuid) returns setof uuid language sql stable AS $$
+-- Hosts `p_subject_id` may `start` jobs on: it is an admin, it owns the host,
+-- or it holds a `start` grant. A NULL subject matches no host.
+--
+-- Factored out of `job_authorized_hosts` because the enqueue-time and dry-run
+-- host-matching diagnostics count over exactly this set and have no job to key
+-- on. Sharing one definition is load-bearing: were the diagnostic to compute a
+-- wider set, its counts would report on hosts the caller cannot see.
+CREATE FUNCTION tml_switchboard.subject_authorized_hosts (p_subject_id uuid) returns setof uuid language sql stable AS $$
     with owner_principals (id) as (
-        select p.id
-        from tml_switchboard.jobs j, tml_switchboard.principals(j.owner_id) p
-        where j.job_id = p_job_id
+        select p.id from tml_switchboard.principals(p_subject_id) p
     )
     select h.host_id
     from tml_switchboard.hosts h
@@ -1084,22 +1107,37 @@ CREATE FUNCTION tml_switchboard.job_authorized_hosts (p_job_id uuid) returns set
 $$;
 
 
+-- Shared by `eligible_hosts` and `reclaimable_hosts`. A job whose `owner_id`
+-- is NULL (orphaned) matches no host.
+CREATE FUNCTION tml_switchboard.job_authorized_hosts (p_job_id uuid) returns setof uuid language sql stable AS $$
+    -- Cross join rather than a scalar subquery on `owner_id`: a job that does
+    -- not exist must yield no hosts, and `principals(NULL)` is not empty (it
+    -- still carries the `everyone` subject), so feeding it a NULL owner read
+    -- from nowhere would admit whatever `everyone` was granted `start` on.
+    select h.host_id
+    from tml_switchboard.jobs j
+    cross join lateral tml_switchboard.subject_authorized_hosts(j.owner_id) as h (host_id)
+    where j.job_id = p_job_id;
+$$;
+
+
 -- Hosts a job may be dispatched onto, by the set-based criteria SQL expresses:
--- the host is idle (no current job), live (its worker's heartbeat
--- `last_seen_at` is newer than the caller-supplied staleness cutoff),
--- host-tag eligible (its opaque `tags` are a superset of the job's
--- `host_tag_requirements`; `tags @> '{}'` holds for every host, so a job with
--- no host-tag requirements matches all idle/live hosts), and -- crucially --
--- one the job's owner is *authorized* to start on.
+-- the host is idle (no current job), not in maintenance, live (its worker's
+-- heartbeat `last_seen_at` is newer than the caller-supplied staleness cutoff),
+-- and -- crucially -- one the job's owner is *authorized* to start on.
+--
+-- Eligibility beyond this set logic is the application's: the job's CEL
+-- predicate and the image-set member match are evaluated in Rust against each
+-- candidate's host spec.
 --
 -- Including authorization here means we don't consider unauthorized hosts for
 -- scheduling, so the enqueue route need not (and does not) pre-authorize a host
 -- at submit time. Jobs that don't have an authorized host time out.
 --
--- The scheduler additionally applies the target/DUT bipartite match and the
--- image resolution under a row lock in its dispatch transaction, and re-checks
--- this authorization there (host ownership/grants can change between this scan
--- and the lock).
+-- The scheduler applies the job's CEL predicate against each candidate's host
+-- spec, then resolves the image under a row lock in its dispatch transaction,
+-- re-checking this authorization there (host ownership/grants can change
+-- between this scan and the lock).
 CREATE FUNCTION tml_switchboard.eligible_hosts (
     p_job_id uuid,
     p_liveness_cutoff timestamp with time zone
@@ -1108,19 +1146,15 @@ CREATE FUNCTION tml_switchboard.eligible_hosts (
     from tml_switchboard.hosts h
     join tml_switchboard.job_authorized_hosts(p_job_id) a on a = h.host_id
     where h.current_job is null
+      and not h.maintenance
       and h.last_seen_at is not null
       and h.last_seen_at > p_liveness_cutoff
-      and h.tags @> (
-          select host_tag_requirements
-          from tml_switchboard.jobs
-          where job_id = p_job_id
-      )
     order by h.host_id;
 $$;
 
 
 -- Occupied hosts whose current job may be reclaimed to make room for
--- `p_job_id`: live, host-tag eligible and `start`-authorized exactly as in
+-- `p_job_id`: live, out of maintenance and `start`-authorized exactly as in
 -- `eligible_hosts`, but holding a job whose `preempt` lease has expired.
 --
 -- Only *expired* leases qualify; reclamation never takes back guaranteed time.
@@ -1139,13 +1173,9 @@ CREATE FUNCTION tml_switchboard.reclaimable_hosts (
     from tml_switchboard.hosts h
     join tml_switchboard.jobs v on v.job_id = h.current_job
     join tml_switchboard.job_authorized_hosts(p_job_id) a on a = h.host_id
-    where h.last_seen_at is not null
+    where not h.maintenance
+      and h.last_seen_at is not null
       and h.last_seen_at > p_liveness_cutoff
-      and h.tags @> (
-          select host_tag_requirements
-          from tml_switchboard.jobs
-          where job_id = p_job_id
-      )
       and v.job_state <> 'finalized'
       and v.lease_expiry_action = 'preempt'
       and v.started_at is not null
@@ -1297,22 +1327,45 @@ CREATE TABLE tml_switchboard.image_set_generations (
 
 -- The members of ONE generation (full replacement per generation).
 --
--- A member's eligibility is a set of required host tags: the member is
--- admissible for a host iff `hosts.tags` is a superset of `required_host_tags`.
+-- A member declares the machine configuration it is built for
+-- (`platform_profile`, matched by equality against the host spec's
+-- `platform.profiles`) plus an optional CEL `predicate` refining that. The
+-- member is admissible for a host iff the profile is one the host advertises
+-- and the refinement, if any, evaluates true; the FIRST admissible member in
+-- `index` order wins.
 --
--- Among admissible members the most specific (largest required set) wins, ties
--- broken by `index` (the member's explicit array position in the
--- create-generation request). Image selection uses HOST tags only; target/DUT
--- tags are irrelevant here. `image_id` references an immortal `images` row (no
--- cascade: images are never deleted).
+-- Profiles rather than pure CEL because compatibility is a hard contract and
+-- should be an equality, not an expression someone can get subtly wrong; the
+-- refinement covers what is not a compatibility question ("the big-memory
+-- variant"). CEL expresses user intent, profiles express machine
+-- compatibility.
+--
+-- First-match-wins because with arbitrary predicates there is no specificity
+-- order to infer -- `site == 'x' || site == 'y'` is neither stronger nor weaker
+-- than `memory_mb >= 4096`. Author order IS the ranking, stated rather than
+-- derived, and it reads like a routing table. A trailing member with no
+-- refinement is the explicit catch-all; omitting one deliberately narrows where
+-- the set's jobs can run.
+--
+-- The primary key is (set_id, generation, index) rather than
+-- (set_id, generation, image_id) so the SAME image may appear under several
+-- profiles -- one build serving both `q35-virtio-uefi` and `q35-virtio-bios`
+-- is two members, not a conflict. `image_id` references an immortal `images`
+-- row (no cascade: images are never deleted).
 CREATE TABLE tml_switchboard.image_set_members (
     set_id uuid NOT NULL,
     generation int NOT NULL,
     image_id uuid NOT NULL REFERENCES tml_switchboard.images (id),
-    required_host_tags TEXT[] NOT NULL DEFAULT '{}',
+    -- The machine configuration this member is built for, e.g.
+    -- `q35-virtio-uefi`, `rpi4-uboot-sd`. Convention, not a registry.
+    platform_profile text NOT NULL,
+    -- Optional CEL refinement, evaluated with the host spec bound as `host`.
+    -- Parsed (not evaluated) when the generation is created, so a malformed
+    -- expression is rejected at authoring time rather than silently matching
+    -- nothing at dispatch.
+    predicate text,
     index int NOT NULL,
-    PRIMARY KEY (set_id, generation, image_id),
-    UNIQUE (set_id, generation, index),
+    PRIMARY KEY (set_id, generation, index),
     FOREIGN key (set_id, generation) REFERENCES tml_switchboard.image_set_generations (set_id, generation) ON DELETE CASCADE
 );
 
@@ -1581,3 +1634,14 @@ UPDATE ON tml_switchboard.hosts FOR each ROW WHEN (
     (to_jsonb(OLD) - 'last_seen_at') IS DISTINCT FROM (to_jsonb(NEW) - 'last_seen_at')
 )
 EXECUTE FUNCTION tml_switchboard.notify_change ('host_id');
+
+
+-- Spec edits do not touch `hosts`, so without these neither the scheduler nor
+-- the host watch endpoints would wake on one: a host that newly matches a
+-- queued job's predicate would wait out `match_interval`, and the console would
+-- not live-update. Keyed on the host, which is what receivers subscribe to.
+--
+-- No UPDATE/DELETE trigger: the table is append-only.
+CREATE TRIGGER host_specs_notify_write
+AFTER insert ON tml_switchboard.host_specs FOR each ROW
+EXECUTE function tml_switchboard.notify_change ('host_id');

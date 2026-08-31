@@ -21,6 +21,7 @@ url = "2"
 # renderable just by being linked in.
 linkme = "0.3"
 chrono = { workspace = true, features = ["serde"] }
+cel = { workspace = true }
 # because cookie-rs has an unavoidable hard dependency on time::Duration
 time = "0.3.47"
 
@@ -124,6 +125,7 @@ figment = { version = "0.10.19", features = ["toml", "env"] }
 # General serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_path_to_error = { workspace = true }
 serde_with = { workspace = true }
 humantime-serde = { workspace = true }
 # OpenAPI snapshot emitted as YAML (api-spec/openapi.yaml)

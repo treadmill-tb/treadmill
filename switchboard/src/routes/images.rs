@@ -35,6 +35,7 @@ use crate::audit::model::{ImageSet as AuditImageSet, Subject as AuditSubject};
 use crate::audit::{self, events};
 use crate::auth::engine::{self, ImageSetPermission as Perm, ImageSourcePermission as SourcePerm};
 use crate::http_error::internal;
+use crate::predicate::{CelEngine, Engine};
 use crate::registry::RegistryError;
 use crate::routes::params::{
     DigestPath, GenerationPath, GrantPath, IdPath, SourceGrantPath, SourcePath,
@@ -313,7 +314,8 @@ async fn generation_info(
                 .unwrap_or((false, false));
             Ok(GenerationMemberInfo {
                 manifest_digest: m.manifest_digest.parse().map_err(internal)?,
-                required_host_tags: m.required_host_tags,
+                platform_profile: m.platform_profile,
+                predicate: m.predicate,
                 index: m.index as u32,
                 usable,
                 usable_by_grantees,
@@ -341,7 +343,7 @@ pub async fn create_generation(
     require_manage(&state, subject.user_id(), set_id).await?;
 
     // Resolve every member digest to a registered image up front, and build the
-    // `(image_id, tags, index)` rows in array order.
+    // rows in array order (which is also the order selection walks).
     let mut members = Vec::with_capacity(req.members.len());
     for (index, m) in req.members.iter().enumerate() {
         let rec = image::fetch_by_digest(state.pool(), &m.manifest_digest.encoded())
@@ -354,7 +356,21 @@ pub async fn create_generation(
                 );
                 StatusCode::UNPROCESSABLE_ENTITY
             })?;
-        members.push((rec.id, m.required_host_tags.clone(), index as i32));
+        // Compile-check the refinement here: a generation is immutable once
+        // created, so a malformed expression would otherwise sit in it
+        // silently matching no host until someone debugged a stuck job.
+        if let Some(source) = m.predicate.as_deref()
+            && let Err(e) = CelEngine.compile(source)
+        {
+            tracing::debug!("create_generation member {index} has a malformed predicate: {e}");
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        members.push(image::NewSetMember {
+            image_id: rec.id,
+            platform_profile: m.platform_profile.clone(),
+            predicate: m.predicate.clone(),
+            index: index as i32,
+        });
     }
 
     let mut tx = state.pool().begin().await.map_err(internal)?;

@@ -13,17 +13,6 @@ type InitType = JobInitSpec["type"];
 
 type ParamRow = { name: string; value: string; secret: boolean };
 
-function words(s: string): string[] {
-  return s.split(/[\s,]+/).filter((w) => w !== "");
-}
-
-function lines(s: string): string[] {
-  return s
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l !== "");
-}
-
 export default function JobNew() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -83,8 +72,7 @@ export default function JobNew() {
       body: {
         init_spec,
         label: label === "" ? null : label,
-        host_tag_requirements: words(str("host_tags")),
-        target_requirements: lines(str("target_reqs")).map(words),
+        host_cel_predicate: str("host_cel_predicate") || "true",
         parameters,
         restart_policy: { max_restarts: Number(str("max_restarts") || "0") },
         owner: owner === "" ? null : owner,
@@ -143,16 +131,15 @@ export default function JobNew() {
         )}
 
         <label className="field">
-          <span>Required host tags (whitespace-separated)</span>
-          <input name="host_tags" className="mono" />
-        </label>
-
-        <label className="field">
           <span>
-            Target (DUT) requirements — one target per line, its required tags
-            whitespace-separated; empty requests no DUTs
+            Host predicate (CEL) — evaluated against the candidate host&rsquo;s
+            spec bound as <code>host</code>; empty matches any described host
           </span>
-          <textarea name="target_reqs" rows={2} className="mono" />
+          <input
+            name="host_cel_predicate"
+            className="mono"
+            placeholder="host.site == 'cambridge' &amp;&amp; host.resources.memory_mb >= 4096"
+          />
         </label>
 
         <div className="field">
