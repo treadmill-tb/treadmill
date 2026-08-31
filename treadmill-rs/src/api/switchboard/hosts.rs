@@ -12,6 +12,15 @@ use uuid::Uuid;
 use crate::api::switchboard::JobInitSpec;
 use crate::host_spec::{HostSpec, HostSpecV1, PlatformKind, Resources};
 
+/// How a [`HostSpec`] appears in this API's schema: an opaque JSON object.
+///
+/// The spec's own schema is published at `GET /hosts/spec-schema` and
+/// snapshotted alongside the type. Expanding it here too would put a second
+/// copy in every generated client, and make each new spec version rewrite this
+/// document — for routes that only carry the spec from an admin's editor to the
+/// switchboard and back, and never interpret it.
+type SpecDocument = serde_json::Map<String, serde_json::Value>;
+
 /// A host as returned by `GET /hosts/{id}`: its operational state plus the
 /// whole admin-authored spec describing what it is.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
@@ -27,8 +36,10 @@ pub struct HostInfo {
     /// Whether an operator has withheld this host from scheduling. A host in
     /// maintenance is neither dispatched onto nor preempted to free capacity.
     pub maintenance: bool,
-    /// The host's current spec, normalized to the latest version. Null only for
-    /// a host that has never been described.
+    /// The host's current spec, normalized to the latest version, as a document
+    /// conforming to the schema at `GET /hosts/spec-schema`. Null only for a
+    /// host that has never been described.
+    #[schemars(with = "Option<SpecDocument>")]
     pub spec: Option<HostSpec>,
     /// The revision `spec` was read at. Null exactly when `spec` is.
     pub spec_revision: Option<i32>,
@@ -132,11 +143,12 @@ pub struct HostUpdateRequest {
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostCreateRequest {
-    /// The host's spec. Its `id` becomes the host's id: the client supplies the
-    /// UUID so a spec is a self-contained document that can live in a git repo
-    /// and be applied. Rejected with a [`HostSpecRejection`] naming the
-    /// offending field if it does not validate.
-    #[schemars(with = "HostSpec")]
+    /// The host's spec, conforming to the schema at `GET /hosts/spec-schema`.
+    /// Its `id` becomes the host's id: the client supplies the UUID so a spec is
+    /// a self-contained document that can live in a git repo and be applied.
+    /// Rejected with a [`HostSpecRejection`] naming the offending field if it
+    /// does not validate.
+    #[schemars(with = "SpecDocument")]
     pub spec: serde_json::Value,
 }
 
@@ -155,8 +167,9 @@ pub struct HostCreateResponse {
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostSpecUpdateRequest {
-    /// The replacement spec. Its `id` must be the host being written.
-    #[schemars(with = "HostSpec")]
+    /// The replacement spec, conforming to the schema at
+    /// `GET /hosts/spec-schema`. Its `id` must be the host being written.
+    #[schemars(with = "SpecDocument")]
     pub spec: serde_json::Value,
 }
 

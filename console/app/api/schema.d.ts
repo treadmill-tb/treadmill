@@ -801,19 +801,6 @@ export interface components {
             code: string;
             state: string;
         };
-        /** @description The board's console, as the host sees it. */
-        Console: {
-            /** Format: uint32 */
-            baud: number;
-            /**
-             * @description The host-side device node. Prefer a stable `/dev/serial/by-id/...`
-             *     path over a `/dev/ttyACM*` name, which is enumeration-order
-             *     dependent.
-             */
-            device: string;
-            /** @constant */
-            kind: "uart";
-        };
         /**
          * @description `POST /image-sets/{id}/generations`: append a new, immutable
          *     full-replacement generation of a set's membership.
@@ -835,24 +822,6 @@ export interface components {
             /** @description The stable, globally-unique moving-target handle a job references (by id). */
             name: string;
         };
-        /** @description How the board is programmed and debugged. */
-        DebugAccess: {
-            probe: components["schemas"]["DebugProbe"];
-            /**
-             * @description The wire protocol, e.g. `swd`, `jtag`. Governed by convention, not a
-             *     registry.
-             */
-            protocol: string;
-        };
-        /** @description The debug probe attached to a board. */
-        DebugProbe: {
-            /** @description e.g. `J-Link OB`, `ST-LINK/V2-1`. */
-            model: string;
-            /** @description The probe's own serial, which is how a host-side tool addresses it. */
-            serial?: string | null;
-            /** @description e.g. `SEGGER`, `STMicroelectronics`. */
-            vendor: string;
-        };
         /**
          * @description A content-addressable OCI digest over 32 bytes of SHA-256.
          *
@@ -863,32 +832,6 @@ export interface components {
         DigestPath: {
             /** @description The image's OCI manifest digest (`sha256:<hex>`). */
             digest: string;
-        };
-        /** @description One device under test wired to a host. */
-        Dut: {
-            /**
-             * @description The architectures of the board's cores, e.g. `cortex-m4`. An array
-             *     because a heterogeneous-core part has more than one. May be empty.
-             */
-            arch: string[];
-            /** @description The board this is, e.g. `nrf52840dk`. */
-            board: string;
-            /**
-             * @description What the board can talk over, e.g. `ble`, `ieee802154`, `usb`, `wifi`,
-             *     `ethernet`, `can`. Governed by convention, not a registry. May be empty.
-             */
-            connectivity: string[];
-            console?: components["schemas"]["Console"] | null;
-            debug?: components["schemas"]["DebugAccess"] | null;
-            /** @description As [`HostSpecV1::labels`], scoped to this DUT. */
-            labels: {
-                [key: string]: string;
-            };
-            /** @description Display label, e.g. `nRF52840-DK #1`. */
-            name?: string | null;
-            /** @description The board's **own** serial number, not its debug probe's. */
-            serial?: string | null;
-            vendor: string;
         };
         /** @description One attached DUT, as a listing names it. */
         DutSummary: {
@@ -1009,12 +952,15 @@ export interface components {
          */
         HostCreateRequest: {
             /**
-             * @description The host's spec. Its `id` becomes the host's id: the client supplies the
-             *     UUID so a spec is a self-contained document that can live in a git repo
-             *     and be applied. Rejected with a [`HostSpecRejection`] naming the
-             *     offending field if it does not validate.
+             * @description The host's spec, conforming to the schema at `GET /hosts/spec-schema`.
+             *     Its `id` becomes the host's id: the client supplies the UUID so a spec is
+             *     a self-contained document that can live in a git repo and be applied.
+             *     Rejected with a [`HostSpecRejection`] naming the offending field if it
+             *     does not validate.
              */
-            spec: components["schemas"]["HostSpec"];
+            spec: {
+                [key: string]: unknown;
+            };
         };
         /**
          * @description A host as returned by `GET /hosts/{id}`: its operational state plus the
@@ -1041,10 +987,13 @@ export interface components {
             maintenance: boolean;
             name: string;
             /**
-             * @description The host's current spec, normalized to the latest version. Null only for
-             *     a host that has never been described.
+             * @description The host's current spec, normalized to the latest version, as a document
+             *     conforming to the schema at `GET /hosts/spec-schema`. Null only for a
+             *     host that has never been described.
              */
-            spec?: components["schemas"]["HostSpec"] | null;
+            spec?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Format: int32
              * @description The revision `spec` was read at. Null exactly when `spec` is.
@@ -1159,56 +1108,15 @@ export interface components {
              */
             init_spec: components["schemas"]["JobInitSpec"] | null;
         };
-        /**
-         * @description A host spec at whatever version it was written under.
-         *
-         *     Untagged because each version type carries its own `spec_version` field:
-         *     that keeps the discriminant inside the document being validated, so a
-         *     rejection names the offending path (`duts[2].debug.probe.serail`) instead of
-         *     the document root, which an internally-tagged enum cannot do.
-         */
-        HostSpec: components["schemas"]["HostSpecV1"];
         /** @description A new revision of a host's spec (`PUT /hosts/{id}/spec`). */
         HostSpecUpdateRequest: {
-            /** @description The replacement spec. Its `id` must be the host being written. */
-            spec: components["schemas"]["HostSpec"];
-        };
-        /** @description Version 1 of the host spec. */
-        HostSpecV1: {
-            /** @description What this host is, in prose. */
-            description?: string | null;
             /**
-             * @description The devices under test wired to this host, in the order the operator
-             *     listed them. May be empty.
+             * @description The replacement spec, conforming to the schema at
+             *     `GET /hosts/spec-schema`. Its `id` must be the host being written.
              */
-            duts: components["schemas"]["Dut"][];
-            /**
-             * Format: uuid
-             * @description Must equal the `host_id` of the host this document describes.
-             */
-            id: string;
-            /**
-             * @description Operator-defined labels. CEL map indexing errors on an absent key, so
-             *     predicates guard with `'key' in host.labels`.
-             */
-            labels: {
-                [key: string]: string;
+            spec: {
+                [key: string]: unknown;
             };
-            /** @description Where in the site, e.g. `rack4/shelf2`. Free text. */
-            location?: string | null;
-            /**
-             * @description Display handle, e.g. `cam-rpi4-01`. Deliberately not unique; nothing
-             *     routes on it.
-             */
-            name: string;
-            platform: components["schemas"]["Platform"];
-            resources: components["schemas"]["Resources"];
-            /**
-             * @description The site the host lives at, e.g. `cambridge`. Flat, so a predicate reads
-             *     `host.site == 'cambridge'`.
-             */
-            site: string;
-            spec_version: components["schemas"]["SpecVersionV1"];
         };
         /**
          * @description What a listing shows of a host's spec: everything flat, and the identity of
@@ -1942,40 +1850,6 @@ export interface components {
             /** @description Stable provider key, e.g. `"github"`. */
             name: string;
         };
-        /** @description The machine a host is, and the images it can boot. */
-        Platform: {
-            /**
-             * @description The host's own CPU architecture, e.g. `aarch64`, `x86_64`.
-             *
-             *     Redundant — a profile implies it — but kept so "any aarch64 host"
-             *     does not require enumerating profiles. Nothing enforces consistency
-             *     between the two.
-             */
-            arch: string;
-            /** @constant */
-            kind: "physical";
-            model: string;
-            /**
-             * @description The whole machine configurations this host can boot, e.g.
-             *     `rpi4-uboot-sd`, `q35-virtio-uefi`, `q35-virtio-bios`,
-             *     `netboot-nbd`. A profile names a complete configuration the way a
-             *     target triple does; an image set member matches one by equality.
-             *
-             *     An array because one host may genuinely serve several. Governed by
-             *     convention, not a registry.
-             */
-            profiles: string[];
-            vendor: string;
-        } | {
-            /** @description The architecture the guest is presented with. */
-            arch: string;
-            /** @description e.g. `qemu`. */
-            hypervisor: string;
-            /** @constant */
-            kind: "virtual";
-            /** @description As [`Platform::Physical::profiles`]. */
-            profiles: string[];
-        };
         /**
          * @description Which [`Platform`] variant a host is, without its variant-specific fields.
          * @enum {string}
@@ -2152,11 +2026,6 @@ export interface components {
              */
             source_id: string;
         };
-        /**
-         * @description The `spec_version` discriminant of a [`HostSpecV1`] document.
-         * @enum {string}
-         */
-        SpecVersionV1: "v1";
         /**
          * @description The user workload's success/failure outcome, exposed as `task_exit_status`
          *     on [`JobInfo`]/[`JobSummary`].

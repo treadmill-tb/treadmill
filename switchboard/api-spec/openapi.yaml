@@ -1979,29 +1979,6 @@ components:
       required:
       - code
       - state
-    Console:
-      description: The board's console, as the host sees it.
-      oneOf:
-      - type: object
-        properties:
-          baud:
-            type: integer
-            format: uint32
-            minimum: 0
-          device:
-            description: |-
-              The host-side device node. Prefer a stable `/dev/serial/by-id/...`
-              path over a `/dev/ttyACM*` name, which is enumeration-order
-              dependent.
-            type: string
-          kind:
-            type: string
-            const: uart
-        additionalProperties: false
-        required:
-        - kind
-        - device
-        - baud
     CreateGenerationRequest:
       description: |-
         `POST /image-sets/{id}/generations`: append a new, immutable
@@ -2032,40 +2009,6 @@ components:
           type: string
       required:
       - name
-    DebugAccess:
-      description: How the board is programmed and debugged.
-      type: object
-      properties:
-        probe:
-          $ref: '#/components/schemas/DebugProbe'
-        protocol:
-          description: |-
-            The wire protocol, e.g. `swd`, `jtag`. Governed by convention, not a
-            registry.
-          type: string
-      additionalProperties: false
-      required:
-      - protocol
-      - probe
-    DebugProbe:
-      description: The debug probe attached to a board.
-      type: object
-      properties:
-        model:
-          description: e.g. `J-Link OB`, `ST-LINK/V2-1`.
-          type: string
-        serial:
-          description: The probe's own serial, which is how a host-side tool addresses it.
-          type:
-          - string
-          - 'null'
-        vendor:
-          description: e.g. `SEGGER`, `STMicroelectronics`.
-          type: string
-      additionalProperties: false
-      required:
-      - vendor
-      - model
     Digest:
       description: |-
         A content-addressable OCI digest over 32 bytes of SHA-256.
@@ -2081,59 +2024,6 @@ components:
           type: string
       required:
       - digest
-    Dut:
-      description: One device under test wired to a host.
-      type: object
-      properties:
-        arch:
-          description: |-
-            The architectures of the board's cores, e.g. `cortex-m4`. An array
-            because a heterogeneous-core part has more than one. May be empty.
-          type: array
-          items:
-            type: string
-        board:
-          description: The board this is, e.g. `nrf52840dk`.
-          type: string
-        connectivity:
-          description: |-
-            What the board can talk over, e.g. `ble`, `ieee802154`, `usb`, `wifi`,
-            `ethernet`, `can`. Governed by convention, not a registry. May be empty.
-          type: array
-          items:
-            type: string
-        console:
-          anyOf:
-          - $ref: '#/components/schemas/Console'
-          - type: 'null'
-        debug:
-          anyOf:
-          - $ref: '#/components/schemas/DebugAccess'
-          - type: 'null'
-        labels:
-          description: As [`HostSpecV1::labels`], scoped to this DUT.
-          type: object
-          additionalProperties:
-            type: string
-        name:
-          description: 'Display label, e.g. `nRF52840-DK #1`.'
-          type:
-          - string
-          - 'null'
-        serial:
-          description: The board's **own** serial number, not its debug probe's.
-          type:
-          - string
-          - 'null'
-        vendor:
-          type: string
-      additionalProperties: false
-      required:
-      - vendor
-      - board
-      - arch
-      - connectivity
-      - labels
     DutSummary:
       description: One attached DUT, as a listing names it.
       type: object
@@ -2304,12 +2194,13 @@ components:
       properties:
         spec:
           description: |-
-            The host's spec. Its `id` becomes the host's id: the client supplies the
-            UUID so a spec is a self-contained document that can live in a git repo
-            and be applied. Rejected with a [`HostSpecRejection`] naming the
-            offending field if it does not validate.
-          allOf:
-          - $ref: '#/components/schemas/HostSpec'
+            The host's spec, conforming to the schema at `GET /hosts/spec-schema`.
+            Its `id` becomes the host's id: the client supplies the UUID so a spec is
+            a self-contained document that can live in a git repo and be applied.
+            Rejected with a [`HostSpecRejection`] naming the offending field if it
+            does not validate.
+          type: object
+          additionalProperties: true
       additionalProperties: false
       required:
       - spec
@@ -2344,11 +2235,13 @@ components:
           type: string
         spec:
           description: |-
-            The host's current spec, normalized to the latest version. Null only for
-            a host that has never been described.
-          anyOf:
-          - $ref: '#/components/schemas/HostSpec'
-          - type: 'null'
+            The host's current spec, normalized to the latest version, as a document
+            conforming to the schema at `GET /hosts/spec-schema`. Null only for a
+            host that has never been described.
+          type:
+          - object
+          - 'null'
+          additionalProperties: true
         spec_revision:
           description: The revision `spec` was read at. Null exactly when `spec` is.
           type:
@@ -2514,85 +2407,19 @@ components:
       additionalProperties: false
       required:
       - host_cel_predicate
-    HostSpec:
-      description: |-
-        A host spec at whatever version it was written under.
-
-        Untagged because each version type carries its own `spec_version` field:
-        that keeps the discriminant inside the document being validated, so a
-        rejection names the offending path (`duts[2].debug.probe.serail`) instead of
-        the document root, which an internally-tagged enum cannot do.
-      anyOf:
-      - $ref: '#/components/schemas/HostSpecV1'
     HostSpecUpdateRequest:
       description: A new revision of a host's spec (`PUT /hosts/{id}/spec`).
       type: object
       properties:
         spec:
-          description: The replacement spec. Its `id` must be the host being written.
-          allOf:
-          - $ref: '#/components/schemas/HostSpec'
+          description: |-
+            The replacement spec, conforming to the schema at
+            `GET /hosts/spec-schema`. Its `id` must be the host being written.
+          type: object
+          additionalProperties: true
       additionalProperties: false
       required:
       - spec
-    HostSpecV1:
-      description: Version 1 of the host spec.
-      type: object
-      properties:
-        description:
-          description: What this host is, in prose.
-          type:
-          - string
-          - 'null'
-        duts:
-          description: |-
-            The devices under test wired to this host, in the order the operator
-            listed them. May be empty.
-          type: array
-          items:
-            $ref: '#/components/schemas/Dut'
-        id:
-          description: Must equal the `host_id` of the host this document describes.
-          type: string
-          format: uuid
-        labels:
-          description: |-
-            Operator-defined labels. CEL map indexing errors on an absent key, so
-            predicates guard with `'key' in host.labels`.
-          type: object
-          additionalProperties:
-            type: string
-        location:
-          description: Where in the site, e.g. `rack4/shelf2`. Free text.
-          type:
-          - string
-          - 'null'
-        name:
-          description: |-
-            Display handle, e.g. `cam-rpi4-01`. Deliberately not unique; nothing
-            routes on it.
-          type: string
-        platform:
-          $ref: '#/components/schemas/Platform'
-        resources:
-          $ref: '#/components/schemas/Resources'
-        site:
-          description: |-
-            The site the host lives at, e.g. `cambridge`. Flat, so a predicate reads
-            `host.site == 'cambridge'`.
-          type: string
-        spec_version:
-          $ref: '#/components/schemas/SpecVersionV1'
-      additionalProperties: false
-      required:
-      - spec_version
-      - id
-      - name
-      - site
-      - platform
-      - resources
-      - labels
-      - duts
     HostSummary:
       description: |-
         What a listing shows of a host's spec: everything flat, and the identity of
@@ -3804,67 +3631,6 @@ components:
       - name
       - display_name
       - login_path
-    Platform:
-      description: The machine a host is, and the images it can boot.
-      oneOf:
-      - type: object
-        properties:
-          arch:
-            description: |-
-              The host's own CPU architecture, e.g. `aarch64`, `x86_64`.
-
-              Redundant — a profile implies it — but kept so "any aarch64 host"
-              does not require enumerating profiles. Nothing enforces consistency
-              between the two.
-            type: string
-          kind:
-            type: string
-            const: physical
-          model:
-            type: string
-          profiles:
-            description: |-
-              The whole machine configurations this host can boot, e.g.
-              `rpi4-uboot-sd`, `q35-virtio-uefi`, `q35-virtio-bios`,
-              `netboot-nbd`. A profile names a complete configuration the way a
-              target triple does; an image set member matches one by equality.
-
-              An array because one host may genuinely serve several. Governed by
-              convention, not a registry.
-            type: array
-            items:
-              type: string
-          vendor:
-            type: string
-        additionalProperties: false
-        required:
-        - kind
-        - arch
-        - profiles
-        - vendor
-        - model
-      - type: object
-        properties:
-          arch:
-            description: The architecture the guest is presented with.
-            type: string
-          hypervisor:
-            description: e.g. `qemu`.
-            type: string
-          kind:
-            type: string
-            const: virtual
-          profiles:
-            description: As [`Platform::Physical::profiles`].
-            type: array
-            items:
-              type: string
-        additionalProperties: false
-        required:
-        - kind
-        - arch
-        - profiles
-        - hypervisor
     PlatformKind:
       description: Which [`Platform`] variant a host is, without its variant-specific fields.
       type: string
@@ -4146,11 +3912,6 @@ components:
       required:
       - digest
       - source_id
-    SpecVersionV1:
-      description: The `spec_version` discriminant of a [`HostSpecV1`] document.
-      type: string
-      enum:
-      - v1
     TaskExitStatus:
       description: |-
         The user workload's success/failure outcome, exposed as `task_exit_status`
