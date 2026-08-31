@@ -9,11 +9,21 @@
     },
     {
       "matchUpdateTypes": ["minor", "patch", "major"],
-      "groupName": "global-rollup",
-      "schedule": ["before 5am on Monday"]
+      "groupName": "weekly dependency updates",
+      "groupSlug": "weekly-dependency-updates",
+      "schedule": ["before 5am on monday"]
+    },
+    {
+      "description": "Disable separate Cargo and npm lock-file maintenance",
+      "matchManagers": ["cargo", "npm"],
+      "matchUpdateTypes": ["lockFileMaintenance"],
+      "enabled": false
     }
   ],
   "nix": {
+    "enabled": true
+  },
+  "lockFileMaintenance": {
     "enabled": true
   }
 }
