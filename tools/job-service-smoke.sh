@@ -22,6 +22,10 @@ gw_port="${TML_GW_PORT:-8443}"
 job_service_hostfwd_port=3860
 service=webterm
 
+# The machine configuration the devstack's host advertises, which a member has
+# to name to be selectable on it (tools/devstack.sh).
+platform_profile="q35-virtio-uefi"
+
 # The devstack's seeded API token (tools/devstack.sh).
 api_token="B1oy2ko1wVdGKbvKc/9dKi7ggZYLTLzdm2As4CWV15c="
 auth=(-H "Authorization: Bearer $api_token" -H 'content-type: application/json')
@@ -60,7 +64,7 @@ else
 fi
 [ -n "$set_id" ] || { echo "!! no image set to use" >&2; exit 1; }
 curl -fsS -o /dev/null -X POST "$sb/api/v1/image-sets/$set_id/generations" "${auth[@]}" \
-	-d "{\"members\":[{\"manifest_digest\":\"$digest\",\"required_host_tags\":[]}]}"
+	-d "{\"members\":[{\"manifest_digest\":\"$digest\",\"platform_profile\":\"$platform_profile\"}]}"
 
 if [ -n "${TML_TEST_JOB_ID:-}" ]; then
 	say "Using the already-running job $TML_TEST_JOB_ID"
