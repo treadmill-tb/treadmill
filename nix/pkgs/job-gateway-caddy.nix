@@ -16,7 +16,7 @@ let
 
   base = pkgs.caddy.withPlugins {
     plugins = [ "github.com/ggicci/caddy-jwt@v1.2.0" ];
-    hash = "sha256-CwYRhKkrzLfYBq/K5cKyMgjxdKYlPTwOboALqif7+HU=";
+    hash = "sha256-jaCgIe5sAXMIefSQj4qp2+RLT/9S4fge8rb6cqRYgU4=";
     # The check runs `caddy build-info` on the build machine, which a
     # cross-compiled binary cannot do.
     doInstallCheck = canExecute;
