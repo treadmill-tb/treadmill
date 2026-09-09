@@ -102,7 +102,6 @@
         name = "rev1";
         sentinel = "TREADMILL_OK rev=1";
       };
-      # Kept available for an add-a-layer test (rev=2 overlay).
       efiRev2 = mkEfiApp {
         name = "rev2";
         sentinel = "TREADMILL_OK rev=2";
@@ -147,6 +146,10 @@
         name = "rev1";
         efiApp = efiRev1;
       };
+      espRev2 = mkEsp {
+        name = "rev2";
+        efiApp = efiRev2;
+      };
 
       # The base qcow2 blob: a full-content image converted straight from the
       # base ESP.
@@ -171,6 +174,21 @@
             qemu-img rebase -u -b "" -f qcow2 overlay.qcow2
             cp overlay.qcow2 "$out/overlay.qcow2"
           '';
+
+      # `convert -B` resolves the backing chain, and a shipped blob names no
+      # backing, so the rev=1 blob is re-linked in a throwaway copy first. The
+      # single `convert -B` precedes the backing strip and no convert follows it;
+      # a later convert pass drops the zero clusters `-B` emitted.
+      rev2Qcow2 = pkgs.runCommand "tiny-efi-rev2-qcow2" { nativeBuildInputs = [ pkgs.qemu-utils ]; } ''
+        mkdir -p "$out"
+        cp "${overlayQcow2}/overlay.qcow2" lower-head.qcow2
+        chmod +w lower-head.qcow2
+        qemu-img rebase -u -b "${baseQcow2}/base.qcow2" -F qcow2 -f qcow2 lower-head.qcow2
+        qemu-img convert -f raw -O qcow2 -B lower-head.qcow2 -F qcow2 \
+          "${espRev2}/esp.img" rev2.qcow2
+        qemu-img rebase -u -b "" -f qcow2 rev2.qcow2
+        cp rev2.qcow2 "$out/rev2.qcow2"
+      '';
 
       # Assemble the OCI image layout by hand: we need a pure-artifact manifest
       # (empty config + Treadmill artifactType), custom blob media types, and
@@ -294,6 +312,7 @@
         tiny-efi-app-base = efiBase;
         tiny-efi-app-rev1 = efiRev1;
         tiny-efi-app-rev2 = efiRev2;
+        tiny-efi-rev2-qcow2 = rev2Qcow2;
         tiny-efi-image-layout = tinyEfiImageLayout;
       };
     };

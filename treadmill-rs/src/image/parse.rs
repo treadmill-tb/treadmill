@@ -36,6 +36,8 @@ pub struct TreadmillImage {
     pub title: Option<String>,
     pub version: Option<String>,
     pub description: Option<String>,
+    /// Name (or digest) of the image this one was derived from.
+    pub base_name: Option<String>,
 }
 
 /// Why an OCI manifest failed to parse as a Treadmill image.
@@ -218,6 +220,7 @@ pub fn parse_image(manifest: &ImageManifest) -> Result<TreadmillImage, ParseErro
         title: oci_annotation(annotations::oci::TITLE),
         version: oci_annotation(annotations::oci::VERSION),
         description: oci_annotation(annotations::oci::DESCRIPTION),
+        base_name: oci_annotation(annotations::oci::BASE_NAME),
     })
 }
 
@@ -339,6 +342,7 @@ mod tests {
             title: None,
             version: None,
             description: None,
+            base_name: None,
         }
     }
 

@@ -181,7 +181,7 @@ let
       };
       # Producer-side OCI layout assemble + validate tool.
       image-util.members = [
-        "images/util"
+        "image-util"
         "treadmill-rs"
       ];
       tml-puppet.members = [
