@@ -46,16 +46,17 @@ nix develop --command bash -c 'cargo build -p treadmill-rs' # default shell
   cluster is torn down when the shell's process exits. `SQLX_OFFLINE=1` is still
   set by default, but `cargo sqlx prepare` commands ignore that setting.
 
-- **`images`** -- the libguestfs image-build pipeline tooling
-  (`virt-customize`/`guestfish` with bundled appliance, `mtools`, `qemu-img`,
-  `xz`, `curl`; `LIBGUESTFS_BACKEND=direct`). Standalone (no Rust/PG/NATS): the
-  in-progress `images/lib/build-image.sh` is plain shell that consumes the
-  Nix-built `tml-puppet` / `image-util` binaries. Image builds need privileged
-  libguestfs + network (live apt), so they run **in this shell**, not as a
-  hermetic Nix check.
+### Image builds
 
-  TODO: revisit this, this shell might be stale now that image builds run
-  without libguestfs on GH actions.
+Treadmill's OCI disk images are built in a separate repository, which consumes
+this flake as an input for the `image-util`, `tml-puppet-static-*` and
+`tml-caddy-static-*` packages. Nothing in this repository builds an image.
+
+The image *format* contract lives here: `treadmill-rs/src/image/` defines the
+manifest shape (`assemble.rs` produces it, `parse.rs` reads it back, and their
+roundtrip tests pin the two together), and `image-util` is the producer-side CLI
+over it -- `assemble`, `append` and `verify`. What to build, and how, is the
+image repository's business; this CLI only knows about layouts and layers.
 
 ### Nix Dev Apps
 

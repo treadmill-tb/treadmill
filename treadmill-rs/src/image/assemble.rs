@@ -43,6 +43,8 @@ pub struct ImageMeta {
     pub title: Option<String>,
     pub version: Option<String>,
     pub description: Option<String>,
+    /// Name (or digest) of the image this one was derived from.
+    pub base_name: Option<String>,
 }
 
 /// Why [`build_manifest`] could not assemble a manifest.
@@ -143,6 +145,9 @@ pub fn build_manifest(
     if let Some(d) = &meta.description {
         manifest_ann.insert(annotations::oci::DESCRIPTION.to_string(), d.clone());
     }
+    if let Some(b) = &meta.base_name {
+        manifest_ann.insert(annotations::oci::BASE_NAME.to_string(), b.clone());
+    }
 
     Ok(ImageManifestBuilder::default()
         .schema_version(SCHEMA_VERSION)
@@ -191,12 +196,17 @@ mod tests {
         let meta = ImageMeta {
             title: Some("Triple".to_string()),
             version: Some("1.2.3".to_string()),
+            base_name: Some("ghcr.io/example/base@sha256:abc".to_string()),
             ..Default::default()
         };
 
         let img = parse_image(&build_manifest(&layers, &meta).unwrap()).unwrap();
 
         assert_eq!(img.title.as_deref(), Some("Triple"));
+        assert_eq!(
+            img.base_name.as_deref(),
+            Some("ghcr.io/example/base@sha256:abc")
+        );
         assert_eq!(img.layers.len(), 3);
         assert_eq!(img.head, dg(3));
         assert_eq!(img.layers[0].lower, None);

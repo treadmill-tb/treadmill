@@ -717,6 +717,7 @@ mod tests {
             title: None,
             version: None,
             description: None,
+            base_name: None,
         }
     }
 

@@ -82,48 +82,11 @@
         shellHook = defaultShell.shellHook + cmn.ephemeralPostgresHook;
       };
 
-      # Image-build shell: the libguestfs pipeline tooling. Standalone — does
-      # NOT inherit the default shell's Rust/Postgres/NATS stack, since
-      # `images/lib/build-image.sh` is plain shell and consumes the
-      # `tml-puppet` / `image-util` binaries built
-      # separately via `nix build`. Image builds need privileged libguestfs and
-      # network (live apt), so they run outside the Nix sandbox in this shell, not
-      # as a hermetic check.
-      imagesShell = pkgs.mkShell {
-        name = "treadmill-images-shell";
-        packages = with pkgs; [
-          # guestfish + the C virt-* tools (virt-copy-in, virt-filesystems, …),
-          # with the prebuilt appliance bundled (no supermin build on first use).
-          libguestfs-with-appliance
-          # virt-customize/virt-sysprep live in the separate guestfs-tools
-          # package (the OCaml tools were split out of libguestfs upstream); it
-          # reuses the appliance above.
-          guestfs-tools
-          # mcopy/mtype/mdir: edit cmdline.txt / ssh.txt in the raw FAT boot blob
-          # (boot layers have no overlay mechanism, so the FAT is mutated in place).
-          mtools
-          # qemu-img: raw<->qcow2 conversion and the overlay backing-chain dance.
-          qemu-utils
-          # decompress .img.xz base images (Raspberry Pi OS lite).
-          xz
-          # fetch base images with mirror fallback.
-          curl
-          coreutils
-        ];
-
-        shellHook = ''
-          # libguestfs boots its appliance under qemu; the direct backend uses
-          # /dev/kvm when present (matching-arch, no TCG) and is the simplest
-          # backend for CI/sandbox use.
-          export LIBGUESTFS_BACKEND=direct
-        '';
-      };
     in
     {
       devShells = {
         default = defaultShell;
         database = databaseShell;
-        images = imagesShell;
       };
     };
 }

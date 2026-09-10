@@ -205,6 +205,93 @@
           }
         );
 
+        # Append a third qcow2 layer onto the `tiny-efi` fixture and drive
+        # `image-util append` + `verify` over the result. Hermetic and seconds
+        # long (no distro download), so image-format work is gated on every PR.
+        image-util-add-a-layer =
+          pkgs.runCommand "image-util-add-a-layer"
+            {
+              nativeBuildInputs = [
+                self'.packages.image-util
+                pkgs.qemu-utils
+                pkgs.coreutils
+                pkgs.findutils
+                pkgs.gnugrep
+              ];
+            }
+            ''
+              set -euo pipefail
+
+              lower="${self'.packages.tiny-efi-image-layout}"
+              rev2="${self'.packages.tiny-efi-rev2-qcow2}/rev2.qcow2"
+
+              image-util verify "$lower" --root-layers 2 --boot-layers 0 \
+                --title tiny-efi --name tiny-efi-lower
+
+              image-util append --lower "$lower" --layer "root=$rev2" \
+                --title "tiny-efi rev2" -o stacked
+              image-util verify stacked --root-layers 3 --boot-layers 0 \
+                --title "tiny-efi rev2" --name tiny-efi-stacked
+
+              # Every layer blob the append inherited keeps its digest, which is
+              # what makes siblings of one lower dedupe in a registry.
+              inherited=0
+              for blob in "$lower"/blobs/sha256/*; do
+                name="$(basename "$blob")"
+                [ -e "stacked/blobs/sha256/$name" ] || continue
+                cmp "$blob" "stacked/blobs/sha256/$name"
+                inherited=$((inherited + 1))
+              done
+              [ "$inherited" -ge 3 ] || {
+                echo "expected both layer blobs and the empty config to carry through" >&2
+                exit 1
+              }
+
+              # Appending in place must leave no unreferenced manifest behind.
+              cp -r --no-preserve=mode "$lower" inplace
+              image-util append --lower inplace --layer "root=$rev2" \
+                --title "tiny-efi rev2" -o inplace
+              image-util verify inplace --root-layers 3 --boot-layers 0 \
+                --title "tiny-efi rev2" --name tiny-efi-inplace
+              blobs="$(find inplace/blobs/sha256 -type f | wc -l)"
+              [ "$blobs" = 5 ] || {
+                echo "in-place append left $blobs blobs, expected 5" >&2
+                find inplace/blobs/sha256 -type f >&2
+                exit 1
+              }
+
+              # A verify that cannot fail is worthless: corrupt one blob's
+              # bytes without changing its length and confirm it is caught.
+              refute() { # <message> <layout>
+                if image-util verify "$2" --name refute 2>err.log; then
+                  echo "verify accepted $1" >&2
+                  exit 1
+                fi
+                grep -q "$3" err.log || {
+                  echo "verify rejected $1 for the wrong reason:" >&2
+                  cat err.log >&2
+                  exit 1
+                }
+              }
+
+              cp -r --no-preserve=mode stacked corrupt
+              head_blob="$(ls -S corrupt/blobs/sha256/* | head -n1)"
+              printf 'x' | dd of="$head_blob" bs=1 seek=100000 conv=notrunc status=none
+              refute "a blob whose bytes no longer hash to its digest" corrupt \
+                "hashes to"
+
+              # A baked backing file is what blockdev.rs's base node forbids.
+              cp -r --no-preserve=mode stacked baked
+              baked_head="$(ls -S baked/blobs/sha256/* | head -n1)"
+              qemu-img rebase -u -b /nonexistent.qcow2 -F qcow2 -f qcow2 "$baked_head"
+              # The rebase changed the blob, so re-assemble around the new bytes.
+              image-util assemble --title baked --layer "root=$baked_head" -o baked-layout
+              refute "a root blob with a baked backing_file" baked-layout \
+                "baked backing_file"
+
+              touch $out
+            '';
+
         # Drive the `oci_store` client against a real child Zot. The tests spin up Zot
         # (and a second one as a copy source) on loopback and skopeo the
         # `tiny-efi` fixture in, so the check needs zot + skopeo on PATH and the
@@ -322,15 +409,8 @@
           }
         );
       }
-      # Promote each package output to a check so `nix flake check`
-      # verifies they all build — EXCEPT every producer-side OCI output whose
-      # name starts with `image-`: the layouts, the per-image `image-check-*`
-      # drift guards, and the `image-util` binary. Those layouts are heavy
-      # distro/TCG builds that must never gate ordinary PRs or the merge queue
-      # the dedicated `.github/workflows/images.yml` builds them explicitly
-      # instead. (The `image-util` binary is compiled by the clippy check
-      # regardless, so it
-      # stays covered.)
-      // (lib.filterAttrs (name: _: !(lib.hasPrefix "image-" name)) self'.packages);
+      # Promote each package output to a check so `nix flake check` verifies
+      # they all build.
+      // self'.packages;
     };
 }

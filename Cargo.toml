@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
   "cli",
-  "images/util",
+  "image-util",
   "puppet",
   "supervisor/connector/local",
   "supervisor/connector/ws",
