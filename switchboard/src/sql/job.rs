@@ -1720,13 +1720,17 @@ pub async fn finalized_reason(
     Ok(reason.flatten())
 }
 
-/// Map a supervisor-reported [`JobErrorKind`] to the terminal
-/// [`TerminationReason`] the switchboard records for it. Image problems become
-/// `ImageError`, a failed resume `ResumeFailed`, an explicit supervisor-internal
-/// fault `InternalError`; the remaining start-time faults (a duplicate/missing
-/// job, capacity) fold into `HostStartFailure` — the job never started.
+/// Map a supervisor-reported [`JobErrorKind`] to the [`TerminationReason`]
+/// permanently recorded by the switchboard.
 ///
-/// A `NotTerminated` is a coordinator sequencing bug, not a start failure, so it
+/// - Image problems become `ImageError`.
+/// - A failed resume becomes `ResumeFailed`.
+/// - An explicit supervisor-internal fault becomes `InternalError`.
+///
+/// The remaining start-time faults (a job id that already ran on the host, a
+/// missing job, capacity) map to `HostStartFailure`, as the job never started.
+///
+/// `NotTerminated` is a coordinator sequencing bug, not a start failure, so it
 /// classifies as `InternalError`.
 ///
 /// `#[non_exhaustive]` on `JobErrorKind` forces a catch-all; new kinds default

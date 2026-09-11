@@ -407,6 +407,15 @@ impl<B: JobBackend> JobRunner<B> {
         }
     }
 
+    /// Handle a [`SwitchboardToSupervisor::StartJob`] request.
+    ///
+    /// This function is idempotent on `job_id`. Another dispatch of the same
+    /// job already known to this supervisor succeeds. The coordinator may
+    /// re-send `StartJob` until it observes the job picked up. In particular,
+    /// this can race with the supervisor's status/state report. A stale status
+    /// report may cause the coordinator to re-send this request.
+    ///
+    /// [`SwitchboardToSupervisor::StartJob`]: treadmill_rs::api::switchboard_supervisor::SwitchboardToSupervisor::StartJob
     #[instrument(skip(self, start_job_req), fields(job_id = ?start_job_req.job_id), err(Debug, level = Level::WARN))]
     pub async fn start_job(
         self: &Arc<Self>,
@@ -418,15 +427,13 @@ impl<B: JobBackend> JobRunner<B> {
 
         if let Some(slot) = slot_lg.as_ref() {
             let facts = slot.handle.facts();
-            return Err(if facts.job_id == start_job_req.job_id {
-                JobError {
-                    error_kind: JobErrorKind::JobAlreadyExists,
-                    description: format!(
-                        "Job {:?} already occupies this supervisor's job slot.",
-                        facts.job_id,
-                    ),
-                }
-            } else if facts.phase.terminated() {
+
+            if facts.job_id == start_job_req.job_id {
+                event!(Level::INFO, "Ignoring re-dispatch of job already executing",);
+                return Ok(());
+            }
+
+            return Err(if facts.phase.terminated() {
                 JobError {
                     error_kind: JobErrorKind::MaxConcurrentJobs,
                     description: format!(
@@ -2074,21 +2081,22 @@ mod tests {
         );
     }
 
-    /// D2.1: this supervisor runs a single job, which occupies its slot from
-    /// `StartJob` until `RemoveJob` — a terminated-but-retained job refuses a
-    /// new one just as a live one does.
+    /// This supervisor runs a single job, which occupies its slot from
+    /// `StartJob` until `RemoveJob`. A terminated job that hasn't been removed
+    /// will also occupies the slot. A re-dispatch of the same job is always
+    /// accepted, even if it's already terminated.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_second_job_is_refused_while_one_occupies_the_slot() {
         let h = harness(StubBackend::default());
         let occupant = Uuid::new_v4();
         let next = Uuid::new_v4();
 
-        start_and_boot(&h, start_msg(occupant)).await;
+        let mut facts = start_and_boot(&h, start_msg(occupant)).await;
 
-        let error = h.runner.start_job(start_msg(occupant)).await.unwrap_err();
+        h.runner.start_job(start_msg(occupant)).await.unwrap();
         assert!(
-            matches!(error.error_kind, JobErrorKind::JobAlreadyExists),
-            "{error:?}",
+            ready(&facts.borrow_and_update()),
+            "a re-dispatch must not kill the job",
         );
 
         let error = h.runner.start_job(start_msg(next)).await.unwrap_err();
@@ -2104,6 +2112,7 @@ mod tests {
             matches!(error.error_kind, JobErrorKind::MaxConcurrentJobs),
             "{error:?}",
         );
+        h.runner.start_job(start_msg(occupant)).await.unwrap();
 
         h.runner.remove_job(occupant).await.unwrap();
         h.runner.start_job(start_msg(next)).await.unwrap();
