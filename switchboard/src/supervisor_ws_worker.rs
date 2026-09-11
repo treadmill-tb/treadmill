@@ -124,6 +124,21 @@ pub struct SupervisorWSWorker<S: SupervisorSocket> {
     /// operation. `None` until the first status is seen, during which
     /// reconcile is a no-op (the actual supervisor state is still unknown).
     last_seen_status: Option<ReportedSupervisorStatus>,
+    /// The id of the latest `StatusRequest` this worker is waiting on.
+    ///
+    /// We only consider [`StatusResponse`]s when they match this id. This ID is
+    /// cleared when the response arrives and whenever a command that changes
+    /// the supervisor's job slot goes out (see [`send_command`]).
+    ///
+    /// This mechanism exists to prevent race conditions in the state
+    /// reconciliation between switchboard and supervisor. For example, when
+    /// starting a job, a stale status report showing that another job is still
+    /// being removed may, if handled, force this worker to ask the supervisor
+    /// to dismiss the currently running job.
+    ///
+    /// [`StatusResponse`]: treadmill_rs::api::switchboard_supervisor::SupervisorToSwitchboard::StatusResponse
+    /// [`send_command`]: SupervisorWSWorker::send_command
+    pending_status_request: Option<Uuid>,
 }
 
 /// Error type for [`SupervisorWSWorker`] operations.
@@ -587,6 +602,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
             socket,
             wake,
             last_seen_status: None,
+            pending_status_request: None,
         };
 
         let result = worker.run_loop().await;
@@ -683,11 +699,15 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// Every resolution is either an idempotent command
     /// (`StartJob`/`TerminateJob`/`RemoveJob` carry the `job_id` and are no-ops
     /// when they don't apply to the current job state) or a `job_state`-guarded
-    /// DB transition, so a replayed reconcile
-    /// converges to the same state. All DB writes go through
-    /// [`WorkerCtx::with_txn`] so the takeover/staleness guard covers them; the
-    /// adopt rows share [`sql::job::apply_running_state`] with the event path so
-    /// the running-state mapping lives in one place, and the drop transitions are
+    /// DB transition, so a replayed reconcile converges to the same state. A
+    /// status snapshot that predates a command this worker sent is not
+    /// considered, so we don't issue state transitions based on stale
+    /// information (see [`pending_status_request`]).
+    ///
+    /// All DB writes go through [`WorkerCtx::with_txn`] so the
+    /// takeover/staleness guard covers them; the adopt rows share
+    /// [`sql::job::apply_running_state`] with the event path so the
+    /// running-state mapping lives in one place, and the drop transitions are
     /// `sql::job::finalize_dropped_and_maybe_restart`.
     ///
     /// The `Terminated` fold: a reported `RunningJobState::Terminated` does not
@@ -858,7 +878,25 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// Serialize a [`SwitchboardToSupervisor`] command as JSON and send it over
     /// the socket as a Text frame (the protocol is JSON-over-Text; see the
     /// protocol module).
+    ///
+    /// This also invalidates outdated [`pending_status_request`]s: any command
+    /// that modifies the job state means that old status requests are now stale
+    /// information.
+    ///
+    /// [`pending_status_request`]: SupervisorWSWorker::pending_status_request
     async fn send_command(&mut self, command: SwitchboardToSupervisor) -> WorkerResult<()> {
+        match &command {
+            SwitchboardToSupervisor::StartJob(_)
+            | SwitchboardToSupervisor::TerminateJob(_)
+            | SwitchboardToSupervisor::RemoveJob(_) => {
+                self.pending_status_request = None;
+            }
+            SwitchboardToSupervisor::StatusRequest(req) => {
+                self.pending_status_request = Some(req.request_id);
+            }
+            SwitchboardToSupervisor::ProtocolError(_) => {}
+        }
+
         let json = serde_json::to_string(&command)
             .context("serializing SwitchboardToSupervisor command")?;
         self.socket
@@ -908,9 +946,20 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 match serde_json::from_str::<SupervisorToSwitchboard>(&payload) {
                     // A fresh status snapshot: refresh the cache and converge
                     // against it. This is the out-of-band refresh `reconcile`
-                    // relies on (it never requests status itself).
+                    // relies on (it never requests status itself). See
+                    // `pending_status_request` for when a status report is
+                    // considered "fresh".
                     Ok(SupervisorToSwitchboard::StatusResponse(response)) => {
                         tracing::trace!(?response, "received StatusResponse from supervisor");
+                        if self.pending_status_request != Some(response.response_to_request_id) {
+                            tracing::debug!(
+                                ?response,
+                                "discarding stale status response: snapshot \
+                                 predates a command we have since sent"
+                            );
+                            return Ok(PostMsg::Continue);
+                        }
+                        self.pending_status_request = None;
                         self.last_seen_status = Some(response.message);
                         Ok(PostMsg::Reconcile)
                     }
@@ -955,13 +1004,20 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         }
     }
 
-    /// Send a `StatusRequest` to the supervisor. The correlated `StatusResponse`
-    /// refreshes [`last_seen_status`] (see [`handle_supervisor_msg`]); we accept
-    /// any response rather than tracking the id, since at most one request is
-    /// outstanding at a time and a status snapshot is idempotent.
+    /// Send a `StatusRequest` to the supervisor.
+    ///
+    /// The correlated `StatusResponse` refreshes [`last_seen_status`] (see
+    /// [`handle_supervisor_msg`]).
+    ///
+    /// The request id is recorded in [`pending_status_request`]. This state
+    /// ensures we don't act based on stale information. We clear this field as
+    /// soon as we issue a command that modifies the supervisor's job slot.
+    /// Then, a status snapshot taken before that command no longer matches this
+    /// ID and is discarded.
     ///
     /// [`last_seen_status`]: SupervisorWSWorker::last_seen_status
     /// [`handle_supervisor_msg`]: SupervisorWSWorker::handle_supervisor_msg
+    /// [`pending_status_request`]: SupervisorWSWorker::pending_status_request
     async fn send_status_request(&mut self) -> WorkerResult<()> {
         self.send_command(SwitchboardToSupervisor::StatusRequest(Request {
             request_id: Uuid::new_v4(),
@@ -1567,6 +1623,7 @@ mod tests {
             socket: NoSocket,
             wake: idle_wake(),
             last_seen_status: None,
+            pending_status_request: None,
         }
     }
 
@@ -1597,6 +1654,7 @@ mod tests {
             socket,
             wake: idle_wake(),
             last_seen_status: None,
+            pending_status_request: None,
         };
         (to_worker, from_worker, worker)
     }
@@ -3397,6 +3455,101 @@ mod tests {
             other => panic!("assigned + idle: expected StartJob, got {other:?}"),
         }
         Ok(())
+    }
+
+    /// A status snapshot the supervisor took before a command this worker has
+    /// since sent describes pre-command state. Adopting it would undo the
+    /// command on the next pass — a just-dispatched job would look unpicked-up
+    /// and be dispatched again — so an uncorrelated reply is discarded and the
+    /// cache left as it was.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn a_status_response_older_than_a_sent_command_is_discarded(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let host_id = insert_host(&pool).await?;
+        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
+        let (_to_worker, mut from_worker, mut worker) =
+            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
+        let mut pong_timeout = Box::pin(sleep(Duration::from_secs(60)));
+
+        worker
+            .send_status_request()
+            .await
+            .expect("status request should send");
+        let request_id = worker
+            .pending_status_request
+            .expect("the outstanding request id must be recorded");
+        let _ = from_worker.try_recv();
+
+        // A reply to some other request never correlates.
+        let post = worker
+            .handle_supervisor_msg(status_response(Uuid::new_v4()), &mut pong_timeout)
+            .await
+            .expect("an uncorrelated response is not fatal");
+        assert!(matches!(post, PostMsg::Continue));
+        assert!(
+            worker.last_seen_status.is_none(),
+            "an uncorrelated response must not reach the cache"
+        );
+
+        // A command that moves the supervisor's job slot invalidates the
+        // outstanding request: its snapshot predates the command.
+        worker
+            .send_command(SwitchboardToSupervisor::TerminateJob(TerminateJobMessage {
+                job_id: Uuid::new_v4(),
+            }))
+            .await
+            .expect("command should send");
+        assert!(worker.pending_status_request.is_none());
+
+        let post = worker
+            .handle_supervisor_msg(status_response(request_id), &mut pong_timeout)
+            .await
+            .expect("a stale response is not fatal");
+        assert!(matches!(post, PostMsg::Continue));
+        assert!(
+            worker.last_seen_status.is_none(),
+            "a snapshot taken before the command must not reach the cache"
+        );
+
+        // The next round trip carries a snapshot the command is reflected in.
+        worker
+            .send_status_request()
+            .await
+            .expect("status request should send");
+        let request_id = worker
+            .pending_status_request
+            .expect("the outstanding request id must be recorded");
+        let post = worker
+            .handle_supervisor_msg(status_response(request_id), &mut pong_timeout)
+            .await
+            .expect("a correlated response should be adopted");
+        assert!(matches!(post, PostMsg::Reconcile));
+        assert!(
+            matches!(
+                worker.last_seen_status,
+                Some(ReportedSupervisorStatus::Idle)
+            ),
+            "a correlated response refreshes the cache"
+        );
+        Ok(())
+    }
+
+    /// An inbound `StatusResponse` frame reporting `Idle`, in reply to
+    /// `response_to_request_id`.
+    fn status_response(response_to_request_id: Uuid) -> ws::Message {
+        let msg = SupervisorToSwitchboard::StatusResponse(
+            treadmill_rs::api::switchboard_supervisor::Response {
+                response_to_request_id,
+                message: ReportedSupervisorStatus::Idle,
+            },
+        );
+        ws::Message::Text(
+            serde_json::to_string(&msg)
+                .expect("status response serializes")
+                .into(),
+        )
     }
 
     /// Assigned, but the supervisor is busy with some *other* job: that job is a
