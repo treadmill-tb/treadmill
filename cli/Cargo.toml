@@ -16,6 +16,42 @@ name = "tml"
 path = "src/main.rs"
 
 [dependencies]
+# Needs `version` + `path` (rather than `workspace = true`) for `cargo publish`
+# to be able to resolve treadmill-rs by its published version. Local builds
+# continue to use the path dependency.
+treadmill-rs = { version = "0.3.0", path = "../treadmill-rs", features = [
+  "client",
+] }
+
+anstream = "1.0.0"
+anstyle = "1.0.0"
+anyhow = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+dialoguer = { version = "0.11.0", default-features = false, features = [
+  "password",
+] }
+figment = { version = "0.10.19", features = ["toml", "env"] }
+futures-util = { workspace = true }
+rustls = { version = "0.23.44", default-features = false, features = [
+  "ring",
+  "std",
+] }
+rustls-native-certs = "0.8.4"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = [
+  "rt-multi-thread",
+  "macros",
+  "io-std",
+  "io-util",
+  "net",
+  "signal",
+] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
+toml = { workspace = true }
+uuid = { workspace = true, features = ["serde"] }
+xdg = "3.0.0"
 
 [lints]
 workspace = true

@@ -1,3 +1,18 @@
-# ssh_keys = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDlX0Q3Z2Q7Z1b9lX2sL8Hwv1Xt..., ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDlX0Q3Z2Q7Z1b9lX2sL8Hwv1Xt..."
-[api]
-url = "http://localhost:8080"
+# tml configuration.
+#
+# Each top-level object is a profile (can be selected with --profile).
+#
+# Every config key can also be set as TML_<KEY>. Environment variables take
+# precedence over config values.
+
+[default]
+switchboard = "https://swb.treadmill.dev"
+
+# Default SSH username when connecting to a job.
+# user = "tml"
+
+# Token for non-interactive login. Prefer using the TML_TOKEN env var.
+# token = "..."
+
+# Skip TLS certificate verification.
+# insecure_tls = false

@@ -18,7 +18,9 @@ use crate::api::switchboard::WhoAmIResponse;
 use crate::api::switchboard::audit::AuditFeedResponse;
 use crate::api::switchboard::hosts::HostInfo;
 use crate::api::switchboard::images::ImageSetInfo;
-use crate::api::switchboard::jobs::{EnqueueJobResponse, JobInfo, JobListResponse};
+use crate::api::switchboard::jobs::{
+    EnqueueJobResponse, JobInfo, JobListResponse, JobServiceCredentials,
+};
 use crate::api::switchboard::users::{PublicUserProfile, SelfUserProfile, SessionInfo};
 use crate::api::switchboard::{LoginCompleteRequest, LoginResponse, LoginStagedResponse};
 
@@ -65,12 +67,29 @@ pub struct SwitchboardClient {
 }
 
 impl SwitchboardClient {
-    /// Build a client for `base_url`. Pass `token = None` for anonymous calls
-    /// (e.g. building the login URL) or `Some(token)` for authenticated ones.
+    /// Build a client for `base_url`.
+    ///
+    /// Pass `token = None` for anonymous calls (e.g. building the login URL) or
+    /// `Some(token)` for authenticated ones.
     pub fn new(base_url: impl Into<String>, token: Option<String>) -> Self {
+        Self::build(base_url, token, reqwest::Client::new())
+    }
+
+    /// Like [`new`](Self::new), but skip TLS certificate verification.
+    pub fn new_danger_accept_invalid_certs(
+        base_url: impl Into<String>,
+        token: Option<String>,
+    ) -> Result<Self, ClientError> {
+        let http = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()?;
+        Ok(Self::build(base_url, token, http))
+    }
+
+    fn build(base_url: impl Into<String>, token: Option<String>, http: reqwest::Client) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         Self {
-            http: reqwest::Client::new(),
+            http,
             base_url,
             token,
         }
@@ -158,6 +177,15 @@ impl SwitchboardClient {
         self.get_json("/api/v1/users/me/tokens").await
     }
 
+    /// `DELETE /users/me/tokens/{token_id}`.
+    ///
+    /// Revoke one of the caller's own tokens. The `token_id` may be the same as
+    /// the token with which the request is made.
+    pub async fn revoke_own_token(&self, token_id: Uuid) -> Result<(), ClientError> {
+        self.delete(&format!("/api/v1/users/me/tokens/{token_id}"))
+            .await
+    }
+
     /// `GET /users/{id}/events` — a user's audit feed (self/admin only).
     pub async fn user_events(&self, user_id: Uuid) -> Result<AuditFeedResponse, ClientError> {
         self.get_json(&format!("/api/v1/users/{user_id}/events"))
@@ -212,6 +240,22 @@ impl SwitchboardClient {
         self.delete(&format!("/api/v1/jobs/{job_id}")).await
     }
 
+    /// `POST /jobs/{id}/services/{service}/token` — credentials admitting the
+    /// caller to one of a running job's announced services: the gateway
+    /// endpoints it is published under, and the signed token they accept.
+    ///
+    /// `404` means the job announces no such service, `409` that it has no
+    /// address yet, and `503` that the deployment runs no service gateway;
+    /// all three arrive as [`ClientError::Status`].
+    pub async fn create_job_service_token(
+        &self,
+        job_id: Uuid,
+        service: &str,
+    ) -> Result<JobServiceCredentials, ClientError> {
+        self.post_empty(&format!("/api/v1/jobs/{job_id}/services/{service}/token"))
+            .await
+    }
+
     /// `GET /hosts` — the read-only host listing (tags, targets, liveness),
     /// e.g. to populate a host picker.
     pub async fn list_hosts(&self) -> Result<Vec<HostInfo>, ClientError> {
@@ -260,6 +304,33 @@ impl SwitchboardClient {
             .http
             .post(format!("{}{path}", self.base_url))
             .json(body);
+        if let Some(token) = &self.token {
+            req = req.bearer_auth(token);
+        }
+        let resp = req.send().await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp.json::<T>().await?);
+        }
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(ClientError::Unauthorized);
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(ClientError::Status {
+            status: status.as_u16(),
+            body,
+        })
+    }
+
+    /// Issue an authenticated, bodyless `POST` to `path` and deserialize the
+    /// JSON response, with the same error mapping as
+    /// [`get_json`](Self::get_json).
+    async fn post_empty<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+    ) -> Result<T, ClientError> {
+        let mut req = self.http.post(format!("{}{path}", self.base_url));
         if let Some(token) = &self.token {
             req = req.bearer_auth(token);
         }
