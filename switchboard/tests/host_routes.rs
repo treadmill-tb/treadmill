@@ -583,6 +583,103 @@ async fn create_host_writes_the_row_and_its_first_spec(pool: PgPool) {
     assert_eq!(again.status(), reqwest::StatusCode::CONFLICT);
 }
 
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn whoami_reports_global_admin(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let bob = mock_login_token(&pool, &client, addr, "bob", true).await;
+
+    let is_admin = async |token: &str| {
+        client
+            .get(format!("http://{addr}/api/v1/auth/whoami"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .json::<WhoAmIResponse>()
+            .await
+            .unwrap()
+            .admin
+    };
+    assert!(is_admin(&admin).await);
+    assert!(!is_admin(&bob).await);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn create_host_assigns_the_requested_owner(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let bob = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob_id = whoami(&client, addr, &bob).await;
+
+    let host_id = Uuid::new_v4();
+    let resp = client
+        .post(format!("http://{addr}/api/v1/hosts"))
+        .bearer_auth(&admin)
+        .json(&serde_json::json!({
+            "spec": spec_document(host_id, "cam-qemu-05"),
+            "owner": bob_id,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+
+    let stored: Option<Uuid> =
+        sqlx::query_scalar("select owner_id from tml_switchboard.hosts where host_id = $1")
+            .bind(host_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, Some(bob_id));
+
+    let host: HostInfo = client
+        .get(format!("http://{addr}/api/v1/hosts/{host_id}"))
+        .bearer_auth(&bob)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(host.permissions.contains(&HostPermission::Manage));
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn create_host_refuses_an_unknown_owner(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+
+    let host_id = Uuid::new_v4();
+    let resp = client
+        .post(format!("http://{addr}/api/v1/hosts"))
+        .bearer_auth(&admin)
+        .json(&serde_json::json!({
+            "spec": spec_document(host_id, "cam-qemu-06"),
+            "owner": Uuid::new_v4(),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+    let rejection: HostSpecRejection = resp.json().await.unwrap();
+    assert_eq!(rejection.path, "owner");
+
+    let exists: bool =
+        sqlx::query_scalar("select exists(select 1 from tml_switchboard.hosts where host_id = $1)")
+            .bind(host_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(!exists);
+}
+
 /// Creating a host mints a supervisor credential and puts a machine into
 /// scheduling, so it is global-admin only.
 #[sqlx::test]

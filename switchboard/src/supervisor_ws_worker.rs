@@ -1599,6 +1599,7 @@ mod tests {
             host_id,
             format!("test-host-{host_id}"),
             SecurityToken::generate(),
+            None,
             pool,
         )
         .await?;

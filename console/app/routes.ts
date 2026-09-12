@@ -14,6 +14,7 @@ export default [
     route("jobs/new", "routes/job-new.tsx"),
     route("jobs/:id", "routes/job-detail.tsx"),
     route("hosts", "routes/hosts.tsx"),
+    route("hosts/new", "routes/host-new.tsx"),
     route("hosts/:id", "routes/host-detail.tsx"),
     route("hosts/:id/spec", "routes/host-spec-edit.tsx"),
     route("images", "routes/images.tsx"),

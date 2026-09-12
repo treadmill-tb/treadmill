@@ -649,11 +649,17 @@ paths:
               schema:
                 type: string
         '422':
-          description: Failed to deserialize the JSON body into the target type
+          description: Error creating the host.
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/HostSpecRejection'
+        '201':
+          description: Host created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostCreateResponse'
         '409':
           description: A host with the spec's `id` already exists.
       security:
@@ -2211,6 +2217,12 @@ components:
         written in one transaction, so a host is never in an undescribed state.
       type: object
       properties:
+        owner:
+          description: Subject (user or group) owning the host. Null leaves it orphaned.
+          type:
+          - string
+          - 'null'
+          format: uuid
         spec:
           description: |-
             The host's spec, conforming to the schema at `GET /hosts/spec-schema`.
@@ -2223,6 +2235,26 @@ components:
       additionalProperties: false
       required:
       - spec
+    HostCreateResponse:
+      description: The created host, and the credential its supervisor authenticates with.
+      type: object
+      properties:
+        auth_token:
+          description: |-
+            Base64 bearer token for the host's `/hosts/{id}/connect` WebSocket. Only
+            returned when creating a new host, cannot be retrieved later.
+          type: string
+        host_id:
+          type: string
+          format: uuid
+        spec_revision:
+          description: The revision the document was stored at.
+          type: integer
+          format: int32
+      required:
+      - host_id
+      - auth_token
+      - spec_revision
     HostInfo:
       description: |-
         A host as returned by `GET /hosts/{id}`: its operational state plus the
@@ -4163,6 +4195,9 @@ components:
       description: 'Response body for `/auth/whoami`: the identity of the authenticated subject.'
       type: object
       properties:
+        admin:
+          description: Whether the subject is a global admin.
+          type: boolean
         name:
           description: 'The user''s display name: freely chosen, not unique.'
           type: string
@@ -4172,6 +4207,7 @@ components:
       required:
       - user_id
       - name
+      - admin
 tags:
 - name: Authentication
   description: Interactive OAuth login, the login-completion step, and token introspection.

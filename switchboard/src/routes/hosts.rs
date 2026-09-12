@@ -286,12 +286,19 @@ pub async fn create(
         .await
         .or_internal("opening a transaction to create a host")?;
 
-    match sql::host::insert(host_id, name.clone(), auth_token, &mut *txn).await {
+    match sql::host::insert(host_id, name.clone(), auth_token, req.owner, &mut *txn).await {
         Ok(()) => {}
         // The id or the generated token collided; only the former is plausible.
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
             tracing::debug!("refusing to create host {host_id}: already exists");
             return Ok(StatusCode::CONFLICT.into_response());
+        }
+        Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => {
+            tracing::debug!("refusing to create host {host_id}: unknown owner");
+            return Ok(refuse(HostSpecRejection {
+                path: "owner".to_string(),
+                message: "no such subject".to_string(),
+            }));
         }
         Err(e) => return Err(crate::http_error::internal(e)),
     }

@@ -952,6 +952,11 @@ export interface components {
          */
         HostCreateRequest: {
             /**
+             * Format: uuid
+             * @description Subject (user or group) owning the host. Null leaves it orphaned.
+             */
+            owner?: string | null;
+            /**
              * @description The host's spec, conforming to the schema at `GET /hosts/spec-schema`.
              *     Its `id` becomes the host's id: the client supplies the UUID so a spec is
              *     a self-contained document that can live in a git repo and be applied.
@@ -961,6 +966,21 @@ export interface components {
             spec: {
                 [key: string]: unknown;
             };
+        };
+        /** @description The created host, and the credential its supervisor authenticates with. */
+        HostCreateResponse: {
+            /**
+             * @description Base64 bearer token for the host's `/hosts/{id}/connect` WebSocket. Only
+             *     returned when creating a new host, cannot be retrieved later.
+             */
+            auth_token: string;
+            /** Format: uuid */
+            host_id: string;
+            /**
+             * Format: int32
+             * @description The revision the document was stored at.
+             */
+            spec_revision: number;
         };
         /**
          * @description A host as returned by `GET /hosts/{id}`: its operational state plus the
@@ -2148,6 +2168,8 @@ export interface components {
         };
         /** @description Response body for `/auth/whoami`: the identity of the authenticated subject. */
         WhoAmIResponse: {
+            /** @description Whether the subject is a global admin. */
+            admin: boolean;
             /** @description The user's display name: freely chosen, not unique. */
             name: string;
             /** Format: uuid */
@@ -2962,6 +2984,15 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Host created successfully. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostCreateResponse"];
+                };
+            };
             /** @description Failed to parse the request body as JSON */
             400: {
                 headers: {
@@ -3001,13 +3032,13 @@ export interface operations {
                     "text/plain": string;
                 };
             };
-            /** @description Failed to deserialize the JSON body into the target type */
+            /** @description Error creating the host. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/plain": string;
+                    "application/json": components["schemas"]["HostSpecRejection"];
                 };
             };
         };

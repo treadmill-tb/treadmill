@@ -18,7 +18,9 @@ use http::{HeaderValue, Method, StatusCode, header};
 use std::time::Duration;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
-use treadmill_rs::api::switchboard::hosts::{HostSpecRejection, HostSpecUpdateResponse};
+use treadmill_rs::api::switchboard::hosts::{
+    HostCreateResponse, HostSpecRejection, HostSpecUpdateResponse,
+};
 use treadmill_rs::api::switchboard::images::{ImageInfo, ImageSetGenerationInfo, ImageSetInfo};
 use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, LeaseRejection};
 use treadmill_rs::api::switchboard::{LoginResponse, LoginStagedResponse};
@@ -324,6 +326,12 @@ pub fn api_router() -> ApiRouter<AppState> {
                          and returns the supervisor credential. The credential is not \
                          retrievable afterwards.",
                     )
+                    .response_with::<201, Json<HostCreateResponse>, _>(|r| {
+                        r.description("Host created successfully.")
+                    })
+                    .response_with::<422, Json<HostSpecRejection>, _>(|r| {
+                        r.description("Error creating the host.")
+                    })
                     .response_with::<403, (), _>(|r| {
                         r.description("The caller is not a global admin.")
                     })

@@ -129,6 +129,8 @@ pub struct WhoAmIResponse {
     pub user_id: Uuid,
     /// The user's display name: freely chosen, not unique.
     pub name: String,
+    /// Whether the subject is a global admin.
+    pub admin: bool,
 }
 
 /// Response body for the unauthenticated `/auth/providers` endpoint: which login
