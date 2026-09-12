@@ -111,14 +111,16 @@ pub async fn insert(
     host_id: Uuid,
     name: String,
     auth_token: SecurityToken,
+    owner: Option<Uuid>,
     conn: impl PgExecutor<'_>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
-        r#"insert into tml_switchboard.hosts (host_id, name, auth_token)
-           values ($1, $2, $3)"#,
+        r#"insert into tml_switchboard.hosts (host_id, name, auth_token, owner_id)
+           values ($1, $2, $3, $4)"#,
         host_id,
         name,
         auth_token.as_bytes(),
+        owner,
     )
     .execute(conn)
     .await

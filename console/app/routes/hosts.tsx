@@ -1,3 +1,5 @@
+import { Link } from "react-router";
+
 import { $api } from "../api/client";
 import { LiveBadge } from "../components/badges";
 import { EntityLink } from "../components/entity-link";
@@ -5,10 +7,19 @@ import { RelTime } from "../components/rel-time";
 
 export default function Hosts() {
   const hosts = $api.useQuery("get", "/hosts");
+  const whoami = $api.useQuery("get", "/auth/whoami");
 
   return (
     <>
-      <h1>Hosts</h1>
+      <div className="toolbar">
+        <h1>Hosts</h1>
+        <span className="spacer" />
+        {whoami.data?.admin === true && (
+          <Link className="btn" to="/hosts/new">
+            Register a supervisor
+          </Link>
+        )}
+      </div>
       {hosts.isPending && <p className="muted">Loading…</p>}
       {hosts.isError && <p className="error">Failed to load hosts.</p>}
       {hosts.data &&

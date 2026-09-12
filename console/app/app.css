@@ -302,6 +302,11 @@ dl.spec-fields dl.spec-fields {
   background: none;
 }
 
+.token {
+  word-break: break-all;
+  user-select: all;
+}
+
 .toolbar h1,
 .toolbar h2 {
   margin: 0;

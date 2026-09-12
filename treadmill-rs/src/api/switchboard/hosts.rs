@@ -167,16 +167,19 @@ pub struct HostCreateRequest {
     /// does not validate.
     #[schemars(with = "SpecDocument")]
     pub spec: serde_json::Value,
+    /// Subject (user or group) owning the host. Null leaves it orphaned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<Uuid>,
 }
 
 /// The created host, and the credential its supervisor authenticates with.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct HostCreateResponse {
     pub host_id: Uuid,
-    /// Base64 bearer token for the host's `/hosts/{id}/connect` WebSocket. The
-    /// API never returns it again, so it has to be captured here.
+    /// Base64 bearer token for the host's `/hosts/{id}/connect` WebSocket. Only
+    /// returned when creating a new host, cannot be retrieved later.
     pub auth_token: String,
-    /// The revision the spec was stored at, always the first.
+    /// The revision the document was stored at.
     pub spec_revision: i32,
 }
 

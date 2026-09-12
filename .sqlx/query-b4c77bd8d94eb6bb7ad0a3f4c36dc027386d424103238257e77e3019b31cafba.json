@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.hosts (host_id, name, auth_token, owner_id)\n           values ($1, $2, $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Bytea",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b4c77bd8d94eb6bb7ad0a3f4c36dc027386d424103238257e77e3019b31cafba"
+}

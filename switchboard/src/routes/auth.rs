@@ -1092,8 +1092,13 @@ pub async fn whoami(
     .await
     .or_internal(&format!("looking up user {user_id}"))?;
 
+    let admin = crate::auth::engine::is_admin(state.pool(), user_id)
+        .await
+        .or_internal(&format!("checking admin for user {user_id}"))?;
+
     Ok(Json(WhoAmIResponse {
         user_id,
         name: row.name,
+        admin,
     }))
 }
