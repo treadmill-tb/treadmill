@@ -40,6 +40,8 @@ use crate::config::{self, JobGatewayConfig};
 /// `<service>-<job-id>` inside a DNS label.
 const MAX_SERVICE_NAME_LEN: usize = 16;
 
+const CLOCK_SKEW_LEEWAY: TimeDelta = TimeDelta::minutes(5);
+
 /// Failure to load the configured signing material.
 #[derive(Debug, thiserror::Error)]
 pub enum KeyError {
@@ -238,13 +240,18 @@ pub fn mint_token(
         .and_then(|ttl| issued_at.checked_add_signed(ttl))
         .unwrap_or(DateTime::<Utc>::MAX_UTC);
 
+    // Backdate the JWT. Hosts also check the JWT and they might not have
+    // particularly reliable clocks. If we were to issue the JWTs with no such
+    // tolerance, we'd be racing the switchboard clock against the hosts.
+    let not_before = issued_at - CLOCK_SKEW_LEEWAY;
+
     let claims = ServiceTokenClaims {
         iss: gateway.config.issuer.clone(),
         sub: subject_id,
         aud: service_label(job_id, service),
         exp: expires_at.timestamp(),
-        iat: issued_at.timestamp(),
-        nbf: issued_at.timestamp(),
+        iat: not_before.timestamp(),
+        nbf: not_before.timestamp(),
         jti: Uuid::new_v4(),
         tml_job: job_id,
         tml_service: service.to_string(),
@@ -344,12 +351,10 @@ mod tests {
         assert_eq!(claims.tml_service, "webide");
         assert_eq!(claims.tml_addr, address);
 
-        // Valid from issuance until the configured lifetime is up, which is
-        // also what the caller is told.
         assert_eq!(claims.nbf, claims.iat);
         assert_eq!(
             claims.exp - claims.iat,
-            gateway.config().token_ttl.as_secs() as i64
+            gateway.config().token_ttl.as_secs() as i64 + CLOCK_SKEW_LEEWAY.num_seconds()
         );
         assert_eq!(minted.expires_at.timestamp(), claims.exp);
     }
