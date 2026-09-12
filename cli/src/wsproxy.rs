@@ -1,7 +1,9 @@
 use anyhow::{Context as _, Result, bail};
+use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -32,12 +34,15 @@ pub async fn run(hostname: &str, port: u16, insecure_tls: bool, verbose: u8) -> 
 
     if verbose > 0 {
         anstream::eprintln!("bridging to wss://{hostname}:{port}/");
+        if let Some(claims) = describe_claims(&token) {
+            anstream::eprintln!("{claims}");
+        }
     }
 
     let connector = Some(tls_connector(insecure_tls)?);
     let (socket, _) = connect_async_tls_with_config(request, None, false, connector)
         .await
-        .with_context(|| format!("connecting to wss://{hostname}:{port}/"))?;
+        .map_err(|error| handshake_error(error, hostname, port))?;
 
     let (mut sink, mut stream) = socket.split();
 
@@ -75,6 +80,68 @@ pub async fn run(hostname: &str, port: u16, insecure_tls: bool, verbose: u8) -> 
 
     uplink.abort();
     Ok(())
+}
+
+/// Decodes JWT claims without checking its signature, used for debugging.
+///
+/// We don't want to leak the actual token to the CLI. This technically breaks
+/// the rule to not try and interpret the switchboard-returned JWT, but it's a
+/// fairly rigid contract between the switchboard and hosts anyways, and in the
+/// worst case this function just fails.
+fn describe_claims(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let field = |name: &str| {
+        claims
+            .get(name)
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string()
+    };
+    let expires_at = claims
+        .get("exp")
+        .and_then(|v| v.as_i64())
+        .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|| "?".to_string());
+
+    Some(format!(
+        "token claims: aud={} tml_job={} tml_service={} sub={} expires_at={expires_at}",
+        field("aud"),
+        field("tml_job"),
+        field("tml_service"),
+        field("sub"),
+    ))
+}
+
+/// Surfaces the HTTP response body from a rejected handshake, for debugging.
+fn handshake_error(error: WsError, hostname: &str, port: u16) -> anyhow::Error {
+    let WsError::Http(response) = &error else {
+        return anyhow::Error::new(error)
+            .context(format!("connecting to wss://{hostname}:{port}/"));
+    };
+
+    let status = response.status();
+    let body = response
+        .body()
+        .as_deref()
+        .map(String::from_utf8_lossy)
+        .map(|body| body.trim().to_string())
+        .filter(|body| !body.is_empty());
+
+    match body {
+        Some(body) => anyhow::anyhow!(
+            "connecting to wss://{hostname}:{port}/: HTTP error: {status}, \
+             {body:?}; re-run with `-v` to see JWT claims"
+        ),
+        None => anyhow::anyhow!(
+            "connecting to wss://{hostname}:{port}/: HTTP error: {status} \
+             (no response body); re-run with `-v` to see JWT claims"
+        ),
+    }
 }
 
 /// TLS configuration.
