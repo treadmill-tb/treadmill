@@ -1223,6 +1223,7 @@ dependencies = [
  "console",
  "shell-words",
  "thiserror 1.0.69",
+ "zeroize",
 ]
 
 [[package]]
@@ -5025,6 +5026,26 @@ dependencies = [
 [[package]]
 name = "treadmill-cli"
 version = "0.3.1"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "anyhow",
+ "chrono",
+ "clap",
+ "dialoguer",
+ "figment",
+ "futures-util",
+ "rustls",
+ "rustls-native-certs",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "toml 1.1.5+spec-1.1.0",
+ "treadmill-rs",
+ "uuid",
+ "xdg",
+]
 
 [[package]]
 name = "treadmill-image-util"
@@ -5906,6 +5927,12 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "xdg"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fb433233f2df9344722454bc7e96465c9d03bff9d77c248f9e7523fe79585b5"
 
 [[package]]
 name = "yansi"
