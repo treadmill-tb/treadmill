@@ -158,7 +158,7 @@ pub enum JobCommand {
     },
     /// Bridge stdio to a job service over a WebSocket, used for ssh's ProxyCommand
     #[command(hide = true)]
-    WsProxy { hostname: String, port: u16 },
+    WsProxy { job: Uuid, service: String },
     /// Alias for `context job set`
     SetActive { job: Uuid },
 }

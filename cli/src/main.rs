@@ -44,21 +44,6 @@ fn fail(error: &anyhow::Error) -> std::process::ExitCode {
 }
 
 async fn run(args: Cli) -> Result<()> {
-    // The bridge runs as ssh's ProxyCommand, where no profile is selected and
-    // the credential arrives in the environment.
-    if let Command::Job {
-        command: JobCommand::WsProxy { hostname, port },
-    } = &args.command
-    {
-        return wsproxy::run(
-            hostname,
-            *port,
-            args.globals.insecure_tls,
-            args.globals.verbose,
-        )
-        .await;
-    }
-
     let mut ctx = Ctx::load(&args.globals)?;
 
     match &args.command {
@@ -96,6 +81,6 @@ async fn job(ctx: &mut Ctx, command: &JobCommand) -> Result<()> {
             local,
         } => ssh::download(ctx, target, remote, local.as_deref()).await,
         JobCommand::SetActive { job } => context::set_active(ctx, *job),
-        JobCommand::WsProxy { .. } => unreachable!("handled before the profile is loaded"),
+        JobCommand::WsProxy { job, service } => wsproxy::run(ctx, *job, service).await,
     }
 }

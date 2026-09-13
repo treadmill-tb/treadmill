@@ -3,46 +3,45 @@ use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
-use tokio_tungstenite::{Connector, connect_async_tls_with_config};
+use tokio_tungstenite::{
+    Connector, MaybeTlsStream, WebSocketStream, connect_async_tls_with_config,
+};
+use uuid::Uuid;
 
-use crate::ssh::SERVICE_TOKEN_ENV;
+use crate::ctx::Ctx;
+use crate::ssh::service_credentials;
+use crate::state::State;
 
 const READ_BUFFER: usize = 16 * 1024;
 
 /// Bridge stdin/stdout to a job's `sshws` service: the gateway and the job's
 /// own proxy both admit the request against the service token, and the socket
 /// then carries raw SSH bytes in binary frames.
-pub async fn run(hostname: &str, port: u16, insecure_tls: bool, verbose: u8) -> Result<()> {
-    let token = std::env::var(SERVICE_TOKEN_ENV)
-        .ok()
-        .filter(|token| !token.is_empty())
-        .with_context(|| {
-            format!("{SERVICE_TOKEN_ENV} is not set; run this through `tml job ssh`")
-        })?;
-
-    let mut request = format!("wss://{hostname}:{port}/")
-        .into_client_request()
-        .context("building the WebSocket request")?;
-    request.headers_mut().insert(
-        "X-Tml-Token",
-        HeaderValue::from_str(&token).context("the service token is not a valid header value")?,
-    );
-
-    if verbose > 0 {
-        anstream::eprintln!("bridging to wss://{hostname}:{port}/");
-        if let Some(claims) = describe_claims(&token) {
-            anstream::eprintln!("{claims}");
+pub async fn run(ctx: &mut Ctx, job_id: Uuid, service: &str) -> Result<()> {
+    let credentials = service_credentials(ctx, job_id, service).await?;
+    let socket = match open(&credentials, ctx.insecure_tls, ctx.verbose).await {
+        Ok(socket) => socket,
+        Err(first_error) => {
+            State::invalidate_job_service_token(
+                &ctx.state_path,
+                job_id,
+                service,
+                &credentials.token,
+            )?;
+            ctx.state = State::load(&ctx.state_path)?;
+            let replacement = service_credentials(ctx, job_id, service).await?;
+            open(&replacement, ctx.insecure_tls, ctx.verbose)
+                .await
+                .with_context(|| {
+                    format!("retrying after the first connection failed: {first_error:#}")
+                })?
         }
-    }
-
-    let connector = Some(tls_connector(insecure_tls)?);
-    let (socket, _) = connect_async_tls_with_config(request, None, false, connector)
-        .await
-        .map_err(|error| handshake_error(error, hostname, port))?;
+    };
 
     let (mut sink, mut stream) = socket.split();
 
@@ -80,6 +79,36 @@ pub async fn run(hostname: &str, port: u16, insecure_tls: bool, verbose: u8) -> 
 
     uplink.abort();
     Ok(())
+}
+
+async fn open(
+    credentials: &crate::state::CachedJobServiceToken,
+    insecure_tls: bool,
+    verbose: u8,
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
+    let hostname = &credentials.hostname;
+    let port = credentials.port;
+    let token = &credentials.token;
+    let mut request = format!("wss://{hostname}:{port}/")
+        .into_client_request()
+        .context("building the WebSocket request")?;
+    request.headers_mut().insert(
+        "X-Tml-Token",
+        HeaderValue::from_str(token).context("the service token is not a valid header value")?,
+    );
+
+    if verbose > 0 {
+        anstream::eprintln!("bridging to wss://{hostname}:{port}/");
+        if let Some(claims) = describe_claims(token) {
+            anstream::eprintln!("{claims}");
+        }
+    }
+
+    let connector = Some(tls_connector(insecure_tls)?);
+    connect_async_tls_with_config(request, None, false, connector)
+        .await
+        .map(|(socket, _)| socket)
+        .map_err(|error| handshake_error(error, hostname, port))
 }
 
 /// Decodes JWT claims without checking its signature, used for debugging.

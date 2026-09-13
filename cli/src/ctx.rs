@@ -10,6 +10,7 @@ use crate::state::State;
 pub struct Ctx {
     pub config: Config,
     pub profile: String,
+    pub config_path: PathBuf,
     pub state: State,
     pub state_path: PathBuf,
     pub output: OutputFormat,
@@ -39,6 +40,7 @@ impl Ctx {
         Ok(Self {
             config,
             profile,
+            config_path,
             state,
             state_path,
             output: globals.output.unwrap_or(OutputFormat::Human),

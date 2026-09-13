@@ -9,44 +9,42 @@ use uuid::Uuid;
 
 use crate::cli::JobTarget;
 use crate::ctx::{Ctx, short};
+use crate::state::CachedJobServiceToken;
 
 pub const SSHWS_PROTOCOL: &str = "sshws";
-pub const SERVICE_TOKEN_ENV: &str = "TML_SERVICE_TOKEN";
-
 /// Everything needed to launch a client against one job service.
 struct Connection {
     destination: String,
     proxy_command: String,
-    token: String,
     ssh_opts: Vec<String>,
 }
 
-pub async fn ssh(ctx: &Ctx, target: &JobTarget, args: &[String]) -> Result<()> {
+pub async fn ssh(ctx: &mut Ctx, target: &JobTarget, args: &[String]) -> Result<()> {
     let connection = connect(ctx, target).await?;
     let mut argv = connection.ssh_options();
     argv.push(connection.destination.clone());
     argv.extend(args.iter().cloned());
-    exec(ctx, "ssh", &argv, &connection.token)
+    exec(ctx, "ssh", &argv)
 }
 
-pub async fn exec_command(ctx: &Ctx, target: &JobTarget, command: &[String]) -> Result<()> {
+pub async fn exec_command(ctx: &mut Ctx, target: &JobTarget, command: &[String]) -> Result<()> {
     let connection = connect(ctx, target).await?;
     let mut argv = connection.ssh_options();
     argv.push(connection.destination.clone());
     argv.extend(command.iter().cloned());
-    exec(ctx, "ssh", &argv, &connection.token)
+    exec(ctx, "ssh", &argv)
 }
 
-pub async fn sftp(ctx: &Ctx, target: &JobTarget, args: &[String]) -> Result<()> {
+pub async fn sftp(ctx: &mut Ctx, target: &JobTarget, args: &[String]) -> Result<()> {
     let connection = connect(ctx, target).await?;
     let mut argv = connection.sftp_options();
     argv.push(connection.destination.clone());
     argv.extend(args.iter().cloned());
-    exec(ctx, "sftp", &argv, &connection.token)
+    exec(ctx, "sftp", &argv)
 }
 
 pub async fn upload(
-    ctx: &Ctx,
+    ctx: &mut Ctx,
     target: &JobTarget,
     local: &Path,
     remote: Option<&str>,
@@ -65,7 +63,7 @@ pub async fn upload(
 }
 
 pub async fn download(
-    ctx: &Ctx,
+    ctx: &mut Ctx,
     target: &JobTarget,
     remote: &str,
     local: Option<&Path>,
@@ -87,7 +85,7 @@ pub async fn download(
 
 /// Drive sftp through a one-line batch script on its stdin, leaving its own
 /// stdout and stderr attached.
-async fn batch(ctx: &Ctx, target: &JobTarget, line: &str) -> Result<()> {
+async fn batch(ctx: &mut Ctx, target: &JobTarget, line: &str) -> Result<()> {
     let connection = connect(ctx, target).await?;
     let mut argv = connection.sftp_options();
     argv.push("-b".into());
@@ -98,7 +96,6 @@ async fn batch(ctx: &Ctx, target: &JobTarget, line: &str) -> Result<()> {
     ctx.detail(&format!("batch: {line}"));
     let mut child = Command::new("sftp")
         .args(&argv)
-        .env(SERVICE_TOKEN_ENV, &connection.token)
         .stdin(Stdio::piped())
         .spawn()
         .context("launching sftp; is OpenSSH installed and on PATH?")?;
@@ -151,7 +148,7 @@ impl Connection {
     }
 }
 
-async fn connect(ctx: &Ctx, target: &JobTarget) -> Result<Connection> {
+async fn connect(ctx: &mut Ctx, target: &JobTarget) -> Result<Connection> {
     let client = ctx.authenticated_client()?;
     let job_id = ctx.resolve_job(target.job.as_deref())?;
 
@@ -161,25 +158,26 @@ async fn connect(ctx: &Ctx, target: &JobTarget) -> Result<Connection> {
     };
 
     ctx.note(&format!("Connecting to service {service}…"));
-    let credentials = client
-        .create_job_service_token(job_id, &service)
-        .await
-        .map_err(|e| service_token_error(e, &service))?;
+    let cached = service_credentials(ctx, job_id, &service).await?;
 
-    let endpoint = credentials
-        .endpoints
-        .first()
-        .context("the switchboard returned no gateway endpoint for this service")?;
+    connection(ctx, target, job_id, service, cached)
+}
 
+fn connection(
+    ctx: &Ctx,
+    target: &JobTarget,
+    job_id: Uuid,
+    service: String,
+    cached: CachedJobServiceToken,
+) -> Result<Connection> {
     let user = target
         .user
         .clone()
         .unwrap_or_else(|| ctx.config.user.clone());
 
     Ok(Connection {
-        destination: format!("{user}@{}", endpoint.hostname),
-        proxy_command: proxy_command(ctx, &endpoint.hostname, endpoint.port)?,
-        token: expose(&credentials),
+        destination: format!("{user}@{}", cached.hostname),
+        proxy_command: proxy_command(ctx, job_id, &service)?,
         ssh_opts: target.ssh_opt.clone(),
     })
 }
@@ -217,13 +215,20 @@ async fn discover_service(
 
 /// The bridge is this same binary, addressed by its absolute path so that the
 /// connection works whether or not `tml` is on the user's `PATH`.
-fn proxy_command(ctx: &Ctx, hostname: &str, port: u16) -> Result<String> {
+fn proxy_command(ctx: &Ctx, job_id: Uuid, service: &str) -> Result<String> {
     let exe = std::env::current_exe().context("locating the running tml binary")?;
     let exe = exe
         .to_str()
         .context("the tml binary path is not valid UTF-8")?;
 
-    let mut command = format!("{} job ws-proxy {} {port}", quote(exe), quote(hostname));
+    let mut command = format!(
+        "{} --profile {} --config {} --switchboard {} job ws-proxy {job_id} {}",
+        quote(exe),
+        quote(&ctx.profile),
+        quote_path(&ctx.config_path)?,
+        quote(&ctx.config.switchboard),
+        quote(service),
+    );
     if ctx.insecure_tls {
         command.push_str(" --insecure-tls");
     }
@@ -233,11 +238,10 @@ fn proxy_command(ctx: &Ctx, hostname: &str, port: u16) -> Result<String> {
     Ok(command)
 }
 
-fn exec(ctx: &Ctx, program: &str, argv: &[String], token: &str) -> Result<()> {
+fn exec(ctx: &Ctx, program: &str, argv: &[String]) -> Result<()> {
     ctx.detail(&command_line(program, argv));
     let error = Command::new(program)
         .args(argv.iter().map(OsString::from))
-        .env(SERVICE_TOKEN_ENV, token)
         .exec();
     Err(error).with_context(|| format!("launching {program}; is OpenSSH installed and on PATH?"))
 }
@@ -266,6 +270,45 @@ fn expose(credentials: &JobServiceCredentials) -> String {
     credentials.token.expose().clone()
 }
 
+pub(crate) async fn service_credentials(
+    ctx: &mut Ctx,
+    job_id: Uuid,
+    service: &str,
+) -> Result<CachedJobServiceToken> {
+    if let Some(cached) = ctx.state.valid_job_service_token(job_id, service).cloned() {
+        return Ok(cached);
+    }
+
+    let credentials = ctx
+        .authenticated_client()?
+        .create_job_service_token(job_id, service)
+        .await
+        .map_err(|error| service_token_error(error, service))?;
+    let endpoint = credentials
+        .endpoints
+        .first()
+        .context("the switchboard returned no gateway endpoint for this service")?;
+    let cached = CachedJobServiceToken {
+        hostname: endpoint.hostname.clone(),
+        port: endpoint.port,
+        token: expose(&credentials),
+        expires_at: credentials.expires_at,
+    };
+    ctx.state
+        .job_service_tokens
+        .entry(job_id)
+        .or_default()
+        .insert(service.to_string(), cached.clone());
+    ctx.state.store(&ctx.state_path)?;
+    Ok(cached)
+}
+
+fn quote_path(path: &Path) -> Result<String> {
+    path.to_str()
+        .map(quote)
+        .context("the configuration path is not valid UTF-8")
+}
+
 fn basename(path: &Path) -> Result<String> {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -273,10 +316,8 @@ fn basename(path: &Path) -> Result<String> {
         .with_context(|| format!("{} has no file name to preserve", path.display()))
 }
 
-/// The launched command, for `-v`. The service token is passed in the
-/// environment and is shown redacted, so the line is not directly pasteable.
 fn command_line(program: &str, argv: &[String]) -> String {
-    let mut line = format!("running: {SERVICE_TOKEN_ENV}=<redacted> {program}");
+    let mut line = format!("running: {program}");
     for arg in argv {
         line.push(' ');
         line.push_str(&display_arg(arg));
