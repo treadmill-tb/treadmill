@@ -375,6 +375,25 @@
           }
         );
 
+        netboot-daemons = cmn.craneLib.cargoNextest (
+          cmn.cargoCommonArgs
+          // {
+            pname = "treadmill-netboot-daemons";
+            version = "0.1.0";
+            cargoArtifacts = cmn.testArtifacts;
+            cargoNextestExtraArgs = "--workspace --no-tests=pass -E 'test(real_daemons)'";
+            partitions = 1;
+            partitionType = "count";
+
+            nativeBuildInputs = cmn.cargoCommonArgs.nativeBuildInputs ++ [
+              pkgs.qemu-utils
+              pkgs.dosfstools
+              pkgs.mtools
+              cmn.nbdfatftpd
+            ];
+          }
+        );
+
         # Log streaming: the live NATS round-trips that can't run in the
         # restricted sandbox (nats-server binds a TCP port; AGENTS.md §2).
         # Spins up a real `nats-server -js`

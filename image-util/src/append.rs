@@ -113,18 +113,13 @@ pub fn store_layer(layout: &Layout, role: Role, path: &Path) -> anyhow::Result<L
     let (digest, size) = layout
         .store_file(path)
         .with_context(|| format!("store layer blob {}", path.display()))?;
-    let virtual_size = match role {
-        Role::Root => Some(
-            qcow2_header(path)
-                .with_context(|| format!("read qcow2 virtual size of {}", path.display()))?
-                .virtual_size,
-        ),
-        Role::Boot => None,
-    };
+    let virtual_size = qcow2_header(path)
+        .with_context(|| format!("read qcow2 virtual size of {}", path.display()))?
+        .virtual_size;
     Ok(LayerSpec {
         digest,
         size,
         role,
-        virtual_size,
+        virtual_size: Some(virtual_size),
     })
 }

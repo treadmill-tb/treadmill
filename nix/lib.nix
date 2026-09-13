@@ -275,6 +275,9 @@ let
   # daemon.
   zot = pkgs.callPackage ./pkgs/zot.nix { };
 
+  # TFTP server serving a FAT file system from an NBD export.
+  nbdfatftpd = inputs.nbdfatftpd.packages.${system}.default;
+
   # Caddy with JWT verification, the dev stack's job service gateway (see
   # nix/pkgs/job-gateway-caddy.nix).
   job-gateway-caddy = import ./pkgs/job-gateway-caddy.nix { inherit pkgs; };
@@ -333,6 +336,7 @@ in
     workspaceDeps
     testArtifacts
     zot
+    nbdfatftpd
     job-gateway-caddy
     ephemeralPostgresHook
     ;

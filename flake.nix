@@ -27,6 +27,11 @@
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    nbdfatftpd = {
+      url = "git+https://codeberg.org/lschuermann/nbdfatftpd.git";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =

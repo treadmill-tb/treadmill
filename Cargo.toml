@@ -66,6 +66,7 @@ log = "0.4.22"
 # NATS log streaming: client + JetStream (async-nats), and per-job bearer-JWT
 # minting (nats-jwt signs claims, nkeys provides the Ed25519 account keypair).
 nats-jwt = "0.3.0"
+nix = { version = "0.31.3", default-features = false }
 nkeys = "0.4.5"
 oci-client = "0.17.0"
 # Pinned to match the oci-spec that oci-client depends on, so the workspace
@@ -90,6 +91,7 @@ thiserror = "2"
 # don't need to repeat the override, and Cargo forbids per-member overrides
 # anyway when `workspace = true`.
 tokio = { version = "1.38.0", default-features = false }
+tokio-serial = { version = "5.5.0", default-features = false }
 tokio-stream = "0.1.14"
 tokio-util = { version = "0.7.10", default-features = false }
 toml = "1.1.2"

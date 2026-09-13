@@ -42,6 +42,10 @@ pub trait WorkloadProcess: Send {
     /// Forcibly terminate the process.
     async fn kill(&mut self) -> std::io::Result<()>;
 
+    async fn interrupt(&mut self) -> std::io::Result<()> {
+        self.kill().await
+    }
+
     /// Take ownership of the process's captured stdout, if it was spawned with
     /// [`StdioMode::Capture`].
     ///
@@ -99,6 +103,17 @@ impl WorkloadProcess for ChildProcess {
 
     async fn kill(&mut self) -> std::io::Result<()> {
         self.0.kill().await
+    }
+
+    async fn interrupt(&mut self) -> std::io::Result<()> {
+        let Some(pid) = self.0.id() else {
+            return Ok(());
+        };
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid as i32),
+            nix::sys::signal::Signal::SIGINT,
+        )
+        .map_err(std::io::Error::from)
     }
 
     fn take_stdout(&mut self) -> Option<BoxedAsyncRead> {
@@ -186,7 +201,8 @@ impl ProcessLauncher for CliLauncher {
             .args(args)
             .stdin(std::process::Stdio::null())
             .stdout(stdout)
-            .stderr(stderr);
+            .stderr(stderr)
+            .kill_on_drop(true);
         if let Some(cwd) = cwd {
             command.current_dir(cwd);
         }

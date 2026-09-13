@@ -8,8 +8,6 @@
     }:
     let
       cmn = import ./lib.nix { inherit inputs system pkgs; };
-      inherit (pkgs) lib;
-      inherit (pkgs.stdenv) isLinux;
     in
     {
       packages = rec {
@@ -23,6 +21,9 @@
         # job service gateway (see nix/pkgs/job-gateway-caddy.nix).
         inherit (cmn) job-gateway-caddy;
 
+        # Serve TFTP from a FAT file system off of an NBD export.
+        inherit (cmn) nbdfatftpd;
+
         tml = cmn.mkBin { bin = "tml"; };
 
         swx = cmn.mkBin { bin = "swx"; };
@@ -33,15 +34,20 @@
           runtimePath = [ pkgs.skopeo ];
         };
 
+        image-util = cmn.mkBin { bin = "image-util"; };
+
+        tml-puppet = cmn.mkBin { bin = "tml-puppet"; };
+
+        # Runs qemu-storage-daemon, qemu-img and nbdfatftpd per job, and execs
+        # skopeo to copy images into the local Zot.
         treadmill-nbd-netboot-supervisor = cmn.mkBin {
           bin = "treadmill-nbd-netboot-supervisor";
-          runtimePath = [ pkgs.skopeo ];
+          runtimePath = [
+            pkgs.skopeo
+            pkgs.qemu-utils
+            cmn.nbdfatftpd
+          ];
         };
-
-        image-util = cmn.mkBin { bin = "image-util"; };
-      }
-      // lib.optionalAttrs isLinux {
-        tml-puppet = cmn.mkBin { bin = "tml-puppet"; };
       };
     };
 }

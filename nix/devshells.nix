@@ -47,6 +47,13 @@
 
           # Web console (console/): npm-driven Vite/React toolchain.
           nodejs_22
+
+          # FAT tooling for the nbd-netboot daemon tests.
+          dosfstools
+          mtools
+
+          # The nbd-netboot supervisor's TFTP server.
+          cmn.nbdfatftpd
         ];
 
         shellHook = ''

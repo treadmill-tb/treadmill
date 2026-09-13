@@ -36,6 +36,7 @@ use std::path::{Path, PathBuf};
 /// A qcow2 backing chain ready to be handed to a runtime.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BackingChain {
+    prefix: String,
     /// Shared read-only lower layers, **base first … head last**.
     lowers: Vec<PathBuf>,
     /// The per-job writable overlay layered on top of the head (created with no
@@ -48,18 +49,28 @@ impl BackingChain {
     /// the qemu device's `drive=` should reference this.
     pub const TOP_NODE: &'static str = "tml-disk";
 
+    const DEFAULT_PREFIX: &'static str = "tml";
+
     /// Build a chain from the ordered shared lowers (base first) and the per-job
     /// writable overlay.
     pub fn new(lowers: Vec<PathBuf>, overlay: impl Into<PathBuf>) -> Self {
+        Self::with_prefix(Self::DEFAULT_PREFIX, lowers, overlay)
+    }
+
+    pub fn with_prefix(prefix: &str, lowers: Vec<PathBuf>, overlay: impl Into<PathBuf>) -> Self {
         BackingChain {
+            prefix: prefix.to_string(),
             lowers,
             overlay: overlay.into(),
         }
     }
 
-    /// `node-name` of the i-th lower's qcow2 node.
-    fn lower_node(i: usize) -> String {
-        format!("tml-lower-{i}")
+    pub fn top_node(&self) -> String {
+        format!("{}-disk", self.prefix)
+    }
+
+    fn lower_node(&self, i: usize) -> String {
+        format!("{}-lower-{i}", self.prefix)
     }
 
     /// The `-blockdev` option strings (the values after each `-blockdev`), in
@@ -70,7 +81,7 @@ impl BackingChain {
         let mut args = Vec::with_capacity((self.lowers.len() + 1) * 2);
 
         for (i, path) in self.lowers.iter().enumerate() {
-            let fmt_node = Self::lower_node(i);
+            let fmt_node = self.lower_node(i);
             let file_node = format!("{fmt_node}-file");
 
             args.push(format!(
@@ -83,20 +94,21 @@ impl BackingChain {
             let mut qcow2 =
                 format!("driver=qcow2,node-name={fmt_node},file={file_node},read-only=on");
             if i > 0 {
-                qcow2.push_str(&format!(",backing={}", Self::lower_node(i - 1)));
+                qcow2.push_str(&format!(",backing={}", self.lower_node(i - 1)));
             }
             args.push(qcow2);
         }
 
         // The writable per-job overlay on top.
-        let top_file = format!("{}-file", Self::TOP_NODE);
+        let top_node = self.top_node();
+        let top_file = format!("{top_node}-file");
         args.push(format!(
             "driver=file,node-name={top_file},filename={}",
             self.overlay.display(),
         ));
-        let mut top = format!("driver=qcow2,node-name={},file={top_file}", Self::TOP_NODE,);
+        let mut top = format!("driver=qcow2,node-name={top_node},file={top_file}");
         if let Some(last) = self.lowers.len().checked_sub(1) {
-            top.push_str(&format!(",backing={}", Self::lower_node(last)));
+            top.push_str(&format!(",backing={}", self.lower_node(last)));
         }
         args.push(top);
 
@@ -199,6 +211,28 @@ mod tests {
         assert!(
             top.contains("backing=tml-lower-0"),
             "top backs the only lower"
+        );
+    }
+
+    #[test]
+    fn a_prefix_keeps_two_chains_apart_in_one_node_graph() {
+        let expected = [
+            "driver=file,node-name=tml-boot-lower-0-file,filename=/store/blobs/sha256/boot,read-only=on",
+            "driver=qcow2,node-name=tml-boot-lower-0,file=tml-boot-lower-0-file,read-only=on",
+            "driver=file,node-name=tml-boot-disk-file,filename=/run/job/boot.qcow2",
+            "driver=qcow2,node-name=tml-boot-disk,file=tml-boot-disk-file,backing=tml-boot-lower-0",
+        ]
+        .join("\n");
+        let chain = BackingChain::with_prefix(
+            "tml-boot",
+            vec![PathBuf::from("/store/blobs/sha256/boot")],
+            "/run/job/boot.qcow2",
+        );
+        assert_eq!(chain.blockdev_args().join("\n"), expected);
+        assert_eq!(chain.top_node(), "tml-boot-disk");
+        assert_eq!(
+            BackingChain::new(vec![], "/o").top_node(),
+            BackingChain::TOP_NODE
         );
     }
 }

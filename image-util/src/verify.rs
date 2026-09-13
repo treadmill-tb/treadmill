@@ -5,7 +5,7 @@ use anyhow::{Context, ensure};
 use clap::Parser;
 
 use crate::chain;
-use crate::layout::{Layout, is_fat_image, qcow2_header, read_image, verify_blob_digest};
+use crate::layout::{Layout, qcow2_header, read_image, verify_blob_digest};
 
 const DEFAULT_MAX_HEAD_VIRTUAL_SIZE: u64 = 10 * 1024 * 1024 * 1024;
 
@@ -125,9 +125,22 @@ pub fn verify(args: &VerifyArgs) -> anyhow::Result<()> {
 
     for layer in &split.boots {
         let path = layout.blob_path(&layer.digest);
+        let header = qcow2_header(&path)?;
+        let annotated = layer.virtual_size.with_context(|| {
+            format!(
+                "boot layer {} carries no dev.treadmill.qcow2.virtual-size",
+                layer.digest,
+            )
+        })?;
         ensure!(
-            is_fat_image(&path)?,
-            "boot layer {} is not a FAT filesystem image",
+            header.virtual_size == annotated,
+            "boot layer {} advertises virtual size {annotated} but its qcow2 header says {}",
+            layer.digest,
+            header.virtual_size,
+        );
+        ensure!(
+            !header.has_backing_file,
+            "boot layer {} has a baked backing_file; the chain is supplied at launch",
             layer.digest,
         );
     }

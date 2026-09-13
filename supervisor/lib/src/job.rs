@@ -25,9 +25,9 @@ use treadmill_rs::control_socket;
 
 use treadmill_tcp_control_socket_server::TcpControlSocket;
 
-use crate::capture::{self, SerialSocket};
+use crate::capture::{self, SerialConsole};
 use crate::job_log::{JobLogRegistration, JobLogRegistry, channel_reader};
-use crate::launcher::WorkloadProcess;
+use crate::launcher::{BoxedAsyncRead, WorkloadProcess};
 use crate::publisher::{LogPublisher, LogPublisherConfig};
 use crate::workdirs::JobWorkdirs;
 
@@ -132,7 +132,9 @@ pub struct Workload {
     /// The guest's serial console.
     ///
     /// Set if the backend routes it somewhere the runner can read.
-    pub serial: Option<SerialSocket>,
+    pub serial: Option<SerialConsole>,
+
+    pub channels: Vec<(LogChannel, BoxedAsyncRead)>,
 }
 
 /// Where a job is in its lifecycle, as the job's own task publishes it.
@@ -741,8 +743,9 @@ impl<B: JobBackend> JobTask<B> {
         self.resources.control_socket = Some(control_socket);
 
         let Workload {
-            mut process,
+            process,
             serial,
+            channels,
         } = self
             .runner
             .backend
@@ -754,7 +757,7 @@ impl<B: JobBackend> JobTask<B> {
             )
             .await?;
 
-        self.attach_console_channels(&mut *process, serial).await;
+        self.attach_console_channels(serial, channels).await;
 
         self.resources.workload = Some(process);
 
@@ -800,11 +803,11 @@ impl<B: JobBackend> JobTask<B> {
             .as_mut()
             .and_then(JobLogRegistration::take_reader)
         {
-            publisher.spawn_channel(LogChannel::Supervisor, reader);
+            publisher.spawn_channel(LogChannel::SUPERVISOR, reader);
         }
 
         let (meta_tx, meta_rx) = mpsc::channel(META_CAPACITY);
-        publisher.spawn_channel(LogChannel::Meta, channel_reader(meta_rx));
+        publisher.spawn_channel(LogChannel::META, channel_reader(meta_rx));
 
         self.resources.meta = Some(meta_tx);
         self.resources.publisher = Some(publisher);
@@ -817,31 +820,24 @@ impl<B: JobBackend> JobTask<B> {
     /// process is handed to `supervise`.
     async fn attach_console_channels(
         &mut self,
-        process: &mut dyn WorkloadProcess,
-        serial: Option<SerialSocket>,
+        serial: Option<SerialConsole>,
+        channels: Vec<(LogChannel, BoxedAsyncRead)>,
     ) {
-        let stdout = process.take_stdout();
-        let stderr = process.take_stderr();
-
         let Some(publisher) = self.resources.publisher.as_ref() else {
             // Drain capture here so the workload's pipes don't block and the
             // operator still sees output.
-            capture::drain_to_stdio(stdout, stderr, serial);
+            capture::drain_to_stdio(serial, channels);
             return;
         };
 
         let mut present = Vec::new();
-        if let Some(stdout) = stdout {
-            publisher.spawn_channel(LogChannel::QemuStdout, stdout);
-            present.push(LogChannel::QemuStdout);
+        for (channel, reader) in channels {
+            publisher.spawn_channel(channel.clone(), reader);
+            present.push(channel);
         }
-        if let Some(stderr) = stderr {
-            publisher.spawn_channel(LogChannel::QemuStderr, stderr);
-            present.push(LogChannel::QemuStderr);
-        }
-        if let Some(socket) = serial {
-            publisher.spawn_serial(LogChannel::Serial, socket);
-            present.push(LogChannel::Serial);
+        if let Some(console) = serial {
+            publisher.spawn_serial(LogChannel::SERIAL, console);
+            present.push(LogChannel::SERIAL);
         }
 
         let views = present_log_views(self.runner.backend.log_views(), &present);
@@ -1144,7 +1140,7 @@ fn supervisor_log_view() -> LogView {
         label: "Supervisor".to_string(),
         render: LogRender::Text,
         format: LogFormat::Jsonl,
-        channels: vec![LogChannel::Supervisor],
+        channels: vec![LogChannel::SUPERVISOR],
         order: 30,
         default: false,
         input: false,
@@ -1570,6 +1566,7 @@ mod tests {
             Ok(Workload {
                 process: Box::new(StubProcess),
                 serial: None,
+                channels: Vec::new(),
             })
         }
 

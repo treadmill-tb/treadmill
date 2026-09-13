@@ -3,7 +3,7 @@ supervisor_id = "7d55ec6d-15e7-4b84-8c04-7c085fe60df4"
 coord_connector = "ws_connector"
 
 # IP address of the NBD netboot target, announced to the switchboard.
-# job_address = "::1"
+# job_address = "fd00::2"
 
 [ws_connector]
 # Placeholder: a supervisor token is 32 bytes, base64-encoded. Read one out of
@@ -11,7 +11,8 @@ coord_connector = "ws_connector"
 token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
 switchboard_uri = "ws://localhost:8081"
 
-# Local OCI store (a per-server Zot daemon) the supervisor pulls images from.
+# Local OCI store (a per-server Zot daemon). The supervisor uses the Zot
+# daemon's fetched images directly as read-only qcow2 CoW backing layers.
 [oci_store]
 registry = "127.0.0.1:5000"
 store_root = "/var/lib/zot"
@@ -26,21 +27,45 @@ store_root = "/var/lib/zot"
 # job_log_level = "debug"
 
 [nbd_netboot]
-qemu_nbd_binary = "qemu-nbd"
-qemu_img_binary = "qemu-img"
-tar_binary = "tar"
+# Binaries the supervisor runs per job. If not specified, will look up on PATH.
+# qemu_storage_daemon_binary = "qemu-storage-daemon"
+# qemu_img_binary = "qemu-img"
+# nbdfatftpd_binary = "nbdfatftpd"
 
 state_dir = "./state"
 
 tcp_control_socket_listen_addr = "0.0.0.0:3859"
+
+# Listen address for the `qemu-storage-daemon` subprocess (serving `root` and
+# `boot` NBD exports).
 nbd_server_listen_addr = "0.0.0.0:10809"
 
-tftp_boot_dir = "./tftp-boot"
+# Listen address for TFTP boot file system server (`nbdfatftpd`).
+#
+# Given port 69 is privileged, this requires running the supervisor with
+# `CAP_NET_BIND_SERVICE`. Alternatively, you can lower
+# `net.ipv4.ip_unprivileged_port_start` in its network namespace.
+tftp_listen_addr = "0.0.0.0:69"
 
-stop_script = "true"
-start_script = "true"
-
-# Each VM will have at most 32GB to work with. This should be
-# sufficient to support most images, even heavy-weight toolchains
-# (such as OpenTitan with Bazel and Vivado Lab tools)
+# Each host will have at most 32GB to work with. This should be sufficient to
+# support most images, even heavy-weight toolchains (such as OpenTitan with
+# Bazel and Vivado Lab tools)
 working_disk_max_bytes = 34359738368
+
+# Optional start/stop hooks. Start script runs after NBD and TFTP daemons are
+# up; stop script before daemons are stopped. A set of `TML_*` environment
+# variables are available, including `TML_NBD_SERVER_LISTEN_ADDR` and
+# `TML_TFTP_LISTEN_ADDR`; read the source for details.
+# start_script = "./power-on.sh"
+# stop_script = "./power-off.sh"
+
+# When to erase retired job state:
+# [nbd_netboot.job_retention]
+# grace_period = "24h"
+# sweep_interval = "1h"
+#
+# Optionally, configure streaming for the host's serial console. Supports read
+# and (for admins) write access:
+# [nbd_netboot.serial_console]
+# device = "/dev/ttyUSB0"
+# baud_rate = 115200

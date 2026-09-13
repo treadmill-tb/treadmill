@@ -8,11 +8,8 @@
 /// `artifactType` of a Treadmill image manifest (pure artifact, empty config).
 pub const IMAGE_ARTIFACT_TYPE: &str = "application/vnd.treadmill.image.v1+json";
 
-/// Media type of a qcow2 disk blob (one layer of a backing chain).
+/// Media type of a qcow2 disk blob.
 pub const DISK_QCOW2: &str = "application/vnd.treadmill.disk.qcow2";
-
-/// Media type of a netboot boot filesystem blob (FAT image).
-pub const BOOT_FAT_V1: &str = "application/vnd.treadmill.boot.fat.v1";
 
 /// Standard OCI media types that Treadmill manifests reference directly.
 pub mod oci {
