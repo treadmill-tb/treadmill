@@ -99,11 +99,11 @@
         "treefmt-nix": "treefmt-nix"
       },
       "locked": {
-        "lastModified": 1789322078,
-        "narHash": "sha256-++zpRYk9iHQ3lCYiT4vz1odnuyyahcVX+JaFGq2Xf7k=",
+        "lastModified": 1789341495,
+        "narHash": "sha256-yzspzXOaHIBjvOSNnbE9bnJCexkMi1Z8JdRXS4SzBB4=",
         "ref": "refs/heads/main",
-        "rev": "81a679e791a382ed29b1d48d8cbd30b7db808c1b",
-        "revCount": 1,
+        "rev": "2a6bde790523c6b2122519b0b3dd302005e9a623",
+        "revCount": 2,
         "type": "git",
         "url": "https://codeberg.org/lschuermann/nbdfatftpd.git"
       },
