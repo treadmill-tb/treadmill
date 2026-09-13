@@ -26,14 +26,13 @@ const EMPTY_CONFIG_DIGEST: &str =
 /// Base64 of the empty-config blob `{}` (inlined via the descriptor `data`).
 const EMPTY_CONFIG_DATA_B64: &str = "e30=";
 
-/// One blob to place into the image, in chain order. The media type is derived
-/// from the role ([`Role::Root`] → qcow2 disk, [`Role::Boot`] → boot FAT).
+/// One blob to place into the image, in chain order.
 #[derive(Debug, Clone)]
 pub struct LayerSpec {
     pub digest: Digest,
     pub size: u64,
     pub role: Role,
-    /// qcow2 virtual size in bytes. Emitted for root layers; `None` for boot.
+    /// qcow2 virtual size in bytes.
     pub virtual_size: Option<u64>,
 }
 
@@ -65,16 +64,6 @@ impl std::fmt::Display for AssembleError {
 
 impl std::error::Error for AssembleError {}
 
-fn media_type_for(role: Role) -> MediaType {
-    MediaType::Other(
-        match role {
-            Role::Root => media_types::DISK_QCOW2,
-            Role::Boot => media_types::BOOT_FAT_V1,
-        }
-        .to_string(),
-    )
-}
-
 /// Convert a Treadmill [`Digest`] to the `oci_spec` digest type. Infallible: a
 /// `Digest` always renders as a valid `sha256:<hex>` OCI digest.
 fn oci_digest(d: &Digest) -> oci_spec::image::Digest {
@@ -103,10 +92,10 @@ pub fn build_manifest(
             layer.role.as_str().to_string(),
         );
 
+        if let Some(vs) = layer.virtual_size {
+            ann.insert(annotations::QCOW2_VIRTUAL_SIZE.to_string(), vs.to_string());
+        }
         if layer.role == Role::Root {
-            if let Some(vs) = layer.virtual_size {
-                ann.insert(annotations::QCOW2_VIRTUAL_SIZE.to_string(), vs.to_string());
-            }
             if let Some(prev) = prev_root {
                 ann.insert(annotations::QCOW2_LOWER.to_string(), prev.encoded());
             }
@@ -115,7 +104,7 @@ pub fn build_manifest(
         }
 
         let mut desc = Descriptor::new(
-            media_type_for(layer.role),
+            MediaType::Other(media_types::DISK_QCOW2.to_string()),
             layer.size,
             oci_digest(&layer.digest),
         );
@@ -224,7 +213,7 @@ mod tests {
                 digest: dg(9),
                 size: 10,
                 role: Role::Boot,
-                virtual_size: None,
+                virtual_size: Some(512),
             },
             LayerSpec {
                 digest: dg(1),
@@ -240,8 +229,8 @@ mod tests {
         let boot = &img.layers[0];
         assert_eq!(boot.role, Some(Role::Boot));
         assert_eq!(boot.lower, None);
-        assert_eq!(boot.virtual_size, None);
-        assert_eq!(boot.media_type, media_types::BOOT_FAT_V1);
+        assert_eq!(boot.virtual_size, Some(512));
+        assert_eq!(boot.media_type, media_types::DISK_QCOW2);
         // The boot layer is standalone — never the head.
         assert_ne!(img.head, boot.digest);
         assert_eq!(img.head, dg(1));

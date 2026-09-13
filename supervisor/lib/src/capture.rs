@@ -3,9 +3,41 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{UnixListener, UnixStream};
 
+use treadmill_rs::api::switchboard_supervisor::LogChannel;
+
 use crate::launcher::BoxedAsyncRead;
+
+pub trait AsyncStream: AsyncRead + AsyncWrite {}
+
+impl<T: AsyncRead + AsyncWrite> AsyncStream for T {}
+
+pub type BoxedAsyncStream = Box<dyn AsyncStream + Send + Unpin>;
+
+pub enum SerialConsole {
+    Listener(SerialSocket),
+    Stream(BoxedAsyncStream),
+}
+
+impl std::fmt::Debug for SerialConsole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SerialConsole::Listener(socket) => f.debug_tuple("Listener").field(socket).finish(),
+            SerialConsole::Stream(_) => f.write_str("Stream"),
+        }
+    }
+}
+
+impl SerialConsole {
+    pub async fn connect(self) -> std::io::Result<BoxedAsyncStream> {
+        match self {
+            SerialConsole::Listener(socket) => Ok(Box::new(socket.accept().await?)),
+            SerialConsole::Stream(stream) => Ok(stream),
+        }
+    }
+}
 
 /// How long to wait for a process (e.g., QEMU) to connect back to the serial
 /// socket before giving up on the `serial` channel.
@@ -82,30 +114,10 @@ impl SerialSocket {
 /// should be written to a local file, or entirely discarded, when no log
 /// streaming option is present. The job's output shouldn't be able to pollute
 /// the host's journal. Refactor accordingly.
-pub fn drain_to_stdio(
-    stdout: Option<BoxedAsyncRead>,
-    stderr: Option<BoxedAsyncRead>,
-    serial: Option<SerialSocket>,
-) {
-    if let Some(mut reader) = stdout {
+pub fn drain_to_stdio(serial: Option<SerialConsole>, channels: Vec<(LogChannel, BoxedAsyncRead)>) {
+    if let Some(console) = serial {
         tokio::spawn(async move {
-            let mut sink = tokio::io::stdout();
-            if let Err(e) = tokio::io::copy(&mut reader, &mut sink).await {
-                tracing::warn!(error = ?e, "qemu-stdout capture drain ended with error");
-            }
-        });
-    }
-    if let Some(mut reader) = stderr {
-        tokio::spawn(async move {
-            let mut sink = tokio::io::stderr();
-            if let Err(e) = tokio::io::copy(&mut reader, &mut sink).await {
-                tracing::warn!(error = ?e, "qemu-stderr capture drain ended with error");
-            }
-        });
-    }
-    if let Some(socket) = serial {
-        tokio::spawn(async move {
-            match socket.accept().await {
+            match console.connect().await {
                 Ok(mut stream) => {
                     let mut sink = tokio::io::stdout();
                     if let Err(e) = tokio::io::copy(&mut stream, &mut sink).await {
@@ -113,8 +125,16 @@ pub fn drain_to_stdio(
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(error = ?e, "failed to accept qemu serial connection");
+                    tracing::warn!(error = ?e, "failed to connect the serial console");
                 }
+            }
+        });
+    }
+    for (channel, mut reader) in channels {
+        tokio::spawn(async move {
+            let mut sink = tokio::io::stdout();
+            if let Err(e) = tokio::io::copy(&mut reader, &mut sink).await {
+                tracing::warn!(%channel, error = ?e, "capture drain ended with error");
             }
         });
     }

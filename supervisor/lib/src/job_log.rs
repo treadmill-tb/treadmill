@@ -377,10 +377,10 @@ mod tests {
         let registry = JobLogRegistry::new();
         let job_id = Uuid::new_v4();
         let mut registration = registry.register(job_id);
-        publisher.spawn_channel(LogChannel::Supervisor, registration.take_reader().unwrap());
+        publisher.spawn_channel(LogChannel::SUPERVISOR, registration.take_reader().unwrap());
 
         let (meta_tx, meta_rx) = mpsc::channel(8);
-        publisher.spawn_channel(LogChannel::Meta, channel_reader(meta_rx));
+        publisher.spawn_channel(LogChannel::META, channel_reader(meta_rx));
 
         with_layer(&registry, LevelFilter::INFO, || {
             info_span!("run", job_id = ?job_id).in_scope(|| {
@@ -395,7 +395,7 @@ mod tests {
                 label: "Supervisor".to_string(),
                 render: LogRender::Text,
                 format: LogFormat::Jsonl,
-                channels: vec![LogChannel::Supervisor],
+                channels: vec![LogChannel::SUPERVISOR],
                 order: 30,
                 default: false,
                 input: false,
@@ -412,7 +412,7 @@ mod tests {
         let published = sink.records();
         let supervisor: Vec<_> = published
             .iter()
-            .filter(|p| p.channel == LogChannel::Supervisor)
+            .filter(|p| p.channel == LogChannel::SUPERVISOR)
             .collect();
         assert_eq!(supervisor.len(), 1);
         let event: serde_json::Value = serde_json::from_slice(&supervisor[0].payload).unwrap();
@@ -420,7 +420,7 @@ mod tests {
 
         let meta: Vec<_> = published
             .iter()
-            .filter(|p| p.channel == LogChannel::Meta)
+            .filter(|p| p.channel == LogChannel::META)
             .collect();
         assert_eq!(meta.len(), 1);
         let declared: LogViewManifest = serde_json::from_slice(&meta[0].payload).unwrap();

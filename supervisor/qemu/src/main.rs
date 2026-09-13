@@ -18,13 +18,16 @@ use treadmill_rs::image::parse::{self, ChainError, TreadmillImage};
 use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 
 use treadmill_supervisor_lib::bootstrap::{self, COORD_MAILBOX_CAPACITY, OnDisconnect};
-use treadmill_supervisor_lib::capture::SerialSocket;
+use treadmill_supervisor_lib::capture::{SerialConsole, SerialSocket};
 use treadmill_supervisor_lib::job::{JobBackend, JobRunner, JobRunnerConfig, JobVars, Workload};
 use treadmill_supervisor_lib::job_log::{self, JobLogRegistry};
 use treadmill_supervisor_lib::launcher::{self, ProcessLauncher, StdioMode, WorkloadProcess};
 use treadmill_supervisor_lib::oci_store::{ImageStore, Location, OciStore, OciStoreConfig};
 use treadmill_supervisor_lib::publisher::LogPublisherConfig;
 use treadmill_supervisor_lib::workdirs::{JobWorkdirs, RetentionConfig};
+
+const QEMU_STDOUT: LogChannel = LogChannel::from_static("qemu-stdout");
+const QEMU_STDERR: LogChannel = LogChannel::from_static("qemu-stderr");
 
 #[derive(Parser, Debug, Clone)]
 pub struct QemuSupervisorArgs {
@@ -316,6 +319,7 @@ impl JobBackend for QemuBackend {
                 .map(|process| Workload {
                     process,
                     serial: None,
+                    channels: Vec::new(),
                 });
         }
 
@@ -346,11 +350,23 @@ impl JobBackend for QemuBackend {
             }
         };
 
-        let process = self
+        let mut process = self
             .spawn_qemu(chain, capture_args, templated_args, StdioMode::Capture)
             .await?;
 
-        Ok(Workload { process, serial })
+        let channels = [
+            (QEMU_STDOUT, process.take_stdout()),
+            (QEMU_STDERR, process.take_stderr()),
+        ]
+        .into_iter()
+        .filter_map(|(channel, reader)| reader.map(|reader| (channel, reader)))
+        .collect();
+
+        Ok(Workload {
+            process,
+            serial: serial.map(SerialConsole::Listener),
+            channels,
+        })
     }
 
     fn log_views(&self) -> Vec<LogView> {
@@ -402,7 +418,7 @@ fn qemu_log_views() -> Vec<LogView> {
             label: "Serial console".to_string(),
             render: LogRender::Terminal,
             format: LogFormat::Raw,
-            channels: vec![LogChannel::Serial],
+            channels: vec![LogChannel::SERIAL],
             order: 10,
             default: true,
             input: true,
@@ -412,7 +428,7 @@ fn qemu_log_views() -> Vec<LogView> {
             label: "QEMU process".to_string(),
             render: LogRender::Text,
             format: LogFormat::Raw,
-            channels: vec![LogChannel::QemuStdout, LogChannel::QemuStderr],
+            channels: vec![QEMU_STDOUT, QEMU_STDERR],
             order: 20,
             default: false,
             input: false,

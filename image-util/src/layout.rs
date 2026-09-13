@@ -4,7 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use anyhow::{Context, anyhow, bail, ensure};
+use anyhow::{Context, anyhow, ensure};
 use digest_io::IoWrapper;
 use oci_spec::image::{
     Descriptor, ImageIndex, ImageIndexBuilder, ImageManifest, MediaType, SCHEMA_VERSION,
@@ -211,20 +211,6 @@ pub fn qcow2_header(path: &Path) -> anyhow::Result<Qcow2Header> {
         virtual_size: u64::from_be_bytes(head[24..32].try_into().expect("8 bytes")),
         has_backing_file: backing_offset != 0 || backing_size != 0,
     })
-}
-
-pub fn is_fat_image(path: &Path) -> anyhow::Result<bool> {
-    let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut sector = [0u8; 512];
-    match file.read_exact(&mut sector) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
-        Err(e) => bail!("{}: read boot sector: {e}", path.display()),
-    }
-    if sector[510] != 0x55 || sector[511] != 0xAA {
-        return Ok(false);
-    }
-    Ok(sector[54..57] == *b"FAT" || sector[82..85] == *b"FAT")
 }
 
 pub fn verify_blob_digest(path: &Path, digest: &Digest) -> anyhow::Result<()> {

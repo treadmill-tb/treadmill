@@ -69,7 +69,7 @@ use tokio_util::task::TaskTracker;
 
 use treadmill_rs::api::switchboard_supervisor::{LogChannel, LogStreamingDispatch};
 
-use crate::capture::SerialSocket;
+use crate::capture::SerialConsole;
 use tracing::level_filters::LevelFilter;
 
 use crate::launcher::BoxedAsyncRead;
@@ -164,13 +164,13 @@ fn now_ns() -> u64 {
 }
 
 /// The full NATS subject a channel publishes to: `<subject_prefix>.<channel>`.
-fn subject_for(subject_prefix: &str, channel: LogChannel) -> String {
+fn subject_for(subject_prefix: &str, channel: &LogChannel) -> String {
     format!("{subject_prefix}.{}", channel.as_subject_token())
 }
 
 /// Per-channel monotonic message id used as the JetStream `Nats-Msg-Id` for
 /// idempotent resume: `<channel>-<seq>`.
-fn message_id(channel: LogChannel, seq: u64) -> String {
+fn message_id(channel: &LogChannel, seq: u64) -> String {
     format!("{}-{}", channel.as_subject_token(), seq)
 }
 
@@ -192,7 +192,7 @@ pub trait ChunkSink: Send + Sync {
     /// ack, and advances the cursor past the frame only once the ack resolves.
     async fn send(
         &self,
-        channel: LogChannel,
+        channel: &LogChannel,
         msg_id: &str,
         capture_ts_ns: u64,
         payload: &[u8],
@@ -218,7 +218,7 @@ impl NatsChunkSink {
 impl ChunkSink for NatsChunkSink {
     async fn send(
         &self,
-        channel: LogChannel,
+        channel: &LogChannel,
         msg_id: &str,
         capture_ts_ns: u64,
         payload: &[u8],
@@ -385,7 +385,7 @@ async fn ship_pending(
     spill_path: &Path,
     cursor: &mut Cursor,
     sink: &dyn ChunkSink,
-    channel: LogChannel,
+    channel: &LogChannel,
 ) -> Result<()> {
     let file = match tokio::fs::File::open(spill_path).await {
         Ok(file) => file,
@@ -473,7 +473,7 @@ async fn run_channel(
     tokio::fs::create_dir_all(&inner.spill_dir)
         .await
         .context("creating spill directory")?;
-    let token = channel.as_subject_token();
+    let token = channel.to_string();
     let spill_path = inner.spill_dir.join(format!("{token}.spill"));
     let cursor_path = inner.spill_dir.join(format!("{token}.cursor"));
 
@@ -496,6 +496,7 @@ async fn run_channel(
         let eof = eof.clone();
         let chunk_bytes = inner.config.chunk_bytes;
         let flush_interval = inner.config.flush_interval;
+        let token = token.clone();
         tokio::spawn(async move {
             let mut buf = vec![0u8; chunk_bytes];
             let mut frame: Vec<u8> = Vec::with_capacity(chunk_bytes);
@@ -574,12 +575,12 @@ async fn run_channel(
     loop {
         // Arm before shipping so a notify during the publish is not lost.
         let armed = notify.notified();
-        match ship_pending(&spill_path, &mut cursor, inner.sink.as_ref(), channel).await {
+        match ship_pending(&spill_path, &mut cursor, inner.sink.as_ref(), &channel).await {
             Ok(()) => {
                 if eof.load(Ordering::SeqCst) {
                     // No more frames will be written after eof is observed;
                     // ship any that landed between the last pass and eof.
-                    ship_pending(&spill_path, &mut cursor, inner.sink.as_ref(), channel).await?;
+                    ship_pending(&spill_path, &mut cursor, inner.sink.as_ref(), &channel).await?;
                     break;
                 }
                 armed.await;
@@ -769,9 +770,9 @@ impl LogPublisher {
     pub fn spawn_channel(&self, channel: LogChannel, reader: BoxedAsyncRead) {
         let inner = self.inner.clone();
         self.inner.tasks.spawn(async move {
-            if let Err(e) = run_channel(inner, channel, reader).await {
+            if let Err(e) = run_channel(inner, channel.clone(), reader).await {
                 tracing::error!(
-                    channel = channel.as_subject_token(),
+                    %channel,
                     error = ?e,
                     "log channel publisher exited with error",
                 );
@@ -783,14 +784,14 @@ impl LogPublisher {
     /// connection off the hot path, then drain+ship it. With console input
     /// configured, the connection is split and a parallel task delivers typed
     /// input from the input subject to the write half.
-    pub fn spawn_serial(&self, channel: LogChannel, socket: SerialSocket) {
+    pub fn spawn_serial(&self, channel: LogChannel, console: SerialConsole) {
         let inner = self.inner.clone();
         self.inner.tasks.spawn(async move {
-            match socket.accept().await {
+            match console.connect().await {
                 Ok(stream) => {
                     let reader: BoxedAsyncRead = match &inner.console_input {
                         Some(input) => {
-                            let (read_half, write_half) = stream.into_split();
+                            let (read_half, write_half) = tokio::io::split(stream);
                             let input = ConsoleInput {
                                 client: input.client.clone(),
                                 subject: input.subject.clone(),
@@ -805,7 +806,7 @@ impl LogPublisher {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(error = ?e, "failed to accept qemu serial connection for log streaming");
+                    tracing::warn!(error = ?e, "failed to connect the serial console for log streaming");
                 }
             }
         });
@@ -829,6 +830,9 @@ impl LogPublisher {
 pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    const QEMU_STDOUT: LogChannel = LogChannel::from_static("qemu-stdout");
+    const QEMU_STDERR: LogChannel = LogChannel::from_static("qemu-stderr");
 
     /// A captured publish: the args `ship_pending` handed the sink.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -868,7 +872,7 @@ pub(crate) mod tests {
     impl ChunkSink for RecordingSink {
         async fn send(
             &self,
-            channel: LogChannel,
+            channel: &LogChannel,
             msg_id: &str,
             capture_ts_ns: u64,
             payload: &[u8],
@@ -880,7 +884,7 @@ pub(crate) mod tests {
                 }
             }
             self.published.lock().unwrap().push(Published {
-                channel,
+                channel: channel.clone(),
                 msg_id: msg_id.to_string(),
                 ts_ns: capture_ts_ns,
                 payload: payload.to_vec(),
@@ -901,14 +905,14 @@ pub(crate) mod tests {
     #[test]
     fn subject_and_message_id_assembly() {
         assert_eq!(
-            subject_for("logs.abc-123", LogChannel::QemuStdout),
+            subject_for("logs.abc-123", &QEMU_STDOUT),
             "logs.abc-123.qemu-stdout"
         );
         assert_eq!(
-            subject_for("logs.abc-123", LogChannel::Serial),
+            subject_for("logs.abc-123", &LogChannel::SERIAL),
             "logs.abc-123.serial"
         );
-        assert_eq!(message_id(LogChannel::QemuStderr, 7), "qemu-stderr-7");
+        assert_eq!(message_id(&QEMU_STDERR, 7), "qemu-stderr-7");
     }
 
     #[tokio::test]
@@ -971,7 +975,7 @@ pub(crate) mod tests {
 
         let sink = RecordingSink::new();
         let mut cursor = Cursor::load(&cursor_path).await.unwrap();
-        ship_pending(&spill, &mut cursor, &sink, LogChannel::QemuStdout)
+        ship_pending(&spill, &mut cursor, &sink, &QEMU_STDOUT)
             .await
             .unwrap();
 
@@ -989,7 +993,7 @@ pub(crate) mod tests {
         assert_eq!(cursor.offset, file_len);
         assert_eq!(cursor.next_seq, 3);
 
-        ship_pending(&spill, &mut cursor, &sink, LogChannel::QemuStdout)
+        ship_pending(&spill, &mut cursor, &sink, &QEMU_STDOUT)
             .await
             .unwrap();
         assert_eq!(sink.records().len(), 3, "no re-publish at EOF");
@@ -1012,7 +1016,7 @@ pub(crate) mod tests {
         // Fail on the 3rd publish (index 2): frames 0 and 1 ack, 2 fails.
         let failing = RecordingSink::failing_after(2);
         let mut cursor = Cursor::load(&cursor_path).await.unwrap();
-        let err = ship_pending(&spill, &mut cursor, &failing, LogChannel::Serial).await;
+        let err = ship_pending(&spill, &mut cursor, &failing, &LogChannel::SERIAL).await;
         assert!(err.is_err());
         assert_eq!(cursor.next_seq, 2, "cursor advanced only past acked frames");
         let acked = failing.records();
@@ -1025,7 +1029,7 @@ pub(crate) mod tests {
         let mut resumed = Cursor::load(&cursor_path).await.unwrap();
         assert_eq!(resumed.next_seq, 2);
         let healthy = RecordingSink::new();
-        ship_pending(&spill, &mut resumed, &healthy, LogChannel::Serial)
+        ship_pending(&spill, &mut resumed, &healthy, &LogChannel::SERIAL)
             .await
             .unwrap();
 
@@ -1051,7 +1055,7 @@ pub(crate) mod tests {
     impl ChunkSink for GatedSink {
         async fn send(
             &self,
-            _channel: LogChannel,
+            _channel: &LogChannel,
             msg_id: &str,
             _capture_ts_ns: u64,
             _payload: &[u8],
@@ -1100,7 +1104,7 @@ pub(crate) mod tests {
             // Dropping the write half is the capture source's EOF.
         });
 
-        run_channel(inner, LogChannel::Serial, Box::new(read))
+        run_channel(inner, LogChannel::SERIAL, Box::new(read))
             .await
             .unwrap();
         writer.await.unwrap();
@@ -1136,7 +1140,7 @@ pub(crate) mod tests {
             write.write_all(b"second").await.unwrap();
         });
 
-        run_channel(inner, LogChannel::Serial, Box::new(read))
+        run_channel(inner, LogChannel::SERIAL, Box::new(read))
             .await
             .unwrap();
         writer.await.unwrap();
@@ -1174,7 +1178,7 @@ pub(crate) mod tests {
 
         let mut cursor = Cursor::load(&cursor_path).await.unwrap();
         let ship = tokio::spawn(async move {
-            ship_pending(&spill, &mut cursor, &sink, LogChannel::Serial).await?;
+            ship_pending(&spill, &mut cursor, &sink, &LogChannel::SERIAL).await?;
             anyhow::Ok(cursor.next_seq)
         });
 
@@ -1311,7 +1315,7 @@ pub(crate) mod tests {
 
         let sink = NatsChunkSink::new(jetstream.clone(), format!("logs.{job}"));
         let mut cursor = Cursor::load(&cursor_path).await.unwrap();
-        ship_pending(&spill, &mut cursor, &sink, LogChannel::QemuStdout)
+        ship_pending(&spill, &mut cursor, &sink, &QEMU_STDOUT)
             .await
             .unwrap();
 
@@ -1428,7 +1432,7 @@ pub(crate) mod tests {
                 tasks: TaskTracker::new(),
             }),
         };
-        publisher.spawn_serial(LogChannel::Serial, socket);
+        publisher.spawn_serial(LogChannel::SERIAL, SerialConsole::Listener(socket));
 
         // The input task subscribes asynchronously and a core publish with no
         // live subscription is dropped (by design), so republish until the

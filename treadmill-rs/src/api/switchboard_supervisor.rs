@@ -216,48 +216,121 @@ pub struct StartJobMessage {
     pub host_spec: Option<serde_json::Value>,
 }
 
-/// A subject token within a job's log stream — the final element of the NATS
-/// subject `logs.<job-id>.<channel>`.
-///
-/// Closed on purpose: it keeps the token vocabulary and the supervisor's spill
-/// filenames safe by construction, at the cost of one line here when a
-/// supervisor grows a channel. A consumer that meets a token it cannot parse
-/// skips it rather than failing — the data is still in the stream, it merely
-/// lacks a view.
-#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum LogChannel {
-    /// qemu's standard output.
-    QemuStdout,
-    /// qemu's standard error.
-    QemuStderr,
-    /// The workload's serial console (qemu routes it to a `-chardev socket`).
-    Serial,
-    /// The supervisor's own tracing events for this job, as JSONL.
-    Supervisor,
-    /// This job's view declarations (see [`LogViewManifest`]), as JSONL.
-    Meta,
+/// NATS log channel name (`logs.<job-id>.<*channel*>`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LogChannel(std::borrow::Cow<'static, str>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidLogChannel(pub String);
+
+impl std::fmt::Display for InvalidLogChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "invalid log channel {:?}: expected 1 to {} lower-case alphanumeric characters, \
+             single hyphens between them",
+            self.0,
+            LogChannel::MAX_LEN,
+        )
+    }
 }
 
+impl std::error::Error for InvalidLogChannel {}
+
 impl LogChannel {
-    /// The subject token for this channel — the final element of the NATS
-    /// subject `logs.<job-id>.<channel>`. Equal to the serde representation.
-    pub fn as_subject_token(self) -> &'static str {
-        match self {
-            LogChannel::QemuStdout => "qemu-stdout",
-            LogChannel::QemuStderr => "qemu-stderr",
-            LogChannel::Serial => "serial",
-            LogChannel::Supervisor => "supervisor",
-            LogChannel::Meta => "meta",
+    pub const SERIAL: LogChannel = LogChannel::from_static("serial");
+    pub const SUPERVISOR: LogChannel = LogChannel::from_static("supervisor");
+    pub const META: LogChannel = LogChannel::from_static("meta");
+
+    pub const MAX_LEN: usize = 32;
+
+    pub const fn from_static(token: &'static str) -> Self {
+        assert!(Self::is_valid(token.as_bytes()));
+        LogChannel(std::borrow::Cow::Borrowed(token))
+    }
+
+    pub fn new(token: impl Into<String>) -> Result<Self, InvalidLogChannel> {
+        let token = token.into();
+        if Self::is_valid(token.as_bytes()) {
+            Ok(LogChannel(std::borrow::Cow::Owned(token)))
+        } else {
+            Err(InvalidLogChannel(token))
         }
+    }
+
+    const fn is_valid(token: &[u8]) -> bool {
+        if token.is_empty() || token.len() > Self::MAX_LEN {
+            return false;
+        }
+        let mut i = 0;
+        let mut previous_hyphen = true;
+        while i < token.len() {
+            let b = token[i];
+            if b == b'-' {
+                if previous_hyphen {
+                    return false;
+                }
+                previous_hyphen = true;
+            } else if b.is_ascii_lowercase() || b.is_ascii_digit() {
+                previous_hyphen = false;
+            } else {
+                return false;
+            }
+            i += 1;
+        }
+        !previous_hyphen
+    }
+
+    pub fn as_subject_token(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for LogChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::str::FromStr for LogChannel {
+    type Err = InvalidLogChannel;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        LogChannel::new(s)
+    }
+}
+
+impl Serialize for LogChannel {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for LogChannel {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        LogChannel::new(s).map_err(serde::de::Error::custom)
+    }
+}
+
+impl schemars::JsonSchema for LogChannel {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "LogChannel".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut schema = String::json_schema(generator);
+        schema.insert("pattern".into(), "^[a-z0-9]+(-[a-z0-9]+)*$".into());
+        schema.insert("maxLength".into(), LogChannel::MAX_LEN.into());
+        schema
     }
 }
 
 /// The manifest version this crate emits and understands.
 pub const LOG_VIEW_MANIFEST_VERSION: u32 = 1;
 
-/// One line of a job's [`Meta`](LogChannel::Meta) channel: the supervisor
-/// declaring what views the job's log stream offers and how to render them.
+/// One line of a job's [`LogChannel::META`] channel: the supervisor declaring
+/// what views the job's log stream offers and how to render them.
 ///
 /// **Declarations are cumulative.** A client keeps a map of views keyed by
 /// [`LogView::id`]; a later declaration replaces an earlier one with the same
