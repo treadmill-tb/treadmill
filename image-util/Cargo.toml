@@ -14,7 +14,9 @@ path = "src/main.rs"
 treadmill-rs = { workspace = true }
 oci-spec = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_json_canonicalizer = { workspace = true }
 sha2 = { workspace = true }
 anyhow = { workspace = true }
 digest-io = { workspace = true }

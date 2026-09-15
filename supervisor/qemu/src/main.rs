@@ -1,3 +1,12 @@
+//! The QEMU supervisor runs each job in a virtual machine.
+//!
+//! # Image contract
+//!
+//! An image for this supervisor provides exactly one role, `disk`: a
+//! whole, partitioned disk (qcow2 layers, over a qcow2 or raw base). The
+//! supervisor layers a per-job writable overlay of `working_disk_max_bytes` on
+//! top, and the configured QEMU invocation attaches it via `{disk_node}`.
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -15,7 +24,7 @@ use treadmill_rs::api::switchboard_supervisor::{
 use treadmill_rs::connector::{self, StartJobMessage, SupervisorConnector};
 use treadmill_rs::image::Digest;
 use treadmill_rs::image::blockdev::BackingChain;
-use treadmill_rs::image::parse::{self, ChainError, TreadmillImage};
+use treadmill_rs::image::parse::{self, TreadmillImage};
 use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 
 use treadmill_supervisor_lib::bootstrap::{self, COORD_MAILBOX_CAPACITY, OnDisconnect, StopSignal};
@@ -31,7 +40,12 @@ use treadmill_supervisor_lib::workdirs::{AllocationRecord, JobWorkdirs, Retentio
 const QEMU_STDOUT: LogChannel = LogChannel::from_static("qemu-stdout");
 const QEMU_STDERR: LogChannel = LogChannel::from_static("qemu-stderr");
 
-const DISK_OVERLAY: &str = "disk";
+/// The role of the disk the VM boots from.
+const DISK_ROLE: &str = "disk";
+
+/// Prefix of the `-blockdev` node names of the disk's chain.
+const DISK_NODE_PREFIX: &str = "tml";
+
 const DISK_OVERLAY_FILE: &str = "overlay.qcow2";
 
 #[derive(Parser, Debug, Clone)]
@@ -69,7 +83,7 @@ pub struct QemuConfig {
     /// - `job_workdir`: per-job state directory
     ///
     /// - `disk_node`: `node-name` of the writable top of the runtime backing
-    ///   chain ([`BackingChain::TOP_NODE`]).
+    ///   chain of the image's `disk` ([`BackingChain::top_node`]).
     ///
     ///   The supervisor internally prepends the `-blockdev` nodes assembling
     ///   the chain to the invocation, so the configured args should attach the
@@ -159,18 +173,6 @@ impl QemuBackend {
         }
     }
 
-    /// Map the image's ordered backing chain to the blob paths in the local OCI
-    /// store. Base first (ready for [`BackingChain::new`]), with the head
-    /// layer's virtual size.
-    fn chain_blob_paths(&self, image: &TreadmillImage) -> Result<(Vec<PathBuf>, u64), ChainError> {
-        let (chain, head_virtual_size) = image.backing_chain()?;
-        let paths = chain
-            .into_iter()
-            .map(|layer| self.image_store.blob_path(&layer.digest))
-            .collect();
-        Ok((paths, head_virtual_size))
-    }
-
     async fn resolve_image(
         &self,
         job_id: Uuid,
@@ -221,21 +223,45 @@ impl QemuBackend {
                 description: format!("Cannot retrieve image manifest of {manifest_digest}: {e:#}",),
             })?;
 
-        parse::parse_image(&manifest).map_err(|e| connector::JobError {
+        let image = parse::parse_image(&manifest).map_err(|e| connector::JobError {
             error_kind: connector::JobErrorKind::ImageInvalid,
             description: format!("Image {manifest_digest} is not a valid Treadmill image: {e}"),
-        })
+        })?;
+
+        image
+            .check_roles(&[DISK_ROLE])
+            .map_err(|e| connector::JobError {
+                error_kind: connector::JobErrorKind::ImageNotCompatible,
+                description: format!("Image {manifest_digest} cannot boot in a VM: {e}"),
+            })?;
+
+        Ok(image)
     }
 
-    fn lower_chain(&self, image: &TreadmillImage) -> Result<Vec<PathBuf>, connector::JobError> {
-        // A malformed chain (dangling/cyclic lower, missing virtual size) is
-        // treated as an invalid image.
-        let (lower_paths, head_virtual_size) =
-            self.chain_blob_paths(image)
-                .map_err(|e| connector::JobError {
-                    error_kind: connector::JobErrorKind::ImageInvalid,
-                    description: format!("Invalid backing chain: {e}"),
-                })?;
+    /// Resolve the image's `disk` chain onto `overlay_file`.
+    fn disk_chain(
+        &self,
+        image: &TreadmillImage,
+        overlay_file: &Path,
+    ) -> Result<BackingChain, connector::JobError> {
+        let disk = image.chain(DISK_ROLE).ok_or_else(|| connector::JobError {
+            error_kind: connector::JobErrorKind::ImageNotCompatible,
+            description: format!("Image provides no {DISK_ROLE} role"),
+        })?;
+
+        let chain = BackingChain::from_chain(
+            DISK_NODE_PREFIX,
+            &disk,
+            |digest| self.image_store.blob_path(digest),
+            overlay_file,
+        )
+        .map_err(|e| connector::JobError {
+            error_kind: connector::JobErrorKind::ImageNotCompatible,
+            description: format!("Cannot attach the image's {DISK_ROLE}: {e}"),
+        })?;
+        let head_virtual_size = disk
+            .virtual_size()
+            .expect("a chain of a known format has a virtual size");
 
         // The overlay is always created with exactly `working_disk_max_bytes`.
         // Fail if the backing image's head layer is smaller than this. If we'd
@@ -251,13 +277,13 @@ impl QemuBackend {
             });
         }
 
-        Ok(lower_paths)
+        Ok(chain)
     }
 
-    fn seed_vars(&self, vars: &mut JobVars) {
+    fn seed_vars(&self, vars: &mut JobVars, chain: &BackingChain) {
         // The disk is attached by referencing the writable top node of the
         // backing chain the supervisor prepends as `-blockdev` args at launch.
-        vars.insert("disk_node".to_string(), BackingChain::TOP_NODE.to_string());
+        vars.insert("disk_node".to_string(), chain.top_node());
     }
 }
 
@@ -303,9 +329,9 @@ impl JobBackend for QemuBackend {
         image: TreadmillImage,
         vars: &mut JobVars,
     ) -> Result<BackingChain, connector::JobError> {
-        let lower_paths = self.lower_chain(&image)?;
-
         let overlay_file = workdir.join(DISK_OVERLAY_FILE);
+        let chain = self.disk_chain(&image, &overlay_file)?;
+
         event!(
             Level::DEBUG,
             ?overlay_file,
@@ -324,7 +350,7 @@ impl JobBackend for QemuBackend {
         AllocationRecord::new(
             manifest_digest,
             locations,
-            [(DISK_OVERLAY.to_string(), DISK_OVERLAY_FILE.to_string())],
+            [(DISK_ROLE.to_string(), DISK_OVERLAY_FILE.to_string())],
         )
         .write(workdir)
         .await
@@ -333,9 +359,9 @@ impl JobBackend for QemuBackend {
             description: format!("Failed to record the job's allocation: {e:#}"),
         })?;
 
-        self.seed_vars(vars);
+        self.seed_vars(vars, &chain);
 
-        Ok(BackingChain::new(lower_paths, overlay_file))
+        Ok(chain)
     }
 
     #[instrument(skip(self, job, vars), err(Debug, level = Level::WARN))]
@@ -349,7 +375,7 @@ impl JobBackend for QemuBackend {
             .await
             .map_err(cannot_resume)?;
         let overlay_file = record
-            .overlay(workdir, DISK_OVERLAY)
+            .overlay(workdir, DISK_ROLE)
             .await
             .map_err(cannot_resume)?;
 
@@ -363,11 +389,11 @@ impl JobBackend for QemuBackend {
         let image = self
             .resolve_image(job.job_id, &record.manifest_digest, &record.locations)
             .await?;
-        let lower_paths = self.lower_chain(&image)?;
+        let chain = self.disk_chain(&image, &overlay_file)?;
 
-        self.seed_vars(vars);
+        self.seed_vars(vars, &chain);
 
-        Ok(BackingChain::new(lower_paths, overlay_file))
+        Ok(chain)
     }
 
     async fn launch(
@@ -648,9 +674,7 @@ mod tests {
         ImageLocation, LogStreamingDispatch, RestartPolicy,
     };
     use treadmill_rs::image::Digest;
-    use treadmill_rs::image::annotations::Role;
-    use treadmill_rs::image::assemble;
-    use treadmill_rs::image::parse::ImageLayer;
+    use treadmill_rs::image::assemble::{Blob, BlobFormat, ImageBuilder, manifest_bytes};
     use treadmill_rs::util::Secret;
     use treadmill_supervisor_lib::launcher::WorkloadProcess;
 
@@ -822,97 +846,65 @@ mod tests {
         }
     }
 
-    /// A layer with no `lower`, i.e. the base of a chain.
-    fn base_layer(d: Digest, virtual_size: Option<u64>) -> ImageLayer {
-        ImageLayer {
-            digest: d,
-            size: 10,
-            media_type: "application/vnd.treadmill.disk.qcow2".to_string(),
-            role: None,
-            virtual_size,
-            lower: None,
-        }
-    }
-
-    fn over(mut layer: ImageLayer, lower: Digest) -> ImageLayer {
-        layer.lower = Some(lower);
-        layer
-    }
-
-    fn image(layers: Vec<ImageLayer>, head: Digest) -> TreadmillImage {
-        TreadmillImage {
-            layers,
-            head,
-            title: None,
-            version: None,
-            description: None,
-            base_name: None,
-        }
-    }
-
     const GIB: u64 = 1024 * 1024 * 1024;
 
-    /// The ordered chain is mapped to the blob paths the local store holds the
-    /// layers at, in the order the `-blockdev` nodes have to be emitted in, and
-    /// the overlay is sized from the head's virtual size. (The ordering itself
-    /// is the image's business, and is tested in `treadmill_rs::image::parse`.)
-    #[tokio::test]
-    async fn the_chain_is_mapped_to_store_blob_paths() {
-        let f = fixture(4 * GIB, vec![]);
-        let (base, middle, head) = (digest(1), digest(2), digest(3));
-
-        let image = image(
-            vec![
-                over(base_layer(middle, Some(2 * GIB)), base),
-                base_layer(base, Some(GIB)),
-                over(base_layer(head, Some(4 * GIB)), middle),
-            ],
-            head,
-        );
-
-        let (paths, head_virtual_size) = f.backend.chain_blob_paths(&image).unwrap();
-
-        assert_eq!(
-            paths,
-            vec![
-                f.store.blob_path(&base),
-                f.store.blob_path(&middle),
-                f.store.blob_path(&head),
-            ],
-        );
-        assert_eq!(head_virtual_size, 4 * GIB);
+    /// An image whose `disk` chain has a qcow2 layer per virtual size, base
+    /// first, with the layer digests `digest(1)`, `digest(2)`, ….
+    fn disk_image(virtual_sizes: &[u64]) -> TreadmillImage {
+        let mut builder = ImageBuilder::default();
+        for (n, virtual_size) in (1..).zip(virtual_sizes) {
+            builder
+                .push(
+                    "disk".parse().unwrap(),
+                    Blob {
+                        digest: digest(n),
+                        size: 10,
+                        format: BlobFormat::Qcow2 {
+                            virtual_size: *virtual_size,
+                        },
+                    },
+                )
+                .unwrap();
+        }
+        builder.build().unwrap()
     }
 
-    /// A chain the image cannot assemble fails the job as an invalid image,
-    /// whatever is wrong with it.
+    /// The disk's chain is mapped to the blob paths the local store holds the
+    /// layers at, base first, in the order the `-blockdev` nodes have to be
+    /// emitted in. (Resolving the chain is the image's business, and is tested
+    /// in `treadmill_rs::image::parse`.)
     #[tokio::test]
-    async fn a_malformed_chain_is_an_invalid_image() {
+    async fn the_disk_chain_is_mapped_to_store_blob_paths() {
         let f = fixture(4 * GIB, vec![]);
-        let head = digest(3);
+        let image = disk_image(&[GIB, 2 * GIB, 4 * GIB]);
 
-        // A `lower` naming nothing in the manifest: no base to stack on.
-        let image = image(vec![over(base_layer(head, Some(GIB)), digest(9))], head);
-
-        let mut vars = JobVars::new();
-        let error = f
+        let chain = f
             .backend
-            .allocate(&start_msg(Uuid::new_v4()), f.tmp.path(), image, &mut vars)
+            .allocate(
+                &start_msg(Uuid::new_v4()),
+                f.tmp.path(),
+                image,
+                &mut JobVars::new(),
+            )
             .await
-            .unwrap_err();
+            .unwrap();
 
-        assert!(
-            matches!(error.error_kind, connector::JobErrorKind::ImageInvalid),
-            "{error:?}",
+        assert_eq!(
+            chain.lower_paths().collect::<Vec<_>>(),
+            [digest(1), digest(2), digest(3)]
+                .map(|d| f.store.blob_path(&d))
+                .iter()
+                .map(PathBuf::as_path)
+                .collect::<Vec<_>>(),
         );
-        assert!(f.launcher.overlays().is_empty(), "nothing was allocated");
+        assert_eq!(chain.overlay_path(), f.tmp.path().join("overlay.qcow2"));
     }
 
     async fn allocate(
         f: &Fixture,
         head_virtual_size: u64,
     ) -> Result<BackingChain, connector::JobError> {
-        let head = digest(3);
-        let image = image(vec![base_layer(head, Some(head_virtual_size))], head);
+        let image = disk_image(&[head_virtual_size]);
         let mut vars = JobVars::new();
         f.backend
             .allocate(&start_msg(Uuid::new_v4()), f.tmp.path(), image, &mut vars)
@@ -990,8 +982,7 @@ mod tests {
 
         let job_id = Uuid::new_v4();
         let mut vars = runner_vars(job_id, f.tmp.path());
-        let head = digest(3);
-        let image = image(vec![base_layer(head, Some(GIB))], head);
+        let image = disk_image(&[GIB]);
         let chain = f
             .backend
             .allocate(&start_msg(job_id), f.tmp.path(), image, &mut vars)
@@ -1020,7 +1011,7 @@ mod tests {
                 "-name",
                 &format!("tml-{job_id}"),
                 "-device",
-                &format!("virtio-blk-pci,drive={}", BackingChain::TOP_NODE),
+                "virtio-blk-pci,drive=tml-disk",
             ],
         );
     }
@@ -1034,8 +1025,7 @@ mod tests {
 
         let job_id = Uuid::new_v4();
         let mut vars = runner_vars(job_id, f.tmp.path());
-        let head = digest(3);
-        let image = image(vec![base_layer(head, Some(GIB))], head);
+        let image = disk_image(&[GIB]);
 
         let mut msg = start_msg(job_id);
         msg.log_streaming = Some(LogStreamingDispatch {
@@ -1075,8 +1065,7 @@ mod tests {
 
         let job_id = Uuid::new_v4();
         let mut vars = runner_vars(job_id, f.tmp.path());
-        let head = digest(3);
-        let image = image(vec![base_layer(head, Some(GIB))], head);
+        let image = disk_image(&[GIB]);
 
         let mut msg = start_msg(job_id);
         msg.log_streaming = Some(LogStreamingDispatch {
@@ -1109,16 +1098,7 @@ mod tests {
     }
 
     fn resumable_manifest(head_virtual_size: u64) -> ImageManifest {
-        assemble::build_manifest(
-            &[assemble::LayerSpec {
-                digest: digest(3),
-                size: 10,
-                role: Role::Root,
-                virtual_size: Some(head_virtual_size),
-            }],
-            &assemble::ImageMeta::default(),
-        )
-        .unwrap()
+        disk_image(&[head_virtual_size]).to_manifest()
     }
 
     async fn retired_workdir(f: &Fixture) -> PathBuf {
@@ -1131,7 +1111,7 @@ mod tests {
                 registry: "127.0.0.1:0".to_string(),
                 repository: "treadmill/stub".to_string(),
             }],
-            [(DISK_OVERLAY.to_string(), DISK_OVERLAY_FILE.to_string())],
+            [(DISK_ROLE.to_string(), DISK_OVERLAY_FILE.to_string())],
         )
         .write(&workdir)
         .await
@@ -1149,7 +1129,7 @@ mod tests {
         let record = AllocationRecord::read(f.tmp.path()).await.unwrap();
         assert_eq!(record.manifest_digest, digest(3));
         assert_eq!(
-            record.overlays.get(DISK_OVERLAY).map(String::as_str),
+            record.overlays.get(DISK_ROLE).map(String::as_str),
             Some(DISK_OVERLAY_FILE),
         );
         assert_eq!(record.locations.len(), 1);
@@ -1201,12 +1181,9 @@ mod tests {
             args.contains(&workdir.join(DISK_OVERLAY_FILE).display().to_string()),
             "{args}",
         );
-        assert!(args.contains(&f.store.blob_path(&digest(3)).display().to_string()));
+        assert!(args.contains(&f.store.blob_path(&digest(1)).display().to_string()));
 
-        assert_eq!(
-            vars.get("disk_node").map(String::as_str),
-            Some(BackingChain::TOP_NODE),
-        );
+        assert_eq!(vars.get("disk_node").map(String::as_str), Some("tml-disk"),);
     }
 
     /// A retired directory this supervisor cannot make sense of is refused as
@@ -1254,6 +1231,99 @@ mod tests {
             ),
             "{error:?}",
         );
+    }
+
+    /// A manifest whose chains do not resolve is the image's fault.
+    #[tokio::test]
+    async fn a_manifest_with_a_dangling_lower_is_an_invalid_image() {
+        let mut manifest = disk_image(&[GIB, GIB]).to_manifest();
+        let mut layers = manifest.layers().clone();
+        layers.remove(0);
+        manifest.set_layers(layers);
+        let f = fixture_serving(4 * GIB, vec![], Some(manifest));
+
+        let error = f
+            .backend
+            .fetch(&start_msg(Uuid::new_v4()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error.error_kind, connector::JobErrorKind::ImageInvalid),
+            "{error:?}",
+        );
+    }
+
+    /// An image built for another target, such as an nbd-netboot image, is
+    /// refused rather than booted without the disks it expects.
+    #[tokio::test]
+    async fn an_image_without_exactly_a_disk_is_not_compatible() {
+        let blob = |n| Blob {
+            digest: digest(n),
+            size: 10,
+            format: BlobFormat::Qcow2 { virtual_size: GIB },
+        };
+        let mut netboot = ImageBuilder::default();
+        netboot
+            .push("rootfs".parse().unwrap(), blob(1))
+            .unwrap()
+            .push("bootfs".parse().unwrap(), blob(2))
+            .unwrap();
+        let mut extra = ImageBuilder::from_image(disk_image(&[GIB]));
+        extra.push("efivars".parse().unwrap(), blob(2)).unwrap();
+
+        for image in [netboot.build().unwrap(), extra.build().unwrap()] {
+            let f = fixture_serving(4 * GIB, vec![], Some(image.to_manifest()));
+            let error = f
+                .backend
+                .fetch(&start_msg(Uuid::new_v4()))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(
+                    error.error_kind,
+                    connector::JobErrorKind::ImageNotCompatible
+                ),
+                "{error:?}",
+            );
+        }
+    }
+
+    /// A disk this supervisor cannot open as a block device is not compatible.
+    #[tokio::test]
+    async fn a_disk_of_an_unknown_format_is_not_compatible() {
+        let manifest = disk_image(&[GIB]).to_manifest();
+        // Canonical bytes, so the virtual size is followed by the role.
+        let json = String::from_utf8(manifest_bytes(&manifest))
+            .unwrap()
+            .replace(
+                "application/vnd.treadmill.qcow2",
+                "application/vnd.example.future",
+            )
+            .replace(
+                &format!(r#""dev.treadmill.qcow2.virtual-size":"{GIB}","#),
+                "",
+            );
+        let f = fixture_serving(4 * GIB, vec![], Some(serde_json::from_str(&json).unwrap()));
+
+        let image = f.backend.fetch(&start_msg(Uuid::new_v4())).await.unwrap();
+        let error = f
+            .backend
+            .allocate(
+                &start_msg(Uuid::new_v4()),
+                f.tmp.path(),
+                image,
+                &mut JobVars::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error.error_kind,
+                connector::JobErrorKind::ImageNotCompatible
+            ),
+            "{error:?}",
+        );
+        assert!(f.launcher.overlays().is_empty(), "nothing was allocated");
     }
 
     /// A manifest that is present but not a Treadmill image is the image's

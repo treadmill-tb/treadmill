@@ -1,16 +1,14 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::Parser;
 
-use treadmill_rs::image::annotations::Role;
-use treadmill_rs::image::assemble::{self, ImageMeta, LayerSpec};
+use treadmill_rs::image::assemble::ImageBuilder;
 
-use crate::chain;
 use crate::layer_arg::LayerArg;
-use crate::layout::{Layout, qcow2_header, read_image};
+use crate::layout::{Layout, read_image};
 
-/// Append layers on top of an existing image layout's backing chain.
+/// Append layers on top of the chains of an existing image layout.
 #[derive(Debug, Parser)]
 pub struct AppendArgs {
     /// Lower OCI image layout whose layers are carried through by digest.
@@ -21,9 +19,13 @@ pub struct AppendArgs {
     #[arg(short = 'o', long)]
     out: PathBuf,
 
-    /// A layer blob as `ROLE=PATH` (ROLE is `root` or `boot`). Repeatable, and
-    /// ORDER IS SIGNIFICANT — it extends the backing chain.
-    #[arg(long = "layer", value_name = "ROLE=PATH", required = true)]
+    /// A layer blob as `ROLE=FORMAT:PATH`, where FORMAT is `qcow2` or `raw`,
+    /// placed on top of ROLE's chain (which only a qcow2 blob can go on), or
+    /// starting it if the lower has no such role.
+    /// Repeatable: each later blob of a role backs onto the one before it.
+    /// Without any, the lower's layers are carried through under the new
+    /// metadata.
+    #[arg(long = "layer", value_name = "ROLE=FORMAT:PATH")]
     layers: Vec<LayerArg>,
 
     /// `org.opencontainers.image.title`; inherited from the lower if omitted.
@@ -62,64 +64,40 @@ pub fn append(args: &AppendArgs) -> anyhow::Result<()> {
     let lower = Layout::open(&args.lower)?;
     let (lower_manifest_digest, _) = lower.manifest()?;
     let lower_image = read_image(&lower)?;
-    chain::split_and_check_order(&lower_image)
-        .context("the lower layout's layer order disagrees with its backing chain")?;
-
-    let mut specs: Vec<LayerSpec> =
-        Vec::with_capacity(lower_image.layers.len() + args.layers.len());
-    for layer in &lower_image.layers {
-        specs.push(LayerSpec {
-            digest: layer.digest,
-            size: layer.size,
-            role: layer
-                .role
-                .with_context(|| format!("lower layer {} carries no role", layer.digest))?,
-            virtual_size: layer.virtual_size,
-        });
-    }
 
     let out = Layout::create(&args.out)?;
-    for layer in &lower_image.layers {
+    for layer in lower_image.layers() {
         out.store_blob_from(&lower, &layer.digest)
             .with_context(|| format!("carry lower layer {} through", layer.digest))?;
     }
 
+    let mut builder = ImageBuilder::from_image(lower_image);
     for layer in &args.layers {
-        specs.push(store_layer(&out, layer.role, &layer.path)?);
+        let blob = out.store_layer(layer)?;
+        builder
+            .push(layer.role.clone(), blob)
+            .with_context(|| format!("place {}", layer.path.display()))?;
     }
 
-    let meta = ImageMeta {
-        title: args.title.clone().or_else(|| lower_image.title.clone()),
-        version: args.version.clone().or_else(|| lower_image.version.clone()),
-        description: args
-            .description
+    let meta = &mut builder.meta;
+    if let Some(title) = &args.title {
+        meta.title = Some(title.clone());
+    }
+    if let Some(version) = &args.version {
+        meta.version = Some(version.clone());
+    }
+    if let Some(description) = &args.description {
+        meta.description = Some(description.clone());
+    }
+    meta.base_name = Some(
+        args.base_name
             .clone()
-            .or_else(|| lower_image.description.clone()),
-        base_name: Some(
-            args.base_name
-                .clone()
-                .unwrap_or_else(|| lower_manifest_digest.encoded()),
-        ),
-    };
+            .unwrap_or_else(|| lower_manifest_digest.encoded()),
+    );
 
-    let manifest = assemble::build_manifest(&specs, &meta).context("assemble manifest")?;
-    out.write_manifest(&manifest)?;
+    let image = builder.build().context("assemble image")?;
+    out.write_image(&image)?;
     out.prune()?;
 
     Ok(())
-}
-
-pub fn store_layer(layout: &Layout, role: Role, path: &Path) -> anyhow::Result<LayerSpec> {
-    let (digest, size) = layout
-        .store_file(path)
-        .with_context(|| format!("store layer blob {}", path.display()))?;
-    let virtual_size = qcow2_header(path)
-        .with_context(|| format!("read qcow2 virtual size of {}", path.display()))?
-        .virtual_size;
-    Ok(LayerSpec {
-        digest,
-        size,
-        role,
-        virtual_size: Some(virtual_size),
-    })
 }
