@@ -22,7 +22,7 @@ pub const ALGORITHM: &str = "sha256";
 /// A content-addressable OCI digest over 32 bytes of SHA-256.
 ///
 /// Formats as the canonical OCI string `sha256:<64 lower-case hex>`.
-#[derive(schemars::JsonSchema, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(schemars::JsonSchema, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Digest(#[schemars(with = "String")] [u8; 32]);
 
 impl Digest {

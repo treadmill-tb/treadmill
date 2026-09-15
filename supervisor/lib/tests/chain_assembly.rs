@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use treadmill_rs::image::Digest;
 use treadmill_rs::image::blockdev::BackingChain;
+use treadmill_rs::image::parse::{ImageLayer, ImageMeta, LayerFormat, TreadmillImage};
 
 const VIRTUAL_SIZE: u64 = 16 * 1024 * 1024;
 
@@ -52,10 +54,15 @@ fn run(cmd: &mut Command) {
     );
 }
 
-/// `qemu-io` script against a file (used to seed layer content).
+/// `qemu-io` script against a qcow2 file (used to seed layer content).
 fn qemu_io_file(qemu_io: &Path, file: &Path, script: &[&str]) {
+    qemu_io_format(qemu_io, "qcow2", file, script);
+}
+
+/// `qemu-io` script against a file of `format`.
+fn qemu_io_format(qemu_io: &Path, format: &str, file: &Path, script: &[&str]) {
     let mut cmd = Command::new(qemu_io);
-    cmd.arg("-f").arg("qcow2").arg(file);
+    cmd.arg("-f").arg(format).arg(file);
     for c in script {
         cmd.arg("-c").arg(c);
     }
@@ -80,6 +87,22 @@ impl StorageDaemon {
         format!("nbd+unix:///disk?socket={}", self.socket.display())
     }
 
+    /// Run a `qemu-io` script through the export, returning its output.
+    fn qemu_io(&self, qemu_io: &Path, script: &[&str]) -> String {
+        let mut cmd = Command::new(qemu_io);
+        cmd.arg("-f").arg("raw").arg(self.nbd_uri());
+        for c in script {
+            cmd.arg("-c").arg(c);
+        }
+        let out = cmd.output().expect("qemu-io over nbd");
+        assert!(
+            out.status.success(),
+            "qemu-io failed: {}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
     fn start(sd: &Path, chain: &BackingChain, socket: PathBuf) -> StorageDaemon {
         let mut cmd = Command::new(sd);
         for node in chain.blockdev_args() {
@@ -90,7 +113,7 @@ impl StorageDaemon {
             .arg("--export")
             .arg(format!(
                 "type=nbd,id=e0,node-name={},name=disk,writable=on",
-                BackingChain::TOP_NODE,
+                chain.top_node(),
             ))
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -142,20 +165,7 @@ fn blockdev_chain_composes_and_is_writable() {
     let daemon = StorageDaemon::start(&t.storage_daemon, &chain, dir.path().join("nbd.sock"));
 
     // Read through the assembled export and verify composition + writability.
-    let read = |script: &[&str]| -> String {
-        let mut cmd = Command::new(&t.qemu_io);
-        cmd.arg("-f").arg("raw").arg(daemon.nbd_uri());
-        for c in script {
-            cmd.arg("-c").arg(c);
-        }
-        let out = cmd.output().expect("qemu-io over nbd");
-        assert!(
-            out.status.success(),
-            "qemu-io failed: {}",
-            String::from_utf8_lossy(&out.stderr),
-        );
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    };
+    let read = |script: &[&str]| daemon.qemu_io(&t.qemu_io, script);
 
     // `read -P` verifies the bytes match the pattern; a mismatch prints a
     // failure line (so assert none appears) — head shadows base at 0, base shows
@@ -171,5 +181,88 @@ fn blockdev_chain_composes_and_is_writable() {
     assert!(
         !rw.to_lowercase().contains("verification failed"),
         "writable top did not retain its write: {rw}",
+    );
+}
+
+/// A chain an image resolves to may start on a raw layer, which is opened with
+/// the raw driver and still shows through the qcow2 layers above it.
+#[test]
+fn an_image_chain_with_a_raw_base_composes() {
+    let Some(t) = tools() else {
+        eprintln!("qemu-storage-daemon/qemu-img/qemu-io not on PATH; skipping");
+        return;
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base.raw");
+    let head = dir.path().join("head.qcow2");
+    let overlay = dir.path().join("overlay.qcow2");
+    std::fs::File::create(&base)
+        .unwrap()
+        .set_len(VIRTUAL_SIZE)
+        .unwrap();
+    for f in [&head, &overlay] {
+        run(Command::new(&t.qemu_img)
+            .args(["create", "-f", "qcow2"])
+            .arg(f)
+            .arg(VIRTUAL_SIZE.to_string()));
+    }
+    qemu_io_format(
+        &t.qemu_io,
+        "raw",
+        &base,
+        &["write -P 0xBB 0 4096", "write -P 0xDD 1M 4096"],
+    );
+    qemu_io_file(&t.qemu_io, &head, &["write -P 0xAA 0 4096"]);
+
+    let (base_digest, head_digest) = (Digest::from_sha256([1; 32]), Digest::from_sha256([2; 32]));
+    let image = TreadmillImage::new(
+        vec![
+            ImageLayer {
+                digest: base_digest,
+                size: VIRTUAL_SIZE,
+                format: LayerFormat::Raw,
+                role: None,
+            },
+            ImageLayer {
+                digest: head_digest,
+                size: 0,
+                format: LayerFormat::Qcow2 {
+                    virtual_size: VIRTUAL_SIZE,
+                    lower: Some(base_digest),
+                },
+                role: Some("disk".parse().unwrap()),
+            },
+        ],
+        ImageMeta::default(),
+    )
+    .unwrap();
+    let chain = BackingChain::from_chain(
+        "tml",
+        &image.chain("disk").unwrap(),
+        |digest| {
+            if *digest == base_digest {
+                base.clone()
+            } else {
+                head.clone()
+            }
+        },
+        overlay.clone(),
+    )
+    .unwrap();
+    let daemon = StorageDaemon::start(&t.storage_daemon, &chain, dir.path().join("nbd.sock"));
+
+    let verify = daemon.qemu_io(
+        &t.qemu_io,
+        &[
+            "read -P 0xAA 0 4096",
+            "read -P 0xDD 1M 4096",
+            "write -P 0xCC 2M 4096",
+            "read -P 0xCC 2M 4096",
+        ],
+    );
+    assert!(
+        !verify.to_lowercase().contains("verification failed"),
+        "chain did not compose as overlay->head->raw base: {verify}",
     );
 }

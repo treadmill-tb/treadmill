@@ -1,5 +1,4 @@
 mod append;
-mod chain;
 mod layer_arg;
 mod layout;
 mod verify;
@@ -10,9 +9,10 @@ use std::process::ExitCode;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
-use treadmill_rs::image::assemble::{self, ImageMeta, LayerSpec};
+use treadmill_rs::image::assemble::ImageBuilder;
+use treadmill_rs::image::parse::ImageMeta;
 
-use crate::append::{AppendArgs, store_layer};
+use crate::append::AppendArgs;
 use crate::layer_arg::LayerArg;
 use crate::layout::Layout;
 use crate::verify::VerifyArgs;
@@ -34,7 +34,7 @@ enum Command {
     Verify(VerifyArgs),
 }
 
-/// Assemble an ordered list of layer blobs into an OCI layout directory.
+/// Assemble layer blobs into an OCI layout directory.
 #[derive(Debug, Parser)]
 struct AssembleArgs {
     /// Output OCI layout directory (holds `oci-layout`, `index.json`, `blobs/`;
@@ -54,9 +54,10 @@ struct AssembleArgs {
     #[arg(long)]
     description: Option<String>,
 
-    /// A layer blob as `ROLE=PATH` (ROLE is `root` or `boot`). Repeatable, and
-    /// ORDER IS SIGNIFICANT — it defines the backing chain (see
-    /// `treadmill_rs::image::assemble`).
+    /// A layer blob as `ROLE=PATH`, placed on top of ROLE's chain. Repeatable:
+    /// the first blob of a role is its chain's base, and each later one backs
+    /// onto the one before it. A blob's format is read off its content (qcow2,
+    /// or raw otherwise); only the base of a chain may be raw.
     #[arg(long = "layer", value_name = "ROLE=PATH", required = true)]
     layers: Vec<LayerArg>,
 
@@ -92,19 +93,20 @@ fn finish(what: &str, result: anyhow::Result<()>) -> ExitCode {
 fn assemble_layout(args: &AssembleArgs) -> anyhow::Result<()> {
     let layout = Layout::create(&args.out)?;
 
-    let mut specs: Vec<LayerSpec> = Vec::with_capacity(args.layers.len());
-    for layer in &args.layers {
-        specs.push(store_layer(&layout, layer.role, &layer.path)?);
-    }
-
-    let meta = ImageMeta {
+    let mut builder = ImageBuilder::new(ImageMeta {
         title: Some(args.title.clone()),
         version: args.version.clone(),
         description: args.description.clone(),
         base_name: None,
-    };
-    let manifest = assemble::build_manifest(&specs, &meta).context("assemble manifest")?;
-    layout.write_manifest(&manifest)?;
+    });
+    for layer in &args.layers {
+        let blob = layout.store_layer(&layer.path)?;
+        builder
+            .push(layer.role.clone(), blob)
+            .with_context(|| format!("place {}", layer.path.display()))?;
+    }
+    let image = builder.build().context("assemble image")?;
+    layout.write_image(&image)?;
 
     Ok(())
 }

@@ -225,12 +225,12 @@
               lower="${self'.packages.tiny-efi-image-layout}"
               rev2="${self'.packages.tiny-efi-rev2-qcow2}/rev2.qcow2"
 
-              image-util verify "$lower" --root-layers 2 --boot-layers 0 \
+              image-util verify "$lower" --chain disk=2 \
                 --title tiny-efi --name tiny-efi-lower
 
-              image-util append --lower "$lower" --layer "root=$rev2" \
+              image-util append --lower "$lower" --layer "disk=$rev2" \
                 --title "tiny-efi rev2" -o stacked
-              image-util verify stacked --root-layers 3 --boot-layers 0 \
+              image-util verify stacked --chain disk=3 \
                 --title "tiny-efi rev2" --name tiny-efi-stacked
 
               # Every layer blob the append inherited keeps its digest, which is
@@ -249,9 +249,9 @@
 
               # Appending in place must leave no unreferenced manifest behind.
               cp -r --no-preserve=mode "$lower" inplace
-              image-util append --lower inplace --layer "root=$rev2" \
+              image-util append --lower inplace --layer "disk=$rev2" \
                 --title "tiny-efi rev2" -o inplace
-              image-util verify inplace --root-layers 3 --boot-layers 0 \
+              image-util verify inplace --chain disk=3 \
                 --title "tiny-efi rev2" --name tiny-efi-inplace
               blobs="$(find inplace/blobs/sha256 -type f | wc -l)"
               [ "$blobs" = 5 ] || {
@@ -285,9 +285,91 @@
               baked_head="$(ls -S baked/blobs/sha256/* | head -n1)"
               qemu-img rebase -u -b /nonexistent.qcow2 -F qcow2 -f qcow2 "$baked_head"
               # The rebase changed the blob, so re-assemble around the new bytes.
-              image-util assemble --title baked --layer "root=$baked_head" -o baked-layout
-              refute "a root blob with a baked backing_file" baked-layout \
+              image-util assemble --title baked --layer "disk=$baked_head" -o baked-layout
+              refute "a blob with a baked backing_file" baked-layout \
                 "baked backing_file"
+
+              touch $out
+            '';
+
+        # Build an image with two independent chains, the way an nbd-netboot
+        # image carries `bootfs` and `rootfs`, and grow both. Pins that roles
+        # carry no special meaning to the tooling, that a qcow2 layer can back
+        # onto a raw base, and that the manifest does not depend on the order
+        # layers are given in.
+        image-util-roles =
+          pkgs.runCommand "image-util-roles"
+            {
+              nativeBuildInputs = [
+                self'.packages.image-util
+                pkgs.qemu-utils
+                pkgs.coreutils
+                pkgs.gnugrep
+                pkgs.jq
+              ];
+            }
+            ''
+              set -euo pipefail
+
+              # fill <file> <bytes> <char>: a file of <bytes> copies of <char>.
+              fill() { head -c "$2" /dev/zero | tr '\0' "$3" >"$1"; }
+              qcow2() { # <out> <bytes> <char>
+                fill "$1.raw" "$2" "$3"
+                qemu-img convert -f raw -O qcow2 "$1.raw" "$1"
+              }
+
+              fill boot0.raw 1048576 b
+              qcow2 boot1.qcow2 1048576 B
+              qcow2 root0.qcow2 4194304 r
+              qcow2 root1.qcow2 8388608 R
+
+              image-util assemble --title roles \
+                --layer bootfs=boot0.raw --layer rootfs=root0.qcow2 -o base
+              image-util verify base --chain bootfs=1 --chain rootfs=1 --name base
+
+              image-util assemble --title roles \
+                --layer rootfs=root0.qcow2 --layer bootfs=boot0.raw -o reordered
+              cmp base/index.json reordered/index.json
+
+              image-util append --lower base \
+                --layer rootfs=root1.qcow2 --layer bootfs=boot1.qcow2 -o derived
+              image-util verify derived --chain bootfs=2 --chain rootfs=2 --name derived
+
+              blob() { echo "sha256:$(sha256sum "$1" | cut -d' ' -f1)"; }
+              manifest="derived/blobs/sha256/$(jq -r '.manifests[0].digest | sub("^sha256:"; "")' derived/index.json)"
+              jq -e \
+                --arg boot0 "$(blob boot0.raw)" --arg boot1 "$(blob boot1.qcow2)" \
+                --arg root0 "$(blob root0.qcow2)" --arg root1 "$(blob root1.qcow2)" '
+                [.layers[] | [.digest, .mediaType, .annotations["dev.treadmill.role"], .annotations["dev.treadmill.qcow2.lower"]]]
+                == [
+                  [$boot0, "application/vnd.treadmill.raw", null, null],
+                  [$boot1, "application/vnd.treadmill.qcow2", "bootfs", $boot0],
+                  [$root0, "application/vnd.treadmill.qcow2", null, null],
+                  [$root1, "application/vnd.treadmill.qcow2", "rootfs", $root0]
+                ]
+              ' "$manifest" >/dev/null
+
+              fails() { # <message> <expected error> <command...>
+                local message="$1" expected="$2"
+                shift 2
+                if "$@" 2>err.log; then
+                  echo "image-util accepted $message" >&2
+                  exit 1
+                fi
+                grep -q "$expected" err.log || {
+                  echo "image-util rejected $message for the wrong reason:" >&2
+                  cat err.log >&2
+                  exit 1
+                }
+              }
+
+              fill other.raw 1048576 o
+              fails "a raw blob on top of a chain" "cannot go on top" \
+                image-util append --lower base --layer bootfs=other.raw -o raw-on-top
+              fails "a chain of the wrong length" "unexpected chains" \
+                image-util verify derived --chain bootfs=2 --chain rootfs=1
+              fails "a missing role" "unexpected chains" \
+                image-util verify derived --chain rootfs=2
 
               touch $out
             '';

@@ -192,7 +192,7 @@
 
       # Assemble the OCI image layout by hand: we need a pure-artifact manifest
       # (empty config + Treadmill artifactType), custom blob media types, and
-      # per-layer/manifest `dev.treadmill.*` annotations that umoci/oras don't
+      # per-layer `dev.treadmill.*` annotations that umoci/oras don't
       # express conveniently. The result is a standard OCI image layout
       # (oci-layout + index.json + blobs/sha256/<digest>).
       tinyEfiImageLayout =
@@ -239,7 +239,8 @@
             overlay_size="$(size "$overlay_qcow2")"
             overlay_vsize="$(vsize "$overlay_qcow2")"
 
-            jq -n \
+            # Sorted keys and no whitespace, as `image-util` writes manifests.
+            jq -cjS -n \
               --arg cfg "sha256:$cfg_digest" --argjson cfgsize "$cfg_size" \
               --arg base "sha256:$base_digest" --argjson basesize "$base_size" \
               --arg basevs "$base_vsize" \
@@ -248,7 +249,7 @@
               '{
                 schemaVersion: 2,
                 mediaType: "application/vnd.oci.image.manifest.v1+json",
-                artifactType: "application/vnd.treadmill.image.v1+json",
+                artifactType: "application/vnd.treadmill.image.v2+json",
                 config: {
                   mediaType: "application/vnd.oci.empty.v1+json",
                   digest: $cfg,
@@ -257,28 +258,26 @@
                 },
                 layers: [
                   {
-                    mediaType: "application/vnd.treadmill.disk.qcow2",
+                    mediaType: "application/vnd.treadmill.qcow2",
                     digest: $base,
                     size: $basesize,
                     annotations: {
-                      "dev.treadmill.role": "root",
                       "dev.treadmill.qcow2.virtual-size": $basevs
                     }
                   },
                   {
-                    mediaType: "application/vnd.treadmill.disk.qcow2",
+                    mediaType: "application/vnd.treadmill.qcow2",
                     digest: $overlay,
                     size: $overlaysize,
                     annotations: {
-                      "dev.treadmill.role": "root",
+                      "dev.treadmill.qcow2.lower": $base,
                       "dev.treadmill.qcow2.virtual-size": $overlayvs,
-                      "dev.treadmill.qcow2.lower": $base
+                      "dev.treadmill.role": "disk"
                     }
                   }
                 ],
                 annotations: {
-                  "org.opencontainers.image.title": "tiny-efi",
-                  "dev.treadmill.qcow2.head": $overlay
+                  "org.opencontainers.image.title": "tiny-efi"
                 }
               }' > manifest.json
 
@@ -287,7 +286,7 @@
 
             printf '{"imageLayoutVersion":"1.0.0"}' > "$out/oci-layout"
 
-            jq -n \
+            jq -cjS -n \
               --arg manifest "sha256:$manifest_digest" --argjson manifestsize "$manifest_size" \
               '{
                 schemaVersion: 2,
@@ -295,7 +294,7 @@
                 manifests: [
                   {
                     mediaType: "application/vnd.oci.image.manifest.v1+json",
-                    artifactType: "application/vnd.treadmill.image.v1+json",
+                    artifactType: "application/vnd.treadmill.image.v2+json",
                     digest: $manifest,
                     size: $manifestsize
                   }
