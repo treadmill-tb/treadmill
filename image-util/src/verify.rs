@@ -1,10 +1,14 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Context, ensure};
+use anyhow::{Context, bail, ensure};
 use clap::Parser;
 
-use crate::chain;
+use treadmill_rs::image::annotations::Role;
+use treadmill_rs::image::parse::LayerFormat;
+
+use crate::layer_arg::ChainArg;
 use crate::layout::{Layout, qcow2_header, read_image, verify_blob_digest};
 
 const DEFAULT_MAX_HEAD_VIRTUAL_SIZE: u64 = 10 * 1024 * 1024 * 1024;
@@ -15,20 +19,17 @@ pub struct VerifyArgs {
     /// Path to the OCI image layout directory.
     pub layout: PathBuf,
 
-    /// Expected number of `role=root` layers; asserted only when given.
-    #[arg(long)]
-    root_layers: Option<usize>,
-
-    /// Expected number of `role=boot` layers; asserted only when given.
-    #[arg(long)]
-    boot_layers: Option<usize>,
+    /// An expected chain as `ROLE=LAYERS`. Repeatable; when given, the image
+    /// must provide exactly these roles, each with a chain of that many layers.
+    #[arg(long = "chain", value_name = "ROLE=LAYERS")]
+    chains: Vec<ChainArg>,
 
     /// Expected `org.opencontainers.image.title`; asserted only when given.
     #[arg(long)]
     title: Option<String>,
 
-    /// Ceiling for the head layer's virtual size, in bytes. Must not exceed the
-    /// smallest `working_disk_max_bytes` of any supervisor the image may be
+    /// Ceiling for the virtual size of every chain's head, in bytes. Must not
+    /// exceed the smallest working disk of any supervisor the image may be
     /// scheduled on. Pass 0 to disable the check.
     #[arg(long, default_value_t = DEFAULT_MAX_HEAD_VIRTUAL_SIZE)]
     max_head_virtual_size: u64,
@@ -48,37 +49,40 @@ impl VerifyArgs {
 
 pub fn verify(args: &VerifyArgs) -> anyhow::Result<()> {
     let layout = Layout::open(&args.layout)?;
+    // Parsing validates the image's structure; what is left to check here is
+    // what needs the blobs.
     let image = read_image(&layout)?;
-    let split = chain::split_and_check_order(&image)?;
 
     if let Some(title) = &args.title {
         ensure!(
-            image.title.as_deref() == Some(title.as_str()),
+            image.meta.title.as_deref() == Some(title.as_str()),
             "unexpected image title: got {:?}, expected {title:?}",
-            image.title,
+            image.meta.title,
         );
     }
-    if let Some(expected) = args.root_layers {
-        ensure!(
-            split.roots.len() == expected,
-            "wrong root-layer count: got {}, expected {expected}",
-            split.roots.len(),
-        );
-    }
-    if let Some(expected) = args.boot_layers {
-        ensure!(
-            split.boots.len() == expected,
-            "wrong boot-layer count: got {}, expected {expected}",
-            split.boots.len(),
-        );
-    }
-    ensure!(
-        split.boots.len() <= 1,
-        "an image carries at most one role=boot layer, found {}",
-        split.boots.len(),
-    );
 
-    for layer in &image.layers {
+    if !args.chains.is_empty() {
+        let mut expected: BTreeMap<&Role, usize> = BTreeMap::new();
+        for chain in &args.chains {
+            ensure!(
+                expected.insert(&chain.role, chain.layers).is_none(),
+                "--chain {} is given more than once",
+                chain.role,
+            );
+        }
+        let actual: BTreeMap<&Role, usize> = image
+            .chains()
+            .map(|chain| (chain.role(), chain.layers().len()))
+            .collect();
+        ensure!(
+            actual == expected,
+            "unexpected chains: got {}, expected {}",
+            describe(&actual),
+            describe(&expected),
+        );
+    }
+
+    for layer in image.layers() {
         let path = layout.blob_path(&layer.digest);
         let meta = fs::metadata(&path)
             .with_context(|| format!("layer blob {} is missing", path.display()))?;
@@ -90,80 +94,52 @@ pub fn verify(args: &VerifyArgs) -> anyhow::Result<()> {
             layer.size,
         );
         verify_blob_digest(&path, &layer.digest)?;
-    }
 
-    let mut previous_virtual_size = 0u64;
-    for (i, layer) in split.roots.iter().enumerate() {
-        let path = layout.blob_path(&layer.digest);
-        let header = qcow2_header(&path)?;
-
-        let annotated = layer.virtual_size.with_context(|| {
-            format!(
-                "root layer {i} ({}) carries no dev.treadmill.qcow2.virtual-size",
+        match &layer.format {
+            LayerFormat::Qcow2 { virtual_size, .. } => {
+                let header = qcow2_header(&path)?;
+                ensure!(
+                    header.virtual_size == *virtual_size,
+                    "layer {} advertises virtual size {virtual_size} but its qcow2 header says {}",
+                    layer.digest,
+                    header.virtual_size,
+                );
+                ensure!(
+                    !header.has_backing_file,
+                    "layer {} has a baked backing_file; the chain is supplied at launch",
+                    layer.digest,
+                );
+            }
+            LayerFormat::Raw => {}
+            LayerFormat::Unknown { media_type } => bail!(
+                "layer {} has media type {media_type}, which image-util cannot verify",
                 layer.digest,
-            )
-        })?;
-        ensure!(
-            header.virtual_size == annotated,
-            "root layer {i} ({}) advertises virtual size {annotated} but its qcow2 header says {}",
-            layer.digest,
-            header.virtual_size,
-        );
-        ensure!(
-            !header.has_backing_file,
-            "root layer {i} ({}) has a baked backing_file; the chain is supplied at launch",
-            layer.digest,
-        );
-        ensure!(
-            annotated >= previous_virtual_size,
-            "root layer {i} ({}) virtual size {annotated} is smaller than its lower's \
-             ({previous_virtual_size}), which would truncate the chain",
-            layer.digest,
-        );
-        previous_virtual_size = annotated;
+            ),
+        }
     }
-
-    for layer in &split.boots {
-        let path = layout.blob_path(&layer.digest);
-        let header = qcow2_header(&path)?;
-        let annotated = layer.virtual_size.with_context(|| {
-            format!(
-                "boot layer {} carries no dev.treadmill.qcow2.virtual-size",
-                layer.digest,
-            )
-        })?;
-        ensure!(
-            header.virtual_size == annotated,
-            "boot layer {} advertises virtual size {annotated} but its qcow2 header says {}",
-            layer.digest,
-            header.virtual_size,
-        );
-        ensure!(
-            !header.has_backing_file,
-            "boot layer {} has a baked backing_file; the chain is supplied at launch",
-            layer.digest,
-        );
-    }
-
-    let (walked, head_virtual_size) = image
-        .backing_chain()
-        .map_err(|e| anyhow::anyhow!("backing chain does not walk: {e}"))?;
-    ensure!(
-        walked
-            .iter()
-            .map(|l| l.digest)
-            .eq(split.roots.iter().map(|l| l.digest)),
-        "the walked backing chain does not match the role=root layers in array order",
-    );
 
     if args.max_head_virtual_size > 0 {
-        ensure!(
-            head_virtual_size <= args.max_head_virtual_size,
-            "head virtual size {head_virtual_size} exceeds the {} byte ceiling; a supervisor \
-             whose working_disk_max_bytes is smaller rejects the image at job launch",
-            args.max_head_virtual_size,
-        );
+        for chain in image.chains() {
+            let virtual_size = chain
+                .virtual_size()
+                .expect("every layer of a known format has a virtual size");
+            ensure!(
+                virtual_size <= args.max_head_virtual_size,
+                "role {}'s virtual size {virtual_size} exceeds the {} byte ceiling; a \
+                 supervisor whose working disk is smaller rejects the image at job launch",
+                chain.role(),
+                args.max_head_virtual_size,
+            );
+        }
     }
 
     Ok(())
+}
+
+fn describe(chains: &BTreeMap<&Role, usize>) -> String {
+    let chains: Vec<String> = chains
+        .iter()
+        .map(|(role, layers)| format!("{role}={layers}"))
+        .collect();
+    format!("[{}]", chains.join(", "))
 }

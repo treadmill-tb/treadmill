@@ -743,10 +743,10 @@ mod tests {
         let manifest = store.manifest(&digest).await.expect("manifest");
         let image = treadmill_rs::image::parse::parse_image(&manifest)
             .expect("manifest is a Treadmill image");
-        assert_eq!(image.layers.len(), 2);
+        assert_eq!(image.layers().len(), 2);
 
         // ...and every layer blob is present and content-addressed correctly.
-        for layer in &image.layers {
+        for layer in image.layers() {
             let path = store.blob_path(&layer.digest);
             assert!(path.is_file(), "layer {} missing at {path:?}", layer.digest);
             let bytes = store.read_blob(&layer.digest).await.unwrap();
@@ -785,7 +785,7 @@ mod tests {
         // Now the whole closure lives in the local store.
         let manifest = store.manifest(&digest).await.expect("manifest");
         let image = treadmill_rs::image::parse::parse_image(&manifest).unwrap();
-        for layer in &image.layers {
+        for layer in image.layers() {
             assert!(
                 store.blob_path(&layer.digest).is_file(),
                 "layer {} was not copied",
@@ -949,7 +949,7 @@ mod tests {
         let image = treadmill_rs::image::parse::parse_image(&manifest).expect("treadmill image");
         let config_digest: Digest = manifest.config().digest().to_string().parse().unwrap();
         let mut closure = vec![digest, config_digest];
-        closure.extend(image.layers.iter().map(|l| l.digest));
+        closure.extend(image.layers().iter().map(|l| l.digest));
 
         // Take an in-use lease on the manifest for a job.
         let job = "550e8400-e29b-41d4-a716-446655440000";
@@ -1045,7 +1045,7 @@ mod tests {
         // The leased closure is intact after the concurrent access.
         let manifest = store.manifest(&digest).await.expect("manifest");
         let image = treadmill_rs::image::parse::parse_image(&manifest).unwrap();
-        for layer in &image.layers {
+        for layer in image.layers() {
             assert!(
                 store.blob_path(&layer.digest).is_file(),
                 "leased layer {} missing after concurrent ensure_present",

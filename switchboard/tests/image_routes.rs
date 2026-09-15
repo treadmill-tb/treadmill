@@ -102,16 +102,16 @@ fn image_manifest_bytes(title: &str) -> Vec<u8> {
         r#"{{
           "schemaVersion": 2,
           "mediaType": "application/vnd.oci.image.manifest.v1+json",
-          "artifactType": "application/vnd.treadmill.image.v1+json",
+          "artifactType": "application/vnd.treadmill.image.v2+json",
           "config": {{ "mediaType": "application/vnd.oci.empty.v1+json", "digest": "{EMPTY}", "size": 2 }},
           "layers": [
-            {{ "mediaType": "application/vnd.treadmill.disk.qcow2", "digest": "{BASE}", "size": 2085355520,
-               "annotations": {{ "dev.treadmill.role": "root", "dev.treadmill.qcow2.virtual-size": "2294284288" }} }},
-            {{ "mediaType": "application/vnd.treadmill.disk.qcow2", "digest": "{OVERLAY}", "size": 3145728,
-               "annotations": {{ "dev.treadmill.role": "root", "dev.treadmill.qcow2.virtual-size": "4294967296",
+            {{ "mediaType": "application/vnd.treadmill.qcow2", "digest": "{BASE}", "size": 2085355520,
+               "annotations": {{ "dev.treadmill.qcow2.virtual-size": "2294284288" }} }},
+            {{ "mediaType": "application/vnd.treadmill.qcow2", "digest": "{OVERLAY}", "size": 3145728,
+               "annotations": {{ "dev.treadmill.role": "disk", "dev.treadmill.qcow2.virtual-size": "4294967296",
                                  "dev.treadmill.qcow2.lower": "{BASE}" }} }}
           ],
-          "annotations": {{ "org.opencontainers.image.title": "{title}", "dev.treadmill.qcow2.head": "{OVERLAY}" }}
+          "annotations": {{ "org.opencontainers.image.title": "{title}" }}
         }}"#
     )
     .into_bytes()

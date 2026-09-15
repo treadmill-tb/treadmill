@@ -11,12 +11,14 @@ use oci_spec::image::{
 };
 use sha2::{Digest as _, Sha256};
 
+use treadmill_rs::image::assemble::{self, Blob, BlobFormat, EMPTY_CONFIG};
 use treadmill_rs::image::media_types;
+use treadmill_rs::image::parse::TreadmillImage;
 use treadmill_rs::image::{Digest, parse};
 
 const OCI_LAYOUT_MARKER: &[u8] = br#"{"imageLayoutVersion":"1.0.0"}"#;
 
-const EMPTY_CONFIG: &[u8] = b"{}";
+const QCOW2_MAGIC: &[u8; 4] = b"QFI\xfb";
 
 pub struct Layout {
     root: PathBuf,
@@ -89,6 +91,28 @@ impl Layout {
         Ok((digest, size))
     }
 
+    /// Store a layer blob, reading its format off its content: a qcow2 image,
+    /// or raw content otherwise.
+    pub fn store_layer(&self, path: &Path) -> anyhow::Result<Blob> {
+        let format = if has_qcow2_magic(path)? {
+            let header = qcow2_header(path)
+                .with_context(|| format!("read qcow2 virtual size of {}", path.display()))?;
+            BlobFormat::Qcow2 {
+                virtual_size: header.virtual_size,
+            }
+        } else {
+            BlobFormat::Raw
+        };
+        let (digest, size) = self
+            .store_file(path)
+            .with_context(|| format!("store layer blob {}", path.display()))?;
+        Ok(Blob {
+            digest,
+            size,
+            format,
+        })
+    }
+
     pub fn store_blob_from(&self, source: &Layout, digest: &Digest) -> anyhow::Result<()> {
         let dest = self.blob_path(digest);
         if dest.exists() {
@@ -114,10 +138,11 @@ impl Layout {
         Ok((digest, bytes.len() as u64))
     }
 
-    pub fn write_manifest(&self, manifest: &ImageManifest) -> anyhow::Result<()> {
+    /// Write `image`'s canonical manifest and point the layout's index at it.
+    pub fn write_image(&self, image: &TreadmillImage) -> anyhow::Result<()> {
         self.store_bytes(EMPTY_CONFIG)?;
 
-        let json = serde_json::to_vec(manifest).context("serialize manifest")?;
+        let json = assemble::manifest_bytes(&image.to_manifest());
         let (digest, size) = self.store_bytes(&json)?;
 
         let mut descriptor = Descriptor::new(MediaType::ImageManifest, size, oci_digest(&digest)?);
@@ -133,7 +158,7 @@ impl Layout {
 
         fs::write(
             self.root.join("index.json"),
-            serde_json::to_vec(&index).context("serialize index")?,
+            serde_json_canonicalizer::to_vec(&index).context("serialize index")?,
         )
         .context("write index.json")?;
         fs::write(self.root.join("oci-layout"), OCI_LAYOUT_MARKER).context("write oci-layout")?;
@@ -194,13 +219,23 @@ pub struct Qcow2Header {
     pub has_backing_file: bool,
 }
 
+fn has_qcow2_magic(path: &Path) -> anyhow::Result<bool> {
+    let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut magic = [0u8; 4];
+    match file.read_exact(&mut magic) {
+        Ok(()) => Ok(&magic == QCOW2_MAGIC),
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("{}: read magic", path.display())),
+    }
+}
+
 pub fn qcow2_header(path: &Path) -> anyhow::Result<Qcow2Header> {
     let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut head = [0u8; 32];
     file.read_exact(&mut head)
         .with_context(|| format!("{}: read qcow2 header", path.display()))?;
     ensure!(
-        &head[0..4] == b"QFI\xfb",
+        &head[0..4] == QCOW2_MAGIC,
         "{}: not a qcow2 file (bad magic)",
         path.display(),
     );

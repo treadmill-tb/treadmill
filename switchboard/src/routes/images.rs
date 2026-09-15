@@ -27,7 +27,7 @@ use treadmill_rs::api::switchboard::images::{
     ImageSetPermission, ImageSourceGrantInfo, ImageSourceGrantRequest, ImageSourceInfo,
     ImageSourcePermission,
 };
-use treadmill_rs::image::parse::{self, ParseError};
+use treadmill_rs::image::parse::{self, ImageError};
 use treadmill_rs::image::{Digest, media_types};
 
 use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_entity};
@@ -51,7 +51,7 @@ fn pull_failed(e: RegistryError) -> StatusCode {
 }
 
 /// A manifest that does not validate as a Treadmill artifact is a 422.
-fn invalid(e: ParseError) -> StatusCode {
+fn invalid(e: ImageError) -> StatusCode {
     tracing::warn!("image registration validation failed: {e}");
     StatusCode::UNPROCESSABLE_ENTITY
 }
@@ -536,9 +536,8 @@ pub async fn list_events(
 /// The manifest is pulled from the submitted source, verified against the path
 /// digest, and validated as a Treadmill artifact before anything is recorded,
 /// so a dispatch never picks an unusable source. An unknown digest inserts the
-/// image row (caching the manifest's projections: title, head, layer count,
-/// version, description) plus the source (201); a known digest idempotently
-/// gains the caller-owned source (200).
+/// image row (caching the manifest's title) plus the source (201); a known
+/// digest idempotently gains the caller-owned source (200).
 pub async fn add_image_source(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
@@ -587,7 +586,7 @@ pub async fn add_image_source(
         id,
         &digest_str,
         media_types::IMAGE_ARTIFACT_TYPE,
-        parsed.title.as_deref(),
+        parsed.meta.title.as_deref(),
     )
     .await
     .map_err(internal)?;

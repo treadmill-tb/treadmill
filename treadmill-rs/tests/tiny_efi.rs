@@ -1,6 +1,6 @@
 //! Round-trips the committed `tiny-efi` OCI fixture through our `oci-spec` view.
 //!
-//! The fixture is built by `nix/tiny-efi.nix`: a two-layer qcow2 backing chain
+//! The fixture is built by `nix/tiny-efi.nix`: a two-layer qcow2 `disk` chain
 //! packaged as a standard OCI image layout. This test reparses that real
 //! wire-format manifest with [`treadmill_rs::image::parse`] and asserts the
 //! Treadmill view it projects — proving the layout the fixture emits and the
@@ -68,28 +68,31 @@ fn tiny_efi_fixture_reparses_as_treadmill_image() {
     .expect("parse manifest blob as an OCI image manifest");
     let image = parse::parse_image(&manifest).expect("manifest reparses as a Treadmill image");
 
-    // Two-layer chain: base (no lower) then overlay (lower = base), head = overlay.
-    assert_eq!(image.title.as_deref(), Some("tiny-efi"));
-    assert_eq!(image.layers.len(), 2, "expected a base + overlay chain");
-
-    let base = &image.layers[0];
-    let overlay = &image.layers[1];
-
+    // One `disk` chain: base (no lower) then overlay (lower = base, the head).
+    assert_eq!(image.meta.title.as_deref(), Some("tiny-efi"));
+    assert_eq!(image.layers().len(), 2, "expected a base + overlay chain");
     assert_eq!(
-        image.head, overlay.digest,
-        "head must name the overlay layer"
+        image.roles().map(Role::as_str).collect::<Vec<_>>(),
+        ["disk"]
     );
-    assert_eq!(base.lower, None, "base layer has no lower");
+
+    let chain = image.chain("disk").expect("the image provides a disk");
+    let [base, overlay] = chain.layers() else {
+        panic!("expected a two-layer disk chain");
+    };
+
+    assert_eq!(chain.head().digest, overlay.digest);
+    assert_eq!(base.lower(), None, "base layer has no lower");
+    assert_eq!(base.role, None, "only the head carries the role");
     assert_eq!(
-        overlay.lower,
-        Some(base.digest),
+        overlay.lower(),
+        Some(&base.digest),
         "overlay must back onto the base layer",
     );
 
-    for layer in &image.layers {
-        assert_eq!(layer.role, Some(Role::Root));
-        assert_eq!(layer.media_type, media_types::DISK_QCOW2);
-        assert_eq!(layer.virtual_size, Some(EXPECTED_VIRTUAL_SIZE));
+    for layer in image.layers() {
+        assert_eq!(layer.format.media_type(), media_types::QCOW2);
+        assert_eq!(layer.virtual_size(), Some(EXPECTED_VIRTUAL_SIZE));
 
         // Every referenced blob is actually present in the layout, at the size
         // the descriptor claims (a cheap end-to-end check on the CAS).

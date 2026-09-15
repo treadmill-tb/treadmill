@@ -225,12 +225,12 @@
               lower="${self'.packages.tiny-efi-image-layout}"
               rev2="${self'.packages.tiny-efi-rev2-qcow2}/rev2.qcow2"
 
-              image-util verify "$lower" --root-layers 2 --boot-layers 0 \
+              image-util verify "$lower" --chain disk=2 \
                 --title tiny-efi --name tiny-efi-lower
 
-              image-util append --lower "$lower" --layer "root=$rev2" \
+              image-util append --lower "$lower" --layer "disk=$rev2" \
                 --title "tiny-efi rev2" -o stacked
-              image-util verify stacked --root-layers 3 --boot-layers 0 \
+              image-util verify stacked --chain disk=3 \
                 --title "tiny-efi rev2" --name tiny-efi-stacked
 
               # Every layer blob the append inherited keeps its digest, which is
@@ -249,9 +249,9 @@
 
               # Appending in place must leave no unreferenced manifest behind.
               cp -r --no-preserve=mode "$lower" inplace
-              image-util append --lower inplace --layer "root=$rev2" \
+              image-util append --lower inplace --layer "disk=$rev2" \
                 --title "tiny-efi rev2" -o inplace
-              image-util verify inplace --root-layers 3 --boot-layers 0 \
+              image-util verify inplace --chain disk=3 \
                 --title "tiny-efi rev2" --name tiny-efi-inplace
               blobs="$(find inplace/blobs/sha256 -type f | wc -l)"
               [ "$blobs" = 5 ] || {
@@ -285,8 +285,8 @@
               baked_head="$(ls -S baked/blobs/sha256/* | head -n1)"
               qemu-img rebase -u -b /nonexistent.qcow2 -F qcow2 -f qcow2 "$baked_head"
               # The rebase changed the blob, so re-assemble around the new bytes.
-              image-util assemble --title baked --layer "root=$baked_head" -o baked-layout
-              refute "a root blob with a baked backing_file" baked-layout \
+              image-util assemble --title baked --layer "disk=$baked_head" -o baked-layout
+              refute "a blob with a baked backing_file" baked-layout \
                 "baked backing_file"
 
               touch $out

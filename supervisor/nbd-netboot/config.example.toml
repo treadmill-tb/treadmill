@@ -36,8 +36,8 @@ state_dir = "./state"
 
 tcp_control_socket_listen_addr = "0.0.0.0:3859"
 
-# Listen address for the `qemu-storage-daemon` subprocess (serving `root` and
-# `boot` NBD exports).
+# Listen address for the `qemu-storage-daemon` subprocess (serving the image's
+# `rootfs` and `bootfs` NBD exports).
 nbd_server_listen_addr = "0.0.0.0:10809"
 
 # Listen address for TFTP boot file system server (`nbdfatftpd`).
