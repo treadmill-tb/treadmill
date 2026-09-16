@@ -28,15 +28,33 @@ pub enum OnDisconnect {
     Exit,
 }
 
-/// Run `action` the first time `kind` arrives.
-///
-/// A repeat of the signal gives up and exits, so a shutdown that cannot make
-/// progress (a coordinator that never removes the job, a workload that will not
-/// die) doesn't prevent shutdown.
-///
-/// TODO: this is tricky! It'll break when we have two supervisor updates while
-/// running a job, and systemd sends two SIGHUPs on ExecReload...
-fn on_signal(kind: SignalKind, action: impl Fn() + Send + 'static) {
+/// Types of stop requests, either terminate or restart post job completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopSignal {
+    /// Exit once the coordinator has removed the current job, triggered by
+    /// `SIGUSR1`, idempotent.
+    AfterJob,
+    /// Terminate the job, remove it, and exit. Triggered by `SIGINT`.
+    StopJob,
+}
+
+/// Behavior for repeated signals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnRepeat {
+    /// Run `action` again and keep going.
+    Reassert,
+    /// Exit with `128 + signo`.
+    Exit,
+}
+
+/// Run `action` every time `kind` arrives, logging `what`, and apply
+/// `on_repeat` from the second signal on.
+fn on_signal(
+    kind: SignalKind,
+    on_repeat: OnRepeat,
+    what: &'static str,
+    action: impl Fn() + Send + 'static,
+) {
     // Create the signal listener:
     let mut signals = match signal(kind) {
         Ok(signals) => signals,
@@ -56,11 +74,17 @@ fn on_signal(kind: SignalKind, action: impl Fn() + Send + 'static) {
         let mut acted = false;
         while signals.recv().await.is_some() {
             if acted {
-                event!(Level::WARN, ?kind, "Received again, exiting immediately");
-                std::process::exit(128 + kind.as_raw_value());
+                match on_repeat {
+                    OnRepeat::Exit => {
+                        event!(Level::WARN, ?kind, "Received again, exiting immediately");
+                        std::process::exit(128 + kind.as_raw_value());
+                    }
+                    OnRepeat::Reassert => event!(Level::INFO, ?kind, "Received again: {}", what),
+                }
+            } else {
+                acted = true;
+                event!(Level::INFO, ?kind, "{}", what);
             }
-            acted = true;
-            event!(Level::INFO, ?kind, "Shutting the supervisor down");
             action();
         }
     });
@@ -68,35 +92,53 @@ fn on_signal(kind: SignalKind, action: impl Fn() + Send + 'static) {
 
 /// Drive `runner` off `connector` until the process is asked to stop, then take
 /// down whatever job is left.
-///
-/// Two signals end the loop, and they mean different things:
-///
-/// - `drain_signal` (`SIGHUP` when there is a coordinator to drain against,
-///   `SIGINT` when there is not) asks the connector to stop serving.
-///
-///   A connector that drains keeps serving the job it holds until the
-///   coordinator removes it, so the process exits between jobs (but not before
-///   terminate was received!)
-///
-/// - `SIGTERM` does not wait for anyone: it stops serving and takes the running
-///   job down with it.
 pub async fn serve<B: JobBackend>(
     connector: Arc<dyn SupervisorConnector>,
     runner: Arc<JobRunner<B>>,
     command_rx: mpsc::Receiver<CoordCommand>,
-    drain_signal: SignalKind,
+    stop_signal: StopSignal,
     on_disconnect: OnDisconnect,
 ) {
-    on_signal(drain_signal, {
-        let connector = connector.clone();
-        move || connector.request_shutdown()
-    });
+    match stop_signal {
+        StopSignal::AfterJob => on_signal(
+            SignalKind::user_defined1(),
+            OnRepeat::Reassert,
+            "Exiting once the coordinator has removed the current job",
+            {
+                let connector = connector.clone();
+                move || connector.request_shutdown()
+            },
+        ),
+        StopSignal::StopJob => on_signal(
+            SignalKind::user_defined1(),
+            OnRepeat::Reassert,
+            "Ignoring: no coordinator to wait for",
+            || (),
+        ),
+    }
+
+    if stop_signal == StopSignal::StopJob {
+        on_signal(
+            SignalKind::interrupt(),
+            OnRepeat::Exit,
+            "Stopping the job and shutting the supervisor down",
+            {
+                let connector = connector.clone();
+                move || connector.request_shutdown()
+            },
+        );
+    }
 
     let stop = CancellationToken::new();
-    on_signal(SignalKind::terminate(), {
-        let stop = stop.clone();
-        move || stop.cancel()
-    });
+    on_signal(
+        SignalKind::terminate(),
+        OnRepeat::Exit,
+        "Shutting the supervisor down",
+        {
+            let stop = stop.clone();
+            move || stop.cancel()
+        },
+    );
 
     let commands = tokio::spawn({
         let runner = runner.clone();

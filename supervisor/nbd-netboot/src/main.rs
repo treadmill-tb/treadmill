@@ -10,7 +10,6 @@ use bytes::Bytes;
 use clap::Parser;
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
-use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_serial::SerialPortBuilderExt;
@@ -27,7 +26,7 @@ use treadmill_rs::image::media_types;
 use treadmill_rs::image::parse::{self, ImageLayer, TreadmillImage};
 use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 
-use treadmill_supervisor_lib::bootstrap::{self, COORD_MAILBOX_CAPACITY, OnDisconnect};
+use treadmill_supervisor_lib::bootstrap::{self, COORD_MAILBOX_CAPACITY, OnDisconnect, StopSignal};
 use treadmill_supervisor_lib::capture::SerialConsole;
 use treadmill_supervisor_lib::job::{JobBackend, JobRunner, JobRunnerConfig, JobVars, Workload};
 use treadmill_supervisor_lib::job_log::{self, JobLogRegistry, channel_reader};
@@ -747,7 +746,7 @@ async fn main() -> Result<()> {
     ));
     let (command_tx, command_rx) = mpsc::channel(COORD_MAILBOX_CAPACITY);
 
-    let (connector, drain_signal, on_disconnect): (Arc<dyn SupervisorConnector>, _, _) =
+    let (connector, stop_signal, on_disconnect): (Arc<dyn SupervisorConnector>, _, _) =
         match config.base.coord_connector {
             SupervisorCoordConnector::WsConnector => {
                 let ws_connector_config = config.ws_connector.clone().ok_or(anyhow!(
@@ -760,7 +759,7 @@ async fn main() -> Result<()> {
                         ws_connector_config,
                         command_tx,
                     )),
-                    SignalKind::hangup(),
+                    StopSignal::AfterJob,
                     OnDisconnect::Reconnect,
                 )
             }
@@ -779,7 +778,7 @@ async fn main() -> Result<()> {
                         local_job,
                         command_tx,
                     )),
-                    SignalKind::interrupt(),
+                    StopSignal::StopJob,
                     OnDisconnect::Exit,
                 )
             }
@@ -794,7 +793,7 @@ async fn main() -> Result<()> {
         config.job_runner(workdirs, job_log),
     ));
 
-    bootstrap::serve(connector, runner, command_rx, drain_signal, on_disconnect).await;
+    bootstrap::serve(connector, runner, command_rx, stop_signal, on_disconnect).await;
 
     Ok(())
 }

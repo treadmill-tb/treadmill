@@ -5,7 +5,6 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use clap::Parser;
 use serde::Deserialize;
-use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc;
 use tracing::{Level, event, instrument};
 
@@ -17,7 +16,7 @@ use treadmill_rs::image::blockdev::BackingChain;
 use treadmill_rs::image::parse::{self, ChainError, TreadmillImage};
 use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 
-use treadmill_supervisor_lib::bootstrap::{self, COORD_MAILBOX_CAPACITY, OnDisconnect};
+use treadmill_supervisor_lib::bootstrap::{self, COORD_MAILBOX_CAPACITY, OnDisconnect, StopSignal};
 use treadmill_supervisor_lib::capture::{SerialConsole, SerialSocket};
 use treadmill_supervisor_lib::job::{JobBackend, JobRunner, JobRunnerConfig, JobVars, Workload};
 use treadmill_supervisor_lib::job_log::{self, JobLogRegistry};
@@ -481,13 +480,9 @@ async fn main() -> Result<()> {
     let backend = Arc::new(QemuBackend::new(image_store, launcher, config.qemu.clone()));
     let (command_tx, command_rx) = mpsc::channel(COORD_MAILBOX_CAPACITY);
 
-    // SIGHUP lets the switchboard finish with the job it dispatched. This
-    // allows for the supervisor to be gracefully updated after finishing a job,
-    // without interrupting it.
-    //
-    // A one-shot local job there is nobody to wait for and it is terminated &
-    // removed when getting a SIGINT / Ctrl-C instead.
-    let (connector, drain_signal, on_disconnect): (Arc<dyn SupervisorConnector>, _, _) =
+    // A one-shot local job has nobody to wait for, so Ctrl-C terminates and
+    // removes it.
+    let (connector, stop_signal, on_disconnect): (Arc<dyn SupervisorConnector>, _, _) =
         match config.base.coord_connector {
             SupervisorCoordConnector::WsConnector => {
                 let ws_connector_config = config.ws_connector.clone().ok_or(anyhow!(
@@ -500,7 +495,7 @@ async fn main() -> Result<()> {
                         ws_connector_config,
                         command_tx,
                     )),
-                    SignalKind::hangup(),
+                    StopSignal::AfterJob,
                     OnDisconnect::Reconnect,
                 )
             }
@@ -521,7 +516,7 @@ async fn main() -> Result<()> {
                         local_job,
                         command_tx,
                     )),
-                    SignalKind::interrupt(),
+                    StopSignal::StopJob,
                     OnDisconnect::Exit,
                 )
             }
@@ -536,7 +531,7 @@ async fn main() -> Result<()> {
         config.job_runner(workdirs, job_log),
     ));
 
-    bootstrap::serve(connector, runner, command_rx, drain_signal, on_disconnect).await;
+    bootstrap::serve(connector, runner, command_rx, stop_signal, on_disconnect).await;
 
     Ok(())
 }
