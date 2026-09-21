@@ -12,7 +12,7 @@
 //! UPDATE_SCHEMA=1 cargo test -p treadmill-rs
 //! ```
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use schemars::schema_for;
 use treadmill_rs::api::switchboard_supervisor::{
@@ -21,7 +21,9 @@ use treadmill_rs::api::switchboard_supervisor::{
 use treadmill_rs::host_spec::HostSpec;
 
 fn snapshot_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("protocol-schema")
+    std::env::current_dir()
+        .unwrap_or_default()
+        .join("protocol-schema")
 }
 
 fn check_schema(name: &str, generated: String) {

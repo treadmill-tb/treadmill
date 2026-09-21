@@ -992,11 +992,11 @@ async fn spec_schema_is_the_committed_artifact(pool: PgPool) {
         .await
         .unwrap();
 
-    let snapshot = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../treadmill-rs/protocol-schema/host_spec.schema.json"
-    ))
-    .expect("the committed snapshot exists");
+    let path = std::env::current_dir()
+        .unwrap_or_default()
+        .join("../treadmill-rs/protocol-schema/host_spec.schema.json");
+    let snapshot = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("could not read {}: {err}", path.display()));
     let committed: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
     assert_eq!(served, committed);
 }
