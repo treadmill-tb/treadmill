@@ -14,9 +14,9 @@ use tracing::{Level, event, instrument};
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard_supervisor::{
-    JobGatewayDispatch, JobInitializingStage, JobService, LOG_VIEW_MANIFEST_VERSION, LogChannel,
-    LogFormat, LogRender, LogView, LogViewManifest, ParameterValue, ReportedSupervisorStatus,
-    RunningJobState,
+    ImageSpecification, JobGatewayDispatch, JobInitializingStage, JobService,
+    LOG_VIEW_MANIFEST_VERSION, LogChannel, LogFormat, LogRender, LogView, LogViewManifest,
+    ParameterValue, ReportedSupervisorStatus, RunningJobState,
 };
 use treadmill_rs::connector::{
     CoordCommand, JobError, JobErrorKind, StartJobMessage, SupervisorConnector,
@@ -105,6 +105,19 @@ pub trait JobBackend: std::fmt::Debug + Send + Sync + 'static {
         image: Self::Image,
         vars: &mut JobVars,
     ) -> Result<Self::Allocation, JobError>;
+
+    async fn adopt(
+        &self,
+        job: &StartJobMessage,
+        workdir: &Path,
+        vars: &mut JobVars,
+    ) -> Result<Self::Allocation, JobError> {
+        let _ = (job, workdir, vars);
+        Err(JobError {
+            error_kind: JobErrorKind::CannotResume,
+            description: "This supervisor cannot resume jobs.".to_string(),
+        })
+    }
 
     /// Start the job's workload.
     async fn launch(
@@ -688,7 +701,16 @@ impl<B: JobBackend> JobTask<B> {
     }
 
     async fn startup(&mut self) -> Result<(), JobError> {
-        let job_workdir = allocate_workdir(&self.runner.config.workdirs, self.job_id()).await?;
+        let resume_from = match self.start_job_req.image_spec {
+            ImageSpecification::ResumeJob { job_id } => Some(job_id),
+            ImageSpecification::Image { .. } => None,
+        };
+
+        let workdirs = &self.runner.config.workdirs;
+        let job_workdir = match resume_from {
+            Some(retired_job_id) => resume_workdir(workdirs, retired_job_id, self.job_id()).await?,
+            None => allocate_workdir(workdirs, self.job_id()).await?,
+        };
 
         // Variables that can be produced by the start script, and used for
         // templating the workload's arguments or setting other job-specific
@@ -706,19 +728,35 @@ impl<B: JobBackend> JobTask<B> {
         self.connect_publisher(&job_workdir).await;
 
         self.set_phase(Phase::FetchingImage).await;
-        let image = self.runner.backend.fetch(&self.start_job_req).await?;
+        let image = match resume_from {
+            Some(_) => None,
+            None => Some(self.runner.backend.fetch(&self.start_job_req).await?),
+        };
 
         self.set_phase(Phase::Allocating).await;
-        let allocation = self
-            .runner
-            .backend
-            .allocate(
-                &self.start_job_req,
-                &job_workdir,
-                image,
-                &mut self.resources.job_vars,
-            )
-            .await?;
+        let allocation = match image {
+            Some(image) => {
+                self.runner
+                    .backend
+                    .allocate(
+                        &self.start_job_req,
+                        &job_workdir,
+                        image,
+                        &mut self.resources.job_vars,
+                    )
+                    .await?
+            }
+            None => {
+                self.runner
+                    .backend
+                    .adopt(
+                        &self.start_job_req,
+                        &job_workdir,
+                        &mut self.resources.job_vars,
+                    )
+                    .await?
+            }
+        };
 
         self.set_phase(Phase::Provisioning).await;
         self.run_start_job_script().await?;
@@ -782,7 +820,7 @@ impl<B: JobBackend> JobTask<B> {
         // Spill files live under the per-job workdir so they survive a
         // supervisor restart and are retained for post-mortem after the job
         // ends.
-        let spill_dir = job_workdir.join("logs");
+        let spill_dir = job_workdir.join("logs").join(self.job_id().to_string());
         let config = self.runner.config.log_streaming.clone();
         let publisher = match LogPublisher::connect(&dispatch, spill_dir, config).await {
             Ok(publisher) => publisher,
@@ -1179,6 +1217,28 @@ async fn allocate_workdir(workdirs: &JobWorkdirs, job_id: Uuid) -> Result<PathBu
         })
 }
 
+async fn resume_workdir(
+    workdirs: &JobWorkdirs,
+    retired_job_id: Uuid,
+    as_job_id: Uuid,
+) -> Result<PathBuf, JobError> {
+    match workdirs.resume(retired_job_id, as_job_id).await {
+        Ok(Some(job_workdir)) => Ok(job_workdir),
+        Ok(None) => Err(JobError {
+            error_kind: JobErrorKind::CannotResume,
+            description: format!(
+                "This supervisor has no retired working directory for job {retired_job_id}: it \
+                 was never started here, it has already been resumed, or it was collected after \
+                 its retention period elapsed."
+            ),
+        }),
+        Err(e) => Err(JobError {
+            error_kind: JobErrorKind::CannotResume,
+            description: format!("The retired job {retired_job_id} cannot be resumed: {e:#}"),
+        }),
+    }
+}
+
 /// The puppet-facing view of one job, served by that job's control socket.
 #[derive(Debug)]
 pub struct JobControlEndpoint {
@@ -1381,7 +1441,7 @@ mod tests {
 
     use super::*;
 
-    use crate::workdirs::RetentionConfig;
+    use crate::workdirs::{AllocationRecord, RetentionConfig};
 
     use std::process::ExitStatus;
 
@@ -1504,6 +1564,8 @@ mod tests {
         fetch_gate: Option<Arc<Gate>>,
 
         launched: std::sync::Mutex<usize>,
+
+        adopted: std::sync::Mutex<Vec<PathBuf>>,
     }
 
     impl StubBackend {
@@ -1527,6 +1589,10 @@ mod tests {
         fn launched(&self) -> usize {
             *self.launched.lock().unwrap()
         }
+
+        fn adopted(&self) -> Vec<PathBuf> {
+            self.adopted.lock().unwrap().clone()
+        }
     }
 
     #[async_trait]
@@ -1545,14 +1611,37 @@ mod tests {
         async fn allocate(
             &self,
             _job: &StartJobMessage,
-            _workdir: &Path,
+            workdir: &Path,
             _image: (),
             _vars: &mut JobVars,
         ) -> Result<(), JobError> {
-            match &self.allocate_error {
-                Some(error) => Err(error.clone()),
-                None => Ok(()),
+            if let Some(error) = &self.allocate_error {
+                return Err(error.clone());
             }
+
+            tokio::fs::write(workdir.join(STUB_OVERLAY), b"stub")
+                .await
+                .unwrap();
+            AllocationRecord::new(
+                STUB_DIGEST.parse().unwrap(),
+                Vec::new(),
+                [(STUB_OVERLAY.to_string(), STUB_OVERLAY.to_string())],
+            )
+            .write(workdir)
+            .await
+            .unwrap();
+
+            Ok(())
+        }
+
+        async fn adopt(
+            &self,
+            _job: &StartJobMessage,
+            workdir: &Path,
+            _vars: &mut JobVars,
+        ) -> Result<(), JobError> {
+            self.adopted.lock().unwrap().push(workdir.to_path_buf());
+            Ok(())
         }
 
         async fn launch(
@@ -1656,6 +1745,8 @@ mod tests {
     const STUB_DIGEST: &str =
         "sha256:1111111111111111111111111111111111111111111111111111111111111111";
 
+    const STUB_OVERLAY: &str = "disk";
+
     fn start_msg(job_id: Uuid) -> StartJobMessage {
         start_msg_with_gateway(job_id, None)
     }
@@ -1682,6 +1773,13 @@ mod tests {
             log_streaming: None,
             gateway,
             host_spec: None,
+        }
+    }
+
+    fn resume_msg(job_id: Uuid, resume_of: Uuid) -> StartJobMessage {
+        StartJobMessage {
+            image_spec: ImageSpecification::ResumeJob { job_id: resume_of },
+            ..start_msg(job_id)
         }
     }
 
@@ -2028,6 +2126,88 @@ mod tests {
             .collect();
         assert_eq!(retired.len(), 1, "{retired:?}");
         assert!(retired[0].ends_with(&job_id.to_string()), "{retired:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_resumed_job_adopts_the_retired_working_directory() {
+        let h = harness(StubBackend::default());
+        let predecessor = Uuid::new_v4();
+        let successor = Uuid::new_v4();
+
+        start_and_boot(&h, start_msg(predecessor)).await;
+        h.runner.terminate_job(predecessor).await.unwrap();
+        h.runner.remove_job(predecessor).await.unwrap();
+
+        start_and_boot(&h, resume_msg(successor, predecessor)).await;
+
+        let workdir = h
+            .tmp
+            .path()
+            .join("state")
+            .join("jobs")
+            .join(successor.to_string());
+        assert_eq!(h.backend.adopted(), vec![workdir.clone()]);
+        assert_eq!(
+            std::fs::read(workdir.join(STUB_OVERLAY)).unwrap(),
+            b"stub",
+            "the predecessor's disk came across",
+        );
+        assert!(h.connector.errors().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_resume_without_a_retired_working_directory_is_refused() {
+        let h = harness(StubBackend::default());
+        let successor = Uuid::new_v4();
+
+        h.runner
+            .start_job(resume_msg(successor, Uuid::new_v4()))
+            .await
+            .unwrap();
+        let mut facts = job_facts(&h.runner).await;
+        wait_for(&mut facts, terminated).await;
+
+        let errors = h.connector.errors();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            matches!(errors[0].error_kind, JobErrorKind::CannotResume),
+            "{:?}",
+            errors[0],
+        );
+
+        assert!(h.backend.adopted().is_empty());
+        assert_eq!(h.backend.launched(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_retired_job_is_resumed_only_once() {
+        let h = harness(StubBackend::default());
+        let predecessor = Uuid::new_v4();
+
+        start_and_boot(&h, start_msg(predecessor)).await;
+        h.runner.terminate_job(predecessor).await.unwrap();
+        h.runner.remove_job(predecessor).await.unwrap();
+
+        let first = Uuid::new_v4();
+        start_and_boot(&h, resume_msg(first, predecessor)).await;
+        h.runner.terminate_job(first).await.unwrap();
+        h.runner.remove_job(first).await.unwrap();
+
+        let second = Uuid::new_v4();
+        h.runner
+            .start_job(resume_msg(second, predecessor))
+            .await
+            .unwrap();
+        let mut facts = job_facts(&h.runner).await;
+        wait_for(&mut facts, terminated).await;
+
+        let errors = h.connector.errors();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            matches!(errors[0].error_kind, JobErrorKind::CannotResume),
+            "{:?}",
+            errors[0],
+        );
     }
 
     /// D2.3/D2.4: the coordinator may repeat either command, or send one for a

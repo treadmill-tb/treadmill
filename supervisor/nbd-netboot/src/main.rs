@@ -17,9 +17,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Level, event, instrument};
 
 use treadmill_rs::api::switchboard_supervisor::{
-    ImageSpecification, LogChannel, LogFormat, LogRender, LogView,
+    ImageLocation, ImageSpecification, LogChannel, LogFormat, LogRender, LogView,
 };
 use treadmill_rs::connector::{JobError, JobErrorKind, StartJobMessage, SupervisorConnector};
+use treadmill_rs::image::Digest;
 use treadmill_rs::image::annotations::Role;
 use treadmill_rs::image::blockdev::BackingChain;
 use treadmill_rs::image::media_types;
@@ -35,11 +36,14 @@ use treadmill_supervisor_lib::launcher::{
 };
 use treadmill_supervisor_lib::oci_store::{ImageStore, Location, OciStore, OciStoreConfig};
 use treadmill_supervisor_lib::publisher::LogPublisherConfig;
-use treadmill_supervisor_lib::workdirs::{JobWorkdirs, RetentionConfig};
+use treadmill_supervisor_lib::workdirs::{AllocationRecord, JobWorkdirs, RetentionConfig};
 
 const ROOT_EXPORT: &str = "root";
 const BOOT_EXPORT: &str = "boot";
 const BOOT_NODE_PREFIX: &str = "tml-boot";
+
+const ROOT_OVERLAY_FILE: &str = "root.qcow2";
+const BOOT_OVERLAY_FILE: &str = "boot.qcow2";
 
 const STORAGE_DAEMON_STDOUT: LogChannel = LogChannel::from_static("storage-daemon-stdout");
 const STORAGE_DAEMON_STDERR: LogChannel = LogChannel::from_static("storage-daemon-stderr");
@@ -222,6 +226,135 @@ impl NbdNetbootBackend {
             })
     }
 
+    async fn resolve_image(
+        &self,
+        manifest_digest: &Digest,
+        locations: &[ImageLocation],
+    ) -> Result<NetbootImage, JobError> {
+        let locations = locations
+            .iter()
+            .cloned()
+            .map(|loc| Location::new(loc.registry, loc.repository))
+            .collect::<Vec<_>>();
+
+        event!(
+            Level::TRACE,
+            %manifest_digest,
+            ?locations,
+            "Ensuring image present in the local OCI store",
+        );
+
+        self.image_store
+            .ensure_present(manifest_digest, &locations)
+            .await
+            .map_err(|e| JobError {
+                error_kind: JobErrorKind::InternalError,
+                description: format!("Failed to fetch image {manifest_digest}: {e:#}"),
+            })?;
+
+        let manifest = self
+            .image_store
+            .manifest(manifest_digest)
+            .await
+            .map_err(|e| JobError {
+                error_kind: JobErrorKind::InternalError,
+                description: format!("Cannot retrieve image manifest of {manifest_digest}: {e:#}",),
+            })?;
+
+        let image = parse::parse_image(&manifest).map_err(|e| JobError {
+            error_kind: JobErrorKind::ImageInvalid,
+            description: format!("Image {manifest_digest} is not a valid Treadmill image: {e}"),
+        })?;
+
+        let boot = boot_layer(&image).map_err(|e| JobError {
+            error_kind: JobErrorKind::ImageInvalid,
+            description: format!("Image {manifest_digest} cannot netboot: {e}"),
+        })?;
+
+        Ok(NetbootImage { image, boot })
+    }
+
+    fn chains(
+        &self,
+        image: &NetbootImage,
+        root_overlay: PathBuf,
+        boot_overlay: PathBuf,
+    ) -> Result<(BackingChain, BackingChain), JobError> {
+        let (chain, head_virtual_size) = image.image.backing_chain().map_err(|e| JobError {
+            error_kind: JobErrorKind::ImageInvalid,
+            description: format!("Invalid backing chain: {e}"),
+        })?;
+
+        if head_virtual_size > self.config.working_disk_max_bytes {
+            return Err(JobError {
+                error_kind: JobErrorKind::ImageInvalid,
+                description: format!(
+                    "Image head virtual size ({} byte) exceeds the working-disk \
+                     maximum ({} byte)",
+                    head_virtual_size, self.config.working_disk_max_bytes,
+                ),
+            });
+        }
+
+        let lowers = chain
+            .into_iter()
+            .map(|layer| self.image_store.blob_path(&layer.digest))
+            .collect();
+
+        Ok((
+            BackingChain::new(lowers, root_overlay),
+            BackingChain::with_prefix(
+                BOOT_NODE_PREFIX,
+                vec![self.image_store.blob_path(&image.boot.digest)],
+                boot_overlay,
+            ),
+        ))
+    }
+
+    fn seed_vars(&self, vars: &mut JobVars) {
+        vars.insert(
+            "tcp_control_socket_listen_addr".to_string(),
+            self.config.tcp_control_socket_listen_addr.to_string(),
+        );
+        vars.insert(
+            "nbd_server_listen_addr".to_string(),
+            self.config.nbd_server_listen_addr.to_string(),
+        );
+        vars.insert(
+            "tftp_listen_addr".to_string(),
+            self.config.tftp_listen_addr.to_string(),
+        );
+    }
+
+    async fn start_servers(
+        &self,
+        job: &StartJobMessage,
+        root: &BackingChain,
+        boot: &BackingChain,
+    ) -> Result<Servers, JobError> {
+        let stdio = if job.log_streaming.is_some() {
+            StdioMode::Capture
+        } else {
+            StdioMode::Inherit
+        };
+
+        let storage_daemon = self
+            .start_storage_daemon(self.storage_daemon_args(root, boot), stdio)
+            .await?;
+
+        let tftp = TftpServer::start(
+            self.launcher.clone(),
+            self.config.nbdfatftpd_binary.clone(),
+            self.tftp_args(),
+            stdio,
+        );
+
+        Ok(Servers {
+            storage_daemon,
+            tftp,
+        })
+    }
+
     async fn start_storage_daemon(
         &self,
         args: Vec<String>,
@@ -332,64 +465,8 @@ impl JobBackend for NbdNetbootBackend {
     type Allocation = Servers;
 
     async fn fetch(&self, job: &StartJobMessage) -> Result<NetbootImage, JobError> {
-        let (manifest_digest, locations) = match &job.image_spec {
-            ImageSpecification::Image {
-                manifest_digest,
-                locations,
-            } => (
-                *manifest_digest,
-                locations
-                    .iter()
-                    .cloned()
-                    .map(|loc| Location::new(loc.registry, loc.repository))
-                    .collect::<Vec<_>>(),
-            ),
-
-            unsupported_image_spec => {
-                return Err(JobError {
-                    error_kind: JobErrorKind::ImageNotCompatible,
-                    description: format!(
-                        "Unsupported image specification: {unsupported_image_spec:?}",
-                    ),
-                });
-            }
-        };
-
-        event!(
-            Level::TRACE,
-            %manifest_digest,
-            ?locations,
-            "Ensuring image present in the local OCI store",
-        );
-
-        self.image_store
-            .ensure_present(&manifest_digest, &locations)
-            .await
-            .map_err(|e| JobError {
-                error_kind: JobErrorKind::InternalError,
-                description: format!("Failed to fetch image {manifest_digest}: {e:#}"),
-            })?;
-
-        let manifest = self
-            .image_store
-            .manifest(&manifest_digest)
-            .await
-            .map_err(|e| JobError {
-                error_kind: JobErrorKind::InternalError,
-                description: format!("Cannot retrieve image manifest of {manifest_digest}: {e:#}",),
-            })?;
-
-        let image = parse::parse_image(&manifest).map_err(|e| JobError {
-            error_kind: JobErrorKind::ImageInvalid,
-            description: format!("Image {manifest_digest} is not a valid Treadmill image: {e}"),
-        })?;
-
-        let boot = boot_layer(&image).map_err(|e| JobError {
-            error_kind: JobErrorKind::ImageInvalid,
-            description: format!("Image {manifest_digest} cannot netboot: {e}"),
-        })?;
-
-        Ok(NetbootImage { image, boot })
+        let (manifest_digest, locations) = image_reference(job)?;
+        self.resolve_image(&manifest_digest, &locations).await
     }
 
     #[instrument(skip(self, job, image, vars), err(Debug, level = Level::WARN))]
@@ -400,74 +477,72 @@ impl JobBackend for NbdNetbootBackend {
         image: NetbootImage,
         vars: &mut JobVars,
     ) -> Result<Servers, JobError> {
-        let (chain, head_virtual_size) = image.image.backing_chain().map_err(|e| JobError {
-            error_kind: JobErrorKind::ImageInvalid,
-            description: format!("Invalid backing chain: {e}"),
-        })?;
+        let root_overlay = workdir.join(ROOT_OVERLAY_FILE);
+        let boot_overlay = workdir.join(BOOT_OVERLAY_FILE);
 
-        if head_virtual_size > self.config.working_disk_max_bytes {
-            return Err(JobError {
-                error_kind: JobErrorKind::ImageInvalid,
-                description: format!(
-                    "Image head virtual size ({} byte) exceeds the working-disk \
-                     maximum ({} byte)",
-                    head_virtual_size, self.config.working_disk_max_bytes,
-                ),
-            });
-        }
+        let (root, boot) = self.chains(&image, root_overlay.clone(), boot_overlay.clone())?;
 
-        let lowers = chain
-            .into_iter()
-            .map(|layer| self.image_store.blob_path(&layer.digest))
-            .collect();
-        let root_overlay = workdir.join("root.qcow2");
         self.create_overlay(&root_overlay, self.config.working_disk_max_bytes)
             .await?;
-        let root = BackingChain::new(lowers, root_overlay);
-
-        let boot_overlay = workdir.join("boot.qcow2");
         self.create_overlay(&boot_overlay, image.boot.virtual_size.unwrap_or_default())
             .await?;
-        let boot = BackingChain::with_prefix(
-            BOOT_NODE_PREFIX,
-            vec![self.image_store.blob_path(&image.boot.digest)],
-            boot_overlay,
+
+        let (manifest_digest, locations) = image_reference(job)?;
+        AllocationRecord::new(
+            manifest_digest,
+            locations,
+            [
+                (ROOT_EXPORT.to_string(), ROOT_OVERLAY_FILE.to_string()),
+                (BOOT_EXPORT.to_string(), BOOT_OVERLAY_FILE.to_string()),
+            ],
+        )
+        .write(workdir)
+        .await
+        .map_err(|e| JobError {
+            error_kind: JobErrorKind::InternalError,
+            description: format!("Failed to record the job's allocation: {e:#}"),
+        })?;
+
+        self.seed_vars(vars);
+
+        self.start_servers(job, &root, &boot).await
+    }
+
+    #[instrument(skip(self, job, vars), err(Debug, level = Level::WARN))]
+    async fn adopt(
+        &self,
+        job: &StartJobMessage,
+        workdir: &Path,
+        vars: &mut JobVars,
+    ) -> Result<Servers, JobError> {
+        let record = AllocationRecord::read(workdir)
+            .await
+            .map_err(cannot_resume)?;
+        let root_overlay = record
+            .overlay(workdir, ROOT_EXPORT)
+            .await
+            .map_err(cannot_resume)?;
+        let boot_overlay = record
+            .overlay(workdir, BOOT_EXPORT)
+            .await
+            .map_err(cannot_resume)?;
+
+        event!(
+            Level::INFO,
+            ?root_overlay,
+            ?boot_overlay,
+            manifest_digest = %record.manifest_digest,
+            "Adopting the working disks of a retired job"
         );
 
-        vars.insert(
-            "tcp_control_socket_listen_addr".to_string(),
-            self.config.tcp_control_socket_listen_addr.to_string(),
-        );
-        vars.insert(
-            "nbd_server_listen_addr".to_string(),
-            self.config.nbd_server_listen_addr.to_string(),
-        );
-        vars.insert(
-            "tftp_listen_addr".to_string(),
-            self.config.tftp_listen_addr.to_string(),
-        );
-
-        let stdio = if job.log_streaming.is_some() {
-            StdioMode::Capture
-        } else {
-            StdioMode::Inherit
-        };
-
-        let storage_daemon = self
-            .start_storage_daemon(self.storage_daemon_args(&root, &boot), stdio)
+        let image = self
+            .resolve_image(&record.manifest_digest, &record.locations)
             .await?;
+        let (root, boot) = self.chains(&image, root_overlay, boot_overlay)?;
 
-        let tftp = TftpServer::start(
-            self.launcher.clone(),
-            self.config.nbdfatftpd_binary.clone(),
-            self.tftp_args(),
-            stdio,
-        );
+        self.seed_vars(vars);
 
-        Ok(Servers {
-            storage_daemon,
-            tftp,
-        })
+        self.start_servers(job, &root, &boot).await
     }
 
     async fn launch(
@@ -503,6 +578,27 @@ impl JobBackend for NbdNetbootBackend {
 
     fn log_views(&self) -> Vec<LogView> {
         netboot_log_views()
+    }
+}
+
+fn image_reference(job: &StartJobMessage) -> Result<(Digest, Vec<ImageLocation>), JobError> {
+    match &job.image_spec {
+        ImageSpecification::Image {
+            manifest_digest,
+            locations,
+        } => Ok((*manifest_digest, locations.clone())),
+
+        unsupported_image_spec => Err(JobError {
+            error_kind: JobErrorKind::ImageNotCompatible,
+            description: format!("Unsupported image specification: {unsupported_image_spec:?}",),
+        }),
+    }
+}
+
+fn cannot_resume(e: anyhow::Error) -> JobError {
+    JobError {
+        error_kind: JobErrorKind::CannotResume,
+        description: format!("{e:#}"),
     }
 }
 
@@ -814,6 +910,7 @@ mod tests {
         ImageLocation, LogStreamingDispatch, ParameterValue, RestartPolicy,
     };
     use treadmill_rs::image::Digest;
+    use treadmill_rs::image::assemble;
     use treadmill_rs::util::Secret;
 
     #[test]
@@ -1225,6 +1322,149 @@ mod tests {
         );
 
         drop(servers);
+    }
+
+    fn resumable_manifest() -> ImageManifest {
+        assemble::build_manifest(
+            &[
+                assemble::LayerSpec {
+                    digest: digest(1),
+                    size: 10,
+                    role: Role::Root,
+                    virtual_size: Some(GIB),
+                },
+                assemble::LayerSpec {
+                    digest: digest(2),
+                    size: 10,
+                    role: Role::Root,
+                    virtual_size: Some(2 * GIB),
+                },
+                assemble::LayerSpec {
+                    digest: digest(3),
+                    size: 10,
+                    role: Role::Boot,
+                    virtual_size: Some(BOOT_BYTES),
+                },
+            ],
+            &assemble::ImageMeta::default(),
+        )
+        .unwrap()
+    }
+
+    async fn retired_workdir(f: &Fixture) -> PathBuf {
+        let workdir = f.tmp.path().join("retired");
+        std::fs::create_dir(&workdir).unwrap();
+        std::fs::write(workdir.join(ROOT_OVERLAY_FILE), b"the root disk").unwrap();
+        std::fs::write(workdir.join(BOOT_OVERLAY_FILE), b"the boot disk").unwrap();
+        AllocationRecord::new(
+            digest(9),
+            vec![ImageLocation {
+                registry: "127.0.0.1:0".to_string(),
+                repository: "treadmill/stub".to_string(),
+            }],
+            [
+                (ROOT_EXPORT.to_string(), ROOT_OVERLAY_FILE.to_string()),
+                (BOOT_EXPORT.to_string(), BOOT_OVERLAY_FILE.to_string()),
+            ],
+        )
+        .write(&workdir)
+        .await
+        .unwrap();
+        workdir
+    }
+
+    #[tokio::test]
+    async fn allocation_records_what_a_resume_needs() {
+        let f = fixture(None);
+        let job = start_msg(Uuid::new_v4(), true);
+        let mut vars = JobVars::new();
+
+        let servers = f
+            .backend
+            .allocate(&job, f.tmp.path(), netboot_image(), &mut vars)
+            .await
+            .unwrap();
+
+        let record = AllocationRecord::read(f.tmp.path()).await.unwrap();
+        assert_eq!(record.manifest_digest, digest(9));
+        assert_eq!(
+            record.overlays.get(ROOT_EXPORT).map(String::as_str),
+            Some(ROOT_OVERLAY_FILE),
+        );
+        assert_eq!(
+            record.overlays.get(BOOT_EXPORT).map(String::as_str),
+            Some(BOOT_OVERLAY_FILE),
+        );
+
+        drop(servers);
+    }
+
+    /// Adopting a retired job serves its existing disks. Creating the overlays
+    /// again is `qemu-img create`, which would discard everything the job
+    /// wrote.
+    #[tokio::test]
+    async fn adopting_reuses_the_existing_overlays() {
+        let f = fixture(Some(resumable_manifest()));
+        let workdir = retired_workdir(&f).await;
+        let job = start_msg(Uuid::new_v4(), true);
+        let mut vars = JobVars::new();
+
+        let servers = f.backend.adopt(&job, &workdir, &mut vars).await.unwrap();
+
+        assert!(
+            !f.launcher
+                .events()
+                .iter()
+                .any(|event| matches!(event, Event::Overlay(..))),
+            "a resume must not re-create the working disks",
+        );
+        assert_eq!(
+            std::fs::read(workdir.join(ROOT_OVERLAY_FILE)).unwrap(),
+            b"the root disk",
+        );
+        assert_eq!(
+            std::fs::read(workdir.join(BOOT_OVERLAY_FILE)).unwrap(),
+            b"the boot disk",
+        );
+
+        let spawned = f.launcher.spawned();
+        let (program, args, _) = &spawned[0];
+        assert_eq!(program, Path::new("/stub/qemu-storage-daemon"));
+        let args = args.join(" ");
+        for overlay in [ROOT_OVERLAY_FILE, BOOT_OVERLAY_FILE] {
+            assert!(
+                args.contains(&workdir.join(overlay).display().to_string()),
+                "{args}",
+            );
+        }
+        assert!(args.contains(&f.store.blob_path(&digest(3)).display().to_string()));
+        assert!(vars.contains_key("tcp_control_socket_listen_addr"));
+
+        drop(servers);
+    }
+
+    #[tokio::test]
+    async fn adopting_an_incomplete_retired_directory_cannot_resume() {
+        let f = fixture(Some(resumable_manifest()));
+
+        let no_record = f.tmp.path().join("no-record");
+        std::fs::create_dir(&no_record).unwrap();
+
+        let no_overlay = retired_workdir(&f).await;
+        std::fs::remove_file(no_overlay.join(BOOT_OVERLAY_FILE)).unwrap();
+
+        for workdir in [no_record, no_overlay] {
+            let mut vars = JobVars::new();
+            let error = f
+                .backend
+                .adopt(&start_msg(Uuid::new_v4(), false), &workdir, &mut vars)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error.error_kind, JobErrorKind::CannotResume),
+                "{error:?}",
+            );
+        }
     }
 
     #[tokio::test]

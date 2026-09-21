@@ -10,19 +10,26 @@
 //! entries once they are older than the configured grace period. The name of a
 //! retired entry carries everything needed to age it out or to move it back.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{Level, event};
 use uuid::Uuid;
+
+use treadmill_rs::api::switchboard_supervisor::ImageLocation;
+use treadmill_rs::image::Digest;
 
 const LOCK_FILE: &str = "supervisor.lock";
 const JOBS_DIR: &str = "jobs";
 const RETIRED_DIR: &str = "retired";
+
+pub const ALLOCATION_RECORD: &str = "allocation.json";
+pub const ALLOCATION_RECORD_VERSION: u32 = 1;
 
 const DEFAULT_GRACE_PERIOD: Duration = Duration::from_secs(24 * 60 * 60);
 const DEFAULT_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -54,6 +61,81 @@ impl Default for RetentionConfig {
             grace_period: DEFAULT_GRACE_PERIOD,
             sweep_interval: DEFAULT_SWEEP_INTERVAL,
         }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AllocationRecord {
+    pub version: u32,
+    pub manifest_digest: Digest,
+    pub locations: Vec<ImageLocation>,
+    pub overlays: BTreeMap<String, String>,
+}
+
+impl AllocationRecord {
+    pub fn new(
+        manifest_digest: Digest,
+        locations: Vec<ImageLocation>,
+        overlays: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
+        AllocationRecord {
+            version: ALLOCATION_RECORD_VERSION,
+            manifest_digest,
+            locations,
+            overlays: overlays.into_iter().collect(),
+        }
+    }
+
+    pub async fn write(&self, workdir: &Path) -> Result<()> {
+        let path = workdir.join(ALLOCATION_RECORD);
+        let bytes = serde_json::to_vec_pretty(self)
+            .with_context(|| format!("serializing {}", path.display()))?;
+        tokio::fs::write(&path, bytes)
+            .await
+            .with_context(|| format!("writing {}", path.display()))
+    }
+
+    pub async fn read(workdir: &Path) -> Result<Self> {
+        let path = workdir.join(ALLOCATION_RECORD);
+        let bytes = tokio::fs::read(&path)
+            .await
+            .with_context(|| format!("reading {}", path.display()))?;
+        let record: AllocationRecord = serde_json::from_slice(&bytes)
+            .with_context(|| format!("parsing {}", path.display()))?;
+        if record.version != ALLOCATION_RECORD_VERSION {
+            bail!(
+                "{} has version {}, this supervisor understands {}",
+                path.display(),
+                record.version,
+                ALLOCATION_RECORD_VERSION,
+            );
+        }
+        Ok(record)
+    }
+
+    pub async fn overlay(&self, workdir: &Path, role: &str) -> Result<PathBuf> {
+        let name = self
+            .overlays
+            .get(role)
+            .ok_or_else(|| anyhow!("no {role:?} overlay recorded in {ALLOCATION_RECORD}"))?;
+        let path = workdir.join(name);
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .with_context(|| format!("checking the {role:?} overlay {}", path.display()))?;
+        if !metadata.is_file() || metadata.len() == 0 {
+            bail!(
+                "the {role:?} overlay {} is not a usable disk image",
+                path.display(),
+            );
+        }
+        Ok(path)
+    }
+
+    async fn overlays_present(&self, workdir: &Path) -> Result<()> {
+        for role in self.overlays.keys() {
+            self.overlay(workdir, role).await?;
+        }
+        Ok(())
     }
 }
 
@@ -139,6 +221,55 @@ impl JobWorkdirs {
         }
     }
 
+    pub async fn resume(&self, retired_job_id: Uuid, as_job_id: Uuid) -> Result<Option<PathBuf>> {
+        let Some(src) = self.latest_retired(retired_job_id).await? else {
+            return Ok(None);
+        };
+
+        let record = AllocationRecord::read(&src)
+            .await
+            .with_context(|| format!("reading the allocation of {}", src.display()))?;
+        record
+            .overlays_present(&src)
+            .await
+            .with_context(|| format!("checking the allocation of {}", src.display()))?;
+
+        let dst = self.path(as_job_id);
+        match tokio::fs::rename(&src, &dst).await {
+            Ok(()) => {
+                event!(Level::INFO, ?src, ?dst, "Resumed job working directory");
+                Ok(Some(dst))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(anyhow!(e))
+                .with_context(|| format!("resuming {} as {}", src.display(), dst.display())),
+        }
+    }
+
+    async fn latest_retired(&self, job_id: Uuid) -> Result<Option<PathBuf>> {
+        let mut entries = tokio::fs::read_dir(&self.retired)
+            .await
+            .with_context(|| format!("reading {}", self.retired.display()))?;
+
+        let mut latest: Option<(u128, PathBuf)> = None;
+        while let Some(entry) = entries.next_entry().await? {
+            let Some((retired_at, _)) = entry
+                .file_name()
+                .to_str()
+                .and_then(parse_retired_name)
+                .filter(|(_, entry_job_id)| *entry_job_id == job_id)
+            else {
+                continue;
+            };
+
+            if latest.as_ref().is_none_or(|(at, _)| retired_at > *at) {
+                latest = Some((retired_at, entry.path()));
+            }
+        }
+
+        Ok(latest.map(|(_, path)| path))
+    }
+
     /// Retire every working directory left behind by a previous supervisor
     /// process.
     pub async fn sweep(&self) -> Result<()> {
@@ -192,9 +323,14 @@ impl JobWorkdirs {
                     ?path,
                     "Collecting retired job working directory"
                 );
-                tokio::fs::remove_dir_all(&path)
-                    .await
-                    .with_context(|| format!("removing {}", path.display()))?;
+                match tokio::fs::remove_dir_all(&path).await {
+                    Ok(()) => (),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(e) => {
+                        return Err(anyhow!(e))
+                            .with_context(|| format!("removing {}", path.display()));
+                    }
+                }
             }
         }
 
@@ -364,6 +500,127 @@ mod tests {
         assert!(!wd.path(job_id).exists());
         assert!(retired_entries(tmp.path())[0].ends_with(&job_id.to_string()));
         assert!(JobWorkdirs::open(tmp.path(), RetentionConfig::default()).is_err());
+    }
+
+    async fn seed_job(wd: &JobWorkdirs, job_id: Uuid) -> PathBuf {
+        let path = wd.create(job_id).await.unwrap();
+        tokio::fs::write(path.join("root.qcow2"), b"disk")
+            .await
+            .unwrap();
+        AllocationRecord::new(
+            Digest::from_sha256([7u8; 32]),
+            vec![ImageLocation {
+                registry: "registry.example".to_string(),
+                repository: "treadmill/image".to_string(),
+            }],
+            [("root".to_string(), "root.qcow2".to_string())],
+        )
+        .write(&path)
+        .await
+        .unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn a_retired_job_resumes_under_a_new_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wd = workdirs(tmp.path(), Duration::from_secs(3600));
+        let job_id = Uuid::new_v4();
+        let successor = Uuid::new_v4();
+
+        seed_job(&wd, job_id).await;
+        assert!(wd.retire(job_id).await.unwrap());
+
+        let resumed = wd.resume(job_id, successor).await.unwrap().unwrap();
+        assert_eq!(resumed, wd.path(successor));
+        assert_eq!(
+            tokio::fs::read(resumed.join("root.qcow2")).await.unwrap(),
+            b"disk",
+        );
+        assert!(retired_entries(tmp.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_retired_job_resumes_at_most_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wd = workdirs(tmp.path(), Duration::from_secs(3600));
+        let job_id = Uuid::new_v4();
+
+        seed_job(&wd, job_id).await;
+        assert!(wd.retire(job_id).await.unwrap());
+
+        assert!(wd.resume(job_id, Uuid::new_v4()).await.unwrap().is_some());
+        assert!(wd.resume(job_id, Uuid::new_v4()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn resuming_a_job_this_supervisor_never_held_finds_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wd = workdirs(tmp.path(), Duration::from_secs(3600));
+
+        assert!(
+            wd.resume(Uuid::new_v4(), Uuid::new_v4())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_newest_retired_directory_of_a_job_is_the_one_resumed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wd = workdirs(tmp.path(), Duration::from_secs(3600));
+        let job_id = Uuid::new_v4();
+
+        let retired = tmp.path().join(RETIRED_DIR);
+        for (marker, retired_at) in [
+            (b"older", SystemTime::now() - Duration::from_secs(600)),
+            (b"newer", SystemTime::now()),
+        ] {
+            let dir = retired.join(retired_name(job_id, retired_at));
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(dir.join("root.qcow2"), marker).unwrap();
+            AllocationRecord::new(
+                Digest::from_sha256([7u8; 32]),
+                Vec::new(),
+                [("root".to_string(), "root.qcow2".to_string())],
+            )
+            .write(&dir)
+            .await
+            .unwrap();
+        }
+
+        let resumed = wd.resume(job_id, Uuid::new_v4()).await.unwrap().unwrap();
+        assert_eq!(
+            tokio::fs::read(resumed.join("root.qcow2")).await.unwrap(),
+            b"newer",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retired_job_without_a_usable_allocation_stays_retired() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wd = workdirs(tmp.path(), Duration::from_secs(3600));
+
+        let no_record = Uuid::new_v4();
+        wd.create(no_record).await.unwrap();
+        assert!(wd.retire(no_record).await.unwrap());
+
+        let no_overlay = Uuid::new_v4();
+        let path = seed_job(&wd, no_overlay).await;
+        tokio::fs::remove_file(path.join("root.qcow2"))
+            .await
+            .unwrap();
+        assert!(wd.retire(no_overlay).await.unwrap());
+
+        for job_id in [no_record, no_overlay] {
+            assert!(wd.resume(job_id, Uuid::new_v4()).await.is_err());
+            assert!(
+                retired_entries(tmp.path())
+                    .iter()
+                    .any(|n| n.ends_with(&job_id.to_string())),
+            );
+        }
     }
 
     fn retired_entries(state_dir: &Path) -> Vec<String> {
