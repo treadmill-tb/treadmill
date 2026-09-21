@@ -195,6 +195,34 @@ pub async fn enqueue(
         }
     }
 
+    // A resume adopts the predecessor's working directory on the one host it
+    // ran on, so refuse the two cases that can never succeed. Whether the
+    // directory is still there is the supervisor's to answer -- it holds the
+    // only authoritative answer, and it answers it atomically.
+    if let JobInitSpec::Resume { job_id } = req.init_spec {
+        let predecessor = sqlx::query!(
+            r#"select job_state as "job_state: job::SqlJobState", dispatched_on_host_id
+               from tml_switchboard.jobs
+               where job_id = $1"#,
+            job_id,
+        )
+        .fetch_optional(state.pool())
+        .await
+        .or_internal(&format!("looking up the predecessor of a resume: {job_id}"))?
+        .ok_or(StatusCode::UNPROCESSABLE_ENTITY)?;
+
+        if predecessor.job_state != job::SqlJobState::Finalized
+            || predecessor.dispatched_on_host_id.is_none()
+        {
+            tracing::debug!(
+                %job_id,
+                state = ?predecessor.job_state,
+                "rejecting a resume of a job that is not a finalized, dispatched job",
+            );
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+    }
+
     // An image-set job requires `use` on the set and freezes a concrete
     // generation at enqueue, so the candidate set is reproducible (resolution to
     // a concrete member still happens per-host at dispatch). Resolve and validate

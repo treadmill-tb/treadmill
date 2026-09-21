@@ -687,7 +687,7 @@ async fn mark_running(pool: &PgPool, job_id: Uuid, started_at: chrono::DateTime<
     )
     .bind(host_id)
     .bind(format!("host-{host_id}"))
-    .bind(vec![0u8; 32])
+    .bind([host_id.as_bytes().as_slice(), host_id.as_bytes()].concat())
     .execute(pool)
     .await
     .unwrap();
@@ -699,6 +699,20 @@ async fn mark_running(pool: &PgPool, job_id: Uuid, started_at: chrono::DateTime<
     .bind(job_id)
     .bind(host_id)
     .bind(started_at)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Drive a job to its terminal state, satisfying the `finalized` invariants.
+async fn mark_finalized(pool: &PgPool, job_id: Uuid) {
+    sqlx::query(
+        "update tml_switchboard.jobs \
+         set job_state = 'finalized', terminated_at = now(), \
+             termination_reason = 'workload_exited' \
+         where job_id = $1",
+    )
+    .bind(job_id)
     .execute(pool)
     .await
     .unwrap();
@@ -925,6 +939,67 @@ async fn enqueue_with_unrelated_owner_is_forbidden(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+/// A resume adopts the predecessor's working directory on the host it ran on.
+/// A job that is still executing, and one that never reached a host at all,
+/// have nothing to adopt, so neither is accepted.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn resuming_a_job_that_cannot_be_resumed_is_refused(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &token).await;
+    let bob_tok = latest_token_id(&pool, bob).await;
+
+    let resume = async |job_id| {
+        client
+            .post(format!("http://{addr}/api/v1/jobs"))
+            .bearer_auth(&token)
+            .json(&image_job_request(
+                None,
+                JobInitSpec::Resume { job_id },
+                None,
+            ))
+            .send()
+            .await
+            .unwrap()
+            .status()
+    };
+
+    // Queued: never dispatched, and not finalized.
+    let queued = seed_job(&pool, bob, bob_tok, &[]).await;
+    assert_eq!(
+        resume(queued).await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+    );
+
+    // Running on a host, but not finalized.
+    let running = seed_job(&pool, bob, bob_tok, &[]).await;
+    mark_running(&pool, running, chrono::Utc::now()).await;
+    assert_eq!(
+        resume(running).await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+    );
+
+    // Finalized without ever being dispatched.
+    let undispatched = seed_job(&pool, bob, bob_tok, &[]).await;
+    mark_finalized(&pool, undispatched).await;
+    assert_eq!(
+        resume(undispatched).await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+    );
+
+    // Finalized on a host: this one the supervisor gets to answer for.
+    let resumable = seed_job(&pool, bob, bob_tok, &[]).await;
+    mark_running(&pool, resumable, chrono::Utc::now()).await;
+    mark_finalized(&pool, resumable).await;
+    assert_eq!(resume(resumable).await, reqwest::StatusCode::CREATED);
 }
 
 #[sqlx::test]
