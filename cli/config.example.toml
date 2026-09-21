@@ -16,3 +16,11 @@ switchboard = "https://swb.treadmill.dev"
 
 # Skip TLS certificate verification.
 # insecure_tls = false
+
+# Domains used in the `tml ssh` integration.
+#
+# This enables support for `ssh tml@<job-id>.job.treadmill.dev`, after running
+# `tml ssh setup`. A hostname can be a specific gateway
+# (`<job-id>.us-east-1.user-gw.treadmill.dev`, one sub-domain under the
+# `ssh_domains` specified here). Otherwise, uses the job's primary gateway.
+ssh_domains = ["job.treadmill.dev", "user-gw.treadmill.dev"]

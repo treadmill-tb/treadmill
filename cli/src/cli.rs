@@ -83,6 +83,31 @@ pub enum Command {
         #[command(subcommand)]
         command: JobCommand,
     },
+    /// Integrate Treadmill with the system SSH client
+    Ssh {
+        #[command(subcommand)]
+        command: SshCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SshCommand {
+    /// Write the tml-managed SSH configuration and hook it into the user's SSH config
+    Setup(SshSetupArgs),
+    /// Bridge stdio to the job named by an SSH hostname, used for ProxyCommand
+    #[command(hide = true)]
+    Proxy { host: String },
+}
+
+#[derive(Args, Debug)]
+pub struct SshSetupArgs {
+    /// Edit the user's SSH configuration without asking for confirmation
+    #[arg(long, short = 'y', conflicts_with = "print")]
+    pub yes: bool,
+
+    /// Only print the snippet, leaving the user's SSH configuration untouched
+    #[arg(long)]
+    pub print: bool,
 }
 
 #[derive(Args, Debug)]

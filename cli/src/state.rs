@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use treadmill_rs::api::switchboard::jobs::JobServiceEndpoint;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -20,8 +21,7 @@ pub struct State {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedJobServiceToken {
-    pub hostname: String,
-    pub port: u16,
+    pub endpoints: Vec<JobServiceEndpoint>,
     pub token: String,
     pub expires_at: DateTime<Utc>,
 }
@@ -29,8 +29,7 @@ pub struct CachedJobServiceToken {
 impl State {
     pub fn load(path: &Path) -> Result<Self> {
         match fs::read_to_string(path) {
-            Ok(contents) => serde_json::from_str(&contents)
-                .with_context(|| format!("parsing {}", path.display())),
+            Ok(contents) => Ok(serde_json::from_str(&contents).unwrap_or_default()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
         }

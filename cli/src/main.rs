@@ -4,13 +4,14 @@ mod context;
 mod ctx;
 mod login;
 mod ssh;
+mod sshconfig;
 mod state;
 mod wsproxy;
 
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, Command, JobCommand};
+use cli::{Cli, Command, JobCommand, SshCommand};
 use ctx::Ctx;
 
 fn main() -> std::process::ExitCode {
@@ -52,19 +53,31 @@ async fn run(args: Cli) -> Result<()> {
         Command::Whoami => login::whoami(&ctx).await,
         Command::Context { command } => context::run(&mut ctx, command).await,
         Command::Job { command } => job(&mut ctx, command).await,
+        Command::Ssh { command } => {
+            require_streaming(&ctx, true);
+            match command {
+                SshCommand::Setup(args) => sshconfig::setup(&ctx, args),
+                SshCommand::Proxy { host } => ssh::proxy(&mut ctx, host).await,
+            }
+        }
     }
+}
+
+fn require_streaming(ctx: &Ctx, streams: bool) {
+    if ctx.human() || !streams {
+        return;
+    }
+    let style = anstyle::AnsiColor::Red.on_default() | anstyle::Effects::BOLD;
+    anstream::eprintln!(
+        "{style}error:{style:#} this command streams bytes and has no structured output"
+    );
+    std::process::exit(2);
 }
 
 async fn job(ctx: &mut Ctx, command: &JobCommand) -> Result<()> {
     // The SSH family hands the terminal to another program, so it has no
     // structured rendering to offer.
-    if !ctx.human() && !matches!(command, JobCommand::SetActive { .. }) {
-        let style = anstyle::AnsiColor::Red.on_default() | anstyle::Effects::BOLD;
-        anstream::eprintln!(
-            "{style}error:{style:#} this command streams bytes and has no structured output"
-        );
-        std::process::exit(2);
-    }
+    require_streaming(ctx, !matches!(command, JobCommand::SetActive { .. }));
 
     match command {
         JobCommand::Ssh { target, args } => ssh::ssh(ctx, target, args).await,
@@ -81,6 +94,6 @@ async fn job(ctx: &mut Ctx, command: &JobCommand) -> Result<()> {
             local,
         } => ssh::download(ctx, target, remote, local.as_deref()).await,
         JobCommand::SetActive { job } => context::set_active(ctx, *job),
-        JobCommand::WsProxy { job, service } => wsproxy::run(ctx, *job, service).await,
+        JobCommand::WsProxy { job, service } => wsproxy::run(ctx, *job, service, None).await,
     }
 }

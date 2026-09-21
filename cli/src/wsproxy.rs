@@ -14,7 +14,7 @@ use tokio_tungstenite::{
 use uuid::Uuid;
 
 use crate::ctx::Ctx;
-use crate::ssh::service_credentials;
+use crate::ssh::{select_endpoint, service_credentials};
 use crate::state::State;
 
 const READ_BUFFER: usize = 16 * 1024;
@@ -22,9 +22,14 @@ const READ_BUFFER: usize = 16 * 1024;
 /// Bridge stdin/stdout to a job's `sshws` service: the gateway and the job's
 /// own proxy both admit the request against the service token, and the socket
 /// then carries raw SSH bytes in binary frames.
-pub async fn run(ctx: &mut Ctx, job_id: Uuid, service: &str) -> Result<()> {
+pub async fn run(ctx: &mut Ctx, job_id: Uuid, service: &str, gateway: Option<&str>) -> Result<()> {
+    let ssh_domains = match gateway {
+        Some(_) => ctx.config.ssh_domains(&ctx.profile)?.to_vec(),
+        None => Vec::new(),
+    };
     let credentials = service_credentials(ctx, job_id, service).await?;
-    let socket = match open(&credentials, ctx.insecure_tls, ctx.verbose).await {
+    let endpoint = select_endpoint(&credentials, gateway, &ssh_domains)?;
+    let socket = match open(endpoint, &credentials.token, ctx.insecure_tls, ctx.verbose).await {
         Ok(socket) => socket,
         Err(first_error) => {
             State::invalidate_job_service_token(
@@ -35,7 +40,8 @@ pub async fn run(ctx: &mut Ctx, job_id: Uuid, service: &str) -> Result<()> {
             )?;
             ctx.state = State::load(&ctx.state_path)?;
             let replacement = service_credentials(ctx, job_id, service).await?;
-            open(&replacement, ctx.insecure_tls, ctx.verbose)
+            let endpoint = select_endpoint(&replacement, gateway, &ssh_domains)?;
+            open(endpoint, &replacement.token, ctx.insecure_tls, ctx.verbose)
                 .await
                 .with_context(|| {
                     format!("retrying after the first connection failed: {first_error:#}")
@@ -82,13 +88,13 @@ pub async fn run(ctx: &mut Ctx, job_id: Uuid, service: &str) -> Result<()> {
 }
 
 async fn open(
-    credentials: &crate::state::CachedJobServiceToken,
+    endpoint: &treadmill_rs::api::switchboard::jobs::JobServiceEndpoint,
+    token: &str,
     insecure_tls: bool,
     verbose: u8,
 ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
-    let hostname = &credentials.hostname;
-    let port = credentials.port;
-    let token = &credentials.token;
+    let hostname = &endpoint.hostname;
+    let port = endpoint.port;
     let mut request = format!("wss://{hostname}:{port}/")
         .into_client_request()
         .context("building the WebSocket request")?;
