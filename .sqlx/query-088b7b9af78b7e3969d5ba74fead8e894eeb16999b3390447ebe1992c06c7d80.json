@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.host_grants (host_id, subject_id, permission)\n           values ($1, $2, $3::text::tml_switchboard.host_permission)\n           on conflict (host_id, subject_id, permission) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "088b7b9af78b7e3969d5ba74fead8e894eeb16999b3390447ebe1992c06c7d80"
+}

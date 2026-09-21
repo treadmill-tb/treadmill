@@ -6,10 +6,10 @@ use std::net::SocketAddr;
 
 use treadmill_rs::api::switchboard::JobInitSpec;
 use treadmill_rs::api::switchboard::hosts::{
-    HostCreateRequest, HostCreateResponse, HostInfo, HostListEntry,
-    HostPermission as ApiHostPermission, HostRequirementsReport, HostRequirementsRequest,
-    HostSpecRejection, HostSpecUpdateRequest, HostSpecUpdateResponse, HostSummary,
-    HostUpdateRequest,
+    HostCreateRequest, HostCreateResponse, HostGrantInfo, HostGrantRequest, HostInfo,
+    HostListEntry, HostOwnerUpdateRequest, HostPermission as ApiHostPermission,
+    HostRequirementsReport, HostRequirementsRequest, HostSpecRejection, HostSpecUpdateRequest,
+    HostSpecUpdateResponse, HostSummary, HostUpdateRequest,
 };
 use treadmill_rs::host_spec::{HostSpec, HostSpecV1};
 
@@ -127,6 +127,228 @@ pub async fn update(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// Require `manage` on a host, the meta-permission governing its owner and ACL.
+/// A host the caller cannot manage is a 403 whether or not it exists, so the
+/// routes built on this do not leak which ids exist.
+async fn require_manage(
+    state: &AppState,
+    subject: &crate::auth::Subject,
+    host_id: Uuid,
+    what: &str,
+) -> Result<(), StatusCode> {
+    use crate::auth::engine::{self, HostPermission};
+
+    let authorized = engine::can_access_host(
+        state.pool(),
+        subject.user_id(),
+        host_id,
+        HostPermission::Manage,
+    )
+    .await
+    .or_internal(&format!("checking host manage access for {what}"))?;
+    if authorized {
+        Ok(())
+    } else {
+        Err(StatusCode::FORBIDDEN)
+    }
+}
+
+/// Axum handler for `PUT /hosts/{id}/owner` — transfer a host to another
+/// subject, or orphan it.
+///
+/// Requires `manage`: as `SCHEMA.sql` has it, the meta-permission covers
+/// transferring ownership, so a manager may hand the host to anyone, including
+/// themselves. Setting the owner already in force is a no-op with no audit
+/// event.
+pub async fn put_owner(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(IdPath { id: host_id }): Path<IdPath>,
+    Json(req): Json<HostOwnerUpdateRequest>,
+) -> Result<StatusCode, StatusCode> {
+    use crate::audit::model::{Host as AuditHost, Subject as AuditSubject};
+    use crate::audit::{self, events};
+
+    require_manage(&state, &subject, host_id, "an owner change").await?;
+
+    let mut txn = state
+        .pool()
+        .begin()
+        .await
+        .or_internal(&format!("opening a transaction to re-own host {host_id}"))?;
+
+    let previous = sql::host::lock_owner(host_id, &mut txn)
+        .await
+        .or_internal(&format!("reading the owner of host {host_id}"))?
+        // Authorized above, so a missing row was deleted in between.
+        .ok_or(StatusCode::NOT_FOUND)?;
+    if previous == req.owner {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
+    match sql::host::set_owner(host_id, req.owner, &mut txn).await {
+        Ok(()) => {}
+        Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => {
+            tracing::debug!("refusing to re-own host {host_id}: unknown subject");
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        Err(e) => return Err(crate::http_error::internal(e)),
+    }
+    audit::emit(
+        &mut txn,
+        &events::HostOwnerChanged {
+            actor: AuditSubject(subject.user_id()),
+            host: AuditHost(host_id),
+            old_owner: previous.map(AuditSubject),
+            new_owner: req.owner.map(AuditSubject),
+        },
+    )
+    .await
+    .or_internal("recording a host owner change")?;
+    txn.commit()
+        .await
+        .or_internal(&format!("committing the owner change of host {host_id}"))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Axum handler for `GET /hosts/{id}/grants` — the host's ACL. Requires
+/// `manage`, like every other route that reads or edits it.
+pub async fn list_grants(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(IdPath { id: host_id }): Path<IdPath>,
+) -> Result<Json<Vec<HostGrantInfo>>, StatusCode> {
+    use crate::auth::engine::HostPermission;
+
+    require_manage(&state, &subject, host_id, "listing grants").await?;
+
+    let grants = sql::host::list_grants(host_id, state.pool())
+        .await
+        .or_internal(&format!("listing the grants of host {host_id}"))?
+        .into_iter()
+        .map(|g| {
+            let permission = HostPermission::from_db_str(&g.permission).ok_or_else(|| {
+                crate::http_error::internal(format!("unknown host permission {:?}", g.permission))
+            })?;
+            Ok(HostGrantInfo {
+                subject_id: g.subject_id,
+                permission: host_perm_to_api(permission),
+                revocable: g.revocable,
+                granted_at: g.granted_at,
+            })
+        })
+        .collect::<Result<Vec<_>, StatusCode>>()?;
+
+    Ok(Json(grants))
+}
+
+/// Axum handler for `POST /hosts/{id}/grants` — grant a permission on the host.
+/// Requires `manage`. Granting one already held is a no-op with no audit
+/// event.
+pub async fn create_grant(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(IdPath { id: host_id }): Path<IdPath>,
+    Json(req): Json<HostGrantRequest>,
+) -> Result<StatusCode, StatusCode> {
+    use crate::audit::model::{Host as AuditHost, Subject as AuditSubject};
+    use crate::audit::{self, events};
+
+    require_manage(&state, &subject, host_id, "a grant").await?;
+    let permission = host_perm_from_api(req.permission).as_str();
+
+    let mut txn = state
+        .pool()
+        .begin()
+        .await
+        .or_internal(&format!("opening a transaction to grant on host {host_id}"))?;
+
+    let added = match sql::host::grant(host_id, req.subject_id, permission, &mut *txn).await {
+        Ok(added) => added,
+        Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => {
+            // The host was authorized above, so it is the subject that is unknown
+            // (or the host was deleted in between, which reads the same).
+            tracing::debug!("refusing a grant on host {host_id}: unknown subject");
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        Err(e) => return Err(crate::http_error::internal(e)),
+    };
+    if added {
+        audit::emit(
+            &mut txn,
+            &events::HostGrantCreated {
+                actor: AuditSubject(subject.user_id()),
+                host: AuditHost(host_id),
+                grantee: AuditSubject(req.subject_id),
+                permission: permission.to_string(),
+            },
+        )
+        .await
+        .or_internal("recording a host grant")?;
+    }
+    txn.commit()
+        .await
+        .or_internal(&format!("committing a grant on host {host_id}"))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Axum handler for `DELETE /hosts/{id}/grants/{subject_id}/{permission}` —
+/// revoke a grant. Requires `manage`. A grant the switchboard fixed in place is
+/// refused with 409 rather than tripping the table's trigger.
+pub async fn revoke_grant(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(HostGrantPath {
+        id: host_id,
+        subject_id: target,
+        permission,
+    }): Path<HostGrantPath>,
+) -> Result<StatusCode, StatusCode> {
+    use crate::audit::model::{Host as AuditHost, Subject as AuditSubject};
+    use crate::audit::{self, events};
+    use crate::auth::engine::HostPermission;
+
+    require_manage(&state, &subject, host_id, "revoking a grant").await?;
+    // An unknown permission word is a malformed request, not a missing grant.
+    let permission = HostPermission::from_db_str(&permission)
+        .ok_or(StatusCode::BAD_REQUEST)?
+        .as_str();
+
+    let mut txn = state.pool().begin().await.or_internal(&format!(
+        "opening a transaction to revoke on host {host_id}"
+    ))?;
+
+    match sql::host::lock_grant_revocable(host_id, target, permission, &mut txn)
+        .await
+        .or_internal(&format!("reading a grant on host {host_id}"))?
+    {
+        None => return Err(StatusCode::NOT_FOUND),
+        Some(false) => return Err(StatusCode::CONFLICT),
+        Some(true) => {}
+    }
+    sql::host::revoke(host_id, target, permission, &mut txn)
+        .await
+        .or_internal(&format!("revoking a grant on host {host_id}"))?;
+    audit::emit(
+        &mut txn,
+        &events::HostGrantRevoked {
+            actor: AuditSubject(subject.user_id()),
+            host: AuditHost(host_id),
+            grantee: AuditSubject(target),
+            permission: permission.to_string(),
+        },
+    )
+    .await
+    .or_internal("recording a host grant revocation")?;
+    txn.commit()
+        .await
+        .or_internal(&format!("committing a revocation on host {host_id}"))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Axum handler for `GET /hosts/spec-schema` — the JSON Schema of a host spec.
 ///
 /// The same artifact as the committed `host_spec.schema.json` snapshot, served
@@ -234,6 +456,15 @@ fn host_perm_to_api(p: crate::auth::engine::HostPermission) -> ApiHostPermission
         HostPermission::Read => ApiHostPermission::Read,
         HostPermission::Start => ApiHostPermission::Start,
         HostPermission::Manage => ApiHostPermission::Manage,
+    }
+}
+
+fn host_perm_from_api(p: ApiHostPermission) -> crate::auth::engine::HostPermission {
+    use crate::auth::engine::HostPermission;
+    match p {
+        ApiHostPermission::Read => HostPermission::Read,
+        ApiHostPermission::Start => HostPermission::Start,
+        ApiHostPermission::Manage => HostPermission::Manage,
     }
 }
 
@@ -487,6 +718,7 @@ fn host_info(
         live: is_live(&host, state),
         host_id: host.host_id,
         name: host.name,
+        owner_id: host.owner_id,
         maintenance: host.maintenance,
         last_seen_at: host.last_seen_at,
         spec,
@@ -590,7 +822,7 @@ use uuid::Uuid;
 use crate::auth::token::SecurityToken;
 use crate::events::EventFilter;
 use crate::http_error::OrInternal;
-use crate::routes::params::IdPath;
+use crate::routes::params::{HostGrantPath, IdPath};
 use crate::serve::AppState;
 use crate::sql;
 use crate::supervisor_ws_worker::{SupervisorWSWorker, SupervisorWSWorkerConfig};

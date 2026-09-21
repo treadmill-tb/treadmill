@@ -15,9 +15,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::WhoAmIResponse;
+use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::hosts::{
-    HostCreateResponse, HostInfo, HostListEntry, HostPermission, HostRequirementsReport,
-    HostSpecRejection, HostSpecUpdateResponse,
+    HostCreateResponse, HostGrantInfo, HostInfo, HostListEntry, HostPermission,
+    HostRequirementsReport, HostSpecRejection, HostSpecUpdateResponse,
 };
 use treadmill_rs::host_spec::{HostSpec, PlatformKind};
 use treadmill_switchboard::events::EventBus;
@@ -991,11 +992,11 @@ async fn spec_schema_is_the_committed_artifact(pool: PgPool) {
         .await
         .unwrap();
 
-    let snapshot = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../treadmill-rs/protocol-schema/host_spec.schema.json"
-    ))
-    .expect("the committed snapshot exists");
+    let path = std::env::current_dir()
+        .unwrap_or_default()
+        .join("../treadmill-rs/protocol-schema/host_spec.schema.json");
+    let snapshot = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("could not read {}: {err}", path.display()));
     let committed: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
     assert_eq!(served, committed);
 }
@@ -1412,4 +1413,276 @@ async fn get_host_reports_the_viewers_permissions(pool: PgPool) {
         ]
     );
     assert_eq!(permissions(&bob).await, vec![HostPermission::Read]);
+}
+
+// -- ownership and grants -------------------------------------------------
+
+/// The event types in a host's audit feed, newest first, as `caller` sees it.
+async fn host_event_types(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    host_id: Uuid,
+) -> Vec<String> {
+    client
+        .get(format!("http://{addr}/api/v1/hosts/{host_id}/events"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .json::<AuditFeedResponse>()
+        .await
+        .unwrap()
+        .events
+        .into_iter()
+        .map(|e| e.event_type)
+        .collect()
+}
+
+/// `PUT /hosts/{id}/owner` requires `manage`, reports the new owner through
+/// `GET /hosts/{id}`, and hands the old owner's implicit authority to the new
+/// one.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn put_owner_transfers_the_host(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let bob = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob_id = whoami(&client, addr, &bob).await;
+    let carol = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let carol_id = whoami(&client, addr, &carol).await;
+    let host_id = seed_host_owned(&pool, "cam-rpi4-02", bob_id).await;
+
+    let put_owner = async |token: &str, owner: Option<Uuid>| {
+        client
+            .put(format!("http://{addr}/api/v1/hosts/{host_id}/owner"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "owner": owner }))
+            .send()
+            .await
+            .unwrap()
+            .status()
+    };
+    let get = async |token: &str| {
+        client
+            .get(format!("http://{addr}/api/v1/hosts/{host_id}"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+    };
+
+    // A stranger cannot take the host.
+    assert_eq!(
+        put_owner(&carol, Some(carol_id)).await,
+        reqwest::StatusCode::FORBIDDEN
+    );
+    // Nor can it be handed to a subject that does not exist.
+    assert_eq!(
+        put_owner(&bob, Some(Uuid::new_v4())).await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let info: HostInfo = get(&bob).await.json().await.unwrap();
+    assert_eq!(info.owner_id, Some(bob_id));
+
+    // The owner already in force is a no-op, and records nothing.
+    assert_eq!(
+        put_owner(&bob, Some(bob_id)).await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+    assert!(
+        !host_event_types(&client, addr, &bob, host_id)
+            .await
+            .iter()
+            .any(|t| t.starts_with("host_owner_changed"))
+    );
+
+    assert_eq!(
+        put_owner(&bob, Some(carol_id)).await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+    let info: HostInfo = get(&carol).await.json().await.unwrap();
+    assert_eq!(info.owner_id, Some(carol_id));
+    assert_eq!(
+        host_event_types(&client, addr, &carol, host_id).await[0],
+        "host_owner_changed.v1"
+    );
+    // Bob gave up his implicit authority with the host.
+    assert_eq!(get(&bob).await.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // Orphaning leaves the host to the admins alone.
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+    assert_eq!(
+        put_owner(&carol, None).await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+    assert_eq!(get(&carol).await.status(), reqwest::StatusCode::FORBIDDEN);
+    let info: HostInfo = get(&admin).await.json().await.unwrap();
+    assert_eq!(info.owner_id, None);
+}
+
+/// The grant routes list, add and revoke entries of a host's ACL, each gated on
+/// `manage`, and a grant takes effect on the grantee's access.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn host_grants_lifecycle(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let bob = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob_id = whoami(&client, addr, &bob).await;
+    let carol = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let carol_id = whoami(&client, addr, &carol).await;
+    let host_id = seed_host_owned(&pool, "cam-rpi4-03", bob_id).await;
+    let grants_url = format!("http://{addr}/api/v1/hosts/{host_id}/grants");
+
+    let grant = async |token: &str, subject: Uuid, permission: &str| {
+        client
+            .post(&grants_url)
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "subject_id": subject, "permission": permission }))
+            .send()
+            .await
+            .unwrap()
+            .status()
+    };
+    let revoke = async |token: &str, subject: Uuid, permission: &str| {
+        client
+            .delete(format!("{grants_url}/{subject}/{permission}"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .status()
+    };
+    let list = async |token: &str| {
+        client
+            .get(&grants_url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+    };
+
+    // Carol can neither read the ACL nor grant herself access.
+    assert_eq!(list(&carol).await.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(
+        grant(&carol, carol_id, "read").await,
+        reqwest::StatusCode::FORBIDDEN
+    );
+
+    assert_eq!(
+        grant(&bob, Uuid::new_v4(), "read").await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        grant(&bob, carol_id, "read").await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+    // Granting one already held changes nothing.
+    assert_eq!(
+        grant(&bob, carol_id, "read").await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+
+    let grants: Vec<HostGrantInfo> = list(&bob).await.json().await.unwrap();
+    assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0].subject_id, carol_id);
+    assert_eq!(grants[0].permission, HostPermission::Read);
+    assert!(grants[0].revocable);
+
+    let types = host_event_types(&client, addr, &bob, host_id).await;
+    assert_eq!(
+        types
+            .iter()
+            .filter(|t| t.starts_with("host_grant_created"))
+            .count(),
+        1,
+        "a repeated grant is not audited twice"
+    );
+
+    // The grant is effective, and read alone does not confer manage.
+    let get = client
+        .get(format!("http://{addr}/api/v1/hosts/{host_id}"))
+        .bearer_auth(&carol)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get.status(), reqwest::StatusCode::OK);
+    assert_eq!(list(&carol).await.status(), reqwest::StatusCode::FORBIDDEN);
+
+    assert_eq!(
+        revoke(&bob, carol_id, "frobnicate").await,
+        reqwest::StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        revoke(&bob, carol_id, "start").await,
+        reqwest::StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        revoke(&carol, carol_id, "read").await,
+        reqwest::StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        revoke(&bob, carol_id, "read").await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+    let grants: Vec<HostGrantInfo> = list(&bob).await.json().await.unwrap();
+    assert!(grants.is_empty());
+    assert_eq!(
+        host_event_types(&client, addr, &bob, host_id).await[0],
+        "host_grant_revoked.v1"
+    );
+
+    // A `manage` grant hands over the ACL too.
+    assert_eq!(
+        grant(&bob, carol_id, "manage").await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+    assert_eq!(list(&carol).await.status(), reqwest::StatusCode::OK);
+}
+
+/// A grant the switchboard fixed in place is listed as such and refused with
+/// 409 rather than a 500 from the table's trigger.
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn irrevocable_host_grant_is_refused(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let bob = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob_id = whoami(&client, addr, &bob).await;
+    let carol = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let carol_id = whoami(&client, addr, &carol).await;
+    let host_id = seed_host_owned(&pool, "cam-rpi4-04", bob_id).await;
+    sqlx::query(
+        "insert into tml_switchboard.host_grants (host_id, subject_id, permission, revocable) \
+         values ($1, $2, 'start', false)",
+    )
+    .bind(host_id)
+    .bind(carol_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let grants: Vec<HostGrantInfo> = client
+        .get(format!("http://{addr}/api/v1/hosts/{host_id}/grants"))
+        .bearer_auth(&bob)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(grants.len(), 1);
+    assert!(!grants[0].revocable);
+
+    let status = client
+        .delete(format!(
+            "http://{addr}/api/v1/hosts/{host_id}/grants/{carol_id}/start"
+        ))
+        .bearer_auth(&bob)
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, reqwest::StatusCode::CONFLICT);
 }

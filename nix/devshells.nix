@@ -86,7 +86,18 @@
 
         # Bring up the throwaway Postgres cluster + DATABASE_URL via the shared
         # snippet (also used by the `switchboard-sqlx-prepare` app).
-        shellHook = defaultShell.shellHook + cmn.ephemeralPostgresHook;
+        shellHook =
+          defaultShell.shellHook
+          + cmn.ephemeralPostgresHook
+          + ''
+            # sqlx gives each #[sqlx::test] its own pool, but all of them draw
+            # from one 20-connection master pool shared by the whole test
+            # process. libtest's default of one thread per core overruns that,
+            # and tests then fail waiting for a connection. `cargo nextest run`
+            # is unaffected: it forks a process per test, so each test gets its
+            # own master pool.
+            export RUST_TEST_THREADS="''${RUST_TEST_THREADS:-8}"
+          '';
       };
 
     in

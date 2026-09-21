@@ -9,11 +9,11 @@
 //! UPDATE_SCHEMA=1 cargo test -p treadmill-switchboard --test openapi_spec
 //! ```
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use treadmill_switchboard::routes::openapi_spec;
 
 fn snapshot_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("api-spec")
+    std::env::current_dir().unwrap_or_default().join("api-spec")
 }
 
 #[test]

@@ -502,6 +502,49 @@ define_event! {
 }
 
 define_event! {
+    /// A host's owner was changed (`PUT /hosts/{id}/owner`). Visible to host
+    /// viewers and, via the `self` policy, to the previous and new owners. Only
+    /// emitted when the owner actually changed; a null owner is an orphaned
+    /// host.
+    HostOwnerChanged v1 {
+        actor: Subject,
+        host: Host @ view(Read),
+        old_owner: Option<Subject> @ view(SelfAccess),
+        new_owner: Option<Subject> @ view(SelfAccess),
+    }
+    event_type = "host_owner_changed";
+    render = "changed the host owner";
+}
+
+define_event! {
+    /// A grant on a host was created (`POST /hosts/{id}/grants`). Visible to
+    /// the host's managers and, via the `self` policy, to the subject who
+    /// received the grant. Not emitted for a grant already held.
+    HostGrantCreated v1 {
+        actor: Subject,
+        host: Host @ view(Manage),
+        grantee: Subject @ view(SelfAccess),
+        permission: String,
+    }
+    event_type = "host_grant_created";
+    render = "granted {permission} on the host";
+}
+
+define_event! {
+    /// A grant on a host was revoked (`DELETE /hosts/{id}/grants/...`).
+    /// Visible to the host's managers and, via the `self` policy, to the
+    /// subject whose grant was removed.
+    HostGrantRevoked v1 {
+        actor: Subject,
+        host: Host @ view(Manage),
+        grantee: Subject @ view(SelfAccess),
+        permission: String,
+    }
+    event_type = "host_grant_revoked";
+    render = "revoked {permission} on the host";
+}
+
+define_event! {
     /// A supervisor opened (and authenticated) a WebSocket for its host, which
     /// the switchboard then marks live. Visible to host viewers.
     SupervisorConnected v1 {

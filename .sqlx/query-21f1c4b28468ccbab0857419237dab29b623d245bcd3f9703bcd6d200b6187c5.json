@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from tml_switchboard.host_grants\n           where host_id = $1 and subject_id = $2 and permission::text = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "21f1c4b28468ccbab0857419237dab29b623d245bcd3f9703bcd6d200b6187c5"
+}
