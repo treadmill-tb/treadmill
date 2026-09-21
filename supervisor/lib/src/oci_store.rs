@@ -81,6 +81,10 @@ pub trait ImageStore: std::fmt::Debug + Send + Sync {
     async fn unpin(&self, _job_id: &str) -> Result<()> {
         Ok(())
     }
+
+    async fn leases(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
 }
 
 #[async_trait]
@@ -103,6 +107,10 @@ impl ImageStore for OciStore {
 
     async fn unpin(&self, job_id: &str) -> Result<()> {
         OciStore::unpin(self, job_id).await
+    }
+
+    async fn leases(&self) -> Result<Vec<String>> {
+        OciStore::leases(self).await
     }
 }
 
@@ -416,6 +424,35 @@ impl OciStore {
             bail!("releasing lease {tag} failed: HTTP {status}");
         }
     }
+
+    #[instrument(skip(self))]
+    pub async fn leases(&self) -> Result<Vec<String>> {
+        let url = format!(
+            "http://{}/v2/{LOCAL_REPOSITORY}/tags/list?n={LEASE_PAGE_SIZE}",
+            self.registry,
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .context("listing in-use leases")?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        if !resp.status().is_success() {
+            bail!("listing in-use leases failed: HTTP {}", resp.status());
+        }
+
+        let list: TagList = resp.json().await.context("parsing the tag listing")?;
+        Ok(list
+            .tags
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|tag| tag.strip_prefix(INUSE_PREFIX).map(str::to_string))
+            .collect())
+    }
 }
 
 /// Whether a registry authority's host is loopback (`localhost`, `127.0.0.0/8`,
@@ -432,11 +469,20 @@ fn loopback_registry(registry: &str) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
+const INUSE_PREFIX: &str = "inuse-";
+
+const LEASE_PAGE_SIZE: usize = 1000;
+
 /// The per-job in-use tag pinning a manifest against the daemon's GC (plan
 /// §7.3). Job ids are UUIDs (`hex` + `-`), which are valid OCI tag components,
 /// so they embed verbatim under an `inuse-` prefix.
 fn inuse_tag(job_id: &str) -> String {
-    format!("inuse-{job_id}")
+    format!("{INUSE_PREFIX}{job_id}")
+}
+
+#[derive(Deserialize)]
+struct TagList {
+    tags: Option<Vec<String>>,
 }
 
 /// Minimal probe for a manifest blob's `mediaType`, to set the `Content-Type`
@@ -954,6 +1000,11 @@ mod tests {
         // Take an in-use lease on the manifest for a job.
         let job = "550e8400-e29b-41d4-a716-446655440000";
         store.pin(&digest, job).await.expect("pin");
+        assert_eq!(
+            store.leases().await.expect("leases"),
+            vec![job.to_string()],
+            "the lease reconciler has to be able to read the lease back",
+        );
 
         // Untag the staged victim, leaving it unreferenced and collectible.
         delete_ref(&zot.authority(), LOCAL_REPOSITORY, "victim").await;
@@ -990,6 +1041,7 @@ mod tests {
         // Release the lease: nothing references the fixture now, so GC reclaims
         // the formerly-protected closure — proving the lease was load-bearing.
         store.unpin(job).await.expect("unpin");
+        assert!(store.leases().await.expect("leases").is_empty());
         // Poll the whole formerly-pinned closure, not just the manifest blob:
         // the manifest and its layers are unlinked one at a time in the same
         // sweep, so the manifest vanishing first does not mean the layers are

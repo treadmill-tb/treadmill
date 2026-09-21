@@ -10,7 +10,7 @@
 //! entries once they are older than the configured grace period. The name of a
 //! retired entry carries everything needed to age it out or to move it back.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -295,6 +295,34 @@ impl JobWorkdirs {
         }
 
         Ok(())
+    }
+
+    pub async fn held_job_ids(&self) -> Result<HashSet<Uuid>> {
+        let mut held = HashSet::new();
+
+        let mut live = tokio::fs::read_dir(&self.jobs)
+            .await
+            .with_context(|| format!("reading {}", self.jobs.display()))?;
+        while let Some(entry) = live.next_entry().await? {
+            if let Some(job_id) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| Uuid::parse_str(name).ok())
+            {
+                held.insert(job_id);
+            }
+        }
+
+        let mut retired = tokio::fs::read_dir(&self.retired)
+            .await
+            .with_context(|| format!("reading {}", self.retired.display()))?;
+        while let Some(entry) = retired.next_entry().await? {
+            if let Some((_, job_id)) = entry.file_name().to_str().and_then(parse_retired_name) {
+                held.insert(job_id);
+            }
+        }
+
+        Ok(held)
     }
 
     /// Delete retired working directories that are older than the grace period.

@@ -15,6 +15,7 @@ use tokio::time::Instant;
 use tokio_serial::SerialPortBuilderExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{Level, event, instrument};
+use uuid::Uuid;
 
 use treadmill_rs::api::switchboard_supervisor::{
     ImageLocation, ImageSpecification, LogChannel, LogFormat, LogRender, LogView,
@@ -34,6 +35,7 @@ use treadmill_supervisor_lib::job_log::{self, JobLogRegistry, channel_reader};
 use treadmill_supervisor_lib::launcher::{
     self, BoxedAsyncRead, ProcessLauncher, StdioMode, WorkloadProcess,
 };
+use treadmill_supervisor_lib::leases;
 use treadmill_supervisor_lib::oci_store::{ImageStore, Location, OciStore, OciStoreConfig};
 use treadmill_supervisor_lib::publisher::LogPublisherConfig;
 use treadmill_supervisor_lib::workdirs::{AllocationRecord, JobWorkdirs, RetentionConfig};
@@ -228,6 +230,7 @@ impl NbdNetbootBackend {
 
     async fn resolve_image(
         &self,
+        job_id: Uuid,
         manifest_digest: &Digest,
         locations: &[ImageLocation],
     ) -> Result<NetbootImage, JobError> {
@@ -251,6 +254,20 @@ impl NbdNetbootBackend {
                 error_kind: JobErrorKind::InternalError,
                 description: format!("Failed to fetch image {manifest_digest}: {e:#}"),
             })?;
+
+        if let Err(e) = self
+            .image_store
+            .pin(manifest_digest, &job_id.to_string())
+            .await
+        {
+            event!(
+                Level::WARN,
+                error = ?e,
+                %manifest_digest,
+                "Failed to take an in-use lease on the image; it is unprotected against \
+                 the local store's garbage collector",
+            );
+        }
 
         let manifest = self
             .image_store
@@ -466,7 +483,8 @@ impl JobBackend for NbdNetbootBackend {
 
     async fn fetch(&self, job: &StartJobMessage) -> Result<NetbootImage, JobError> {
         let (manifest_digest, locations) = image_reference(job)?;
-        self.resolve_image(&manifest_digest, &locations).await
+        self.resolve_image(job.job_id, &manifest_digest, &locations)
+            .await
     }
 
     #[instrument(skip(self, job, image, vars), err(Debug, level = Level::WARN))]
@@ -536,7 +554,7 @@ impl JobBackend for NbdNetbootBackend {
         );
 
         let image = self
-            .resolve_image(&record.manifest_digest, &record.locations)
+            .resolve_image(job.job_id, &record.manifest_digest, &record.locations)
             .await?;
         let (root, boot) = self.chains(&image, root_overlay, boot_overlay)?;
 
@@ -835,6 +853,12 @@ async fn main() -> Result<()> {
     )
     .await?;
 
+    leases::spawn_reaper(
+        workdirs.clone(),
+        image_store.clone(),
+        config.nbd_netboot.job_retention.sweep_interval,
+    );
+
     let backend = Arc::new(NbdNetbootBackend::new(
         image_store,
         launcher,
@@ -929,6 +953,27 @@ mod tests {
     struct StubStore {
         root: PathBuf,
         manifest: Option<ImageManifest>,
+        pinned: Mutex<Vec<String>>,
+        unpinned: Mutex<Vec<String>>,
+    }
+
+    impl StubStore {
+        fn new(root: PathBuf, manifest: Option<ImageManifest>) -> Self {
+            StubStore {
+                root,
+                manifest,
+                pinned: Mutex::new(Vec::new()),
+                unpinned: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn pinned(&self) -> Vec<String> {
+            self.pinned.lock().unwrap().clone()
+        }
+
+        fn unpinned(&self) -> Vec<String> {
+            self.unpinned.lock().unwrap().clone()
+        }
     }
 
     #[async_trait]
@@ -945,6 +990,16 @@ mod tests {
 
         fn blob_path(&self, digest: &Digest) -> PathBuf {
             self.root.join(digest.encoded().replace(':', "-"))
+        }
+
+        async fn pin(&self, _: &Digest, job_id: &str) -> Result<()> {
+            self.pinned.lock().unwrap().push(job_id.to_string());
+            Ok(())
+        }
+
+        async fn unpin(&self, job_id: &str) -> Result<()> {
+            self.unpinned.lock().unwrap().push(job_id.to_string());
+            Ok(())
         }
     }
 
@@ -1079,10 +1134,7 @@ mod tests {
     fn fixture(manifest: Option<ImageManifest>) -> Fixture {
         let tmp = tempfile::tempdir().unwrap();
         let nbd_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let store = Arc::new(StubStore {
-            root: tmp.path().join("blobs"),
-            manifest,
-        });
+        let store = Arc::new(StubStore::new(tmp.path().join("blobs"), manifest));
         let launcher = StubLauncher::default();
         let backend = NbdNetbootBackend::new(
             store.clone(),
@@ -1403,13 +1455,30 @@ mod tests {
     /// again is `qemu-img create`, which would discard everything the job
     /// wrote.
     #[tokio::test]
+    async fn a_job_takes_an_image_lease_that_outlives_it() {
+        let f = fixture(Some(resumable_manifest()));
+        let job_id = Uuid::new_v4();
+
+        f.backend.fetch(&start_msg(job_id, false)).await.unwrap();
+
+        assert_eq!(f.store.pinned(), vec![job_id.to_string()]);
+        assert!(
+            f.store.unpinned().is_empty(),
+            "the lease is released when the working directory is collected, not here",
+        );
+    }
+
+    #[tokio::test]
     async fn adopting_reuses_the_existing_overlays() {
         let f = fixture(Some(resumable_manifest()));
         let workdir = retired_workdir(&f).await;
-        let job = start_msg(Uuid::new_v4(), true);
+        let job_id = Uuid::new_v4();
+        let job = start_msg(job_id, true);
         let mut vars = JobVars::new();
 
         let servers = f.backend.adopt(&job, &workdir, &mut vars).await.unwrap();
+
+        assert_eq!(f.store.pinned(), vec![job_id.to_string()]);
 
         assert!(
             !f.launcher
@@ -1493,10 +1562,7 @@ mod tests {
     #[tokio::test]
     async fn a_storage_daemon_that_never_listens_fails_the_job() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = Arc::new(StubStore {
-            root: tmp.path().join("blobs"),
-            manifest: None,
-        });
+        let store = Arc::new(StubStore::new(tmp.path().join("blobs"), None));
         let launcher = StubLauncher::default();
         let unused = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = unused.local_addr().unwrap().port();
@@ -1746,10 +1812,7 @@ mod tests {
             config.nbd_server_listen_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), nbd_port);
             config.tftp_listen_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), tftp_port);
 
-            let store = Arc::new(StubStore {
-                root: blobs,
-                manifest: None,
-            });
+            let store = Arc::new(StubStore::new(blobs, None));
             let backend =
                 NbdNetbootBackend::new(store, Arc::new(CliLauncher::new(&t.qemu_img)), config);
 

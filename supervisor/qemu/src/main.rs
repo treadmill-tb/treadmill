@@ -7,6 +7,7 @@ use clap::Parser;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::{Level, event, instrument};
+use uuid::Uuid;
 
 use treadmill_rs::api::switchboard_supervisor::{
     ImageLocation, ImageSpecification, LogChannel, LogFormat, LogRender, LogView,
@@ -22,6 +23,7 @@ use treadmill_supervisor_lib::capture::{SerialConsole, SerialSocket};
 use treadmill_supervisor_lib::job::{JobBackend, JobRunner, JobRunnerConfig, JobVars, Workload};
 use treadmill_supervisor_lib::job_log::{self, JobLogRegistry};
 use treadmill_supervisor_lib::launcher::{self, ProcessLauncher, StdioMode, WorkloadProcess};
+use treadmill_supervisor_lib::leases;
 use treadmill_supervisor_lib::oci_store::{ImageStore, Location, OciStore, OciStoreConfig};
 use treadmill_supervisor_lib::publisher::LogPublisherConfig;
 use treadmill_supervisor_lib::workdirs::{AllocationRecord, JobWorkdirs, RetentionConfig};
@@ -171,6 +173,7 @@ impl QemuBackend {
 
     async fn resolve_image(
         &self,
+        job_id: Uuid,
         manifest_digest: &Digest,
         locations: &[ImageLocation],
     ) -> Result<TreadmillImage, connector::JobError> {
@@ -194,6 +197,20 @@ impl QemuBackend {
                 error_kind: connector::JobErrorKind::InternalError,
                 description: format!("Failed to fetch image {manifest_digest}: {e:#}"),
             })?;
+
+        if let Err(e) = self
+            .image_store
+            .pin(manifest_digest, &job_id.to_string())
+            .await
+        {
+            event!(
+                Level::WARN,
+                error = ?e,
+                %manifest_digest,
+                "Failed to take an in-use lease on the image; it is unprotected against \
+                 the local store's garbage collector",
+            );
+        }
 
         let manifest = self
             .image_store
@@ -279,7 +296,8 @@ impl JobBackend for QemuBackend {
 
     async fn fetch(&self, job: &StartJobMessage) -> Result<TreadmillImage, connector::JobError> {
         let (manifest_digest, locations) = image_reference(job)?;
-        self.resolve_image(&manifest_digest, &locations).await
+        self.resolve_image(job.job_id, &manifest_digest, &locations)
+            .await
     }
 
     #[instrument(skip(self, job, image, vars), err(Debug, level = Level::WARN))]
@@ -325,10 +343,10 @@ impl JobBackend for QemuBackend {
         Ok(BackingChain::new(lower_paths, overlay_file))
     }
 
-    #[instrument(skip(self, _job, vars), err(Debug, level = Level::WARN))]
+    #[instrument(skip(self, job, vars), err(Debug, level = Level::WARN))]
     async fn adopt(
         &self,
-        _job: &StartJobMessage,
+        job: &StartJobMessage,
         workdir: &Path,
         vars: &mut JobVars,
     ) -> Result<BackingChain, connector::JobError> {
@@ -348,7 +366,7 @@ impl JobBackend for QemuBackend {
         );
 
         let image = self
-            .resolve_image(&record.manifest_digest, &record.locations)
+            .resolve_image(job.job_id, &record.manifest_digest, &record.locations)
             .await?;
         let lower_paths = self.lower_chain(&image)?;
 
@@ -551,6 +569,12 @@ async fn main() -> Result<()> {
     let workdirs =
         JobWorkdirs::start(&config.qemu.state_dir, config.qemu.job_retention.clone()).await?;
 
+    leases::spawn_reaper(
+        workdirs.clone(),
+        image_store.clone(),
+        config.qemu.job_retention.sweep_interval,
+    );
+
     let backend = Arc::new(QemuBackend::new(image_store, launcher, config.qemu.clone()));
     let (command_tx, command_rx) = mpsc::channel(COORD_MAILBOX_CAPACITY);
 
@@ -654,6 +678,18 @@ mod tests {
     struct StubStore {
         root: PathBuf,
         manifest: Option<ImageManifest>,
+        pinned: std::sync::Mutex<Vec<String>>,
+        unpinned: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl StubStore {
+        fn pinned(&self) -> Vec<String> {
+            self.pinned.lock().unwrap().clone()
+        }
+
+        fn unpinned(&self) -> Vec<String> {
+            self.unpinned.lock().unwrap().clone()
+        }
     }
 
     #[async_trait]
@@ -670,6 +706,16 @@ mod tests {
 
         fn blob_path(&self, digest: &Digest) -> PathBuf {
             self.root.join(format!("{digest}.qcow2"))
+        }
+
+        async fn pin(&self, _: &Digest, job_id: &str) -> Result<()> {
+            self.pinned.lock().unwrap().push(job_id.to_string());
+            Ok(())
+        }
+
+        async fn unpin(&self, job_id: &str) -> Result<()> {
+            self.unpinned.lock().unwrap().push(job_id.to_string());
+            Ok(())
         }
     }
 
@@ -757,6 +803,8 @@ mod tests {
         let store = Arc::new(StubStore {
             root: tmp.path().join("blobs"),
             manifest,
+            pinned: std::sync::Mutex::new(Vec::new()),
+            unpinned: std::sync::Mutex::new(Vec::new()),
         });
         let launcher = Arc::new(StubLauncher::default());
 
@@ -1156,16 +1204,33 @@ mod tests {
     /// already there. Creating the overlay again is `qemu-img create`, which
     /// would silently discard everything the job wrote.
     #[tokio::test]
+    async fn a_job_takes_an_image_lease_that_outlives_it() {
+        let f = fixture_serving(4 * GIB, vec![], Some(resumable_manifest(4 * GIB)));
+        let job_id = Uuid::new_v4();
+
+        f.backend.fetch(&start_msg(job_id)).await.unwrap();
+
+        assert_eq!(f.store.pinned(), vec![job_id.to_string()]);
+        assert!(
+            f.store.unpinned().is_empty(),
+            "the lease is released when the working directory is collected, not here",
+        );
+    }
+
+    #[tokio::test]
     async fn adopting_reuses_the_existing_overlay() {
         let f = fixture_serving(4 * GIB, vec![], Some(resumable_manifest(4 * GIB)));
         let workdir = retired_workdir(&f).await;
+        let job_id = Uuid::new_v4();
 
         let mut vars = JobVars::new();
         let chain = f
             .backend
-            .adopt(&start_msg(Uuid::new_v4()), &workdir, &mut vars)
+            .adopt(&start_msg(job_id), &workdir, &mut vars)
             .await
             .unwrap();
+
+        assert_eq!(f.store.pinned(), vec![job_id.to_string()]);
 
         assert!(
             f.launcher.overlays().is_empty(),
