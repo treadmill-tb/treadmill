@@ -365,6 +365,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/hosts/{id}/owner": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Change a host's owner
+         * @description A null owner orphans the host, leaving it manageable only by global admins.
+         */
+        put: operations["putHostOwner"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/hosts/{id}/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List a host's grants
+         * @description Returns the complete set in a stable order; this route is not paginated.
+         */
+        get: operations["listHostGrants"];
+        put?: never;
+        /** Grant a permission on a host */
+        post: operations["createHostGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/hosts/{id}/grants/{subject_id}/{permission}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke a grant on a host */
+        delete: operations["revokeHostGrant"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/hosts/{id}/events": {
         parameters: {
             query?: never;
@@ -982,6 +1040,44 @@ export interface components {
              */
             spec_revision: number;
         };
+        /** @description One grant on a host, as returned by `GET /hosts/{id}/grants`. */
+        HostGrantInfo: {
+            /** Format: date-time */
+            granted_at: string;
+            permission: components["schemas"]["HostPermission"];
+            /**
+             * @description False for a grant the switchboard fixed in place, which no one can
+             *     revoke; it is removed only with the host.
+             */
+            revocable: boolean;
+            /** Format: uuid */
+            subject_id: string;
+        };
+        /** @description The `{id}/grants/{subject_id}/{permission}` segments of a host grant route. */
+        HostGrantPath: {
+            /**
+             * Format: uuid
+             * @description The host's unique identifier.
+             */
+            id: string;
+            /** @description The permission being revoked (`read`, `start` or `manage`). */
+            permission: string;
+            /**
+             * Format: uuid
+             * @description The subject (user or group) the grant applies to.
+             */
+            subject_id: string;
+        };
+        /** @description `POST /hosts/{id}/grants`: grant `permission` on the host to a subject. */
+        HostGrantRequest: {
+            permission: components["schemas"]["HostPermission"];
+            /**
+             * Format: uuid
+             * @description The subject (user or group) receiving the grant. Granting the `everyone`
+             *     subject makes the permission public.
+             */
+            subject_id: string;
+        };
         /**
          * @description A host as returned by `GET /hosts/{id}`: its operational state plus the
          *     whole admin-authored spec describing what it is.
@@ -1006,6 +1102,12 @@ export interface components {
              */
             maintenance: boolean;
             name: string;
+            /**
+             * Format: uuid
+             * @description Subject (user or group) owning the host; null if it is orphaned, and so
+             *     manageable only by global admins.
+             */
+            owner_id?: string | null;
             /** @description The viewer's permissions on this host. */
             permissions: components["schemas"]["HostPermission"][];
             /**
@@ -1054,6 +1156,15 @@ export interface components {
              * @description The revision `spec` was projected from. Null exactly when `spec` is.
              */
             spec_revision?: number | null;
+        };
+        /** @description A change of a host's owner (`PUT /hosts/{id}/owner`). */
+        HostOwnerUpdateRequest: {
+            /**
+             * Format: uuid
+             * @description The new owning subject (user or group). Null orphans the host, leaving
+             *     it manageable only by global admins.
+             */
+            owner?: string | null;
         };
         /**
          * @description A permission on a host. `permissions` on [`HostInfo`] reports which of these
@@ -3329,6 +3440,232 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HostSpecRejection"];
                 };
+            };
+        };
+    };
+    putHostOwner: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description A change of a host's owner (`PUT /hosts/{id}/owner`). */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HostOwnerUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Applied, or the owner was already in force. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller lacks `manage` on the host. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description No such subject. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listHostGrants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostGrantInfo"][];
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller lacks `manage` on the host. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createHostGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description `POST /hosts/{id}/grants`: grant `permission` on the host to a subject. */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HostGrantRequest"];
+            };
+        };
+        responses: {
+            /** @description The grant was recorded, or was already held. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller lacks `manage` on the host. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description No such subject. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revokeHostGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The host's unique identifier. */
+                id: string;
+                /** @description The permission being revoked (`read`, `start` or `manage`). */
+                permission: string;
+                /** @description The subject (user or group) the grant applies to. */
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The grant was revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such permission. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller lacks `manage` on the host. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No matching grant to revoke. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The grant is irrevocable; it goes only with the host. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

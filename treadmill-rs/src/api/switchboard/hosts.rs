@@ -42,6 +42,9 @@ pub enum HostPermission {
 pub struct HostInfo {
     pub host_id: Uuid,
     pub name: String,
+    /// Subject (user or group) owning the host; null if it is orphaned, and so
+    /// manageable only by global admins.
+    pub owner_id: Option<Uuid>,
     /// Whether the host's supervisor has heartbeat recently enough to be
     /// considered schedulable, computed with the deployment's liveness window.
     pub live: bool,
@@ -153,6 +156,36 @@ pub struct HostUpdateRequest {
     /// Withhold the host from scheduling, or return it to service.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maintenance: Option<bool>,
+}
+
+/// A change of a host's owner (`PUT /hosts/{id}/owner`).
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostOwnerUpdateRequest {
+    /// The new owning subject (user or group). Null orphans the host, leaving
+    /// it manageable only by global admins.
+    pub owner: Option<Uuid>,
+}
+
+/// `POST /hosts/{id}/grants`: grant `permission` on the host to a subject.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostGrantRequest {
+    /// The subject (user or group) receiving the grant. Granting the `everyone`
+    /// subject makes the permission public.
+    pub subject_id: Uuid,
+    pub permission: HostPermission,
+}
+
+/// One grant on a host, as returned by `GET /hosts/{id}/grants`.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct HostGrantInfo {
+    pub subject_id: Uuid,
+    pub permission: HostPermission,
+    /// False for a grant the switchboard fixed in place, which no one can
+    /// revoke; it is removed only with the host.
+    pub revocable: bool,
+    pub granted_at: DateTime<Utc>,
 }
 
 /// A new host (`POST /hosts`): the `hosts` row and revision 1 of its spec are

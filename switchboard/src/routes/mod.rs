@@ -417,6 +417,67 @@ pub fn api_router() -> ApiRouter<AppState> {
                     })
             }),
         )
+        //  PUT /hosts/{id}/owner -- transfer the host, or orphan it
+        .api_route(
+            "/hosts/{id}/owner",
+            put_with(hosts::put_owner, |o| {
+                doc(o, "putHostOwner", "Hosts", "Change a host's owner")
+                    .description(
+                        "A null owner orphans the host, leaving it manageable only \
+                         by global admins.",
+                    )
+                    .response_with::<204, (), _>(|r| {
+                        r.description("Applied, or the owner was already in force.")
+                    })
+                    .response_with::<403, (), _>(|r| {
+                        r.description("The caller lacks `manage` on the host.")
+                    })
+                    .response_with::<422, (), _>(|r| r.description("No such subject."))
+            }),
+        )
+        //  GET  /hosts/{id}/grants -- list the host's grants
+        //  POST /hosts/{id}/grants -- grant a permission to a subject
+        .api_route(
+            "/hosts/{id}/grants",
+            get_with(hosts::list_grants, |o| {
+                doc(o, "listHostGrants", "Hosts", "List a host's grants")
+                    .description(NOT_PAGINATED)
+                    .response_with::<403, (), _>(|r| {
+                        r.description("The caller lacks `manage` on the host.")
+                    })
+            })
+            .post_with(hosts::create_grant, |o| {
+                doc(
+                    o,
+                    "createHostGrant",
+                    "Hosts",
+                    "Grant a permission on a host",
+                )
+                .response_with::<204, (), _>(|r| {
+                    r.description("The grant was recorded, or was already held.")
+                })
+                .response_with::<403, (), _>(|r| {
+                    r.description("The caller lacks `manage` on the host.")
+                })
+                .response_with::<422, (), _>(|r| r.description("No such subject."))
+            }),
+        )
+        //  DELETE /hosts/{id}/grants/{subject_id}/{permission} -- revoke a grant
+        .api_route(
+            "/hosts/{id}/grants/{subject_id}/{permission}",
+            delete_with(hosts::revoke_grant, |o| {
+                doc(o, "revokeHostGrant", "Hosts", "Revoke a grant on a host")
+                    .response_with::<204, (), _>(|r| r.description("The grant was revoked."))
+                    .response_with::<400, (), _>(|r| r.description("No such permission."))
+                    .response_with::<403, (), _>(|r| {
+                        r.description("The caller lacks `manage` on the host.")
+                    })
+                    .response_with::<404, (), _>(|r| r.description("No matching grant to revoke."))
+                    .response_with::<409, (), _>(|r| {
+                        r.description("The grant is irrevocable; it goes only with the host.")
+                    })
+            }),
+        )
         .api_route(
             "/hosts/{id}/events",
             get_with(hosts::list_events, |o| {

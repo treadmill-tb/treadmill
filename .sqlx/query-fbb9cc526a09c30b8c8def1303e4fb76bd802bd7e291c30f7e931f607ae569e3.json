@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select revocable\n           from tml_switchboard.host_grants\n           where host_id = $1 and subject_id = $2 and permission::text = $3\n           for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "revocable",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.host_grants",
+            "name": "revocable"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fbb9cc526a09c30b8c8def1303e4fb76bd802bd7e291c30f7e931f607ae569e3"
+}

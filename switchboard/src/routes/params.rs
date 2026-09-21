@@ -68,6 +68,17 @@ pub(crate) struct GrantPath {
     pub permission: String,
 }
 
+/// The `{id}/grants/{subject_id}/{permission}` segments of a host grant route.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub(crate) struct HostGrantPath {
+    /// The host's unique identifier.
+    pub id: Uuid,
+    /// The subject (user or group) the grant applies to.
+    pub subject_id: Uuid,
+    /// The permission being revoked (`read`, `start` or `manage`).
+    pub permission: String,
+}
+
 /// The `{digest}/sources/{source_id}` segments of an image-source route.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub(crate) struct SourcePath {

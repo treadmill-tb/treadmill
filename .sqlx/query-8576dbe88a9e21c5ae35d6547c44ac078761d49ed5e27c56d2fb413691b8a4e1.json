@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select owner_id\n           from tml_switchboard.hosts\n           where host_id = $1\n           for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "owner_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.hosts",
+            "name": "owner_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "8576dbe88a9e21c5ae35d6547c44ac078761d49ed5e27c56d2fb413691b8a4e1"
+}

@@ -19,6 +19,7 @@ pub struct SqlHost {
 pub struct SqlHostListing {
     pub host_id: Uuid,
     pub name: String,
+    pub owner_id: Option<Uuid>,
     pub maintenance: bool,
     pub last_seen_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -47,7 +48,7 @@ pub async fn list_readable(
         r#"with principals (id) as (
                select id from tml_switchboard.principals($1::uuid)
            )
-           select host_id, name, maintenance, last_seen_at
+           select host_id, name, owner_id, maintenance, last_seen_at
            from tml_switchboard.hosts h
            where exists (select 1 from principals where id = $2::uuid)
               or exists (select 1 from principals p where p.id = h.owner_id)
@@ -74,7 +75,7 @@ pub async fn fetch_listing(
 ) -> Result<Option<SqlHostListing>, sqlx::Error> {
     sqlx::query_as!(
         SqlHostListing,
-        r#"select host_id, name, maintenance, last_seen_at
+        r#"select host_id, name, owner_id, maintenance, last_seen_at
            from tml_switchboard.hosts
            where host_id = $1"#,
         host_id,
@@ -376,6 +377,134 @@ pub async fn set_maintenance(
            where host_id = $1"#,
         host_id,
         maintenance,
+    )
+    .execute(&mut **txn)
+    .await
+    .map(|_| ())
+}
+
+/// One grant on a host.
+#[derive(Debug)]
+pub struct SqlHostGrant {
+    pub subject_id: Uuid,
+    pub permission: String,
+    pub revocable: bool,
+    pub granted_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Read a host's owner under a row lock. The outer `None` means no such host;
+/// the inner one an orphaned host.
+///
+/// Paired with [`set_owner`] in one transaction so the audit event records the
+/// owner actually replaced.
+pub async fn lock_owner(
+    host_id: Uuid,
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<Option<Option<Uuid>>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"select owner_id
+           from tml_switchboard.hosts
+           where host_id = $1
+           for update"#,
+        host_id,
+    )
+    .fetch_optional(&mut **txn)
+    .await
+}
+
+/// Set a host's owner; `None` orphans it. Fails with a foreign-key violation
+/// for a subject that does not exist.
+pub async fn set_owner(
+    host_id: Uuid,
+    owner: Option<Uuid>,
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"update tml_switchboard.hosts
+           set owner_id = $2
+           where host_id = $1"#,
+        host_id,
+        owner,
+    )
+    .execute(&mut **txn)
+    .await
+    .map(|_| ())
+}
+
+/// A host's grants, ordered by when they were made.
+pub async fn list_grants(
+    host_id: Uuid,
+    conn: impl PgExecutor<'_>,
+) -> Result<Vec<SqlHostGrant>, sqlx::Error> {
+    sqlx::query_as!(
+        SqlHostGrant,
+        r#"select subject_id, permission::text as "permission!", revocable, granted_at
+           from tml_switchboard.host_grants
+           where host_id = $1
+           order by granted_at, subject_id, permission"#,
+        host_id,
+    )
+    .fetch_all(conn)
+    .await
+}
+
+/// Grant `permission` on a host to a subject. Returns whether a grant was
+/// added: granting one already held is a no-op. Fails with a foreign-key
+/// violation for a subject that does not exist.
+pub async fn grant(
+    host_id: Uuid,
+    subject_id: Uuid,
+    permission: &str,
+    conn: impl PgExecutor<'_>,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query!(
+        r#"insert into tml_switchboard.host_grants (host_id, subject_id, permission)
+           values ($1, $2, $3::text::tml_switchboard.host_permission)
+           on conflict (host_id, subject_id, permission) do nothing"#,
+        host_id,
+        subject_id,
+        permission,
+    )
+    .execute(conn)
+    .await
+    .map(|r| r.rows_affected() > 0)
+}
+
+/// Whether a `(subject, permission)` grant on a host exists and may be revoked,
+/// read under a row lock. `None` when there is no such grant.
+pub async fn lock_grant_revocable(
+    host_id: Uuid,
+    subject_id: Uuid,
+    permission: &str,
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<Option<bool>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"select revocable
+           from tml_switchboard.host_grants
+           where host_id = $1 and subject_id = $2 and permission::text = $3
+           for update"#,
+        host_id,
+        subject_id,
+        permission,
+    )
+    .fetch_optional(&mut **txn)
+    .await
+}
+
+/// Revoke a single `(subject, permission)` grant on a host. The caller checks
+/// [`lock_grant_revocable`] first: an irrevocable grant is refused by trigger.
+pub async fn revoke(
+    host_id: Uuid,
+    subject_id: Uuid,
+    permission: &str,
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"delete from tml_switchboard.host_grants
+           where host_id = $1 and subject_id = $2 and permission::text = $3"#,
+        host_id,
+        subject_id,
+        permission,
     )
     .execute(&mut **txn)
     .await

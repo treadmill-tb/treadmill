@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "with principals (id) as (\n               select id from tml_switchboard.principals($1::uuid)\n           )\n           select host_id, name, maintenance, last_seen_at\n           from tml_switchboard.hosts h\n           where exists (select 1 from principals where id = $2::uuid)\n              or exists (select 1 from principals p where p.id = h.owner_id)\n              or exists (\n                     select 1\n                     from tml_switchboard.host_grants g\n                     join principals p on g.subject_id = p.id\n                     where g.host_id = h.host_id and g.permission = 'read'\n                 )\n           order by name, host_id",
+  "query": "with principals (id) as (\n               select id from tml_switchboard.principals($1::uuid)\n           )\n           select host_id, name, owner_id, maintenance, last_seen_at\n           from tml_switchboard.hosts h\n           where exists (select 1 from principals where id = $2::uuid)\n              or exists (select 1 from principals p where p.id = h.owner_id)\n              or exists (\n                     select 1\n                     from tml_switchboard.host_grants g\n                     join principals p on g.subject_id = p.id\n                     where g.host_id = h.host_id and g.permission = 'read'\n                 )\n           order by name, host_id",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,17 @@
       },
       {
         "ordinal": 2,
+        "name": "owner_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.hosts",
+            "name": "owner_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "maintenance",
         "type_info": "Bool",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "last_seen_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -57,9 +68,10 @@
     "nullable": [
       false,
       false,
+      true,
       false,
       true
     ]
   },
-  "hash": "040d691283c50cbc464c99d9a6e29c82938bab36a7aef443567bb66b71ce3a41"
+  "hash": "8032d6c3f47cbd5e90d7f6986d246dc4b13ab182527222230a68e719fc0f8ca1"
 }
