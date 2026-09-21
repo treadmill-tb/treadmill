@@ -27,6 +27,7 @@ tokio-serial = { workspace = true }
 tokio-util = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 oci-spec = { workspace = true }

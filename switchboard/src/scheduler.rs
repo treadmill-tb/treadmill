@@ -976,6 +976,87 @@ mod tests {
         Ok(())
     }
 
+    /// Only the host that holds the predecessor's retired working directory can
+    /// resume it, so that is the only host a resume job is eligible for.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn eligible_hosts_pins_a_resume_to_its_predecessors_host(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let cutoff = Utc::now() - Duration::seconds(60);
+
+        let ran_on = insert_live_host(&pool, user).await?;
+        let elsewhere = insert_live_host(&pool, user).await?;
+
+        let (_, img) = register_image(&pool, user, 1, true).await?;
+        let predecessor = enqueue_image(&pool, token, img).await?;
+        sqlx::query(
+            "update tml_switchboard.jobs \
+             set job_state = 'finalized', dispatched_on_host_id = $2, \
+                 terminated_at = now(), termination_reason = 'workload_exited' \
+             where job_id = $1",
+        )
+        .bind(predecessor)
+        .bind(ran_on)
+        .execute(&pool)
+        .await?;
+
+        let resume = enqueue(
+            &pool,
+            token,
+            JobInitSpec::Resume {
+                job_id: predecessor,
+            },
+            DEFAULT_HOST_CEL_PREDICATE,
+            Utc::now(),
+        )
+        .await?;
+
+        assert_eq!(eligible(&pool, resume, cutoff).await?, vec![ran_on]);
+
+        // A normal job still sees the whole fleet.
+        let plain = enqueue_image(&pool, token, img).await?;
+        let mut got = eligible(&pool, plain, cutoff).await?;
+        got.sort();
+        let mut want = vec![ran_on, elsewhere];
+        want.sort();
+        assert_eq!(got, want);
+
+        Ok(())
+    }
+
+    /// A predecessor that never reached a host pins to nothing: there is no
+    /// working directory anywhere to adopt.
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+    async fn eligible_hosts_refuses_a_resume_of_an_undispatched_job(
+        pool: PgPool,
+    ) -> anyhow::Result<()> {
+        let user = insert_user(&pool).await?;
+        let token = insert_token(&pool, user).await?;
+        let cutoff = Utc::now() - Duration::seconds(60);
+        let _host = insert_live_host(&pool, user).await?;
+
+        let (_, img) = register_image(&pool, user, 1, true).await?;
+        let predecessor = enqueue_image(&pool, token, img).await?;
+
+        let resume = enqueue(
+            &pool,
+            token,
+            JobInitSpec::Resume {
+                job_id: predecessor,
+            },
+            DEFAULT_HOST_CEL_PREDICATE,
+            Utc::now(),
+        )
+        .await?;
+
+        assert!(eligible(&pool, resume, cutoff).await?.is_empty());
+        Ok(())
+    }
+
     // -- host-start authorization ------------------------------------------
 
     #[sqlx::test(migrations = "./migrations")]

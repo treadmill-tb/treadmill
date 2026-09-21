@@ -1109,6 +1109,12 @@ $$;
 
 -- Shared by `eligible_hosts` and `reclaimable_hosts`. A job whose `owner_id`
 -- is NULL (orphaned) matches no host.
+--
+-- A resume job (`resume_job_id` set) is additionally pinned to the one host its
+-- predecessor ran on: only that host holds the retired working directory the
+-- resume adopts. A predecessor that was never dispatched pins to nothing, so
+-- such a job matches no host and ages out of the queue rather than being placed
+-- somewhere it could never resume.
 CREATE FUNCTION tml_switchboard.job_authorized_hosts (p_job_id uuid) returns setof uuid language sql stable AS $$
     -- Cross join rather than a scalar subquery on `owner_id`: a job that does
     -- not exist must yield no hosts, and `principals(NULL)` is not empty (it
@@ -1117,7 +1123,12 @@ CREATE FUNCTION tml_switchboard.job_authorized_hosts (p_job_id uuid) returns set
     select h.host_id
     from tml_switchboard.jobs j
     cross join lateral tml_switchboard.subject_authorized_hosts(j.owner_id) as h (host_id)
-    where j.job_id = p_job_id;
+    left join tml_switchboard.jobs pred on pred.job_id = j.resume_job_id
+    where j.job_id = p_job_id
+      and (
+          j.resume_job_id is null
+          or h.host_id = pred.dispatched_on_host_id
+      );
 $$;
 
 
