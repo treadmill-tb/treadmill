@@ -68,7 +68,7 @@ log = "0.4.22"
 nats-jwt = "0.3.0"
 nix = { version = "0.31.3", default-features = false }
 nkeys = "0.4.5"
-oci-client = "0.17.0"
+oci-client = "0.18.0"
 # Pinned to match the oci-spec that oci-client depends on, so the workspace
 # resolves a single oci-spec version instead of two.
 oci-spec = { version = "0.10.0", default-features = false, features = [
