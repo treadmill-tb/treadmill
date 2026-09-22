@@ -1,4 +1,5 @@
-import { useSyncExternalStore, type ReactNode } from "react";
+import { Moon, Sun, SunMoon, type LucideIcon } from "lucide-react";
+import { useSyncExternalStore } from "react";
 
 const THEME_KEY = "tml_theme";
 const THEMES = ["light", "auto", "dark"] as const;
@@ -38,42 +39,10 @@ function applyTheme(theme: Theme) {
   }
 }
 
-function Icon({ children }: { children: ReactNode }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="16"
-      height="16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      {children}
-    </svg>
-  );
-}
-
-const ICONS: Record<Theme, ReactNode> = {
-  light: (
-    <Icon>
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
-    </Icon>
-  ),
-  auto: (
-    <Icon>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" />
-    </Icon>
-  ),
-  dark: (
-    <Icon>
-      <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
-    </Icon>
-  ),
+const ICONS: Record<Theme, LucideIcon> = {
+  light: Sun,
+  auto: SunMoon,
+  dark: Moon,
 };
 
 const LABELS: Record<Theme, string> = {
@@ -86,19 +55,22 @@ export function ThemeSwitch() {
   const theme = useSyncExternalStore(subscribe, currentTheme, () => "auto");
   return (
     <div className="theme-switch" role="radiogroup" aria-label="Theme">
-      {THEMES.map((t) => (
-        <label key={t} title={LABELS[t]}>
-          <input
-            type="radio"
-            name="theme"
-            value={t}
-            aria-label={LABELS[t]}
-            checked={theme === t}
-            onChange={() => applyTheme(t)}
-          />
-          {ICONS[t]}
-        </label>
-      ))}
+      {THEMES.map((t) => {
+        const Icon = ICONS[t];
+        return (
+          <label key={t} title={LABELS[t]}>
+            <input
+              type="radio"
+              name="theme"
+              value={t}
+              aria-label={LABELS[t]}
+              checked={theme === t}
+              onChange={() => applyTheme(t)}
+            />
+            <Icon size={16} aria-hidden="true" />
+          </label>
+        );
+      })}
     </div>
   );
 }

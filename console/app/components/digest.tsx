@@ -1,3 +1,5 @@
+import { CopyButton } from "./copy-button";
+
 export function Digest({ digest }: { digest: string | null | undefined }) {
   if (digest == null) {
     return <span className="muted">—</span>;
@@ -7,14 +9,7 @@ export function Digest({ digest }: { digest: string | null | undefined }) {
     : digest.slice(0, 19);
   return (
     <span className="mono" title={digest}>
-      {short}…{" "}
-      <button
-        className="copy-btn"
-        title="Copy full digest"
-        onClick={() => void navigator.clipboard.writeText(digest)}
-      >
-        ⧉
-      </button>
+      {short}… <CopyButton value={digest} label="Copy full digest" />
     </span>
   );
 }

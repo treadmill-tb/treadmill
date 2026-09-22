@@ -1,3 +1,4 @@
+import { CircleQuestionMark } from "lucide-react";
 import {
   useEffect,
   useId,
@@ -81,7 +82,7 @@ export function HelpTip({
         aria-controls={id}
         onClick={() => setPinned((p) => !p)}
       >
-        ?
+        <CircleQuestionMark size={16} aria-hidden="true" />
       </button>
       <span
         ref={bubbleRef}

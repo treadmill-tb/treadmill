@@ -357,11 +357,12 @@ dd > :is(button, .btn) {
 }
 
 .copy-btn {
-  padding: 0 0.125rem;
+  display: inline-flex;
+  padding: 0.125rem;
   border: none;
   background: none;
   color: var(--pico-muted-color);
-  font-size: inherit;
+  vertical-align: middle;
 }
 
 .copy-btn:hover {
@@ -654,24 +655,16 @@ p.spec-hint {
 .help-tip > button {
   position: relative;
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1rem;
-  height: 1rem;
   padding: 0;
-  border: var(--pico-border-width) solid var(--pico-form-element-border-color);
-  border-radius: 50%;
+  border: none;
   background: none;
   box-shadow: none;
   color: var(--pico-muted-color);
-  font-family: var(--pico-font-family-sans-serif);
-  font-size: 0.6875rem;
-  font-weight: 600;
   line-height: 1;
   cursor: help;
 }
 
-/* A fingertip-sized target around the small circle. */
+/* A fingertip-sized target around the small icon. */
 .help-tip > button::before {
   content: "";
   position: absolute;
@@ -679,7 +672,6 @@ p.spec-hint {
 }
 
 .help-tip > button:is(:hover, [aria-expanded="true"]) {
-  border-color: var(--pico-primary);
   color: var(--pico-primary);
 }
 
