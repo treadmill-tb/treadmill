@@ -246,6 +246,27 @@ body > footer {
   flex: 1;
 }
 
+/* A section that opens from its heading, chevron first. */
+details.collapsible {
+  margin-bottom: 0;
+}
+
+details.collapsible > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  line-height: inherit;
+}
+
+details.collapsible > summary::after {
+  order: -1;
+  margin: 0;
+}
+
+details.collapsible > summary > :is(h2, h3) {
+  margin: 0;
+}
+
 .card {
   margin-bottom: var(--pico-block-spacing-vertical);
   padding: var(--pico-block-spacing-vertical)

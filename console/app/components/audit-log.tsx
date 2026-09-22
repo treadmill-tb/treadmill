@@ -1,4 +1,5 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
+import { useState } from "react";
 
 import { client } from "../api/client";
 import type { components } from "../api/schema";
@@ -17,8 +18,9 @@ const PATHS = {
   "image-sets": "/image-sets/{id}/events",
 } as const;
 
-function useAuditFeed(entity: AuditEntity, id: string) {
+function useAuditFeed(entity: AuditEntity, id: string, enabled: boolean) {
   return useInfiniteQuery({
+    enabled,
     queryKey: ["audit", entity, id],
     queryFn: async ({ pageParam }): Promise<AuditFeedResponse> => {
       const { data, response } = await client.GET(PATHS[entity], {
@@ -37,12 +39,30 @@ function useAuditFeed(entity: AuditEntity, id: string) {
   });
 }
 
+/** An entity's audit events, collapsed until the reader opens them — and only
+ * fetched then, since most visits never do. */
 export function AuditLog({ entity, id }: { entity: AuditEntity; id: string }) {
-  const feed = useAuditFeed(entity, id);
+  const [open, setOpen] = useState(false);
+  const feed = useAuditFeed(entity, id, open);
 
   return (
     <section>
-      <h2>Events</h2>
+      <details
+        className="collapsible"
+        onToggle={(e) => setOpen(e.currentTarget.open)}
+      >
+        <summary>
+          <h2>Events</h2>
+        </summary>
+        {open && <AuditEvents feed={feed} />}
+      </details>
+    </section>
+  );
+}
+
+function AuditEvents({ feed }: { feed: ReturnType<typeof useAuditFeed> }) {
+  return (
+    <>
       {feed.isPending && <p className="muted">Loading…</p>}
       {feed.isError && <p className="error">{feed.error.message}</p>}
       {feed.data && (
@@ -91,6 +111,6 @@ export function AuditLog({ entity, id }: { entity: AuditEntity; id: string }) {
           )}
         </>
       )}
-    </section>
+    </>
   );
 }
