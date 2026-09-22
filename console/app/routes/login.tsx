@@ -24,11 +24,15 @@ export default function Login() {
 function LoginPage() {
   const navigate = useNavigate();
   const [code, setCode] = useState("");
+  // Only set when the switchboard can't redirect back here: the login then
+  // completes in a separate tab, which shows a code to paste below.
+  const [started, setStarted] = useState(false);
   const providers = $api.useQuery("get", "/auth/providers", {
     params: { query: { return_to: RETURN_TO } },
   });
   const redirect = providers.data?.return_to_allowed ?? false;
   const target = redirect ? undefined : "_blank";
+  const onStart = redirect ? undefined : () => setStarted(true);
 
   return (
     <main className="container login-page">
@@ -52,6 +56,8 @@ function LoginPage() {
                 className="btn login-btn"
                 href={providerHref(p.login_path, redirect)}
                 target={target}
+                onClick={onStart}
+                onAuxClick={onStart}
               >
                 Sign in with {p.display_name}
               </a>
@@ -68,13 +74,15 @@ function LoginPage() {
                     className="btn login-btn"
                     href={providerHref(m.login_path, redirect)}
                     target={target}
+                    onClick={onStart}
+                    onAuxClick={onStart}
                   >
                     {m.label}
                   </a>
                 ))}
               </div>
             )}
-            {!redirect && (
+            {!redirect && started && (
               <form
                 className="form"
                 onSubmit={(e) => {
