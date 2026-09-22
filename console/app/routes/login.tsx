@@ -31,7 +31,7 @@ function LoginPage() {
   const target = redirect ? undefined : "_blank";
 
   return (
-    <main className="page login-page">
+    <main className="container login-page">
       <div className="card login-card">
         <h1>Treadmill</h1>
         {providers.isPending && <p className="muted">Loading login methods…</p>}

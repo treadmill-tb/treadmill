@@ -15,7 +15,7 @@ export default function Hosts() {
         <h1>Hosts</h1>
         <span className="spacer" />
         {whoami.data?.admin === true && (
-          <Link className="btn" to="/hosts/new">
+          <Link className="btn primary" to="/hosts/new">
             Register a supervisor
           </Link>
         )}

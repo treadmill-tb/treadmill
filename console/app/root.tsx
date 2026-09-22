@@ -2,15 +2,19 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
 
+import { THEME_SCRIPT, ThemeSwitch } from "./components/theme-switch";
+
+import "@picocss/pico/css/pico.blue.min.css";
 import "./app.css";
 
 export function Layout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>Treadmill</title>
+        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
         <Meta />
         <Links />
       </head>
@@ -26,10 +30,13 @@ export function Layout({ children }: { children: ReactNode }) {
 
 function Footer() {
   return (
-    <footer className="footer muted">
-      built from{" "}
-      <span className="mono">
-        {import.meta.env.VITE_TML_CONSOLE_REV ?? "unknown"}
+    <footer className="container muted">
+      <ThemeSwitch />
+      <span>
+        The Treadmill Distributed Hardware Testbed — Console Version{" "}
+        <span className="mono">
+          {import.meta.env.VITE_TML_CONSOLE_REV ?? "unknown"}
+        </span>
       </span>
     </footer>
   );

@@ -77,7 +77,7 @@ export default function LoginCallback() {
   }, []);
 
   return (
-    <main className="page login-page">
+    <main className="container login-page">
       <div className="card login-card">
         <h1>Signing in…</h1>
         {phase.kind === "completing" && (

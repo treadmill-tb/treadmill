@@ -198,7 +198,11 @@ function CreateForm() {
       )}
 
       <div className="toolbar">
-        <button disabled={create.isPending} onClick={submit}>
+        <button
+          className="primary"
+          disabled={create.isPending}
+          onClick={submit}
+        >
           {create.isPending ? "Registering…" : "Register"}
         </button>
         <Link className="btn" to="/hosts">

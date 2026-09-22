@@ -24,7 +24,11 @@ export function EntityLink({
     return <span className="muted">—</span>;
   }
   return (
-    <Link to={`${ROUTES[kind]}/${id}`} className="mono" title={id}>
+    <Link
+      to={`${ROUTES[kind]}/${id}`}
+      className={label === undefined ? "mono" : undefined}
+      title={id}
+    >
       {label ?? shortId(id)}
     </Link>
   );

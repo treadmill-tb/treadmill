@@ -108,7 +108,11 @@ function SpecForm({ host }: { host: HostInfo }) {
         <button disabled={pending} onClick={() => submit(true)}>
           {validate.isPending ? "Validating…" : "Validate"}
         </button>
-        <button disabled={pending} onClick={() => submit(false)}>
+        <button
+          className="primary"
+          disabled={pending}
+          onClick={() => submit(false)}
+        >
           {save.isPending ? "Saving…" : "Save"}
         </button>
         <Link className="btn" to={`/hosts/${host.host_id}`}>

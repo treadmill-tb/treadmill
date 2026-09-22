@@ -37,7 +37,7 @@ export default function Jobs() {
       <div className="toolbar">
         <h1>Jobs</h1>
         <span className="spacer" />
-        <Link to="/jobs/new" className="btn">
+        <Link to="/jobs/new" className="btn primary">
           Enqueue job
         </Link>
       </div>
