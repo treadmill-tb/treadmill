@@ -164,11 +164,11 @@ dependency layer's ~360 crates. It also needs the invoking user to be a
 trusted Nix user, otherwise Nix ignores the extra substituter and only warns.
 
 CI pushes only `nix build .#cache-seed`: the Rust toolchain, the crane
-dependency layer, and the vendored `zot` / `nbdfatftpd` / `job-gateway-caddy`
-builds. The dependency layer sets `unsafeDiscardReferences`, as a zstd tarball
-of `target/` has no runtime dependencies, but the store paths embedded in it
-would otherwise pull the vendored crate sources into its closure and every
-push.
+dependency layer, and the vendored `zot` / `nbdfatftpd` / `job-gateway-caddy` /
+`tml-caddy-static-*` builds. The dependency layer sets
+`unsafeDiscardReferences`, as a zstd tarball of `target/` has no runtime
+dependencies, but the store paths embedded in it would otherwise pull the
+vendored crate sources into its closure and every push.
 
 ## 4. Testing conventions
 
