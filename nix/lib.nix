@@ -7,8 +7,30 @@ let
   inherit (pkgs) lib;
   inherit (inputs) crane fenix;
 
-  rustToolchain = fenix.packages.${system}.stable.toolchain;
-  craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+  # Not `stable.toolchain`: its components overlap, and symlinkJoin logs every
+  # collision (~80k lines).
+  rustToolchain = fenix.packages.${system}.combine (
+    with fenix.packages.${system}.stable;
+    [
+      cargo
+      rustc-unwrapped
+      rust-std
+      clippy-unwrapped
+      rustfmt
+      rust-src
+      rust-analyzer
+    ]
+  );
+  craneLib = ((crane.mkLib pkgs).overrideToolchain rustToolchain).overrideScope (
+    _: prev: {
+      # nixpkgs' fetchurl floods the build logs; Nix's builtin fetcher is quiet.
+      downloadCargoPackage = prev.downloadCargoPackage.override {
+        pkgsBuildBuild = pkgs.pkgsBuildBuild // {
+          fetchurl = import <nix/fetchurl.nix>;
+        };
+      };
+    }
+  );
 
   workspaceRoot = ../.;
 
@@ -122,15 +144,19 @@ let
     inherit src;
     strictDeps = true;
 
-    SQLX_OFFLINE = "true";
+    # In `env` rather than as top-level attributes, so they stay exported
+    # environment variables under `__structuredAttrs` (see workspaceDeps).
+    env = {
+      SQLX_OFFLINE = "true";
 
-    # sqlx-macros (a proc-macro .so loaded by rustc at compile time) links
-    # against libssl.so.3; without this it fails with
-    #
-    #     libssl.so.3: cannot open shared object file
-    #
-    # when rustc tries to dlopen the macro.
-    LD_LIBRARY_PATH = lib.makeLibraryPath [ pkgs.openssl ];
+      # sqlx-macros (a proc-macro .so loaded by rustc at compile time) links
+      # against libssl.so.3; without this it fails with
+      #
+      #     libssl.so.3: cannot open shared object file
+      #
+      # when rustc tries to dlopen the macro.
+      LD_LIBRARY_PATH = lib.makeLibraryPath [ pkgs.openssl ];
+    };
 
     nativeBuildInputs = [
       pkgs.pkg-config
@@ -202,6 +228,15 @@ let
     // {
       src = depsSrc;
       pname = "treadmill-workspace";
+
+      # The layer is a zstd tarball of target/, which only a later cargo build
+      # unpacks; it has no runtime dependencies. zstd stores short strings as
+      # literals, though, so the reference scanner finds the vendored-source
+      # store paths embedded in the rlibs and dep-info files, and the layer's
+      # closure (and every Cachix push of it) drags along the vendor directory
+      # and all ~570 crate sources.
+      __structuredAttrs = true;
+      unsafeDiscardReferences.out = true;
     }
   );
 

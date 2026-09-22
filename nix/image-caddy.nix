@@ -6,16 +6,16 @@ _: {
       inherit (pkgs.stdenv) isLinux;
 
       mkImageCaddy =
-        crossPkgs:
+        system:
         import ./pkgs/job-gateway-caddy.nix {
-          pkgs = crossPkgs;
-          static = true;
+          inherit pkgs;
+          staticFor = lib.systems.elaborate system;
         };
     in
     {
       packages = lib.optionalAttrs isLinux {
-        tml-caddy-static-x86_64 = mkImageCaddy pkgs.pkgsCross.musl64.pkgsStatic;
-        tml-caddy-static-aarch64 = mkImageCaddy pkgs.pkgsCross.aarch64-multiplatform.pkgsStatic;
+        tml-caddy-static-x86_64 = mkImageCaddy "x86_64-linux";
+        tml-caddy-static-aarch64 = mkImageCaddy "aarch64-linux";
       };
     };
 }
