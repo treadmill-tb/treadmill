@@ -741,7 +741,8 @@ p.spec-hint {
 
 /* --------------------------------------------------------- Login pages */
 
-.login-page {
+.login-page,
+.loading-page {
   display: flex;
   justify-content: center;
   padding-top: 5rem;

@@ -53,6 +53,16 @@ const queryClient = new QueryClient({
   },
 });
 
+// Prerendered into index.html (SPA mode), shown until the JS modules have
+// loaded and the app has hydrated.
+export function HydrateFallback() {
+  return (
+    <main className="container loading-page">
+      <p aria-busy="true">Loading Treadmill Console…</p>
+    </main>
+  );
+}
+
 export default function Root() {
   return (
     <QueryClientProvider client={queryClient}>
