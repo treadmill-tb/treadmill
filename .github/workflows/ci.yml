@@ -24,23 +24,10 @@ permissions:
   contents: read
 
 jobs:
+  # A single job, so that one required status check gates both enqueueing a PR
+  # into the merge queue and passing it. The heavy tier only runs on main and in
+  # the merge queue.
   flake-check:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: cachix/install-nix-action@v31
-      - uses: cachix/cachix-action@v17
-        with:
-          name: treadmill-tb
-          skipPush: true
-
-      - run: nix flake check --print-build-logs
-
-  ci-heavy:
-    if: github.event_name != 'pull_request'
-
     runs-on: ubuntu-latest
 
     # On main or in the merge queue to main we have access to the "cachix-push"
@@ -59,7 +46,11 @@ jobs:
           name: treadmill-tb
           skipPush: true
 
-      - run: nix build --print-build-logs --no-link '.#ci-heavy'
+      - run: nix flake check --print-build-logs
+
+      - name: Build the heavy tier
+        if: github.event_name != 'pull_request'
+        run: nix build --print-build-logs --no-link '.#ci-heavy'
 
       - name: Seed Cachix
         if: env.CACHIX_AUTH_TOKEN != ''
@@ -68,7 +59,7 @@ jobs:
             | cachix push treadmill-tb
 
   deploy-console:
-    needs: [flake-check, ci-heavy]
+    needs: [flake-check]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     runs-on: ubuntu-latest
