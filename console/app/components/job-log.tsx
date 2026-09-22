@@ -5,7 +5,7 @@ import {
   wsconnect,
   type NatsConnection,
 } from "@nats-io/nats-core";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 
 import { client } from "../api/client";
 import { LogTerminalView } from "./log-terminal-view";
@@ -128,6 +128,7 @@ export function JobLog({
   dispatched,
   replayBytes = DEFAULT_REPLAY_BYTES,
   canSendInput = false,
+  finalized = false,
 }: {
   jobId: string;
   /** Whether the job has been placed on a host. The switchboard creates the
@@ -135,12 +136,15 @@ export function JobLog({
   dispatched: boolean;
   replayBytes?: number;
   canSendInput?: boolean;
+  /** Whether the job is over, so its log has nothing more to follow. */
+  finalized?: boolean;
 }) {
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
   const [truncated, setTruncated] = useState(false);
   const [declared, setDeclared] = useState<Map<string, LogView>>(new Map());
   const [seen, setSeen] = useState<string[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  const tabIds = useId();
   // Buffers belong to one connection's demux. `JobLog` is keyed by job, so a
   // different job mounts a fresh component and a fresh bus.
   const bus = useMemo(() => new ChannelBus(), []);
@@ -474,7 +478,13 @@ export function JobLog({
   return (
     <section>
       <h2>
-        Logs {status.kind === "live" && <span className="badge ok">live</span>}
+        Logs{" "}
+        {status.kind === "live" &&
+          (finalized ? (
+            <span className="badge">replayed</span>
+          ) : (
+            <span className="badge ok">live</span>
+          ))}
         {status.kind === "replaying" && (
           <span className="badge ok">replaying</span>
         )}
@@ -497,25 +507,31 @@ export function JobLog({
           {status.kind === "retrying" && (
             <p className="muted">Retrying: {status.reason}.</p>
           )}
-          <div className="log-tabs" role="tablist">
-            {views.map((view) => (
+          <div className="log-tabs" role="tablist" aria-label="Log views">
+            {views.map((view, i) => (
               <button
                 key={view.id}
+                id={`${tabIds}-tab-${i}`}
                 role="tab"
                 aria-selected={view.id === activeId}
+                aria-controls={`${tabIds}-panel-${i}`}
                 onClick={() => setSelected(view.id)}
               >
                 {view.label}
               </button>
             ))}
           </div>
-          {views.map((view) => (
+          {views.map((view, i) => (
             // Views stay mounted and inactive ones are hidden, so switching
             // tabs never replays a buffer into a freshly mounted component.
             // The channels are part of the key: a view that gains one starts
             // over, and the bus replays what it missed.
             <div
               key={`${view.id} ${view.channels.join(" ")}`}
+              id={`${tabIds}-panel-${i}`}
+              className="log-panel"
+              role="tabpanel"
+              aria-labelledby={`${tabIds}-tab-${i}`}
               hidden={view.id !== activeId}
             >
               {view.render === "terminal" ? (
@@ -539,7 +555,7 @@ export function JobLog({
             {truncated && `Earlier output omitted. `}
             {replayBytes === 0
               ? "Live tail only (history replay disabled by ?replay=0)."
-              : `Replays up to ~${bytesLabel(replayBytes)} of stored history, then follows live (override with ?replay=).`}
+              : `Replays up to ~${bytesLabel(replayBytes)} of stored history${finalized ? "" : ", then follows live"} (override with ?replay=).`}
           </p>
         </>
       )}

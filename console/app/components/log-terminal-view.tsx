@@ -73,8 +73,10 @@ export function LogTerminalView({
     term.loadAddon(fit);
     term.open(mount);
     fit.fit();
-    const onResize = () => fit.fit();
-    window.addEventListener("resize", onResize);
+    // Follows the box rather than the window, so expanding the log view
+    // refits too.
+    const resize = new ResizeObserver(() => fit.fit());
+    resize.observe(mount);
     termRef.current = term;
     fitRef.current = fit;
 
@@ -94,7 +96,7 @@ export function LogTerminalView({
 
     return () => {
       for (const unsub of unsubscribe) unsub();
-      window.removeEventListener("resize", onResize);
+      resize.disconnect();
       termRef.current = null;
       fitRef.current = null;
       term.dispose();
@@ -204,29 +206,41 @@ export function LogTerminalView({
 
   const offersInput = view.input && canSendInput;
 
+  const toggleInput = () => {
+    setInputStatus({ kind: "off" });
+    setInputEnabled((enabled) => !enabled);
+  };
+
   return (
     <>
-      {(offersInput || inputStatus.kind === "error") && (
-        <p className="log-view-bar">
-          {inputStatus.kind === "on" && (
-            <span className="badge ok">input on</span>
-          )}{" "}
-          {offersInput && inputStatus.kind !== "unavailable" && (
-            <button
-              onClick={() => {
-                setInputStatus({ kind: "off" });
-                setInputEnabled((enabled) => !enabled);
-              }}
-            >
-              {inputEnabled ? "Disable input" : "Enable console input"}
-            </button>
-          )}
-          {inputStatus.kind === "error" && (
-            <span className="error">{inputStatus.message}</span>
-          )}
+      <div ref={mountRef} className="job-log-term" />
+      {offersInput && inputEnabled && (
+        <div className="notice" role="status">
+          <div>
+            <strong>
+              {inputStatus.kind === "on"
+                ? "Console input is on."
+                : "Connecting console input…"}
+            </strong>
+            <p>
+              This serial console is only intended for debugging. All text
+              entered here, including passwords and secrets, will be logged,
+              recorded, and replayed for all future visitors. For interactive
+              access, use direct services offered by the host (or switch to an
+              image that supports such interactive access).
+            </p>
+          </div>
+          <button onClick={toggleInput}>Disable console input</button>
+        </div>
+      )}
+      {offersInput && !inputEnabled && inputStatus.kind !== "unavailable" && (
+        <p className="log-input-bar">
+          <button onClick={toggleInput}>Enable console input</button>
         </p>
       )}
-      <div ref={mountRef} className="job-log-term" />
+      {inputStatus.kind === "error" && (
+        <p className="error">{inputStatus.message}</p>
+      )}
     </>
   );
 }

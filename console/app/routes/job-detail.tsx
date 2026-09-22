@@ -273,6 +273,7 @@ export default function JobDetail({ params }: Route.ComponentProps) {
             jobId={params.id}
             dispatched={job.data.dispatched_on_host_id != null}
             replayBytes={replayBytes}
+            finalized={job.data.state === "finalized"}
             canSendInput={
               job.data.permissions.includes("manage") &&
               job.data.state !== "finalized"
