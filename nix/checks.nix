@@ -396,8 +396,9 @@
         cache-seed = pkgs.linkFarmFromDrvs "treadmill-cache-seed" (
           [
             # The dependency layer discards its references, so the toolchain
-            # needs listing on its own.
+            # and the vendored crate sources need listing on their own.
             cmn.rustToolchain
+            cmn.cargoVendorDir
             cmn.workspaceDeps
             cmn.zot
             cmn.nbdfatftpd
