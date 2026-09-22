@@ -377,8 +377,6 @@
           "job-gateway-caddy"
         ]
         ++ lib.optionals pkgs.stdenv.isLinux [
-          "tml-puppet-static-x86_64"
-          "tml-puppet-static-aarch64"
           "tml-caddy-static-x86_64"
           "tml-caddy-static-aarch64"
           "tiny-efi-app-base"

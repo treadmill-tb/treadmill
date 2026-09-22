@@ -148,10 +148,12 @@ breakage).
 nix flake check --accept-flake-config
 ```
 
-The **heavy** tier is every binary and cross-target package, plus the tests
+The **heavy** tier is every binary and the static Caddy builds, plus the tests
 that need a real Zot, qemu, NATS or the `tiny-efi` fixture. CI runs it in the
 merge queue and on `main`, not on pull requests. Each heavy test is also a
-package, so a single one can be run on its own.
+package, so a single one can be run on its own. The `tml-puppet-static-*`
+builds are left out: only the image repository consumes them, and it builds
+them anyway.
 
 ```bash
 nix build --accept-flake-config '.#ci-heavy'
