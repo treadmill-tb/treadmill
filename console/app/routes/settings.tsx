@@ -3,7 +3,7 @@ import { useState, type FormEvent } from "react";
 
 import { $api } from "../api/client";
 import type { components } from "../api/schema";
-import { EntityLink } from "../components/entity-link";
+import { EntityLink, shortId } from "../components/entity-link";
 import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
 
@@ -198,7 +198,7 @@ export default function Settings() {
                 {tokens.data.map((t) => (
                   <tr key={t.token_id}>
                     <td className="mono" title={t.token_id}>
-                      {t.token_id.slice(0, 8)}
+                      {shortId(t.token_id)}
                       {t.comment != null && (
                         <span className="muted"> {t.comment}</span>
                       )}
