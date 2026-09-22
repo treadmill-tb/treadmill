@@ -793,6 +793,28 @@ p.spec-hint {
   resize: vertical;
 }
 
+/* Shown in a view until its first output arrives. */
+.log-empty {
+  margin: 0;
+  color: var(--pico-muted-color);
+  font-style: italic;
+}
+
+/* Over the terminal, which is black in either theme. */
+.log-term-wrap {
+  position: relative;
+}
+
+.log-term-wrap > .log-empty {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.75rem;
+  color: #9aa3b2;
+  font-family: var(--pico-font-family-monospace);
+  font-size: var(--text-xs);
+  pointer-events: none;
+}
+
 /* Terminal-rendered view (xterm mount) */
 .job-log-term {
   height: 28rem;

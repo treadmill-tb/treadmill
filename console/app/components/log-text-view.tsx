@@ -134,6 +134,9 @@ export function LogTextView({
         }
       }}
     >
+      {lines.length === 0 && (
+        <p className="log-empty">{`No logs for "${view.label}" yet…`}</p>
+      )}
       {lines.map((line, i) => (
         <div
           // Lines have no identity of their own, and the list only ever grows

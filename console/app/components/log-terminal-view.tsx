@@ -51,6 +51,8 @@ export function LogTerminalView({
   const mountRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  // Until the first byte, the terminal is overlaid with a placeholder.
+  const [empty, setEmpty] = useState(true);
   const [inputEnabled, setInputEnabled] = useState(false);
   const [inputStatus, setInputStatus] = useState<InputStatus>({ kind: "off" });
   // The live input connection keystrokes are published over, if any.
@@ -88,11 +90,12 @@ export function LogTerminalView({
       if (conn !== null) conn.nc.publish(conn.subject, encoder.encode(data));
     });
 
-    const unsubscribe = channels
-      .split(" ")
-      .map((channel) =>
-        bus.subscribe(channel, (frame) => term.write(frame.data)),
-      );
+    const unsubscribe = channels.split(" ").map((channel) =>
+      bus.subscribe(channel, (frame) => {
+        term.write(frame.data);
+        if (frame.data.length > 0) setEmpty(false);
+      }),
+    );
 
     return () => {
       for (const unsub of unsubscribe) unsub();
@@ -213,7 +216,12 @@ export function LogTerminalView({
 
   return (
     <>
-      <div ref={mountRef} className="job-log-term" />
+      <div className="log-term-wrap">
+        <div ref={mountRef} className="job-log-term" />
+        {empty && (
+          <p className="log-empty">{`No logs for "${view.label}" yet…`}</p>
+        )}
+      </div>
       {offersInput && inputEnabled && (
         <div className="notice" role="status">
           <div>
