@@ -7,7 +7,20 @@ let
   inherit (pkgs) lib;
   inherit (inputs) crane fenix;
 
-  rustToolchain = fenix.packages.${system}.stable.toolchain;
+  # Not `stable.toolchain`: its components overlap, and symlinkJoin logs every
+  # collision (~80k lines).
+  rustToolchain = fenix.packages.${system}.combine (
+    with fenix.packages.${system}.stable;
+    [
+      cargo
+      rustc-unwrapped
+      rust-std
+      clippy-unwrapped
+      rustfmt
+      rust-src
+      rust-analyzer
+    ]
+  );
   craneLib = ((crane.mkLib pkgs).overrideToolchain rustToolchain).overrideScope (
     _: prev: {
       # nixpkgs' fetchurl floods the build logs; Nix's builtin fetcher is quiet.
