@@ -107,6 +107,22 @@ h3 {
   --pico-font-weight: 600;
 }
 
+/* A detail page's title: the object's name, and its short ID under it. */
+.page-title {
+  margin-bottom: var(--pico-typography-spacing-vertical);
+}
+
+.page-title > h1 {
+  margin-bottom: 0.25rem;
+  overflow-wrap: anywhere;
+}
+
+.page-title > p {
+  margin: 0;
+  color: var(--pico-muted-color);
+  font-size: var(--text-sm);
+}
+
 /* A heading carrying status badges lines them up with its text. */
 h1:has(.badge),
 h2:has(.badge) {
@@ -354,6 +370,22 @@ button.danger:is(:hover, :active, :focus) {
 
 dd > :is(button, .btn) {
   margin-left: 0.25rem;
+}
+
+/* A bare icon acting as a button, e.g. the pencil renaming a job. */
+.icon-btn {
+  display: inline-flex;
+  margin-left: 0.5rem;
+  padding: 0.125rem;
+  border: none;
+  background: none;
+  box-shadow: none;
+  color: var(--pico-muted-color);
+  vertical-align: middle;
+}
+
+.icon-btn:hover {
+  color: var(--pico-primary);
 }
 
 .copy-btn {

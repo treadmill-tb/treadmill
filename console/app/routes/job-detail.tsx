@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { Pencil } from "lucide-react";
 import { useSearchParams } from "react-router";
 
 import { $api } from "../api/client";
@@ -8,8 +9,9 @@ import {
   TerminationBadge,
 } from "../components/badges";
 import { AuditLog } from "../components/audit-log";
+import { CopyButton } from "../components/copy-button";
 import { Digest } from "../components/digest";
-import { EntityLink } from "../components/entity-link";
+import { EntityLink, shortId } from "../components/entity-link";
 import { ImageRef } from "../components/image-ref";
 import { JobLog, parseReplayBytes } from "../components/job-log";
 import { JobServices } from "../components/job-services";
@@ -66,9 +68,47 @@ export default function JobDetail({ params }: Route.ComponentProps) {
 
   return (
     <>
-      <h1>
-        Job <span className="mono">{params.id}</span>
-      </h1>
+      <hgroup className="page-title">
+        <h1>
+          {job.data === undefined ? (
+            "Job"
+          ) : job.data.label != null ? (
+            job.data.label
+          ) : (
+            <em className="muted">Unnamed Job</em>
+          )}
+          {job.data?.permissions.includes("manage") && (
+            <button
+              type="button"
+              className="icon-btn"
+              title="Rename job"
+              aria-label="Rename job"
+              disabled={update.isPending}
+              onClick={() => {
+                const label = window.prompt(
+                  "Job name (empty clears it):",
+                  job.data.label ?? "",
+                );
+                if (label !== null) {
+                  update.mutate({
+                    params: { path: { id: params.id } },
+                    body: { label: label === "" ? null : label },
+                  });
+                }
+              }}
+            >
+              <Pencil size={18} aria-hidden="true" />
+            </button>
+          )}
+        </h1>
+        <p>
+          Job{" "}
+          <span className="mono" title={params.id}>
+            {shortId(params.id)}
+          </span>{" "}
+          <CopyButton value={params.id} label="Copy full job ID" />
+        </p>
+      </hgroup>
       {job.isPending && <p className="muted">Loading…</p>}
       {job.isError && <p className="error">Failed to load the job.</p>}
       {job.data && (
@@ -82,7 +122,10 @@ export default function JobDetail({ params }: Route.ComponentProps) {
               className="danger"
               disabled={job.data.state === "finalized" || terminate.isPending}
               onClick={() => {
-                if (window.confirm(`Terminate job ${params.id}?`)) {
+                const name = job.data.label ?? "unnamed job";
+                if (
+                  window.confirm(`Terminate ${name} (${shortId(params.id)})?`)
+                ) {
                   terminate.mutate({ params: { path: { id: params.id } } });
                 }
               }}
@@ -94,29 +137,6 @@ export default function JobDetail({ params }: Route.ComponentProps) {
           <MutationError error={update.error} />
 
           <dl className="props">
-            <dt>Label</dt>
-            <dd>
-              {job.data.label ?? <span className="muted">—</span>}{" "}
-              {job.data.permissions.includes("manage") && (
-                <button
-                  disabled={update.isPending}
-                  onClick={() => {
-                    const label = window.prompt(
-                      "Job label (empty clears it):",
-                      job.data.label ?? "",
-                    );
-                    if (label !== null) {
-                      update.mutate({
-                        params: { path: { id: params.id } },
-                        body: { label: label === "" ? null : label },
-                      });
-                    }
-                  }}
-                >
-                  Edit
-                </button>
-              )}
-            </dd>
             <dt>Image</dt>
             <dd>
               <ImageRef
