@@ -405,52 +405,54 @@ export default function ImageSetDetail({ params }: Route.ComponentProps) {
               (grants.data.length === 0 ? (
                 <p className="muted">No explicit grants.</p>
               ) : (
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Subject</th>
-                      <th>Permission</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {grants.data.map((grant) => (
-                      <tr key={`${grant.subject_id}/${grant.permission}`}>
-                        <td>
-                          <EntityLink kind="user" id={grant.subject_id} />
-                        </td>
-                        <td>
-                          <span className="badge">{grant.permission}</span>
-                        </td>
-                        <td>
-                          <button
-                            className="danger"
-                            disabled={revoke.isPending}
-                            onClick={() => {
-                              if (
-                                window.confirm(
-                                  `Revoke ${grant.permission} from ${grant.subject_id}?`,
-                                )
-                              ) {
-                                revoke.mutate({
-                                  params: {
-                                    path: {
-                                      id: params.id,
-                                      subject_id: grant.subject_id,
-                                      permission: grant.permission,
-                                    },
-                                  },
-                                });
-                              }
-                            }}
-                          >
-                            Revoke
-                          </button>
-                        </td>
+                <div className="overflow-auto">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Subject</th>
+                        <th>Permission</th>
+                        <th></th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {grants.data.map((grant) => (
+                        <tr key={`${grant.subject_id}/${grant.permission}`}>
+                          <td>
+                            <EntityLink kind="user" id={grant.subject_id} />
+                          </td>
+                          <td>
+                            <span className="badge">{grant.permission}</span>
+                          </td>
+                          <td>
+                            <button
+                              className="danger"
+                              disabled={revoke.isPending}
+                              onClick={() => {
+                                if (
+                                  window.confirm(
+                                    `Revoke ${grant.permission} from ${grant.subject_id}?`,
+                                  )
+                                ) {
+                                  revoke.mutate({
+                                    params: {
+                                      path: {
+                                        id: params.id,
+                                        subject_id: grant.subject_id,
+                                        permission: grant.permission,
+                                      },
+                                    },
+                                  });
+                                }
+                              }}
+                            >
+                              Revoke
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               ))}
           </section>
 
@@ -486,56 +488,58 @@ export function GenerationMembers({
           `everyone`) to fix this.
         </p>
       )}
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Image</th>
-            <th>Digest</th>
-            <th>Platform profile</th>
-            <th>Refinement</th>
-            <th>Usability</th>
-          </tr>
-        </thead>
-        <tbody>
-          {members.map((m) => (
-            <tr key={m.index}>
-              <td>{m.index}</td>
-              <td>
-                <Link to={`/images/${m.manifest_digest}`} className="mono">
-                  {m.manifest_digest.slice(7, 15)}
-                </Link>
-              </td>
-              <td>
-                <Digest digest={m.manifest_digest} />
-              </td>
-              <td className="mono">{m.platform_profile}</td>
-              <td className="mono">
-                {m.predicate || <span className="muted">—</span>}
-              </td>
-              <td>
-                {!m.usable ? (
-                  <span
-                    className="badge danger"
-                    title="No source of this image is usable by you; a job would not resolve it."
-                  >
-                    no usable source
-                  </span>
-                ) : m.usable_by_grantees ? (
-                  <span className="badge ok">usable</span>
-                ) : (
-                  <span
-                    className="badge warn"
-                    title="Some subject holding a `use` grant on this set cannot use any source of this image."
-                  >
-                    not grantee-usable
-                  </span>
-                )}
-              </td>
+      <div className="overflow-auto">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Image</th>
+              <th>Digest</th>
+              <th>Platform profile</th>
+              <th>Refinement</th>
+              <th>Usability</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {members.map((m) => (
+              <tr key={m.index}>
+                <td>{m.index}</td>
+                <td>
+                  <Link to={`/images/${m.manifest_digest}`} className="mono">
+                    {m.manifest_digest.slice(7, 15)}
+                  </Link>
+                </td>
+                <td>
+                  <Digest digest={m.manifest_digest} />
+                </td>
+                <td className="mono">{m.platform_profile}</td>
+                <td className="mono">
+                  {m.predicate || <span className="muted">—</span>}
+                </td>
+                <td>
+                  {!m.usable ? (
+                    <span
+                      className="badge danger"
+                      title="No source of this image is usable by you; a job would not resolve it."
+                    >
+                      no usable source
+                    </span>
+                  ) : m.usable_by_grantees ? (
+                    <span className="badge ok">usable</span>
+                  ) : (
+                    <span
+                      className="badge warn"
+                      title="Some subject holding a `use` grant on this set cannot use any source of this image."
+                    >
+                      not grantee-usable
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }

@@ -50,32 +50,34 @@ export function AuditLog({ entity, id }: { entity: AuditEntity; id: string }) {
           {feed.data.pages[0]?.events.length === 0 ? (
             <p className="muted">No events.</p>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>When</th>
-                  <th>Actor</th>
-                  <th>Event</th>
-                  <th>Message</th>
-                </tr>
-              </thead>
-              <tbody>
-                {feed.data.pages.flatMap((page) =>
-                  page.events.map((ev) => (
-                    <tr key={ev.event_id}>
-                      <td>
-                        <RelTime iso={ev.created_at} />
-                      </td>
-                      <td>
-                        <EntityLink kind="user" id={ev.actor_id} />
-                      </td>
-                      <td className="mono muted">{ev.event_type}</td>
-                      <td>{ev.message}</td>
-                    </tr>
-                  )),
-                )}
-              </tbody>
-            </table>
+            <div className="overflow-auto">
+              <table>
+                <thead>
+                  <tr>
+                    <th>When</th>
+                    <th>Actor</th>
+                    <th>Event</th>
+                    <th>Message</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {feed.data.pages.flatMap((page) =>
+                    page.events.map((ev) => (
+                      <tr key={ev.event_id}>
+                        <td>
+                          <RelTime iso={ev.created_at} />
+                        </td>
+                        <td>
+                          <EntityLink kind="user" id={ev.actor_id} />
+                        </td>
+                        <td className="mono muted">{ev.event_type}</td>
+                        <td>{ev.message}</td>
+                      </tr>
+                    )),
+                  )}
+                </tbody>
+              </table>
+            </div>
           )}
           {feed.hasNextPage && (
             <div className="toolbar">

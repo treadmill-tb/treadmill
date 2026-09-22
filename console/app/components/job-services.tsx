@@ -105,51 +105,53 @@ export function JobServices({
       {services.length === 0 ? (
         <p className="muted">No services announced.</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Label</th>
-              <th>Protocol</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {services.map((service) => (
-              <tr key={service.name}>
-                <td className="mono">{service.name}</td>
-                <td>{service.label ?? <span className="muted">—</span>}</td>
-                <td>
-                  <span className="badge">{service.protocol}</span>
-                </td>
-                <td>
-                  {service.protocol !== BROWSER_PROTOCOL ? (
-                    <span className="muted">—</span>
-                  ) : state.kind === "blocked" &&
-                    state.service === service.name ? (
-                    <a
-                      href={state.href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      Open {service.name}
-                    </a>
-                  ) : (
-                    <button
-                      disabled={!canOpen || state.kind === "opening"}
-                      onClick={() => void open(service.name)}
-                    >
-                      {state.kind === "opening" &&
-                      state.service === service.name
-                        ? "Opening…"
-                        : "Open"}
-                    </button>
-                  )}
-                </td>
+        <div className="overflow-auto">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Label</th>
+                <th>Protocol</th>
+                <th />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {services.map((service) => (
+                <tr key={service.name}>
+                  <td className="mono">{service.name}</td>
+                  <td>{service.label ?? <span className="muted">—</span>}</td>
+                  <td>
+                    <span className="badge">{service.protocol}</span>
+                  </td>
+                  <td>
+                    {service.protocol !== BROWSER_PROTOCOL ? (
+                      <span className="muted">—</span>
+                    ) : state.kind === "blocked" &&
+                      state.service === service.name ? (
+                      <a
+                        href={state.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        Open {service.name}
+                      </a>
+                    ) : (
+                      <button
+                        disabled={!canOpen || state.kind === "opening"}
+                        onClick={() => void open(service.name)}
+                      >
+                        {state.kind === "opening" &&
+                        state.service === service.name
+                          ? "Opening…"
+                          : "Open"}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
       {state.kind === "error" && <p className="error">{state.message}</p>}
     </section>

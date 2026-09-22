@@ -191,65 +191,67 @@ function HostGrants({ hostId }: { hostId: string }) {
         (grants.data.length === 0 ? (
           <p className="muted">No explicit grants.</p>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Subject</th>
-                <th>Permission</th>
-                <th>Granted</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {grants.data.map((grant) => (
-                <tr key={`${grant.subject_id}/${grant.permission}`}>
-                  <td>
-                    <EntityLink kind="user" id={grant.subject_id} />
-                  </td>
-                  <td>
-                    <span className="badge">{grant.permission}</span>
-                  </td>
-                  <td>
-                    <RelTime iso={grant.granted_at} />
-                  </td>
-                  <td>
-                    {grant.revocable ? (
-                      <button
-                        className="danger"
-                        disabled={revoke.isPending}
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              `Revoke ${grant.permission} from ${grant.subject_id}?`,
-                            )
-                          ) {
-                            revoke.mutate({
-                              params: {
-                                path: {
-                                  id: hostId,
-                                  subject_id: grant.subject_id,
-                                  permission: grant.permission,
-                                },
-                              },
-                            });
-                          }
-                        }}
-                      >
-                        Revoke
-                      </button>
-                    ) : (
-                      <span
-                        className="badge"
-                        title="Fixed in place by the switchboard; it goes only with the host."
-                      >
-                        irrevocable
-                      </span>
-                    )}
-                  </td>
+          <div className="overflow-auto">
+            <table>
+              <thead>
+                <tr>
+                  <th>Subject</th>
+                  <th>Permission</th>
+                  <th>Granted</th>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {grants.data.map((grant) => (
+                  <tr key={`${grant.subject_id}/${grant.permission}`}>
+                    <td>
+                      <EntityLink kind="user" id={grant.subject_id} />
+                    </td>
+                    <td>
+                      <span className="badge">{grant.permission}</span>
+                    </td>
+                    <td>
+                      <RelTime iso={grant.granted_at} />
+                    </td>
+                    <td>
+                      {grant.revocable ? (
+                        <button
+                          className="danger"
+                          disabled={revoke.isPending}
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                `Revoke ${grant.permission} from ${grant.subject_id}?`,
+                              )
+                            ) {
+                              revoke.mutate({
+                                params: {
+                                  path: {
+                                    id: hostId,
+                                    subject_id: grant.subject_id,
+                                    permission: grant.permission,
+                                  },
+                                },
+                              });
+                            }
+                          }}
+                        >
+                          Revoke
+                        </button>
+                      ) : (
+                        <span
+                          className="badge"
+                          title="Fixed in place by the switchboard; it goes only with the host."
+                        >
+                          irrevocable
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ))}
     </section>
   );

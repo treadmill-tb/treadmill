@@ -23,6 +23,8 @@ function AuthedShell() {
                 treadmill
               </Link>
             </li>
+          </ul>
+          <ul className="sections">
             <li>
               <NavLink to="/jobs">Jobs</NavLink>
             </li>

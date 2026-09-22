@@ -248,53 +248,55 @@ function SourceGrants({
         (grants.data.length === 0 ? (
           <p className="muted">No explicit grants.</p>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Subject</th>
-                <th>Permission</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {grants.data.map((grant) => (
-                <tr key={`${grant.subject_id}/${grant.permission}`}>
-                  <td>
-                    <EntityLink kind="user" id={grant.subject_id} />
-                  </td>
-                  <td>
-                    <span className="badge">{grant.permission}</span>
-                  </td>
-                  <td>
-                    <button
-                      className="danger"
-                      disabled={revoke.isPending}
-                      onClick={() => {
-                        if (
-                          window.confirm(
-                            `Revoke ${grant.permission} from ${grant.subject_id}?`,
-                          )
-                        ) {
-                          revoke.mutate({
-                            params: {
-                              path: {
-                                digest,
-                                source_id: source.id,
-                                subject_id: grant.subject_id,
-                                permission: grant.permission,
-                              },
-                            },
-                          });
-                        }
-                      }}
-                    >
-                      Revoke
-                    </button>
-                  </td>
+          <div className="overflow-auto">
+            <table>
+              <thead>
+                <tr>
+                  <th>Subject</th>
+                  <th>Permission</th>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {grants.data.map((grant) => (
+                  <tr key={`${grant.subject_id}/${grant.permission}`}>
+                    <td>
+                      <EntityLink kind="user" id={grant.subject_id} />
+                    </td>
+                    <td>
+                      <span className="badge">{grant.permission}</span>
+                    </td>
+                    <td>
+                      <button
+                        className="danger"
+                        disabled={revoke.isPending}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Revoke ${grant.permission} from ${grant.subject_id}?`,
+                            )
+                          ) {
+                            revoke.mutate({
+                              params: {
+                                path: {
+                                  digest,
+                                  source_id: source.id,
+                                  subject_id: grant.subject_id,
+                                  permission: grant.permission,
+                                },
+                              },
+                            });
+                          }
+                        }}
+                      >
+                        Revoke
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ))}
     </div>
   );
@@ -361,80 +363,82 @@ export default function ImageDetail({ params }: Route.ComponentProps) {
               />
             )}
             <MutationError error={deleteSource.error} />
-            <table>
-              <thead>
-                <tr>
-                  <th>Registry</th>
-                  <th>Repository</th>
-                  <th>Status</th>
-                  <th>Owner</th>
-                  <th>Your permissions</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {image.data.sources.map((src) => (
-                  <tr key={src.id}>
-                    <td className="mono">{src.registry}</td>
-                    <td className="mono">{src.repository}</td>
-                    <td>
-                      <span className="badge">{src.status}</span>
-                    </td>
-                    <td>
-                      <EntityLink kind="user" id={src.owner_id} />
-                    </td>
-                    <td>
-                      {src.permissions.length === 0 ? (
-                        <span className="muted">—</span>
-                      ) : (
-                        src.permissions.map((p) => (
-                          <span key={p} className="badge">
-                            {p}
-                          </span>
-                        ))
-                      )}
-                    </td>
-                    <td>
-                      {src.permissions.includes("manage") && (
-                        <div className="toolbar">
-                          <button
-                            onClick={() =>
-                              setOpenGrants(
-                                openGrants === src.id ? null : src.id,
-                              )
-                            }
-                          >
-                            {openGrants === src.id ? "Hide grants" : "Grants"}
-                          </button>
-                          <button
-                            className="danger"
-                            disabled={deleteSource.isPending}
-                            onClick={() => {
-                              if (
-                                window.confirm(
-                                  `Delete source ${src.registry}/${src.repository}? Subjects relying on it can no longer pull this image through it.`,
-                                )
-                              ) {
-                                deleteSource.mutate({
-                                  params: {
-                                    path: {
-                                      digest: params.digest,
-                                      source_id: src.id,
-                                    },
-                                  },
-                                });
-                              }
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      )}
-                    </td>
+            <div className="overflow-auto">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Registry</th>
+                    <th>Repository</th>
+                    <th>Status</th>
+                    <th>Owner</th>
+                    <th>Your permissions</th>
+                    <th></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {image.data.sources.map((src) => (
+                    <tr key={src.id}>
+                      <td className="mono">{src.registry}</td>
+                      <td className="mono">{src.repository}</td>
+                      <td>
+                        <span className="badge">{src.status}</span>
+                      </td>
+                      <td>
+                        <EntityLink kind="user" id={src.owner_id} />
+                      </td>
+                      <td>
+                        {src.permissions.length === 0 ? (
+                          <span className="muted">—</span>
+                        ) : (
+                          src.permissions.map((p) => (
+                            <span key={p} className="badge">
+                              {p}
+                            </span>
+                          ))
+                        )}
+                      </td>
+                      <td>
+                        {src.permissions.includes("manage") && (
+                          <div className="toolbar">
+                            <button
+                              onClick={() =>
+                                setOpenGrants(
+                                  openGrants === src.id ? null : src.id,
+                                )
+                              }
+                            >
+                              {openGrants === src.id ? "Hide grants" : "Grants"}
+                            </button>
+                            <button
+                              className="danger"
+                              disabled={deleteSource.isPending}
+                              onClick={() => {
+                                if (
+                                  window.confirm(
+                                    `Delete source ${src.registry}/${src.repository}? Subjects relying on it can no longer pull this image through it.`,
+                                  )
+                                ) {
+                                  deleteSource.mutate({
+                                    params: {
+                                      path: {
+                                        digest: params.digest,
+                                        source_id: src.id,
+                                      },
+                                    },
+                                  });
+                                }
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
             {openSource && (
               <SourceGrants digest={params.digest} source={openSource} />
             )}

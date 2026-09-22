@@ -76,42 +76,44 @@ export default function ImageSets() {
         (sets.data.length === 0 ? (
           <p className="muted">No image sets visible to this account.</p>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Canonical name</th>
-                <th>Latest generation</th>
-                <th>Owner</th>
-                <th>Created</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sets.data.map((g) => (
-                <tr key={g.id}>
-                  <td>
-                    <EntityLink
-                      kind="imageSet"
-                      id={g.id}
-                      label={g.display_name}
-                    />
-                  </td>
-                  <td className="mono">
-                    {g.canonical_name ?? <span className="muted">—</span>}
-                  </td>
-                  <td>
-                    {g.latest_generation ?? <span className="muted">—</span>}
-                  </td>
-                  <td>
-                    <EntityLink kind="user" id={g.owner_id} />
-                  </td>
-                  <td>
-                    <RelTime iso={g.created_at} />
-                  </td>
+          <div className="overflow-auto">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Canonical name</th>
+                  <th>Latest generation</th>
+                  <th>Owner</th>
+                  <th>Created</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {sets.data.map((g) => (
+                  <tr key={g.id}>
+                    <td>
+                      <EntityLink
+                        kind="imageSet"
+                        id={g.id}
+                        label={g.display_name}
+                      />
+                    </td>
+                    <td className="mono">
+                      {g.canonical_name ?? <span className="muted">—</span>}
+                    </td>
+                    <td>
+                      {g.latest_generation ?? <span className="muted">—</span>}
+                    </td>
+                    <td>
+                      <EntityLink kind="user" id={g.owner_id} />
+                    </td>
+                    <td>
+                      <RelTime iso={g.created_at} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ))}
     </>
   );

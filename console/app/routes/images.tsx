@@ -77,40 +77,42 @@ export default function Images() {
         (images.data.length === 0 ? (
           <p className="muted">No images visible to this account.</p>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Title</th>
-                <th>Digest</th>
-                <th>Artifact type</th>
-                <th>Sources</th>
-                <th>Registered</th>
-              </tr>
-            </thead>
-            <tbody>
-              {images.data.map((img) => (
-                <tr key={img.manifest_digest}>
-                  <td>
-                    <Link to={`/images/${img.manifest_digest}`}>
-                      {img.title ?? (
-                        <span className="mono">
-                          {img.manifest_digest.slice(7, 15)}
-                        </span>
-                      )}
-                    </Link>
-                  </td>
-                  <td>
-                    <Digest digest={img.manifest_digest} />
-                  </td>
-                  <td className="mono">{img.artifact_type}</td>
-                  <td>{img.sources.length}</td>
-                  <td>
-                    <RelTime iso={img.created_at} />
-                  </td>
+          <div className="overflow-auto">
+            <table>
+              <thead>
+                <tr>
+                  <th>Title</th>
+                  <th>Digest</th>
+                  <th>Artifact type</th>
+                  <th>Sources</th>
+                  <th>Registered</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {images.data.map((img) => (
+                  <tr key={img.manifest_digest}>
+                    <td>
+                      <Link to={`/images/${img.manifest_digest}`}>
+                        {img.title ?? (
+                          <span className="mono">
+                            {img.manifest_digest.slice(7, 15)}
+                          </span>
+                        )}
+                      </Link>
+                    </td>
+                    <td>
+                      <Digest digest={img.manifest_digest} />
+                    </td>
+                    <td className="mono">{img.artifact_type}</td>
+                    <td>{img.sources.length}</td>
+                    <td>
+                      <RelTime iso={img.created_at} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ))}
     </>
   );

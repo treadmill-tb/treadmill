@@ -230,30 +230,32 @@ export default function JobDetail({ params }: Route.ComponentProps) {
             {Object.keys(job.data.parameters).length === 0 ? (
               <p className="muted">No parameters.</p>
             ) : (
-              <table>
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Value</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(job.data.parameters).map(([name, p]) => (
-                    <tr key={name}>
-                      <td className="mono">{name}</td>
-                      <td>
-                        {p.secret ? (
-                          <span className="badge warn" title="Value withheld">
-                            secret
-                          </span>
-                        ) : (
-                          <span className="mono">{p.value}</span>
-                        )}
-                      </td>
+              <div className="overflow-auto">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Value</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {Object.entries(job.data.parameters).map(([name, p]) => (
+                      <tr key={name}>
+                        <td className="mono">{name}</td>
+                        <td>
+                          {p.secret ? (
+                            <span className="badge warn" title="Value withheld">
+                              secret
+                            </span>
+                          ) : (
+                            <span className="mono">{p.value}</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </section>
 

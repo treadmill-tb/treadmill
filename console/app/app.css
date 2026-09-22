@@ -149,6 +149,10 @@ body > header.topbar {
   font-weight: 700;
 }
 
+.topbar nav .sections {
+  flex: 1;
+}
+
 .topbar nav a[aria-current="page"] {
   --pico-color: var(--pico-h1-color);
   font-weight: 600;
@@ -371,8 +375,16 @@ dd > :is(button, .btn) {
 
 .field-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
   align-items: center;
+}
+
+/* Inputs share a row, and wrap onto their own lines once it gets narrow. */
+.field-row > input {
+  flex: 1 1 12rem;
+  width: auto;
+  min-width: 0;
 }
 
 .check {
@@ -792,4 +804,67 @@ p.spec-hint {
   padding: 0.75rem 1rem;
   font-size: var(--text-sm);
   white-space: pre-wrap;
+}
+
+/* ------------------------------------------------------------- Mobile */
+
+/* Pico's small-screen breakpoint. */
+@media (max-width: 767px) {
+  body > main {
+    padding-block: 1.25rem 2rem;
+  }
+
+  h1 {
+    --pico-font-size: 1.5rem;
+  }
+
+  /* The section links move onto a row of their own under the brand and
+     account links, and scroll sideways rather than wrapping. */
+  .topbar nav {
+    flex-wrap: wrap;
+  }
+
+  .topbar nav .sections {
+    order: 1;
+    flex: 0 0 calc(100% + 2 * var(--pico-nav-element-spacing-horizontal));
+    margin-inline: calc(var(--pico-nav-element-spacing-horizontal) * -1);
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+
+  /* Labels sit above their values instead of in a column beside them. */
+  dl.props,
+  dl.spec-fields dl.spec-fields,
+  dl.spec-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  dl.props > dt,
+  dl.props > .spec-field > dt {
+    padding-bottom: 0;
+    border-bottom: none;
+    font-size: var(--text-sm);
+  }
+
+  dl.spec-item {
+    gap: 0 1.5rem;
+  }
+
+  dl.spec-item dd + dt {
+    margin-top: 0.375rem;
+  }
+
+  .job-log-term,
+  .log-text {
+    height: min(28rem, 65vh);
+  }
+
+  .login-page,
+  .loading-page {
+    padding-top: 2rem;
+  }
+
+  .login-card {
+    padding: 1.25rem;
+  }
 }
