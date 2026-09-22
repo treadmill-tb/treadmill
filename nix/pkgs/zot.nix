@@ -1,40 +1,42 @@
-# Project Zot — the OCI-native registry used as both the canonical tier and the
-# per-server single-writer store of the Treadmill image migration. Not in
-# nixpkgs, so we vendor it here. Adapted from
+# Zot, an OCI-native registry
+#
+# Not in nixpkgs, adapted from
 # https://raw.githubusercontent.com/ijohanne/nur-packages/refs/heads/master/pkgs/zot/default.nix
-# (the upstream `sources.zot` is replaced with a pinned fetchFromGitHub, and the
-# Go toolchain is pinned to 1.25 for the `jsonv2` GOEXPERIMENT).
+
 {
   lib,
   buildGoModule,
   fetchFromGitHub,
   fetchurl,
-  go_1_25,
+  go_1_27,
 }:
 let
+  rev = "2bfe843171d8846e12ea423bf108e04d12eef5a3";
+  # The stable 2.1.21 release doesn't compile under Go 1.27 because the trivy
+  # dependency chokes on stablization differences of the jsonv2 experiment.
+  # Unstable upstream already pins a trivy revision with this fixed.
+  version = "2.1.21-unstable-2026-09-20";
+
   zui = fetchurl {
-    url = "https://github.com/project-zot/zui/releases/download/commit-111cb8e/zui.tgz";
-    hash = "sha256-cuiUi764XHZZlR1JrkCSvnrkx6XvKvyHgFctCWK/a6g=";
+    url = "https://github.com/project-zot/zui/releases/download/commit-a7feb46/zui.tgz";
+    hash = "sha256-sV0TxPWLekQAbE0aKyI7vcFI9Wo/zo+0gvSyb6EwXF4=";
   };
 in
-(buildGoModule.override { go = go_1_25; }) {
+(buildGoModule.override { go = go_1_27; }) {
   pname = "zot";
-  version = "2.1.15";
+  inherit version;
 
   src = fetchFromGitHub {
     owner = "project-zot";
     repo = "zot";
-    rev = "v2.1.15";
-    hash = "sha256-PhPhlifLU0kOGPqH1kqKxikt+DtJO+MWEv1w6/7sZ6E=";
+    inherit rev;
+    hash = "sha256-1Ik3Bcy1W2DbpVqfw+BT8p7gh+5trAOrjvLDfioAR6o=";
   };
 
-  vendorHash = "sha256-AhzrYlRE1trshVtXKLiOcwSZzdd8SSDuPz9BNKuwRFs=";
+  vendorHash = "sha256-f+u3wsd+yBTgW7HAAphSFi1KUKbmLC0kkLq71HMfMbM=";
   doCheck = false;
 
-  env = {
-    CGO_ENABLED = "0";
-    GOEXPERIMENT = "jsonv2";
-  };
+  env.CGO_ENABLED = "0";
 
   preBuild = ''
     tar xzf ${zui} -C pkg/extensions/
@@ -57,8 +59,9 @@ in
   ldflags = [
     "-s"
     "-w"
-    "-X zotregistry.dev/zot/v2/pkg/api/config.ReleaseTag=v2.1.15"
-    "-X zotregistry.dev/zot/v2/pkg/api/config.BinaryType=zot-full"
+    "-X zotregistry.dev/zot/v2/pkg/buildinfo.ReleaseTag=${version}"
+    "-X zotregistry.dev/zot/v2/pkg/buildinfo.Commit=${rev}"
+    "-X zotregistry.dev/zot/v2/pkg/buildinfo.BinaryType=zot-full"
   ];
 
   subPackages = [
