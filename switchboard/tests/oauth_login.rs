@@ -84,7 +84,7 @@ async fn spawn_server(state: AppState) -> SocketAddr {
 
 /// Run one full login: start the flow (persisting the CSRF state), read that
 /// state back out of the database, drive the callback — which stages the
-/// login — and claim the staged pair at the completion endpoint to receive
+/// login — and claim the login code at the completion endpoint to receive
 /// the session.
 async fn run_login(client: &reqwest::Client, addr: SocketAddr, pool: &PgPool) -> LoginResponse {
     let login_resp = client
@@ -122,8 +122,7 @@ async fn run_login(client: &reqwest::Client, addr: SocketAddr, pool: &PgPool) ->
     let complete = client
         .post(format!("http://{addr}/api/v1/auth/login/complete"))
         .json(&serde_json::json!({
-            "staged_id": body["staged_id"],
-            "staged_secret": body["staged_secret"],
+            "login_code": body["login_code"],
             "tos_version": body["tos_version"],
         }))
         .send()

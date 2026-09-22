@@ -64,7 +64,7 @@ pub struct LoginResponse {
 /// Response body for a staged login: the callback has verified the identity
 /// (e.g., OAuth token exchanged, admission passed) and staged the login
 /// server-side. Every interactive login is staged; the caller finishes it by
-/// `POST`ing the `(staged_id, staged_secret)` pair to `/auth/login/complete`,
+/// `POST`ing its `login_code` to `/auth/login/complete`,
 /// which is the sole point that mints the session token.
 ///
 /// `required` lists what the completion must additionally provide. An empty
@@ -75,23 +75,21 @@ pub struct LoginResponse {
 ///   the `tos_version` actually shown.
 ///
 /// Returned as `200` by the OAuth callback (a browser flow that declared a
-/// `return_to` is instead `302`-redirected there with the pair in the query),
+/// `return_to` is instead `302`-redirected there with the code in the query),
 /// and as `409 Conflict` by `/auth/login/complete` when the presented
-/// completion is still missing a required step (with a fresh pair — the
+/// completion is still missing a required step (with a fresh code — the
 /// presented one is consumed).
 ///
-/// `staged_secret` must be kept secret and treated equivalently to an auth
+/// `login_code` must be kept secret and treated equivalently to an auth
 /// token, as it can mint an auth token.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct LoginStagedResponse {
     /// What the completion step must provide; empty means ready to claim
     /// (recognized steps are documented on the type).
     pub required: Vec<String>,
-    /// Identifies the staged login to `/auth/login/complete`.
-    pub staged_id: Uuid,
-    /// Single-use secret that `/auth/login/complete` exchanges for an auth
+    /// Single-use code that `/auth/login/complete` exchanges for an auth
     /// token.
-    pub staged_secret: Secret<String>,
+    pub login_code: Secret<String>,
     /// The ToS version the user is being asked to accept (if `required`
     /// contains `"tos"`), echoed back on completion so consent is recorded
     /// against the text actually shown.
@@ -112,10 +110,8 @@ pub struct TosInfoResponse {
 /// JSON or form-encoded data.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct LoginCompleteRequest {
-    /// The staged login, from [`LoginStagedResponse::staged_id`].
-    pub staged_id: Uuid,
-    /// Its one-time secret, from [`LoginStagedResponse::staged_secret`].
-    pub staged_secret: Secret<String>,
+    /// The staged login's code, from [`LoginStagedResponse::login_code`].
+    pub login_code: Secret<String>,
     /// The ToS version the user was shown and accepted (only mandatory if
     /// `required` contained `"tos"`). Must match the version currently in
     /// force, so a concurrent ToS bump cannot record consent to text the user
@@ -144,6 +140,8 @@ pub struct AuthProvidersResponse {
     /// development-only mock provider is enabled; each is an unauthenticated,
     /// canned identity. A frontend MUST surface these as development-only.
     pub mock_identities: Vec<MockIdentityInfo>,
+    /// Whether the `return_to` passed in the query may receive a login.
+    pub return_to_allowed: bool,
 }
 
 /// A real OAuth provider advertised by `/auth/providers`.

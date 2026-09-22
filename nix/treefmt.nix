@@ -45,7 +45,7 @@
           "console/.react-router/**"
         ];
 
-        # Scope prettier to the web console: its default include list would also
+        # Scope prettier to the web frontends: its default include list would also
         # claim YAMLs like the generated switchboard/api-spec/openapi.yaml, which
         # must stay byte-identical to what the drift test emits.
         settings.formatter.prettier.includes = lib.mkForce [
@@ -54,6 +54,8 @@
           "console/**/*.js"
           "console/**/*.css"
           "console/**/*.html"
+          "switchboard/**/*.css"
+          "switchboard/**/*.js"
         ];
 
         settings.formatter.sql-formatter =

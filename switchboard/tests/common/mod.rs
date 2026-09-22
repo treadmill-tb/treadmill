@@ -178,8 +178,7 @@ pub async fn run_mock_login(
     let complete = client
         .post(format!("http://{addr}/api/v1/auth/login/complete"))
         .json(&serde_json::json!({
-            "staged_id": staged.staged_id,
-            "staged_secret": staged.staged_secret,
+            "login_code": staged.login_code,
             "tos_version": staged.tos_version,
         }))
         .send()

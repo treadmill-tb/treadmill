@@ -14,14 +14,10 @@ type Phase =
 export default function LoginCallback() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
-  const stagedId = params.get("staged_id");
-  const stagedSecret = params.get("staged_secret");
+  const loginCode = params.get("login_code");
   const [phase, setPhase] = useState<Phase>(() =>
-    stagedId === null || stagedSecret === null
-      ? {
-          kind: "error",
-          message: "Missing staged login credentials in the callback URL.",
-        }
+    loginCode === null
+      ? { kind: "error", message: "Missing login code in the callback URL." }
       : { kind: "completing" },
   );
   const started = useRef(false);
@@ -31,18 +27,13 @@ export default function LoginCallback() {
   });
 
   async function complete(
-    stagedId: string,
-    stagedSecret: string,
+    loginCode: string,
     tosVersion: number | null,
   ): Promise<void> {
     const { data, error, response } = await client.POST(
       "/auth/login/complete",
       {
-        body: {
-          staged_id: stagedId,
-          staged_secret: stagedSecret,
-          tos_version: tosVersion,
-        },
+        body: { login_code: loginCode, tos_version: tosVersion },
       },
     );
     if (data) {
@@ -79,9 +70,9 @@ export default function LoginCallback() {
   }
 
   useEffect(() => {
-    if (started.current || stagedId === null || stagedSecret === null) return;
+    if (started.current || loginCode === null) return;
     started.current = true;
-    void complete(stagedId, stagedSecret, null);
+    void complete(loginCode, null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -106,11 +97,7 @@ export default function LoginCallback() {
                   onClick={() => {
                     // Echo the version of the text actually shown, so consent
                     // is recorded against it.
-                    void complete(
-                      phase.staged.staged_id,
-                      phase.staged.staged_secret,
-                      tos.data.version,
-                    );
+                    void complete(phase.staged.login_code, tos.data.version);
                   }}
                 >
                   Accept and continue

@@ -44,7 +44,7 @@ pub enum ClientError {
 
 /// The two live outcomes of [`SwitchboardClient::login_complete`]: the login
 /// finished and yielded the session, or a step is still required and the
-/// response carries a fresh staged pair (the presented one was consumed).
+/// response carries a fresh login code (the presented one was consumed).
 #[derive(Debug, Clone)]
 pub enum LoginCompleteOutcome {
     Complete(LoginResponse),
@@ -117,18 +117,18 @@ impl SwitchboardClient {
 
     /// Absolute URL of `POST /auth/login/complete`, for a browser frontend to
     /// use as its completion form's `action` (the endpoint accepts the staged
-    /// pair form-encoded, so a no-JS HTML form can finish the login directly).
+    /// code form-encoded, so a no-JS HTML form can finish the login directly).
     pub fn login_complete_url(&self) -> String {
         format!("{}/api/v1/auth/login/complete", self.base_url)
     }
 
     /// `POST /auth/login/complete` — claim a staged login by presenting its
-    /// single-use pair, JSON and server-to-server. Unauthenticated (the pair
+    /// single-use code, JSON and server-to-server. Unauthenticated (the code
     /// is the capability). A `200` yields the session
     /// ([`LoginCompleteOutcome::Complete`]); a `409` means a step is still
-    /// required and carries a fresh pair to retry with
+    /// required and carries a fresh code to retry with
     /// ([`LoginCompleteOutcome::Staged`]); anything else (notably the `410`
-    /// for an unknown/expired/used pair) maps to [`ClientError`].
+    /// for an unknown/expired/used code) maps to [`ClientError`].
     pub async fn login_complete(
         &self,
         request: &LoginCompleteRequest,

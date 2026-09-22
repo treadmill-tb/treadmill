@@ -1,13 +1,16 @@
-import { Navigate } from "react-router";
+import { useState } from "react";
+import { Navigate, useNavigate } from "react-router";
 
 import { $api, API_ORIGIN, getToken } from "../api/client";
 
-/** Provider login URL with this SPA's callback declared as `return_to` (the
- * exact URL must be in the switchboard's `oauth.return_to_allowlist`). */
-function providerHref(loginPath: string): string {
+const RETURN_TO = `${window.location.origin}/login/callback`;
+
+function providerHref(loginPath: string, redirect: boolean): string {
   const base = API_ORIGIN === "" ? window.location.origin : API_ORIGIN;
   const url = new URL(loginPath, base);
-  url.searchParams.set("return_to", `${window.location.origin}/login/callback`);
+  if (redirect) {
+    url.searchParams.set("return_to", RETURN_TO);
+  }
   return url.toString();
 }
 
@@ -19,7 +22,13 @@ export default function Login() {
 }
 
 function LoginPage() {
-  const providers = $api.useQuery("get", "/auth/providers");
+  const navigate = useNavigate();
+  const [code, setCode] = useState("");
+  const providers = $api.useQuery("get", "/auth/providers", {
+    params: { query: { return_to: RETURN_TO } },
+  });
+  const redirect = providers.data?.return_to_allowed ?? false;
+  const target = redirect ? undefined : "_blank";
 
   return (
     <main className="page login-page">
@@ -41,7 +50,8 @@ function LoginPage() {
               <a
                 key={p.name}
                 className="btn login-btn"
-                href={providerHref(p.login_path)}
+                href={providerHref(p.login_path, redirect)}
+                target={target}
               >
                 Sign in with {p.display_name}
               </a>
@@ -56,12 +66,36 @@ function LoginPage() {
                   <a
                     key={m.key}
                     className="btn login-btn"
-                    href={providerHref(m.login_path)}
+                    href={providerHref(m.login_path, redirect)}
+                    target={target}
                   >
                     {m.label}
                   </a>
                 ))}
               </div>
+            )}
+            {!redirect && (
+              <form
+                className="form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void navigate(
+                    `/login/callback?login_code=${encodeURIComponent(code.trim())}`,
+                  );
+                }}
+              >
+                <label className="field">
+                  <span>Login code</span>
+                  <input
+                    className="mono"
+                    required
+                    autoComplete="off"
+                    value={code}
+                    onChange={(e) => setCode(e.target.value)}
+                  />
+                </label>
+                <button type="submit">Sign in</button>
+              </form>
             )}
           </>
         )}

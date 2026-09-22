@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select locked, tos_accepted_version from tml_switchboard.users where subject_id = $1;",
+  "query": "select locked, tos_accepted_version, name from tml_switchboard.users where subject_id = $1;",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,17 @@
             "name": "tos_accepted_version"
           }
         }
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.users",
+            "name": "name"
+          }
+        }
       }
     ],
     "parameters": {
@@ -33,8 +44,9 @@
     },
     "nullable": [
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "1d1feb664d8ee428aa07ee4dd8bb60bd43e1d1ca1db10b5bacd6b813cbe71108"
+  "hash": "b0fa8e683f1d5675b583ad53d0461279c41780aeb721a6a632ebe0bd4b8324bb"
 }

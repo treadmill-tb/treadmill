@@ -15,9 +15,9 @@ paths:
         provider's consent screen. A client may pass `?return_to=<URL>` (validated
         against a server-side allowlist) to have the callback redirect the browser
         following a successful token-exchange with the authenthenication provider.
-        On redirect, the `(staged_id, staged_secret)` pair will be placed in request
-        parameters of the `return_to` URL; without it the callback responds with
-        JSON.
+        On redirect, the `login_code` will be placed in the request parameters of
+        the `return_to` URL; without it the callback responds with JSON, or with a
+        page displaying the code to a browser.
       operationId: startLogin
       parameters:
       - in: path
@@ -46,10 +46,10 @@ paths:
         Performs a token-exchange with the authentication provider, and stages a new
         login. This endpoint does not mint a token directly; instead a client must
         complete the login with an additional request to `/auth/login/complete` by
-        supplying the returned `(staged_id, staged_secret)` tuple. This tuple is
-        either returned as JSON or, for a flow that declared a `return_to`
-        parameter, via a 302 "See Other" redirect to an URL with those added as
-        query parameters.
+        supplying the returned `login_code`. This code is either returned as JSON
+        (or a page displaying it, to a browser) or, for a flow that declared a
+        `return_to` parameter, via a 302 "See Other" redirect to an URL with it
+        added as a query parameter.
 
         A login may require additional information by the user (such as an explicit
         ToS accept). See the `/auth/login/complete` endpoint docs.
@@ -92,6 +92,12 @@ paths:
       - Authentication
       summary: List the enabled login methods
       operationId: listAuthProviders
+      parameters:
+      - in: query
+        name: return_to
+        schema:
+          type: string
+        style: form
       responses:
         '200':
           description: |-
@@ -142,8 +148,8 @@ paths:
       - Authentication
       summary: Complete a staged login
       description: |
-        Claim a staged login by providing the `(staged_id, staged_secret)` tuple
-        provided by the callback response or redirect.
+        Claim a staged login by providing the `login_code` provided by the
+        callback response or redirect.
 
         Completing the login may require supplying additional values. If `required`
         includes `"tos"`, the `"tos_version"` field must be the current ToS
@@ -2160,9 +2166,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/OAuthProviderInfo'
+        return_to_allowed:
+          description: Whether the `return_to` passed in the query may receive a login.
+          type: boolean
       required:
       - oauth
       - mock_identities
+      - return_to_allowed
     AuthToken:
       type: string
     CallbackQuery:
@@ -3728,12 +3738,8 @@ components:
         JSON or form-encoded data.
       type: object
       properties:
-        staged_id:
-          description: The staged login, from [`LoginStagedResponse::staged_id`].
-          type: string
-          format: uuid
-        staged_secret:
-          description: Its one-time secret, from [`LoginStagedResponse::staged_secret`].
+        login_code:
+          description: The staged login's code, from [`LoginStagedResponse::login_code`].
           allOf:
           - $ref: '#/components/schemas/Secret'
         tos_version:
@@ -3747,8 +3753,7 @@ components:
           - 'null'
           format: int32
       required:
-      - staged_id
-      - staged_secret
+      - login_code
     LoginResponse:
       description: |-
         Response Body that [`login_handler`] emits.
@@ -3770,7 +3775,7 @@ components:
         Response body for a staged login: the callback has verified the identity
         (e.g., OAuth token exchanged, admission passed) and staged the login
         server-side. Every interactive login is staged; the caller finishes it by
-        `POST`ing the `(staged_id, staged_secret)` pair to `/auth/login/complete`,
+        `POST`ing its `login_code` to `/auth/login/complete`,
         which is the sole point that mints the session token.
 
         `required` lists what the completion must additionally provide. An empty
@@ -3781,15 +3786,21 @@ components:
           the `tos_version` actually shown.
 
         Returned as `200` by the OAuth callback (a browser flow that declared a
-        `return_to` is instead `302`-redirected there with the pair in the query),
+        `return_to` is instead `302`-redirected there with the code in the query),
         and as `409 Conflict` by `/auth/login/complete` when the presented
-        completion is still missing a required step (with a fresh pair — the
+        completion is still missing a required step (with a fresh code — the
         presented one is consumed).
 
-        `staged_secret` must be kept secret and treated equivalently to an auth
+        `login_code` must be kept secret and treated equivalently to an auth
         token, as it can mint an auth token.
       type: object
       properties:
+        login_code:
+          description: |-
+            Single-use code that `/auth/login/complete` exchanges for an auth
+            token.
+          allOf:
+          - $ref: '#/components/schemas/Secret'
         required:
           description: |-
             What the completion step must provide; empty means ready to claim
@@ -3797,16 +3808,6 @@ components:
           type: array
           items:
             type: string
-        staged_id:
-          description: Identifies the staged login to `/auth/login/complete`.
-          type: string
-          format: uuid
-        staged_secret:
-          description: |-
-            Single-use secret that `/auth/login/complete` exchanges for an auth
-            token.
-          allOf:
-          - $ref: '#/components/schemas/Secret'
         tos_version:
           description: |-
             The ToS version the user is being asked to accept (if `required`
@@ -3818,8 +3819,7 @@ components:
           format: int32
       required:
       - required
-      - staged_id
-      - staged_secret
+      - login_code
     MockIdentityInfo:
       description: A built-in mock identity advertised by `/auth/providers` (development only).
       type: object
@@ -4017,6 +4017,13 @@ components:
           type: string
       required:
       - provider
+    ProvidersQuery:
+      type: object
+      properties:
+        return_to:
+          type:
+          - string
+          - 'null'
     PublicUserProfile:
       description: |-
         The world-readable subset of a user profile: only data deemed safe to expose

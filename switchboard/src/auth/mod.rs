@@ -5,6 +5,7 @@ use uuid::Uuid;
 pub mod admission;
 pub mod engine;
 pub mod extract;
+pub mod login_code;
 pub mod oauth;
 pub mod staged_secret;
 pub mod token;
