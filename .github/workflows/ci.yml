@@ -24,12 +24,8 @@ permissions:
   contents: read
 
 jobs:
-  nix-flake-check:
+  flake-check:
     runs-on: ubuntu-latest
-
-    # If building on main or in the merge queue to main, we have access to the
-    # "cachix-push" environment secrets and can push to the cache.
-    environment: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/main')) && 'cachix-push' || '' }}
 
     steps:
       - uses: actions/checkout@v7
@@ -38,29 +34,41 @@ jobs:
       - uses: cachix/cachix-action@v17
         with:
           name: treadmill-tb
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+          skipPush: true
 
-      # On `pull_request`, only build a curated subset of checks to keep PR
-      # feedback fast. The full `nix flake check` runs in `merge_group` (which
-      # gates merging into main) and on `push` to main, so heavier builds
-      # (musl cross-compile of tml-puppet, swx-image, per-binary package
-      # derivations, etc.) still get exercised before anything lands.
-      - name: nix build (PR fast checks)
-        if: github.event_name == 'pull_request'
+      - run: nix flake check --print-build-logs
+
+  ci-heavy:
+    if: github.event_name != 'pull_request'
+
+    runs-on: ubuntu-latest
+
+    # On main or in the merge queue to main we have access to the "cachix-push"
+    # environment secrets and can seed the cache.
+    environment: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/main')) && 'cachix-push' || '' }}
+
+    env:
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v17
+        with:
+          name: treadmill-tb
+          skipPush: true
+
+      - run: nix build --print-build-logs --no-link '.#ci-heavy'
+
+      - name: Seed Cachix
+        if: env.CACHIX_AUTH_TOKEN != ''
         run: |
-          SYSTEM="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
-          nix build --print-build-logs \
-            ".#checks.${SYSTEM}.clippy" \
-            ".#checks.${SYSTEM}.nextest" \
-            ".#checks.${SYSTEM}.switchboard-migrations-consistency" \
-            ".#checks.${SYSTEM}.treefmt"
-
-      - name: nix flake check (full)
-        if: github.event_name != 'pull_request'
-        run: nix flake check --print-build-logs
+          nix build --no-link --print-out-paths '.#cache-seed' \
+            | cachix push treadmill-tb
 
   deploy-console:
-    needs: nix-flake-check
+    needs: [flake-check, ci-heavy]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     runs-on: ubuntu-latest
