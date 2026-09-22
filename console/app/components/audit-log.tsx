@@ -5,8 +5,8 @@ import { client } from "../api/client";
 import { ApiError } from "../api/errors";
 import type { components } from "../api/schema";
 import { EntityLink } from "./entity-link";
-import { MutationError } from "./mutation-error";
 import { RelTime } from "./rel-time";
+import { RequestError } from "./request-error";
 
 type AuditFeedResponse = components["schemas"]["AuditFeedResponse"];
 
@@ -66,7 +66,7 @@ function AuditEvents({ feed }: { feed: ReturnType<typeof useAuditFeed> }) {
   return (
     <>
       {feed.isPending && <p className="muted">Loading…</p>}
-      <MutationError
+      <RequestError
         error={feed.error}
         messages={{ 403: "You are not allowed to see these events." }}
       />

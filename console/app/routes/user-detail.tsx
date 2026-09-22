@@ -1,5 +1,6 @@
 import { $api } from "../api/client";
 import { AuditLog } from "../components/audit-log";
+import { RequestError } from "../components/request-error";
 import type { Route } from "./+types/user-detail";
 
 export default function UserDetail({ params }: Route.ComponentProps) {
@@ -10,7 +11,7 @@ export default function UserDetail({ params }: Route.ComponentProps) {
   return (
     <>
       {user.isPending && <p className="muted">Loading…</p>}
-      {user.isError && <p className="error">Failed to load the user.</p>}
+      <RequestError error={user.error} messages={{ 404: "No such user." }} />
       {user.data && (
         <>
           <h1>

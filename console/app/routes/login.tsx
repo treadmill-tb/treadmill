@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Navigate, useNavigate } from "react-router";
 
 import { $api, API_ORIGIN, getToken } from "../api/client";
+import { RequestError } from "../components/request-error";
 
 const RETURN_TO = `${window.location.origin}/login/callback`;
 
@@ -39,9 +40,7 @@ function LoginPage() {
       <div className="card login-card">
         <h1>Treadmill</h1>
         {providers.isPending && <p className="muted">Loading login methods…</p>}
-        {providers.isError && (
-          <p className="error">Failed to load login methods.</p>
-        )}
+        <RequestError error={providers.error} />
         {providers.data && (
           <>
             {providers.data.oauth.length === 0 &&

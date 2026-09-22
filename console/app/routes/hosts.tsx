@@ -4,6 +4,7 @@ import { $api } from "../api/client";
 import { LiveBadge } from "../components/badges";
 import { EntityLink } from "../components/entity-link";
 import { RelTime } from "../components/rel-time";
+import { RequestError } from "../components/request-error";
 
 export default function Hosts() {
   const hosts = $api.useQuery("get", "/hosts");
@@ -21,7 +22,7 @@ export default function Hosts() {
         )}
       </div>
       {hosts.isPending && <p className="muted">Loading…</p>}
-      {hosts.isError && <p className="error">Failed to load hosts.</p>}
+      <RequestError error={hosts.error} />
       {hosts.data &&
         (hosts.data.length === 0 ? (
           <p className="muted">No hosts registered.</p>

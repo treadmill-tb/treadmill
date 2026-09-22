@@ -4,8 +4,8 @@ import { Link } from "react-router";
 
 import { $api } from "../api/client";
 import { Digest } from "../components/digest";
-import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
+import { RequestError } from "../components/request-error";
 
 function RegisterImageForm({ onDone }: { onDone: () => void }) {
   const queryClient = useQueryClient();
@@ -46,7 +46,12 @@ function RegisterImageForm({ onDone }: { onDone: () => void }) {
         <span>Repository</span>
         <input name="repository" required className="mono" />
       </label>
-      <MutationError error={register.error} />
+      <RequestError
+        error={register.error}
+        messages={{
+          502: "The source could not be reached, or it does not serve this image.",
+        }}
+      />
       <div className="toolbar">
         <button type="submit" disabled={register.isPending}>
           {register.isPending ? "Registering…" : "Register"}
@@ -72,7 +77,7 @@ export default function Images() {
       </div>
       {showForm && <RegisterImageForm onDone={() => setShowForm(false)} />}
       {images.isPending && <p className="muted">Loading…</p>}
-      {images.isError && <p className="error">Failed to load images.</p>}
+      <RequestError error={images.error} />
       {images.data &&
         (images.data.length === 0 ? (
           <p className="muted">No images visible to this account.</p>

@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 
 import { $api, client, setToken } from "../api/client";
+import { ApiError, describeError } from "../api/errors";
 import type { components } from "../api/schema";
+import { RequestError } from "../components/request-error";
 
 type Staged = components["schemas"]["LoginStagedResponse"];
 
@@ -65,7 +67,9 @@ export default function LoginCallback() {
     }
     setPhase({
       kind: "error",
-      message: `Completing the login failed (HTTP ${response.status}).`,
+      message: describeError(new ApiError(response.status, error), {
+        403: "This account is locked.",
+      }),
     });
   }
 
@@ -87,9 +91,7 @@ export default function LoginCallback() {
           <>
             <h2>Terms of Service</h2>
             {tos.isPending && <p className="muted">Loading…</p>}
-            {tos.isError && (
-              <p className="error">Failed to load the Terms of Service.</p>
-            )}
+            <RequestError error={tos.error} />
             {tos.data && (
               <>
                 <pre className="tos-text">{tos.data.text}</pre>

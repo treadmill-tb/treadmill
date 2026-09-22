@@ -6,8 +6,8 @@ import { $api } from "../api/client";
 import { AuditLog } from "../components/audit-log";
 import { Digest } from "../components/digest";
 import { EntityLink } from "../components/entity-link";
-import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
+import { RequestError } from "../components/request-error";
 import type { Route } from "./+types/image-set-detail";
 
 type MemberRow = {
@@ -136,7 +136,10 @@ function NewGenerationForm({
           Add member
         </button>
       </div>
-      <MutationError error={create.error} />
+      <RequestError
+        error={create.error}
+        messages={{ 404: "No such image set, or you cannot see it." }}
+      />
       <div className="toolbar">
         <button type="submit" disabled={create.isPending}>
           {create.isPending ? "Appending…" : "Append generation"}
@@ -197,7 +200,10 @@ function GrantForm({ setId, onDone }: { setId: string; onDone: () => void }) {
           </option>
         </select>
       </label>
-      <MutationError error={grant.error} />
+      <RequestError
+        error={grant.error}
+        messages={{ 404: "No such image set, or you cannot see it." }}
+      />
       <div className="toolbar">
         <button type="submit" disabled={grant.isPending}>
           {grant.isPending ? "Granting…" : "Grant"}
@@ -268,7 +274,10 @@ export default function ImageSetDetail({ params }: Route.ComponentProps) {
   return (
     <>
       {set.isPending && <p className="muted">Loading…</p>}
-      {set.isError && <p className="error">Failed to load the set.</p>}
+      <RequestError
+        error={set.error}
+        messages={{ 404: "No such image set, or you cannot see it." }}
+      />
       {set.data && (
         <>
           <div className="toolbar">
@@ -313,7 +322,10 @@ export default function ImageSetDetail({ params }: Route.ComponentProps) {
               New generation
             </button>
           </div>
-          <MutationError error={setPublic.error} />
+          <RequestError
+            error={setPublic.error}
+            messages={{ 404: "No such image set, or you cannot see it." }}
+          />
           {showGenerationForm && (
             <NewGenerationForm
               setId={params.id}
@@ -374,9 +386,10 @@ export default function ImageSetDetail({ params }: Route.ComponentProps) {
             {latest != null && generation.isPending && (
               <p className="muted">Loading…</p>
             )}
-            {generation.isError && (
-              <p className="error">Failed to load the generation.</p>
-            )}
+            <RequestError
+              error={generation.error}
+              messages={{ 404: "No such generation." }}
+            />
             {generation.data && (
               <GenerationMembers members={generation.data.members} />
             )}
@@ -396,11 +409,12 @@ export default function ImageSetDetail({ params }: Route.ComponentProps) {
                 onDone={() => setShowGrantForm(false)}
               />
             )}
-            <MutationError error={revoke.error} />
+            <RequestError
+              error={revoke.error}
+              messages={{ 404: "That grant no longer exists." }}
+            />
             {grants.isPending && <p className="muted">Loading…</p>}
-            {grants.isError && (
-              <p className="error">Failed to load the grants.</p>
-            )}
+            <RequestError error={grants.error} />
             {grants.data &&
               (grants.data.length === 0 ? (
                 <p className="muted">No explicit grants.</p>

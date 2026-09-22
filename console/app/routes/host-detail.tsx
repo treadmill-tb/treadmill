@@ -8,8 +8,8 @@ import { LiveBadge } from "../components/badges";
 import { AuditLog } from "../components/audit-log";
 import { EntityLink } from "../components/entity-link";
 import { HostSpecView } from "../components/host-spec";
-import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
+import { RequestError } from "../components/request-error";
 import { useResourceWatch } from "../hooks/use-resource-watch";
 import type { Route } from "./+types/host-detail";
 
@@ -82,7 +82,13 @@ function OwnerForm({
           onChange={(e) => setValue(e.target.value)}
         />
       </label>
-      <MutationError error={put.error} />
+      <RequestError
+        error={put.error}
+        messages={{
+          403: "You are not allowed to manage this host.",
+          422: "There is no user or group with that ID.",
+        }}
+      />
       <div className="toolbar">
         <button type="submit" disabled={put.isPending}>
           {put.isPending ? "Transferring…" : "Transfer"}
@@ -147,7 +153,13 @@ function GrantForm({ hostId, onDone }: { hostId: string; onDone: () => void }) {
           </option>
         </select>
       </label>
-      <MutationError error={grant.error} />
+      <RequestError
+        error={grant.error}
+        messages={{
+          403: "You are not allowed to manage this host.",
+          422: "There is no user or group with that ID.",
+        }}
+      />
       <div className="toolbar">
         <button type="submit" disabled={grant.isPending}>
           {grant.isPending ? "Granting…" : "Grant"}
@@ -184,9 +196,19 @@ function HostGrants({ hostId }: { hostId: string }) {
       {showGrantForm && (
         <GrantForm hostId={hostId} onDone={() => setShowGrantForm(false)} />
       )}
-      <MutationError error={revoke.error} />
+      <RequestError
+        error={revoke.error}
+        messages={{
+          403: "You are not allowed to manage this host.",
+          404: "That grant no longer exists.",
+          409: "This grant goes with the host and cannot be revoked.",
+        }}
+      />
       {grants.isPending && <p className="muted">Loading…</p>}
-      {grants.isError && <p className="error">Failed to load the grants.</p>}
+      <RequestError
+        error={grants.error}
+        messages={{ 403: "Only the host's managers can see its grants." }}
+      />
       {grants.data &&
         (grants.data.length === 0 ? (
           <p className="muted">No explicit grants.</p>
@@ -273,9 +295,10 @@ export default function HostDetail({ params }: Route.ComponentProps) {
   return (
     <>
       {host.isPending && <p className="muted">Loading…</p>}
-      {host.isError && (
-        <p className="error">No such host, or you cannot read it.</p>
-      )}
+      <RequestError
+        error={host.error}
+        messages={{ 403: "No such host, or you cannot read it." }}
+      />
       {host.data && (
         <>
           <h1>

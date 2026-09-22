@@ -18,8 +18,8 @@ import { INITIALIZING_STAGES, TERMINATION_REASONS, type Tone } from "./badges";
 import { EntityLink } from "./entity-link";
 import { HelpTip } from "./help-tip";
 import { formatSeconds, JobLease } from "./job-lease";
-import { MutationError } from "./mutation-error";
 import { RelTime } from "./rel-time";
+import { RequestError } from "./request-error";
 
 type JobInfo = components["schemas"]["JobInfo"];
 type HostListEntry = components["schemas"]["HostListEntry"];
@@ -170,7 +170,7 @@ function EligibleHosts({
   if (report.isPending) return <p className="muted">Finding hosts…</p>;
   if (report.isError) {
     return (
-      <MutationError
+      <RequestError
         error={report.error}
         messages={{
           403: "You may not use this job's image set, so its eligible hosts can't be determined.",

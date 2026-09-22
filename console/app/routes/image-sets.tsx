@@ -4,8 +4,8 @@ import { useNavigate } from "react-router";
 
 import { $api } from "../api/client";
 import { EntityLink } from "../components/entity-link";
-import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
+import { RequestError } from "../components/request-error";
 
 function CreateGroupForm({ onDone }: { onDone: () => void }) {
   const navigate = useNavigate();
@@ -45,7 +45,10 @@ function CreateGroupForm({ onDone }: { onDone: () => void }) {
         <span>Canonical name (optional, admins only)</span>
         <input name="canonical_name" className="mono" />
       </label>
-      <MutationError error={create.error} />
+      <RequestError
+        error={create.error}
+        messages={{ 409: "An image set with that name already exists." }}
+      />
       <div className="toolbar">
         <button type="submit" disabled={create.isPending}>
           {create.isPending ? "Creating…" : "Create"}
@@ -71,7 +74,7 @@ export default function ImageSets() {
       </div>
       {showForm && <CreateGroupForm onDone={() => setShowForm(false)} />}
       {sets.isPending && <p className="muted">Loading…</p>}
-      {sets.isError && <p className="error">Failed to load image sets.</p>}
+      <RequestError error={sets.error} />
       {sets.data &&
         (sets.data.length === 0 ? (
           <p className="muted">No image sets visible to this account.</p>

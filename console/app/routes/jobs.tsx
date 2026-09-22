@@ -2,6 +2,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
 
 import { client } from "../api/client";
+import { ApiError } from "../api/errors";
 import type { components } from "../api/schema";
 import {
   JobStateBadge,
@@ -11,6 +12,7 @@ import {
 import { EntityLink } from "../components/entity-link";
 import { ImageRef } from "../components/image-ref";
 import { RelTime } from "../components/rel-time";
+import { RequestError } from "../components/request-error";
 
 type JobListResponse = components["schemas"]["JobListResponse"];
 
@@ -18,13 +20,13 @@ export default function Jobs() {
   const jobs = useInfiniteQuery({
     queryKey: ["jobs"],
     queryFn: async ({ pageParam }): Promise<JobListResponse> => {
-      const { data, response } = await client.GET("/jobs", {
+      const { data, error, response } = await client.GET("/jobs", {
         params: {
           query: pageParam !== undefined ? { cursor: pageParam } : {},
         },
       });
       if (data === undefined) {
-        throw new Error(`fetching jobs failed (${response.status})`);
+        throw new ApiError(response.status, error);
       }
       return data;
     },
@@ -42,7 +44,7 @@ export default function Jobs() {
         </Link>
       </div>
       {jobs.isPending && <p className="muted">Loading…</p>}
-      {jobs.isError && <p className="error">{jobs.error.message}</p>}
+      <RequestError error={jobs.error} />
       {jobs.data && (
         <>
           {jobs.data.pages[0]?.jobs.length === 0 ? (

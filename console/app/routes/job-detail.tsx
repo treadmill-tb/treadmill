@@ -16,8 +16,8 @@ import { JobDetails } from "../components/job-details";
 import { JobLog, parseReplayBytes } from "../components/job-log";
 import { JobServices } from "../components/job-services";
 import { JobStatus } from "../components/job-status";
-import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
+import { RequestError } from "../components/request-error";
 import { useResourceWatch } from "../hooks/use-resource-watch";
 import { useUpdateJob } from "../hooks/use-update-job";
 import type { Route } from "./+types/job-detail";
@@ -54,7 +54,7 @@ export default function JobDetail({ params }: Route.ComponentProps) {
   if (job.isPending) return <p className="muted">Loading…</p>;
   if (job.isError) {
     return (
-      <MutationError
+      <RequestError
         error={job.error}
         messages={{
           403: "This job doesn't exist, or you don't have access to it.",
@@ -111,7 +111,7 @@ export default function JobDetail({ params }: Route.ComponentProps) {
           Reload the page to see its latest state.
         </p>
       )}
-      <MutationError
+      <RequestError
         error={terminate.error}
         messages={{ 403: "You are not allowed to terminate this job." }}
       />
@@ -214,7 +214,7 @@ function JobName({ job }: { job: JobInfo }) {
         >
           <X size={20} aria-hidden="true" />
         </button>
-        <MutationError
+        <RequestError
           error={update.error}
           messages={{ 403: "You are not allowed to rename this job." }}
         />

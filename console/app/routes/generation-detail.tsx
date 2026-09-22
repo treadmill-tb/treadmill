@@ -1,6 +1,7 @@
 import { $api } from "../api/client";
 import { EntityLink } from "../components/entity-link";
 import { RelTime } from "../components/rel-time";
+import { RequestError } from "../components/request-error";
 import { GenerationMembers } from "./image-set-detail";
 import type { Route } from "./+types/generation-detail";
 
@@ -24,9 +25,10 @@ export default function GenerationDetail({ params }: Route.ComponentProps) {
       ) : (
         <>
           {generation.isPending && <p className="muted">Loading…</p>}
-          {generation.isError && (
-            <p className="error">Failed to load the generation.</p>
-          )}
+          <RequestError
+            error={generation.error}
+            messages={{ 404: "No such image set or generation." }}
+          />
           {generation.data && (
             <>
               <dl className="props">

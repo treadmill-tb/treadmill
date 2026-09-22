@@ -5,7 +5,7 @@ import type { components } from "../api/schema";
 import { useNow } from "../hooks/use-now";
 import { useUpdateJob } from "../hooks/use-update-job";
 import { Dialog } from "./dialog";
-import { MutationError } from "./mutation-error";
+import { RequestError } from "./request-error";
 
 type JobInfo = components["schemas"]["JobInfo"];
 type JobLeaseExpiryAction = components["schemas"]["JobLeaseExpiryAction"];
@@ -277,7 +277,7 @@ function LeaseError({
   const rejection =
     error instanceof ApiError && error.status === 409 ? error.body : undefined;
   if (!isLeaseRejection(rejection)) {
-    return <MutationError error={error} messages={UPDATE_ERRORS} />;
+    return <RequestError error={error} messages={UPDATE_ERRORS} />;
   }
   let text: string;
   let offer: string | null = null;
@@ -452,7 +452,7 @@ function ExpiryActionDialog({
           </label>
         ))}
       </fieldset>
-      <MutationError error={error} messages={UPDATE_ERRORS} />
+      <RequestError error={error} messages={UPDATE_ERRORS} />
     </Dialog>
   );
 }

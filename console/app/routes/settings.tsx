@@ -4,8 +4,8 @@ import { useState, type FormEvent } from "react";
 import { $api } from "../api/client";
 import type { components } from "../api/schema";
 import { EntityLink, ShortId } from "../components/entity-link";
-import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
+import { RequestError } from "../components/request-error";
 
 type SelfUserProfile = components["schemas"]["SelfUserProfile"];
 
@@ -63,7 +63,7 @@ function ProfileForm({
           className="mono"
         />
       </label>
-      <MutationError error={update.error} />
+      <RequestError error={update.error} />
       <div className="toolbar">
         <button type="submit" disabled={update.isPending}>
           {update.isPending ? "Saving…" : "Save"}
@@ -94,7 +94,7 @@ export default function Settings() {
     <>
       <h1>Settings</h1>
       {me.isPending && <p className="muted">Loading…</p>}
-      {me.isError && <p className="error">Failed to load the profile.</p>}
+      <RequestError error={me.error} />
       {me.data && (
         <>
           <section>
@@ -178,9 +178,12 @@ export default function Settings() {
 
       <section>
         <h2>Sessions &amp; API tokens</h2>
-        <MutationError error={revoke.error} />
+        <RequestError
+          error={revoke.error}
+          messages={{ 404: "That token no longer exists." }}
+        />
         {tokens.isPending && <p className="muted">Loading…</p>}
-        {tokens.isError && <p className="error">Failed to load tokens.</p>}
+        <RequestError error={tokens.error} />
         {tokens.data && (
           <div className="overflow-auto">
             <table>

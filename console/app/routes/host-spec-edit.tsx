@@ -6,7 +6,7 @@ import { $api } from "../api/client";
 import { ApiError } from "../api/errors";
 import type { components } from "../api/schema";
 import { JsonEditor } from "../components/json-editor";
-import { MutationError } from "../components/mutation-error";
+import { RequestError } from "../components/request-error";
 import type { Route } from "./+types/host-spec-edit";
 
 type HostInfo = components["schemas"]["HostInfo"];
@@ -26,7 +26,12 @@ function isRejection(error: unknown): error is HostSpecRejection {
 function SpecError({ error }: { error: unknown }) {
   const rejection = error instanceof ApiError ? error.body : undefined;
   if (!isRejection(rejection)) {
-    return <MutationError error={error} />;
+    return (
+      <RequestError
+        error={error}
+        messages={{ 403: "You are not allowed to edit this host's spec." }}
+      />
+    );
   }
   return (
     <p className="error">
@@ -144,9 +149,10 @@ export default function HostSpecEdit({ params }: Route.ComponentProps) {
     <>
       <h1>Edit host spec</h1>
       {host.isPending && <p className="muted">Loading…</p>}
-      {host.isError && (
-        <p className="error">No such host, or you cannot read it.</p>
-      )}
+      <RequestError
+        error={host.error}
+        messages={{ 403: "No such host, or you cannot read it." }}
+      />
       {host.data &&
         (host.data.permissions.includes("manage") ? (
           <>

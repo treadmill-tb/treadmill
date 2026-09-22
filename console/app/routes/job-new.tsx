@@ -4,7 +4,7 @@ import { useNavigate } from "react-router";
 
 import { $api } from "../api/client";
 import type { components } from "../api/schema";
-import { MutationError } from "../components/mutation-error";
+import { RequestError } from "../components/request-error";
 
 type JobInitSpec = components["schemas"]["JobInitSpec"];
 type JobParameter = components["schemas"]["JobParameter"];
@@ -241,7 +241,10 @@ export default function JobNew() {
           </select>
         </label>
 
-        <MutationError error={enqueue.error} />
+        <RequestError
+          error={enqueue.error}
+          messages={{ 403: "You are not allowed to start this job." }}
+        />
         <div className="toolbar">
           <button type="submit" disabled={enqueue.isPending}>
             {enqueue.isPending ? "Enqueuing…" : "Enqueue"}

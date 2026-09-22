@@ -5,8 +5,8 @@ import { $api } from "../api/client";
 import type { components } from "../api/schema";
 import { Digest } from "../components/digest";
 import { EntityLink } from "../components/entity-link";
-import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
+import { RequestError } from "../components/request-error";
 import { EVERYONE_SUBJECT } from "./image-set-detail";
 import type { Route } from "./+types/image-detail";
 
@@ -56,7 +56,12 @@ function AddSourceForm({
         <span>Repository</span>
         <input name="repository" required className="mono" />
       </label>
-      <MutationError error={add.error} />
+      <RequestError
+        error={add.error}
+        messages={{
+          502: "The source could not be reached, or it does not serve this image.",
+        }}
+      />
       <div className="toolbar">
         <button type="submit" disabled={add.isPending}>
           {add.isPending ? "Adding…" : "Add source"}
@@ -131,7 +136,10 @@ function SourceGrantForm({
           </option>
         </select>
       </label>
-      <MutationError error={grant.error} />
+      <RequestError
+        error={grant.error}
+        messages={{ 404: "The image or source no longer exists." }}
+      />
       <div className="toolbar">
         <button type="submit" disabled={grant.isPending}>
           {grant.isPending ? "Granting…" : "Grant"}
@@ -240,10 +248,16 @@ function SourceGrants({
           onDone={() => setShowGrantForm(false)}
         />
       )}
-      <MutationError error={setPublic.error} />
-      <MutationError error={revoke.error} />
+      <RequestError
+        error={setPublic.error}
+        messages={{ 404: "The image or source no longer exists." }}
+      />
+      <RequestError
+        error={revoke.error}
+        messages={{ 404: "That grant no longer exists." }}
+      />
       {grants.isPending && <p className="muted">Loading…</p>}
-      {grants.isError && <p className="error">Failed to load the grants.</p>}
+      <RequestError error={grants.error} />
       {grants.data &&
         (grants.data.length === 0 ? (
           <p className="muted">No explicit grants.</p>
@@ -330,7 +344,10 @@ export default function ImageDetail({ params }: Route.ComponentProps) {
     <>
       <h1>Image</h1>
       {image.isPending && <p className="muted">Loading…</p>}
-      {image.isError && <p className="error">Failed to load the image.</p>}
+      <RequestError
+        error={image.error}
+        messages={{ 404: "No such image, or you cannot see it." }}
+      />
       {image.data && (
         <>
           <dl className="props">
@@ -362,7 +379,10 @@ export default function ImageDetail({ params }: Route.ComponentProps) {
                 onDone={() => setShowAddSource(false)}
               />
             )}
-            <MutationError error={deleteSource.error} />
+            <RequestError
+              error={deleteSource.error}
+              messages={{ 404: "The image or source no longer exists." }}
+            />
             <div className="overflow-auto">
               <table>
                 <thead>

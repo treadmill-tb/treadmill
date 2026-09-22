@@ -6,7 +6,7 @@ import { $api } from "../api/client";
 import { ApiError } from "../api/errors";
 import type { components } from "../api/schema";
 import { JsonEditor } from "../components/json-editor";
-import { MutationError } from "../components/mutation-error";
+import { RequestError } from "../components/request-error";
 
 type HostCreateResponse = components["schemas"]["HostCreateResponse"];
 type HostSpecRejection = components["schemas"]["HostSpecRejection"];
@@ -25,7 +25,15 @@ function isRejection(error: unknown): error is HostSpecRejection {
 function CreateError({ error }: { error: unknown }) {
   const rejection = error instanceof ApiError ? error.body : undefined;
   if (!isRejection(rejection)) {
-    return <MutationError error={error} />;
+    return (
+      <RequestError
+        error={error}
+        messages={{
+          403: "Only global admins can register hosts.",
+          409: "A host with this ID already exists.",
+        }}
+      />
+    );
   }
   return (
     <p className="error">
@@ -225,7 +233,7 @@ export default function HostNew() {
     <>
       <h1>Register a supervisor</h1>
       {whoami.isPending && <p className="muted">Loading…</p>}
-      {whoami.isError && <p className="error">Failed to load your identity.</p>}
+      <RequestError error={whoami.error} />
       {whoami.data &&
         (whoami.data.admin ? (
           <CreateForm />
