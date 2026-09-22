@@ -396,6 +396,9 @@
         ci-heavy = pkgs.linkFarmFromDrvs "treadmill-ci-heavy" (lib.attrValues heavyTests ++ heavyPackages);
 
         cache-seed = pkgs.linkFarmFromDrvs "treadmill-cache-seed" [
+          # The dependency layer discards its references, so the toolchain
+          # needs listing on its own.
+          cmn.rustToolchain
           cmn.workspaceDeps
           cmn.zot
           cmn.nbdfatftpd

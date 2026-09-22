@@ -163,9 +163,12 @@ points Nix at the Cachix cache; without it every Rust build starts from the
 dependency layer's ~360 crates. It also needs the invoking user to be a
 trusted Nix user, otherwise Nix ignores the extra substituter and only warns.
 
-CI pushes only `nix build .#cache-seed`: the crane dependency layer and the
-vendored `zot` / `nbdfatftpd` / `job-gateway-caddy` builds. The Rust toolchain
-rides along in the dependency layer's closure.
+CI pushes only `nix build .#cache-seed`: the Rust toolchain, the crane
+dependency layer, and the vendored `zot` / `nbdfatftpd` / `job-gateway-caddy`
+builds. The dependency layer sets `unsafeDiscardReferences`, as a zstd tarball
+of `target/` has no runtime dependencies, but the store paths embedded in it
+would otherwise pull the vendored crate sources into its closure and every
+push.
 
 ## 4. Testing conventions
 
