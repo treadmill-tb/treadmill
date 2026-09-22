@@ -8,7 +8,16 @@ let
   inherit (inputs) crane fenix;
 
   rustToolchain = fenix.packages.${system}.stable.toolchain;
-  craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+  craneLib = ((crane.mkLib pkgs).overrideToolchain rustToolchain).overrideScope (
+    _: prev: {
+      # nixpkgs' fetchurl floods the build logs; Nix's builtin fetcher is quiet.
+      downloadCargoPackage = prev.downloadCargoPackage.override {
+        pkgsBuildBuild = pkgs.pkgsBuildBuild // {
+          fetchurl = import <nix/fetchurl.nix>;
+        };
+      };
+    }
+  );
 
   workspaceRoot = ../.;
 
