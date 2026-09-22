@@ -197,29 +197,10 @@ let
   # every other member). Consumed by mkBin and the cross-musl puppet build.
   binSrcs = lib.mapAttrs (name: args: mkBinSrc ({ inherit name; } // args)) binSources;
 
-  # Single dependency layer shared by every binary. Built with `--workspace` so
-  # cargo resolves the full feature union; each bin is then built with
-  # `--workspace --bin <name>`, which resolves that same union and reuses these
-  # artifacts verbatim — one deps build for all bins, no per-group rebuilds.
-  # `doCheck = false` + empty `cargoCheckExtraArgs` keep dev-deps/--all-targets
-  # out of the graph, matching what the `--bin` builds actually activate.
-  binDeps = craneLib.buildDepsOnly (
-    cargoCommonArgs
-    // {
-      src = depsSrc;
-      pname = "treadmill-bin-deps";
-      cargoExtraArgs = "--locked --workspace";
-      doCheck = false;
-      cargoCheckExtraArgs = "";
-    }
-  );
-
-  # Workspace-wide deps layer for clippy / nextest, which span the whole graph
-  # with `--all-targets` (so it includes dev-deps). Distinct from `binDeps`
-  # above, whose feature set omits them.
   workspaceDeps = craneLib.buildDepsOnly (
     cargoCommonArgs
     // {
+      src = depsSrc;
       pname = "treadmill-workspace";
     }
   );
@@ -258,7 +239,7 @@ let
       // {
         src = binSrcs.${bin};
         pname = bin;
-        cargoArtifacts = binDeps;
+        cargoArtifacts = workspaceDeps;
         cargoExtraArgs = "--locked --workspace --bin ${bin}";
         buildInputs = cargoCommonArgs.buildInputs ++ extraBuildInputs;
         doCheck = false;

@@ -107,8 +107,8 @@ and commit the diff:
 cd console && npm ci && npm run codegen
 ```
 
-The `console` Nix package (`nix build .#console`, auto-promoted to a
-flake check) is the frontend CI gate: it fails on schema drift, then runs
+The `console` Nix package (`nix build .#console`, also a fast-tier flake
+check) is the frontend CI gate: it fails on schema drift, then runs
 `npm run lint`, `npm run typecheck` (strict tsc), and the vite build. Dev loop:
 `npm run dev` (in the default dev shell, which carries node) proxies `/api` to
 a local switchboard at `127.0.0.1:8081` (override with `TML_DEV_PROXY`). The
@@ -136,12 +136,36 @@ nix develop --command bash -c 'cargo clippy -p treadmill-switchboard --all-targe
 nix develop --command bash -c 'cargo test  -p treadmill-rs'
 ```
 
-The authoritative gates are the **flake checks** (`nix/checks.nix`), run
-hermetically. Always ensure all default flake checks pass by running `nix flake
-check` on every commit, except where that doesn't make sense (deliberate
-intermediate commit with breakage). The checks can be accelerated using the
-Cachix cache (requires to be a trusted Nix user to accept the flake config),
-which holds a pre-built crane dependency layer.
+The hermetic gates live in `nix/checks.nix` and come in two tiers.
+
+The **fast** tier is `treefmt`, `clippy`, `nextest`, `nextest-db`, `console`,
+`shellcheck`, `openapi-spec` and `switchboard-migrations-consistency`. It
+builds no binaries and needs no foreign toolchain. Run it on every commit,
+except where that doesn't make sense (deliberate intermediate commit with
+breakage).
+
+```bash
+nix flake check --accept-flake-config
+```
+
+The **heavy** tier is every binary and cross-target package, plus the tests
+that need a real Zot, qemu, NATS or the `tiny-efi` fixture. CI runs it in the
+merge queue and on `main`, not on pull requests. Each heavy test is also a
+package, so a single one can be run on its own.
+
+```bash
+nix build --accept-flake-config '.#ci-heavy'
+nix build --accept-flake-config '.#nats-log-streaming'
+```
+
+`--accept-flake-config` opts into the `nixConfig` block in `flake.nix`, which
+points Nix at the Cachix cache; without it every Rust build starts from the
+dependency layer's ~360 crates. It also needs the invoking user to be a
+trusted Nix user, otherwise Nix ignores the extra substituter and only warns.
+
+CI pushes only `nix build .#cache-seed`: the crane dependency layer and the
+vendored `zot` / `nbdfatftpd` / `job-gateway-caddy` builds. The Rust toolchain
+rides along in the dependency layer's closure.
 
 ## 4. Testing conventions
 
