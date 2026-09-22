@@ -140,8 +140,21 @@ let
     fileset = workspaceSkeleton;
   };
 
+  # crane's vendor dir symlinks ~570 per-crate paths; materialize it into one
+  # path so Cachix serves it as a single NAR. Not runCommandLocal, which
+  # disallows substitution.
+  cargoVendorDir =
+    let
+      linked = craneLib.vendorCargoDeps { cargoLock = workspaceRoot + "/Cargo.lock"; };
+    in
+    pkgs.runCommand "treadmill-cargo-vendor" { } ''
+      cp -rL ${linked} $out
+      chmod -R u+w $out
+      substituteInPlace $out/config.toml --replace-fail ${linked} $out
+    '';
+
   cargoCommonArgs = {
-    inherit src;
+    inherit src cargoVendorDir;
     strictDeps = true;
 
     # In `env` rather than as top-level attributes, so they stay exported
@@ -347,6 +360,7 @@ in
     craneLib
     src
     cargoCommonArgs
+    cargoVendorDir
     binSrcs
     mkBin
     workspaceDeps
