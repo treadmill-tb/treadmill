@@ -48,6 +48,8 @@ let
     (lib.fileset.maybeMissing (workspaceRoot + "/switchboard/migrations"))
     (lib.fileset.maybeMissing (workspaceRoot + "/switchboard/SCHEMA.sql"))
     (lib.fileset.maybeMissing (workspaceRoot + "/switchboard/config.example.toml"))
+    (workspaceRoot + "/switchboard/src/routes/login_code.css")
+    (workspaceRoot + "/switchboard/src/routes/login_code.js")
     # Committed OpenAPI snapshot read by the api-spec drift-guard test.
     (lib.fileset.maybeMissing (workspaceRoot + "/switchboard/api-spec"))
   ];

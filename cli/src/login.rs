@@ -4,6 +4,7 @@ use treadmill_rs::api::switchboard::client::LoginCompleteOutcome;
 use treadmill_rs::api::switchboard::{
     AuthProvidersResponse, LoginCompleteRequest, LoginStagedResponse,
 };
+use treadmill_rs::util::Secret;
 
 use crate::cli::LoginArgs;
 use crate::ctx::Ctx;
@@ -21,15 +22,18 @@ pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
     ctx.note(&format!("Logging in to {}", ctx.config.switchboard));
     open_browser(&url);
     anstream::eprintln!(
-        "Open this URL to authenticate, then paste the JSON the page shows:\n\n    {url}\n"
+        "Open this URL to authenticate, then paste the login code the page shows:\n\n    {url}\n"
     );
 
-    let mut staged = read_staged()?;
+    let mut staged = LoginStagedResponse {
+        required: Vec::new(),
+        login_code: read_login_code()?,
+        tos_version: None,
+    };
 
     loop {
         let mut request = LoginCompleteRequest {
-            staged_id: staged.staged_id,
-            staged_secret: staged.staged_secret.clone(),
+            login_code: staged.login_code.clone(),
             tos_version: staged.tos_version,
         };
 
@@ -170,23 +174,23 @@ fn select_login(ctx: &Ctx, providers: &AuthProvidersResponse, args: &LoginArgs) 
     }
 }
 
-/// The callback renders the staged pair as JSON when the flow declared no
-/// `return_to`, which is the only completion route open to a client that
-/// cannot have a loopback URL allowlisted.
-fn read_staged() -> Result<LoginStagedResponse> {
+/// The callback shows the login code when the flow declared no `return_to`,
+/// which is the only completion route open to a client that cannot have a
+/// loopback URL allowlisted.
+fn read_login_code() -> Result<Secret<String>> {
     let raw: String = if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        // The blob carries a token-minting secret, so it is read like a
-        // password: never echoed, and never left in the scrollback.
-        Password::new().with_prompt("Paste the JSON").interact()?
+        // The code is a token-minting secret, so it is read like a password:
+        // never echoed, and never left in the scrollback.
+        Password::new()
+            .with_prompt("Paste the login code")
+            .interact()?
     } else {
         use std::io::Read;
         let mut raw = String::new();
         std::io::stdin().read_to_string(&mut raw)?;
         raw
     };
-
-    serde_json::from_str(raw.trim())
-        .context("that is not the JSON the login callback shows; paste the whole object")
+    Ok(Secret::new(raw.trim().to_string()))
 }
 
 async fn accept_tos(

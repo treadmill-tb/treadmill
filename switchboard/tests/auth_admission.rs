@@ -16,6 +16,7 @@ use std::net::SocketAddr;
 use sqlx::PgPool;
 use tokio::net::TcpListener;
 use treadmill_rs::api::switchboard::LoginResponse;
+use treadmill_switchboard::auth::login_code;
 use treadmill_switchboard::routes::build_router;
 use treadmill_switchboard::serve::AppState;
 use wiremock::matchers::{method, path};
@@ -138,7 +139,7 @@ async fn drive_to_callback(
         .unwrap()
 }
 
-/// POST the staged pair from a staged-login `body` to `/auth/login/complete`,
+/// POST the login code from a staged-login `body` to `/auth/login/complete`,
 /// echoing the offered ToS version, and return the response.
 async fn complete_login(
     client: &reqwest::Client,
@@ -148,8 +149,7 @@ async fn complete_login(
     client
         .post(format!("http://{addr}/api/v1/auth/login/complete"))
         .json(&serde_json::json!({
-            "staged_id": body["staged_id"],
-            "staged_secret": body["staged_secret"],
+            "login_code": body["login_code"],
             "tos_version": body["tos_version"],
         }))
         .send()
@@ -158,7 +158,7 @@ async fn complete_login(
 }
 
 /// Drive a full interactive login: the callback stages every login, so claim
-/// the staged pair (echoing the offered ToS version, when consent is
+/// the login code (echoing the offered ToS version, when consent is
 /// required). Returns the final HTTP status: the callback's status when it
 /// refused to stage (e.g. a `403` denial), otherwise the
 /// `/auth/login/complete` status.
@@ -419,7 +419,7 @@ async fn new_user_staged_then_provisioned_on_tos_accept(pool: PgPool) {
     assert_eq!(body["required"], serde_json::json!(["tos"]));
     assert_eq!(body["tos_version"], 1);
     assert!(
-        !body["staged_secret"].as_str().unwrap().is_empty(),
+        !body["login_code"].as_str().unwrap().is_empty(),
         "the marker carries the one-time completion secret"
     );
 
@@ -440,7 +440,8 @@ async fn new_user_staged_then_provisioned_on_tos_accept(pool: PgPool) {
         stored_hash.starts_with("$argon2id$"),
         "secret stored as a salted argon2id PHC string, got {stored_hash:?}"
     );
-    assert!(!stored_hash.contains(body["staged_secret"].as_str().unwrap()));
+    let (_, secret) = login_code::decode(body["login_code"].as_str().unwrap()).unwrap();
+    assert!(!stored_hash.contains(&secret));
 
     // Complete the login: the user is created at the accepted version, a token
     // is returned, and the staged row is consumed.
@@ -460,7 +461,7 @@ async fn new_user_staged_then_provisioned_on_tos_accept(pool: PgPool) {
         "the staged registration was consumed"
     );
 
-    // The staged pair is single-use: a second completion is 410 Gone.
+    // The login code is single-use: a second completion is 410 Gone.
     let replay = complete_login(&c, addr, &body).await;
     assert_eq!(replay.status(), reqwest::StatusCode::GONE);
 }
@@ -527,9 +528,9 @@ async fn existing_user_reaccepts_on_tos_version_bump(pool: PgPool) {
 }
 
 /// Parse a redirect's Location, asserting it points at the console's landing
-/// URL and carries ONLY the staged pair (never a token, never the secret's
-/// context) in the query; returns the pair.
-fn landing_pair(resp: &reqwest::Response) -> (String, String) {
+/// URL and carries ONLY the login code (never a token, never the secret's
+/// context) in the query; returns the code.
+fn landing_code(resp: &reqwest::Response) -> String {
     assert!(
         resp.status().is_redirection(),
         "expected a redirect to the console landing, got {}",
@@ -543,11 +544,8 @@ fn landing_pair(resp: &reqwest::Response) -> (String, String) {
         !query.contains_key("token") && !query.contains_key("expires_at"),
         "a session token must never transit a redirect URL, got {location}"
     );
-    assert_eq!(query.len(), 2, "only the staged pair rides the redirect");
-    (
-        query["staged_id"].to_string(),
-        query["staged_secret"].to_string(),
-    )
+    assert_eq!(query.len(), 1, "only the login code rides the redirect");
+    query["login_code"].to_string()
 }
 
 #[sqlx::test]
@@ -594,19 +592,16 @@ async fn browser_flow_completes_tos_via_form_post(pool: PgPool) {
         .unwrap();
 
     // The callback 302s the browser to the console's landing page carrying
-    // only the single-use staged pair; no user exists yet.
-    let (staged_id, staged_secret) = landing_pair(&cb);
+    // only the single-use login code; no user exists yet.
+    let code = landing_code(&cb);
     assert_eq!(octocat_user_count(&pool).await, 0, "no user yet");
 
-    // The console exchanges the pair server-to-server (JSON), declaring no ToS
-    // consent: the pair is consumed and a fresh one comes back as the 409
+    // The console exchanges the code server-to-server (JSON), declaring no ToS
+    // consent: the code is consumed and a fresh one comes back as the 409
     // marker for the console's consent form to embed.
     let exchange = c
         .post(format!("http://{addr}/api/v1/auth/login/complete"))
-        .json(&serde_json::json!({
-            "staged_id": staged_id,
-            "staged_secret": staged_secret,
-        }))
+        .json(&serde_json::json!({ "login_code": code }))
         .send()
         .await
         .unwrap();
@@ -616,30 +611,26 @@ async fn browser_flow_completes_tos_via_form_post(pool: PgPool) {
     assert_eq!(marker["tos_version"], 1);
     assert_eq!(octocat_user_count(&pool).await, 0, "still no user");
 
-    // The console's no-JS consent form POSTs the fresh pair back form-encoded;
+    // The console's no-JS consent form POSTs the fresh code back form-encoded;
     // the completion provisions the user and 302s the browser back to the
-    // landing page with a fresh ready-to-claim pair -- never the token.
+    // landing page with a fresh ready-to-claim code -- never the token.
     let complete = c
         .post(format!("http://{addr}/api/v1/auth/login/complete"))
         .form(&[
-            ("staged_id", marker["staged_id"].as_str().unwrap()),
-            ("staged_secret", marker["staged_secret"].as_str().unwrap()),
+            ("login_code", marker["login_code"].as_str().unwrap()),
             ("tos_version", "1"),
         ])
         .send()
         .await
         .unwrap();
-    let (claim_id, claim_secret) = landing_pair(&complete);
+    let claim_code = landing_code(&complete);
     assert_eq!(octocat_user_count(&pool).await, 1, "user provisioned");
     assert_eq!(octocat_tos_version(&pool).await, Some(1));
 
-    // The console exchanges the ready-to-claim pair for the session token.
+    // The console exchanges the ready-to-claim code for the session token.
     let claim = c
         .post(format!("http://{addr}/api/v1/auth/login/complete"))
-        .json(&serde_json::json!({
-            "staged_id": claim_id,
-            "staged_secret": claim_secret,
-        }))
+        .json(&serde_json::json!({ "login_code": claim_code }))
         .send()
         .await
         .unwrap();
@@ -657,7 +648,7 @@ async fn non_allowlisted_return_to_is_rejected(pool: PgPool) {
     cfg.oauth.return_to_allowlist = vec!["https://console.example/auth/landing".to_string()];
     let addr = spawn_server(AppState::new(pool.clone(), cfg)).await;
 
-    // The staged pair a return_to receives can mint a session token, so a
+    // The login code a return_to receives can mint a session token, so a
     // value outside the allowlist must be refused up front, before any flow
     // state exists.
     for target in [
@@ -711,8 +702,10 @@ async fn wrong_staged_secret_neither_completes_nor_burns(pool: PgPool) {
     let forged = c
         .post(format!("http://{addr}/api/v1/auth/login/complete"))
         .json(&serde_json::json!({
-            "staged_id": body["staged_id"],
-            "staged_secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "login_code": login_code::encode(
+                login_code::decode(body["login_code"].as_str().unwrap()).unwrap().0,
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            ),
             "tos_version": body["tos_version"],
         }))
         .send()
@@ -726,7 +719,7 @@ async fn wrong_staged_secret_neither_completes_nor_burns(pool: PgPool) {
         "a wrong secret must not burn the staged login"
     );
 
-    // The legitimate holder of the pair still completes normally.
+    // The legitimate holder of the code still completes normally.
     let complete = complete_login(&c, addr, &body).await;
     assert_eq!(complete.status(), reqwest::StatusCode::OK);
     assert_eq!(octocat_user_count(&pool).await, 1);
@@ -753,7 +746,7 @@ async fn expired_staged_login_cannot_complete(pool: PgPool) {
     assert_eq!(cb.status(), reqwest::StatusCode::OK);
     let body: serde_json::Value = cb.json().await.unwrap();
 
-    // The pair expires before the user completes: presenting it is uniformly a
+    // The code expires before the user completes: presenting it is uniformly a
     // 410, provisioning nothing. (The now-inert row lingers until the next
     // staging's housekeeping sweep — the expiry check on consumption is what
     // guarantees correctness.)
@@ -793,14 +786,13 @@ async fn stale_tos_version_echo_is_not_recorded(pool: PgPool) {
     let body: serde_json::Value = cb.json().await.unwrap();
 
     // Echoing a ToS version other than the one in force (as after a concurrent
-    // bump) must not record consent: the presented pair is consumed and the
-    // marker re-offers the current version with a FRESH pair for a corrected
+    // bump) must not record consent: the presented code is consumed and the
+    // marker re-offers the current version with a FRESH code for a corrected
     // retry.
     let stale = c
         .post(format!("http://{addr}/api/v1/auth/login/complete"))
         .json(&serde_json::json!({
-            "staged_id": body["staged_id"],
-            "staged_secret": body["staged_secret"],
+            "login_code": body["login_code"],
             "tos_version": 999,
         }))
         .send()
@@ -813,13 +805,13 @@ async fn stale_tos_version_echo_is_not_recorded(pool: PgPool) {
         "marker re-offers the current version"
     );
     assert_ne!(
-        retry["staged_secret"], body["staged_secret"],
-        "the marker carries a fresh pair"
+        retry["login_code"], body["login_code"],
+        "the marker carries a fresh code"
     );
     assert_eq!(octocat_user_count(&pool).await, 0, "no user provisioned");
     assert_eq!(staged_count(&pool).await, 1, "consumed and re-staged");
 
-    // The presented pair was consumed by the stale echo; only the fresh one
+    // The presented code was consumed by the stale echo; only the fresh one
     // completes.
     let replay = complete_login(&c, addr, &body).await;
     assert_eq!(replay.status(), reqwest::StatusCode::GONE);
@@ -884,7 +876,86 @@ async fn account_locked_after_staging_is_refused_completion(pool: PgPool) {
     assert_eq!(denials, 1, "locked-login denial recorded");
     assert_eq!(staged_count(&pool).await, 0, "the staged login is consumed");
 
-    // Replaying the pair after the denial stays dead.
+    // Replaying the code after the denial stays dead.
     let replay = complete_login(&c, addr_v2, &body).await;
     assert_eq!(replay.status(), reqwest::StatusCode::GONE);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn browser_without_return_to_gets_login_code_page(pool: PgPool) {
+    let gh = MockServer::start().await;
+    mount_github(&gh, &[]).await;
+    let addr = spawn_server(AppState::new(pool.clone(), test_config(&gh.uri()))).await;
+
+    sqlx::query(
+        "insert into tml_switchboard.login_allowlist (provider, kind, external_id) \
+         values ('github', 'user', '12345')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let browser = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .default_headers(
+            [(reqwest::header::ACCEPT, "text/html".parse().unwrap())]
+                .into_iter()
+                .collect(),
+        )
+        .build()
+        .unwrap();
+    let cb = drive_to_callback(&browser, addr, &pool).await;
+    assert_eq!(cb.status(), reqwest::StatusCode::OK);
+    assert_eq!(cb.headers()["cache-control"], "no-store");
+    assert!(
+        cb.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .starts_with("default-src 'none';")
+    );
+
+    let page = cb.text().await.unwrap();
+    assert!(page.contains("The Octocat"));
+    let code = page
+        .split_once("<code>")
+        .and_then(|(_, rest)| rest.split_once("</code>"))
+        .unwrap()
+        .0;
+    let complete = complete_login(
+        &client(),
+        addr,
+        &serde_json::json!({ "login_code": code, "tos_version": 1 }),
+    )
+    .await;
+    assert_eq!(complete.status(), reqwest::StatusCode::OK);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn providers_reports_whether_return_to_is_allowed(pool: PgPool) {
+    const LANDING: &str = "https://console.example/auth/landing";
+    let mut cfg = test_config("http://unused.example");
+    cfg.oauth.return_to_allowlist = vec![LANDING.to_string()];
+    let addr = spawn_server(AppState::new(pool, cfg)).await;
+
+    for (query, allowed) in [
+        (vec![("return_to", LANDING)], true),
+        (
+            vec![("return_to", "https://evil.example/auth/landing")],
+            false,
+        ),
+        (vec![], false),
+    ] {
+        let providers: serde_json::Value = client()
+            .get(format!("http://{addr}/api/v1/auth/providers"))
+            .query(&query)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(providers["return_to_allowed"], allowed, "{query:?}");
+    }
 }

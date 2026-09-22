@@ -54,6 +54,15 @@ pub struct ExternalIdentity {
     pub emails: Vec<Email<'static>>,
 }
 
+impl ExternalIdentity {
+    pub fn display_name(&self) -> String {
+        self.full_name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| self.login.clone())
+    }
+}
+
 /// Things that can go wrong talking to an OAuth provider.
 #[derive(Debug, Error)]
 pub enum OAuthError {

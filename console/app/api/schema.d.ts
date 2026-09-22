@@ -19,9 +19,9 @@ export interface paths {
          *     provider's consent screen. A client may pass `?return_to=<URL>` (validated
          *     against a server-side allowlist) to have the callback redirect the browser
          *     following a successful token-exchange with the authenthenication provider.
-         *     On redirect, the `(staged_id, staged_secret)` pair will be placed in request
-         *     parameters of the `return_to` URL; without it the callback responds with
-         *     JSON.
+         *     On redirect, the `login_code` will be placed in the request parameters of
+         *     the `return_to` URL; without it the callback responds with JSON, or with a
+         *     page displaying the code to a browser.
          */
         get: operations["startLogin"];
         put?: never;
@@ -46,10 +46,10 @@ export interface paths {
          *     Performs a token-exchange with the authentication provider, and stages a new
          *     login. This endpoint does not mint a token directly; instead a client must
          *     complete the login with an additional request to `/auth/login/complete` by
-         *     supplying the returned `(staged_id, staged_secret)` tuple. This tuple is
-         *     either returned as JSON or, for a flow that declared a `return_to`
-         *     parameter, via a 302 "See Other" redirect to an URL with those added as
-         *     query parameters.
+         *     supplying the returned `login_code`. This code is either returned as JSON
+         *     (or a page displaying it, to a browser) or, for a flow that declared a
+         *     `return_to` parameter, via a 302 "See Other" redirect to an URL with it
+         *     added as a query parameter.
          *
          *     A login may require additional information by the user (such as an explicit
          *     ToS accept). See the `/auth/login/complete` endpoint docs.
@@ -125,8 +125,8 @@ export interface paths {
         put?: never;
         /**
          * Complete a staged login
-         * @description Claim a staged login by providing the `(staged_id, staged_secret)` tuple
-         *     provided by the callback response or redirect.
+         * @description Claim a staged login by providing the `login_code` provided by the
+         *     callback response or redirect.
          *
          *     Completing the login may require supplying additional values. If `required`
          *     includes `"tos"`, the `"tos_version"` field must be the current ToS
@@ -852,6 +852,8 @@ export interface components {
             mock_identities: components["schemas"]["MockIdentityInfo"][];
             /** @description Real OAuth providers (e.g. GitHub) the user can start a login flow with. */
             oauth: components["schemas"]["OAuthProviderInfo"][];
+            /** @description Whether the `return_to` passed in the query may receive a login. */
+            return_to_allowed: boolean;
         };
         AuthToken: string;
         /** @description Query parameters the provider appends to the callback redirect. */
@@ -1815,13 +1817,8 @@ export interface components {
          *     JSON or form-encoded data.
          */
         LoginCompleteRequest: {
-            /**
-             * Format: uuid
-             * @description The staged login, from [`LoginStagedResponse::staged_id`].
-             */
-            staged_id: string;
-            /** @description Its one-time secret, from [`LoginStagedResponse::staged_secret`]. */
-            staged_secret: components["schemas"]["Secret"];
+            /** @description The staged login's code, from [`LoginStagedResponse::login_code`]. */
+            login_code: components["schemas"]["Secret"];
             /**
              * Format: int32
              * @description The ToS version the user was shown and accepted (only mandatory if
@@ -1846,7 +1843,7 @@ export interface components {
          * @description Response body for a staged login: the callback has verified the identity
          *     (e.g., OAuth token exchanged, admission passed) and staged the login
          *     server-side. Every interactive login is staged; the caller finishes it by
-         *     `POST`ing the `(staged_id, staged_secret)` pair to `/auth/login/complete`,
+         *     `POST`ing its `login_code` to `/auth/login/complete`,
          *     which is the sole point that mints the session token.
          *
          *     `required` lists what the completion must additionally provide. An empty
@@ -1857,30 +1854,25 @@ export interface components {
          *       the `tos_version` actually shown.
          *
          *     Returned as `200` by the OAuth callback (a browser flow that declared a
-         *     `return_to` is instead `302`-redirected there with the pair in the query),
+         *     `return_to` is instead `302`-redirected there with the code in the query),
          *     and as `409 Conflict` by `/auth/login/complete` when the presented
-         *     completion is still missing a required step (with a fresh pair — the
+         *     completion is still missing a required step (with a fresh code — the
          *     presented one is consumed).
          *
-         *     `staged_secret` must be kept secret and treated equivalently to an auth
+         *     `login_code` must be kept secret and treated equivalently to an auth
          *     token, as it can mint an auth token.
          */
         LoginStagedResponse: {
+            /**
+             * @description Single-use code that `/auth/login/complete` exchanges for an auth
+             *     token.
+             */
+            login_code: components["schemas"]["Secret"];
             /**
              * @description What the completion step must provide; empty means ready to claim
              *     (recognized steps are documented on the type).
              */
             required: string[];
-            /**
-             * Format: uuid
-             * @description Identifies the staged login to `/auth/login/complete`.
-             */
-            staged_id: string;
-            /**
-             * @description Single-use secret that `/auth/login/complete` exchanges for an auth
-             *     token.
-             */
-            staged_secret: components["schemas"]["Secret"];
             /**
              * Format: int32
              * @description The ToS version the user is being asked to accept (if `required`
@@ -2029,6 +2021,9 @@ export interface components {
         ProviderPath: {
             /** @description The login provider's name (e.g. `github`). */
             provider: string;
+        };
+        ProvidersQuery: {
+            return_to?: string | null;
         };
         /**
          * @description The world-readable subset of a user profile: only data deemed safe to expose
@@ -2372,7 +2367,9 @@ export interface operations {
     };
     listAuthProviders: {
         parameters: {
-            query?: never;
+            query?: {
+                return_to?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;

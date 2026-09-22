@@ -338,12 +338,7 @@ impl Transition for CreateUser<'_> {
         .execute(&mut *conn)
         .await?;
 
-        let name = self
-            .identity
-            .full_name
-            .clone()
-            .filter(|n| !n.trim().is_empty())
-            .unwrap_or_else(|| self.identity.login.clone());
+        let name = self.identity.display_name();
         sqlx::query!(
             "insert into tml_switchboard.users \
              (subject_id, name, avatar_url, tos_accepted_version, tos_accepted_at) \

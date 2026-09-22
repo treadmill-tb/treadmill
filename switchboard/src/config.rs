@@ -72,7 +72,7 @@ impl SwitchboardConfig {
     /// Whether `url` is an allowed interactive-login `return_to` target: an
     /// exact match against [`OAuthConfig::return_to_allowlist`].
     ///
-    /// The staged pair the callback appends to `return_to` is a token-minting
+    /// The login code the callback appends to `return_to` is a token-minting
     /// capability; every `return_to` MUST pass this check, both when a flow is
     /// initiated and again at the callback (the config may change mid-flow).
     pub fn return_to_allowed(&self, url: &str) -> bool {
@@ -170,9 +170,9 @@ pub struct OAuthConfig {
     /// carries no open-redirect surface.
     ///
     /// The callback `302`-redirects a flow with a `return_to` there, carrying
-    /// the single-use `?staged_id=…&staged_secret=…` pair, which the frontend
+    /// the single-use `?login_code=…`, which the frontend
     /// exchanges server-to-server at `POST /auth/login/complete` for the
-    /// session token. The pair is a token-minting capability, so an
+    /// session token. The code is a token-minting capability, so an
     /// unvalidated `return_to` would hand account takeover to an
     /// attacker-chosen URL — never bypass this list. Flows that declare no
     /// `return_to` (programmatic clients) receive JSON instead; the two styles

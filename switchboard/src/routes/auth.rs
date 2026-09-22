@@ -15,10 +15,10 @@
 //!      `code` and `state`; we confirm the state, exchange the code, fetch the
 //!      identity, provision/refresh the local user, and stage the login. A
 //!      flow that declared a `return_to` sends the browser there with the
-//!      single-use staged pair in the query; other flows receive the pair as
+//!      single-use login code in the query; other flows receive the code as
 //!      JSON. No token is issued here.
 //!
-//!   3. `POST /auth/login/complete` consumes the staged pair and mints the
+//!   3. `POST /auth/login/complete` consumes the login code and mints the
 //!      session token, once everything the staging marked `required` (e.g.,
 //!      ToS consent) is provided.
 //!
@@ -33,7 +33,7 @@ use crate::auth::oauth::ExternalIdentity;
 use crate::auth::oauth::OAuthProvider;
 use crate::auth::oauth::github::GithubProvider;
 use crate::auth::oauth::mock::{MOCK_IDENTITIES, MockProvider};
-use crate::auth::staged_secret;
+use crate::auth::{login_code, staged_secret};
 use crate::client_addr::ClientAddr;
 use crate::config::ServerConfig;
 use crate::http_error::OrInternal;
@@ -44,12 +44,15 @@ use crate::sql::api_token::IssueSessionToken;
 use crate::sql::staged_login::{StageLogin, StagedLogin};
 use axum::Json;
 use axum::extract::{Form, FromRequest, Path, Query, Request, State};
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{Html, IntoResponse, Redirect, Response};
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use chrono::{Duration, Utc};
 use http::StatusCode;
 use http::request::Parts;
 use indoc::indoc;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use sqlx::PgExecutor;
 use std::collections::HashMap;
 use treadmill_rs::api::switchboard::{
@@ -64,14 +67,14 @@ use uuid::Uuid;
 const FLOW_LIFETIME_MINUTES: i64 = 10;
 
 /// How long a staged login lives before it must be consumed by `POST
-/// /auth/login/complete`, when its pair is held by a human working through the
+/// /auth/login/complete`, when its code is held by a human working through the
 /// completion step (reading the ToS).
 const STAGED_LOGIN_LIFETIME_MINUTES: i64 = 30;
 
-/// How long a staged login lives when its pair merely transits a browser
+/// How long a staged login lives when its code merely transits a browser
 /// redirect to the flow's `return_to`: the frontend exchanges it within
 /// seconds, and anything longer only widens the window in which an abandoned
-/// redirect (whose pair sits in browser history) stays claimable.
+/// redirect (whose code sits in browser history) stays claimable.
 const STAGED_HANDOFF_LIFETIME_MINUTES: i64 = 2;
 
 /// The blanket Terms of Service text served by `GET /auth/tos`. A placeholder
@@ -118,7 +121,10 @@ fn provider_for(
 /// `GET /auth/providers`: advertise the enabled login methods so a frontend can
 /// render the right buttons. Unauthenticated; returns only non-secret metadata.
 #[tracing::instrument(skip(state))]
-pub async fn providers(State(state): State<AppState>) -> Json<AuthProvidersResponse> {
+pub async fn providers(
+    State(state): State<AppState>,
+    Query(query): Query<ProvidersQuery>,
+) -> Json<AuthProvidersResponse> {
     let oauth_cfg = &state.config().oauth;
 
     let mut oauth = Vec::new();
@@ -150,7 +156,15 @@ pub async fn providers(State(state): State<AppState>) -> Json<AuthProvidersRespo
     Json(AuthProvidersResponse {
         oauth,
         mock_identities,
+        return_to_allowed: query
+            .return_to
+            .is_some_and(|target| state.config().return_to_allowed(&target)),
     })
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProvidersQuery {
+    return_to: Option<String>,
 }
 
 pub const AUTH_LOGIN_ENDPOINT_DOC: &str = indoc! {"
@@ -160,9 +174,9 @@ pub const AUTH_LOGIN_ENDPOINT_DOC: &str = indoc! {"
     provider's consent screen. A client may pass `?return_to=<URL>` (validated
     against a server-side allowlist) to have the callback redirect the browser
     following a successful token-exchange with the authenthenication provider.
-    On redirect, the `(staged_id, staged_secret)` pair will be placed in request
-    parameters of the `return_to` URL; without it the callback responds with
-    JSON.
+    On redirect, the `login_code` will be placed in the request parameters of
+    the `return_to` URL; without it the callback responds with JSON, or with a
+    page displaying the code to a browser.
 "};
 
 /// `GET /auth/{provider}/login`: start the flow and redirect the browser to the
@@ -170,8 +184,8 @@ pub const AUTH_LOGIN_ENDPOINT_DOC: &str = indoc! {"
 ///
 /// A browser frontend passes `?return_to=<its landing URL>` to declare where
 /// the callback should send the browser afterwards, carrying the single-use
-/// staged pair in the query. It must match the configured allowlist exactly
-/// (see [`crate::config::OAuthConfig::return_to_allowlist`]) — the staged pair
+/// login code in the query. It must match the configured allowlist exactly
+/// (see [`crate::config::OAuthConfig::return_to_allowlist`]) — the login code
 /// is a token-minting capability — so anything else is rejected up front. A
 /// flow without `return_to` (a programmatic client) receives JSON from the
 /// callback instead.
@@ -220,10 +234,10 @@ pub const AUTH_PROVIDER_CALLBACK_ENDPOINT_DOC: &str = indoc! {"
     Performs a token-exchange with the authentication provider, and stages a new
     login. This endpoint does not mint a token directly; instead a client must
     complete the login with an additional request to `/auth/login/complete` by
-    supplying the returned `(staged_id, staged_secret)` tuple. This tuple is
-    either returned as JSON or, for a flow that declared a `return_to`
-    parameter, via a 302 \"See Other\" redirect to an URL with those added as
-    query parameters.
+    supplying the returned `login_code`. This code is either returned as JSON
+    (or a page displaying it, to a browser) or, for a flow that declared a
+    `return_to` parameter, via a 302 \"See Other\" redirect to an URL with it
+    added as a query parameter.
 
     A login may require additional information by the user (such as an explicit
     ToS accept). See the `/auth/login/complete` endpoint docs.
@@ -238,7 +252,7 @@ pub struct CallbackQuery {
 
 /// `GET /auth/{provider}/callback`: complete the flow and stage the login. No
 /// session token is issued here — every outcome hands the caller a single-use
-/// staged pair (via the flow's `return_to` redirect, or as JSON) that `POST
+/// login code (via the flow's `return_to` redirect, or as JSON) that `POST
 /// /auth/login/complete` exchanges for the token.
 // `parts` is skipped: its `Debug` carries the request URI (with the OAuth code)
 // and every header.
@@ -284,7 +298,7 @@ pub async fn callback(
 
     // The flow's return_to was validated at initiation; re-check it against the
     // allowlist in case the configuration changed while the user was at the
-    // provider — a since-removed entry must not keep receiving staged pairs.
+    // provider — a since-removed entry must not keep receiving login codes.
     if let Some(target) = flow.return_to.as_deref()
         && !state.config().return_to_allowed(target)
     {
@@ -292,6 +306,12 @@ pub async fn callback(
         return Err(StatusCode::BAD_REQUEST);
     }
     let return_to = flow.return_to.as_deref();
+    let show_page = return_to.is_none()
+        && parts
+            .headers
+            .get(http::header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|accept| accept.contains("text/html"));
 
     let token = provider.exchange(query.code).await.map_err(|e| {
         tracing::error!("authorization-code exchange failed: {e}");
@@ -333,10 +353,10 @@ pub async fn callback(
     // Every branch converges on staging the (now verified) login: an existing
     // user is refreshed and staged, a brand-new admitted user's identity is
     // staged without any durable record, and the dev-only mock provider
-    // conjures its account and stages it ready-to-claim. The staged pair is
+    // conjures its account and stages it ready-to-claim. The login code is
     // then handed back by `stage_and_respond`; the session token is only
     // minted when `POST /auth/login/complete` consumes the row.
-    let (user_id, org_ids, tos_required) = match resolved {
+    let (user_id, org_ids, tos_required, name) = match resolved {
         Some((user_id, kind)) => {
             // Existing user: proceed ungated. Org membership only narrows
             // auto-groups, so a fetch failure here must not block the login.
@@ -361,7 +381,7 @@ pub async fn callback(
             // provisioning audit trail current), but is refused up front --
             // nothing gets staged. Commit the refusal, including its audit row.
             let status = sqlx::query!(
-                "select locked, tos_accepted_version \
+                "select locked, tos_accepted_version, name \
                  from tml_switchboard.users where subject_id = $1;",
                 user_id,
             )
@@ -397,7 +417,7 @@ pub async fn callback(
             // A ToS version bump forces re-acceptance before the login can be
             // claimed.
             let stale_tos = status.tos_accepted_version.is_none_or(|v| v < current_tos);
-            (user_id, org_ids, stale_tos)
+            (user_id, org_ids, stale_tos, status.name)
         }
         None => {
             // Org membership is load-bearing for org-based admission at
@@ -481,6 +501,7 @@ pub async fn callback(
                 None,
                 &org_ids,
                 return_to,
+                show_page.then(|| identity.display_name()).as_deref(),
                 &ctx,
                 true,
                 current_tos,
@@ -500,6 +521,7 @@ pub async fn callback(
         Some(user_id),
         &org_ids,
         return_to,
+        show_page.then_some(name.as_str()),
         &ctx,
         tos_required,
         current_tos,
@@ -544,8 +566,7 @@ impl ClientContext {
     }
 }
 
-/// Stage a `staged_logins` row and return the `(staged_id, staged_secret)`
-/// pair. Provide EITHER `identity` (a brand-new admitted user — no durable
+/// Stage a `staged_logins` row and return its login code. Provide EITHER `identity` (a brand-new admitted user — no durable
 /// record exists until `POST /auth/login/complete` consumes the row) OR
 /// `existing_user_id`, never both. The id alone is no capability; only the
 /// secret's salted hash is stored. Takes any executor so a re-stage/successor
@@ -560,7 +581,7 @@ async fn stage_login_row(
     return_to: Option<&str>,
     ctx: &ClientContext,
     lifetime_minutes: i64,
-) -> Result<(Uuid, Secret<String>), StatusCode> {
+) -> Result<Secret<String>, StatusCode> {
     let staged_id = Uuid::new_v4();
     let staged_secret = staged_secret::generate();
     let secret_hash =
@@ -583,19 +604,18 @@ async fn stage_login_row(
     )
     .await
     .or_internal("persisting the staged login")?;
-    Ok((staged_id, Secret::new(staged_secret)))
+    Ok(Secret::new(login_code::encode(staged_id, &staged_secret)))
 }
 
-/// Hand a staged pair to the client: a 302 to `redirect_to` with the
-/// single-use pair in the query when the response goes back to a browser (the
+/// Hand a login code to the client: a 302 to `redirect_to` with the
+/// single-use code in the query when the response goes back to a browser (the
 /// flow declared a `return_to`, and — for the completion route — the request
 /// came from the frontend's HTML form), else the [`LoginStagedResponse`] JSON
 /// with `status`.
 fn staged_response(
     redirect_to: Option<&str>,
     status: StatusCode,
-    staged_id: Uuid,
-    staged_secret: Secret<String>,
+    login_code: Secret<String>,
     required: Vec<String>,
     tos_version: Option<i32>,
 ) -> Result<Response, StatusCode> {
@@ -604,16 +624,14 @@ fn staged_response(
             let mut url = url::Url::parse(target)
                 .or_internal(&format!("parsing allowlisted return_to {target:?}"))?;
             url.query_pairs_mut()
-                .append_pair("staged_id", &staged_id.to_string())
-                .append_pair("staged_secret", staged_secret.expose());
+                .append_pair("login_code", login_code.expose());
             Ok(Redirect::to(url.as_str()).into_response())
         }
         None => Ok((
             status,
             Json(LoginStagedResponse {
                 required,
-                staged_id,
-                staged_secret,
+                login_code,
                 tos_version,
             }),
         )
@@ -621,10 +639,10 @@ fn staged_response(
     }
 }
 
-/// The callback's staging tail: stage the verified login and hand its pair
-/// back. The row's lifetime follows how the pair travels — a browser flow's
-/// pair only transits the `return_to` redirect (the frontend exchanges it
-/// within seconds), while a programmatic client may hold the pair while a
+/// The callback's staging tail: stage the verified login and hand its code
+/// back. The row's lifetime follows how the code travels — a browser flow's
+/// code only transits the `return_to` redirect (the frontend exchanges it
+/// within seconds), while a programmatic client may hold the code while a
 /// human works through the completion step.
 #[allow(clippy::too_many_arguments)]
 async fn stage_and_respond(
@@ -634,6 +652,7 @@ async fn stage_and_respond(
     existing_user_id: Option<Uuid>,
     org_ids: &[String],
     return_to: Option<&str>,
+    page_for: Option<&str>,
     ctx: &ClientContext,
     tos_required: bool,
     current_tos: i32,
@@ -649,7 +668,7 @@ async fn stage_and_respond(
     } else {
         STAGED_LOGIN_LIFETIME_MINUTES
     };
-    let (staged_id, staged_secret) = stage_login_row(
+    let login_code = stage_login_row(
         state.pool(),
         provider,
         identity,
@@ -661,6 +680,10 @@ async fn stage_and_respond(
     )
     .await?;
 
+    if let Some(name) = page_for {
+        return Ok(login_code_page(name, login_code.expose()));
+    }
+
     let required = if tos_required {
         vec!["tos".to_string()]
     } else {
@@ -669,11 +692,65 @@ async fn stage_and_respond(
     staged_response(
         return_to,
         StatusCode::OK,
-        staged_id,
-        staged_secret,
+        login_code,
         required,
         tos_required.then_some(current_tos),
     )
+}
+
+const LOGIN_CODE_STYLE: &str = include_str!("login_code.css");
+const LOGIN_CODE_SCRIPT: &str = include_str!("login_code.js");
+
+fn login_code_page(name: &str, code: &str) -> Response {
+    let name: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || " -_.,'".contains(c) {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect();
+    let page = format!(
+        r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Treadmill login code</title>
+    <style>{LOGIN_CODE_STYLE}</style>
+  </head>
+  <body>
+    <main>
+      <h1>Login code</h1>
+      <p>
+        This code grants full access to your Treadmill account &ldquo;{name}&rdquo;.
+        Only provide it to applications you trust.
+      </p>
+      <code>{code}</code>
+      <button type="button">Copy</button>
+    </main>
+    <script>{LOGIN_CODE_SCRIPT}</script>
+  </body>
+</html>
+"#
+    );
+    let csp = format!(
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-{}'; \
+         frame-ancestors 'none'",
+        BASE64_STANDARD.encode(Sha256::digest(LOGIN_CODE_SCRIPT)),
+    );
+    (
+        [
+            (http::header::CACHE_CONTROL, "no-store".to_string()),
+            (http::header::REFERRER_POLICY, "no-referrer".to_string()),
+            (http::header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            (http::header::CONTENT_SECURITY_POLICY, csp),
+        ],
+        Html(page),
+    )
+        .into_response()
 }
 
 /// `GET /auth/tos`: the current Terms of Service text + version for a frontend to
@@ -687,8 +764,8 @@ pub async fn tos_info(State(state): State<AppState>) -> Json<TosInfoResponse> {
 }
 
 pub const AUTH_LOGIN_COMPLETE_ENDPOINT_DOC: &str = indoc! {"
-    Claim a staged login by providing the `(staged_id, staged_secret)` tuple
-    provided by the callback response or redirect.
+    Claim a staged login by providing the `login_code` provided by the
+    callback response or redirect.
 
     Completing the login may require supplying additional values. If `required`
     includes `\"tos\"`, the `\"tos_version\"` field must be the current ToS
@@ -700,7 +777,7 @@ pub const AUTH_LOGIN_COMPLETE_ENDPOINT_DOC: &str = indoc! {"
 /// The request body of `POST /auth/login/complete`, in whichever encoding the
 /// client speaks: JSON for programmatic clients, `x-www-form-urlencoded` for a
 /// no-JS browser HTML form (forms cannot send JSON). The body is mandatory — it
-/// carries the staged pair — so any other content type is `415` and a malformed
+/// carries the login code — so any other content type is `415` and a malformed
 /// body is `400`.
 pub struct LoginCompleteBody {
     request: LoginCompleteRequest,
@@ -708,7 +785,7 @@ pub struct LoginCompleteBody {
     /// (a no-JS ToS consent form), which cannot consume a JSON response. The
     /// handler answers such requests through the flow's `return_to` redirect;
     /// JSON callers always get JSON, so a frontend's server-to-server exchange
-    /// of a browser flow's pair is never redirected.
+    /// of a browser flow's code is never redirected.
     from_form: bool,
 }
 
@@ -758,20 +835,20 @@ impl FromRequest<AppState> for LoginCompleteBody {
 /// session token is minted.
 ///
 /// Unauthenticated; the caller authenticates by presenting the staged login's
-/// `staged_id` TOGETHER with its one-time `staged_secret` (JSON or
+/// `login_code` (JSON or
 /// form-encoded, see [`LoginCompleteBody`]). In one transaction: consume the
 /// staging row (unknown id, wrong secret, or expired → `410 Gone`, with a
 /// wrong secret leaving the row intact), re-check the lock state for an
 /// existing user, and check what the login still requires. If ToS consent is
 /// required, the echoed `tos_version` must be the one currently in force — a
 /// concurrent ToS bump must not record consent to text the user never saw —
-/// else the presented pair is consumed and a fresh one is returned as a `409`
+/// else the presented code is consumed and a fresh one is returned as a `409`
 /// marker (or through the flow's `return_to` for a browser form) for the
 /// client to re-render and re-submit. A satisfied completion creates the
 /// brand-new account (recording the accepted ToS version) or records the
 /// re-acceptance, then either mints the token (JSON callers), or — for a
 /// browser form completing a `return_to` flow — stages a fresh ready-to-claim
-/// pair and 302s it to the flow's return point, where the frontend exchanges
+/// code and 302s it to the flow's return point, where the frontend exchanges
 /// it server-to-server.
 #[tracing::instrument(skip(state, body, parts))]
 pub async fn login_complete(
@@ -780,6 +857,9 @@ pub async fn login_complete(
     body: LoginCompleteBody,
 ) -> Result<Response, StatusCode> {
     let LoginCompleteBody { request, from_form } = body;
+    let Some((staged_id, staged_secret)) = login_code::decode(request.login_code.expose()) else {
+        return Err(StatusCode::GONE);
+    };
 
     // This request's context feeds audit rows recorded about THIS caller (the
     // locked-login denial). The session token instead carries the browser
@@ -797,20 +877,16 @@ pub async fn login_complete(
 
     // Consume-once: an unknown id, a wrong secret, or an expired/already-used
     // row is uniformly a 410 (no oracle distinguishing them).
-    let Some(staged) = sql::staged_login::consume_staged(
-        &mut tx,
-        request.staged_id,
-        request.staged_secret.expose(),
-    )
-    .await
-    .or_internal("consuming the staged registration")?
+    let Some(staged) = sql::staged_login::consume_staged(&mut tx, staged_id, &staged_secret)
+        .await
+        .or_internal("consuming the staged registration")?
     else {
         return Err(StatusCode::GONE);
     };
 
     // A browser-form completion is answered through the flow's declared return
     // point; JSON callers always get JSON (a frontend's server-to-server
-    // exchange of a browser flow's pair must not be redirected).
+    // exchange of a browser flow's code must not be redirected).
     let redirect_to = if from_form {
         staged.return_to.clone()
     } else {
@@ -874,14 +950,14 @@ pub async fn login_complete(
 
     if tos_required && request.tos_version.is_none_or(|v| v != current_tos) {
         // Required consent is missing, or was given to a superseded version.
-        // The presented pair is consumed; re-stage a fresh one for the client
+        // The presented code is consumed; re-stage a fresh one for the client
         // to re-render and re-submit — with the longer lifetime, since a human
         // is about to read the text.
         let identity = staged
             .parse_identity()
             .transpose()
             .or_internal("decoding the staged identity")?;
-        let (staged_id, staged_secret) = stage_login_row(
+        let login_code = stage_login_row(
             &mut *tx,
             &staged.provider,
             identity.as_ref(),
@@ -898,8 +974,7 @@ pub async fn login_complete(
         return staged_response(
             redirect_to.as_deref(),
             StatusCode::CONFLICT,
-            staged_id,
-            staged_secret,
+            login_code,
             vec!["tos".to_string()],
             Some(current_tos),
         );
@@ -965,10 +1040,10 @@ pub async fn login_complete(
     if let Some(target) = redirect_to {
         // Browser-form completion of a `return_to` flow: hand the now
         // ready-to-claim login back through the flow's return point as a fresh
-        // single-use pair, which the frontend exchanges server-to-server for
-        // the token. The pair only transits the redirect, hence the short
+        // single-use code, which the frontend exchanges server-to-server for
+        // the token. The code only transits the redirect, hence the short
         // lifetime.
-        let (staged_id, staged_secret) = stage_login_row(
+        let login_code = stage_login_row(
             &mut *tx,
             &staged.provider,
             None,
@@ -983,14 +1058,7 @@ pub async fn login_complete(
             .await
             .or_internal("committing the login-completion transaction")?;
         tracing::info!("user {user_id} completed the login step; handing back to the frontend");
-        return staged_response(
-            Some(&target),
-            StatusCode::OK,
-            staged_id,
-            staged_secret,
-            Vec::new(),
-            None,
-        );
+        return staged_response(Some(&target), StatusCode::OK, login_code, Vec::new(), None);
     }
 
     // JSON completion: mint the session token, stamped with the browser
