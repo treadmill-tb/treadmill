@@ -616,26 +616,84 @@ dl.spec-item dd {
   margin: 0;
 }
 
-/* Marks a field carrying documentation from the published schema. */
-dt .spec-hint {
+p.spec-hint {
+  color: var(--pico-muted-color);
+}
+
+/* ------------------------------------------ Help tips (help-tip.tsx) */
+
+.help-tip {
+  position: relative;
+  display: inline-block;
+  margin-left: 0.375rem;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.help-tip > button {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 0.875rem;
-  height: 0.875rem;
-  margin-left: 0.375rem;
+  width: 1rem;
+  height: 1rem;
+  padding: 0;
   border: var(--pico-border-width) solid var(--pico-form-element-border-color);
   border-radius: 50%;
+  background: none;
+  box-shadow: none;
   color: var(--pico-muted-color);
   font-family: var(--pico-font-family-sans-serif);
-  font-size: 0.625rem;
+  font-size: 0.6875rem;
   font-weight: 600;
-  vertical-align: middle;
+  line-height: 1;
   cursor: help;
 }
 
-p.spec-hint {
-  color: var(--pico-muted-color);
+/* A fingertip-sized target around the small circle. */
+.help-tip > button::before {
+  content: "";
+  position: absolute;
+  inset: -0.5rem;
+}
+
+.help-tip > button:is(:hover, [aria-expanded="true"]) {
+  border-color: var(--pico-primary);
+  color: var(--pico-primary);
+}
+
+.help-tip > button:focus-visible {
+  box-shadow: 0 0 0 var(--pico-outline-width) var(--pico-primary-focus);
+}
+
+.help-tip-bubble {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 0.5rem);
+  left: 50%;
+  width: max-content;
+  max-width: min(22rem, calc(100vw - 1rem));
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-tooltip-background-color);
+  color: var(--pico-tooltip-color);
+  font-family: var(--pico-font-family-sans-serif);
+  font-size: var(--text-sm);
+  font-weight: 400;
+  line-height: 1.45;
+  text-align: left;
+  white-space: normal;
+  transform: translateX(calc(-50% + var(--shift, 0px)));
+}
+
+.help-tip-bubble[hidden] {
+  display: none;
+}
+
+.help-tip-bubble code {
+  padding: 0 0.25rem;
+  background: color-mix(in srgb, currentColor 15%, transparent);
+  color: inherit;
 }
 
 /* ---------------------------------------------------------------- Misc */
@@ -656,6 +714,30 @@ p.spec-hint {
 }
 
 /* ---------------------------------------------------------------- Logs */
+
+/* The title and its help on the left, the stream's status at the far
+   right. */
+.log-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.log-heading > .badge {
+  margin-left: auto;
+}
+
+.log-title {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Centring uses the whole line box, descender room included, which sits the
+   icon a little below the capitals' middle. */
+.log-title .help-tip {
+  translate: 0 -0.125rem;
+}
 
 /* One tab per declared view, underlined under a rule. The rule is an inset
    shadow, which the active tab's underline paints over: overlapping a real

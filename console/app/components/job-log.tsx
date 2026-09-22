@@ -8,6 +8,7 @@ import {
 import { useEffect, useId, useMemo, useState } from "react";
 
 import { client } from "../api/client";
+import { HelpTip } from "./help-tip";
 import { LogTerminalView } from "./log-terminal-view";
 import { LogTextView } from "./log-text-view";
 import {
@@ -477,8 +478,25 @@ export function JobLog({
 
   return (
     <section>
-      <h2>
-        Logs{" "}
+      <h2 className="log-heading">
+        <span className="log-title">
+          Logs
+          <HelpTip label="About the log">
+            {replayBytes === 0 ? (
+              <>
+                Live tail only: history replay is disabled by{" "}
+                <code>?replay=0</code> in the URL.
+              </>
+            ) : (
+              <>
+                Replays up to ~{bytesLabel(replayBytes)} of stored history
+                {finalized ? "" : ", then follows live"}. Change the amount with{" "}
+                <code>?replay=</code> in the URL, e.g. <code>?replay=4M</code>,
+                or <code>?replay=0</code> for the live tail only.
+              </>
+            )}
+          </HelpTip>
+        </span>
         {status.kind === "live" &&
           (finalized ? (
             <span className="badge">replayed</span>
@@ -551,12 +569,7 @@ export function JobLog({
               )}
             </div>
           ))}
-          <p className="muted">
-            {truncated && `Earlier output omitted. `}
-            {replayBytes === 0
-              ? "Live tail only (history replay disabled by ?replay=0)."
-              : `Replays up to ~${bytesLabel(replayBytes)} of stored history${finalized ? "" : ", then follows live"} (override with ?replay=).`}
-          </p>
+          {truncated && <p className="muted">Earlier output omitted.</p>}
         </>
       )}
     </section>
