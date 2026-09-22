@@ -8,6 +8,7 @@ import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
 
 import { client } from "../api/client";
+import { ApiError, describeError } from "../api/errors";
 import { LINE_CAP, type ChannelBus, type LogView } from "./log-stream";
 
 import "@xterm/xterm/css/xterm.css";
@@ -156,7 +157,9 @@ export function LogTerminalView({
         if (creds.data === undefined) {
           setInputStatus({
             kind: "error",
-            message: `Fetching input credentials failed (HTTP ${creds.response.status}).`,
+            message: describeError(
+              new ApiError(creds.response.status, creds.error),
+            ),
           });
           setInputEnabled(false);
           return;

@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { $api } from "../api/client";
+import { ApiError } from "../api/errors";
 import type { components } from "../api/schema";
 import { JsonEditor } from "../components/json-editor";
 import { MutationError } from "../components/mutation-error";
@@ -23,16 +24,17 @@ function isRejection(error: unknown): error is HostSpecRejection {
 }
 
 function SpecError({ error }: { error: unknown }) {
-  if (!isRejection(error)) {
+  const rejection = error instanceof ApiError ? error.body : undefined;
+  if (!isRejection(rejection)) {
     return <MutationError error={error} />;
   }
   return (
     <p className="error">
-      {error.path === "" ? (
-        error.message
+      {rejection.path === "" ? (
+        rejection.message
       ) : (
         <>
-          <code className="mono">{error.path}</code>: {error.message}
+          <code className="mono">{rejection.path}</code>: {rejection.message}
         </>
       )}
     </p>

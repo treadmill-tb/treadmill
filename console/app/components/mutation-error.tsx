@@ -1,15 +1,16 @@
-/** Render a mutation's thrown error body (string, object, or Error). */
-export function MutationError({ error }: { error: unknown }) {
+import { describeError, type ErrorMessages } from "../api/errors";
+
+/** A failed request's error as a sentence, worded by `messages` for the
+ * statuses whose meaning depends on the call. */
+export function MutationError({
+  error,
+  messages,
+}: {
+  error: unknown;
+  messages?: ErrorMessages;
+}) {
   if (error == null) {
     return null;
   }
-  let text: string;
-  if (typeof error === "string") {
-    text = error;
-  } else if (error instanceof Error) {
-    text = error.message;
-  } else {
-    text = JSON.stringify(error);
-  }
-  return <p className="error">{text === "{}" ? "Request failed." : text}</p>;
+  return <p className="error">{describeError(error, messages)}</p>;
 }

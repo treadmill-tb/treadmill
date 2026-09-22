@@ -8,6 +8,7 @@ import {
 import { useEffect, useId, useMemo, useState } from "react";
 
 import { client } from "../api/client";
+import { ApiError, describeError } from "../api/errors";
 import { HelpTip } from "./help-tip";
 import { LogTerminalView } from "./log-terminal-view";
 import { LogTextView } from "./log-text-view";
@@ -188,7 +189,10 @@ export function JobLog({
       if (creds.data === undefined) {
         setStatus({
           kind: "error",
-          message: `Fetching log credentials failed (HTTP ${creds.response.status}).`,
+          message: describeError(
+            new ApiError(creds.response.status, creds.error),
+            { 403: "You are not allowed to see this job's logs." },
+          ),
         });
         return null;
       }
@@ -499,22 +503,22 @@ export function JobLog({
         </span>
         {status.kind === "live" &&
           (finalized ? (
-            <span className="badge">replayed</span>
+            <span className="badge">Replayed</span>
           ) : (
-            <span className="badge ok">live</span>
+            <span className="badge ok">Live</span>
           ))}
         {status.kind === "replaying" && (
-          <span className="badge ok">replaying</span>
+          <span className="badge ok">Replaying</span>
         )}
         {(status.kind === "connecting" ||
           status.kind === "retrying" ||
           status.kind === "waiting") && (
           <span className="badge warn">
             {status.kind === "waiting"
-              ? "waiting for logs"
+              ? "Waiting for logs"
               : status.kind === "retrying"
-                ? "reconnecting"
-                : status.kind}
+                ? "Reconnecting"
+                : "Connecting"}
           </span>
         )}
       </h2>

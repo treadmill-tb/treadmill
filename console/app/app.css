@@ -107,22 +107,6 @@ h3 {
   --pico-font-weight: 600;
 }
 
-/* A detail page's title: the object's name, and its short ID under it. */
-.page-title {
-  margin-bottom: var(--pico-typography-spacing-vertical);
-}
-
-.page-title > h1 {
-  margin-bottom: 0.25rem;
-  overflow-wrap: anywhere;
-}
-
-.page-title > p {
-  margin: 0;
-  color: var(--pico-muted-color);
-  font-size: var(--text-sm);
-}
-
 /* A heading carrying status badges lines them up with its text. */
 h1:has(.badge),
 h2:has(.badge) {
@@ -139,6 +123,22 @@ code {
 .mono {
   font-family: var(--pico-font-family-monospace);
   font-size: 0.875em;
+}
+
+/* A short `^`-form UUID, sized and aligned with the text around it. */
+.short-id {
+  font-family: var(--pico-font-family-monospace);
+  vertical-align: baseline;
+}
+
+/* A name that may be long, cut off rather than wrapped. */
+.origin-name {
+  display: inline-block;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
+  white-space: nowrap;
 }
 
 .muted {
@@ -373,10 +373,11 @@ dd > :is(button, .btn) {
 }
 
 /* A bare icon acting as a button, e.g. the pencil renaming a job. */
-.icon-btn {
+button.icon-btn {
   display: inline-flex;
-  margin-left: 0.5rem;
-  padding: 0.125rem;
+  width: auto;
+  margin: 0;
+  padding: 0.25rem;
   border: none;
   background: none;
   box-shadow: none;
@@ -384,8 +385,21 @@ dd > :is(button, .btn) {
   vertical-align: middle;
 }
 
-.icon-btn:hover {
+button.icon-btn:hover {
   color: var(--pico-primary);
+}
+
+/* A button that reads as an inline link, e.g. "Change" after a sentence. */
+button.link-btn {
+  margin: 0 0 0 0.5rem;
+  padding: 0;
+  border: none;
+  background: none;
+  box-shadow: none;
+  color: var(--pico-primary);
+  font-size: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
 }
 
 .copy-btn {
@@ -678,7 +692,7 @@ p.spec-hint {
 
 .help-tip {
   position: relative;
-  display: inline-block;
+  display: inline-flex;
   margin-left: 0.375rem;
   line-height: 1;
   vertical-align: middle;
@@ -776,12 +790,6 @@ p.spec-hint {
 .log-title {
   display: inline-flex;
   align-items: center;
-}
-
-/* Centring uses the whole line box, descender room included, which sits the
-   icon a little below the capitals' middle. */
-.log-title .help-tip {
-  translate: 0 -0.125rem;
 }
 
 /* One tab per declared view, underlined under a rule. The rule is an inset
@@ -1085,4 +1093,623 @@ p.spec-hint {
   .login-card {
     padding: 1.25rem;
   }
+}
+
+/* ------------------------------------------------ Dialogs (dialog.tsx) */
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.dialog-head > h3 {
+  margin: 0;
+}
+
+dialog > article > footer button {
+  width: auto;
+}
+
+/* Radio options as bordered cards, each with a one-line explanation. */
+.choice-list label {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+  padding: 0.75rem;
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  cursor: pointer;
+}
+
+.choice-list label:has(:checked) {
+  border-color: var(--pico-primary);
+}
+
+.choice-list input {
+  flex: none;
+  margin-top: 0.25rem;
+}
+
+.choice-list span {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ------------------------------------------ Detail page head (job-detail) */
+
+/* Name, short ID, state and actions on one line, wrapping on phones. */
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.375rem;
+}
+
+.page-head-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.625rem;
+  min-width: 0;
+}
+
+.page-head-title > h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.page-id {
+  display: inline-flex;
+  align-items: baseline;
+  color: var(--pico-muted-color);
+}
+
+.page-id > .copy-btn {
+  align-self: center;
+}
+
+.page-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* Header buttons and the badges beside headings share one height, so the
+   right-hand edge of the page lines up. */
+.page-head-actions > :is(button, .btn) {
+  display: inline-flex;
+  align-items: center;
+  height: 2rem;
+  margin: 0;
+  padding: 0 0.875rem;
+}
+
+:is(.page-head-actions, .log-heading) > .badge {
+  height: 2rem;
+  padding: 0 0.75rem;
+}
+
+.rename {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0;
+}
+
+.rename > input {
+  width: auto;
+  min-width: min(24rem, 70vw);
+  height: auto;
+  margin: 0;
+  padding: 0.125rem 0.5rem;
+  font-size: 1.375rem;
+  font-weight: 600;
+}
+
+.rename > .error {
+  flex-basis: 100%;
+  margin: 0.25rem 0 0;
+}
+
+/* Owner, host and the latest timestamp, under the title. */
+.page-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+  margin: 0;
+  color: var(--pico-muted-color);
+  font-size: var(--text-sm);
+}
+
+.page-context > span + span::before {
+  content: "·";
+  margin-right: 0.75rem;
+}
+
+/* A link to another object inside running text: icon plus underline. */
+a.icon-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 0.2em;
+}
+
+a.icon-link > svg {
+  align-self: center;
+}
+
+a.icon-link:hover {
+  text-decoration-color: currentColor;
+}
+
+/* ------------------------------------------------------- Job detail page */
+
+/* Details and host side by side, mirroring each other; the log and events
+   below span the full width. */
+.job-cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 1.5rem;
+  margin-top: 2rem;
+}
+
+@media (min-width: 960px) {
+  .job-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Body-size text throughout both cards; hierarchy comes from weight and
+   colour alone. */
+.job-cards > .card {
+  margin: 0;
+}
+
+.job-cards > .card :is(h3, h4, button, code) {
+  font-size: inherit;
+}
+
+/* A card's title as a band across its top, like Pico's article header. */
+.job-cards > .card > .card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: calc(var(--pico-block-spacing-vertical) * -1)
+    calc(var(--pico-block-spacing-horizontal) * -1) 1rem;
+  padding: 0.75rem var(--pico-block-spacing-horizontal);
+  border-bottom: var(--pico-border-width) solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius) var(--pico-border-radius) 0 0;
+  background: var(--pico-card-sectioning-background-color);
+  font-weight: 600;
+}
+
+.job-cards > .card > .card-head > svg {
+  color: var(--pico-muted-color);
+}
+
+.host-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.25rem;
+  font-weight: 600;
+}
+
+.host-name .badge + .badge {
+  margin-left: 0;
+}
+
+/* Sections within a card are ruled off from each other. */
+.job-cards > .card > :is(h4, .more-props) {
+  padding-top: 0.75rem;
+  border-top: var(--pico-border-width) solid var(--pico-muted-border-color);
+}
+
+.job-cards > .card > h4 {
+  margin: 1.25rem 0 0.5rem;
+}
+
+.job-cards dl.props {
+  grid-template-columns: minmax(6rem, max-content) minmax(0, 1fr);
+  margin: 0;
+}
+
+/* Parameters: one line each, long names and values cut off. */
+.job-cards dl.props.truncate {
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+}
+
+.job-cards dl.props.truncate > dt {
+  max-width: 14rem;
+}
+
+.job-cards dl.props.truncate > :is(dt, dd) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-cards .link-btn {
+  margin: 0.5rem 0 0;
+}
+
+.job-cards p.details-more {
+  margin: 0.75rem 0 0;
+  padding-top: 0.5rem;
+  border-top: var(--pico-border-width) solid var(--pico-muted-border-color);
+}
+
+.job-cards .more-props {
+  margin-top: 0.75rem;
+}
+
+.host-facts {
+  margin: 0;
+  color: var(--pico-muted-color);
+}
+
+.dut-list {
+  margin: 0;
+  padding: 0;
+}
+
+.dut-list > li {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin: 0;
+  padding: 0.5rem 0;
+  border-bottom: var(--pico-border-width) solid var(--pico-table-border-color);
+  list-style: none;
+}
+
+.dut-list > li:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.dut-list > li > svg {
+  flex: none;
+  color: var(--pico-muted-color);
+}
+
+.status-panel {
+  margin-top: 1.5rem;
+  padding: var(--pico-block-spacing-vertical)
+    var(--pico-block-spacing-horizontal);
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-card-background-color);
+}
+
+.status-panel > :last-child,
+.status-panel .lease > :last-child {
+  margin-bottom: 0;
+}
+
+/* Initialization stages: a segmented bar, each segment labelled. */
+.stage-progress {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.25rem;
+  margin: 0 0 1.25rem;
+  padding: 0;
+}
+
+.stage-progress > li {
+  position: relative;
+  margin: 0;
+  padding-top: 0.75rem;
+  color: var(--pico-muted-color);
+  font-size: var(--text-xs);
+  list-style: none;
+}
+
+.stage-progress > li::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 0.375rem;
+  border-radius: 999px;
+  background: var(--pico-muted-border-color);
+}
+
+.stage-progress > li.done {
+  color: var(--pico-color);
+}
+
+.stage-progress > li.done::before {
+  background: var(--active-mark);
+}
+
+.stage-progress > li.current {
+  color: var(--pico-h1-color);
+  font-weight: 600;
+}
+
+.stage-progress > li.current::before {
+  background: linear-gradient(
+      90deg,
+      var(--active-tint),
+      var(--active-mark),
+      var(--active-tint)
+    )
+    0 0 / 200% 100%;
+  animation: stage-shimmer 1.5s linear infinite;
+}
+
+@keyframes stage-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-progress > li.current::before {
+    background: var(--active-mark);
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+/* Lease: countdown, a bar of time used, and ways to change it. */
+.lease-headline {
+  margin-bottom: 0.375rem;
+  border-radius: var(--pico-border-radius);
+}
+
+.lease-headline strong {
+  font-size: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.lease-headline.flash {
+  animation: lease-flash 1.5s ease-out;
+}
+
+@keyframes lease-flash {
+  from {
+    background: var(--active-tint);
+  }
+}
+
+.lease-low {
+  color: var(--warn);
+}
+
+.lease progress {
+  margin-bottom: 0.75rem;
+}
+
+.lease progress.warn {
+  --pico-progress-color: var(--warn-mark);
+}
+
+.lease-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.lease-buttons > button {
+  margin: 0;
+  padding: 0.25rem 0.75rem;
+  font-size: var(--text-sm);
+}
+
+/* A finished job's lifecycle and workload result, side by side. */
+.outcome {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+}
+
+.outcome > div + div {
+  padding-left: 1.5rem;
+  border-left: var(--pico-border-width) solid var(--pico-muted-border-color);
+}
+
+@media (max-width: 640px) {
+  .outcome {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .outcome > div + div {
+    padding: 1.5rem 0 0;
+    border-top: var(--pico-border-width) solid var(--pico-muted-border-color);
+    border-left: none;
+  }
+}
+
+.outcome h3 {
+  margin: 0 0 0.5rem;
+  color: var(--pico-muted-color);
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.outcome-headline {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.outcome-headline > svg {
+  flex: none;
+}
+
+.outcome blockquote {
+  margin: 0 0 0.5rem;
+  padding: 0.25rem 0 0.25rem 0.875rem;
+}
+
+.outcome > div > :last-child {
+  margin-bottom: 0;
+}
+
+.tone-ok {
+  color: var(--ok);
+}
+
+.tone-warn {
+  color: var(--warn);
+}
+
+.tone-active {
+  color: var(--active);
+}
+
+.tone-danger {
+  color: var(--danger);
+}
+
+.tone-neutral {
+  color: var(--pico-h1-color);
+}
+
+/* Eligible hosts of a queued job, each with its liveness as a shape. */
+.host-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+  padding: 0;
+}
+
+.host-chips > li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0.125rem 0.625rem;
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
+  border-radius: 999px;
+  font-size: var(--text-sm);
+  list-style: none;
+}
+
+.dot {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--pico-muted-border-color);
+}
+
+.dot.ok {
+  background: var(--ok-mark);
+}
+
+.dot.warn {
+  border-radius: 1px;
+  background: var(--warn-mark);
+}
+
+.dot.danger {
+  border: 2px solid var(--danger-mark);
+  background: none;
+}
+
+/* Services: small cards in a grid, the action under the name. */
+.service-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+}
+
+.service-list > li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.5rem 0.625rem;
+  margin: 0;
+  padding: 0.75rem;
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  list-style: none;
+}
+
+.service-list > li > svg {
+  color: var(--pico-muted-color);
+}
+
+.service-list > li > :nth-child(n + 3) {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.service-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 0.5rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.service-list button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0.25rem 0.75rem;
+  font-size: var(--text-sm);
+}
+
+.ssh-help > h4 {
+  margin: 1.5rem 0 0.5rem;
+  font-size: 1rem;
+}
+
+.ssh-help > h4:first-child {
+  margin-top: 0;
+}
+
+.ssh-help > p {
+  margin-bottom: 0.5rem;
+}
+
+/* A shell command to copy; the prompt is decoration, not copied. */
+.command {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  padding: 0.375rem 0.5rem 0.375rem 0.75rem;
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-code-background-color);
+}
+
+.command > code {
+  flex: 1;
+  padding: 0;
+  background: none;
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.command > code::before {
+  content: "$ ";
+  color: var(--pico-muted-color);
+  user-select: none;
 }

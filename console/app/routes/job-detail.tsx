@@ -1,41 +1,35 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Pencil } from "lucide-react";
-import { useSearchParams } from "react-router";
+import { Check, Pencil, Server, User, X } from "lucide-react";
+import { useState } from "react";
+import { Link, useSearchParams } from "react-router";
 
 import { $api } from "../api/client";
-import {
-  JobStateBadge,
-  TaskExitBadge,
-  TerminationBadge,
-} from "../components/badges";
+import { ApiError, describeError } from "../api/errors";
+import type { components } from "../api/schema";
 import { AuditLog } from "../components/audit-log";
+import { JobStateBadge } from "../components/badges";
 import { CopyButton } from "../components/copy-button";
-import { Digest } from "../components/digest";
-import { EntityLink, shortId } from "../components/entity-link";
-import { ImageRef } from "../components/image-ref";
+import { ConfirmDialog } from "../components/dialog";
+import { EntityLink, ShortId } from "../components/entity-link";
+import { HostCard } from "../components/host-card";
+import { JobDetails } from "../components/job-details";
 import { JobLog, parseReplayBytes } from "../components/job-log";
 import { JobServices } from "../components/job-services";
+import { JobStatus } from "../components/job-status";
 import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
 import { useResourceWatch } from "../hooks/use-resource-watch";
+import { useUpdateJob } from "../hooks/use-update-job";
 import type { Route } from "./+types/job-detail";
 
-const LEASE_PROMPT =
-  'New lease: "2h" to set it, "+30m" / "-10m" to extend or shorten, ' +
-  "or an ISO timestamp to end it at a fixed instant.";
-
-function formatSeconds(secs: number): string {
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  const s = secs % 60;
-  return [h && `${h}h`, m && `${m}m`, (s || !(h || m)) && `${s}s`]
-    .filter(Boolean)
-    .join(" ");
-}
+type JobInfo = components["schemas"]["JobInfo"];
 
 export default function JobDetail({ params }: Route.ComponentProps) {
   const queryClient = useQueryClient();
-  useResourceWatch(`/jobs/${params.id}/watch`, ["get", "/jobs/{id}"]);
+  const watchStopped = useResourceWatch(`/jobs/${params.id}/watch`, [
+    "get",
+    "/jobs/{id}",
+  ]);
   // Per-page-load override for how much log history to replay (a user
   // settings page may subsume this later).
   const [searchParams] = useSearchParams();
@@ -43,6 +37,7 @@ export default function JobDetail({ params }: Route.ComponentProps) {
   const job = $api.useQuery("get", "/jobs/{id}", {
     params: { path: { id: params.id } },
   });
+  const hosts = $api.useQuery("get", "/hosts");
   const terminate = $api.useMutation("delete", "/jobs/{id}", {
     onSuccess: async () => {
       await Promise.all([
@@ -54,255 +49,256 @@ export default function JobDetail({ params }: Route.ComponentProps) {
       ]);
     },
   });
-  const update = $api.useMutation("patch", "/jobs/{id}", {
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["get", "/jobs/{id}"] }),
-        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
-        queryClient.invalidateQueries({
-          queryKey: ["audit", "jobs", params.id],
-        }),
-      ]);
-    },
-  });
+  const [confirmTerminate, setConfirmTerminate] = useState(false);
+
+  if (job.isPending) return <p className="muted">Loading…</p>;
+  if (job.isError) {
+    return (
+      <MutationError
+        error={job.error}
+        messages={{
+          403: "This job doesn't exist, or you don't have access to it.",
+        }}
+      />
+    );
+  }
+
+  const data = job.data;
+  const host = hosts.data?.find(
+    (h) => h.host_id === data.dispatched_on_host_id,
+  );
+  const finalized = data.state === "finalized";
+  const canManage = data.permissions.includes("manage");
 
   return (
     <>
-      <hgroup className="page-title">
-        <h1>
-          {job.data === undefined ? (
-            "Job"
-          ) : job.data.label != null ? (
-            job.data.label
+      <header className="page-head">
+        <div className="page-head-title">
+          <JobName job={data} />
+          <span className="page-id">
+            (
+            <ShortId id={data.job_id} />
+            <CopyButton value={data.job_id} label="Copy full job ID" />)
+          </span>
+        </div>
+        <div className="page-head-actions">
+          <JobStateBadge state={data.state} stage={data.initializing_stage} />
+          {finalized ? (
+            <Link className="btn" to="/jobs/new">
+              Resume
+            </Link>
           ) : (
-            <em className="muted">Unnamed Job</em>
+            data.permissions.includes("stop") && (
+              <button
+                type="button"
+                className="danger"
+                disabled={data.state === "terminating" || terminate.isPending}
+                onClick={() => setConfirmTerminate(true)}
+              >
+                {terminate.isPending ? "Terminating…" : "Terminate"}
+              </button>
+            )
           )}
-          {job.data?.permissions.includes("manage") && (
-            <button
-              type="button"
-              className="icon-btn"
-              title="Rename job"
-              aria-label="Rename job"
-              disabled={update.isPending}
-              onClick={() => {
-                const label = window.prompt(
-                  "Job name (empty clears it):",
-                  job.data.label ?? "",
-                );
-                if (label !== null) {
-                  update.mutate({
-                    params: { path: { id: params.id } },
-                    body: { label: label === "" ? null : label },
-                  });
-                }
-              }}
-            >
-              <Pencil size={18} aria-hidden="true" />
-            </button>
-          )}
-        </h1>
-        <p>
-          Job{" "}
-          <span className="mono" title={params.id}>
-            {shortId(params.id)}
-          </span>{" "}
-          <CopyButton value={params.id} label="Copy full job ID" />
+        </div>
+      </header>
+      <JobContext job={data} hostName={host?.name} />
+      {watchStopped !== null && (
+        <p className="error">
+          Live updates stopped.{" "}
+          {describeError(new ApiError(watchStopped, undefined), {
+            403: "You no longer have access to this job.",
+          })}{" "}
+          Reload the page to see its latest state.
         </p>
-      </hgroup>
-      {job.isPending && <p className="muted">Loading…</p>}
-      {job.isError && <p className="error">Failed to load the job.</p>}
-      {job.data && (
-        <>
-          <div className="toolbar">
-            <JobStateBadge
-              state={job.data.state}
-              stage={job.data.initializing_stage}
-            />
-            <button
-              className="danger"
-              disabled={job.data.state === "finalized" || terminate.isPending}
-              onClick={() => {
-                const name = job.data.label ?? "unnamed job";
-                if (
-                  window.confirm(`Terminate ${name} (${shortId(params.id)})?`)
-                ) {
-                  terminate.mutate({ params: { path: { id: params.id } } });
-                }
-              }}
-            >
-              {terminate.isPending ? "Terminating…" : "Terminate"}
-            </button>
-          </div>
-          <MutationError error={terminate.error} />
-          <MutationError error={update.error} />
+      )}
+      <MutationError
+        error={terminate.error}
+        messages={{ 403: "You are not allowed to terminate this job." }}
+      />
+      <ConfirmDialog
+        open={confirmTerminate}
+        title="Terminate this job?"
+        confirmLabel="Terminate"
+        danger
+        onConfirm={() => {
+          setConfirmTerminate(false);
+          terminate.mutate({ params: { path: { id: params.id } } });
+        }}
+        onCancel={() => setConfirmTerminate(false)}
+      >
+        <p>
+          {data.label != null ? <strong>{data.label}</strong> : "This job"} (
+          <ShortId id={data.job_id} />) will be stopped
+          {data.dispatched_on_host_id != null && " and its host freed up"}. This
+          cannot be undone.
+        </p>
+      </ConfirmDialog>
 
-          <dl className="props">
-            <dt>Image</dt>
-            <dd>
-              <ImageRef
-                image={job.data.image}
-                predecessor={job.data.predecessor}
-              />
-            </dd>
-            <dt>Resolved digest</dt>
-            <dd>
-              <Digest digest={job.data.image.resolved_digest} />
-            </dd>
-            <dt>Owner</dt>
-            <dd>
-              <EntityLink kind="user" id={job.data.owner_id} />
-            </dd>
-            <dt>Host</dt>
-            <dd>
-              <EntityLink kind="host" id={job.data.dispatched_on_host_id} />
-            </dd>
-            <dt>Address</dt>
-            <dd>
-              {job.data.job_ip_address === null ||
-              job.data.job_ip_address === undefined ? (
-                <span className="muted">—</span>
-              ) : (
-                <span className="mono">{job.data.job_ip_address}</span>
-              )}
-            </dd>
-            <dt>Queued</dt>
-            <dd>
-              <RelTime iso={job.data.queued_at} />
-            </dd>
-            <dt>Started</dt>
-            <dd>
-              <RelTime iso={job.data.started_at} />
-            </dd>
-            <dt>Terminated</dt>
-            <dd>
-              <RelTime iso={job.data.terminated_at} />
-            </dd>
-            <dt>Lease</dt>
-            <dd>
-              {formatSeconds(job.data.lease_duration_secs)}
-              {job.data.lease_expires_at != null && (
-                <>
-                  {" · expires "}
-                  <RelTime iso={job.data.lease_expires_at} />
-                </>
-              )}{" "}
-              {job.data.permissions.includes("manage") && (
-                <button
-                  disabled={update.isPending}
-                  onClick={() => {
-                    const lease = window.prompt(LEASE_PROMPT, "+30m");
-                    if (lease !== null && lease !== "") {
-                      update.mutate({
-                        params: { path: { id: params.id } },
-                        body: { lease },
-                      });
-                    }
-                  }}
-                >
-                  Change
-                </button>
-              )}
-            </dd>
-            <dt>At lease expiry</dt>
-            <dd>
-              {job.data.lease_expiry_action === "preempt"
-                ? "keep running; reclaim when a host is needed"
-                : "terminate"}{" "}
-              {job.data.permissions.includes("manage") && (
-                <button
-                  disabled={update.isPending}
-                  onClick={() =>
-                    update.mutate({
-                      params: { path: { id: params.id } },
-                      body: {
-                        lease_expiry_action:
-                          job.data.lease_expiry_action === "preempt"
-                            ? "terminate"
-                            : "preempt",
-                      },
-                    })
-                  }
-                >
-                  {job.data.lease_expiry_action === "preempt"
-                    ? "Terminate instead"
-                    : "Allow reclaim instead"}
-                </button>
-              )}
-            </dd>
-            <dt>Restarts left</dt>
-            <dd>{job.data.restart_policy.remaining_restarts}</dd>
-            <dt>Host predicate</dt>
-            <dd>
-              <code>{job.data.host_cel_predicate}</code>
-            </dd>
-            <dt>Outcome</dt>
-            <dd>
-              <TaskExitBadge status={job.data.task_exit_status} />{" "}
-              <TerminationBadge reason={job.data.termination_reason} />
-              {job.data.exit_message != null && (
-                <div className="muted">{job.data.exit_message}</div>
-              )}
-            </dd>
-          </dl>
+      <JobStatus job={data} hosts={hosts.data} />
 
-          <section>
-            <h2>Parameters</h2>
-            {Object.keys(job.data.parameters).length === 0 ? (
-              <p className="muted">No parameters.</p>
-            ) : (
-              <div className="overflow-auto">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(job.data.parameters).map(([name, p]) => (
-                      <tr key={name}>
-                        <td className="mono">{name}</td>
-                        <td>
-                          {p.secret ? (
-                            <span className="badge warn" title="Value withheld">
-                              secret
-                            </span>
-                          ) : (
-                            <span className="mono">{p.value}</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
+      {!finalized && (
+        <JobServices
+          jobId={params.id}
+          services={data.services}
+          canOpen={canManage && !finalized}
+        />
+      )}
 
-          <JobServices
-            jobId={params.id}
-            services={job.data.services}
-            canOpen={
-              job.data.permissions.includes("manage") &&
-              job.data.state !== "finalized"
-            }
-          />
+      <div className="job-cards">
+        <JobDetails job={data} />
+        {host !== undefined && <HostCard host={host} />}
+      </div>
 
-          <JobLog
-            key={`${params.id} ${replayBytes}`}
-            jobId={params.id}
-            dispatched={job.data.dispatched_on_host_id != null}
-            replayBytes={replayBytes}
-            finalized={job.data.state === "finalized"}
-            canSendInput={
-              job.data.permissions.includes("manage") &&
-              job.data.state !== "finalized"
-            }
-          />
+      <JobLog
+        key={`${params.id} ${replayBytes}`}
+        jobId={params.id}
+        dispatched={data.dispatched_on_host_id != null}
+        replayBytes={replayBytes}
+        finalized={finalized}
+        canSendInput={canManage && !finalized}
+      />
 
-          <AuditLog entity="jobs" id={params.id} />
-        </>
+      <AuditLog entity="jobs" id={params.id} />
+    </>
+  );
+}
+
+/** The job's name as the page title; the pencil turns it into a text box. */
+function JobName({ job }: { job: JobInfo }) {
+  const update = useUpdateJob(job.job_id);
+  const [draft, setDraft] = useState<string | null>(null);
+  const cancel = () => {
+    setDraft(null);
+    update.reset();
+  };
+
+  if (draft !== null) {
+    return (
+      <form
+        className="rename"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const label = draft.trim();
+          update.mutate(
+            {
+              params: { path: { id: job.job_id } },
+              body: { label: label === "" ? null : label },
+            },
+            { onSuccess: () => setDraft(null) },
+          );
+        }}
+      >
+        <input
+          aria-label="Job name"
+          placeholder="Unnamed Job"
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === "Escape" && cancel()}
+        />
+        <button
+          type="submit"
+          className="icon-btn"
+          title="Save name"
+          aria-label="Save name"
+          disabled={update.isPending}
+        >
+          <Check size={20} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="icon-btn"
+          title="Cancel"
+          aria-label="Cancel renaming"
+          onClick={cancel}
+        >
+          <X size={20} aria-hidden="true" />
+        </button>
+        <MutationError
+          error={update.error}
+          messages={{ 403: "You are not allowed to rename this job." }}
+        />
+      </form>
+    );
+  }
+
+  return (
+    <>
+      <h1>{job.label ?? <em className="muted">Unnamed Job</em>}</h1>
+      {job.permissions.includes("manage") && (
+        <button
+          type="button"
+          className="icon-btn"
+          title="Rename job"
+          aria-label="Rename job"
+          onClick={() => setDraft(job.label ?? "")}
+        >
+          <Pencil size={18} aria-hidden="true" />
+        </button>
       )}
     </>
+  );
+}
+
+/** Who owns the job, where it runs, and the last thing that happened to it. */
+function JobContext({
+  job,
+  hostName,
+}: {
+  job: JobInfo;
+  hostName: string | undefined;
+}) {
+  // A group owner has no profile to fetch, and falls back to its short ID.
+  const owner = $api.useQuery(
+    "get",
+    "/users/{id}",
+    { params: { path: { id: job.owner_id ?? "" } } },
+    { enabled: job.owner_id != null },
+  );
+
+  return (
+    <p className="page-context">
+      <span>
+        Owner:{" "}
+        {job.owner_id == null ? (
+          <span className="muted">none</span>
+        ) : (
+          <EntityLink
+            kind="user"
+            id={job.owner_id}
+            label={owner.data?.name}
+            icon={User}
+          />
+        )}
+      </span>
+      <span>
+        Host:{" "}
+        {job.dispatched_on_host_id == null ? (
+          <span className="muted">not assigned yet</span>
+        ) : (
+          <EntityLink
+            kind="host"
+            id={job.dispatched_on_host_id}
+            label={hostName}
+            icon={Server}
+          />
+        )}
+      </span>
+      <span>
+        {job.terminated_at != null ? (
+          <>
+            ended <RelTime iso={job.terminated_at} />
+          </>
+        ) : job.started_at != null ? (
+          <>
+            started <RelTime iso={job.started_at} />
+          </>
+        ) : (
+          <>
+            queued <RelTime iso={job.queued_at} />
+          </>
+        )}
+      </span>
+    </p>
   );
 }

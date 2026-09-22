@@ -2,8 +2,10 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { client } from "../api/client";
+import { ApiError } from "../api/errors";
 import type { components } from "../api/schema";
 import { EntityLink } from "./entity-link";
+import { MutationError } from "./mutation-error";
 import { RelTime } from "./rel-time";
 
 type AuditFeedResponse = components["schemas"]["AuditFeedResponse"];
@@ -23,14 +25,14 @@ function useAuditFeed(entity: AuditEntity, id: string, enabled: boolean) {
     enabled,
     queryKey: ["audit", entity, id],
     queryFn: async ({ pageParam }): Promise<AuditFeedResponse> => {
-      const { data, response } = await client.GET(PATHS[entity], {
+      const { data, error, response } = await client.GET(PATHS[entity], {
         params: {
           path: { id },
           query: pageParam !== undefined ? { cursor: pageParam } : {},
         },
       });
       if (data === undefined) {
-        throw new Error(`fetching audit events failed (${response.status})`);
+        throw new ApiError(response.status, error);
       }
       return data;
     },
@@ -64,7 +66,10 @@ function AuditEvents({ feed }: { feed: ReturnType<typeof useAuditFeed> }) {
   return (
     <>
       {feed.isPending && <p className="muted">Loading…</p>}
-      {feed.isError && <p className="error">{feed.error.message}</p>}
+      <MutationError
+        error={feed.error}
+        messages={{ 403: "You are not allowed to see these events." }}
+      />
       {feed.data && (
         <>
           {feed.data.pages[0]?.events.length === 0 ? (

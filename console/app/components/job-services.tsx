@@ -1,7 +1,11 @@
+import { ExternalLink, Globe, Plug, SquareTerminal } from "lucide-react";
 import { useState } from "react";
 
 import { client } from "../api/client";
+import { ApiError, describeError, type ErrorMessages } from "../api/errors";
 import type { components } from "../api/schema";
+import { CopyButton } from "./copy-button";
+import { Dialog } from "./dialog";
 
 type JobServiceView = components["schemas"]["JobServiceView"];
 
@@ -9,6 +13,13 @@ type JobServiceView = components["schemas"]["JobServiceView"];
  * HTTPS and takes the token from the query. Every other protocol names some
  * client we cannot launch, so those services are listed but not offered. */
 const BROWSER_PROTOCOL = "webapp";
+
+/** SSH tunnelled over a websocket, which `tml` knows how to connect to. */
+const SSH_PROTOCOL = "sshws";
+
+/** The domain `tml ssh setup` routes through `tml` in the SSH config: the CLI's
+ * default `ssh_domains` entry (`cli/src/config.rs`), not a gateway domain. */
+const SSH_DOMAIN = "job.treadmill.dev";
 
 type OpenState =
   | { kind: "idle" }
@@ -18,25 +29,18 @@ type OpenState =
   | { kind: "blocked"; service: string; href: string }
   | { kind: "error"; message: string };
 
-function mintFailure(status: number): string {
-  switch (status) {
-    case 403:
-      return "You are not authorized to open this job's services.";
-    case 404:
-      return "The job is no longer announcing this service.";
-    case 409:
-      return "The job has not reported an address yet; try again shortly.";
-    case 503:
-      return "This switchboard does not offer gateway access.";
-    default:
-      return `Could not mint a token for this service (HTTP ${status}).`;
-  }
-}
+const MINT_ERRORS: ErrorMessages = {
+  403: "You are not authorized to open this job's services.",
+  404: "The job is no longer announcing this service.",
+  409: "The job has not reported an address yet; try again shortly.",
+  503: "This switchboard does not offer gateway access.",
+};
 
 /**
- * The services a job announced, each opened by minting a token for it and
- * following the URL (crafted from the switchboard endpoint) with that token in
- * the query.
+ * The services a job announced. A browser service opens by minting a token for
+ * it and following the URL (crafted from the switchboard endpoint) with that
+ * token in the query; an SSH service explains how to connect with `tml`; any
+ * other protocol is only listed.
  *
  * The set arrives with the job, so a `/jobs/{id}/watch` wake-up refreshes it
  * like any other field: a service announced while the page is open shows up on
@@ -73,7 +77,13 @@ export function JobServices({
 
     if (creds.data === undefined) {
       tab?.close();
-      setState({ kind: "error", message: mintFailure(creds.response.status) });
+      setState({
+        kind: "error",
+        message: describeError(
+          new ApiError(creds.response.status, creds.error),
+          MINT_ERRORS,
+        ),
+      });
       return;
     }
 
@@ -99,61 +109,121 @@ export function JobServices({
     setState({ kind: "idle" });
   }
 
+  const [sshService, setSshService] = useState<JobServiceView | null>(null);
+
   return (
     <section>
       <h2>Services</h2>
       {services.length === 0 ? (
-        <p className="muted">No services announced.</p>
+        <p className="muted">
+          <em>Job does not announce any services yet</em>
+        </p>
       ) : (
-        <div className="overflow-auto">
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Label</th>
-                <th>Protocol</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {services.map((service) => (
-                <tr key={service.name}>
-                  <td className="mono">{service.name}</td>
-                  <td>{service.label ?? <span className="muted">—</span>}</td>
-                  <td>
-                    <span className="badge">{service.protocol}</span>
-                  </td>
-                  <td>
-                    {service.protocol !== BROWSER_PROTOCOL ? (
-                      <span className="muted">—</span>
-                    ) : state.kind === "blocked" &&
-                      state.service === service.name ? (
-                      <a
-                        href={state.href}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        Open {service.name}
-                      </a>
-                    ) : (
-                      <button
-                        disabled={!canOpen || state.kind === "opening"}
-                        onClick={() => void open(service.name)}
-                      >
-                        {state.kind === "opening" &&
-                        state.service === service.name
-                          ? "Opening…"
-                          : "Open"}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <ul className="service-list">
+          {services.map((service) => {
+            const Icon =
+              service.protocol === BROWSER_PROTOCOL
+                ? Globe
+                : service.protocol === SSH_PROTOCOL
+                  ? SquareTerminal
+                  : Plug;
+            return (
+              <li key={service.name}>
+                <Icon size={20} aria-hidden="true" />
+                <span className="service-name">
+                  <strong>{service.label ?? service.name}</strong>
+                  {service.label != null && (
+                    <span className="mono muted">{service.name}</span>
+                  )}
+                </span>
+                {service.protocol === BROWSER_PROTOCOL ? (
+                  state.kind === "blocked" && state.service === service.name ? (
+                    <a
+                      href={state.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Open {service.name}
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={!canOpen || state.kind === "opening"}
+                      onClick={() => void open(service.name)}
+                    >
+                      {state.kind === "opening" &&
+                      state.service === service.name
+                        ? "Opening…"
+                        : "Open"}
+                      <ExternalLink size={14} aria-hidden="true" />
+                    </button>
+                  )
+                ) : service.protocol === SSH_PROTOCOL ? (
+                  <button
+                    type="button"
+                    disabled={!canOpen}
+                    onClick={() => setSshService(service)}
+                  >
+                    Connect…
+                  </button>
+                ) : (
+                  <span className="muted">
+                    protocol: <span className="mono">{service.protocol}</span>
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       )}
       {state.kind === "error" && <p className="error">{state.message}</p>}
+      <Dialog
+        open={sshService !== null}
+        onClose={() => setSshService(null)}
+        title={`Connect to ${sshService?.label ?? sshService?.name ?? ""}`}
+      >
+        {sshService !== null && (
+          <SshInstructions jobId={jobId} service={sshService.name} />
+        )}
+      </Dialog>
     </section>
+  );
+}
+
+/** The two ways into an `sshws` service: through `tml`, or plain `ssh`. */
+function SshInstructions({
+  jobId,
+  service,
+}: {
+  jobId: string;
+  service: string;
+}) {
+  return (
+    <div className="ssh-help">
+      <h4>With tml</h4>
+      <p>Make this the active job, then connect to it:</p>
+      <Command text={`tml job set-active ${jobId}`} />
+      <Command text="tml job ssh" />
+
+      <h4>With plain ssh</h4>
+      <p>
+        Also works for <code>scp</code>, <code>rsync</code> and editors&apos;
+        remote-SSH support. First, once per machine, let <code>tml</code> set up
+        your SSH config:
+      </p>
+      <Command text="tml ssh setup" tag="one-time" />
+      <p>Then connect with:</p>
+      <Command text={`ssh ${service}-${jobId}.${SSH_DOMAIN}`} />
+    </div>
+  );
+}
+
+function Command({ text, tag }: { text: string; tag?: string }) {
+  return (
+    <div className="command">
+      <code>{text}</code>
+      {tag !== undefined && <span className="badge">{tag}</span>}
+      <CopyButton value={text} label="Copy command" />
+    </div>
   );
 }

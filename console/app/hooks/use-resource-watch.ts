@@ -1,6 +1,6 @@
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { type QueryKey, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { API_ORIGIN, clearToken, getToken } from "../api/client";
 
@@ -13,12 +13,20 @@ class FatalError extends Error {}
  * carries the bearer token, reconnects across the server's channel TTL, and is
  * torn down when the component unmounts. A `401` clears the session and returns
  * to login; a `403` (grant revoked) stops watching without retrying.
+ *
+ * Returns the HTTP status that stopped the watch for good, or null while it is
+ * running, so a page can say its data is no longer live.
  */
 export function useResourceWatch(
   watchPath: string,
   invalidateKey: QueryKey,
-): void {
+): number | null {
   const queryClient = useQueryClient();
+  // Keyed by path, so a different resource starts out live again.
+  const [stopped, setStopped] = useState<{
+    path: string;
+    status: number;
+  } | null>(null);
   const serializedKey = JSON.stringify(invalidateKey);
 
   useEffect(() => {
@@ -36,6 +44,7 @@ export function useResourceWatch(
           clearToken();
           window.location.assign("/login");
         }
+        setStopped({ path: watchPath, status: response.status });
         throw new FatalError(`watch ${watchPath} failed: ${response.status}`);
       },
       onmessage(event) {
@@ -56,4 +65,6 @@ export function useResourceWatch(
 
     return () => controller.abort();
   }, [watchPath, serializedKey, queryClient]);
+
+  return stopped?.path === watchPath ? stopped.status : null;
 }

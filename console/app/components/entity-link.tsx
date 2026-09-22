@@ -1,3 +1,4 @@
+import type { LucideIcon } from "lucide-react";
 import { Link } from "react-router";
 
 /**
@@ -7,6 +8,15 @@ import { Link } from "react-router";
  */
 export function shortId(id: string): string {
   return `^${id.replaceAll("-", "").slice(-8)}`;
+}
+
+/** A UUID in its short form, the full one on hover. */
+export function ShortId({ id }: { id: string }) {
+  return (
+    <span className="short-id" title={id}>
+      {shortId(id)}
+    </span>
+  );
 }
 
 const ROUTES = {
@@ -20,10 +30,13 @@ export function EntityLink({
   kind,
   id,
   label,
+  icon: Icon,
 }: {
   kind: keyof typeof ROUTES;
   id: string | null | undefined;
   label?: string;
+  /** Marks the link out as one, for where plain text surrounds it. */
+  icon?: LucideIcon;
 }) {
   if (id == null) {
     return <span className="muted">—</span>;
@@ -31,9 +44,14 @@ export function EntityLink({
   return (
     <Link
       to={`${ROUTES[kind]}/${id}`}
-      className={label === undefined ? "mono" : undefined}
+      className={
+        [label === undefined && "short-id", Icon !== undefined && "icon-link"]
+          .filter(Boolean)
+          .join(" ") || undefined
+      }
       title={id}
     >
+      {Icon !== undefined && <Icon size={14} aria-hidden="true" />}
       {label ?? shortId(id)}
     </Link>
   );

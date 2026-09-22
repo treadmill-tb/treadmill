@@ -5,8 +5,56 @@ type JobInitializingStage = components["schemas"]["JobInitializingStage"];
 type TaskExitStatus = components["schemas"]["TaskExitStatus"];
 type TerminationReason = components["schemas"]["TerminationReason"];
 
-// Exhaustive switches over the generated unions: a new API variant fails the
+// Exhaustive records over the generated unions: a new API variant fails the
 // build here instead of rendering wrongly.
+
+export type Tone = "ok" | "active" | "warn" | "danger" | "";
+
+const JOB_STATES: Record<JobState, { label: string; tone: Tone }> = {
+  queued: { label: "Queued", tone: "warn" },
+  assigned: { label: "Assigned", tone: "warn" },
+  initializing: { label: "Starting up", tone: "active" },
+  ready: { label: "Running", tone: "active" },
+  terminating: { label: "Shutting down", tone: "warn" },
+  finalized: { label: "Finished", tone: "" },
+};
+
+export const INITIALIZING_STAGES: Record<JobInitializingStage, string> = {
+  starting: "Starting",
+  fetching_image: "Fetching image",
+  allocating: "Allocating",
+  provisioning: "Provisioning",
+  booting: "Booting",
+};
+
+const TASK_EXITS: Record<TaskExitStatus, { label: string; tone: Tone }> = {
+  pending: { label: "No result yet", tone: "active" },
+  success: { label: "Succeeded", tone: "ok" },
+  failure: { label: "Failed", tone: "danger" },
+};
+
+/** Why a job ended, as a sentence a newcomer understands. */
+export const TERMINATION_REASONS: Record<
+  TerminationReason,
+  { label: string; tone: Tone }
+> = {
+  workload_exited: { label: "Job terminated normally", tone: "" },
+  workload_self_terminated: { label: "Job shut itself down", tone: "" },
+  user_terminated: { label: "Terminated by a user", tone: "" },
+  execution_timeout: { label: "Stopped when its lease ran out", tone: "warn" },
+  preempted: {
+    label: "Host reclaimed after the lease ended",
+    tone: "warn",
+  },
+  queue_timeout: { label: "Gave up waiting for a host", tone: "warn" },
+  image_error: { label: "Its image could not be used", tone: "danger" },
+  host_match_error: { label: "No host matched it", tone: "danger" },
+  host_start_failure: { label: "The host failed to start it", tone: "danger" },
+  host_dropped_job: { label: "Host dropped job", tone: "danger" },
+  host_unreachable: { label: "The host became unreachable", tone: "danger" },
+  resume_failed: { label: "Resuming job failed", tone: "danger" },
+  internal_error: { label: "Switchboard error", tone: "danger" },
+};
 
 export function JobStateBadge({
   state,
@@ -15,26 +63,14 @@ export function JobStateBadge({
   state: JobState;
   stage?: JobInitializingStage | null;
 }) {
-  let cls: string;
-  switch (state) {
-    case "queued":
-    case "assigned":
-      cls = "warn";
-      break;
-    case "initializing":
-    case "ready":
-      cls = "active";
-      break;
-    case "terminating":
-      cls = "warn";
-      break;
-    case "finalized":
-      cls = "";
-      break;
-  }
-  const label =
-    state === "initializing" && stage != null ? `${state}: ${stage}` : state;
-  return <span className={`badge ${cls}`}>{label}</span>;
+  const { label, tone } = JOB_STATES[state];
+  return (
+    <span className={`badge ${tone}`} title={state}>
+      {state === "initializing" && stage != null
+        ? `${label}: ${INITIALIZING_STAGES[stage].toLowerCase()}`
+        : label}
+    </span>
+  );
 }
 
 export function TaskExitBadge({
@@ -45,19 +81,12 @@ export function TaskExitBadge({
   if (status == null) {
     return <span className="muted">—</span>;
   }
-  let cls: string;
-  switch (status) {
-    case "pending":
-      cls = "active";
-      break;
-    case "success":
-      cls = "ok";
-      break;
-    case "failure":
-      cls = "danger";
-      break;
-  }
-  return <span className={`badge ${cls}`}>{status}</span>;
+  const { label, tone } = TASK_EXITS[status];
+  return (
+    <span className={`badge ${tone}`} title={status}>
+      {label}
+    </span>
+  );
 }
 
 export function TerminationBadge({
@@ -68,29 +97,12 @@ export function TerminationBadge({
   if (reason == null) {
     return <span className="muted">—</span>;
   }
-  let cls: string;
-  switch (reason) {
-    case "workload_exited":
-    case "workload_self_terminated":
-    case "user_terminated":
-      cls = "";
-      break;
-    case "queue_timeout":
-    case "execution_timeout":
-    case "preempted":
-      cls = "warn";
-      break;
-    case "image_error":
-    case "host_match_error":
-    case "host_start_failure":
-    case "host_dropped_job":
-    case "host_unreachable":
-    case "resume_failed":
-    case "internal_error":
-      cls = "danger";
-      break;
-  }
-  return <span className={`badge ${cls}`}>{reason}</span>;
+  const { label, tone } = TERMINATION_REASONS[reason];
+  return (
+    <span className={`badge ${tone}`} title={reason}>
+      {label}
+    </span>
+  );
 }
 
 export function LiveBadge({ live }: { live: boolean }) {

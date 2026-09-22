@@ -32,7 +32,7 @@ export function ImageRef({
           set{" "}
           <Link
             to={`/image-sets/${ref.set_id}/generations/${ref.generation}`}
-            className="mono"
+            className="short-id"
             title={ref.set_id}
           >
             {shortId(ref.set_id)}#{ref.generation}
