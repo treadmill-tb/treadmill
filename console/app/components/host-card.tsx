@@ -3,7 +3,7 @@ import { useState } from "react";
 
 import type { components } from "../api/schema";
 import { LiveBadge } from "./badges";
-import { EntityLink } from "./entity-link";
+import { EntityLink, ShortId } from "./entity-link";
 
 type HostListEntry = components["schemas"]["HostListEntry"];
 
@@ -129,6 +129,21 @@ export function HostCard({ host }: { host: HostListEntry }) {
           </button>
         </p>
       )}
+    </aside>
+  );
+}
+
+export function UnreadableHostCard({ hostId }: { hostId: string }) {
+  return (
+    <aside className="card host-card">
+      <h3 className="card-head">
+        <Server size={18} aria-hidden="true" />
+        Assigned Host
+      </h3>
+      <p className="host-name">
+        <ShortId id={hostId} />
+      </p>
+      <p className="muted">You can't view this host.</p>
     </aside>
   );
 }

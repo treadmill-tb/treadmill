@@ -10,8 +10,9 @@ import { AuditLog } from "../components/audit-log";
 import { JobStateBadge } from "../components/badges";
 import { CopyButton } from "../components/copy-button";
 import { ConfirmDialog } from "../components/dialog";
+import { EligibleHostsCard } from "../components/eligible-hosts-card";
 import { EntityLink, ShortId } from "../components/entity-link";
-import { HostCard } from "../components/host-card";
+import { HostCard, UnreadableHostCard } from "../components/host-card";
 import { JobDetails } from "../components/job-details";
 import { JobLog, parseReplayBytes } from "../components/job-log";
 import { RerunButtons } from "../components/job-rerun";
@@ -131,7 +132,7 @@ export default function JobDetail({ params }: Route.ComponentProps) {
         </p>
       </ConfirmDialog>
 
-      <JobStatus job={data} hosts={hosts.data} />
+      <JobStatus job={data} />
 
       {!finalized && (
         <JobServices
@@ -143,7 +144,15 @@ export default function JobDetail({ params }: Route.ComponentProps) {
 
       <div className="job-cards">
         <JobDetails job={data} />
-        {host !== undefined && <HostCard host={host} />}
+        {data.dispatched_on_host_id == null ? (
+          <EligibleHostsCard job={data} hosts={hosts.data} />
+        ) : host !== undefined ? (
+          <HostCard host={host} />
+        ) : (
+          hosts.data !== undefined && (
+            <UnreadableHostCard hostId={data.dispatched_on_host_id} />
+          )
+        )}
       </div>
 
       <JobLog

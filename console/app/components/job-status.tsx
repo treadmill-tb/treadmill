@@ -12,17 +12,12 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 
-import { $api } from "../api/client";
 import type { components } from "../api/schema";
 import { INITIALIZING_STAGES, TERMINATION_REASONS, type Tone } from "./badges";
-import { EntityLink } from "./entity-link";
-import { HelpTip } from "./help-tip";
 import { formatSeconds, JobLease } from "./job-lease";
 import { RelTime } from "./rel-time";
-import { RequestError } from "./request-error";
 
 type JobInfo = components["schemas"]["JobInfo"];
-type HostListEntry = components["schemas"]["HostListEntry"];
 type JobInitializingStage = components["schemas"]["JobInitializingStage"];
 
 const TONE_ICON: Record<Tone, LucideIcon> = {
@@ -57,18 +52,12 @@ function Headline({
  * in its lifecycle (and what can be done about that), and what its workload
  * has reported.
  */
-export function JobStatus({
-  job,
-  hosts,
-}: {
-  job: JobInfo;
-  hosts: HostListEntry[] | undefined;
-}) {
+export function JobStatus({ job }: { job: JobInfo }) {
   return (
     <div className="status-panel outcome">
       <div>
         <h3>Job lifecycle</h3>
-        <Lifecycle job={job} hosts={hosts} />
+        <Lifecycle job={job} />
       </div>
       <div>
         <h3>Workload result</h3>
@@ -78,13 +67,7 @@ export function JobStatus({
   );
 }
 
-function Lifecycle({
-  job,
-  hosts,
-}: {
-  job: JobInfo;
-  hosts: HostListEntry[] | undefined;
-}) {
+function Lifecycle({ job }: { job: JobInfo }) {
   const lease = (
     <JobLease job={job} canManage={job.permissions.includes("manage")} />
   );
@@ -95,7 +78,6 @@ function Lifecycle({
           <Headline icon={Clock} tone="warn">
             Waiting for a host
           </Headline>
-          <EligibleHosts job={job} hosts={hosts} />
           <p className="muted">Position in the queue: not available yet.</p>
           {lease}
         </>
@@ -141,139 +123,6 @@ function Lifecycle({
     case "finalized":
       return <Ended job={job} />;
   }
-}
-
-/** The hosts a queued job could be placed on, or why there are none. */
-function EligibleHosts({
-  job,
-  hosts,
-}: {
-  job: JobInfo;
-  hosts: HostListEntry[] | undefined;
-}) {
-  const report = $api.useQuery("post", "/hosts/match", {
-    body: {
-      host_cel_predicate: job.host_cel_predicate,
-      init_spec:
-        job.image.reference.type === "image_set" &&
-        job.predecessor?.type !== "resume"
-          ? {
-              type: "image_set",
-              set_id: job.image.reference.set_id,
-              generation: job.image.reference.generation,
-            }
-          : null,
-      owner: null,
-    },
-  });
-
-  if (report.isPending) return <p className="muted">Finding hosts…</p>;
-  if (report.isError) {
-    return (
-      <RequestError
-        error={report.error}
-        messages={{
-          403: "You may not use this job's image set, so its eligible hosts can't be determined.",
-        }}
-      />
-    );
-  }
-  const r = report.data;
-  const predicate = <code>{job.host_cel_predicate}</code>;
-  const note = (
-    <HelpTip label="About eligible hosts">
-      Matched against the hosts <em>you</em> may start jobs on, which can differ
-      from the job owner's. Whether a host is currently busy is not taken into
-      account.
-    </HelpTip>
-  );
-
-  if (r.compile_error != null) {
-    return (
-      <p className="error">
-        The host predicate {predicate} doesn't compile: {r.compile_error}
-      </p>
-    );
-  }
-  if (r.authorized === 0) {
-    return (
-      <p className="error">There are no hosts you may start jobs on.{note}</p>
-    );
-  }
-  if (r.schedulable.length === 0) {
-    return (
-      <>
-        <p className="error">
-          {r.predicate_matched === 0 ? (
-            <>
-              None of the {r.authorized} hosts you can use match {predicate}.
-            </>
-          ) : (
-            <>
-              {r.predicate_matched} hosts match {predicate}, but none of them
-              takes this image set.
-            </>
-          )}
-          {note}
-        </p>
-        {r.errored > 0 && <PredicateErrors report={r} />}
-      </>
-    );
-  }
-
-  const byName = new Map(hosts?.map((h) => [h.name, h]));
-  return (
-    <>
-      <p>
-        {r.schedulable.length} of the {r.authorized} hosts you can use{" "}
-        {r.schedulable.length === 1 ? "is" : "are"} eligible:{note}
-      </p>
-      <ul className="host-chips">
-        {r.schedulable.map((name) => {
-          const host = byName.get(name);
-          return (
-            <li key={name}>
-              <span
-                className={`dot ${host === undefined ? "" : host.maintenance ? "warn" : host.live ? "ok" : "danger"}`}
-                title={
-                  host === undefined
-                    ? undefined
-                    : host.maintenance
-                      ? "In maintenance"
-                      : host.live
-                        ? "Live"
-                        : "Offline"
-                }
-              />
-              {host === undefined ? (
-                name
-              ) : (
-                <EntityLink kind="host" id={host.host_id} label={name} />
-              )}
-            </li>
-          );
-        })}
-      </ul>
-      {r.errored > 0 && <PredicateErrors report={r} />}
-    </>
-  );
-}
-
-function PredicateErrors({
-  report,
-}: {
-  report: components["schemas"]["HostRequirementsReport"];
-}) {
-  return (
-    <p className="muted">
-      The predicate failed to evaluate on {report.errored}{" "}
-      {report.errored === 1 ? "host" : "hosts"}, which count as not matching
-      {report.errors[0] !== undefined && (
-        <>, e.g.: {report.errors[0].message}</>
-      )}
-      .
-    </p>
-  );
 }
 
 /** The initialization stages as a bar of steps, the current one animated. */

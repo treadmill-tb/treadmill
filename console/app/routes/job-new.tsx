@@ -4,7 +4,11 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 
 import { $api } from "../api/client";
-import { parseSingleHostPredicate, singleHostPredicate } from "../api/hosts";
+import {
+  jobImageSpec,
+  parseSingleHostPredicate,
+  singleHostPredicate,
+} from "../api/hosts";
 import { isStandard, shortDigest } from "../api/images";
 import type { components } from "../api/schema";
 import { ShortId } from "../components/entity-link";
@@ -12,17 +16,16 @@ import { HostChoice, type HostMode } from "../components/host-choice";
 import { ImageChoice } from "../components/image-choice";
 import {
   availabilityVerdict,
-  byStatus,
-  failureVerdict,
   HostItem,
   JobPreview,
+  matchVerdict,
+  splitCandidates,
   type HostCandidate,
   type Verdict,
 } from "../components/job-preview";
 import { RequestError } from "../components/request-error";
 import { useDebounced } from "../hooks/use-debounced";
 
-type HostMatch = components["schemas"]["HostMatch"];
 type ImageSetInfo = components["schemas"]["ImageSetInfo"];
 type JobImageReference = components["schemas"]["JobImageReference"];
 type JobInfo = components["schemas"]["JobInfo"];
@@ -358,15 +361,7 @@ function JobForm({ base }: { base: Base | null }) {
       initSpec = { type: "image_set", set_id: setId, generation: version };
     }
   } else {
-    const reference = base.job.image.reference;
-    initSpec =
-      reference.type === "image_set"
-        ? {
-            type: "image_set",
-            set_id: reference.set_id,
-            generation: reference.generation,
-          }
-        : { type: "image", manifest_digest: reference.manifest_digest };
+    initSpec = jobImageSpec(base.job);
   }
 
   let predicate = "true";
@@ -399,19 +394,10 @@ function JobForm({ base }: { base: Base | null }) {
   );
 
   const hostById = new Map((hosts.data ?? []).map((h) => [h.host_id, h]));
-  const candidate = (m: HostMatch): HostCandidate => ({
-    match: m,
-    host: hostById.get(m.host_id),
-  });
   const report = match.data;
-  const eligible = (report?.hosts ?? [])
-    .filter((h) => h.schedulable)
-    .map(candidate)
-    .sort(byStatus);
-  const incompatible = (report?.hosts ?? [])
-    .filter((h) => h.predicate_matched && !h.schedulable)
-    .map(candidate);
-  const candidates = (everyHost.data?.hosts ?? []).map(candidate);
+  const { eligible, incompatible } = splitCandidates(report, hosts.data);
+  const every = splitCandidates(everyHost.data, hosts.data);
+  const candidates = [...every.eligible, ...every.incompatible];
 
   const resumeHostId = job?.dispatched_on_host_id ?? "";
   const resumeHost: HostCandidate = {
@@ -432,7 +418,7 @@ function JobForm({ base }: { base: Base | null }) {
     verdict = { tone: "idle", title: "No host selected", facts: [] };
   else if (report === undefined)
     verdict = { tone: "idle", title: "Checking hosts…", facts: [] };
-  else verdict = failureVerdict(report) ?? availabilityVerdict(eligible);
+  else verdict = matchVerdict(report, eligible);
 
   let previewHosts = [...eligible, ...incompatible];
   if (resuming) previewHosts = [resumeHost];

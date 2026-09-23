@@ -260,6 +260,17 @@ export function HostItem({
   );
 }
 
+export function VerdictBox({ verdict }: { verdict: Verdict }) {
+  return (
+    <div className={`verdict ${verdict.tone}`}>
+      <strong>{verdict.title}</strong>
+      {verdict.facts.map((fact, i) => (
+        <span key={i}>{fact}</span>
+      ))}
+    </div>
+  );
+}
+
 function Funnel({ report }: { report: Report }) {
   const rows: [string, number][] = [
     ["Usable", report.authorized],
@@ -294,33 +305,55 @@ function Funnel({ report }: { report: Report }) {
   );
 }
 
-export function JobPreview({
-  verdict,
-  hostsTitle,
-  hosts,
-  onSelectHost,
-  report,
-  showFunnel,
-  facts,
-}: {
+export function splitCandidates(
+  report: Report | undefined,
+  hosts: HostListEntry[] | undefined,
+): { eligible: HostCandidate[]; incompatible: HostCandidate[] } {
+  const candidate = (match: HostMatch): HostCandidate => ({
+    match,
+    host: hosts?.find((h) => h.host_id === match.host_id),
+  });
+  const matches = report?.hosts ?? [];
+  return {
+    eligible: matches
+      .filter((h) => h.schedulable)
+      .map(candidate)
+      .sort(byStatus),
+    incompatible: matches
+      .filter((h) => h.predicate_matched && !h.schedulable)
+      .map(candidate),
+  };
+}
+
+export function matchVerdict(
+  report: Report,
+  eligible: HostCandidate[],
+): Verdict {
+  return failureVerdict(report) ?? availabilityVerdict(eligible);
+}
+
+type SummaryProps = {
   verdict: Verdict;
   hostsTitle: string;
   hosts: HostCandidate[];
   onSelectHost?: (hostId: string) => void;
   report: Report | undefined;
   showFunnel: boolean;
-  facts: [string, ReactNode][];
-}) {
+};
+
+export function HostMatchSummary({
+  verdict,
+  hostsTitle,
+  hosts,
+  onSelectHost,
+  report,
+  showFunnel,
+}: SummaryProps) {
   const errored =
     report !== undefined && report.errored > 0 && report.predicate_matched > 0;
   return (
-    <aside className="job-preview" aria-live="polite">
-      <div className={`verdict ${verdict.tone}`}>
-        <strong>{verdict.title}</strong>
-        {verdict.facts.map((fact, i) => (
-          <span key={i}>{fact}</span>
-        ))}
-      </div>
+    <div className="match-summary">
+      <VerdictBox verdict={verdict} />
 
       {hosts.length > 0 && (
         <section>
@@ -364,7 +397,17 @@ export function JobPreview({
           </ul>
         </section>
       )}
+    </div>
+  );
+}
 
+export function JobPreview({
+  facts,
+  ...summary
+}: SummaryProps & { facts: [string, ReactNode][] }) {
+  return (
+    <aside className="job-preview" aria-live="polite">
+      <HostMatchSummary {...summary} />
       <section>
         <h3>Job Preview</h3>
         <dl className="props">
