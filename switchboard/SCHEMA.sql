@@ -649,19 +649,11 @@ CREATE TABLE tml_switchboard.jobs (
     -- Optional user-provided display label (see the `valid_label` constraint
     -- for its shape). Non-unique, mutable after enqueue.
     label text,
-    -- These columns specify the job image and the nature of the job. A job's
-    -- image is referenced against the switchboard image catalog: either a
-    -- concrete image (`image_id`, a registered `images` row) or an image set
-    -- (`image_set_id` plus the frozen `image_set_generation`, an
-    -- `image_set_generations` row) resolved to a concrete member at dispatch.
-    --
-    --  (1) normal job:    exactly one of image_id / image_set_id is set; both
-    --                     resume_job_id and restart_job_id are null
-    --
-    --  (2) restarted job: exactly one of image_id / image_set_id is set;
-    --                     restart_job_id is set
-    --
-    --  (3) resumed job:   resume_job_id is set; image_id / image_set_id null
+    -- Every job references an image in the catalog: either a concrete image
+    -- (`image_id`) or an image set (`image_set_id` plus the frozen
+    -- `image_set_generation`) resolved to a concrete member at dispatch.
+    -- Resumed and restarted jobs copy their predecessor's reference; at most
+    -- one of `resume_job_id` / `restart_job_id` is set.
     --
     -- `image_set_generation` is set exactly when `image_set_id` is: the
     -- generation is frozen at enqueue so the candidate set is reproducible. The
@@ -673,11 +665,10 @@ CREATE TABLE tml_switchboard.jobs (
     image_id uuid,
     image_set_id uuid,
     image_set_generation int,
-    -- The concrete image actually dispatched, recorded at dispatch for
-    -- reproducibility/audit (the digest is recovered by join to `images`).
-    --
-    -- For a concrete-image job this equals `image_id`; for an image-set job it
-    -- is the member the matcher selected.
+    -- The concrete image the job runs (the digest is recovered by join to
+    -- `images`): for a concrete-image job `image_id`, for an image-set job the
+    -- member chosen at dispatch, and for a resume its predecessor's, set at
+    -- enqueue.
     resolved_image_id uuid,
     -- Job's restart policy.
     restart_policy tml_switchboard.restart_policy NOT NULL,
@@ -743,25 +734,19 @@ CREATE TABLE tml_switchboard.jobs (
     exit_message text,
     terminated_at timestamp with time zone,
     ---->> INVARIANT CHECKING <<----
-    -- Two allowed init states:
-    --  (1) resume_job_id = null, restart_job_id = _, and exactly one of
-    --      image_id / image_set_id is set; image_set_generation is set iff
-    --      image_set_id is
-    --  (2) resume_job_id != null, restart_job_id = null, and image_id /
-    --      image_set_id / image_set_generation all null
     CONSTRAINT valid_init_spec CHECK (
-        (
+        (image_id IS NOT NULL)::int + (image_set_id IS NOT NULL)::int = 1
+        AND (image_set_id IS NULL) = (image_set_generation IS NULL)
+        AND (
             resume_job_id IS NULL
-            AND (image_id IS NOT NULL)::int + (image_set_id IS NOT NULL)::int = 1
-            AND (image_set_id IS NULL) = (image_set_generation IS NULL)
+            OR restart_job_id IS NULL
         )
-        OR (
-            resume_job_id IS NOT NULL
-            AND restart_job_id IS NULL
-            AND image_id IS NULL
-            AND image_set_id IS NULL
-            AND image_set_generation IS NULL
-        )
+    ),
+    -- Automatic restarts start from scratch after a failure, which a resume
+    -- can't.
+    CONSTRAINT resume_never_restarts CHECK (
+        resume_job_id IS NULL
+        OR (restart_policy).remaining_restart_count = 0
     ),
     -- Restart count >= 0
     CONSTRAINT valid_restart_policy CHECK ((restart_policy).remaining_restart_count >= 0),

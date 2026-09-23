@@ -3153,14 +3153,27 @@ components:
       - description: May manage the source's grants and delete it (owner holds this implicitly).
         type: string
         const: manage
-    JobImageRef:
+    JobImage:
+      description: 'A job''s image: what it references, and the concrete image it runs.'
+      type: object
+      properties:
+        reference:
+          $ref: '#/components/schemas/JobImageReference'
+        resolved_digest:
+          description: |-
+            The concrete image: chosen at dispatch, or for a resume the image its
+            predecessor ran. Null until known.
+          anyOf:
+          - $ref: '#/components/schemas/Digest'
+          - type: 'null'
+      required:
+      - reference
+    JobImageReference:
       description: |-
-        What a job is based off, as seen by `GET /jobs/{id}`: a concrete image, an
-        image set (with the frozen generation), or a resume/restart of an earlier
-        job. The concrete manifest digest actually dispatched is reported separately
-        as `resolved_image_digest`.
+        The image a job references: a concrete image, or an image set with its
+        frozen generation. Resumed and restarted jobs carry their predecessor's.
       oneOf:
-      - description: Based off a concrete catalog image, addressed by its manifest digest.
+      - description: A concrete catalog image, addressed by its manifest digest.
         type: object
         properties:
           manifest_digest:
@@ -3172,8 +3185,8 @@ components:
         - type
         - manifest_digest
       - description: |-
-          Based off a registered image *set*, addressed by its id plus the frozen
-          generation; the concrete member is chosen at dispatch.
+          An image set and its frozen generation; the member is chosen at
+          dispatch.
         type: object
         properties:
           generation:
@@ -3190,30 +3203,6 @@ components:
         - type
         - set_id
         - generation
-      - description: Resumes a previously started job.
-        type: object
-        properties:
-          job_id:
-            type: string
-            format: uuid
-          type:
-            type: string
-            const: resume
-        required:
-        - type
-        - job_id
-      - description: Restarts a previously started job (inherits its image reference).
-        type: object
-        properties:
-          job_id:
-            type: string
-            format: uuid
-          type:
-            type: string
-            const: restart
-        required:
-        - type
-        - job_id
     JobInfo:
       description: |-
         The full server-side view of a single job, returned by `GET /jobs/{id}`.
@@ -3241,9 +3230,7 @@ components:
             The CEL expression this job's host had to satisfy, as submitted.
           type: string
         image:
-          description: What the job is based off.
-          allOf:
-          - $ref: '#/components/schemas/JobImageRef'
+          $ref: '#/components/schemas/JobImage'
         initializing_stage:
           description: The sub-stage while `state` is `initializing`; null otherwise.
           anyOf:
@@ -3297,17 +3284,15 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/JobPermission'
+        predecessor:
+          description: The job this one resumes or restarts, if any.
+          anyOf:
+          - $ref: '#/components/schemas/JobPredecessor'
+          - type: 'null'
         queued_at:
           description: When the job was enqueued.
           type: string
           format: date-time
-        resolved_image_digest:
-          description: |-
-            The concrete manifest digest actually dispatched, recorded at dispatch;
-            null until then.
-          anyOf:
-          - $ref: '#/components/schemas/Digest'
-          - type: 'null'
         restart_policy:
           $ref: '#/components/schemas/RestartPolicyState'
         services:
@@ -3357,7 +3342,9 @@ components:
       - permissions
     JobInitSpec:
       oneOf:
-      - description: Resume a previously started job.
+      - description: |-
+          Resume a previously started job on its host, from its working
+          directory. A resumed job's restart budget is always 0.
         type: object
         properties:
           job_id:
@@ -3369,7 +3356,9 @@ components:
         required:
         - type
         - job_id
-      - description: Restart a previously started job (inherits its image reference).
+      - description: |-
+          Start afresh from a previously started job's image reference. A
+          resumed job can't be restarted.
         type: object
         properties:
           job_id:
@@ -3533,6 +3522,33 @@ components:
           restarting it (owner holds this implicitly).
         type: string
         const: manage
+    JobPredecessor:
+      description: The job a resumed or restarted job continues.
+      oneOf:
+      - description: Continues from the predecessor's working directory on its host.
+        type: object
+        properties:
+          job_id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            const: resume
+        required:
+        - type
+        - job_id
+      - description: Starts afresh from the predecessor's image reference.
+        type: object
+        properties:
+          job_id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            const: restart
+        required:
+        - type
+        - job_id
     JobRequest:
       type: object
       properties:
@@ -3720,7 +3736,7 @@ components:
           - 'null'
           format: uuid
         image:
-          $ref: '#/components/schemas/JobImageRef'
+          $ref: '#/components/schemas/JobImage'
         job_id:
           type: string
           format: uuid
@@ -3743,6 +3759,10 @@ components:
           - string
           - 'null'
           format: uuid
+        predecessor:
+          anyOf:
+          - $ref: '#/components/schemas/JobPredecessor'
+          - type: 'null'
         queued_at:
           type: string
           format: date-time

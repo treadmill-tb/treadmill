@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select resume_job_id is not null as \"resumed!\"\n               from tml_switchboard.jobs\n               where job_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "resumed!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6787a023a60063da8c5386ee53af37f4d9b77fca0d3dd1e5014eb88c98136396"
+}

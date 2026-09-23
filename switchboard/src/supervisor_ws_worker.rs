@@ -3653,10 +3653,8 @@ mod tests {
             other => panic!("expected concrete Image spec, got {other:?}"),
         }
 
-        // Resume job: `ResumeJob` carrying the original job's id. A resume row has
-        // no image/set reference (the `valid_init_spec` invariant), so it is
-        // inserted directly rather than via `insert_job`. `resume_job_id` is an FK,
-        // so it must point at a real job — reuse the concrete one above.
+        // Resume job: `ResumeJob` carrying the original job's id, with the
+        // original's image reference copied as enqueue does.
         let resume_target = job_id;
         let resume_job = Uuid::new_v4();
         sqlx::query(
@@ -3667,7 +3665,9 @@ mod tests {
               initializing_stage, queued_at, started_at, dispatched_on_host_id, \
               termination_reason, task_exit_status, exit_message, terminated_at) \
              values \
-             ($1, $2, null, null, null, null, row(0)::tml_switchboard.restart_policy, \
+             ($1, $2, null, \
+              (select image_id from tml_switchboard.jobs where job_id = $2), \
+              null, null, row(0)::tml_switchboard.restart_policy, \
               $3, interval '1 hour', 'queued', null, now(), null, null, null, \
               null, null, null)",
         )

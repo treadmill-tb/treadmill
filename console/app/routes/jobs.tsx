@@ -74,7 +74,10 @@ export default function Jobs() {
                         <JobStateBadge state={job.state} />
                       </td>
                       <td>
-                        <ImageRef image={job.image} />
+                        <ImageRef
+                          image={job.image}
+                          predecessor={job.predecessor}
+                        />
                       </td>
                       <td>
                         <EntityLink

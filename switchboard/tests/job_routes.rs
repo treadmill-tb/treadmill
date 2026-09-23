@@ -22,9 +22,9 @@ use uuid::Uuid;
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{
-    EnqueueJobResponse, JobImageRef, JobInfo, JobLeaseExpiryAction, JobListResponse, JobPermission,
-    JobServiceCredentials, JobServiceEndpoint, LeaseRejection, LeaseRejectionCode,
-    NatsConsoleInputCredentials, NatsLogStreamCredentials,
+    EnqueueJobResponse, JobImageReference, JobInfo, JobLeaseExpiryAction, JobListResponse,
+    JobPermission, JobPredecessor, JobServiceCredentials, JobServiceEndpoint, LeaseRejection,
+    LeaseRejectionCode, NatsConsoleInputCredentials, NatsLogStreamCredentials,
 };
 use treadmill_rs::api::switchboard::{
     DEFAULT_HOST_CEL_PREDICATE, JobInitSpec, JobRequest, JobState, WhoAmIResponse,
@@ -1214,8 +1214,10 @@ async fn owner_reads_own_job_with_secret_redacted(pool: PgPool) {
     assert_eq!(info.owner_id, Some(bob));
     assert_eq!(info.state, JobState::Queued);
     assert!(
-        matches!(info.image, JobImageRef::Image { manifest_digest: got } if got.encoded() == image_digest)
+        matches!(info.image.reference, JobImageReference::Image { manifest_digest: got } if got.encoded() == image_digest)
     );
+    assert_eq!(info.image.resolved_digest, None);
+    assert_eq!(info.predecessor, None);
 
     // Secret parameter: flagged secret, value withheld.
     let secret = &info.parameters["api_key"];
@@ -1974,4 +1976,81 @@ async fn a_service_the_job_does_not_announce_is_not_found(pool: PgPool) {
             "{service} named no service"
         );
     }
+}
+
+#[sqlx::test]
+#[ignore = "requires a database; run via the nextest-db check"]
+async fn resumes_and_restarts_carry_the_image_reference(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &token).await;
+    let bob_tok = latest_token_id(&pool, bob).await;
+
+    let enqueue = async |init_spec, max_restarts| {
+        let mut req = image_job_request(None, init_spec, None);
+        req.restart_policy.max_restarts = max_restarts;
+        client
+            .post(format!("http://{addr}/api/v1/jobs"))
+            .bearer_auth(&token)
+            .json(&req)
+            .send()
+            .await
+            .unwrap()
+    };
+    let run_to_end = async |job_id| {
+        mark_running(&pool, job_id, chrono::Utc::now()).await;
+        mark_finalized(&pool, job_id).await;
+    };
+
+    let original = seed_job(&pool, bob, bob_tok, &[]).await;
+    sqlx::query("update tml_switchboard.jobs set resolved_image_id = image_id where job_id = $1")
+        .bind(original)
+        .execute(&pool)
+        .await
+        .unwrap();
+    run_to_end(original).await;
+    let original_info = get_job(&client, addr, &token, original).await;
+    let JobImageReference::Image { manifest_digest } = original_info.image.reference.clone() else {
+        panic!("expected a concrete image reference");
+    };
+
+    // A resume reports its predecessor's image, resolved already, and never
+    // restarts automatically whatever it asks for.
+    let resp = enqueue(JobInitSpec::Resume { job_id: original }, 3).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    let resumed = resp.json::<EnqueueJobResponse>().await.unwrap().job_id;
+    let info = get_job(&client, addr, &token, resumed).await;
+    assert_eq!(info.image.reference, original_info.image.reference);
+    assert_eq!(info.image.resolved_digest, Some(manifest_digest));
+    assert_eq!(
+        info.predecessor,
+        Some(JobPredecessor::Resume { job_id: original })
+    );
+    assert_eq!(info.restart_policy.remaining_restarts, 0);
+
+    // A job may be resumed more than once; the supervisor admits one.
+    let resp = enqueue(JobInitSpec::Resume { job_id: original }, 0).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+
+    // A resumed job can't be restarted.
+    run_to_end(resumed).await;
+    let resp = enqueue(JobInitSpec::Restart { job_id: resumed }, 0).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A manual restart starts afresh with the budget it asks for.
+    let resp = enqueue(JobInitSpec::Restart { job_id: original }, 2).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    let restarted = resp.json::<EnqueueJobResponse>().await.unwrap().job_id;
+    let info = get_job(&client, addr, &token, restarted).await;
+    assert_eq!(info.image.reference, original_info.image.reference);
+    assert_eq!(info.image.resolved_digest, None);
+    assert_eq!(
+        info.predecessor,
+        Some(JobPredecessor::Restart { job_id: original })
+    );
+    assert_eq!(info.restart_policy.remaining_restarts, 2);
 }

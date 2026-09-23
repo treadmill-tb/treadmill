@@ -6,9 +6,9 @@ use sqlx::types::ipnetwork::IpNetwork;
 use sqlx::{PgExecutor, Postgres, Transaction};
 use std::net::IpAddr;
 use treadmill_rs::api::switchboard::jobs::{
-    JobImageRef, JobInfo, JobInitializingStage as ClientJobInitializingStage,
+    JobImage, JobImageReference, JobInfo, JobInitializingStage as ClientJobInitializingStage,
     JobLeaseExpiryAction as ClientLeaseExpiryAction, JobParameterView,
-    JobPermission as ClientJobPermission, JobServiceView, JobSummary,
+    JobPermission as ClientJobPermission, JobPredecessor, JobServiceView, JobSummary,
     LeaseRejectionCode as ClientLeaseRejectionCode, LeaseSpec,
     RestartPolicy as ClientRestartPolicy, RestartPolicyState,
     TaskExitStatus as ClientTaskExitStatus,
@@ -231,19 +231,27 @@ pub async fn insert(
     queued_at: DateTime<Utc>,
     conn: &mut Transaction<'_, Postgres>,
 ) -> Result<(), sqlx::Error> {
-    let (resume_job_id, restart_job_id, image_id, image_set_id, image_set_generation): (
+    #[allow(clippy::type_complexity)]
+    let (
+        resume_job_id,
+        restart_job_id,
+        image_id,
+        image_set_id,
+        image_set_generation,
+        resolved_image_id,
+    ): (
         Option<Uuid>,
         Option<Uuid>,
         Option<Uuid>,
         Option<Uuid>,
         Option<i32>,
+        Option<Uuid>,
     ) = match job_request.init_spec {
-        JobInitSpec::Resume { job_id } => (Some(job_id), None, None, None, None),
-        JobInitSpec::Restart { job_id } => {
+        JobInitSpec::Resume { job_id } | JobInitSpec::Restart { job_id } => {
             let predecessor = sqlx::query!(
                 r#"
-                    select resume_job_id, restart_job_id, image_id,
-                           image_set_id, image_set_generation
+                    select image_id, image_set_id, image_set_generation,
+                           resolved_image_id
                     from tml_switchboard.jobs
                     where job_id = $1
                     "#,
@@ -251,12 +259,20 @@ pub async fn insert(
             )
             .fetch_one(conn.as_mut())
             .await?;
+            // A resume runs its predecessor's disk, so its image is known now;
+            // a restart starts afresh and resolves at dispatch.
+            let resume = matches!(job_request.init_spec, JobInitSpec::Resume { .. });
             (
-                predecessor.resume_job_id,
-                Some(job_id),
+                resume.then_some(job_id),
+                (!resume).then_some(job_id),
                 predecessor.image_id,
                 predecessor.image_set_id,
                 predecessor.image_set_generation,
+                if resume {
+                    predecessor.resolved_image_id
+                } else {
+                    None
+                },
             )
         }
         JobInitSpec::Image { manifest_digest } => {
@@ -267,7 +283,7 @@ pub async fn insert(
                 .ok_or_else(|| {
                     sqlx::Error::Protocol(format!("image {manifest_digest} is not registered"))
                 })?;
-            (None, None, Some(rec.id), None, None)
+            (None, None, Some(rec.id), None, None, None)
         }
         JobInitSpec::ImageSet { set_id, generation } => {
             // Freeze the candidate set: pin an explicit generation, else the
@@ -283,7 +299,14 @@ pub async fn insert(
                         ))
                     })?,
             };
-            (None, None, None, Some(set_id), Some(generation as i32))
+            (
+                None,
+                None,
+                None,
+                Some(set_id),
+                Some(generation as i32),
+                None,
+            )
         }
     };
 
@@ -299,6 +322,7 @@ pub async fn insert(
           image_id,
           image_set_id,
           image_set_generation,
+          resolved_image_id,
           restart_policy,
           enqueued_by_token_id,
           host_cel_predicate,
@@ -323,6 +347,7 @@ pub async fn insert(
           $4,       -- image_id
           $5,       -- image_set_id
           $6,       -- image_set_generation
+          $15,      -- resolved_image_id
           $7,       -- restart_policy
           $8,       -- enqueued_by_token_id
           $14,      -- host_cel_predicate
@@ -346,8 +371,12 @@ pub async fn insert(
         image_set_id,
         image_set_generation,
         SqlRestartPolicy {
-            remaining_restart_count: i32::try_from(job_request.restart_policy.max_restarts)
-                .unwrap(),
+            // A resume never restarts automatically.
+            remaining_restart_count: if resume_job_id.is_some() {
+                0
+            } else {
+                i32::try_from(job_request.restart_policy.max_restarts).unwrap()
+            },
         } as SqlRestartPolicy,
         as_token_id,
         lease_duration,
@@ -356,6 +385,7 @@ pub async fn insert(
         job_request.label,
         lease_expiry_action as SqlLeaseExpiryAction,
         job_request.host_cel_predicate,
+        resolved_image_id,
     )
     .execute(conn.as_mut())
     .await?;
@@ -372,14 +402,12 @@ pub struct SqlJob {
     resume_job_id: Option<Uuid>,
     #[allow(dead_code)]
     restart_job_id: Option<Uuid>,
-    // The job's image reference: a concrete image id, or an image set id plus
-    // the frozen generation (resolved to a concrete member at dispatch). Exactly
-    // one of image_id / image_set_id is set for a non-resume job; all null for
-    // a resume. image_set_generation is set iff image_set_id is.
+    // The job's image reference: exactly one of a concrete image id, or an
+    // image set id plus the frozen generation.
     image_id: Option<Uuid>,
     image_set_id: Option<Uuid>,
     image_set_generation: Option<i32>,
-    // The concrete image id actually dispatched, recorded at dispatch.
+    // The concrete image id the job runs; see `SCHEMA.sql`.
     #[allow(dead_code)]
     resolved_image_id: Option<Uuid>,
 
@@ -526,10 +554,8 @@ impl SqlJob {
     /// on the job (computed by the caller, which knows the viewer).
     ///
     /// Reads the job's ordered target requirements and parameters (the latter
-    /// **redacted**: secret values are withheld, see [`JobParameterView`]) and
-    /// folds the four mutually-exclusive image columns into a single
-    /// [`JobImageRef`] (resume → restart → concrete image → image set, matching
-    /// the row invariants in `SCHEMA.sql`). Stored digests are re-parsed; a
+    /// **redacted**: secret values are withheld, see [`JobParameterView`]).
+    /// Stored digests are re-parsed; a
     /// malformed one is a data-integrity fault surfaced as
     /// [`JobInfoError::Digest`]. The job's announced services are read
     /// alongside; [`JobSummary`] (the listing view) carries neither them nor
@@ -578,14 +604,16 @@ impl SqlJob {
             None => None,
         };
 
-        let image = job_image_ref(
-            self.resume_job_id,
-            self.restart_job_id,
-            image_digest,
-            self.image_set_id,
-            self.image_set_generation,
-            self.job_id,
-        )?;
+        let image = JobImage {
+            reference: job_image_reference(
+                image_digest,
+                self.image_set_id,
+                self.image_set_generation,
+                self.job_id,
+            )?,
+            resolved_digest: resolved_image_digest,
+        };
+        let predecessor = job_predecessor(self.resume_job_id, self.restart_job_id);
 
         Ok(JobInfo {
             job_id: self.job_id,
@@ -594,7 +622,7 @@ impl SqlJob {
             state: self.job_state.into(),
             initializing_stage: self.initializing_stage.map(Into::into),
             image,
-            resolved_image_digest,
+            predecessor,
             restart_policy: self.sql_restart_policy.into(),
             host_cel_predicate: self.host_cel_predicate,
             parameters,
@@ -773,31 +801,33 @@ async fn digest_for_image_id(
         .map_err(|_| JobInfoError::Digest(rec.manifest_digest))
 }
 
-/// Fold a job row's mutually-exclusive image columns into a single
-/// [`JobImageRef`], following the row invariants in `SCHEMA.sql` (resume →
-/// restart → concrete image → image set). A row that sets none of them
-/// violates `valid_init_spec` ([`JobInfoError::Malformed`]).
-fn job_image_ref(
-    resume_job_id: Option<Uuid>,
-    restart_job_id: Option<Uuid>,
+/// A job row's image reference; `valid_init_spec` guarantees exactly one.
+fn job_image_reference(
     image_digest: Option<Digest>,
     image_set_id: Option<Uuid>,
     image_set_generation: Option<i32>,
     job_id: Uuid,
-) -> Result<JobImageRef, JobInfoError> {
-    if let Some(job_id) = resume_job_id {
-        Ok(JobImageRef::Resume { job_id })
-    } else if let Some(job_id) = restart_job_id {
-        Ok(JobImageRef::Restart { job_id })
-    } else if let Some(manifest_digest) = image_digest {
-        Ok(JobImageRef::Image { manifest_digest })
+) -> Result<JobImageReference, JobInfoError> {
+    if let Some(manifest_digest) = image_digest {
+        Ok(JobImageReference::Image { manifest_digest })
     } else if let (Some(set_id), Some(generation)) = (image_set_id, image_set_generation) {
-        Ok(JobImageRef::ImageSet {
+        Ok(JobImageReference::ImageSet {
             set_id,
             generation: generation as u32,
         })
     } else {
         Err(JobInfoError::Malformed(job_id))
+    }
+}
+
+fn job_predecessor(
+    resume_job_id: Option<Uuid>,
+    restart_job_id: Option<Uuid>,
+) -> Option<JobPredecessor> {
+    match (resume_job_id, restart_job_id) {
+        (Some(job_id), _) => Some(JobPredecessor::Resume { job_id }),
+        (None, Some(job_id)) => Some(JobPredecessor::Restart { job_id }),
+        (None, None) => None,
     }
 }
 
@@ -830,6 +860,7 @@ pub async fn list_visible(
           j.resume_job_id,
           j.restart_job_id,
           i.manifest_digest as "image_digest?",
+          r.manifest_digest as "resolved_digest?",
           j.image_set_id,
           j.image_set_generation,
           j.queued_at,
@@ -842,6 +873,7 @@ pub async fn list_visible(
           j.task_exit_status as "task_exit_status: SqlTaskExitStatus"
         from tml_switchboard.jobs j
         left join tml_switchboard.images i on i.id = j.image_id
+        left join tml_switchboard.images r on r.id = j.resolved_image_id
         where (
             exists (select 1 from p where p.id = $2)
             or j.owner_id in (select id from p)
@@ -866,23 +898,27 @@ pub async fn list_visible(
 
     rows.into_iter()
         .map(|r| {
-            let image_digest = r
-                .image_digest
-                .map(|d| d.parse().map_err(|_| JobInfoError::Digest(d)))
-                .transpose()?;
+            let parse = |d: Option<String>| {
+                d.map(|d| d.parse().map_err(|_| JobInfoError::Digest(d)))
+                    .transpose()
+            };
+            let image_digest = parse(r.image_digest)?;
+            let resolved_digest = parse(r.resolved_digest)?;
             Ok(JobSummary {
                 job_id: r.job_id,
                 label: r.label,
                 owner_id: r.owner_id,
                 state: r.job_state.into(),
-                image: job_image_ref(
-                    r.resume_job_id,
-                    r.restart_job_id,
-                    image_digest,
-                    r.image_set_id,
-                    r.image_set_generation,
-                    r.job_id,
-                )?,
+                image: JobImage {
+                    reference: job_image_reference(
+                        image_digest,
+                        r.image_set_id,
+                        r.image_set_generation,
+                        r.job_id,
+                    )?,
+                    resolved_digest,
+                },
+                predecessor: job_predecessor(r.resume_job_id, r.restart_job_id),
                 queued_at: r.queued_at,
                 started_at: r.started_at,
                 terminated_at: r.terminated_at,
@@ -2173,5 +2209,42 @@ mod tests {
             };
             assert_eq!(error.constraint(), Some("valid_service_name"), "{name}");
         }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "requires a database; run via the nextest-db check"]
+    async fn resumed_jobs_never_auto_restart(pool: PgPool) {
+        let original = insert_job(&pool).await;
+        let resume = async |budget: i32| {
+            let job_id = Uuid::now_v7();
+            sqlx::query(
+                "insert into tml_switchboard.jobs \
+                 (job_id, owner_id, resume_job_id, image_id, restart_policy, \
+                  enqueued_by_token_id, lease_duration, job_state, queued_at) \
+                 select $1, owner_id, job_id, image_id, \
+                        row($3)::tml_switchboard.restart_policy, \
+                        enqueued_by_token_id, lease_duration, 'queued', now() \
+                 from tml_switchboard.jobs where job_id = $2",
+            )
+            .bind(job_id)
+            .bind(original)
+            .bind(budget)
+            .execute(&pool)
+            .await
+            .map(|_| job_id)
+        };
+
+        let sqlx::Error::Database(error) = resume(1).await.unwrap_err() else {
+            panic!("expected a constraint violation");
+        };
+        assert_eq!(error.constraint(), Some("resume_never_restarts"));
+
+        let resumed = resume(0).await.unwrap();
+        let mut txn = pool.begin().await.unwrap();
+        let successor = finalize_dropped_and_maybe_restart(resumed, Utc::now(), &mut txn)
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+        assert_eq!(successor, None);
     }
 }
