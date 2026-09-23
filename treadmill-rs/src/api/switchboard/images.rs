@@ -77,16 +77,37 @@ pub struct ImageSourceGrantInfo {
     pub permission: ImageSourcePermission,
 }
 
-/// `POST /image-sets`: create an empty, named image set. The caller becomes
-/// its owner; membership is added afterwards via per-generation snapshots (see
+/// `POST /image-sets`: create an empty image set. The caller becomes its
+/// owner; membership is added afterwards via per-generation snapshots (see
 /// [`CreateGenerationRequest`]).
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateImageSetRequest {
-    /// The stable, globally-unique moving-target handle a job references (by id).
-    pub name: String,
-    /// Optional human-readable label.
+    /// The human-readable name the set is shown by. Not unique.
+    pub display_name: String,
+    /// An optional globally-unique handle, such as `ubuntu-24.04`. Giving a
+    /// set one is privileged: only a global admin may.
     #[serde(default)]
-    pub label: Option<String>,
+    pub canonical_name: Option<String>,
+}
+
+/// `PATCH /image-sets/{id}`: rename an image set. Absent fields are left
+/// unchanged.
+#[derive(schemars::JsonSchema, Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateImageSetRequest {
+    /// A new display name. Requires `manage` on the set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// A new canonical name; an explicit `null` removes it. Only a global
+    /// admin may change it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
+    #[schemars(with = "Option<String>")]
+    pub canonical_name: Option<Option<String>>,
 }
 
 /// One member of a new generation; `index` is the member's array position in the
@@ -114,12 +135,14 @@ pub struct CreateGenerationRequest {
     pub members: Vec<GenerationMemberSpec>,
 }
 
-/// A named, mutable image set, as returned by the catalog list/inspect routes.
+/// A mutable image set, as returned by the catalog list/inspect routes.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct ImageSetInfo {
     pub id: Uuid,
-    pub name: String,
-    pub label: Option<String>,
+    /// The human-readable name the set is shown by. Not unique.
+    pub display_name: String,
+    /// The set's globally-unique handle, if an admin gave it one.
+    pub canonical_name: Option<String>,
     pub owner_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     /// The set's latest generation number, or null if it has none yet.
@@ -173,6 +196,17 @@ pub enum ImageSetPermission {
 pub struct ImageSetGrantRequest {
     pub subject_id: Uuid,
     pub permission: ImageSetPermission,
+}
+
+/// A change of an image set's owner (`PUT /image-sets/{id}/owner`).
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageSetOwnerUpdateRequest {
+    /// The new owning subject (user, group, or the `system` subject, which
+    /// marks a set as a standard image maintained by the switchboard's
+    /// admins). Null orphans the set, leaving it manageable only by global
+    /// admins.
+    pub owner: Option<Uuid>,
 }
 
 /// One grant on an image set, as returned by the list-grants route.

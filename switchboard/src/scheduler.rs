@@ -631,7 +631,7 @@ mod tests {
     ) -> anyhow::Result<(Uuid, Vec<Digest>)> {
         let gid = Uuid::new_v4();
         let mut tx = pool.begin().await?;
-        sql::image::create_set(&mut *tx, gid, &format!("set-{name_seed}"), owner, None).await?;
+        sql::image::create_set(&mut *tx, gid, &format!("set-{name_seed}"), None, owner).await?;
         let mut member_rows = Vec::new();
         let mut member_digests = Vec::new();
         for (index, (seed, profile, predicate)) in members.iter().enumerate() {

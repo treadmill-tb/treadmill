@@ -664,8 +664,8 @@ pub fn api_router() -> ApiRouter<AppState> {
                 .response_with::<404, (), _>(|r| r.description("No matching grant to revoke."))
             }),
         )
-        //  POST /image-sets        -- create an empty, named image set
-        //  GET  /image-sets        -- list owned image sets
+        //  POST /image-sets        -- create an empty image set
+        //  GET  /image-sets        -- list image sets the caller can use
         .api_route(
             "/image-sets",
             post_with(images::create_image_set, |o| {
@@ -673,21 +673,45 @@ pub fn api_router() -> ApiRouter<AppState> {
                     .response_with::<201, Json<ImageSetInfo>, _>(|r| {
                         r.description("The image set was created.")
                     })
-                    .response_with::<409, (), _>(|r| {
-                        r.description("An image set with that name already exists.")
+                    .response_with::<403, (), _>(|r| {
+                        r.description("Only a global admin may give a set a canonical name.")
                     })
+                    .response_with::<409, (), _>(|r| {
+                        r.description("An image set with that canonical name already exists.")
+                    })
+                    .response_with::<422, (), _>(|r| r.description("A name is empty."))
             })
             .get_with(images::list_image_sets, |o| {
                 doc(o, "listImageSets", "Images", "List image sets").description(NOT_PAGINATED)
             }),
         )
-        //  GET /image-sets/{id}    -- inspect one image set
+        //  GET   /image-sets/{id}  -- inspect one image set
+        //  PATCH /image-sets/{id}  -- rename it
         .api_route(
             "/image-sets/{id}",
             get_with(images::get_image_set, |o| {
                 doc(o, "getImageSet", "Images", "Get an image set").response_with::<404, (), _>(
                     |r| r.description("No such image set, or it is not visible to the caller."),
                 )
+            })
+            .patch_with(images::update_image_set, |o| {
+                doc(o, "updateImageSet", "Images", "Rename an image set")
+                    .response_with::<200, Json<ImageSetInfo>, _>(|r| {
+                        r.description("The set, as renamed.")
+                    })
+                    .response_with::<403, (), _>(|r| {
+                        r.description(
+                            "The caller lacks `manage` on the set, or is not a global admin \
+                             changing its canonical name.",
+                        )
+                    })
+                    .response_with::<404, (), _>(|r| {
+                        r.description("No such image set, or it is not visible to the caller.")
+                    })
+                    .response_with::<409, (), _>(|r| {
+                        r.description("Another image set has that canonical name.")
+                    })
+                    .response_with::<422, (), _>(|r| r.description("A name is empty."))
             }),
         )
         //  GET /image-sets/{id}/events -- the set's audit feed (manage-gated)
@@ -734,6 +758,39 @@ pub fn api_router() -> ApiRouter<AppState> {
                     "Get an image-set generation",
                 )
                 .response_with::<404, (), _>(|r| r.description("No such image set or generation."))
+            }),
+        )
+        //  PUT /image-sets/{id}/owner -- transfer the set, or orphan it
+        .api_route(
+            "/image-sets/{id}/owner",
+            put_with(images::put_image_set_owner, |o| {
+                doc(
+                    o,
+                    "putImageSetOwner",
+                    "Images",
+                    "Change an image set's owner",
+                )
+                .description(
+                    "A null owner orphans the set, leaving it manageable only by \
+                     global admins. Only a global admin may hand a set to the \
+                     `system` subject, which marks it as a standard image; the \
+                     `everyone` subject cannot own a set.",
+                )
+                .response_with::<204, (), _>(|r| {
+                    r.description("Applied, or the owner was already in force.")
+                })
+                .response_with::<403, (), _>(|r| {
+                    r.description(
+                        "The caller lacks `manage` on the set, or is not a global \
+                         admin handing it to `system`.",
+                    )
+                })
+                .response_with::<404, (), _>(|r| {
+                    r.description("No such image set, or it is not visible to the caller.")
+                })
+                .response_with::<422, (), _>(|r| {
+                    r.description("No such subject, or one that cannot own a set.")
+                })
             }),
         )
         //  POST /image-sets/{id}/grants -- grant use/manage to a subject

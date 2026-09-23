@@ -707,7 +707,8 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /** Rename an image set */
+        patch: operations["updateImageSet"];
         trace?: never;
     };
     "/image-sets/{id}/events": {
@@ -754,6 +755,26 @@ export interface paths {
         /** Get an image-set generation */
         get: operations["getImageSetGeneration"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/image-sets/{id}/owner": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Change an image set's owner
+         * @description A null owner orphans the set, leaving it manageable only by global admins. Only a global admin may hand a set to the `system` subject, which marks it as a standard image; the `everyone` subject cannot own a set.
+         */
+        put: operations["putImageSetOwner"];
         post?: never;
         delete?: never;
         options?: never;
@@ -869,18 +890,19 @@ export interface components {
             members: components["schemas"]["GenerationMemberSpec"][];
         };
         /**
-         * @description `POST /image-sets`: create an empty, named image set. The caller becomes
-         *     its owner; membership is added afterwards via per-generation snapshots (see
+         * @description `POST /image-sets`: create an empty image set. The caller becomes its
+         *     owner; membership is added afterwards via per-generation snapshots (see
          *     [`CreateGenerationRequest`]).
          */
         CreateImageSetRequest: {
             /**
-             * @description Optional human-readable label.
+             * @description An optional globally-unique handle, such as `ubuntu-24.04`. Giving a
+             *     set one is privileged: only a global admin may.
              * @default null
              */
-            label: string | null;
-            /** @description The stable, globally-unique moving-target handle a job references (by id). */
-            name: string;
+            canonical_name: string | null;
+            /** @description The human-readable name the set is shown by. Not unique. */
+            display_name: string;
         };
         /**
          * @description A content-addressable OCI digest over 32 bytes of SHA-256.
@@ -1354,21 +1376,34 @@ export interface components {
             /** Format: uuid */
             subject_id: string;
         };
-        /** @description A named, mutable image set, as returned by the catalog list/inspect routes. */
+        /** @description A mutable image set, as returned by the catalog list/inspect routes. */
         ImageSetInfo: {
+            /** @description The set's globally-unique handle, if an admin gave it one. */
+            canonical_name?: string | null;
             /** Format: date-time */
             created_at: string;
+            /** @description The human-readable name the set is shown by. Not unique. */
+            display_name: string;
             /** Format: uuid */
             id: string;
-            label?: string | null;
             /**
              * Format: uint32
              * @description The set's latest generation number, or null if it has none yet.
              */
             latest_generation?: number | null;
-            name: string;
             /** Format: uuid */
             owner_id?: string | null;
+        };
+        /** @description A change of an image set's owner (`PUT /image-sets/{id}/owner`). */
+        ImageSetOwnerUpdateRequest: {
+            /**
+             * Format: uuid
+             * @description The new owning subject (user, group, or the `system` subject, which
+             *     marks a set as a standard image maintained by the switchboard's
+             *     admins). Null orphans the set, leaving it manageable only by global
+             *     admins.
+             */
+            owner?: string | null;
         };
         /** @description A permission on an image set. */
         ImageSetPermission: "use" | "manage";
@@ -2234,6 +2269,19 @@ export interface components {
              * @description The version this text corresponds to (the server's current ToS version).
              */
             version: number;
+        };
+        /**
+         * @description `PATCH /image-sets/{id}`: rename an image set. Absent fields are left
+         *     unchanged.
+         */
+        UpdateImageSetRequest: {
+            /**
+             * @description A new canonical name; an explicit `null` removes it. Only a global
+             *     admin may change it.
+             */
+            canonical_name?: string | null;
+            /** @description A new display name. Requires `manage` on the set. */
+            display_name?: string | null;
         };
         /**
          * @description A patch to a job (`PATCH /jobs/{id}`). Only the fields listed here are
@@ -4482,8 +4530,8 @@ export interface operations {
             cookie?: never;
         };
         /**
-         * @description `POST /image-sets`: create an empty, named image set. The caller becomes
-         *     its owner; membership is added afterwards via per-generation snapshots (see
+         * @description `POST /image-sets`: create an empty image set. The caller becomes its
+         *     owner; membership is added afterwards via per-generation snapshots (see
          *     [`CreateGenerationRequest`]).
          */
         requestBody: {
@@ -4517,14 +4565,14 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            /** @description Only a global admin may give a set a canonical name. */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description An image set with that name already exists. */
+            /** @description An image set with that canonical name already exists. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4540,14 +4588,12 @@ export interface operations {
                     "text/plain": string;
                 };
             };
-            /** @description Failed to deserialize the JSON body into the target type */
+            /** @description A name is empty. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "text/plain": string;
-                };
+                content?: never;
             };
         };
     };
@@ -4563,7 +4609,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A named, mutable image set, as returned by the catalog list/inspect routes. */
+            /** @description A mutable image set, as returned by the catalog list/inspect routes. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4588,6 +4634,90 @@ export interface operations {
             };
             /** @description No such image set, or it is not visible to the caller. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateImageSet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * @description `PATCH /image-sets/{id}`: rename an image set. Absent fields are left
+         *     unchanged.
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateImageSetRequest"];
+            };
+        };
+        responses: {
+            /** @description The set, as renamed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageSetInfo"];
+                };
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller lacks `manage` on the set, or is not a global admin changing its canonical name. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such image set, or it is not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Another image set has that canonical name. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description A name is empty. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4771,6 +4901,78 @@ export interface operations {
             };
             /** @description No such image set or generation. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putImageSetOwner: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description A change of an image set's owner (`PUT /image-sets/{id}/owner`). */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImageSetOwnerUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Applied, or the owner was already in force. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller lacks `manage` on the set, or is not a global admin handing it to `system`. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such image set, or it is not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description No such subject, or one that cannot own a set. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tml_switchboard.image_sets\n           set display_name = $2, canonical_name = $3\n           where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f45ba133d04d70f3771353da1766ef9287ccf6130d7925e55c7d3da872e4ec51"
+}

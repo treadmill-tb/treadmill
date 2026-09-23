@@ -1165,7 +1165,7 @@ async fn validate_separates_predicate_misses_from_image_misses(pool: PgPool) {
     let image_id = Uuid::new_v4();
     let digest = Digest::from_sha256([7u8; 32]);
     let mut txn = pool.begin().await.unwrap();
-    sql::image::create_set(&mut *txn, set_id, "rpi-only", admin_id, None)
+    sql::image::create_set(&mut *txn, set_id, "rpi-only", None, admin_id)
         .await
         .unwrap();
     sql::image::insert(

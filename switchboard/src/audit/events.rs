@@ -595,6 +595,35 @@ define_event! {
 }
 
 define_event! {
+    /// An image set was renamed (`PATCH /image-sets/{id}`).
+    ImageSetRenamed v1 {
+        actor: Subject,
+        set: ImageSet @ view(Manage),
+        old_display_name: String,
+        new_display_name: String,
+        old_canonical_name: Option<String>,
+        new_canonical_name: Option<String>,
+    }
+    event_type = "image_set_renamed";
+    render = "renamed the image set";
+}
+
+define_event! {
+    /// An image set's owner was changed (`PUT /image-sets/{id}/owner`).
+    /// Visible to the set's managers and, via the `self` policy, to the
+    /// previous and new owners. Only emitted when the owner actually changed;
+    /// a null owner is an orphaned set.
+    ImageSetOwnerChanged v1 {
+        actor: Subject,
+        set: ImageSet @ view(Manage),
+        old_owner: Option<Subject> @ view(SelfAccess),
+        new_owner: Option<Subject> @ view(SelfAccess),
+    }
+    event_type = "image_set_owner_changed";
+    render = "changed the image set owner";
+}
+
+define_event! {
     /// A full-replacement generation was appended to an image set
     /// (`POST /image-sets/{id}/generations`). Visible to the set's managers.
     ImageSetGenerationCreated v1 {

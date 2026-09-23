@@ -24,8 +24,8 @@ use oci_spec::image::ImageManifest;
 use treadmill_rs::api::switchboard::images::{
     AddImageSourceRequest, CreateGenerationRequest, CreateImageSetRequest, GenerationMemberInfo,
     ImageInfo, ImageSetGenerationInfo, ImageSetGrantInfo, ImageSetGrantRequest, ImageSetInfo,
-    ImageSetPermission, ImageSourceGrantInfo, ImageSourceGrantRequest, ImageSourceInfo,
-    ImageSourcePermission,
+    ImageSetOwnerUpdateRequest, ImageSetPermission, ImageSourceGrantInfo, ImageSourceGrantRequest,
+    ImageSourceInfo, ImageSourcePermission, UpdateImageSetRequest,
 };
 use treadmill_rs::image::parse::{self, ParseError};
 use treadmill_rs::image::{Digest, media_types};
@@ -169,43 +169,68 @@ async fn set_info(state: &AppState, set: image::SetRecord) -> Result<ImageSetInf
         .map_err(internal)?;
     Ok(ImageSetInfo {
         id: set.id,
-        name: set.name,
-        label: set.label,
+        display_name: set.display_name,
+        canonical_name: set.canonical_name,
         owner_id: set.owner_subject,
         created_at: set.created_at,
         latest_generation,
     })
 }
 
-/// `POST /image-sets`: create an empty, named image set. The caller owns it.
+/// A trimmed, non-empty name, or 422.
+fn valid_name(name: &str) -> Result<&str, StatusCode> {
+    let name = name.trim();
+    if name.is_empty() {
+        tracing::debug!("refusing an empty image set name");
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    Ok(name)
+}
+
+/// 403 unless `subject` is a global admin, who alone may set canonical names.
+async fn require_admin(state: &AppState, subject: Uuid) -> Result<(), StatusCode> {
+    if engine::is_admin(state.pool(), subject)
+        .await
+        .map_err(internal)?
+    {
+        Ok(())
+    } else {
+        tracing::debug!("refusing a canonical name from non-admin {subject}");
+        Err(StatusCode::FORBIDDEN)
+    }
+}
+
+fn is_unique_violation(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(e) if e.is_unique_violation())
+}
+
+/// `POST /image-sets`: create an empty image set. The caller owns it.
 pub async fn create_image_set(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Json(req): Json<CreateImageSetRequest>,
 ) -> Result<(StatusCode, Json<ImageSetInfo>), StatusCode> {
     let owner = subject.user_id();
-
-    // Names are globally unique; surface a clash as a 409 rather than a 500.
-    if image::fetch_set_by_name(state.pool(), &req.name)
-        .await
-        .map_err(internal)?
-        .is_some()
-    {
-        return Err(StatusCode::CONFLICT);
+    let display_name = valid_name(&req.display_name)?;
+    let canonical_name = req.canonical_name.as_deref().map(valid_name).transpose()?;
+    if canonical_name.is_some() {
+        require_admin(&state, owner).await?;
     }
 
     let id = Uuid::now_v7();
     let mut tx = state.pool().begin().await.map_err(internal)?;
-    image::create_set(&mut *tx, id, &req.name, owner, req.label.as_deref())
-        .await
-        .map_err(internal)?;
+    match image::create_set(&mut *tx, id, display_name, canonical_name, owner).await {
+        Ok(()) => {}
+        Err(e) if is_unique_violation(&e) => return Err(StatusCode::CONFLICT),
+        Err(e) => return Err(internal(e)),
+    }
     audit::emit(
         &mut tx,
         &events::ImageSetCreated {
             actor: AuditSubject(owner),
             owner: AuditSubject(owner),
             set: AuditImageSet(id),
-            name: req.name.clone(),
+            name: display_name.to_string(),
         },
     )
     .await
@@ -217,6 +242,63 @@ pub async fn create_image_set(
         .map_err(internal)?
         .ok_or_else(|| internal("set vanished immediately after insert"))?;
     Ok((StatusCode::CREATED, Json(set_info(&state, set).await?)))
+}
+
+/// `PATCH /image-sets/{id}`: rename a set. The display name requires `manage`,
+/// the canonical name a global admin.
+pub async fn update_image_set(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(IdPath { id: set_id }): Path<IdPath>,
+    Json(req): Json<UpdateImageSetRequest>,
+) -> Result<Json<ImageSetInfo>, StatusCode> {
+    require_manage(&state, subject.user_id(), set_id).await?;
+    let display_name = req.display_name.as_deref().map(valid_name).transpose()?;
+    let canonical_name = match &req.canonical_name {
+        None => None,
+        Some(name) => {
+            require_admin(&state, subject.user_id()).await?;
+            Some(name.as_deref().map(valid_name).transpose()?)
+        }
+    };
+
+    let mut tx = state.pool().begin().await.map_err(internal)?;
+    let (old_display, old_canonical) = image::lock_set_names(&mut tx, set_id)
+        .await
+        .map_err(internal)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let new_display = display_name.unwrap_or(&old_display).to_string();
+    let new_canonical = match canonical_name {
+        Some(name) => name.map(str::to_string),
+        None => old_canonical.clone(),
+    };
+    if new_display != old_display || new_canonical != old_canonical {
+        match image::set_set_names(&mut tx, set_id, &new_display, new_canonical.as_deref()).await {
+            Ok(()) => {}
+            Err(e) if is_unique_violation(&e) => return Err(StatusCode::CONFLICT),
+            Err(e) => return Err(internal(e)),
+        }
+        audit::emit(
+            &mut tx,
+            &events::ImageSetRenamed {
+                actor: AuditSubject(subject.user_id()),
+                set: AuditImageSet(set_id),
+                old_display_name: old_display,
+                new_display_name: new_display,
+                old_canonical_name: old_canonical,
+                new_canonical_name: new_canonical,
+            },
+        )
+        .await
+        .map_err(internal)?;
+    }
+    tx.commit().await.map_err(internal)?;
+
+    let set = image::fetch_set_by_id(state.pool(), set_id)
+        .await
+        .map_err(internal)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(set_info(&state, set).await?))
 }
 
 /// `GET /image-sets`: list sets the caller owns (directly or via a group).
@@ -430,6 +512,68 @@ pub async fn grant_image_set(
             set: AuditImageSet(set_id),
             grantee: AuditSubject(req.subject_id),
             permission: permission.as_str().to_string(),
+        },
+    )
+    .await
+    .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PUT /image-sets/{id}/owner`: transfer a set to another subject, or orphan
+/// it.
+///
+/// Requires `manage`, the meta-permission covering ownership transfer. Handing
+/// a set to the `system` subject marks it as a standard image, which only a
+/// global admin may do. The `everyone` subject is never a valid owner: as a
+/// principal of every subject, it would give everyone `manage`. Setting the
+/// owner already in force is a no-op with no audit event.
+pub async fn put_image_set_owner(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(IdPath { id: set_id }): Path<IdPath>,
+    Json(req): Json<ImageSetOwnerUpdateRequest>,
+) -> Result<StatusCode, StatusCode> {
+    require_manage(&state, subject.user_id(), set_id).await?;
+
+    if req.owner == Some(engine::EVERYONE_SUBJECT_ID) {
+        tracing::debug!("refusing to re-own image set {set_id}: `everyone` cannot own");
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    if req.owner == Some(audit::SYSTEM_ACTOR_ID)
+        && !engine::is_admin(state.pool(), subject.user_id())
+            .await
+            .map_err(internal)?
+    {
+        tracing::debug!("refusing to re-own image set {set_id} to `system`: not an admin");
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let mut tx = state.pool().begin().await.map_err(internal)?;
+    let previous = image::lock_set_owner(&mut tx, set_id)
+        .await
+        .map_err(internal)?
+        // Authorized above, so a missing row was deleted in between.
+        .ok_or(StatusCode::NOT_FOUND)?;
+    if previous == req.owner {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
+    match image::set_set_owner(&mut tx, set_id, req.owner).await {
+        Ok(()) => {}
+        Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => {
+            tracing::debug!("refusing to re-own image set {set_id}: unknown subject");
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        Err(e) => return Err(internal(e)),
+    }
+    audit::emit(
+        &mut tx,
+        &events::ImageSetOwnerChanged {
+            actor: AuditSubject(subject.user_id()),
+            set: AuditImageSet(set_id),
+            old_owner: previous.map(AuditSubject),
+            new_owner: req.owner.map(AuditSubject),
         },
     )
     .await

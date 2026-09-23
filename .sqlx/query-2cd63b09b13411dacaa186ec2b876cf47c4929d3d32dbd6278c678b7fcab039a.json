@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tml_switchboard.image_sets\n           set owner_subject = $2\n           where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2cd63b09b13411dacaa186ec2b876cf47c4929d3d32dbd6278c678b7fcab039a"
+}

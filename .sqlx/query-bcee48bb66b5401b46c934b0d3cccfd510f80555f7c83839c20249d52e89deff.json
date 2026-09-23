@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, name, owner_subject, label, created_at\n           from tml_switchboard.image_sets where id = $1",
+  "query": "select id, display_name, canonical_name, owner_subject, created_at\n           from tml_switchboard.image_sets where id = $1",
   "describe": {
     "columns": [
       {
@@ -16,34 +16,34 @@
       },
       {
         "ordinal": 1,
-        "name": "name",
+        "name": "display_name",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "tml_switchboard.image_sets",
-            "name": "name"
+            "name": "display_name"
           }
         }
       },
       {
         "ordinal": 2,
+        "name": "canonical_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_sets",
+            "name": "canonical_name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "owner_subject",
         "type_info": "Uuid",
         "origin": {
           "Table": {
             "table": "tml_switchboard.image_sets",
             "name": "owner_subject"
-          }
-        }
-      },
-      {
-        "ordinal": 3,
-        "name": "label",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "tml_switchboard.image_sets",
-            "name": "label"
           }
         }
       },
@@ -72,5 +72,5 @@
       false
     ]
   },
-  "hash": "52de9cd87f767fa304ba16df1566f6d225b9b1316568bec434c4d886d4197286"
+  "hash": "bcee48bb66b5401b46c934b0d3cccfd510f80555f7c83839c20249d52e89deff"
 }
