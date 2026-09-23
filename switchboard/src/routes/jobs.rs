@@ -12,7 +12,7 @@ use sqlx::postgres::types::PgInterval;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::jobs::{
-    EnqueueJobResponse, JobInfo, JobLeaseExpiryAction, JobListResponse,
+    EnqueueJobResponse, JobDefaults, JobInfo, JobLeaseExpiryAction, JobListResponse,
     JobPermission as ApiJobPermission, JobServiceCredentials, LeaseRejection, LeaseRejectionCode,
     NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
 };
@@ -124,6 +124,37 @@ pub async fn list_events(
         .map(Json)
 }
 
+pub(crate) async fn resolve_owner(
+    state: &AppState,
+    caller: Uuid,
+    requested: Option<Uuid>,
+) -> Result<Uuid, StatusCode> {
+    let Some(requested) = requested else {
+        return Ok(caller);
+    };
+    let reachable = sqlx::query_scalar!(
+        "select exists(select 1 from tml_switchboard.principals($1) p where p.id = $2) as \"ok!\"",
+        caller,
+        requested,
+    )
+    .fetch_one(state.pool())
+    .await
+    .or_internal("checking requested job owner reachability")?;
+    if !reachable {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(requested)
+}
+
+pub async fn defaults(
+    State(state): State<AppState>,
+    _subject: crate::auth::Subject,
+) -> Json<JobDefaults> {
+    Json(JobDefaults {
+        lease_duration_secs: state.config().service.default_job_lease.num_seconds(),
+    })
+}
+
 /// Axum handler for `POST /jobs`.
 ///
 /// Enqueues a new job and returns its id. The job is inserted in the `queued`
@@ -161,24 +192,7 @@ pub async fn enqueue(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    // Resolve and validate the owner: the caller, or a group it belongs to.
-    let owner = match req.owner {
-        Some(requested) => {
-            let reachable = sqlx::query_scalar!(
-                "select exists(select 1 from tml_switchboard.principals($1) p where p.id = $2) as \"ok!\"",
-                caller,
-                requested,
-            )
-            .fetch_one(state.pool())
-            .await
-            .or_internal("checking requested job owner reachability")?;
-            if !reachable {
-                return Err(StatusCode::FORBIDDEN);
-            }
-            requested
-        }
-        None => caller,
-    };
+    let owner = resolve_owner(&state, caller, req.owner).await?;
 
     // Resuming or restarting exposes the referenced job; require `Manage` on it.
     // (Independent of the owner check above — the requested owner may differ from

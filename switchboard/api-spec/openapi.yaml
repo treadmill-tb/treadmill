@@ -272,6 +272,25 @@ paths:
                 $ref: '#/components/schemas/EnqueueJobResponse'
       security:
       - token: []
+  /jobs/defaults:
+    get:
+      tags:
+      - Jobs
+      summary: Get job defaults
+      operationId: getJobDefaults
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The authenticated account is locked, or lacks permission for this resource.
+        '200':
+          description: Defaults applied to a new job (`GET /jobs/defaults`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobDefaults'
+      security:
+      - token: []
   /jobs/{id}/events:
     get:
       tags:
@@ -772,7 +791,7 @@ paths:
       tags:
       - Hosts
       summary: Match hosts against a job's requirements
-      description: Evaluated over the hosts the caller may start on, so a job that would never be placed says so before it is submitted.
+      description: Evaluated over the hosts the job's owner may start on, so a job that would never be placed says so before it is submitted.
       operationId: matchHosts
       requestBody:
         description: |-
@@ -788,7 +807,7 @@ paths:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
         '403':
-          description: The caller lacks `use` on the named image set.
+          description: The caller lacks `use` on the named image set, or may not name `owner`.
         '200':
           description: |-
             How a job's host requirements meet the fleet right now.
@@ -2603,6 +2622,17 @@ components:
         whole admin-authored spec describing what it is.
       type: object
       properties:
+        busy:
+          description: Whether a job is assigned to the host.
+          type: boolean
+        current_lease_expires_at:
+          description: |-
+            When the lease of the host's current job expires. Null if the host is
+            not busy, or its job has not started.
+          type:
+          - string
+          - 'null'
+          format: date-time
         host_id:
           type: string
           format: uuid
@@ -2659,6 +2689,7 @@ components:
       - name
       - live
       - maintenance
+      - busy
       - permissions
     HostListEntry:
       description: |-
@@ -2671,6 +2702,15 @@ components:
         document is served by `GET /hosts/{id}` alone.
       type: object
       properties:
+        busy:
+          description: As [`HostInfo::busy`].
+          type: boolean
+        current_lease_expires_at:
+          description: As [`HostInfo::current_lease_expires_at`].
+          type:
+          - string
+          - 'null'
+          format: date-time
         host_id:
           type: string
           format: uuid
@@ -2706,6 +2746,39 @@ components:
       - name
       - live
       - maintenance
+      - busy
+    HostMatch:
+      description: How one authorized host meets a job's requirements.
+      type: object
+      properties:
+        error:
+          description: The predicate's evaluation error on this host, if any.
+          type:
+          - string
+          - 'null'
+        host_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        platform_profile:
+          description: |-
+            The platform profile of the image-set member selected for this host.
+            Null if the request named no image set, or no member is admissible.
+          type:
+          - string
+          - 'null'
+        predicate_matched:
+          description: Whether the predicate admits the host.
+          type: boolean
+        schedulable:
+          description: Whether the host could run the job.
+          type: boolean
+      required:
+      - host_id
+      - name
+      - predicate_matched
+      - schedulable
     HostOwnerUpdateRequest:
       description: A change of a host's owner (`PUT /hosts/{id}/owner`).
       type: object
@@ -2789,6 +2862,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/HostPredicateError'
+        hosts:
+          description: |-
+            Every authorized host, ordered by name. Empty if the predicate does not
+            compile.
+          type: array
+          items:
+            $ref: '#/components/schemas/HostMatch'
         image_matched:
           description: |-
             Of those, how many carry an admissible image-set member. Evaluated over
@@ -2820,6 +2900,7 @@ components:
       - schedulable
       - errored
       - errors
+      - hosts
     HostRequirementsRequest:
       description: |-
         A dry run of a job's host requirements (`POST /hosts/match`).
@@ -2840,6 +2921,13 @@ components:
           anyOf:
           - $ref: '#/components/schemas/JobInitSpec'
           - type: 'null'
+          default: null
+        owner:
+          description: The job's owner, as `JobRequest::owner`. Absent, the caller.
+          type:
+          - string
+          - 'null'
+          format: uuid
           default: null
       additionalProperties: false
       required:
@@ -3054,10 +3142,18 @@ components:
           - string
           - 'null'
           format: uuid
+        platforms:
+          description: |-
+            The platform profiles of the latest generation's members, in member
+            order, without duplicates.
+          type: array
+          items:
+            type: string
       required:
       - id
       - display_name
       - created_at
+      - platforms
     ImageSetOwnerUpdateRequest:
       description: A change of an image set's owner (`PUT /image-sets/{id}/owner`).
       type: object
@@ -3153,6 +3249,18 @@ components:
       - description: May manage the source's grants and delete it (owner holds this implicitly).
         type: string
         const: manage
+    JobDefaults:
+      description: Defaults applied to a new job (`GET /jobs/defaults`).
+      type: object
+      properties:
+        lease_duration_secs:
+          description: |-
+            The lease duration used when `JobRequest::lease_duration` is absent, in
+            seconds.
+          type: integer
+          format: int64
+      required:
+      - lease_duration_secs
     JobImage:
       description: 'A job''s image: what it references, and the concrete image it runs.'
       type: object

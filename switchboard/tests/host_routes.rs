@@ -1040,6 +1040,13 @@ async fn validate_counts_predicate_matches(pool: PgPool) {
     assert_eq!(report.image_matched, None);
     assert_eq!(report.errored, 0);
     assert_eq!(report.compile_error, None);
+    let rows: Vec<_> = report
+        .hosts
+        .iter()
+        .map(|h| (h.name.as_str(), h.predicate_matched, h.schedulable))
+        .collect();
+    assert_eq!(rows, vec![("big", true, true), ("small", false, false)]);
+    assert!(report.hosts.iter().all(|h| h.platform_profile.is_none()));
 
     // A predicate nothing satisfies is reported as such, not as an error.
     let report = validate(
@@ -1112,6 +1119,10 @@ async fn validate_surfaces_evaluation_errors(pool: PgPool) {
     assert_eq!(report.errored, 1);
     assert_eq!(report.errors.len(), 1);
     assert_eq!(report.errors[0].host_id, host_id);
+    assert_eq!(
+        report.hosts[0].error,
+        Some(report.errors[0].message.clone())
+    );
     assert_eq!(report.errors[0].name, "cam-qemu-04");
     assert!(report.errors[0].message.contains("model"), "{report:?}");
 
@@ -1221,6 +1232,12 @@ async fn validate_separates_predicate_misses_from_image_misses(pool: PgPool) {
         "the image set is the problem"
     );
     assert!(report.schedulable.is_empty());
+    assert!(
+        report
+            .hosts
+            .iter()
+            .all(|h| h.predicate_matched && h.platform_profile.is_none() && !h.schedulable)
+    );
 
     // The mirror image: the predicate is the problem, and the image side is
     // still reported over the whole set rather than over what survived.
@@ -1228,6 +1245,30 @@ async fn validate_separates_predicate_misses_from_image_misses(pool: PgPool) {
     assert_eq!(report.predicate_matched, 0);
     assert_eq!(report.image_matched, Some(0));
     assert!(report.schedulable.is_empty());
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn validate_as_an_unrelated_owner_is_forbidden(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let bob = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let admin_id = whoami(&client, addr, &admin).await;
+    let bob_id = whoami(&client, addr, &bob).await;
+
+    let status = async |owner: Uuid| {
+        client
+            .post(format!("http://{addr}/api/v1/hosts/match"))
+            .bearer_auth(&bob)
+            .json(&serde_json::json!({ "host_cel_predicate": "true", "owner": owner }))
+            .send()
+            .await
+            .unwrap()
+            .status()
+    };
+    assert_eq!(status(bob_id).await, reqwest::StatusCode::OK);
+    assert_eq!(status(admin_id).await, reqwest::StatusCode::FORBIDDEN);
 }
 
 /// Counts cover only hosts the caller may start on, so the endpoint cannot be

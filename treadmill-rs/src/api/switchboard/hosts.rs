@@ -54,6 +54,11 @@ pub struct HostInfo {
     /// Whether an operator has withheld this host from scheduling. A host in
     /// maintenance is neither dispatched onto nor preempted to free capacity.
     pub maintenance: bool,
+    /// Whether a job is assigned to the host.
+    pub busy: bool,
+    /// When the lease of the host's current job expires. Null if the host is
+    /// not busy, or its job has not started.
+    pub current_lease_expires_at: Option<DateTime<Utc>>,
     /// The host's current spec, normalized to the latest version, as a document
     /// conforming to the schema at `GET /hosts/spec-schema`. Null only for a
     /// host that has never been described.
@@ -82,6 +87,10 @@ pub struct HostListEntry {
     pub last_seen_at: Option<DateTime<Utc>>,
     /// As [`HostInfo::maintenance`].
     pub maintenance: bool,
+    /// As [`HostInfo::busy`].
+    pub busy: bool,
+    /// As [`HostInfo::current_lease_expires_at`].
+    pub current_lease_expires_at: Option<DateTime<Utc>>,
     /// The projection of the host's current spec. Null only for a host that has
     /// never been described.
     pub spec: Option<HostSummary>,
@@ -261,6 +270,9 @@ pub struct HostRequirementsRequest {
     /// only the predicate is evaluated.
     #[serde(default)]
     pub init_spec: Option<JobInitSpec>,
+    /// The job's owner, as `JobRequest::owner`. Absent, the caller.
+    #[serde(default)]
+    pub owner: Option<Uuid>,
 }
 
 /// How a job's host requirements meet the fleet right now.
@@ -293,6 +305,25 @@ pub struct HostRequirementsReport {
     /// Set when the predicate does not compile, in which case nothing was
     /// evaluated and every match count is zero.
     pub compile_error: Option<String>,
+    /// Every authorized host, ordered by name. Empty if the predicate does not
+    /// compile.
+    pub hosts: Vec<HostMatch>,
+}
+
+/// How one authorized host meets a job's requirements.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct HostMatch {
+    pub host_id: Uuid,
+    pub name: String,
+    /// Whether the predicate admits the host.
+    pub predicate_matched: bool,
+    /// The predicate's evaluation error on this host, if any.
+    pub error: Option<String>,
+    /// The platform profile of the image-set member selected for this host.
+    /// Null if the request named no image set, or no member is admissible.
+    pub platform_profile: Option<String>,
+    /// Whether the host could run the job.
+    pub schedulable: bool,
 }
 
 /// One host the predicate could not be evaluated against.

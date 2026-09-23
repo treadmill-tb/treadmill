@@ -162,11 +162,22 @@ pub async fn get_image(
 }
 
 /// Assemble the API view of a set from its record, reading the latest
-/// generation number.
+/// generation's number and platforms.
 async fn set_info(state: &AppState, set: image::SetRecord) -> Result<ImageSetInfo, StatusCode> {
     let latest_generation = image::latest_generation(state.pool(), set.id)
         .await
         .map_err(internal)?;
+    let mut platforms = Vec::new();
+    if let Some(generation) = latest_generation {
+        let members = image::members_for_generation(state.pool(), set.id, generation)
+            .await
+            .map_err(internal)?;
+        for member in members {
+            if !platforms.contains(&member.platform_profile) {
+                platforms.push(member.platform_profile);
+            }
+        }
+    }
     Ok(ImageSetInfo {
         id: set.id,
         display_name: set.display_name,
@@ -174,6 +185,7 @@ async fn set_info(state: &AppState, set: image::SetRecord) -> Result<ImageSetInf
         owner_id: set.owner_subject,
         created_at: set.created_at,
         latest_generation,
+        platforms,
     })
 }
 

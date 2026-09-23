@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "with principals (id) as (\n               select id from tml_switchboard.principals($1::uuid)\n           )\n           select host_id, name, owner_id, maintenance, last_seen_at\n           from tml_switchboard.hosts h\n           where exists (select 1 from principals where id = $2::uuid)\n              or exists (select 1 from principals p where p.id = h.owner_id)\n              or exists (\n                     select 1\n                     from tml_switchboard.host_grants g\n                     join principals p on g.subject_id = p.id\n                     where g.host_id = h.host_id and g.permission = 'read'\n                 )\n           order by name, host_id",
+  "query": "with principals (id) as (\n               select id from tml_switchboard.principals($1::uuid)\n           )\n           select h.host_id, h.name, h.owner_id, h.maintenance, h.last_seen_at,\n                  h.current_job is not null as \"busy!\",\n                  (j.started_at + j.lease_duration) as \"current_lease_expires_at?\"\n           from tml_switchboard.hosts h\n           left join tml_switchboard.jobs j on j.job_id = h.current_job\n           where exists (select 1 from principals where id = $2::uuid)\n              or exists (select 1 from principals p where p.id = h.owner_id)\n              or exists (\n                     select 1\n                     from tml_switchboard.host_grants g\n                     join principals p on g.subject_id = p.id\n                     where g.host_id = h.host_id and g.permission = 'read'\n                 )\n           order by h.name, h.host_id",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,18 @@
             "name": "last_seen_at"
           }
         }
+      },
+      {
+        "ordinal": 5,
+        "name": "busy!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "current_lease_expires_at?",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -70,8 +82,10 @@
       false,
       true,
       false,
-      true
+      true,
+      null,
+      null
     ]
   },
-  "hash": "8032d6c3f47cbd5e90d7f6986d246dc4b13ab182527222230a68e719fc0f8ca1"
+  "hash": "258968c46de3d1ad752400c61828bbb3b61afceeed4eeb9eff693fec9b8a15a9"
 }

@@ -11,7 +11,9 @@
 //! matched" into the same empty answer.
 
 use sqlx::PgPool;
-use treadmill_rs::api::switchboard::hosts::{HostPredicateError, HostRequirementsReport};
+use treadmill_rs::api::switchboard::hosts::{
+    HostMatch, HostPredicateError, HostRequirementsReport,
+};
 use treadmill_rs::host_spec::HostSpecV1;
 use uuid::Uuid;
 
@@ -59,6 +61,7 @@ pub async fn evaluate(
         errored: 0,
         errors: Vec::new(),
         compile_error: None,
+        hosts: Vec::new(),
     };
 
     let compiled = match CelEngine.compile(predicate) {
@@ -93,40 +96,48 @@ pub async fn evaluate(
 
         // An undescribed host is dispatchable by nothing, so it neither
         // matches nor errors; it is simply one of `authorized`.
-        let admitted = match spec {
-            Some(spec) => match compiled.eval(spec) {
-                Ok(admitted) => admitted,
-                Err(e) => {
-                    report.errored += 1;
-                    if report.errors.len() < MAX_REPORTED_ERRORS {
-                        report.errors.push(HostPredicateError {
-                            host_id: host.host_id,
-                            name: host.name.clone(),
-                            message: e.to_string(),
-                        });
-                    }
-                    false
-                }
-            },
-            None => false,
+        let (admitted, error) = match spec.map(|spec| compiled.eval(spec)) {
+            Some(Ok(admitted)) => (admitted, None),
+            Some(Err(e)) => (false, Some(e.to_string())),
+            None => (false, None),
         };
         if admitted {
             report.predicate_matched += 1;
         }
-
-        let Some(members) = members.as_deref() else {
-            if admitted {
-                report.schedulable.push(host.host_id);
+        if let Some(message) = &error {
+            report.errored += 1;
+            if report.errors.len() < MAX_REPORTED_ERRORS {
+                report.errors.push(HostPredicateError {
+                    host_id: host.host_id,
+                    name: host.name.clone(),
+                    message: message.clone(),
+                });
             }
-            continue;
+        }
+
+        let (platform_profile, image_admits) = match members.as_deref() {
+            Some(members) => match select_member(members, spec) {
+                Some(member) => (Some(member.platform_profile.clone()), true),
+                None => (None, false),
+            },
+            None => (None, true),
         };
-        let has_member = select_member(members, spec).is_some();
-        if has_member {
+        if platform_profile.is_some() {
             report.image_matched = Some(report.image_matched.unwrap_or(0) + 1);
         }
-        if admitted && has_member {
+
+        let schedulable = admitted && image_admits;
+        if schedulable {
             report.schedulable.push(host.host_id);
         }
+        report.hosts.push(HostMatch {
+            host_id: host.host_id,
+            name: host.name,
+            predicate_matched: admitted,
+            error,
+            platform_profile,
+            schedulable,
+        });
     }
 
     Ok(report)

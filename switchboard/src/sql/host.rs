@@ -22,6 +22,8 @@ pub struct SqlHostListing {
     pub owner_id: Option<Uuid>,
     pub maintenance: bool,
     pub last_seen_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub busy: bool,
+    pub current_lease_expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// A host reduced to what a matching report needs to name it.
@@ -48,8 +50,11 @@ pub async fn list_readable(
         r#"with principals (id) as (
                select id from tml_switchboard.principals($1::uuid)
            )
-           select host_id, name, owner_id, maintenance, last_seen_at
+           select h.host_id, h.name, h.owner_id, h.maintenance, h.last_seen_at,
+                  h.current_job is not null as "busy!",
+                  (j.started_at + j.lease_duration) as "current_lease_expires_at?"
            from tml_switchboard.hosts h
+           left join tml_switchboard.jobs j on j.job_id = h.current_job
            where exists (select 1 from principals where id = $2::uuid)
               or exists (select 1 from principals p where p.id = h.owner_id)
               or exists (
@@ -58,7 +63,7 @@ pub async fn list_readable(
                      join principals p on g.subject_id = p.id
                      where g.host_id = h.host_id and g.permission = 'read'
                  )
-           order by name, host_id"#,
+           order by h.name, h.host_id"#,
         subject_id,
         crate::auth::engine::ADMINS_GROUP_ID,
     )
@@ -75,9 +80,12 @@ pub async fn fetch_listing(
 ) -> Result<Option<SqlHostListing>, sqlx::Error> {
     sqlx::query_as!(
         SqlHostListing,
-        r#"select host_id, name, owner_id, maintenance, last_seen_at
-           from tml_switchboard.hosts
-           where host_id = $1"#,
+        r#"select h.host_id, h.name, h.owner_id, h.maintenance, h.last_seen_at,
+                  h.current_job is not null as "busy!",
+                  (j.started_at + j.lease_duration) as "current_lease_expires_at?"
+           from tml_switchboard.hosts h
+           left join tml_switchboard.jobs j on j.job_id = h.current_job
+           where h.host_id = $1"#,
         host_id,
     )
     .fetch_optional(conn)

@@ -14,17 +14,19 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
+use chrono::SubsecRound;
 use reqwest::redirect::Policy;
 use sqlx::PgPool;
 use sqlx::types::ipnetwork::IpNetwork;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
+use treadmill_rs::api::switchboard::hosts::{HostInfo, HostListEntry};
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{
-    EnqueueJobResponse, JobImageReference, JobInfo, JobLeaseExpiryAction, JobListResponse,
-    JobPermission, JobPredecessor, JobServiceCredentials, JobServiceEndpoint, LeaseRejection,
-    LeaseRejectionCode, NatsConsoleInputCredentials, NatsLogStreamCredentials,
+    EnqueueJobResponse, JobDefaults, JobImageReference, JobInfo, JobLeaseExpiryAction,
+    JobListResponse, JobPermission, JobPredecessor, JobServiceCredentials, JobServiceEndpoint,
+    LeaseRejection, LeaseRejectionCode, NatsConsoleInputCredentials, NatsLogStreamCredentials,
 };
 use treadmill_rs::api::switchboard::{
     DEFAULT_HOST_CEL_PREDICATE, JobInitSpec, JobRequest, JobState, WhoAmIResponse,
@@ -1069,6 +1071,84 @@ async fn enqueue_honors_a_requested_lease_duration(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(info.lease_duration_secs, 2 * 3600);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn defaults_report_the_configured_lease(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+
+    let defaults: JobDefaults = client
+        .get(format!("http://{addr}/api/v1/jobs/defaults"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(defaults.lease_duration_secs, 3600);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn host_reports_its_current_job_lease(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let token = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let alice = whoami(&client, addr, &token).await;
+    let job_id = seed_job(&pool, alice, latest_token_id(&pool, alice).await, &[]).await;
+    let started_at = chrono::Utc::now().trunc_subsecs(0);
+    mark_running(&pool, job_id, started_at).await;
+    let host_id: Uuid = sqlx::query_scalar(
+        "update tml_switchboard.hosts h set current_job = j.job_id \
+         from tml_switchboard.jobs j \
+         where j.job_id = $1 and h.host_id = j.dispatched_on_host_id \
+         returning h.host_id",
+    )
+    .bind(job_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let host: HostInfo = client
+        .get(format!("http://{addr}/api/v1/hosts/{host_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(host.busy);
+    assert_eq!(
+        host.current_lease_expires_at,
+        Some(started_at + chrono::Duration::hours(1))
+    );
+
+    let hosts: Vec<HostListEntry> = client
+        .get(format!("http://{addr}/api/v1/hosts"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let entry = hosts.iter().find(|h| h.host_id == host_id).unwrap();
+    assert!(entry.busy);
+    assert_eq!(
+        entry.current_lease_expires_at,
+        host.current_lease_expires_at
+    );
 }
 
 /// A job's `(job_state, termination_reason)` as enum text.

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select host_id, name, owner_id, maintenance, last_seen_at\n           from tml_switchboard.hosts\n           where host_id = $1",
+  "query": "select h.host_id, h.name, h.owner_id, h.maintenance, h.last_seen_at,\n                  h.current_job is not null as \"busy!\",\n                  (j.started_at + j.lease_duration) as \"current_lease_expires_at?\"\n           from tml_switchboard.hosts h\n           left join tml_switchboard.jobs j on j.job_id = h.current_job\n           where h.host_id = $1",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,18 @@
             "name": "last_seen_at"
           }
         }
+      },
+      {
+        "ordinal": 5,
+        "name": "busy!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "current_lease_expires_at?",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -69,8 +81,10 @@
       false,
       true,
       false,
-      true
+      true,
+      null,
+      null
     ]
   },
-  "hash": "8a62515515cf81a67eddcc3afae6cbd1a1c2c7fb63ee6470882b979bec6e866d"
+  "hash": "371df2bb4446a521f43a6bd725886dd3bd9a32a50053892e3ce254efc6b6fac2"
 }
