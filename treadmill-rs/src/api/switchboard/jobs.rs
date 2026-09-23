@@ -493,6 +493,14 @@ pub struct EnqueueJobResponse {
     pub host_requirements: crate::api::switchboard::hosts::HostRequirementsReport,
 }
 
+/// Defaults applied to a new job (`GET /jobs/defaults`).
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct JobDefaults {
+    /// The lease duration used when `JobRequest::lease_duration` is absent, in
+    /// seconds.
+    pub lease_duration_secs: i64,
+}
+
 /// A patch to a job (`PATCH /jobs/{id}`). Only the fields listed here are
 /// mutable; a request carrying any other field is rejected. Omitting a field
 /// leaves it unchanged; sending an explicit `null` clears it.

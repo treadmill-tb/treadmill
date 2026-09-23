@@ -159,6 +159,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/jobs/defaults": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get job defaults */
+        get: operations["getJobDefaults"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/jobs/{id}/events": {
         parameters: {
             query?: never;
@@ -336,7 +353,7 @@ export interface paths {
         put?: never;
         /**
          * Match hosts against a job's requirements
-         * @description Evaluated over the hosts the caller may start on, so a job that would never be placed says so before it is submitted.
+         * @description Evaluated over the hosts the job's owner may start on, so a job that would never be placed says so before it is submitted.
          */
         post: operations["matchHosts"];
         delete?: never;
@@ -1107,6 +1124,14 @@ export interface components {
          *     whole admin-authored spec describing what it is.
          */
         HostInfo: {
+            /** @description Whether a job is assigned to the host. */
+            busy: boolean;
+            /**
+             * Format: date-time
+             * @description When the lease of the host's current job expires. Null if the host is
+             *     not busy, or its job has not started.
+             */
+            current_lease_expires_at?: string | null;
             /** Format: uuid */
             host_id: string;
             /**
@@ -1158,6 +1183,13 @@ export interface components {
          *     document is served by `GET /hosts/{id}` alone.
          */
         HostListEntry: {
+            /** @description As [`HostInfo::busy`]. */
+            busy: boolean;
+            /**
+             * Format: date-time
+             * @description As [`HostInfo::current_lease_expires_at`].
+             */
+            current_lease_expires_at?: string | null;
             /** Format: uuid */
             host_id: string;
             /**
@@ -1180,6 +1212,23 @@ export interface components {
              * @description The revision `spec` was projected from. Null exactly when `spec` is.
              */
             spec_revision?: number | null;
+        };
+        /** @description How one authorized host meets a job's requirements. */
+        HostMatch: {
+            /** @description The predicate's evaluation error on this host, if any. */
+            error?: string | null;
+            /** Format: uuid */
+            host_id: string;
+            name: string;
+            /**
+             * @description The platform profile of the image-set member selected for this host.
+             *     Null if the request named no image set, or no member is admissible.
+             */
+            platform_profile?: string | null;
+            /** @description Whether the predicate admits the host. */
+            predicate_matched: boolean;
+            /** @description Whether the host could run the job. */
+            schedulable: boolean;
         };
         /** @description A change of a host's owner (`PUT /hosts/{id}/owner`). */
         HostOwnerUpdateRequest: {
@@ -1233,6 +1282,11 @@ export interface components {
             /** @description The first few evaluation errors, for diagnosis; `errored` is the total. */
             errors: components["schemas"]["HostPredicateError"][];
             /**
+             * @description Every authorized host, ordered by name. Empty if the predicate does not
+             *     compile.
+             */
+            hosts: components["schemas"]["HostMatch"][];
+            /**
              * Format: uint32
              * @description Of those, how many carry an admissible image-set member. Evaluated over
              *     the whole authorized set rather than only the predicate's matches, so
@@ -1269,6 +1323,12 @@ export interface components {
              * @default null
              */
             init_spec: components["schemas"]["JobInitSpec"] | null;
+            /**
+             * Format: uuid
+             * @description The job's owner, as `JobRequest::owner`. Absent, the caller.
+             * @default null
+             */
+            owner: string | null;
         };
         /**
          * @description Why a submitted host spec was refused (`422 Unprocessable Entity`).
@@ -1393,6 +1453,11 @@ export interface components {
             latest_generation?: number | null;
             /** Format: uuid */
             owner_id?: string | null;
+            /**
+             * @description The platform profiles of the latest generation's members, in member
+             *     order, without duplicates.
+             */
+            platforms: string[];
         };
         /** @description A change of an image set's owner (`PUT /image-sets/{id}/owner`). */
         ImageSetOwnerUpdateRequest: {
@@ -1447,6 +1512,15 @@ export interface components {
          *     that grants the well-known `everyone` subject `use`.
          */
         ImageSourcePermission: "use" | "manage";
+        /** @description Defaults applied to a new job (`GET /jobs/defaults`). */
+        JobDefaults: {
+            /**
+             * Format: int64
+             * @description The lease duration used when `JobRequest::lease_duration` is absent, in
+             *     seconds.
+             */
+            lease_duration_secs: number;
+        };
         /** @description A job's image: what it references, and the concrete image it runs. */
         JobImage: {
             reference: components["schemas"]["JobImageReference"];
@@ -2668,6 +2742,40 @@ export interface operations {
             };
         };
     };
+    getJobDefaults: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Defaults applied to a new job (`GET /jobs/defaults`). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobDefaults"];
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listJobEvents: {
         parameters: {
             query?: {
@@ -3385,7 +3493,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The caller lacks `use` on the named image set. */
+            /** @description The caller lacks `use` on the named image set, or may not name `owner`. */
             403: {
                 headers: {
                     [name: string]: unknown;

@@ -464,6 +464,7 @@ async fn create_group_append_generations_and_inspect(pool: PgPool) {
     assert_eq!(set.display_name, "Ubuntu set");
     assert_eq!(set.canonical_name, None);
     assert_eq!(set.latest_generation, None);
+    assert!(set.platforms.is_empty());
 
     // POST a first generation: member 0 generic, member 1 more specific.
     let resp = client
@@ -505,6 +506,7 @@ async fn create_group_append_generations_and_inspect(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(info.latest_generation, Some(1));
+    assert_eq!(info.platforms, vec!["rpi4-uboot-sd".to_string()]);
 
     // A second generation fully replaces the membership (just member 1 now) and
     // increments the generation number.

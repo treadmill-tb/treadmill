@@ -147,6 +147,9 @@ pub struct ImageSetInfo {
     pub created_at: DateTime<Utc>,
     /// The set's latest generation number, or null if it has none yet.
     pub latest_generation: Option<u32>,
+    /// The platform profiles of the latest generation's members, in member
+    /// order, without duplicates.
+    pub platforms: Vec<String>,
 }
 
 /// One member of a generation, as returned by the inspect route. A member is

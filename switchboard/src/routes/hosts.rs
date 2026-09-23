@@ -366,16 +366,16 @@ pub async fn spec_schema() -> Json<serde_json::Value> {
 /// Axum handler for `POST /hosts/match` — a dry run of a job's host
 /// requirements.
 ///
-/// Reports over the hosts the *caller* may start on. An owner cannot be named
-/// the way enqueue allows: the caller's own authorization is what bounds the
-/// report, and letting it be widened is exactly how this would become a probe
-/// for hosts the caller cannot see.
+/// Reports over the hosts the job's owner may start on. The owner is checked
+/// as enqueue checks it, so this reveals no host that enqueueing could not.
 pub async fn match_hosts(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Json(req): Json<HostRequirementsRequest>,
 ) -> Result<Json<HostRequirementsReport>, StatusCode> {
     use crate::auth::engine::{self, ImageSetPermission};
+
+    let owner = crate::routes::jobs::resolve_owner(&state, subject.user_id(), req.owner).await?;
 
     // Resolve the image set exactly as enqueue does, so the report describes
     // the membership an actual submission would freeze.
@@ -407,14 +407,10 @@ pub async fn match_hosts(
         _ => None,
     };
 
-    let report = crate::host_requirements::evaluate(
-        state.pool(),
-        subject.user_id(),
-        &req.host_cel_predicate,
-        image_set,
-    )
-    .await
-    .or_internal("evaluating host requirements")?;
+    let report =
+        crate::host_requirements::evaluate(state.pool(), owner, &req.host_cel_predicate, image_set)
+            .await
+            .or_internal("evaluating host requirements")?;
 
     Ok(Json(report))
 }
@@ -720,6 +716,8 @@ fn host_info(
         name: host.name,
         owner_id: host.owner_id,
         maintenance: host.maintenance,
+        busy: host.busy,
+        current_lease_expires_at: host.current_lease_expires_at,
         last_seen_at: host.last_seen_at,
         spec,
         spec_revision,
@@ -744,6 +742,8 @@ fn host_entry(
         host_id: host.host_id,
         name: host.name,
         maintenance: host.maintenance,
+        busy: host.busy,
+        current_lease_expires_at: host.current_lease_expires_at,
         last_seen_at: host.last_seen_at,
         spec,
         spec_revision,

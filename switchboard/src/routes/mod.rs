@@ -202,6 +202,13 @@ pub fn api_router() -> ApiRouter<AppState> {
             })
             .get_with(jobs::list, |o| doc(o, "listJobs", "Jobs", "List jobs")),
         )
+        //  GET /jobs/defaults -- defaults applied to a new job
+        .api_route(
+            "/jobs/defaults",
+            get_with(jobs::defaults, |o| {
+                doc(o, "getJobDefaults", "Jobs", "Get job defaults")
+            }),
+        )
         //  GET /jobs/{id}/events
         .api_route(
             "/jobs/{id}/events",
@@ -380,11 +387,14 @@ pub fn api_router() -> ApiRouter<AppState> {
                     "Match hosts against a job's requirements",
                 )
                 .description(
-                    "Evaluated over the hosts the caller may start on, so a job that \
+                    "Evaluated over the hosts the job's owner may start on, so a job that \
                      would never be placed says so before it is submitted.",
                 )
                 .response_with::<403, (), _>(|r| {
-                    r.description("The caller lacks `use` on the named image set.")
+                    r.description(
+                        "The caller lacks `use` on the named image set, or may not name \
+                         `owner`.",
+                    )
                 })
             }),
         )
