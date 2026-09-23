@@ -595,6 +595,20 @@ define_event! {
 }
 
 define_event! {
+    /// An image set was renamed (`PATCH /image-sets/{id}`).
+    ImageSetRenamed v1 {
+        actor: Subject,
+        set: ImageSet @ view(Manage),
+        old_display_name: String,
+        new_display_name: String,
+        old_canonical_name: Option<String>,
+        new_canonical_name: Option<String>,
+    }
+    event_type = "image_set_renamed";
+    render = "renamed the image set";
+}
+
+define_event! {
     /// An image set's owner was changed (`PUT /image-sets/{id}/owner`).
     /// Visible to the set's managers and, via the `self` policy, to the
     /// previous and new owners. Only emitted when the owner actually changed;

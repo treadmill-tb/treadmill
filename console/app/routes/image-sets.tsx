@@ -26,11 +26,11 @@ function CreateGroupForm({ onDone }: { onDone: () => void }) {
       const v = f.get(k);
       return typeof v === "string" ? v.trim() : "";
     };
-    const label = str("label");
+    const canonical = str("canonical_name");
     create.mutate({
       body: {
-        name: str("name"),
-        label: label === "" ? null : label,
+        display_name: str("display_name"),
+        canonical_name: canonical === "" ? null : canonical,
       },
     });
   }
@@ -38,12 +38,12 @@ function CreateGroupForm({ onDone }: { onDone: () => void }) {
   return (
     <form className="form card" onSubmit={onSubmit}>
       <label className="field">
-        <span>Name (stable, globally unique)</span>
-        <input name="name" required className="mono" />
+        <span>Name</span>
+        <input name="display_name" required />
       </label>
       <label className="field">
-        <span>Label (optional)</span>
-        <input name="label" />
+        <span>Canonical name (optional, admins only)</span>
+        <input name="canonical_name" className="mono" />
       </label>
       <MutationError error={create.error} />
       <div className="toolbar">
@@ -80,7 +80,7 @@ export default function ImageSets() {
             <thead>
               <tr>
                 <th>Name</th>
-                <th>Label</th>
+                <th>Canonical name</th>
                 <th>Latest generation</th>
                 <th>Owner</th>
                 <th>Created</th>
@@ -90,9 +90,15 @@ export default function ImageSets() {
               {sets.data.map((g) => (
                 <tr key={g.id}>
                   <td>
-                    <EntityLink kind="imageSet" id={g.id} label={g.name} />
+                    <EntityLink
+                      kind="imageSet"
+                      id={g.id}
+                      label={g.display_name}
+                    />
                   </td>
-                  <td>{g.label ?? <span className="muted">—</span>}</td>
+                  <td className="mono">
+                    {g.canonical_name ?? <span className="muted">—</span>}
+                  </td>
                   <td>
                     {g.latest_generation ?? <span className="muted">—</span>}
                   </td>

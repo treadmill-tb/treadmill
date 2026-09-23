@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select display_name, canonical_name\n           from tml_switchboard.image_sets\n           where id = $1\n           for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_sets",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "canonical_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.image_sets",
+            "name": "canonical_name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "da2b327be702cdd0dd04e10c81e9a4e862f00342c8724e3076e66ae78aa9ac54"
+}

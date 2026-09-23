@@ -48,18 +48,16 @@ else
 	echo "already registered (or registration refused); continuing"
 fi
 
-# Re-runnable: reuse the set from an earlier run rather than failing on the
-# duplicate name.
+# Re-runnable: reuse the set from an earlier run.
 say "Public image set for it"
-set_name=ubuntu-webterm
-set_id="$(curl -fsS -X POST "$sb/api/v1/image-sets" "${auth[@]}" \
-	-d "{\"name\":\"$set_name\",\"label\":\"Ubuntu 26.04 (webterm)\",\"public\":true}" 2>/dev/null |
-	jq -r .id 2>/dev/null || true)"
-if [ -z "$set_id" ] || [ "$set_id" = null ]; then
-	set_id="$(curl -fsS "$sb/api/v1/image-sets" "${auth[@]}" |
-		jq -r --arg n "$set_name" '.[] | select(.name == $n) | .id' | head -n1)"
+set_name="Ubuntu 26.04 (webterm)"
+set_id="$(curl -fsS "$sb/api/v1/image-sets" "${auth[@]}" |
+	jq -r --arg n "$set_name" '.[] | select(.display_name == $n) | .id' | head -n1)"
+if [ -n "$set_id" ]; then
 	echo "reusing set $set_id"
 else
+	set_id="$(curl -fsS -X POST "$sb/api/v1/image-sets" "${auth[@]}" \
+		-d "{\"display_name\":\"$set_name\"}" | jq -r .id)"
 	echo "created set $set_id"
 fi
 [ -n "$set_id" ] || { echo "!! no image set to use" >&2; exit 1; }

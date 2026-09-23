@@ -627,7 +627,7 @@ if [ "$enable_supervisor" = 1 ]; then
       curl -fsS -X POST "http://127.0.0.1:$sb_port/api/v1/image-sets" \
        -H "Authorization: Bearer $api_token_bearer" \
        -H 'content-type: application/json' \
-       -d "{\"name\":\"tiny-efi\",\"label\":\"tiny-efi (dev)\",\"public\":true}" \
+       -d '{"display_name":"tiny-efi (dev)","canonical_name":"tiny-efi"}' \
     )"; then
       tiny_efi_set_id="$(echo "$GRP" | jq -r .id)"
       echo "  created as $tiny_efi_set_id"

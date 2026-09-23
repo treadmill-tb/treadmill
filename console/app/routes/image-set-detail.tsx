@@ -272,7 +272,7 @@ export default function ImageSetDetail({ params }: Route.ComponentProps) {
       {set.data && (
         <>
           <div className="toolbar">
-            <h1>Set {set.data.name}</h1>
+            <h1>Set {set.data.display_name}</h1>
             <span className="spacer" />
             {grants.data && (
               <button
@@ -331,8 +331,10 @@ export default function ImageSetDetail({ params }: Route.ComponentProps) {
           <dl className="props">
             <dt>Id</dt>
             <dd className="mono">{set.data.id}</dd>
-            <dt>Label</dt>
-            <dd>{set.data.label ?? <span className="muted">—</span>}</dd>
+            <dt>Canonical name</dt>
+            <dd className="mono">
+              {set.data.canonical_name ?? <span className="muted">—</span>}
+            </dd>
             <dt>Visibility</dt>
             <dd>
               {isPublic == null ? (

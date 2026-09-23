@@ -1730,8 +1730,8 @@ paths:
       operationId: createImageSet
       requestBody:
         description: |-
-          `POST /image-sets`: create an empty, named image set. The caller becomes
-          its owner; membership is added afterwards via per-generation snapshots (see
+          `POST /image-sets`: create an empty image set. The caller becomes its
+          owner; membership is added afterwards via per-generation snapshots (see
           [`CreateGenerationRequest`]).
         content:
           application/json:
@@ -1742,7 +1742,7 @@ paths:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
         '403':
-          description: The authenticated account is locked, or lacks permission for this resource.
+          description: Only a global admin may give a set a canonical name.
         '400':
           description: Failed to parse the request body as JSON
           content:
@@ -1756,11 +1756,7 @@ paths:
               schema:
                 type: string
         '422':
-          description: Failed to deserialize the JSON body into the target type
-          content:
-            text/plain:
-              schema:
-                type: string
+          description: A name is empty.
         '201':
           description: The image set was created.
           content:
@@ -1768,7 +1764,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ImageSetInfo'
         '409':
-          description: An image set with that name already exists.
+          description: An image set with that canonical name already exists.
       security:
       - token: []
   /image-sets/{id}:
@@ -1793,13 +1789,68 @@ paths:
         '403':
           description: The authenticated account is locked, or lacks permission for this resource.
         '200':
-          description: A named, mutable image set, as returned by the catalog list/inspect routes.
+          description: A mutable image set, as returned by the catalog list/inspect routes.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ImageSetInfo'
         '404':
           description: No such image set, or it is not visible to the caller.
+      security:
+      - token: []
+    patch:
+      tags:
+      - Images
+      summary: Rename an image set
+      operationId: updateImageSet
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        description: |-
+          `PATCH /image-sets/{id}`: rename an image set. Absent fields are left
+          unchanged.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateImageSetRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The caller lacks `manage` on the set, or is not a global admin changing its canonical name.
+        '200':
+          description: The set, as renamed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageSetInfo'
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: A name is empty.
+        '404':
+          description: No such image set, or it is not visible to the caller.
+        '409':
+          description: Another image set has that canonical name.
       security:
       - token: []
   /image-sets/{id}/events:
@@ -2249,22 +2300,25 @@ components:
       - members
     CreateImageSetRequest:
       description: |-
-        `POST /image-sets`: create an empty, named image set. The caller becomes
-        its owner; membership is added afterwards via per-generation snapshots (see
+        `POST /image-sets`: create an empty image set. The caller becomes its
+        owner; membership is added afterwards via per-generation snapshots (see
         [`CreateGenerationRequest`]).
       type: object
       properties:
-        label:
-          description: Optional human-readable label.
+        canonical_name:
+          description: |-
+            An optional globally-unique handle, such as `ubuntu-24.04`. Giving a
+            set one is privileged: only a global admin may.
           type:
           - string
           - 'null'
           default: null
-        name:
-          description: The stable, globally-unique moving-target handle a job references (by id).
+        display_name:
+          description: The human-readable name the set is shown by. Not unique.
           type: string
+      additionalProperties: false
       required:
-      - name
+      - display_name
     Digest:
       description: |-
         A content-addressable OCI digest over 32 bytes of SHA-256.
@@ -2971,19 +3025,23 @@ components:
       - subject_id
       - permission
     ImageSetInfo:
-      description: A named, mutable image set, as returned by the catalog list/inspect routes.
+      description: A mutable image set, as returned by the catalog list/inspect routes.
       type: object
       properties:
-        created_at:
-          type: string
-          format: date-time
-        id:
-          type: string
-          format: uuid
-        label:
+        canonical_name:
+          description: The set's globally-unique handle, if an admin gave it one.
           type:
           - string
           - 'null'
+        created_at:
+          type: string
+          format: date-time
+        display_name:
+          description: The human-readable name the set is shown by. Not unique.
+          type: string
+        id:
+          type: string
+          format: uuid
         latest_generation:
           description: The set's latest generation number, or null if it has none yet.
           type:
@@ -2991,8 +3049,6 @@ components:
           - 'null'
           format: uint32
           minimum: 0
-        name:
-          type: string
         owner_id:
           type:
           - string
@@ -3000,7 +3056,7 @@ components:
           format: uuid
       required:
       - id
-      - name
+      - display_name
       - created_at
     ImageSetOwnerUpdateRequest:
       description: A change of an image set's owner (`PUT /image-sets/{id}/owner`).
@@ -4453,6 +4509,25 @@ components:
       required:
       - version
       - text
+    UpdateImageSetRequest:
+      description: |-
+        `PATCH /image-sets/{id}`: rename an image set. Absent fields are left
+        unchanged.
+      type: object
+      properties:
+        canonical_name:
+          description: |-
+            A new canonical name; an explicit `null` removes it. Only a global
+            admin may change it.
+          type:
+          - string
+          - 'null'
+        display_name:
+          description: A new display name. Requires `manage` on the set.
+          type:
+          - string
+          - 'null'
+      additionalProperties: false
     UpdateJobRequest:
       description: |-
         A patch to a job (`PATCH /jobs/{id}`). Only the fields listed here are

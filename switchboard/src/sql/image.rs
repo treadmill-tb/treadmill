@@ -54,16 +54,16 @@ pub struct MemberUsability {
     pub usable_by_grantees: bool,
 }
 
-/// A named, mutable image set.
+/// A mutable image set.
 ///
 /// A set is "public" iff it grants the well-known `everyone` subject `use`;
 /// there is no dedicated flag on the row (see `SCHEMA.sql`).
 #[derive(Debug, Clone)]
 pub struct SetRecord {
     pub id: Uuid,
-    pub name: String,
+    pub display_name: String,
+    pub canonical_name: Option<String>,
     pub owner_subject: Option<Uuid>,
-    pub label: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -375,22 +375,23 @@ pub async fn list_usable_images(
 
 // -- image sets ---------------------------------------------------------------
 
-/// Create a new, empty named image set.
+/// Create a new, empty image set. Fails with a unique violation for a taken
+/// canonical name.
 pub async fn create_set(
     conn: impl PgExecutor<'_>,
     id: Uuid,
-    name: &str,
+    display_name: &str,
+    canonical_name: Option<&str>,
     owner_subject: Uuid,
-    label: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
         r#"insert into tml_switchboard.image_sets
-             (id, name, owner_subject, label)
+             (id, display_name, canonical_name, owner_subject)
            values ($1, $2, $3, $4)"#,
         id,
-        name,
+        display_name,
+        canonical_name,
         owner_subject,
-        label,
     )
     .execute(conn)
     .await
@@ -433,6 +434,44 @@ pub async fn set_set_owner(
     .map(|_| ())
 }
 
+/// Lock a set's row and read its names: `(display_name, canonical_name)`.
+pub async fn lock_set_names(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    set_id: Uuid,
+) -> Result<Option<(String, Option<String>)>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"select display_name, canonical_name
+           from tml_switchboard.image_sets
+           where id = $1
+           for update"#,
+        set_id,
+    )
+    .fetch_optional(&mut **txn)
+    .await?;
+    Ok(row.map(|r| (r.display_name, r.canonical_name)))
+}
+
+/// Set a set's names. Fails with a unique violation for a taken canonical
+/// name.
+pub async fn set_set_names(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    set_id: Uuid,
+    display_name: &str,
+    canonical_name: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"update tml_switchboard.image_sets
+           set display_name = $2, canonical_name = $3
+           where id = $1"#,
+        set_id,
+        display_name,
+        canonical_name,
+    )
+    .execute(&mut **txn)
+    .await
+    .map(|_| ())
+}
+
 /// Look a set up by its stable id.
 pub async fn fetch_set_by_id(
     conn: impl PgExecutor<'_>,
@@ -440,24 +479,9 @@ pub async fn fetch_set_by_id(
 ) -> Result<Option<SetRecord>, sqlx::Error> {
     sqlx::query_as!(
         SetRecord,
-        r#"select id, name, owner_subject, label, created_at
+        r#"select id, display_name, canonical_name, owner_subject, created_at
            from tml_switchboard.image_sets where id = $1"#,
         id,
-    )
-    .fetch_optional(conn)
-    .await
-}
-
-/// Look a set up by its unique name.
-pub async fn fetch_set_by_name(
-    conn: impl PgExecutor<'_>,
-    name: &str,
-) -> Result<Option<SetRecord>, sqlx::Error> {
-    sqlx::query_as!(
-        SetRecord,
-        r#"select id, name, owner_subject, label, created_at
-           from tml_switchboard.image_sets where name = $1"#,
-        name,
     )
     .fetch_optional(conn)
     .await
@@ -473,7 +497,7 @@ pub async fn list_owned_sets(
 ) -> Result<Vec<SetRecord>, sqlx::Error> {
     sqlx::query_as!(
         SetRecord,
-        r#"select g.id, g.name, g.owner_subject, g.label, g.created_at
+        r#"select g.id, g.display_name, g.canonical_name, g.owner_subject, g.created_at
            from tml_switchboard.image_sets g
            where exists (
                   select 1 from tml_switchboard.principals($1) p
