@@ -119,11 +119,14 @@ export default function JobDetail({ params }: Route.ComponentProps) {
             </dd>
             <dt>Image</dt>
             <dd>
-              <ImageRef image={job.data.image} />
+              <ImageRef
+                image={job.data.image}
+                predecessor={job.data.predecessor}
+              />
             </dd>
             <dt>Resolved digest</dt>
             <dd>
-              <Digest digest={job.data.resolved_image_digest} />
+              <Digest digest={job.data.image.resolved_digest} />
             </dd>
             <dt>Owner</dt>
             <dd>

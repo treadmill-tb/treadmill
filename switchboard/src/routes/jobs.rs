@@ -199,6 +199,26 @@ pub async fn enqueue(
     // ran on, so refuse the two cases that can never succeed. Whether the
     // directory is still there is the supervisor's to answer -- it holds the
     // only authoritative answer, and it answers it atomically.
+    // A resumed job can't be restarted: it has no fresh start to go back to.
+    if let JobInitSpec::Restart { job_id } = req.init_spec {
+        let resumed = sqlx::query_scalar!(
+            r#"select resume_job_id is not null as "resumed!"
+               from tml_switchboard.jobs
+               where job_id = $1"#,
+            job_id,
+        )
+        .fetch_optional(state.pool())
+        .await
+        .or_internal(&format!(
+            "looking up the predecessor of a restart: {job_id}"
+        ))?
+        .ok_or(StatusCode::UNPROCESSABLE_ENTITY)?;
+        if resumed {
+            tracing::debug!(%job_id, "rejecting a restart of a resumed job");
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+    }
+
     if let JobInitSpec::Resume { job_id } = req.init_spec {
         let predecessor = sqlx::query!(
             r#"select job_state as "job_state: job::SqlJobState", dispatched_on_host_id

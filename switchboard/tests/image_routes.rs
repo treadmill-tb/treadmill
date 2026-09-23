@@ -27,7 +27,7 @@ use treadmill_rs::api::switchboard::images::{
     ImageInfo, ImageSetGenerationInfo, ImageSetInfo, ImageSourceGrantInfo, ImageSourcePermission,
 };
 use treadmill_rs::api::switchboard::jobs::RestartPolicy;
-use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, JobImageRef, JobInfo};
+use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, JobImageReference, JobInfo};
 use treadmill_rs::api::switchboard::{
     DEFAULT_HOST_CEL_PREDICATE, JobInitSpec, JobRequest, WhoAmIResponse,
 };
@@ -758,8 +758,8 @@ async fn enqueue_image_set_checks_use_and_freezes_generation(pool: PgPool) {
         .await
         .unwrap();
     assert!(matches!(
-        info.image,
-        JobImageRef::ImageSet { set_id, generation } if set_id == set.id && generation == 1
+        info.image.reference,
+        JobImageReference::ImageSet { set_id, generation } if set_id == set.id && generation == 1
     ));
 
     // A non-existent explicit generation is a 400; the existing one is accepted.

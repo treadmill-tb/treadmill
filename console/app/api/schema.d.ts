@@ -1447,13 +1447,20 @@ export interface components {
          *     that grants the well-known `everyone` subject `use`.
          */
         ImageSourcePermission: "use" | "manage";
+        /** @description A job's image: what it references, and the concrete image it runs. */
+        JobImage: {
+            reference: components["schemas"]["JobImageReference"];
+            /**
+             * @description The concrete image: chosen at dispatch, or for a resume the image its
+             *     predecessor ran. Null until known.
+             */
+            resolved_digest?: components["schemas"]["Digest"] | null;
+        };
         /**
-         * @description What a job is based off, as seen by `GET /jobs/{id}`: a concrete image, an
-         *     image set (with the frozen generation), or a resume/restart of an earlier
-         *     job. The concrete manifest digest actually dispatched is reported separately
-         *     as `resolved_image_digest`.
+         * @description The image a job references: a concrete image, or an image set with its
+         *     frozen generation. Resumed and restarted jobs carry their predecessor's.
          */
-        JobImageRef: {
+        JobImageReference: {
             manifest_digest: components["schemas"]["Digest"];
             /** @constant */
             type: "image";
@@ -1464,16 +1471,6 @@ export interface components {
             set_id: string;
             /** @constant */
             type: "image_set";
-        } | {
-            /** Format: uuid */
-            job_id: string;
-            /** @constant */
-            type: "resume";
-        } | {
-            /** Format: uuid */
-            job_id: string;
-            /** @constant */
-            type: "restart";
         };
         /**
          * @description The full server-side view of a single job, returned by `GET /jobs/{id}`.
@@ -1496,8 +1493,7 @@ export interface components {
              *     The CEL expression this job's host had to satisfy, as submitted.
              */
             host_cel_predicate: string;
-            /** @description What the job is based off. */
-            image: components["schemas"]["JobImageRef"];
+            image: components["schemas"]["JobImage"];
             /** @description The sub-stage while `state` is `initializing`; null otherwise. */
             initializing_stage?: components["schemas"]["JobInitializingStage"] | null;
             /** Format: uuid */
@@ -1534,16 +1530,13 @@ export interface components {
             };
             /** @description The viewer's permissions on this job. */
             permissions: components["schemas"]["JobPermission"][];
+            /** @description The job this one resumes or restarts, if any. */
+            predecessor?: components["schemas"]["JobPredecessor"] | null;
             /**
              * Format: date-time
              * @description When the job was enqueued.
              */
             queued_at: string;
-            /**
-             * @description The concrete manifest digest actually dispatched, recorded at dispatch;
-             *     null until then.
-             */
-            resolved_image_digest?: components["schemas"]["Digest"] | null;
             restart_policy: components["schemas"]["RestartPolicyState"];
             /** @description The set of currently announced services by the job. */
             services: components["schemas"]["JobServiceView"][];
@@ -1650,6 +1643,18 @@ export interface components {
          *     the viewer holds (an owner or global admin holds all of them).
          */
         JobPermission: "read" | "stop" | "manage";
+        /** @description The job a resumed or restarted job continues. */
+        JobPredecessor: {
+            /** Format: uuid */
+            job_id: string;
+            /** @constant */
+            type: "resume";
+        } | {
+            /** Format: uuid */
+            job_id: string;
+            /** @constant */
+            type: "restart";
+        };
         JobRequest: {
             /**
              * @description Host eligibility as a single CEL expression, evaluated with the
@@ -1776,7 +1781,7 @@ export interface components {
              * @description The host the job is (or was) dispatched on; null if unplaced.
              */
             dispatched_on_host_id?: string | null;
-            image: components["schemas"]["JobImageRef"];
+            image: components["schemas"]["JobImage"];
             /** Format: uuid */
             job_id: string;
             /** @description The user-provided display label, if any. */
@@ -1792,6 +1797,7 @@ export interface components {
              * @description Owning subject (user or group); null if orphaned.
              */
             owner_id?: string | null;
+            predecessor?: components["schemas"]["JobPredecessor"] | null;
             /** Format: date-time */
             queued_at: string;
             /** Format: date-time */

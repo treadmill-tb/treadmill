@@ -362,21 +362,34 @@ pub struct JobServiceCredentials {
     pub expires_at: DateTime<Utc>,
 }
 
-/// What a job is based off, as seen by `GET /jobs/{id}`: a concrete image, an
-/// image set (with the frozen generation), or a resume/restart of an earlier
-/// job. The concrete manifest digest actually dispatched is reported separately
-/// as `resolved_image_digest`.
-#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+/// The image a job references: a concrete image, or an image set with its
+/// frozen generation. Resumed and restarted jobs carry their predecessor's.
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum JobImageRef {
-    /// Based off a concrete catalog image, addressed by its manifest digest.
+pub enum JobImageReference {
+    /// A concrete catalog image, addressed by its manifest digest.
     Image { manifest_digest: Digest },
-    /// Based off a registered image *set*, addressed by its id plus the frozen
-    /// generation; the concrete member is chosen at dispatch.
+    /// An image set and its frozen generation; the member is chosen at
+    /// dispatch.
     ImageSet { set_id: Uuid, generation: u32 },
-    /// Resumes a previously started job.
+}
+
+/// A job's image: what it references, and the concrete image it runs.
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobImage {
+    pub reference: JobImageReference,
+    /// The concrete image: chosen at dispatch, or for a resume the image its
+    /// predecessor ran. Null until known.
+    pub resolved_digest: Option<Digest>,
+}
+
+/// The job a resumed or restarted job continues.
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum JobPredecessor {
+    /// Continues from the predecessor's working directory on its host.
     Resume { job_id: Uuid },
-    /// Restarts a previously started job (inherits its image reference).
+    /// Starts afresh from the predecessor's image reference.
     Restart { job_id: Uuid },
 }
 
@@ -424,11 +437,9 @@ pub struct JobInfo {
     /// The sub-stage while `state` is `initializing`; null otherwise.
     pub initializing_stage: Option<JobInitializingStage>,
 
-    /// What the job is based off.
-    pub image: JobImageRef,
-    /// The concrete manifest digest actually dispatched, recorded at dispatch;
-    /// null until then.
-    pub resolved_image_digest: Option<Digest>,
+    pub image: JobImage,
+    /// The job this one resumes or restarts, if any.
+    pub predecessor: Option<JobPredecessor>,
 
     pub restart_policy: RestartPolicyState,
     /// Host eligibility tags this job requires (superset match against a host's
@@ -519,7 +530,8 @@ pub struct JobSummary {
     /// Owning subject (user or group); null if orphaned.
     pub owner_id: Option<Uuid>,
     pub state: JobState,
-    pub image: JobImageRef,
+    pub image: JobImage,
+    pub predecessor: Option<JobPredecessor>,
     pub queued_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub terminated_at: Option<DateTime<Utc>>,

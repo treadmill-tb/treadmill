@@ -172,10 +172,12 @@ pub struct MockIdentityInfo {
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum JobInitSpec {
-    /// Resume a previously started job.
+    /// Resume a previously started job on its host, from its working
+    /// directory. A resumed job's restart budget is always 0.
     Resume { job_id: Uuid },
 
-    /// Restart a previously started job (inherits its image reference).
+    /// Start afresh from a previously started job's image reference. A
+    /// resumed job can't be restarted.
     Restart { job_id: Uuid },
 
     /// Base this job off a concrete image registered in the switchboard

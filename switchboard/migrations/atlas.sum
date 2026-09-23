@@ -1,4 +1,4 @@
-h1:nJlKbU+mCay+IqJy6H37drJuiJbh/TdVBYohbGdF/Wo=
+h1:H0Vo0tAmSFZ0b1On500P57HwtD3HfpcWlxytaLVDVX8=
 00000000000001_base.sql h1:7OodY/qoessjRRoCAAX04fthKHTDNzzloQ4srKlxs+o=
 20260704040624_add_login_admission.sql h1:hYEzBBXagVmDVTtFsA1uosdNLKUi8JvitaMOFw/4jbk=
 20260708035542_everyone_subject.sql h1:eshPaeCj4UtkHWVuGTZHzsESVxK09Vy8ys5+ywA09pU=
@@ -23,3 +23,4 @@ h1:nJlKbU+mCay+IqJy6H37drJuiJbh/TdVBYohbGdF/Wo=
 20260830212000_host_requirements_diagnostic.sql h1:9tzN25ULYj8MTVw2SykwUQDJIpoQLvn3srpUDox25nw=
 20260921120000_resume_host_pin.sql h1:I0UTLaKmJ83cvSCcD1J5qZW/BWLmEueltjr7G8/j/0I=
 20260923005955_image_set_display_names.sql h1:5lJpshySR2+Dd/cICt7qxW9ttKae7105gg+ePH7YAzg=
+20260923021516_job_image_references.sql h1:v24ah5GGLlybRg/Nu+B8pPSXzzE7qfruEuv/A+QVFBY=
