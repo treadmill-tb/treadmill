@@ -1931,3 +1931,465 @@ dialog h4 {
   margin: 0;
   color: var(--pico-muted-color);
 }
+
+.enqueue {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "form"
+    "preview"
+    "submit";
+  gap: 1.5rem;
+  margin-top: 1.25rem;
+}
+
+@media (min-width: 960px) {
+  .enqueue {
+    grid-template-columns: minmax(0, 1fr) 22rem;
+    grid-template-areas:
+      "form preview"
+      "submit preview";
+    align-items: start;
+  }
+
+  .job-preview {
+    position: sticky;
+    top: 1rem;
+  }
+}
+
+.enqueue-form {
+  grid-area: form;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.enqueue-form :is(input, select, textarea, fieldset) {
+  margin-bottom: 0;
+}
+
+.enqueue-submit {
+  grid-area: submit;
+}
+
+.enqueue-submit > .toolbar {
+  justify-content: flex-end;
+}
+
+.enqueue-form legend,
+.form-details > summary > span:first-child {
+  margin-bottom: 0.375rem;
+  font-weight: 600;
+}
+
+.form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.options > :is(label, div) {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.25rem 0.75rem;
+  width: 100%;
+  margin: 0;
+  padding: 0.625rem 0.75rem;
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
+  border-bottom-width: 0;
+}
+
+.options > :is(label, div):first-of-type {
+  border-radius: var(--pico-border-radius) var(--pico-border-radius) 0 0;
+}
+
+.options > :is(label, div):last-child {
+  border-bottom-width: var(--pico-border-width);
+  border-radius: 0 0 var(--pico-border-radius) var(--pico-border-radius);
+}
+
+.options > :is(label, div):only-of-type {
+  border-radius: var(--pico-border-radius);
+}
+
+.options > label {
+  cursor: pointer;
+}
+
+.options > .fixed {
+  display: block;
+}
+
+.options > .fixed .host-item,
+.options > .fixed .host-details {
+  padding-inline: 0;
+}
+
+.options > :is(label, div):has(> input:checked) {
+  background: var(--active-tint);
+  box-shadow: inset 0 0 0 1px var(--active-mark);
+}
+
+.options > :is(label, div) > input {
+  margin-top: 0.25rem;
+}
+
+.option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.option-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.5rem;
+}
+
+.option-aside {
+  display: flex;
+  align-items: baseline;
+}
+
+.dim strong {
+  color: var(--pico-muted-color);
+  font-weight: 500;
+}
+
+.incompatible {
+  color: var(--danger);
+}
+
+.inline-field,
+.inline-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin: 0;
+}
+
+.inline-field > select {
+  width: auto;
+}
+
+.inline-options > label {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+}
+
+.toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.toggles > button {
+  margin: 0;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  font-size: var(--text-sm);
+}
+
+.toggles > button[aria-pressed="true"] {
+  --pico-border-color: var(--active-mark);
+  --pico-color: var(--active);
+  --pico-background-color: var(--active-tint);
+  font-weight: 600;
+}
+
+.examples {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 0.375rem 0.75rem;
+  border: var(--pico-border-width) dashed var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+}
+
+.examples > small {
+  color: var(--pico-muted-color);
+}
+
+.examples > button {
+  margin: 0;
+  padding: 0.125rem 0;
+  border: none;
+  background: none;
+  box-shadow: none;
+  color: var(--pico-primary);
+  font-size: var(--text-sm);
+  text-align: left;
+}
+
+.examples > button::before {
+  content: "+ ";
+}
+
+.suggest {
+  position: relative;
+}
+
+.suggest-list {
+  margin: 0.25rem 0 0;
+  padding: 0;
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-background-color);
+}
+
+.suggest-list > li {
+  margin: 0;
+  list-style: none;
+  border-top: var(--pico-border-width) solid var(--pico-muted-border-color);
+}
+
+.suggest-list > li:first-child {
+  border-top: none;
+}
+
+.suggest-list > li.muted {
+  padding: 0.375rem 0.75rem;
+  font-size: var(--text-sm);
+}
+
+.suggest-list button {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0.375rem 0.75rem;
+  border: none;
+  border-radius: 0;
+  text-align: left;
+}
+
+.form-details > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+}
+
+.form-details > summary > span:first-child {
+  flex: 1;
+}
+
+.form-details > :not(summary) {
+  margin-left: 1rem;
+}
+
+.form-details[open] > summary {
+  margin-bottom: 0.75rem;
+}
+
+.form-details .field-row,
+.form-details .inline-field {
+  margin-bottom: 0.5rem;
+}
+
+.stepper {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.stepper > button {
+  margin: 0;
+  padding: 0.25rem 0.5rem;
+}
+
+.stepper > button:first-child {
+  border-radius: var(--pico-border-radius) 0 0 var(--pico-border-radius);
+}
+
+.stepper > button:last-child {
+  border-radius: 0 var(--pico-border-radius) var(--pico-border-radius) 0;
+}
+
+.stepper > output {
+  min-width: 2.5rem;
+  padding: 0.25rem 0.5rem;
+  border-block: var(--pico-border-width) solid
+    var(--pico-form-element-border-color);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.job-preview {
+  grid-area: preview;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1rem;
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-card-background-color);
+  box-shadow: var(--pico-card-box-shadow);
+}
+
+.job-preview h3 {
+  margin: 0 0 0.5rem;
+  color: var(--pico-muted-color);
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.job-preview dl.props {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.verdict {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  padding: 0.625rem 0.875rem;
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  font-size: var(--text-sm);
+}
+
+.verdict > strong {
+  font-size: 1rem;
+}
+
+.verdict.ok {
+  border-color: var(--ok-mark);
+  background: var(--ok-tint);
+}
+
+.verdict.ok > strong {
+  color: var(--ok);
+}
+
+.verdict.warn {
+  border-color: var(--warn-mark);
+  background: var(--warn-tint);
+}
+
+.verdict.warn > strong {
+  color: var(--warn);
+}
+
+.verdict.danger {
+  border-color: var(--danger-mark);
+  background: var(--danger-tint);
+}
+
+.verdict.danger > strong {
+  color: var(--danger);
+}
+
+.host-items {
+  max-height: 18rem;
+  overflow-y: auto;
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+}
+
+.host-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0 0.5rem;
+  padding: 0.375rem 0.75rem;
+  font-size: var(--text-sm);
+}
+
+.host-items > .host-item-card + .host-item-card {
+  border-top: var(--pico-border-width) solid var(--pico-muted-border-color);
+}
+
+.host-item-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.host-item-actions > button {
+  margin: 0;
+}
+
+.host-item-meta > svg,
+.host-details svg {
+  vertical-align: -0.125em;
+}
+
+.host-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0 0.75rem 0.5rem 1.75rem;
+  font-size: var(--text-xs);
+}
+
+.host-details > ul {
+  margin: 0;
+  padding: 0;
+}
+
+.host-details > ul > li {
+  margin: 0;
+  list-style: none;
+}
+
+.host-item-meta {
+  grid-column: 2 / 4;
+  color: var(--pico-muted-color);
+  overflow-wrap: anywhere;
+}
+
+.funnel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.funnel-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 2rem;
+  align-items: center;
+  gap: 0.5rem;
+  text-align: right;
+}
+
+.funnel-bar {
+  position: relative;
+  overflow: hidden;
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
+  border-radius: calc(var(--pico-border-radius) * 0.66);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.funnel-bar > span:first-child {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-right: 2px solid var(--active-mark);
+  background: var(--active-tint);
+}
+
+.funnel-bar > span:first-child.empty {
+  border-right-color: var(--danger-mark);
+  background: none;
+}
+
+.funnel-bar > span:last-child {
+  position: relative;
+  padding: 0 0.5rem;
+}
+
+.filter-errors {
+  margin: 0;
+  padding: 0;
+  font-size: var(--text-sm);
+}
+
+.filter-errors > li {
+  list-style: none;
+}

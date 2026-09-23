@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Share2 } from "lucide-react";
+import { Play, Share2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 
@@ -215,6 +215,7 @@ export default function HostDetail({ params }: Route.ComponentProps) {
   const [sharing, setSharing] = useState(false);
 
   const canManage = host.data?.permissions.includes("manage") ?? false;
+  const canStart = host.data?.permissions.includes("start") ?? false;
 
   return (
     <>
@@ -234,6 +235,14 @@ export default function HostDetail({ params }: Route.ComponentProps) {
               <button type="button" onClick={() => setSharing(true)}>
                 <Share2 size={14} aria-hidden="true" /> Share
               </button>
+            )}{" "}
+            {canStart && (
+              <Link
+                className="btn primary"
+                to={`/jobs/new?host=${host.data.host_id}`}
+              >
+                <Play size={14} aria-hidden="true" /> Run job here
+              </Link>
             )}
           </h1>
           <dl className="props">
