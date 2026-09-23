@@ -175,6 +175,17 @@ pub struct ImageSetGrantRequest {
     pub permission: ImageSetPermission,
 }
 
+/// A change of an image set's owner (`PUT /image-sets/{id}/owner`).
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageSetOwnerUpdateRequest {
+    /// The new owning subject (user, group, or the `system` subject, which
+    /// marks a set as a standard image maintained by the switchboard's
+    /// admins). Null orphans the set, leaving it manageable only by global
+    /// admins.
+    pub owner: Option<Uuid>,
+}
+
 /// One grant on an image set, as returned by the list-grants route.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct ImageSetGrantInfo {

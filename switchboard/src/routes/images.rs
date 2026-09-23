@@ -24,8 +24,8 @@ use oci_spec::image::ImageManifest;
 use treadmill_rs::api::switchboard::images::{
     AddImageSourceRequest, CreateGenerationRequest, CreateImageSetRequest, GenerationMemberInfo,
     ImageInfo, ImageSetGenerationInfo, ImageSetGrantInfo, ImageSetGrantRequest, ImageSetInfo,
-    ImageSetPermission, ImageSourceGrantInfo, ImageSourceGrantRequest, ImageSourceInfo,
-    ImageSourcePermission,
+    ImageSetOwnerUpdateRequest, ImageSetPermission, ImageSourceGrantInfo, ImageSourceGrantRequest,
+    ImageSourceInfo, ImageSourcePermission,
 };
 use treadmill_rs::image::parse::{self, ParseError};
 use treadmill_rs::image::{Digest, media_types};
@@ -430,6 +430,68 @@ pub async fn grant_image_set(
             set: AuditImageSet(set_id),
             grantee: AuditSubject(req.subject_id),
             permission: permission.as_str().to_string(),
+        },
+    )
+    .await
+    .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PUT /image-sets/{id}/owner`: transfer a set to another subject, or orphan
+/// it.
+///
+/// Requires `manage`, the meta-permission covering ownership transfer. Handing
+/// a set to the `system` subject marks it as a standard image, which only a
+/// global admin may do. The `everyone` subject is never a valid owner: as a
+/// principal of every subject, it would give everyone `manage`. Setting the
+/// owner already in force is a no-op with no audit event.
+pub async fn put_image_set_owner(
+    State(state): State<AppState>,
+    subject: crate::auth::Subject,
+    Path(IdPath { id: set_id }): Path<IdPath>,
+    Json(req): Json<ImageSetOwnerUpdateRequest>,
+) -> Result<StatusCode, StatusCode> {
+    require_manage(&state, subject.user_id(), set_id).await?;
+
+    if req.owner == Some(engine::EVERYONE_SUBJECT_ID) {
+        tracing::debug!("refusing to re-own image set {set_id}: `everyone` cannot own");
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    if req.owner == Some(audit::SYSTEM_ACTOR_ID)
+        && !engine::is_admin(state.pool(), subject.user_id())
+            .await
+            .map_err(internal)?
+    {
+        tracing::debug!("refusing to re-own image set {set_id} to `system`: not an admin");
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let mut tx = state.pool().begin().await.map_err(internal)?;
+    let previous = image::lock_set_owner(&mut tx, set_id)
+        .await
+        .map_err(internal)?
+        // Authorized above, so a missing row was deleted in between.
+        .ok_or(StatusCode::NOT_FOUND)?;
+    if previous == req.owner {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
+    match image::set_set_owner(&mut tx, set_id, req.owner).await {
+        Ok(()) => {}
+        Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => {
+            tracing::debug!("refusing to re-own image set {set_id}: unknown subject");
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        Err(e) => return Err(internal(e)),
+    }
+    audit::emit(
+        &mut tx,
+        &events::ImageSetOwnerChanged {
+            actor: AuditSubject(subject.user_id()),
+            set: AuditImageSet(set_id),
+            old_owner: previous.map(AuditSubject),
+            new_owner: req.owner.map(AuditSubject),
         },
     )
     .await

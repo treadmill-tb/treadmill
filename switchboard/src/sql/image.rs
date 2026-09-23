@@ -397,6 +397,42 @@ pub async fn create_set(
     .map(|_| ())
 }
 
+/// Lock a set's row and read its owner: `None` if the set does not exist,
+/// `Some(None)` if it is orphaned.
+pub async fn lock_set_owner(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    set_id: Uuid,
+) -> Result<Option<Option<Uuid>>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"select owner_subject
+           from tml_switchboard.image_sets
+           where id = $1
+           for update"#,
+        set_id,
+    )
+    .fetch_optional(&mut **txn)
+    .await
+}
+
+/// Set a set's owner; `None` orphans it. Fails with a foreign-key violation
+/// for a subject that does not exist.
+pub async fn set_set_owner(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    set_id: Uuid,
+    owner: Option<Uuid>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"update tml_switchboard.image_sets
+           set owner_subject = $2
+           where id = $1"#,
+        set_id,
+        owner,
+    )
+    .execute(&mut **txn)
+    .await
+    .map(|_| ())
+}
+
 /// Look a set up by its stable id.
 pub async fn fetch_set_by_id(
     conn: impl PgExecutor<'_>,

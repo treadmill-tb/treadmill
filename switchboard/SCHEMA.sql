@@ -183,8 +183,10 @@ VALUES
 -- internal automation -- to a stable actor referenceable directly in code.
 --
 -- It is a bare `subjects` row with no `users`/`groups` extension: it never logs
--- in and owns nothing; it exists only to be named as the actor of
--- system-originated events.
+-- in. Besides being named as the actor of system-originated events, it may own
+-- image sets: a system-owned set is a "standard image" the switchboard offers
+-- to every user, maintained by global admins (who hold `manage` on every set).
+-- Only a global admin may hand a set to it (`PUT /image-sets/{id}/owner`).
 INSERT INTO
     tml_switchboard.subjects (subject_id, kind)
 VALUES

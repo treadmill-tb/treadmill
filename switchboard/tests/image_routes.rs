@@ -1030,3 +1030,119 @@ async fn enqueue_concrete_image_requires_usable_source(pool: PgPool) {
     let resp = enqueue_image_job(&client, &base, &carol_token, &m).await;
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
 }
+
+/// The well-known `system` subject (see `SCHEMA.sql`): a set it owns is a
+/// standard image.
+const SYSTEM_SUBJECT: Uuid = Uuid::from_u128(2);
+
+/// `PUT /image-sets/{id}/owner` with `owner`, returning the response status.
+async fn put_set_owner(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    set: Uuid,
+    owner: Option<Uuid>,
+) -> reqwest::StatusCode {
+    client
+        .put(format!("{base}/image-sets/{set}/owner"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "owner": owner }))
+        .send()
+        .await
+        .unwrap()
+        .status()
+}
+
+#[sqlx::test]
+#[ignore = "requires a database; run via the nextest-db check"]
+async fn image_set_owner_transfer_and_system_ownership(pool: PgPool) {
+    let addr = spawn_with_registry(&pool, Arc::new(StubRegistry::default())).await;
+    let client = http_client();
+    let base = format!("http://{addr}/api/v1");
+    // `alice` is the global admin (see `mock_login_token`).
+    let alice_token = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let carol = whoami(&client, addr, &carol_token).await;
+
+    let set = create_set(&client, &base, &bob_token, "linux").await;
+
+    // Carol cannot re-own a set she cannot see.
+    assert_eq!(
+        put_set_owner(&client, &base, &carol_token, set.id, Some(carol)).await,
+        reqwest::StatusCode::NOT_FOUND
+    );
+
+    // The owner may not mark the set standard, nor hand it to `everyone`, nor
+    // to a subject that does not exist.
+    assert_eq!(
+        put_set_owner(&client, &base, &bob_token, set.id, Some(SYSTEM_SUBJECT)).await,
+        reqwest::StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        put_set_owner(&client, &base, &bob_token, set.id, Some(EVERYONE_SUBJECT)).await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        put_set_owner(&client, &base, &bob_token, set.id, Some(Uuid::now_v7())).await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // An admin may; repeating it is a no-op.
+    assert_eq!(
+        put_set_owner(&client, &base, &alice_token, set.id, Some(SYSTEM_SUBJECT)).await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        put_set_owner(&client, &base, &alice_token, set.id, Some(SYSTEM_SUBJECT)).await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+
+    // Bob no longer owns it, so it is hidden from him until it is public;
+    // then every user lists it, owned by `system`.
+    let resp = client
+        .get(format!("{base}/image-sets/{}", set.id))
+        .bearer_auth(&bob_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+    let resp = set_public(&client, &base, &alice_token, set.id, true).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    let listed: Vec<ImageSetInfo> = client
+        .get(format!("{base}/image-sets"))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let listed = listed.iter().find(|s| s.id == set.id).unwrap();
+    assert_eq!(listed.owner_id, Some(SYSTEM_SUBJECT));
+
+    // A public set's `use` grant does not let others re-own it.
+    assert_eq!(
+        put_set_owner(&client, &base, &carol_token, set.id, Some(carol)).await,
+        reqwest::StatusCode::FORBIDDEN
+    );
+
+    // The transfer is audited, once.
+    let feed: AuditFeedResponse = client
+        .get(format!("{base}/image-sets/{}/events", set.id))
+        .bearer_auth(&alice_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        feed.events
+            .iter()
+            .filter(|e| e.event_type.starts_with("image_set_owner_changed"))
+            .count(),
+        1
+    );
+}

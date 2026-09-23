@@ -761,6 +761,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/image-sets/{id}/owner": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Change an image set's owner
+         * @description A null owner orphans the set, leaving it manageable only by global admins. Only a global admin may hand a set to the `system` subject, which marks it as a standard image; the `everyone` subject cannot own a set.
+         */
+        put: operations["putImageSetOwner"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/image-sets/{id}/grants": {
         parameters: {
             query?: never;
@@ -1369,6 +1389,17 @@ export interface components {
             name: string;
             /** Format: uuid */
             owner_id?: string | null;
+        };
+        /** @description A change of an image set's owner (`PUT /image-sets/{id}/owner`). */
+        ImageSetOwnerUpdateRequest: {
+            /**
+             * Format: uuid
+             * @description The new owning subject (user, group, or the `system` subject, which
+             *     marks a set as a standard image maintained by the switchboard's
+             *     admins). Null orphans the set, leaving it manageable only by global
+             *     admins.
+             */
+            owner?: string | null;
         };
         /** @description A permission on an image set. */
         ImageSetPermission: "use" | "manage";
@@ -4771,6 +4802,78 @@ export interface operations {
             };
             /** @description No such image set or generation. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putImageSetOwner: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description A change of an image set's owner (`PUT /image-sets/{id}/owner`). */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImageSetOwnerUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Applied, or the owner was already in force. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller lacks `manage` on the set, or is not a global admin handing it to `system`. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such image set, or it is not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description No such subject, or one that cannot own a set. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

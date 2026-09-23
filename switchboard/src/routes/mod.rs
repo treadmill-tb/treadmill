@@ -665,7 +665,7 @@ pub fn api_router() -> ApiRouter<AppState> {
             }),
         )
         //  POST /image-sets        -- create an empty, named image set
-        //  GET  /image-sets        -- list owned image sets
+        //  GET  /image-sets        -- list image sets the caller can use
         .api_route(
             "/image-sets",
             post_with(images::create_image_set, |o| {
@@ -734,6 +734,39 @@ pub fn api_router() -> ApiRouter<AppState> {
                     "Get an image-set generation",
                 )
                 .response_with::<404, (), _>(|r| r.description("No such image set or generation."))
+            }),
+        )
+        //  PUT /image-sets/{id}/owner -- transfer the set, or orphan it
+        .api_route(
+            "/image-sets/{id}/owner",
+            put_with(images::put_image_set_owner, |o| {
+                doc(
+                    o,
+                    "putImageSetOwner",
+                    "Images",
+                    "Change an image set's owner",
+                )
+                .description(
+                    "A null owner orphans the set, leaving it manageable only by \
+                     global admins. Only a global admin may hand a set to the \
+                     `system` subject, which marks it as a standard image; the \
+                     `everyone` subject cannot own a set.",
+                )
+                .response_with::<204, (), _>(|r| {
+                    r.description("Applied, or the owner was already in force.")
+                })
+                .response_with::<403, (), _>(|r| {
+                    r.description(
+                        "The caller lacks `manage` on the set, or is not a global \
+                         admin handing it to `system`.",
+                    )
+                })
+                .response_with::<404, (), _>(|r| {
+                    r.description("No such image set, or it is not visible to the caller.")
+                })
+                .response_with::<422, (), _>(|r| {
+                    r.description("No such subject, or one that cannot own a set.")
+                })
             }),
         )
         //  POST /image-sets/{id}/grants -- grant use/manage to a subject

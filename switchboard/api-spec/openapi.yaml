@@ -1957,6 +1957,55 @@ paths:
           description: No such image set or generation.
       security:
       - token: []
+  /image-sets/{id}/owner:
+    put:
+      tags:
+      - Images
+      summary: Change an image set's owner
+      description: A null owner orphans the set, leaving it manageable only by global admins. Only a global admin may hand a set to the `system` subject, which marks it as a standard image; the `everyone` subject cannot own a set.
+      operationId: putImageSetOwner
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        description: A change of an image set's owner (`PUT /image-sets/{id}/owner`).
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageSetOwnerUpdateRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The caller lacks `manage` on the set, or is not a global admin handing it to `system`.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: No such subject, or one that cannot own a set.
+        '204':
+          description: Applied, or the owner was already in force.
+        '404':
+          description: No such image set, or it is not visible to the caller.
+      security:
+      - token: []
   /image-sets/{id}/grants:
     get:
       tags:
@@ -2953,6 +3002,21 @@ components:
       - id
       - name
       - created_at
+    ImageSetOwnerUpdateRequest:
+      description: A change of an image set's owner (`PUT /image-sets/{id}/owner`).
+      type: object
+      properties:
+        owner:
+          description: |-
+            The new owning subject (user, group, or the `system` subject, which
+            marks a set as a standard image maintained by the switchboard's
+            admins). Null orphans the set, leaving it manageable only by global
+            admins.
+          type:
+          - string
+          - 'null'
+          format: uuid
+      additionalProperties: false
     ImageSetPermission:
       description: A permission on an image set.
       oneOf:
