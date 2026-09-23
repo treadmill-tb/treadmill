@@ -8,6 +8,7 @@ import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
 
 import { client } from "../api/client";
+import { ApiError, describeError } from "../api/errors";
 import { LINE_CAP, type ChannelBus, type LogView } from "./log-stream";
 
 import "@xterm/xterm/css/xterm.css";
@@ -51,6 +52,8 @@ export function LogTerminalView({
   const mountRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  // Until the first byte, the terminal is overlaid with a placeholder.
+  const [empty, setEmpty] = useState(true);
   const [inputEnabled, setInputEnabled] = useState(false);
   const [inputStatus, setInputStatus] = useState<InputStatus>({ kind: "off" });
   // The live input connection keystrokes are published over, if any.
@@ -73,8 +76,10 @@ export function LogTerminalView({
     term.loadAddon(fit);
     term.open(mount);
     fit.fit();
-    const onResize = () => fit.fit();
-    window.addEventListener("resize", onResize);
+    // Follows the box rather than the window, so expanding the log view
+    // refits too.
+    const resize = new ResizeObserver(() => fit.fit());
+    resize.observe(mount);
     termRef.current = term;
     fitRef.current = fit;
 
@@ -86,15 +91,16 @@ export function LogTerminalView({
       if (conn !== null) conn.nc.publish(conn.subject, encoder.encode(data));
     });
 
-    const unsubscribe = channels
-      .split(" ")
-      .map((channel) =>
-        bus.subscribe(channel, (frame) => term.write(frame.data)),
-      );
+    const unsubscribe = channels.split(" ").map((channel) =>
+      bus.subscribe(channel, (frame) => {
+        term.write(frame.data);
+        if (frame.data.length > 0) setEmpty(false);
+      }),
+    );
 
     return () => {
       for (const unsub of unsubscribe) unsub();
-      window.removeEventListener("resize", onResize);
+      resize.disconnect();
       termRef.current = null;
       fitRef.current = null;
       term.dispose();
@@ -151,7 +157,9 @@ export function LogTerminalView({
         if (creds.data === undefined) {
           setInputStatus({
             kind: "error",
-            message: `Fetching input credentials failed (HTTP ${creds.response.status}).`,
+            message: describeError(
+              new ApiError(creds.response.status, creds.error),
+            ),
           });
           setInputEnabled(false);
           return;
@@ -204,29 +212,46 @@ export function LogTerminalView({
 
   const offersInput = view.input && canSendInput;
 
+  const toggleInput = () => {
+    setInputStatus({ kind: "off" });
+    setInputEnabled((enabled) => !enabled);
+  };
+
   return (
     <>
-      {(offersInput || inputStatus.kind === "error") && (
-        <p className="log-view-bar">
-          {inputStatus.kind === "on" && (
-            <span className="badge ok">input on</span>
-          )}{" "}
-          {offersInput && inputStatus.kind !== "unavailable" && (
-            <button
-              onClick={() => {
-                setInputStatus({ kind: "off" });
-                setInputEnabled((enabled) => !enabled);
-              }}
-            >
-              {inputEnabled ? "Disable input" : "Enable console input"}
-            </button>
-          )}
-          {inputStatus.kind === "error" && (
-            <span className="error">{inputStatus.message}</span>
-          )}
+      <div className="log-term-wrap">
+        <div ref={mountRef} className="job-log-term" />
+        {empty && (
+          <p className="log-empty">{`No logs for "${view.label}" yet…`}</p>
+        )}
+      </div>
+      {offersInput && inputEnabled && (
+        <div className="notice" role="status">
+          <div>
+            <strong>
+              {inputStatus.kind === "on"
+                ? "Console input is on."
+                : "Connecting console input…"}
+            </strong>
+            <p>
+              This serial console is only intended for debugging. All text
+              entered here, including passwords and secrets, will be logged,
+              recorded, and replayed for all future visitors. For interactive
+              access, use direct services offered by the host (or switch to an
+              image that supports such interactive access).
+            </p>
+          </div>
+          <button onClick={toggleInput}>Disable console input</button>
+        </div>
+      )}
+      {offersInput && !inputEnabled && inputStatus.kind !== "unavailable" && (
+        <p className="log-input-bar">
+          <button onClick={toggleInput}>Enable console input</button>
         </p>
       )}
-      <div ref={mountRef} className="job-log-term" />
+      {inputStatus.kind === "error" && (
+        <p className="error">{inputStatus.message}</p>
+      )}
     </>
   );
 }

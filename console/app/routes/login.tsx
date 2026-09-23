@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Navigate, useNavigate } from "react-router";
 
 import { $api, API_ORIGIN, getToken } from "../api/client";
+import { RequestError } from "../components/request-error";
 
 const RETURN_TO = `${window.location.origin}/login/callback`;
 
@@ -24,20 +25,22 @@ export default function Login() {
 function LoginPage() {
   const navigate = useNavigate();
   const [code, setCode] = useState("");
+  // Only set when the switchboard can't redirect back here: the login then
+  // completes in a separate tab, which shows a code to paste below.
+  const [started, setStarted] = useState(false);
   const providers = $api.useQuery("get", "/auth/providers", {
     params: { query: { return_to: RETURN_TO } },
   });
   const redirect = providers.data?.return_to_allowed ?? false;
   const target = redirect ? undefined : "_blank";
+  const onStart = redirect ? undefined : () => setStarted(true);
 
   return (
-    <main className="page login-page">
+    <main className="container login-page">
       <div className="card login-card">
         <h1>Treadmill</h1>
         {providers.isPending && <p className="muted">Loading login methods…</p>}
-        {providers.isError && (
-          <p className="error">Failed to load login methods.</p>
-        )}
+        <RequestError error={providers.error} />
         {providers.data && (
           <>
             {providers.data.oauth.length === 0 &&
@@ -52,6 +55,8 @@ function LoginPage() {
                 className="btn login-btn"
                 href={providerHref(p.login_path, redirect)}
                 target={target}
+                onClick={onStart}
+                onAuxClick={onStart}
               >
                 Sign in with {p.display_name}
               </a>
@@ -68,13 +73,15 @@ function LoginPage() {
                     className="btn login-btn"
                     href={providerHref(m.login_path, redirect)}
                     target={target}
+                    onClick={onStart}
+                    onAuxClick={onStart}
                   >
                     {m.label}
                   </a>
                 ))}
               </div>
             )}
-            {!redirect && (
+            {!redirect && started && (
               <form
                 className="form"
                 onSubmit={(e) => {

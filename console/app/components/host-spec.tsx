@@ -1,4 +1,5 @@
 import { $api } from "../api/client";
+import { HelpTip } from "./help-tip";
 
 /** A JSON Schema node, walked structurally rather than typed field by field. */
 type Schema = Record<string, unknown>;
@@ -164,9 +165,11 @@ function Fields({
           <div key={key} className="spec-field">
             {/* The raw field name, not a prettified one: it is what a CEL
                 predicate spells, so showing anything else would mislead. */}
-            <dt className="mono" title={title}>
+            <dt className="mono">
               {key}
-              {title !== undefined && <span className="spec-hint">?</span>}
+              {title !== undefined && (
+                <HelpTip label={`About ${key}`}>{title}</HelpTip>
+              )}
             </dt>
             <dd>
               <Value value={sub} schema={subSchema} root={root} />

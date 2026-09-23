@@ -3,9 +3,10 @@ import { useState } from "react";
 import { Link } from "react-router";
 
 import { $api } from "../api/client";
+import { ApiError } from "../api/errors";
 import type { components } from "../api/schema";
 import { JsonEditor } from "../components/json-editor";
-import { MutationError } from "../components/mutation-error";
+import { RequestError } from "../components/request-error";
 
 type HostCreateResponse = components["schemas"]["HostCreateResponse"];
 type HostSpecRejection = components["schemas"]["HostSpecRejection"];
@@ -22,16 +23,25 @@ function isRejection(error: unknown): error is HostSpecRejection {
 }
 
 function CreateError({ error }: { error: unknown }) {
-  if (!isRejection(error)) {
-    return <MutationError error={error} />;
+  const rejection = error instanceof ApiError ? error.body : undefined;
+  if (!isRejection(rejection)) {
+    return (
+      <RequestError
+        error={error}
+        messages={{
+          403: "Only global admins can register hosts.",
+          409: "A host with this ID already exists.",
+        }}
+      />
+    );
   }
   return (
     <p className="error">
-      {error.path === "" ? (
-        error.message
+      {rejection.path === "" ? (
+        rejection.message
       ) : (
         <>
-          <code className="mono">{error.path}</code>: {error.message}
+          <code className="mono">{rejection.path}</code>: {rejection.message}
         </>
       )}
     </p>
@@ -198,7 +208,11 @@ function CreateForm() {
       )}
 
       <div className="toolbar">
-        <button disabled={create.isPending} onClick={submit}>
+        <button
+          className="primary"
+          disabled={create.isPending}
+          onClick={submit}
+        >
           {create.isPending ? "Registering…" : "Register"}
         </button>
         <Link className="btn" to="/hosts">
@@ -219,7 +233,7 @@ export default function HostNew() {
     <>
       <h1>Register a supervisor</h1>
       {whoami.isPending && <p className="muted">Loading…</p>}
-      {whoami.isError && <p className="error">Failed to load your identity.</p>}
+      <RequestError error={whoami.error} />
       {whoami.data &&
         (whoami.data.admin ? (
           <CreateForm />

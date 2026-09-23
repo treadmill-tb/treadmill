@@ -5,9 +5,9 @@ import { $api } from "../api/client";
 import type { components } from "../api/schema";
 import { Digest } from "../components/digest";
 import { EntityLink } from "../components/entity-link";
-import { MutationError } from "../components/mutation-error";
 import { RelTime } from "../components/rel-time";
-import { EVERYONE_SUBJECT } from "./image-set-detail";
+import { RequestError } from "../components/request-error";
+import { EVERYONE_SUBJECT } from "../api/subjects";
 import type { Route } from "./+types/image-detail";
 
 type ImageSourceInfo = components["schemas"]["ImageSourceInfo"];
@@ -56,7 +56,12 @@ function AddSourceForm({
         <span>Repository</span>
         <input name="repository" required className="mono" />
       </label>
-      <MutationError error={add.error} />
+      <RequestError
+        error={add.error}
+        messages={{
+          502: "The source could not be reached, or it does not serve this image.",
+        }}
+      />
       <div className="toolbar">
         <button type="submit" disabled={add.isPending}>
           {add.isPending ? "Adding…" : "Add source"}
@@ -131,7 +136,10 @@ function SourceGrantForm({
           </option>
         </select>
       </label>
-      <MutationError error={grant.error} />
+      <RequestError
+        error={grant.error}
+        messages={{ 404: "The image or source no longer exists." }}
+      />
       <div className="toolbar">
         <button type="submit" disabled={grant.isPending}>
           {grant.isPending ? "Granting…" : "Grant"}
@@ -240,61 +248,69 @@ function SourceGrants({
           onDone={() => setShowGrantForm(false)}
         />
       )}
-      <MutationError error={setPublic.error} />
-      <MutationError error={revoke.error} />
+      <RequestError
+        error={setPublic.error}
+        messages={{ 404: "The image or source no longer exists." }}
+      />
+      <RequestError
+        error={revoke.error}
+        messages={{ 404: "That grant no longer exists." }}
+      />
       {grants.isPending && <p className="muted">Loading…</p>}
-      {grants.isError && <p className="error">Failed to load the grants.</p>}
+      <RequestError error={grants.error} />
       {grants.data &&
         (grants.data.length === 0 ? (
           <p className="muted">No explicit grants.</p>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Subject</th>
-                <th>Permission</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {grants.data.map((grant) => (
-                <tr key={`${grant.subject_id}/${grant.permission}`}>
-                  <td>
-                    <EntityLink kind="user" id={grant.subject_id} />
-                  </td>
-                  <td>
-                    <span className="badge">{grant.permission}</span>
-                  </td>
-                  <td>
-                    <button
-                      className="danger"
-                      disabled={revoke.isPending}
-                      onClick={() => {
-                        if (
-                          window.confirm(
-                            `Revoke ${grant.permission} from ${grant.subject_id}?`,
-                          )
-                        ) {
-                          revoke.mutate({
-                            params: {
-                              path: {
-                                digest,
-                                source_id: source.id,
-                                subject_id: grant.subject_id,
-                                permission: grant.permission,
-                              },
-                            },
-                          });
-                        }
-                      }}
-                    >
-                      Revoke
-                    </button>
-                  </td>
+          <div className="overflow-auto">
+            <table>
+              <thead>
+                <tr>
+                  <th>Subject</th>
+                  <th>Permission</th>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {grants.data.map((grant) => (
+                  <tr key={`${grant.subject_id}/${grant.permission}`}>
+                    <td>
+                      <EntityLink kind="user" id={grant.subject_id} />
+                    </td>
+                    <td>
+                      <span className="badge">{grant.permission}</span>
+                    </td>
+                    <td>
+                      <button
+                        className="danger"
+                        disabled={revoke.isPending}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Revoke ${grant.permission} from ${grant.subject_id}?`,
+                            )
+                          ) {
+                            revoke.mutate({
+                              params: {
+                                path: {
+                                  digest,
+                                  source_id: source.id,
+                                  subject_id: grant.subject_id,
+                                  permission: grant.permission,
+                                },
+                              },
+                            });
+                          }
+                        }}
+                      >
+                        Revoke
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ))}
     </div>
   );
@@ -326,9 +342,12 @@ export default function ImageDetail({ params }: Route.ComponentProps) {
 
   return (
     <>
-      <h1>Image</h1>
+      <h1>Build</h1>
       {image.isPending && <p className="muted">Loading…</p>}
-      {image.isError && <p className="error">Failed to load the image.</p>}
+      <RequestError
+        error={image.error}
+        messages={{ 404: "No such build, or you cannot see it." }}
+      />
       {image.data && (
         <>
           <dl className="props">
@@ -360,81 +379,86 @@ export default function ImageDetail({ params }: Route.ComponentProps) {
                 onDone={() => setShowAddSource(false)}
               />
             )}
-            <MutationError error={deleteSource.error} />
-            <table>
-              <thead>
-                <tr>
-                  <th>Registry</th>
-                  <th>Repository</th>
-                  <th>Status</th>
-                  <th>Owner</th>
-                  <th>Your permissions</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {image.data.sources.map((src) => (
-                  <tr key={src.id}>
-                    <td className="mono">{src.registry}</td>
-                    <td className="mono">{src.repository}</td>
-                    <td>
-                      <span className="badge">{src.status}</span>
-                    </td>
-                    <td>
-                      <EntityLink kind="user" id={src.owner_id} />
-                    </td>
-                    <td>
-                      {src.permissions.length === 0 ? (
-                        <span className="muted">—</span>
-                      ) : (
-                        src.permissions.map((p) => (
-                          <span key={p} className="badge">
-                            {p}
-                          </span>
-                        ))
-                      )}
-                    </td>
-                    <td>
-                      {src.permissions.includes("manage") && (
-                        <div className="toolbar">
-                          <button
-                            onClick={() =>
-                              setOpenGrants(
-                                openGrants === src.id ? null : src.id,
-                              )
-                            }
-                          >
-                            {openGrants === src.id ? "Hide grants" : "Grants"}
-                          </button>
-                          <button
-                            className="danger"
-                            disabled={deleteSource.isPending}
-                            onClick={() => {
-                              if (
-                                window.confirm(
-                                  `Delete source ${src.registry}/${src.repository}? Subjects relying on it can no longer pull this image through it.`,
-                                )
-                              ) {
-                                deleteSource.mutate({
-                                  params: {
-                                    path: {
-                                      digest: params.digest,
-                                      source_id: src.id,
-                                    },
-                                  },
-                                });
-                              }
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      )}
-                    </td>
+            <RequestError
+              error={deleteSource.error}
+              messages={{ 404: "The image or source no longer exists." }}
+            />
+            <div className="overflow-auto">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Registry</th>
+                    <th>Repository</th>
+                    <th>Status</th>
+                    <th>Owner</th>
+                    <th>Your permissions</th>
+                    <th></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {image.data.sources.map((src) => (
+                    <tr key={src.id}>
+                      <td className="mono">{src.registry}</td>
+                      <td className="mono">{src.repository}</td>
+                      <td>
+                        <span className="badge">{src.status}</span>
+                      </td>
+                      <td>
+                        <EntityLink kind="user" id={src.owner_id} />
+                      </td>
+                      <td>
+                        {src.permissions.length === 0 ? (
+                          <span className="muted">—</span>
+                        ) : (
+                          src.permissions.map((p) => (
+                            <span key={p} className="badge">
+                              {p}
+                            </span>
+                          ))
+                        )}
+                      </td>
+                      <td>
+                        {src.permissions.includes("manage") && (
+                          <div className="toolbar">
+                            <button
+                              onClick={() =>
+                                setOpenGrants(
+                                  openGrants === src.id ? null : src.id,
+                                )
+                              }
+                            >
+                              {openGrants === src.id ? "Hide grants" : "Grants"}
+                            </button>
+                            <button
+                              className="danger"
+                              disabled={deleteSource.isPending}
+                              onClick={() => {
+                                if (
+                                  window.confirm(
+                                    `Delete source ${src.registry}/${src.repository}? Subjects relying on it can no longer pull this image through it.`,
+                                  )
+                                ) {
+                                  deleteSource.mutate({
+                                    params: {
+                                      path: {
+                                        digest: params.digest,
+                                        source_id: src.id,
+                                      },
+                                    },
+                                  });
+                                }
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
             {openSource && (
               <SourceGrants digest={params.digest} source={openSource} />
             )}

@@ -44,6 +44,9 @@ export function LogTextView({
   active: boolean;
 }) {
   const [lines, setLines] = useState<Line[]>([]);
+  // Structured events show as one clipped line until tapped. Tracked by the
+  // line object, since indices shift as old lines drop off the front.
+  const [expanded, setExpanded] = useState<ReadonlySet<Line>>(new Set());
   const pendingRef = useRef<Line[]>([]);
   const flushRef = useRef<number | null>(null);
   const boxRef = useRef<HTMLDivElement | null>(null);
@@ -104,10 +107,25 @@ export function LogTextView({
   }, [lines, active]);
 
   const showTag = view.channels.length > 1;
+  const clipped = view.format === "jsonl";
+
+  const toggle = (line: Line, el: HTMLElement) => {
+    // Selecting text to copy it is not a request to expand the line, and a
+    // line that fits has nothing hidden to show.
+    if (window.getSelection()?.toString()) return;
+    const open = expanded.has(line);
+    if (!open && el.scrollWidth <= el.clientWidth) return;
+    const next = new Set(expanded);
+    if (open) next.delete(line);
+    else next.add(line);
+    setExpanded(next);
+  };
+
   return (
     <div
       ref={boxRef}
       className="log-text"
+      data-format={view.format}
       onScroll={() => {
         const box = boxRef.current;
         if (box !== null) {
@@ -116,6 +134,9 @@ export function LogTextView({
         }
       }}
     >
+      {lines.length === 0 && (
+        <p className="log-empty">{`No logs for "${view.label}" yet…`}</p>
+      )}
       {lines.map((line, i) => (
         <div
           // Lines have no identity of their own, and the list only ever grows
@@ -123,6 +144,8 @@ export function LogTextView({
           key={i}
           className="log-line"
           data-channel={line.channel}
+          data-expanded={clipped ? expanded.has(line) : undefined}
+          onClick={clipped ? (e) => toggle(line, e.currentTarget) : undefined}
         >
           {showTag && <span className="log-tag">{line.channel}</span>}
           {view.format === "jsonl" ? renderEvent(line.text) : line.text}

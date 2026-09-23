@@ -3,9 +3,10 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { $api } from "../api/client";
+import { ApiError } from "../api/errors";
 import type { components } from "../api/schema";
 import { JsonEditor } from "../components/json-editor";
-import { MutationError } from "../components/mutation-error";
+import { RequestError } from "../components/request-error";
 import type { Route } from "./+types/host-spec-edit";
 
 type HostInfo = components["schemas"]["HostInfo"];
@@ -23,16 +24,22 @@ function isRejection(error: unknown): error is HostSpecRejection {
 }
 
 function SpecError({ error }: { error: unknown }) {
-  if (!isRejection(error)) {
-    return <MutationError error={error} />;
+  const rejection = error instanceof ApiError ? error.body : undefined;
+  if (!isRejection(rejection)) {
+    return (
+      <RequestError
+        error={error}
+        messages={{ 403: "You are not allowed to edit this host's spec." }}
+      />
+    );
   }
   return (
     <p className="error">
-      {error.path === "" ? (
-        error.message
+      {rejection.path === "" ? (
+        rejection.message
       ) : (
         <>
-          <code className="mono">{error.path}</code>: {error.message}
+          <code className="mono">{rejection.path}</code>: {rejection.message}
         </>
       )}
     </p>
@@ -108,7 +115,11 @@ function SpecForm({ host }: { host: HostInfo }) {
         <button disabled={pending} onClick={() => submit(true)}>
           {validate.isPending ? "Validating…" : "Validate"}
         </button>
-        <button disabled={pending} onClick={() => submit(false)}>
+        <button
+          className="primary"
+          disabled={pending}
+          onClick={() => submit(false)}
+        >
           {save.isPending ? "Saving…" : "Save"}
         </button>
         <Link className="btn" to={`/hosts/${host.host_id}`}>
@@ -138,9 +149,10 @@ export default function HostSpecEdit({ params }: Route.ComponentProps) {
     <>
       <h1>Edit host spec</h1>
       {host.isPending && <p className="muted">Loading…</p>}
-      {host.isError && (
-        <p className="error">No such host, or you cannot read it.</p>
-      )}
+      <RequestError
+        error={host.error}
+        messages={{ 403: "No such host, or you cannot read it." }}
+      />
       {host.data &&
         (host.data.permissions.includes("manage") ? (
           <>

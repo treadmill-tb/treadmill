@@ -16,31 +16,45 @@ function AuthedShell() {
   return (
     <>
       <header className="topbar">
-        <div className="topbar-inner">
-          <Link to="/" className="brand">
-            treadmill
-          </Link>
-          <nav>
-            <NavLink to="/jobs">Jobs</NavLink>
-            <NavLink to="/hosts">Hosts</NavLink>
-            <NavLink to="/images">Images</NavLink>
-            <NavLink to="/image-sets">Image sets</NavLink>
-          </nav>
-          <span className="spacer" />
-          <Link to="/settings" className="muted">
-            {whoami.data?.name ?? "…"}
-          </Link>
-          <button
-            onClick={() => {
-              clearToken();
-              void navigate("/login");
-            }}
-          >
-            Log out
-          </button>
-        </div>
+        <nav className="container">
+          <ul>
+            <li>
+              <Link to="/" className="brand">
+                treadmill
+              </Link>
+            </li>
+          </ul>
+          <ul className="sections">
+            <li>
+              <NavLink to="/jobs">Jobs</NavLink>
+            </li>
+            <li>
+              <NavLink to="/hosts">Hosts</NavLink>
+            </li>
+            <li>
+              <NavLink to="/images">Images</NavLink>
+            </li>
+          </ul>
+          <ul>
+            <li>
+              <Link to="/settings" className="secondary">
+                {whoami.data?.name ?? "…"}
+              </Link>
+            </li>
+            <li>
+              <button
+                onClick={() => {
+                  clearToken();
+                  void navigate("/login");
+                }}
+              >
+                Log out
+              </button>
+            </li>
+          </ul>
+        </nav>
       </header>
-      <main className="page">
+      <main className="container">
         <Outlet />
       </main>
     </>

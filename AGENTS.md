@@ -111,7 +111,8 @@ The `console` Nix package (`nix build .#console`, also a fast-tier flake
 check) is the frontend CI gate: it fails on schema drift, then runs
 `npm run lint`, `npm run typecheck` (strict tsc), and the vite build. Dev loop:
 `npm run dev` (in the default dev shell, which carries node) proxies `/api` to
-a local switchboard at `127.0.0.1:8081` (override with `TML_DEV_PROXY`). The
+a local switchboard at `127.0.0.1:8000`, where `nix run .#devstack` serves it
+(override with `TML_DEV_PROXY`). The
 build reads `VITE_TML_API_URL` for the switchboard origin; empty means
 same-origin.
 

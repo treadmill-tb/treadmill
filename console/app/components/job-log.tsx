@@ -5,9 +5,11 @@ import {
   wsconnect,
   type NatsConnection,
 } from "@nats-io/nats-core";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 
 import { client } from "../api/client";
+import { ApiError, describeError } from "../api/errors";
+import { HelpTip } from "./help-tip";
 import { LogTerminalView } from "./log-terminal-view";
 import { LogTextView } from "./log-text-view";
 import {
@@ -128,6 +130,7 @@ export function JobLog({
   dispatched,
   replayBytes = DEFAULT_REPLAY_BYTES,
   canSendInput = false,
+  finalized = false,
 }: {
   jobId: string;
   /** Whether the job has been placed on a host. The switchboard creates the
@@ -135,12 +138,15 @@ export function JobLog({
   dispatched: boolean;
   replayBytes?: number;
   canSendInput?: boolean;
+  /** Whether the job is over, so its log has nothing more to follow. */
+  finalized?: boolean;
 }) {
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
   const [truncated, setTruncated] = useState(false);
   const [declared, setDeclared] = useState<Map<string, LogView>>(new Map());
   const [seen, setSeen] = useState<string[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  const tabIds = useId();
   // Buffers belong to one connection's demux. `JobLog` is keyed by job, so a
   // different job mounts a fresh component and a fresh bus.
   const bus = useMemo(() => new ChannelBus(), []);
@@ -183,7 +189,10 @@ export function JobLog({
       if (creds.data === undefined) {
         setStatus({
           kind: "error",
-          message: `Fetching log credentials failed (HTTP ${creds.response.status}).`,
+          message: describeError(
+            new ApiError(creds.response.status, creds.error),
+            { 403: "You are not allowed to see this job's logs." },
+          ),
         });
         return null;
       }
@@ -473,20 +482,43 @@ export function JobLog({
 
   return (
     <section>
-      <h2>
-        Logs {status.kind === "live" && <span className="badge ok">live</span>}
+      <h2 className="log-heading">
+        <span className="log-title">
+          Logs
+          <HelpTip label="About the log">
+            {replayBytes === 0 ? (
+              <>
+                Live tail only: history replay is disabled by{" "}
+                <code>?replay=0</code> in the URL.
+              </>
+            ) : (
+              <>
+                Replays up to ~{bytesLabel(replayBytes)} of stored history
+                {finalized ? "" : ", then follows live"}. Change the amount with{" "}
+                <code>?replay=</code> in the URL, e.g. <code>?replay=4M</code>,
+                or <code>?replay=0</code> for the live tail only.
+              </>
+            )}
+          </HelpTip>
+        </span>
+        {status.kind === "live" &&
+          (finalized ? (
+            <span className="badge">Replayed</span>
+          ) : (
+            <span className="badge ok">Live</span>
+          ))}
         {status.kind === "replaying" && (
-          <span className="badge ok">replaying</span>
+          <span className="badge ok">Replaying</span>
         )}
         {(status.kind === "connecting" ||
           status.kind === "retrying" ||
           status.kind === "waiting") && (
           <span className="badge warn">
             {status.kind === "waiting"
-              ? "waiting for logs"
+              ? "Waiting for logs"
               : status.kind === "retrying"
-                ? "reconnecting"
-                : status.kind}
+                ? "Reconnecting"
+                : "Connecting"}
           </span>
         )}
       </h2>
@@ -497,25 +529,31 @@ export function JobLog({
           {status.kind === "retrying" && (
             <p className="muted">Retrying: {status.reason}.</p>
           )}
-          <div className="log-tabs" role="tablist">
-            {views.map((view) => (
+          <div className="log-tabs" role="tablist" aria-label="Log views">
+            {views.map((view, i) => (
               <button
                 key={view.id}
+                id={`${tabIds}-tab-${i}`}
                 role="tab"
                 aria-selected={view.id === activeId}
+                aria-controls={`${tabIds}-panel-${i}`}
                 onClick={() => setSelected(view.id)}
               >
                 {view.label}
               </button>
             ))}
           </div>
-          {views.map((view) => (
+          {views.map((view, i) => (
             // Views stay mounted and inactive ones are hidden, so switching
             // tabs never replays a buffer into a freshly mounted component.
             // The channels are part of the key: a view that gains one starts
             // over, and the bus replays what it missed.
             <div
               key={`${view.id} ${view.channels.join(" ")}`}
+              id={`${tabIds}-panel-${i}`}
+              className="log-panel"
+              role="tabpanel"
+              aria-labelledby={`${tabIds}-tab-${i}`}
               hidden={view.id !== activeId}
             >
               {view.render === "terminal" ? (
@@ -535,12 +573,7 @@ export function JobLog({
               )}
             </div>
           ))}
-          <p className="muted">
-            {truncated && `Earlier output omitted. `}
-            {replayBytes === 0
-              ? "Live tail only (history replay disabled by ?replay=0)."
-              : `Replays up to ~${bytesLabel(replayBytes)} of stored history, then follows live (override with ?replay=).`}
-          </p>
+          {truncated && <p className="muted">Earlier output omitted.</p>}
         </>
       )}
     </section>

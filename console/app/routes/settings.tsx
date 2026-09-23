@@ -3,9 +3,9 @@ import { useState, type FormEvent } from "react";
 
 import { $api } from "../api/client";
 import type { components } from "../api/schema";
-import { EntityLink } from "../components/entity-link";
-import { MutationError } from "../components/mutation-error";
+import { EntityLink, ShortId } from "../components/entity-link";
 import { RelTime } from "../components/rel-time";
+import { RequestError } from "../components/request-error";
 
 type SelfUserProfile = components["schemas"]["SelfUserProfile"];
 
@@ -63,7 +63,7 @@ function ProfileForm({
           className="mono"
         />
       </label>
-      <MutationError error={update.error} />
+      <RequestError error={update.error} />
       <div className="toolbar">
         <button type="submit" disabled={update.isPending}>
           {update.isPending ? "Saving…" : "Save"}
@@ -94,7 +94,7 @@ export default function Settings() {
     <>
       <h1>Settings</h1>
       {me.isPending && <p className="muted">Loading…</p>}
-      {me.isError && <p className="error">Failed to load the profile.</p>}
+      <RequestError error={me.error} />
       {me.data && (
         <>
           <section>
@@ -119,13 +119,11 @@ export default function Settings() {
                 <dd>
                   {me.data.emails.map((e) => (
                     <div key={e.email} className="mono">
-                      {e.email}
+                      {e.email}{" "}
                       {e.is_primary && (
-                        <span className="badge active"> primary</span>
+                        <span className="badge active">primary</span>
                       )}
-                      {!e.verified && (
-                        <span className="badge"> unverified</span>
-                      )}
+                      {!e.verified && <span className="badge">unverified</span>}
                     </div>
                   ))}
                 </dd>
@@ -150,27 +148,29 @@ export default function Settings() {
             {me.data.groups.length === 0 ? (
               <p className="muted">No group memberships.</p>
             ) : (
-              <table>
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Source</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {me.data.groups.map((g) => (
-                    <tr key={g.group_id}>
-                      <td>{g.name}</td>
-                      <td className="muted">
-                        {g.source}
-                        {g.source_ref !== "" && (
-                          <span className="mono"> ({g.source_ref})</span>
-                        )}
-                      </td>
+              <div className="overflow-auto">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Source</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {me.data.groups.map((g) => (
+                      <tr key={g.group_id}>
+                        <td>{g.name}</td>
+                        <td className="muted">
+                          {g.source}
+                          {g.source_ref !== "" && (
+                            <span className="mono"> ({g.source_ref})</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </section>
         </>
@@ -178,72 +178,79 @@ export default function Settings() {
 
       <section>
         <h2>Sessions &amp; API tokens</h2>
-        <MutationError error={revoke.error} />
+        <RequestError
+          error={revoke.error}
+          messages={{ 404: "That token no longer exists." }}
+        />
         {tokens.isPending && <p className="muted">Loading…</p>}
-        {tokens.isError && <p className="error">Failed to load tokens.</p>}
+        <RequestError error={tokens.error} />
         {tokens.data && (
-          <table>
-            <thead>
-              <tr>
-                <th>Token</th>
-                <th>Created</th>
-                <th>Expires</th>
-                <th>Client</th>
-                <th>Status</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {tokens.data.map((t) => (
-                <tr key={t.token_id}>
-                  <td className="mono" title={t.token_id}>
-                    {t.token_id.slice(0, 8)}
-                    {t.comment != null && (
-                      <span className="muted"> {t.comment}</span>
-                    )}
-                  </td>
-                  <td>
-                    <RelTime iso={t.created_at} />
-                    {t.created_ip != null && (
-                      <div className="muted mono">{t.created_ip}</div>
-                    )}
-                  </td>
-                  <td>
-                    <RelTime iso={t.expires_at} />
-                  </td>
-                  <td className="muted">{t.user_agent ?? "—"}</td>
-                  <td>
-                    {t.current && <span className="badge active">current</span>}{" "}
-                    {t.revoked && (
-                      <span className="badge danger" title={t.revoked.reason}>
-                        revoked
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    {t.revoked == null && (
-                      <button
-                        className="danger"
-                        disabled={revoke.isPending}
-                        onClick={() => {
-                          const q = t.current
-                            ? "Revoke the token of THIS session? You will be logged out."
-                            : "Revoke this token?";
-                          if (window.confirm(q)) {
-                            revoke.mutate({
-                              params: { path: { token_id: t.token_id } },
-                            });
-                          }
-                        }}
-                      >
-                        Revoke
-                      </button>
-                    )}
-                  </td>
+          <div className="overflow-auto">
+            <table>
+              <thead>
+                <tr>
+                  <th>Token</th>
+                  <th>Created</th>
+                  <th>Expires</th>
+                  <th>Client</th>
+                  <th>Status</th>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {tokens.data.map((t) => (
+                  <tr key={t.token_id}>
+                    <td>
+                      <ShortId id={t.token_id} />
+                      {t.comment != null && (
+                        <span className="muted"> {t.comment}</span>
+                      )}
+                    </td>
+                    <td>
+                      <RelTime iso={t.created_at} />
+                      {t.created_ip != null && (
+                        <div className="muted mono">{t.created_ip}</div>
+                      )}
+                    </td>
+                    <td>
+                      <RelTime iso={t.expires_at} />
+                    </td>
+                    <td className="muted">{t.user_agent ?? "—"}</td>
+                    <td>
+                      {t.current && (
+                        <span className="badge active">current</span>
+                      )}{" "}
+                      {t.revoked && (
+                        <span className="badge danger" title={t.revoked.reason}>
+                          revoked
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      {t.revoked == null && (
+                        <button
+                          className="danger"
+                          disabled={revoke.isPending}
+                          onClick={() => {
+                            const q = t.current
+                              ? "Revoke the token of THIS session? You will be logged out."
+                              : "Revoke this token?";
+                            if (window.confirm(q)) {
+                              revoke.mutate({
+                                params: { path: { token_id: t.token_id } },
+                              });
+                            }
+                          }}
+                        >
+                          Revoke
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </>
