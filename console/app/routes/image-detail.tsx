@@ -7,7 +7,7 @@ import { Digest } from "../components/digest";
 import { EntityLink } from "../components/entity-link";
 import { RelTime } from "../components/rel-time";
 import { RequestError } from "../components/request-error";
-import { EVERYONE_SUBJECT } from "./image-set-detail";
+import { EVERYONE_SUBJECT } from "../api/subjects";
 import type { Route } from "./+types/image-detail";
 
 type ImageSourceInfo = components["schemas"]["ImageSourceInfo"];
@@ -342,11 +342,11 @@ export default function ImageDetail({ params }: Route.ComponentProps) {
 
   return (
     <>
-      <h1>Image</h1>
+      <h1>Build</h1>
       {image.isPending && <p className="muted">Loading…</p>}
       <RequestError
         error={image.error}
-        messages={{ 404: "No such image, or you cannot see it." }}
+        messages={{ 404: "No such build, or you cannot see it." }}
       />
       {image.data && (
         <>

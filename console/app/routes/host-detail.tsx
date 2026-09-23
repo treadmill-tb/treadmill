@@ -1,8 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { Share2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 
-import { $api } from "../api/client";
+import { $api, client } from "../api/client";
+import { ApiError } from "../api/errors";
 import type { components } from "../api/schema";
 import { LiveBadge } from "../components/badges";
 import { AuditLog } from "../components/audit-log";
@@ -10,14 +12,15 @@ import { EntityLink } from "../components/entity-link";
 import { HostSpecView } from "../components/host-spec";
 import { RelTime } from "../components/rel-time";
 import { RequestError } from "../components/request-error";
+import {
+  ShareDialog,
+  type ApplyAccess,
+  type Role,
+} from "../components/share-dialog";
 import { useResourceWatch } from "../hooks/use-resource-watch";
 import type { Route } from "./+types/host-detail";
 
 type HostPermission = components["schemas"]["HostPermission"];
-
-function asHostPermission(value: string): HostPermission {
-  return value === "manage" ? "manage" : value === "start" ? "start" : "read";
-}
 
 /// Invalidate everything a change to a host's owner or ACL can affect: the host
 /// itself (its owner and the viewer's permissions), the listing, its grants and
@@ -111,171 +114,91 @@ function OwnerForm({
   );
 }
 
-function GrantForm({ hostId, onDone }: { hostId: string; onDone: () => void }) {
-  const invalidate = useInvalidateHost(hostId);
-  const grant = $api.useMutation("post", "/hosts/{id}/grants", {
-    onSuccess: async () => {
+const HOST_ROLES: Role<HostPermission>[] = [
+  { label: "Can view", detail: "see the host", permissions: ["read"] },
+  {
+    label: "Can run jobs",
+    detail: "also run jobs on it",
+    permissions: ["read", "start"],
+  },
+  {
+    label: "Can manage",
+    detail: "also change its spec, owner and sharing",
+    permissions: ["read", "start", "manage"],
+  },
+];
+
+const HOST_PUBLIC_LEVELS: Role<HostPermission>[] = [
+  {
+    label: "Anyone can see it",
+    permissions: ["read"],
+  },
+  {
+    label: "Anyone can run jobs on it",
+    permissions: ["read", "start"],
+  },
+];
+
+function HostShareDialog({
+  open,
+  onClose,
+  host,
+}: {
+  open: boolean;
+  onClose: () => void;
+  host: { host_id: string; name: string; owner_id?: string | null };
+}) {
+  const invalidate = useInvalidateHost(host.host_id);
+  const grants = $api.useQuery(
+    "get",
+    "/hosts/{id}/grants",
+    { params: { path: { id: host.host_id } } },
+    { enabled: open },
+  );
+
+  const apply: ApplyAccess<HostPermission> = async (subject, permissions) => {
+    const current = (grants.data ?? [])
+      .filter((g) => g.subject_id === subject)
+      .map((g) => g.permission);
+    try {
+      for (const permission of permissions) {
+        if (current.includes(permission)) continue;
+        const r = await client.POST("/hosts/{id}/grants", {
+          params: { path: { id: host.host_id } },
+          body: { subject_id: subject, permission },
+        });
+        if (!r.response.ok) throw new ApiError(r.response.status, r.error);
+      }
+      for (const permission of current) {
+        if (permissions.includes(permission)) continue;
+        const r = await client.DELETE(
+          "/hosts/{id}/grants/{subject_id}/{permission}",
+          {
+            params: {
+              path: { id: host.host_id, subject_id: subject, permission },
+            },
+          },
+        );
+        if (!r.response.ok) throw new ApiError(r.response.status, r.error);
+      }
+    } finally {
       await invalidate();
-      onDone();
-    },
-  });
-
-  function onSubmit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const f = new FormData(e.currentTarget);
-    const subject = f.get("subject_id");
-    const permission = f.get("permission");
-    if (typeof subject !== "string" || typeof permission !== "string") {
-      return;
     }
-    grant.mutate({
-      params: { path: { id: hostId } },
-      body: {
-        subject_id: subject.trim(),
-        permission: asHostPermission(permission),
-      },
-    });
-  }
+    return null;
+  };
 
   return (
-    <form className="form card" onSubmit={onSubmit}>
-      <label className="field">
-        <span>Subject id (user or group UUID)</span>
-        <input name="subject_id" required className="mono" />
-      </label>
-      <label className="field">
-        <span>Permission</span>
-        <select name="permission" defaultValue="start">
-          <option value="read">read — may see the host and its spec</option>
-          <option value="start">start — may run jobs on the host</option>
-          <option value="manage">
-            manage — may edit the spec, the owner and the grants
-          </option>
-        </select>
-      </label>
-      <RequestError
-        error={grant.error}
-        messages={{
-          403: "You are not allowed to manage this host.",
-          422: "There is no user or group with that ID.",
-        }}
-      />
-      <div className="toolbar">
-        <button type="submit" disabled={grant.isPending}>
-          {grant.isPending ? "Granting…" : "Grant"}
-        </button>
-        <button type="button" onClick={onDone}>
-          Cancel
-        </button>
-      </div>
-    </form>
-  );
-}
-
-/// The manage-gated grants panel: the host's ACL with revoke buttons, and a
-/// grant form. Only mounted for a manager, as the list route is manage-gated.
-function HostGrants({ hostId }: { hostId: string }) {
-  const invalidate = useInvalidateHost(hostId);
-  const grants = $api.useQuery("get", "/hosts/{id}/grants", {
-    params: { path: { id: hostId } },
-  });
-  const [showGrantForm, setShowGrantForm] = useState(false);
-  const revoke = $api.useMutation(
-    "delete",
-    "/hosts/{id}/grants/{subject_id}/{permission}",
-    { onSuccess: invalidate },
-  );
-
-  return (
-    <section>
-      <div className="toolbar">
-        <h2>Grants</h2>
-        <span className="spacer" />
-        <button onClick={() => setShowGrantForm(!showGrantForm)}>Grant</button>
-      </div>
-      {showGrantForm && (
-        <GrantForm hostId={hostId} onDone={() => setShowGrantForm(false)} />
-      )}
-      <RequestError
-        error={revoke.error}
-        messages={{
-          403: "You are not allowed to manage this host.",
-          404: "That grant no longer exists.",
-          409: "This grant goes with the host and cannot be revoked.",
-        }}
-      />
-      {grants.isPending && <p className="muted">Loading…</p>}
-      <RequestError
-        error={grants.error}
-        messages={{ 403: "Only the host's managers can see its grants." }}
-      />
-      {grants.data &&
-        (grants.data.length === 0 ? (
-          <p className="muted">No explicit grants.</p>
-        ) : (
-          <div className="overflow-auto">
-            <table>
-              <thead>
-                <tr>
-                  <th>Subject</th>
-                  <th>Permission</th>
-                  <th>Granted</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {grants.data.map((grant) => (
-                  <tr key={`${grant.subject_id}/${grant.permission}`}>
-                    <td>
-                      <EntityLink kind="user" id={grant.subject_id} />
-                    </td>
-                    <td>
-                      <span className="badge">{grant.permission}</span>
-                    </td>
-                    <td>
-                      <RelTime iso={grant.granted_at} />
-                    </td>
-                    <td>
-                      {grant.revocable ? (
-                        <button
-                          className="danger"
-                          disabled={revoke.isPending}
-                          onClick={() => {
-                            if (
-                              window.confirm(
-                                `Revoke ${grant.permission} from ${grant.subject_id}?`,
-                              )
-                            ) {
-                              revoke.mutate({
-                                params: {
-                                  path: {
-                                    id: hostId,
-                                    subject_id: grant.subject_id,
-                                    permission: grant.permission,
-                                  },
-                                },
-                              });
-                            }
-                          }}
-                        >
-                          Revoke
-                        </button>
-                      ) : (
-                        <span
-                          className="badge"
-                          title="Fixed in place by the switchboard; it goes only with the host."
-                        >
-                          irrevocable
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ))}
-    </section>
+    <ShareDialog
+      open={open}
+      onClose={onClose}
+      title={host.name}
+      ownerId={host.owner_id}
+      grants={grants.data}
+      grantsError={grants.error}
+      roles={HOST_ROLES}
+      publicLevels={HOST_PUBLIC_LEVELS}
+      apply={apply}
+    />
   );
 }
 
@@ -289,6 +212,7 @@ export default function HostDetail({ params }: Route.ComponentProps) {
     { params: { path: { id: params.id } } },
   ]);
   const [showOwnerForm, setShowOwnerForm] = useState(false);
+  const [sharing, setSharing] = useState(false);
 
   const canManage = host.data?.permissions.includes("manage") ?? false;
 
@@ -305,6 +229,11 @@ export default function HostDetail({ params }: Route.ComponentProps) {
             Host {host.data.name} <LiveBadge live={host.data.live} />
             {host.data.maintenance && (
               <span className="badge warn">maintenance</span>
+            )}{" "}
+            {canManage && (
+              <button type="button" onClick={() => setSharing(true)}>
+                <Share2 size={14} aria-hidden="true" /> Share
+              </button>
             )}
           </h1>
           <dl className="props">
@@ -363,7 +292,13 @@ export default function HostDetail({ params }: Route.ComponentProps) {
             )}
           </section>
 
-          {canManage && <HostGrants hostId={params.id} />}
+          {canManage && (
+            <HostShareDialog
+              open={sharing}
+              onClose={() => setSharing(false)}
+              host={host.data}
+            />
+          )}
 
           <AuditLog entity="hosts" id={params.id} />
         </>

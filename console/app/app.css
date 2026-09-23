@@ -1713,3 +1713,221 @@ a.icon-link:hover {
   color: var(--pico-muted-color);
   user-select: none;
 }
+
+/* ------------------------------------------------------ Images & sharing */
+
+.subject {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+}
+
+.subject > svg {
+  align-self: center;
+}
+
+input[type="search"].search {
+  width: min(16rem, 50vw);
+  margin: 0;
+}
+
+.image-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: 1rem;
+}
+
+.image-cards > .card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin: 0;
+}
+
+.image-cards h3 {
+  margin: 0;
+}
+
+.image-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: auto;
+  padding-top: 0.5rem;
+}
+
+.image-card-foot > .btn {
+  margin: 0;
+}
+
+.variant-list {
+  margin: 0 0 0.75rem;
+  padding: 0;
+  list-style: none;
+}
+
+.variant-list > li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0.625rem 0;
+  border-bottom: var(--pico-border-width) solid var(--pico-muted-border-color);
+  list-style: none;
+}
+
+.variant-list > li:last-child {
+  border-bottom: none;
+}
+
+.variant-index {
+  flex: none;
+  width: 1.5rem;
+  color: var(--pico-muted-color);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.variant-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.variant-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.variant-head > .chip {
+  margin: 0;
+}
+
+.variant-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+}
+
+.variant-actions {
+  display: flex;
+  flex: none;
+  gap: 0.125rem;
+}
+
+.version-list {
+  margin: 0 0 0.75rem;
+  padding: 0;
+}
+
+.version-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 1rem;
+  padding: 0.5rem 0;
+  border-bottom: var(--pico-border-width) solid var(--pico-muted-border-color);
+  list-style: none;
+}
+
+.version-list > li > a {
+  min-width: 2.5rem;
+  font-weight: 600;
+}
+
+.version-list .version-changes {
+  flex: 1 1 12rem;
+}
+
+.version-list button {
+  margin: 0;
+  padding: 0.125rem 0.625rem;
+  font-size: var(--text-sm);
+}
+
+.share-list {
+  margin: 0 0 1rem;
+  padding: 0;
+}
+
+.share-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+  padding: 0.375rem 0;
+  border-bottom: var(--pico-border-width) solid var(--pico-muted-border-color);
+  list-style: none;
+}
+
+.share-role {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.share-role > :is(select, button) {
+  width: auto;
+  margin: 0;
+  padding-block: 0.25rem;
+  font-size: var(--text-sm);
+}
+
+.share-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.share-add > select,
+.share-add > .field {
+  flex: 1 1 12rem;
+  margin: 0;
+}
+
+.share-add > select:nth-of-type(2) {
+  flex: 0 1 10rem;
+}
+
+.share-add > button {
+  margin: 0;
+}
+
+dialog h4 {
+  margin: 1rem 0 0.5rem;
+  font-size: var(--text-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--pico-muted-color);
+}
+
+.choice-list strong > svg,
+.badge > svg {
+  vertical-align: -0.125em;
+}
+
+/* Buttons with an icon beside their text. */
+:is(button, .btn):has(> svg) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+}
+
+.help-line {
+  display: block;
+}
+
+.readonly {
+  margin: 0;
+  color: var(--pico-muted-color);
+}

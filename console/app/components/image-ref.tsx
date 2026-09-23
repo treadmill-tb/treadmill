@@ -1,10 +1,29 @@
 import { Link } from "react-router";
 
+import { $api } from "../api/client";
+import { shortDigest } from "../api/images";
 import type { components } from "../api/schema";
 import { EntityLink, shortId } from "./entity-link";
 
 type JobImage = components["schemas"]["JobImage"];
 type JobPredecessor = components["schemas"]["JobPredecessor"];
+
+function ImageVersionRef({
+  setId,
+  generation,
+}: {
+  setId: string;
+  generation: number;
+}) {
+  const set = $api.useQuery("get", "/image-sets/{id}", {
+    params: { path: { id: setId } },
+  });
+  return (
+    <Link to={`/images/${setId}/versions/${generation}`} title={setId}>
+      {set.data?.display_name ?? shortId(setId)} v{generation}
+    </Link>
+  );
+}
 
 export function ImageRef({
   image,
@@ -17,33 +36,21 @@ export function ImageRef({
   return (
     <span>
       {ref.type === "image" ? (
-        <>
-          image{" "}
-          <Link
-            to={`/images/${ref.manifest_digest}`}
-            className="mono"
-            title={ref.manifest_digest}
-          >
-            {ref.manifest_digest.slice(0, 19)}…
-          </Link>
-        </>
+        <Link
+          to={`/images/build/${ref.manifest_digest}`}
+          className="mono"
+          title={ref.manifest_digest}
+        >
+          {shortDigest(ref.manifest_digest)}
+        </Link>
       ) : (
-        <>
-          set{" "}
-          <Link
-            to={`/image-sets/${ref.set_id}/generations/${ref.generation}`}
-            className="short-id"
-            title={ref.set_id}
-          >
-            {shortId(ref.set_id)}#{ref.generation}
-          </Link>
-        </>
+        <ImageVersionRef setId={ref.set_id} generation={ref.generation} />
       )}
       {predecessor != null && (
-        <>
+        <span className="muted">
           {" "}
           ({predecessor.type} <EntityLink kind="job" id={predecessor.job_id} />)
-        </>
+        </span>
       )}
     </span>
   );

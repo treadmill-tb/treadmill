@@ -3,6 +3,7 @@ import { Fragment, useState } from "react";
 import { Link } from "react-router";
 
 import { $api } from "../api/client";
+import { isStandard } from "../api/images";
 import type { components } from "../api/schema";
 import { Digest } from "./digest";
 import { EntityLink, ShortId, shortId } from "./entity-link";
@@ -16,7 +17,7 @@ const PARAMETERS_SHOWN = 3;
 
 /** What the job runs, as the first rows of the details card. */
 function Origin({ job }: { job: JobInfo }) {
-  const ref = job.image.reference;
+  const { reference: ref, resolved_digest } = job.image;
   return (
     <>
       {job.predecessor != null && (
@@ -27,7 +28,7 @@ function Origin({ job }: { job: JobInfo }) {
           </dd>
         </>
       )}
-      <dt>{ref.type === "image" ? "Image" : "Image set"}</dt>
+      <dt>Image</dt>
       <dd>
         {ref.type === "image" ? (
           <ImageOrigin digest={ref.manifest_digest} />
@@ -35,6 +36,15 @@ function Origin({ job }: { job: JobInfo }) {
           <ImageSetOrigin setId={ref.set_id} generation={ref.generation} />
         )}
       </dd>
+      {ref.type === "image_set" && resolved_digest != null && (
+        <>
+          <dt>Build</dt>
+          <dd>
+            <Digest digest={resolved_digest} />{" "}
+            <Link to={`/images/build/${resolved_digest}`}>view</Link>
+          </dd>
+        </>
+      )}
     </>
   );
 }
@@ -48,13 +58,18 @@ function ImageOrigin({ digest }: { digest: string }) {
   if (title == null) {
     return (
       <>
-        <Digest digest={digest} /> <Link to={`/images/${digest}`}>view</Link>
+        <Digest digest={digest} />{" "}
+        <Link to={`/images/build/${digest}`}>view</Link>
       </>
     );
   }
   return (
     <>
-      <Link to={`/images/${digest}`} className="origin-name" title={title}>
+      <Link
+        to={`/images/build/${digest}`}
+        className="origin-name"
+        title={title}
+      >
         {title}
       </Link>{" "}
       <span className="muted">
@@ -64,7 +79,6 @@ function ImageOrigin({ digest }: { digest: string }) {
   );
 }
 
-/** An image set generation by the set's name, then its short ID. */
 function ImageSetOrigin({
   setId,
   generation,
@@ -75,24 +89,34 @@ function ImageSetOrigin({
   const info = $api.useQuery("get", "/image-sets/{id}", {
     params: { path: { id: setId } },
   });
-  const name = info.data?.display_name;
-  const to = `/image-sets/${setId}/generations/${generation}`;
-  if (name === undefined) {
+  const to = `/images/${setId}/versions/${generation}`;
+  if (info.data === undefined) {
     return (
       <Link to={to} className="short-id" title={setId}>
-        {shortId(setId)}#{generation}
+        {shortId(setId)} v{generation}
       </Link>
     );
   }
+  const name = info.data.display_name;
+  const latest = info.data.latest_generation;
   return (
     <>
       <Link to={to} className="origin-name" title={name}>
         {name}
       </Link>{" "}
-      generation {generation}{" "}
-      <span className="muted">
-        (<ShortId id={setId} />)
-      </span>
+      v{generation}
+      {isStandard(info.data) && (
+        <>
+          {" "}
+          <span className="badge ok">Standard</span>
+        </>
+      )}
+      {latest != null && latest !== generation && (
+        <span className="muted">
+          {" "}
+          (<Link to={`/images/${setId}`}>v{latest}</Link> is the latest)
+        </span>
+      )}
     </>
   );
 }

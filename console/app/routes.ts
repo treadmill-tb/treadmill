@@ -18,10 +18,18 @@ export default [
     route("hosts/:id", "routes/host-detail.tsx"),
     route("hosts/:id/spec", "routes/host-spec-edit.tsx"),
     route("images", "routes/images.tsx"),
-    route("images/:digest", "routes/image-detail.tsx"),
-    route("image-sets", "routes/image-sets.tsx"),
-    route("image-sets/:id", "routes/image-set-detail.tsx"),
-    route("image-sets/:id/generations/:n", "routes/generation-detail.tsx"),
+    route("images/build/:digest", "routes/image-detail.tsx"),
+    route("images/:id", "routes/image.tsx"),
+    route("images/:id/edit", "routes/image-edit.tsx"),
+    route("images/:id/versions/:n", "routes/image-version.tsx"),
+    // Links from before image sets were called images.
+    route("image-sets", "routes/image-sets-redirect.tsx", { id: "image-sets" }),
+    route("image-sets/:id", "routes/image-sets-redirect.tsx", {
+      id: "image-set",
+    }),
+    route("image-sets/:id/generations/:n", "routes/image-sets-redirect.tsx", {
+      id: "image-set-generation",
+    }),
     route("users/:id", "routes/user-detail.tsx"),
     route("settings", "routes/settings.tsx"),
   ]),

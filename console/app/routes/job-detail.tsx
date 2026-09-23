@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Check, Pencil, Server, User, X } from "lucide-react";
 import { useState } from "react";
-import { Link, useSearchParams } from "react-router";
+import { useSearchParams } from "react-router";
 
 import { $api } from "../api/client";
 import { ApiError, describeError } from "../api/errors";
@@ -14,6 +14,7 @@ import { EntityLink, ShortId } from "../components/entity-link";
 import { HostCard } from "../components/host-card";
 import { JobDetails } from "../components/job-details";
 import { JobLog, parseReplayBytes } from "../components/job-log";
+import { RerunButtons } from "../components/job-rerun";
 import { JobServices } from "../components/job-services";
 import { JobStatus } from "../components/job-status";
 import { RelTime } from "../components/rel-time";
@@ -83,22 +84,18 @@ export default function JobDetail({ params }: Route.ComponentProps) {
         </div>
         <div className="page-head-actions">
           <JobStateBadge state={data.state} stage={data.initializing_stage} />
-          {finalized ? (
-            <Link className="btn" to="/jobs/new">
-              Resume
-            </Link>
-          ) : (
-            data.permissions.includes("stop") && (
-              <button
-                type="button"
-                className="danger"
-                disabled={data.state === "terminating" || terminate.isPending}
-                onClick={() => setConfirmTerminate(true)}
-              >
-                {terminate.isPending ? "Terminating…" : "Terminate"}
-              </button>
-            )
-          )}
+          {finalized
+            ? canManage && <RerunButtons job={data} />
+            : data.permissions.includes("stop") && (
+                <button
+                  type="button"
+                  className="danger"
+                  disabled={data.state === "terminating" || terminate.isPending}
+                  onClick={() => setConfirmTerminate(true)}
+                >
+                  {terminate.isPending ? "Terminating…" : "Terminate"}
+                </button>
+              )}
         </div>
       </header>
       <JobContext job={data} hostName={host?.name} />

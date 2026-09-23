@@ -34,9 +34,6 @@ function AuthedShell() {
             <li>
               <NavLink to="/images">Images</NavLink>
             </li>
-            <li>
-              <NavLink to="/image-sets">Image sets</NavLink>
-            </li>
           </ul>
           <ul>
             <li>
