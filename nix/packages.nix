@@ -37,7 +37,11 @@
           runtimePath = [ pkgs.skopeo ];
         };
 
-        image-util = cmn.mkBin { bin = "image-util"; };
+        # Reads qcow2 layers' metadata with qemu-img.
+        image-util = cmn.mkBin {
+          bin = "image-util";
+          runtimePath = [ pkgs.qemu-utils ];
+        };
 
         # Runs qemu-storage-daemon, qemu-img and nbdfatftpd per job, and execs
         # skopeo to copy images into the local Zot.

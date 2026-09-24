@@ -1,24 +1,36 @@
 //! Annotation keys (and typed values) for Treadmill OCI images.
 //!
-//! Selection axes and backing-chain structure that don't fit the standard OCI
-//! `platform`/descriptor fields are carried as annotations under the
-//! `dev.treadmill.*` namespace.
+//! Everything Treadmill-specific about an image is carried on its layer
+//! descriptors, under the `dev.treadmill.*` namespace:
+//!
+//! - [`ROLE`] is independent of the layer's format, and names what a consumer
+//!   uses the layer for.
+//!
+//! - `dev.treadmill.<format>.*` keys belong to one format, and are only valid
+//!   on layers of that format. How layers relate to each other (a qcow2 backing
+//!   chain) is such a format-specific property.
 
 use std::fmt;
 use std::str::FromStr;
 
-/// Role of a blob within an image (value of the [`ROLE`] annotation).
+/// Role of a layer within an image (value is a [`Role`]). Only a head layer,
+/// one no other layer builds upon, carries a role.
 pub const ROLE: &str = "dev.treadmill.role";
 
-/// Digest of the top (head) layer of a qcow2 backing chain (manifest-level).
-pub const QCOW2_HEAD: &str = "dev.treadmill.qcow2.head";
+/// Namespace of the annotations belonging to the qcow2 format.
+pub const QCOW2_NAMESPACE: &str = "dev.treadmill.qcow2.";
 
-/// Digest of the layer immediately below this one in a qcow2 backing chain
-/// (descriptor-level).
+/// Digest of the layer a qcow2 layer backs onto. That layer must be qcow2 or
+/// raw.
 pub const QCOW2_LOWER: &str = "dev.treadmill.qcow2.lower";
 
-/// Advertised qcow2 virtual size of a layer, in bytes (descriptor-level).
+/// The qcow2 virtual size of a layer, in bytes (a decimal integer). Required on
+/// every qcow2 layer.
 pub const QCOW2_VIRTUAL_SIZE: &str = "dev.treadmill.qcow2.virtual-size";
+
+/// Namespace of the annotations belonging to the raw format. It currently
+/// defines none.
+pub const RAW_NAMESPACE: &str = "dev.treadmill.raw.";
 
 /// Standard OCI annotation keys that Treadmill populates.
 pub mod oci {
@@ -32,50 +44,72 @@ pub mod oci {
     pub const BASE_NAME: &str = "org.opencontainers.image.base.name";
 }
 
-/// An annotation carried a value outside the set this enum understands.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct UnknownValue(pub String);
+/// Longest [`Role`] name accepted.
+pub const ROLE_MAX_LEN: usize = 63;
 
-impl fmt::Display for UnknownValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "unrecognized annotation value: {:?}", self.0)
-    }
-}
-
-impl std::error::Error for UnknownValue {}
-
-/// Value of the [`ROLE`] annotation: what a blob is within an image.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub enum Role {
-    /// A root filesystem / disk layer.
-    Root,
-    /// A netboot boot filesystem.
-    Boot,
-}
+/// The name of a role, e.g. `disk` or `rootfs`.
+///
+/// The image format assigns roles no meaning: a consumer (e.g. a supervisor)
+/// defines the roles it understands. A role name starts with a lower-case
+/// ASCII letter, continues with lower-case ASCII letters, digits and `-`, and
+/// is at most [`ROLE_MAX_LEN`] characters long.
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct Role(String);
 
 impl Role {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Role::Root => "root",
-            Role::Boot => "boot",
-        }
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
 impl fmt::Display for Role {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+        f.write_str(&self.0)
     }
 }
 
+impl PartialEq<str> for Role {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == other
+    }
+}
+
+impl PartialEq<&str> for Role {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+/// A role name was not well-formed.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct InvalidRole(pub String);
+
+impl fmt::Display for InvalidRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "invalid role {:?}: expected a lower-case ASCII letter followed by at most {} \
+             lower-case ASCII letters, digits or '-'",
+            self.0,
+            ROLE_MAX_LEN - 1,
+        )
+    }
+}
+
+impl std::error::Error for InvalidRole {}
+
 impl FromStr for Role {
-    type Err = UnknownValue;
+    type Err = InvalidRole;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "root" => Ok(Role::Root),
-            "boot" => Ok(Role::Boot),
-            other => Err(UnknownValue(other.to_string())),
+        let mut chars = s.chars();
+        let well_formed = s.len() <= ROLE_MAX_LEN
+            && chars.next().is_some_and(|c| c.is_ascii_lowercase())
+            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if well_formed {
+            Ok(Role(s.to_string()))
+        } else {
+            Err(InvalidRole(s.to_string()))
         }
     }
 }
@@ -85,13 +119,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn role_roundtrip() {
-        for role in [Role::Root, Role::Boot] {
-            assert_eq!(role.as_str().parse::<Role>().unwrap(), role);
+    fn well_formed_roles_parse() {
+        for name in ["disk", "rootfs", "boot-fs2", "a", &"a".repeat(ROLE_MAX_LEN)] {
+            assert_eq!(name.parse::<Role>().unwrap().as_str(), name);
         }
-        assert_eq!(
-            "tmpfs".parse::<Role>(),
-            Err(UnknownValue("tmpfs".to_string())),
-        );
+    }
+
+    #[test]
+    fn malformed_roles_are_refused() {
+        for name in [
+            "",
+            "Disk",
+            "2disk",
+            "-disk",
+            "root_fs",
+            "root.fs",
+            "rööt",
+            &"a".repeat(ROLE_MAX_LEN + 1),
+        ] {
+            assert_eq!(name.parse::<Role>(), Err(InvalidRole(name.to_string())));
+        }
     }
 }

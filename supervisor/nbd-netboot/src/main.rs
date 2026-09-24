@@ -1,3 +1,20 @@
+//! The nbd-netboot supervisor boots a physical host over the network: the host
+//! fetches its boot files over TFTP, and mounts its file systems over NBD.
+//!
+//! # Image contract
+//!
+//! An image for this supervisor provides exactly two roles, each a file system
+//! (qcow2 layers, over a qcow2 or raw base):
+//!
+//! - `rootfs`, the root file system. It gets a per-job writable overlay of
+//!   `working_disk_max_bytes`.
+//! - `bootfs`, the FAT boot file system. It gets a per-job writable overlay of
+//!   its own size, and is also served over TFTP.
+//!
+//! Each is served as the NBD export named after its role, which is how the
+//! guest attaches it (e.g. `nbdroot=<server>,rootfs,nbd0` on the kernel command
+//! line, or `nbd-client <server> -N bootfs`).
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -22,10 +39,8 @@ use treadmill_rs::api::switchboard_supervisor::{
 };
 use treadmill_rs::connector::{JobError, JobErrorKind, StartJobMessage, SupervisorConnector};
 use treadmill_rs::image::Digest;
-use treadmill_rs::image::annotations::Role;
 use treadmill_rs::image::blockdev::BackingChain;
-use treadmill_rs::image::media_types;
-use treadmill_rs::image::parse::{self, ImageLayer, TreadmillImage};
+use treadmill_rs::image::parse::{self, TreadmillImage};
 use treadmill_rs::supervisor::{SupervisorBaseConfig, SupervisorCoordConnector};
 
 use treadmill_supervisor_lib::bootstrap::{self, COORD_MAILBOX_CAPACITY, OnDisconnect, StopSignal};
@@ -40,12 +55,12 @@ use treadmill_supervisor_lib::oci_store::{ImageStore, Location, OciStore, OciSto
 use treadmill_supervisor_lib::publisher::LogPublisherConfig;
 use treadmill_supervisor_lib::workdirs::{AllocationRecord, JobWorkdirs, RetentionConfig};
 
-const ROOT_EXPORT: &str = "root";
-const BOOT_EXPORT: &str = "boot";
-const BOOT_NODE_PREFIX: &str = "tml-boot";
-
-const ROOT_OVERLAY_FILE: &str = "root.qcow2";
-const BOOT_OVERLAY_FILE: &str = "boot.qcow2";
+/// The role of the root file system.
+const ROOTFS_ROLE: &str = "rootfs";
+/// The role of the boot file system.
+const BOOTFS_ROLE: &str = "bootfs";
+/// Every role an image provides, in the order they are allocated and exported.
+const NETBOOT_ROLES: [&str; 2] = [BOOTFS_ROLE, ROOTFS_ROLE];
 
 const STORAGE_DAEMON_STDOUT: LogChannel = LogChannel::from_static("storage-daemon-stdout");
 const STORAGE_DAEMON_STDERR: LogChannel = LogChannel::from_static("storage-daemon-stderr");
@@ -131,12 +146,6 @@ pub struct NbdNetbootSupervisorConfig {
     nbd_netboot: NbdNetbootConfig,
 }
 
-#[derive(Debug)]
-pub struct NetbootImage {
-    image: TreadmillImage,
-    boot: ImageLayer,
-}
-
 pub struct Servers {
     storage_daemon: Box<dyn WorkloadProcess>,
     tftp: TftpServer,
@@ -178,12 +187,15 @@ impl NbdNetbootBackend {
         SocketAddr::new(ip, listen.port())
     }
 
-    fn storage_daemon_args(&self, root: &BackingChain, boot: &BackingChain) -> Vec<String> {
+    /// Serve each chain as the NBD export named after its role.
+    fn storage_daemon_args(&self, chains: &[(&str, BackingChain)]) -> Vec<String> {
         let listen = self.config.nbd_server_listen_addr;
         let mut args = Vec::new();
-        for node in root.blockdev_args().into_iter().chain(boot.blockdev_args()) {
-            args.push("--blockdev".to_string());
-            args.push(node);
+        for (_, chain) in chains {
+            for node in chain.blockdev_args() {
+                args.push("--blockdev".to_string());
+                args.push(node);
+            }
         }
         args.push("--nbd-server".to_string());
         args.push(format!(
@@ -191,13 +203,11 @@ impl NbdNetbootBackend {
             listen.ip(),
             listen.port(),
         ));
-        for (export, node) in [
-            (ROOT_EXPORT, root.top_node()),
-            (BOOT_EXPORT, boot.top_node()),
-        ] {
+        for (export, chain) in chains {
             args.push("--export".to_string());
             args.push(format!(
-                "type=nbd,id={export},node-name={node},name={export},writable=on"
+                "type=nbd,id={export},node-name={},name={export},writable=on",
+                chain.top_node(),
             ));
         }
         args
@@ -208,7 +218,7 @@ impl NbdNetbootBackend {
             "-l".to_string(),
             self.config.tftp_listen_addr.to_string(),
             "-n".to_string(),
-            format!("nbd://{}/{BOOT_EXPORT}", self.nbd_connect_addr()),
+            format!("nbd://{}/{BOOTFS_ROLE}", self.nbd_connect_addr()),
         ]
     }
 
@@ -233,7 +243,7 @@ impl NbdNetbootBackend {
         job_id: Uuid,
         manifest_digest: &Digest,
         locations: &[ImageLocation],
-    ) -> Result<NetbootImage, JobError> {
+    ) -> Result<TreadmillImage, JobError> {
         let locations = locations
             .iter()
             .cloned()
@@ -283,49 +293,69 @@ impl NbdNetbootBackend {
             description: format!("Image {manifest_digest} is not a valid Treadmill image: {e}"),
         })?;
 
-        let boot = boot_layer(&image).map_err(|e| JobError {
-            error_kind: JobErrorKind::ImageInvalid,
+        image.check_roles(&NETBOOT_ROLES).map_err(|e| JobError {
+            error_kind: JobErrorKind::ImageNotCompatible,
             description: format!("Image {manifest_digest} cannot netboot: {e}"),
         })?;
 
-        Ok(NetbootImage { image, boot })
+        Ok(image)
     }
 
+    /// Resolve the chain of every role in [`NETBOOT_ROLES`] onto the overlay at
+    /// the same position in `overlays`.
     fn chains(
         &self,
-        image: &NetbootImage,
-        root_overlay: PathBuf,
-        boot_overlay: PathBuf,
-    ) -> Result<(BackingChain, BackingChain), JobError> {
-        let (chain, head_virtual_size) = image.image.backing_chain().map_err(|e| JobError {
-            error_kind: JobErrorKind::ImageInvalid,
-            description: format!("Invalid backing chain: {e}"),
-        })?;
+        image: &TreadmillImage,
+        overlays: [PathBuf; NETBOOT_ROLES.len()],
+    ) -> Result<Vec<(&'static str, BackingChain)>, JobError> {
+        let mut chains = Vec::with_capacity(NETBOOT_ROLES.len());
+        for (role, overlay) in NETBOOT_ROLES.into_iter().zip(overlays) {
+            let resolved = image.chain(role).ok_or_else(|| JobError {
+                error_kind: JobErrorKind::ImageNotCompatible,
+                description: format!("Image provides no {role} role"),
+            })?;
+            let chain = BackingChain::from_chain(
+                &format!("tml-{role}"),
+                &resolved,
+                |digest| self.image_store.blob_path(digest),
+                overlay,
+            )
+            .map_err(|e| JobError {
+                error_kind: JobErrorKind::ImageNotCompatible,
+                description: format!("Cannot serve the image's {role}: {e}"),
+            })?;
+            let virtual_size = resolved
+                .virtual_size()
+                .expect("a chain of a known format has a virtual size");
 
-        if head_virtual_size > self.config.working_disk_max_bytes {
-            return Err(JobError {
-                error_kind: JobErrorKind::ImageInvalid,
-                description: format!(
-                    "Image head virtual size ({} byte) exceeds the working-disk \
-                     maximum ({} byte)",
-                    head_virtual_size, self.config.working_disk_max_bytes,
-                ),
-            });
+            // The root file system's overlay is the working disk, so it has to
+            // hold everything its image does.
+            if role == ROOTFS_ROLE && virtual_size > self.config.working_disk_max_bytes {
+                return Err(JobError {
+                    error_kind: JobErrorKind::ImageInvalid,
+                    description: format!(
+                        "Image {role} virtual size ({virtual_size} byte) exceeds the \
+                         working-disk maximum ({} byte)",
+                        self.config.working_disk_max_bytes,
+                    ),
+                });
+            }
+            chains.push((role, chain));
         }
+        Ok(chains)
+    }
 
-        let lowers = chain
-            .into_iter()
-            .map(|layer| self.image_store.blob_path(&layer.digest))
-            .collect();
-
-        Ok((
-            BackingChain::new(lowers, root_overlay),
-            BackingChain::with_prefix(
-                BOOT_NODE_PREFIX,
-                vec![self.image_store.blob_path(&image.boot.digest)],
-                boot_overlay,
-            ),
-        ))
+    /// The size `role`'s overlay is created with: the root file system's is the
+    /// working disk, and the boot file system keeps its own size.
+    fn overlay_size(&self, image: &TreadmillImage, role: &str) -> u64 {
+        if role == ROOTFS_ROLE {
+            self.config.working_disk_max_bytes
+        } else {
+            image
+                .chain(role)
+                .and_then(|chain| chain.virtual_size())
+                .expect("a resolved role has a chain of a known format")
+        }
     }
 
     fn seed_vars(&self, vars: &mut JobVars) {
@@ -342,8 +372,7 @@ impl NbdNetbootBackend {
     async fn start_servers(
         &self,
         job: &StartJobMessage,
-        root: &BackingChain,
-        boot: &BackingChain,
+        chains: &[(&str, BackingChain)],
     ) -> Result<Servers, JobError> {
         let stdio = if job.log_streaming.is_some() {
             StdioMode::Capture
@@ -352,7 +381,7 @@ impl NbdNetbootBackend {
         };
 
         let storage_daemon = self
-            .start_storage_daemon(self.storage_daemon_args(root, boot), stdio)
+            .start_storage_daemon(self.storage_daemon_args(chains), stdio)
             .await?;
 
         let tftp = TftpServer::start(
@@ -447,37 +476,12 @@ impl NbdNetbootBackend {
     }
 }
 
-fn boot_layer(image: &TreadmillImage) -> Result<ImageLayer, String> {
-    let mut boots = image
-        .layers
-        .iter()
-        .filter(|layer| layer.role == Some(Role::Boot));
-    let boot = boots
-        .next()
-        .ok_or_else(|| "image has no role=boot layer".to_string())?;
-    if boots.next().is_some() {
-        return Err("image has more than one role=boot layer".to_string());
-    }
-    if boot.media_type != media_types::DISK_QCOW2 {
-        return Err(format!(
-            "boot layer {} has media type {}, expected {}",
-            boot.digest,
-            boot.media_type,
-            media_types::DISK_QCOW2,
-        ));
-    }
-    if boot.virtual_size.is_none() {
-        return Err(format!("boot layer {} has no virtual size", boot.digest));
-    }
-    Ok(boot.clone())
-}
-
 #[async_trait]
 impl JobBackend for NbdNetbootBackend {
-    type Image = NetbootImage;
+    type Image = TreadmillImage;
     type Allocation = Servers;
 
-    async fn fetch(&self, job: &StartJobMessage) -> Result<NetbootImage, JobError> {
+    async fn fetch(&self, job: &StartJobMessage) -> Result<TreadmillImage, JobError> {
         let (manifest_digest, locations) = image_reference(job)?;
         self.resolve_image(job.job_id, &manifest_digest, &locations)
             .await
@@ -488,27 +492,25 @@ impl JobBackend for NbdNetbootBackend {
         &self,
         job: &StartJobMessage,
         workdir: &Path,
-        image: NetbootImage,
+        image: TreadmillImage,
         vars: &mut JobVars,
     ) -> Result<Servers, JobError> {
-        let root_overlay = workdir.join(ROOT_OVERLAY_FILE);
-        let boot_overlay = workdir.join(BOOT_OVERLAY_FILE);
+        // Resolve every chain before allocating anything for any of them.
+        let chains = self.chains(
+            &image,
+            NETBOOT_ROLES.map(|role| workdir.join(overlay_file(role))),
+        )?;
 
-        let (root, boot) = self.chains(&image, root_overlay.clone(), boot_overlay.clone())?;
-
-        self.create_overlay(&root_overlay, self.config.working_disk_max_bytes)
-            .await?;
-        self.create_overlay(&boot_overlay, image.boot.virtual_size.unwrap_or_default())
-            .await?;
+        for (role, chain) in &chains {
+            self.create_overlay(chain.overlay_path(), self.overlay_size(&image, role))
+                .await?;
+        }
 
         let (manifest_digest, locations) = image_reference(job)?;
         AllocationRecord::new(
             manifest_digest,
             locations,
-            [
-                (ROOT_EXPORT.to_string(), ROOT_OVERLAY_FILE.to_string()),
-                (BOOT_EXPORT.to_string(), BOOT_OVERLAY_FILE.to_string()),
-            ],
+            NETBOOT_ROLES.map(|role| (role.to_string(), overlay_file(role))),
         )
         .write(workdir)
         .await
@@ -519,7 +521,7 @@ impl JobBackend for NbdNetbootBackend {
 
         self.seed_vars(vars);
 
-        self.start_servers(job, &root, &boot).await
+        self.start_servers(job, &chains).await
     }
 
     #[instrument(skip(self, job, vars), err(Debug, level = Level::WARN))]
@@ -532,19 +534,19 @@ impl JobBackend for NbdNetbootBackend {
         let record = AllocationRecord::read(workdir)
             .await
             .map_err(cannot_resume)?;
-        let root_overlay = record
-            .overlay(workdir, ROOT_EXPORT)
+        let bootfs_overlay = record
+            .overlay(workdir, BOOTFS_ROLE)
             .await
             .map_err(cannot_resume)?;
-        let boot_overlay = record
-            .overlay(workdir, BOOT_EXPORT)
+        let rootfs_overlay = record
+            .overlay(workdir, ROOTFS_ROLE)
             .await
             .map_err(cannot_resume)?;
 
         event!(
             Level::INFO,
-            ?root_overlay,
-            ?boot_overlay,
+            ?bootfs_overlay,
+            ?rootfs_overlay,
             manifest_digest = %record.manifest_digest,
             "Adopting the working disks of a retired job"
         );
@@ -552,11 +554,11 @@ impl JobBackend for NbdNetbootBackend {
         let image = self
             .resolve_image(job.job_id, &record.manifest_digest, &record.locations)
             .await?;
-        let (root, boot) = self.chains(&image, root_overlay, boot_overlay)?;
+        let chains = self.chains(&image, [bootfs_overlay, rootfs_overlay])?;
 
         self.seed_vars(vars);
 
-        self.start_servers(job, &root, &boot).await
+        self.start_servers(job, &chains).await
     }
 
     async fn launch(
@@ -607,6 +609,11 @@ fn image_reference(job: &StartJobMessage) -> Result<(Digest, Vec<ImageLocation>)
             description: format!("Unsupported image specification: {unsupported_image_spec:?}",),
         }),
     }
+}
+
+/// The file name of a role's overlay in the job's working directory.
+fn overlay_file(role: &str) -> String {
+    format!("{role}.qcow2")
 }
 
 fn cannot_resume(e: anyhow::Error) -> JobError {
@@ -929,7 +936,7 @@ mod tests {
         ImageLocation, LogStreamingDispatch, RestartPolicy,
     };
     use treadmill_rs::image::Digest;
-    use treadmill_rs::image::assemble;
+    use treadmill_rs::image::assemble::{Blob, BlobFormat, ImageBuilder};
     use treadmill_rs::util::Secret;
 
     #[test]
@@ -1145,55 +1152,33 @@ mod tests {
         }
     }
 
-    fn root_layer(d: Digest, virtual_size: u64, lower: Option<Digest>) -> ImageLayer {
-        ImageLayer {
-            digest: d,
-            size: 10,
-            media_type: media_types::DISK_QCOW2.to_string(),
-            role: Some(Role::Root),
-            virtual_size: Some(virtual_size),
-            lower,
-        }
-    }
-
-    fn boot_layer(d: Digest, virtual_size: u64) -> ImageLayer {
-        ImageLayer {
-            digest: d,
-            size: 10,
-            media_type: media_types::DISK_QCOW2.to_string(),
-            role: Some(Role::Boot),
-            virtual_size: Some(virtual_size),
-            lower: None,
-        }
-    }
-
-    fn image(layers: Vec<ImageLayer>, head: Digest) -> TreadmillImage {
-        TreadmillImage {
-            layers,
-            head,
-            title: None,
-            version: None,
-            description: None,
-            base_name: None,
-        }
-    }
-
     const GIB: u64 = 1024 * 1024 * 1024;
     const BOOT_BYTES: u64 = 512 * 1024 * 1024;
 
-    fn netboot_image() -> NetbootImage {
-        let (base, head, boot) = (digest(1), digest(2), digest(3));
-        NetbootImage {
-            image: image(
-                vec![
-                    root_layer(base, GIB, None),
-                    root_layer(head, 2 * GIB, Some(base)),
-                    boot_layer(boot, BOOT_BYTES),
-                ],
-                head,
-            ),
-            boot: boot_layer(boot, BOOT_BYTES),
+    fn qcow2(d: Digest, virtual_size: u64) -> Blob {
+        Blob {
+            digest: d,
+            size: 10,
+            format: BlobFormat::Qcow2 { virtual_size },
         }
+    }
+
+    /// An image with a `rootfs` chain of `digest(1)` (1 GiB) and `digest(2)`
+    /// (`rootfs_size`), and a `bootfs` of `digest(3)` (`bootfs_size`).
+    fn netboot_image_sized(rootfs_size: u64, bootfs_size: u64) -> TreadmillImage {
+        let mut builder = ImageBuilder::default();
+        builder
+            .push(ROOTFS_ROLE.parse().unwrap(), qcow2(digest(1), GIB))
+            .unwrap()
+            .push(ROOTFS_ROLE.parse().unwrap(), qcow2(digest(2), rootfs_size))
+            .unwrap()
+            .push(BOOTFS_ROLE.parse().unwrap(), qcow2(digest(3), bootfs_size))
+            .unwrap();
+        builder.build().unwrap()
+    }
+
+    fn netboot_image() -> TreadmillImage {
+        netboot_image_sized(2 * GIB, BOOT_BYTES)
     }
 
     fn start_msg(job_id: Uuid, streaming: bool) -> StartJobMessage {
@@ -1220,58 +1205,54 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_image_needs_exactly_one_fat_boot_layer() {
-        let (base, boot, other) = (digest(1), digest(3), digest(4));
+    /// An image lacking a file system, or carrying one this supervisor does not
+    /// know what to do with, is refused rather than half-served.
+    #[tokio::test]
+    async fn an_image_without_exactly_bootfs_and_rootfs_is_not_compatible() {
+        let mut rootfs_only = ImageBuilder::default();
+        rootfs_only
+            .push(ROOTFS_ROLE.parse().unwrap(), qcow2(digest(1), GIB))
+            .unwrap();
+        let mut disk = ImageBuilder::default();
+        disk.push("disk".parse().unwrap(), qcow2(digest(1), GIB))
+            .unwrap();
+        let mut extra = ImageBuilder::from_image(netboot_image());
+        extra
+            .push("kernel".parse().unwrap(), qcow2(digest(4), GIB))
+            .unwrap();
 
-        let none = image(vec![root_layer(base, GIB, None)], base);
-        assert!(super::boot_layer(&none).is_err());
+        for image in [rootfs_only, disk, extra] {
+            let f = fixture(Some(image.build().unwrap().to_manifest()));
+            let error = f
+                .backend
+                .fetch(&start_msg(Uuid::new_v4(), false))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error.error_kind, JobErrorKind::ImageNotCompatible),
+                "{error:?}"
+            );
+        }
 
-        let two = image(
-            vec![
-                root_layer(base, GIB, None),
-                boot_layer(boot, BOOT_BYTES),
-                boot_layer(other, BOOT_BYTES),
-            ],
-            base,
+        let f = fixture(Some(netboot_image().to_manifest()));
+        assert_eq!(
+            f.backend
+                .fetch(&start_msg(Uuid::new_v4(), false))
+                .await
+                .unwrap(),
+            netboot_image(),
         );
-        assert!(super::boot_layer(&two).is_err());
-
-        let mut not_qcow2 = boot_layer(boot, BOOT_BYTES);
-        not_qcow2.media_type = "application/octet-stream".to_string();
-        let wrong_type = image(vec![root_layer(base, GIB, None), not_qcow2], base);
-        assert!(super::boot_layer(&wrong_type).is_err());
-
-        let mut no_virtual_size = boot_layer(boot, BOOT_BYTES);
-        no_virtual_size.virtual_size = None;
-        let no_size = image(vec![root_layer(base, GIB, None), no_virtual_size], base);
-        assert!(super::boot_layer(&no_size).is_err());
-
-        let one = image(
-            vec![root_layer(base, GIB, None), boot_layer(boot, BOOT_BYTES)],
-            base,
-        );
-        assert_eq!(super::boot_layer(&one).unwrap().digest, boot);
     }
 
     #[tokio::test]
-    async fn a_manifest_without_a_boot_layer_is_an_invalid_image() {
-        let json = r#"{
-          "schemaVersion": 2,
-          "mediaType": "application/vnd.oci.image.manifest.v1+json",
-          "artifactType": "application/vnd.treadmill.image.v1+json",
-          "config": { "mediaType": "application/vnd.oci.empty.v1+json",
-                      "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
-                      "size": 2 },
-          "layers": [
-            { "mediaType": "application/vnd.treadmill.disk.qcow2",
-              "digest": "sha256:0101010101010101010101010101010101010101010101010101010101010101",
-              "size": 10,
-              "annotations": { "dev.treadmill.role": "root", "dev.treadmill.qcow2.virtual-size": "1073741824" } }
-          ],
-          "annotations": { "dev.treadmill.qcow2.head": "sha256:0101010101010101010101010101010101010101010101010101010101010101" }
-        }"#;
-        let f = fixture(Some(serde_json::from_str(json).unwrap()));
+    async fn a_manifest_that_is_not_a_valid_image_is_an_invalid_image() {
+        let mut manifest = netboot_image().to_manifest();
+        let mut layers = manifest.layers().clone();
+        // Layers are in canonical order, `bootfs` then `rootfs` base first:
+        // dropping the `rootfs` base leaves its head backing onto nothing.
+        layers.remove(1);
+        manifest.set_layers(layers);
+        let f = fixture(Some(manifest));
 
         let error = f
             .backend
@@ -1296,28 +1277,32 @@ mod tests {
             .await
             .unwrap();
 
-        let root_overlay = f.tmp.path().join("root.qcow2");
-        let boot_overlay = f.tmp.path().join("boot.qcow2");
+        let bootfs_overlay = f.tmp.path().join("bootfs.qcow2");
+        let rootfs_overlay = f.tmp.path().join("rootfs.qcow2");
         let events = f.launcher.events();
-        assert_eq!(events[0], Event::Overlay(root_overlay.clone(), 4 * GIB));
-        assert_eq!(events[1], Event::Overlay(boot_overlay.clone(), BOOT_BYTES));
+        assert_eq!(
+            events[0],
+            Event::Overlay(bootfs_overlay.clone(), BOOT_BYTES)
+        );
+        assert_eq!(events[1], Event::Overlay(rootfs_overlay.clone(), 4 * GIB));
 
         let nbd_port = f.backend.config.nbd_server_listen_addr.port();
         let spawned = f.launcher.spawned();
         let (program, args, stdio) = &spawned[0];
         assert_eq!(program, Path::new("/stub/qemu-storage-daemon"));
         assert_eq!(*stdio, StdioMode::Capture);
-        let expected_nodes = BackingChain::new(
-            vec![f.store.blob_path(&digest(1)), f.store.blob_path(&digest(2))],
-            root_overlay,
+        let expected_nodes = BackingChain::with_prefix(
+            "tml-bootfs",
+            vec![f.store.blob_path(&digest(3))],
+            bootfs_overlay,
         )
         .blockdev_args()
         .into_iter()
         .chain(
             BackingChain::with_prefix(
-                BOOT_NODE_PREFIX,
-                vec![f.store.blob_path(&digest(3))],
-                boot_overlay,
+                "tml-rootfs",
+                vec![f.store.blob_path(&digest(1)), f.store.blob_path(&digest(2))],
+                rootfs_overlay,
             )
             .blockdev_args(),
         )
@@ -1331,9 +1316,9 @@ mod tests {
                 "--nbd-server".to_string(),
                 format!("addr.type=inet,addr.host=0.0.0.0,addr.port={nbd_port},max-connections=0"),
                 "--export".to_string(),
-                "type=nbd,id=root,node-name=tml-disk,name=root,writable=on".to_string(),
+                "type=nbd,id=bootfs,node-name=tml-bootfs-disk,name=bootfs,writable=on".to_string(),
                 "--export".to_string(),
-                "type=nbd,id=boot,node-name=tml-boot-disk,name=boot,writable=on".to_string(),
+                "type=nbd,id=rootfs,node-name=tml-rootfs-disk,name=rootfs,writable=on".to_string(),
             ],
         );
 
@@ -1353,7 +1338,7 @@ mod tests {
                 "-l",
                 "127.0.0.1:6969",
                 "-n",
-                &format!("nbd://127.0.0.1:{nbd_port}/boot"),
+                &format!("nbd://127.0.0.1:{nbd_port}/bootfs"),
             ]
         );
 
@@ -1369,48 +1354,18 @@ mod tests {
         drop(servers);
     }
 
-    fn resumable_manifest() -> ImageManifest {
-        assemble::build_manifest(
-            &[
-                assemble::LayerSpec {
-                    digest: digest(1),
-                    size: 10,
-                    role: Role::Root,
-                    virtual_size: Some(GIB),
-                },
-                assemble::LayerSpec {
-                    digest: digest(2),
-                    size: 10,
-                    role: Role::Root,
-                    virtual_size: Some(2 * GIB),
-                },
-                assemble::LayerSpec {
-                    digest: digest(3),
-                    size: 10,
-                    role: Role::Boot,
-                    virtual_size: Some(BOOT_BYTES),
-                },
-            ],
-            &assemble::ImageMeta::default(),
-        )
-        .unwrap()
-    }
-
     async fn retired_workdir(f: &Fixture) -> PathBuf {
         let workdir = f.tmp.path().join("retired");
         std::fs::create_dir(&workdir).unwrap();
-        std::fs::write(workdir.join(ROOT_OVERLAY_FILE), b"the root disk").unwrap();
-        std::fs::write(workdir.join(BOOT_OVERLAY_FILE), b"the boot disk").unwrap();
+        std::fs::write(workdir.join(overlay_file(ROOTFS_ROLE)), b"the root disk").unwrap();
+        std::fs::write(workdir.join(overlay_file(BOOTFS_ROLE)), b"the boot disk").unwrap();
         AllocationRecord::new(
             digest(9),
             vec![ImageLocation {
                 registry: "127.0.0.1:0".to_string(),
                 repository: "treadmill/stub".to_string(),
             }],
-            [
-                (ROOT_EXPORT.to_string(), ROOT_OVERLAY_FILE.to_string()),
-                (BOOT_EXPORT.to_string(), BOOT_OVERLAY_FILE.to_string()),
-            ],
+            NETBOOT_ROLES.map(|role| (role.to_string(), overlay_file(role))),
         )
         .write(&workdir)
         .await
@@ -1432,14 +1387,9 @@ mod tests {
 
         let record = AllocationRecord::read(f.tmp.path()).await.unwrap();
         assert_eq!(record.manifest_digest, digest(9));
-        assert_eq!(
-            record.overlays.get(ROOT_EXPORT).map(String::as_str),
-            Some(ROOT_OVERLAY_FILE),
-        );
-        assert_eq!(
-            record.overlays.get(BOOT_EXPORT).map(String::as_str),
-            Some(BOOT_OVERLAY_FILE),
-        );
+        for role in NETBOOT_ROLES {
+            assert_eq!(record.overlays.get(role), Some(&overlay_file(role)));
+        }
 
         drop(servers);
     }
@@ -1449,7 +1399,7 @@ mod tests {
     /// wrote.
     #[tokio::test]
     async fn a_job_takes_an_image_lease_that_outlives_it() {
-        let f = fixture(Some(resumable_manifest()));
+        let f = fixture(Some(netboot_image().to_manifest()));
         let job_id = Uuid::new_v4();
 
         f.backend.fetch(&start_msg(job_id, false)).await.unwrap();
@@ -1463,7 +1413,7 @@ mod tests {
 
     #[tokio::test]
     async fn adopting_reuses_the_existing_overlays() {
-        let f = fixture(Some(resumable_manifest()));
+        let f = fixture(Some(netboot_image().to_manifest()));
         let workdir = retired_workdir(&f).await;
         let job_id = Uuid::new_v4();
         let job = start_msg(job_id, true);
@@ -1481,11 +1431,11 @@ mod tests {
             "a resume must not re-create the working disks",
         );
         assert_eq!(
-            std::fs::read(workdir.join(ROOT_OVERLAY_FILE)).unwrap(),
+            std::fs::read(workdir.join(overlay_file(ROOTFS_ROLE))).unwrap(),
             b"the root disk",
         );
         assert_eq!(
-            std::fs::read(workdir.join(BOOT_OVERLAY_FILE)).unwrap(),
+            std::fs::read(workdir.join(overlay_file(BOOTFS_ROLE))).unwrap(),
             b"the boot disk",
         );
 
@@ -1493,9 +1443,9 @@ mod tests {
         let (program, args, _) = &spawned[0];
         assert_eq!(program, Path::new("/stub/qemu-storage-daemon"));
         let args = args.join(" ");
-        for overlay in [ROOT_OVERLAY_FILE, BOOT_OVERLAY_FILE] {
+        for role in NETBOOT_ROLES {
             assert!(
-                args.contains(&workdir.join(overlay).display().to_string()),
+                args.contains(&workdir.join(overlay_file(role)).display().to_string()),
                 "{args}",
             );
         }
@@ -1506,13 +1456,13 @@ mod tests {
 
     #[tokio::test]
     async fn adopting_an_incomplete_retired_directory_cannot_resume() {
-        let f = fixture(Some(resumable_manifest()));
+        let f = fixture(Some(netboot_image().to_manifest()));
 
         let no_record = f.tmp.path().join("no-record");
         std::fs::create_dir(&no_record).unwrap();
 
         let no_overlay = retired_workdir(&f).await;
-        std::fs::remove_file(no_overlay.join(BOOT_OVERLAY_FILE)).unwrap();
+        std::fs::remove_file(no_overlay.join(overlay_file(BOOTFS_ROLE))).unwrap();
 
         for workdir in [no_record, no_overlay] {
             let mut vars = JobVars::new();
@@ -1531,8 +1481,7 @@ mod tests {
     #[tokio::test]
     async fn an_image_larger_than_the_working_disk_is_refused() {
         let f = fixture(None);
-        let mut image = netboot_image();
-        image.image.layers[1].virtual_size = Some(8 * GIB);
+        let image = netboot_image_sized(8 * GIB, BOOT_BYTES);
 
         let error = f
             .backend
@@ -1808,16 +1757,13 @@ mod tests {
             let backend =
                 NbdNetbootBackend::new(store, Arc::new(CliLauncher::new(&t.qemu_img)), config);
 
-            let image = NetbootImage {
-                image: image(
-                    vec![
-                        root_layer(digest(1), GIB, None),
-                        boot_layer(digest(3), boot_size),
-                    ],
-                    digest(1),
-                ),
-                boot: boot_layer(digest(3), boot_size),
-            };
+            let mut builder = ImageBuilder::default();
+            builder
+                .push(ROOTFS_ROLE.parse().unwrap(), qcow2(digest(1), GIB))
+                .unwrap()
+                .push(BOOTFS_ROLE.parse().unwrap(), qcow2(digest(3), boot_size))
+                .unwrap();
+            let image = builder.build().unwrap();
             let job = start_msg(Uuid::new_v4(), true);
             let workdir = tmp.path().join("job");
             std::fs::create_dir(&workdir).unwrap();

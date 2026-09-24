@@ -173,7 +173,7 @@ async fn register_image(pool: &PgPool) -> (Uuid, Digest) {
     sqlx::query(
         "insert into tml_switchboard.images \
            (id, manifest_digest, artifact_type) \
-         values ($1, $2, 'application/vnd.treadmill.image.v1+json')",
+         values ($1, $2, 'application/vnd.treadmill.image.v2+json')",
     )
     .bind(id)
     .bind(&digest)

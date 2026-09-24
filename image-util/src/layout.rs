@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::str::FromStr;
 
 use anyhow::{Context, anyhow, ensure};
@@ -9,14 +9,17 @@ use digest_io::IoWrapper;
 use oci_spec::image::{
     Descriptor, ImageIndex, ImageIndexBuilder, ImageManifest, MediaType, SCHEMA_VERSION,
 };
+use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
+use treadmill_rs::image::assemble::{self, Blob, BlobFormat, EMPTY_CONFIG};
 use treadmill_rs::image::media_types;
+use treadmill_rs::image::parse::TreadmillImage;
 use treadmill_rs::image::{Digest, parse};
 
-const OCI_LAYOUT_MARKER: &[u8] = br#"{"imageLayoutVersion":"1.0.0"}"#;
+use crate::layer_arg::{LayerArg, LayerFormatArg};
 
-const EMPTY_CONFIG: &[u8] = b"{}";
+const OCI_LAYOUT_MARKER: &[u8] = br#"{"imageLayoutVersion":"1.0.0"}"#;
 
 pub struct Layout {
     root: PathBuf,
@@ -89,6 +92,25 @@ impl Layout {
         Ok((digest, size))
     }
 
+    /// Store a layer blob in its given format.
+    pub fn store_layer(&self, layer: &LayerArg) -> anyhow::Result<Blob> {
+        let path = &layer.path;
+        let format = match layer.format {
+            LayerFormatArg::Qcow2 => BlobFormat::Qcow2 {
+                virtual_size: qcow2_info(path)?.virtual_size,
+            },
+            LayerFormatArg::Raw => BlobFormat::Raw,
+        };
+        let (digest, size) = self
+            .store_file(path)
+            .with_context(|| format!("store layer blob {}", path.display()))?;
+        Ok(Blob {
+            digest,
+            size,
+            format,
+        })
+    }
+
     pub fn store_blob_from(&self, source: &Layout, digest: &Digest) -> anyhow::Result<()> {
         let dest = self.blob_path(digest);
         if dest.exists() {
@@ -114,10 +136,11 @@ impl Layout {
         Ok((digest, bytes.len() as u64))
     }
 
-    pub fn write_manifest(&self, manifest: &ImageManifest) -> anyhow::Result<()> {
+    /// Write `image`'s canonical manifest and point the layout's index at it.
+    pub fn write_image(&self, image: &TreadmillImage) -> anyhow::Result<()> {
         self.store_bytes(EMPTY_CONFIG)?;
 
-        let json = serde_json::to_vec(manifest).context("serialize manifest")?;
+        let json = assemble::manifest_bytes(&image.to_manifest());
         let (digest, size) = self.store_bytes(&json)?;
 
         let mut descriptor = Descriptor::new(MediaType::ImageManifest, size, oci_digest(&digest)?);
@@ -133,7 +156,7 @@ impl Layout {
 
         fs::write(
             self.root.join("index.json"),
-            serde_json::to_vec(&index).context("serialize index")?,
+            serde_json_canonicalizer::to_vec(&index).context("serialize index")?,
         )
         .context("write index.json")?;
         fs::write(self.root.join("oci-layout"), OCI_LAYOUT_MARKER).context("write oci-layout")?;
@@ -189,28 +212,37 @@ pub fn read_image(layout: &Layout) -> anyhow::Result<parse::TreadmillImage> {
         .map_err(|e| anyhow!("manifest does not reparse as a Treadmill image: {e}"))
 }
 
-pub struct Qcow2Header {
+/// What `qemu-img info` reports about a qcow2 image.
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct Qcow2Info {
     pub virtual_size: u64,
-    pub has_backing_file: bool,
+    pub backing_filename: Option<String>,
 }
 
-pub fn qcow2_header(path: &Path) -> anyhow::Result<Qcow2Header> {
-    let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut head = [0u8; 32];
-    file.read_exact(&mut head)
-        .with_context(|| format!("{}: read qcow2 header", path.display()))?;
-    ensure!(
-        &head[0..4] == b"QFI\xfb",
-        "{}: not a qcow2 file (bad magic)",
-        path.display(),
+/// Read a qcow2 image's metadata with `qemu-img info`, which fails if the file
+/// is not a qcow2 image.
+pub fn qcow2_info(path: &Path) -> anyhow::Result<Qcow2Info> {
+    // `--image-opts` so that no part of the path is read as a protocol prefix
+    // or an option; a literal comma is escaped by doubling it.
+    let image_opts = format!(
+        "driver=qcow2,file.driver=file,file.filename={}",
+        path.to_str()
+            .with_context(|| format!("{}: path is not valid UTF-8", path.display()))?
+            .replace(',', ",,"),
     );
-
-    let backing_offset = u64::from_be_bytes(head[8..16].try_into().expect("8 bytes"));
-    let backing_size = u32::from_be_bytes(head[16..20].try_into().expect("4 bytes"));
-    Ok(Qcow2Header {
-        virtual_size: u64::from_be_bytes(head[24..32].try_into().expect("8 bytes")),
-        has_backing_file: backing_offset != 0 || backing_size != 0,
-    })
+    let output = Command::new("qemu-img")
+        .args(["info", "--output=json", "--image-opts", &image_opts])
+        .output()
+        .context("run qemu-img info")?;
+    ensure!(
+        output.status.success(),
+        "{}: qemu-img info failed: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr).trim(),
+    );
+    serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("{}: parse qemu-img info output", path.display()))
 }
 
 pub fn verify_blob_digest(path: &Path, digest: &Digest) -> anyhow::Result<()> {
