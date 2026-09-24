@@ -330,6 +330,10 @@ struct JobResources {
     job_log: Option<JobLogRegistration>,
     meta: Option<mpsc::Sender<Bytes>>,
 
+    /// Closes the workload's serial console when dropped, so it cannot stay
+    /// open into the next job, even if this job's task panics or is aborted.
+    serial_close: Option<oneshot::Sender<()>>,
+
     workload: Option<Box<dyn WorkloadProcess>>,
 
     /// Variables associated with this job.
@@ -839,6 +843,12 @@ impl<B: JobBackend> JobTask<B> {
         serial: Option<SerialConsole>,
         channels: Vec<(LogChannel, BoxedAsyncRead)>,
     ) {
+        let serial = serial.map(|console| {
+            let (console, close) = console.close_on_drop();
+            self.resources.serial_close = Some(close);
+            console
+        });
+
         let Some(publisher) = self.resources.publisher.as_ref() else {
             // Drain capture here so the workload's pipes don't block and the
             // operator still sees output.
@@ -1077,6 +1087,7 @@ impl<B: JobBackend> JobTask<B> {
             publisher,
             job_log,
             meta,
+            serial_close,
             workload: _,
             job_vars,
             start_hook_ran,
@@ -1094,11 +1105,12 @@ impl<B: JobBackend> JobTask<B> {
                 .await;
         }
 
-        // The channels this supervisor produces end here: late enough that the
-        // stop hook's output still reaches the job's readers, and before the
-        // drain, which cannot finish until they have reached EOF.
+        // The channels this supervisor produces, and the serial console, end
+        // here: late enough that the stop hook's output still reaches the
+        // job's readers, and before the drain, which waits for their EOF.
         drop(job_log);
         drop(meta);
+        drop(serial_close);
 
         if let Some(publisher) = publisher {
             publisher.drain(PUBLISHER_DRAIN_TIMEOUT).await;
