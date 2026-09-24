@@ -606,7 +606,7 @@ CREATE TYPE tml_switchboard.job_initializing_stage AS enum(
 CREATE TYPE tml_switchboard.termination_reason AS enum(
     -- workload-driven (the job's own process ended it)
     'workload_exited', -- e.g., QEMU process exits
-    'workload_self_terminated', -- e.g., termination requested with puppet
+    'workload_self_terminated', -- e.g., termination requested with `tml job terminate`
     -- externally terminated
     'user_terminated',
     -- reclaimed after lease expiry to place another job

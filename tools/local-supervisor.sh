@@ -204,7 +204,7 @@ chmod +x "$vars_start"
 # ---------------------------------------------------------------------------
 # Render the static supervisor config. Per-job inputs (image digest, repo, ssh
 # keys, parameters) are NOT here — they are passed as command-line flags to the
-# `local` connector below. The control socket listens on loopback; the guest
+# `local` connector below. The daemon API listens on loopback; the guest
 # reaches it via 10.0.2.2 (the host address in qemu SLIRP networking).
 # ---------------------------------------------------------------------------
 sup_cfg="$cfg_dir/supervisor.toml"
@@ -223,7 +223,7 @@ qemu_binary = "$qemu_binary"
 qemu_img_binary = "qemu-img"
 state_dir = "$sup_state_dir"
 working_disk_max_bytes = $disk_max_bytes
-tcp_control_socket_listen_addr = "127.0.0.1:3859"
+daemon_api_listen_addr = "127.0.0.1:3859"
 start_script = "$vars_start"
 qemu_args = [
   "-name", "tml-{job_id}",
@@ -236,7 +236,7 @@ qemu_args = [
   "-device", "$blk_device,drive={disk_node}",
   "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
   "-device", "$net_device,netdev=net0,id=nic0",
-  "-fw_cfg", "name=opt/org.tockos.treadmill.tcp-ctrl-socket,string=10.0.2.2:3859",
+  "-fw_cfg", "name=opt/dev.treadmill.supervisor-url,string=http://10.0.2.2:3859",
 TOML
   for a in "${extra_qemu_args[@]}"; do
     printf '  "%s",\n' "$a"

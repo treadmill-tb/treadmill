@@ -33,14 +33,11 @@ daemon = [
   "treadmill-rs/client",
   "dep:ed25519-dalek",
   "dep:log",
-  "dep:nix",
   "dep:sd-notify",
   "dep:simplelog",
-  "dep:treadmill-tcp-control-socket-client",
   "dep:zbus",
   "tokio/fs",
   "tokio/process",
-  "tokio/sync",
   "tokio/time",
 ]
 
@@ -49,7 +46,6 @@ daemon = [
 # to be able to resolve treadmill-rs by its published version. Local builds
 # continue to use the path dependency.
 treadmill-rs = { version = "0.3.0", path = "../treadmill-rs" }
-treadmill-tcp-control-socket-client = { workspace = true, optional = true }
 
 anstream = "1.0.0"
 anstyle = "1.0.0"
@@ -64,7 +60,6 @@ ed25519-dalek = { workspace = true, features = ["pem"], optional = true }
 figment = { version = "0.10.19", features = ["toml", "env"], optional = true }
 futures-util = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
-nix = { workspace = true, features = ["signal"], optional = true }
 rustls = { version = "0.23.44", default-features = false, features = [
   "ring",
   "std",

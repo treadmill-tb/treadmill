@@ -6,11 +6,12 @@ edition.workspace = true
 
 [dependencies]
 treadmill-rs = { workspace = true }
-treadmill-tcp-control-socket-server = { workspace = true }
 
+aide = { workspace = true, features = ["axum", "axum-json"] }
 anyhow = { workspace = true }
 async-nats = { workspace = true }
 async-trait = { workspace = true }
+axum = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 futures-util = { workspace = true }
@@ -40,6 +41,9 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = { workspace = true }
 
 [dev-dependencies]
+treadmill-rs = { workspace = true, features = ["client"] }
+
+serde_norway = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }

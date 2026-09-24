@@ -69,14 +69,14 @@ qemu_args = [
   "user,id=net0,hostfwd=tcp::2222-:22",
   "-device",
   "virtio-net-pci,id=nic0,netdev=net0",
-  # Where the guest's puppet reaches this supervisor's control socket.
-  # (10.0.2.2 is the host address in QEMU SLIRP networking; the port is
-  # `tcp_control_socket_listen_addr`'s.)
+  # Where the guest's daemon reaches this supervisor's daemon API.
+  # (10.0.2.2 is the host's loopback in QEMU SLIRP networking; the port is
+  # `daemon_api_listen_addr`'s.)
   "-fw_cfg",
-  "name=opt/org.tockos.treadmill.tcp-ctrl-socket,string=10.0.2.2:3859",
+  "name=opt/dev.treadmill.supervisor-url,string=http://10.0.2.2:3859",
 ]
 
-tcp_control_socket_listen_addr = "0.0.0.0:3859"
+daemon_api_listen_addr = "127.0.0.1:3859"
 
 # Each VM will have at most 32GB to work with. This should be
 # sufficient to support most images, even heavy-weight toolchains

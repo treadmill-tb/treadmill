@@ -23,7 +23,6 @@ serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["hex", "base64"] }
 subtle = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
-tracing = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v4"] }
 
 # Optional: the `client` feature pulls in an async HTTP client so binaries (the

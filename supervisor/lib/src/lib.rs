@@ -1,5 +1,6 @@
 pub mod bootstrap;
 pub mod capture;
+pub mod daemon_api;
 pub mod job;
 pub mod job_log;
 pub mod launcher;

@@ -38,7 +38,7 @@ sqlx = { version = "0.9.0", features = [
 ] }
 
 # Server
-axum = { version = "0.8.9", features = [
+axum = { workspace = true, features = [
   "tokio",
   "http2",
   "json",
@@ -49,7 +49,7 @@ axum = { version = "0.8.9", features = [
   "ws",
   "macros",
 ] }
-aide = { version = "0.16.0-alpha.4", features = [
+aide = { workspace = true, features = [
   "axum",
   "axum-json",
   "axum-extra-headers",
@@ -129,7 +129,7 @@ serde_path_to_error = { workspace = true }
 serde_with = { workspace = true }
 humantime-serde = { workspace = true }
 # OpenAPI snapshot emitted as YAML (api-spec/openapi.yaml)
-serde_norway = "0.9"
+serde_norway = { workspace = true }
 # Configuration deserialization
 toml = { workspace = true }
 

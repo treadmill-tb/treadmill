@@ -14,7 +14,7 @@ image-based, reproducible way to run workloads on them.
 | **Switchboard** (central coordinator) | `switchboard/`                | Central coordinator.                          |
 | **Supervisors**                       | `supervisor/*`                | Control and manage hosts.                     |
 | **Connectors**                        | `supervisor/connector/*`,     | Protocol between switchboard and supervisors. |
-| **Control Sockets**                   | `supervisor/control-socket/*` | Protocol between supervisors and the daemon.  |
+| **Daemon API**                        | `supervisor/lib/`             | HTTP API between supervisors and the daemon.  |
 | **CLI**                               | `cli/`                        | `tml`: the user-facing client, and the agent  |
 |                                       |                               | inside images (`tml daemon`).                 |
 | **Shared Library**                    | `treadmill-rs/`               | Common types & infrastructure.                |
@@ -182,8 +182,8 @@ user); without it, builds start from scratch.
 
 ### Snapshot drift guards
 
-Two committed snapshots are guarded by tests; regenerate them deliberately when
-a change is intentional:
+Three committed snapshots are guarded by tests; regenerate them deliberately
+when a change is intentional:
 
 - **Supervisor wire protocol** — `treadmill-rs/protocol-schema/*.schema.json`,
   guarded by `treadmill-rs/tests/protocol_schema.rs`. Regenerate:
@@ -191,6 +191,9 @@ a change is intentional:
 - **Switchboard OpenAPI** — `switchboard/api-spec/openapi.yaml`, guarded by
   `switchboard/tests/openapi_spec.rs`. Regenerate:
   `UPDATE_SCHEMA=1 cargo test -p treadmill-switchboard --test openapi_spec`.
+- **Supervisor daemon API** — `supervisor/lib/api-spec/daemon-api.yaml`,
+  guarded by `supervisor/lib/tests/daemon_api_spec.rs`. Regenerate:
+  `UPDATE_SCHEMA=1 cargo test -p treadmill-supervisor-lib --test daemon_api_spec`.
 
 ## 5. Formatting
 

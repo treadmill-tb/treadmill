@@ -104,8 +104,8 @@ pub enum Command {
         #[command(subcommand)]
         command: SshCommand,
     },
-    /// Run the in-image daemon, connecting to the supervisor's control socket
-    /// and serving D-Bus
+    /// Run the in-image daemon, connecting to the supervisor's daemon API and
+    /// serving D-Bus
     #[cfg(feature = "daemon")]
     Daemon(crate::daemon::DaemonArgs),
 }

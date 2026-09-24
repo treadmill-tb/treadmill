@@ -497,7 +497,7 @@ qemu_img_binary = "qemu-img"
 state_dir = "$sup_state_dir"
 # 10GB should be enough to run proper Linux images:
 working_disk_max_bytes = 10737418240
-tcp_control_socket_listen_addr = "127.0.0.1:3859"
+daemon_api_listen_addr = "127.0.0.1:3859"
 start_script = "$pflash_vars_start"
 # KVM, EDK2 OVMF UEFI, virtio-blk on the backing chain's writable top node. The
 # serial console is wired automatically by the supervisor when the dispatch
@@ -517,7 +517,7 @@ qemu_args = [
   # until this boots an image that runs one.
   "-netdev", "user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::$job_service_hostfwd_port-:$job_service_port",
   "-device", "virtio-net-pci,netdev=net0",
-  "-fw_cfg", "name=opt/org.tockos.treadmill.tcp-ctrl-socket,string=10.0.2.2:3859",
+  "-fw_cfg", "name=opt/dev.treadmill.supervisor-url,string=http://10.0.2.2:3859",
   "-display", "none",
   "-no-reboot",
 ]

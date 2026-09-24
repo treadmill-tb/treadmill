@@ -127,6 +127,8 @@ let
       switchboardData
       # Committed wire-schema snapshots read by the protocol drift-guard test.
       (lib.fileset.maybeMissing (workspaceRoot + "/treadmill-rs/protocol-schema"))
+      # Committed daemon API snapshot read by its drift-guard test.
+      (lib.fileset.maybeMissing (workspaceRoot + "/supervisor/lib/api-spec"))
       # Committed `insta` snapshots (`.snap`); not picked up by
       # commonCargoSources, so without this insta tests see no stored snapshot
       # and fail in the sandbox.
@@ -202,7 +204,6 @@ let
     let
       supervisorShared = [
         "treadmill-rs"
-        "supervisor/control-socket/tcp/server"
         "supervisor/connector/local"
         "supervisor/connector/ws"
         "supervisor/lib"
@@ -212,7 +213,6 @@ let
       tml.members = [
         "cli"
         "treadmill-rs"
-        "supervisor/control-socket/tcp/client"
       ];
       swx = {
         members = [

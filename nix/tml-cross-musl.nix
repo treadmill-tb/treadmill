@@ -35,7 +35,7 @@
           version = "0.1.0";
 
           # Same per-crate fileset as the native crane build: workspace skeleton
-          # + cli/, treadmill-rs/, supervisor/control-socket/tcp/client/.
+          # + cli/, treadmill-rs/.
           # Editing other workspace crates won't invalidate this build.
           src = cmn.binSrcs.tml;
           buildAndTestSubdir = "cli";
