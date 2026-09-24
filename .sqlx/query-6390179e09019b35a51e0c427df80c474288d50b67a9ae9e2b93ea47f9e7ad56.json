@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tml_switchboard.jobs\n           set task_exit_status = $2, exit_message = $3\n           where job_id = $1 and job_state <> 'finalized'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tml_switchboard.task_exit_status",
+            "kind": {
+              "Enum": [
+                "pending",
+                "success",
+                "failure"
+              ]
+            }
+          }
+        },
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6390179e09019b35a51e0c427df80c474288d50b67a9ae9e2b93ea47f9e7ad56"
+}

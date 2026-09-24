@@ -59,3 +59,8 @@ impl JobSubject {
         self.job_id
     }
 }
+
+pub enum Caller {
+    User(Subject),
+    Job(JobSubject),
+}

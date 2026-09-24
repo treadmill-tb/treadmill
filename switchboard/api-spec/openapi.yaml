@@ -501,6 +501,110 @@ paths:
           description: Job service gateways are not enabled on this deployment.
       security:
       - token: []
+  /jobs/{id}/exit-status:
+    put:
+      tags:
+      - Jobs
+      summary: Report a job's exit status
+      description: Sets the job's `task_exit_status` and `exit_message`, replacing any earlier report. Only the job's own token may report.
+      operationId: putJobExitStatus
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        description: |-
+          The body of `PUT /jobs/{id}/exit-status`, by which a job reports its own
+          outcome. It may do so any number of times while it runs, each report
+          replacing the last.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobExitStatusRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the job token is missing, malformed, or its job has finalized.'
+        '403':
+          description: The job token belongs to a different job.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '204':
+          description: The report was recorded.
+        '409':
+          description: The job has finalized.
+      security:
+      - job_token: []
+  /jobs/{id}/services:
+    put:
+      tags:
+      - Jobs
+      summary: Announce a job's services
+      description: Replaces the job's announced services with the given set. Only the job's own token may announce.
+      operationId: putJobServices
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/JobServiceAnnouncement'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the job token is missing, malformed, or its job has finalized.'
+        '403':
+          description: The job token belongs to a different job.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: A service name is invalid or repeated.
+        '204':
+          description: The set was recorded, or matched the one in force.
+      security:
+      - job_token: []
   /jobs/{id}/environment:
     get:
       tags:
@@ -573,6 +677,7 @@ paths:
       tags:
       - Jobs
       summary: Terminate a job
+      description: Requires `stop` on the job, or the job's own token, with which a job terminates itself.
       operationId: terminateJob
       parameters:
       - in: path
@@ -586,15 +691,16 @@ paths:
         style: simple
       responses:
         '401':
-          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+          description: 'Authentication failed: the token is missing, malformed, expired, or revoked, or its job has finalized.'
         '403':
-          description: The authenticated account is locked, or lacks permission for this resource.
+          description: The account is locked or lacks permission for this resource, or the job token belongs to a different job.
         '202':
           description: Termination was initiated.
         '204':
           description: The job was already finalized; nothing to do.
       security:
       - token: []
+      - job_token: []
     patch:
       tags:
       - Jobs
@@ -3323,6 +3429,26 @@ components:
       required:
       - host_id
       - parameters
+    JobExitStatusRequest:
+      description: |-
+        The body of `PUT /jobs/{id}/exit-status`, by which a job reports its own
+        outcome. It may do so any number of times while it runs, each report
+        replacing the last.
+      type: object
+      properties:
+        message:
+          description: |-
+            An optional human-readable note, recorded as the job's `exit_message`.
+            Null clears it.
+          type:
+          - string
+          - 'null'
+        outcome:
+          description: The workload's outcome.
+          allOf:
+          - $ref: '#/components/schemas/TaskExitStatus'
+      required:
+      - outcome
     JobGatewayEndpoint:
       description: A gateway under which a job's services are published.
       type: object
@@ -3825,6 +3951,30 @@ components:
       - init_spec
       - restart_policy
       - parameters
+    JobServiceAnnouncement:
+      description: |-
+        One service a job announces in `PUT /jobs/{id}/services`, which carries the
+        job's complete set.
+      type: object
+      properties:
+        label:
+          description: Optional human-readable text to display.
+          type:
+          - string
+          - 'null'
+        name:
+          description: |-
+            Identifies the service within its job: 1 to 16 lowercase alphanumeric
+            characters, starting with a letter.
+          type: string
+        protocol:
+          description: |-
+            A token the client interprets to decide how to connect (`webapp`,
+            `sshws`, …).
+          type: string
+      required:
+      - name
+      - protocol
     JobServiceCredentials:
       description: |-
         Access credentials for one of a job's announced services, returned by

@@ -191,6 +191,15 @@ impl From<SqlTaskExitStatus> for ClientTaskExitStatus {
         }
     }
 }
+impl From<ClientTaskExitStatus> for SqlTaskExitStatus {
+    fn from(value: ClientTaskExitStatus) -> Self {
+        match value {
+            ClientTaskExitStatus::Pending => SqlTaskExitStatus::Pending,
+            ClientTaskExitStatus::Success => SqlTaskExitStatus::Success,
+            ClientTaskExitStatus::Failure => SqlTaskExitStatus::Failure,
+        }
+    }
+}
 impl From<TaskExitStatus> for SqlTaskExitStatus {
     fn from(value: TaskExitStatus) -> Self {
         match value {
@@ -1430,6 +1439,7 @@ pub enum TerminateOutcome {
 /// concurrent placement.
 pub async fn request_terminate(
     job_id: Uuid,
+    reason: SqlTerminationReason,
     at: DateTime<Utc>,
     txn: &mut Transaction<'_, Postgres>,
 ) -> Result<TerminateOutcome, sqlx::Error> {
@@ -1457,12 +1467,13 @@ pub async fn request_terminate(
             sqlx::query!(
                 r#"update tml_switchboard.jobs
                    set job_state = 'finalized',
-                       termination_reason = 'user_terminated',
+                       termination_reason = $3,
                        task_exit_status = null,
                        terminated_at = $2
                    where job_id = $1 and job_state = 'queued'"#,
                 job_id,
                 at,
+                reason as SqlTerminationReason,
             )
             .execute(&mut **txn)
             .await?;
@@ -1478,11 +1489,11 @@ pub async fn request_terminate(
             sqlx::query!(
                 r#"update tml_switchboard.jobs
                    set terminate_requested_at = coalesce(terminate_requested_at, $2),
-                       terminate_requested_reason =
-                           coalesce(terminate_requested_reason, 'user_terminated')
+                       terminate_requested_reason = coalesce(terminate_requested_reason, $3)
                    where job_id = $1"#,
                 job_id,
                 at,
+                reason as SqlTerminationReason,
             )
             .execute(&mut **txn)
             .await?;
@@ -1894,6 +1905,25 @@ pub async fn set_task_outcome(
     .await?;
 
     Ok(updated.is_some())
+}
+
+pub async fn set_exit_status(
+    job_id: Uuid,
+    outcome: SqlTaskExitStatus,
+    message: Option<&str>,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<bool, sqlx::Error> {
+    let updated = sqlx::query!(
+        r#"update tml_switchboard.jobs
+           set task_exit_status = $2, exit_message = $3
+           where job_id = $1 and job_state <> 'finalized'"#,
+        job_id,
+        outcome as SqlTaskExitStatus,
+        message,
+    )
+    .execute(&mut **txn)
+    .await?;
+    Ok(updated.rows_affected() == 1)
 }
 
 /// Finalize a job the supervisor dropped (`termination_reason = host_dropped_job`)

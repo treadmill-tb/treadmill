@@ -12,19 +12,21 @@ use sqlx::postgres::types::PgInterval;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::jobs::{
-    EnqueueJobResponse, JobDefaults, JobEnvironment, JobInfo, JobLeaseExpiryAction,
-    JobListResponse, JobPermission as ApiJobPermission, JobServiceCredentials, LeaseRejection,
-    LeaseRejectionCode, NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
+    EnqueueJobResponse, JobDefaults, JobEnvironment, JobExitStatusRequest, JobInfo,
+    JobLeaseExpiryAction, JobListResponse, JobPermission as ApiJobPermission,
+    JobServiceAnnouncement, JobServiceCredentials, LeaseRejection, LeaseRejectionCode,
+    NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
+use treadmill_rs::api::switchboard_supervisor::JobService;
 use treadmill_rs::host_spec::HostSpec;
 use treadmill_rs::util::Secret;
 
 use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_entity};
 use crate::audit::model::{Job as AuditJob, Subject as AuditSubject};
 use crate::audit::{self, events};
-use crate::auth::JobSubject;
 use crate::auth::engine::{self, ImageSetPermission, JobPermission};
+use crate::auth::{Caller, JobSubject};
 use crate::events::EventFilter;
 use crate::http_error::OrInternal;
 use crate::job_gateway::{self, MintError, service_endpoint};
@@ -571,6 +573,15 @@ pub async fn update_job(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+fn exit_status_name(outcome: job::SqlTaskExitStatus) -> String {
+    match outcome {
+        job::SqlTaskExitStatus::Pending => "pending",
+        job::SqlTaskExitStatus::Success => "success",
+        job::SqlTaskExitStatus::Failure => "failure",
+    }
+    .to_string()
+}
+
 fn expiry_action_name(action: job::SqlLeaseExpiryAction) -> String {
     match action {
         job::SqlLeaseExpiryAction::Terminate => "terminate",
@@ -654,18 +665,24 @@ pub async fn get_job(
     Ok(Json(info))
 }
 
+fn require_own_job(job_subject: &JobSubject, job_id: Uuid) -> Result<(), StatusCode> {
+    if job_subject.job_id() == job_id {
+        Ok(())
+    } else {
+        tracing::debug!(
+            "refusing the token of job {} access to job {job_id}",
+            job_subject.job_id()
+        );
+        Err(StatusCode::FORBIDDEN)
+    }
+}
+
 pub async fn get_environment(
     State(state): State<AppState>,
     job_subject: JobSubject,
     Path(IdPath { id: job_id }): Path<IdPath>,
 ) -> Result<Json<JobEnvironment>, StatusCode> {
-    if job_subject.job_id() != job_id {
-        tracing::debug!(
-            "refusing the environment of job {job_id} to the token of job {}",
-            job_subject.job_id()
-        );
-        return Err(StatusCode::FORBIDDEN);
-    }
+    require_own_job(&job_subject, job_id)?;
 
     let mut conn = state
         .pool()
@@ -700,33 +717,127 @@ pub async fn get_environment(
     }))
 }
 
+pub async fn put_exit_status(
+    State(state): State<AppState>,
+    job_subject: JobSubject,
+    Path(IdPath { id: job_id }): Path<IdPath>,
+    Json(req): Json<JobExitStatusRequest>,
+) -> Result<StatusCode, StatusCode> {
+    require_own_job(&job_subject, job_id)?;
+
+    let outcome = job::SqlTaskExitStatus::from(req.outcome);
+    let mut txn = state.pool().begin().await.or_internal(&format!(
+        "opening a transaction to set the exit status of job {job_id}"
+    ))?;
+    if !job::set_exit_status(job_id, outcome, req.message.as_deref(), &mut txn)
+        .await
+        .or_internal(&format!("setting the exit status of job {job_id}"))?
+    {
+        tracing::debug!("refusing the exit status of finalized job {job_id}");
+        return Err(StatusCode::CONFLICT);
+    }
+    audit::emit(
+        &mut txn,
+        &events::JobExitStatusSet {
+            actor: AuditSubject(job_id),
+            job: AuditJob(job_id),
+            outcome: exit_status_name(outcome),
+            message: req.message,
+        },
+    )
+    .await
+    .or_internal(&format!("emitting JobExitStatusSet for {job_id}"))?;
+    txn.commit()
+        .await
+        .or_internal(&format!("committing the exit status of job {job_id}"))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn put_services(
+    State(state): State<AppState>,
+    job_subject: JobSubject,
+    Path(IdPath { id: job_id }): Path<IdPath>,
+    Json(announced): Json<Vec<JobServiceAnnouncement>>,
+) -> Result<StatusCode, StatusCode> {
+    require_own_job(&job_subject, job_id)?;
+
+    let mut services: Vec<JobService> = announced
+        .into_iter()
+        .map(|s| JobService {
+            name: s.name,
+            label: s.label,
+            protocol: s.protocol,
+        })
+        .collect();
+    services.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut txn = state.pool().begin().await.or_internal(&format!(
+        "opening a transaction to replace the services of job {job_id}"
+    ))?;
+    if job::fetch_services(job_id, &mut *txn)
+        .await
+        .or_internal(&format!("loading the announced services of job {job_id}"))?
+        == services
+    {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    match job::replace_services(job_id, &services, &mut txn).await {
+        Ok(()) => {}
+        Err(sqlx::Error::Database(e)) if e.is_check_violation() || e.is_unique_violation() => {
+            tracing::debug!("refusing the service set of job {job_id}: {e}");
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        Err(e) => return Err(crate::http_error::internal(e)),
+    }
+    txn.commit()
+        .await
+        .or_internal(&format!("committing the services of job {job_id}"))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Axum handler for `DELETE /jobs/{id}` — request termination of a job.
 ///
 /// Gated on the caller's `stop` permission (403 for unauthorized, including a
-/// nonexistent job). A still-`queued` job is finalized as `user_terminated`
-/// immediately; a dispatched job has its terminate signal recorded and the owning
+/// nonexistent job), or on a job token of this very job. A still-`queued` job
+/// is finalized immediately, as `user_terminated` or, for a job token,
+/// `workload_self_terminated`; a dispatched job has its terminate signal recorded and the owning
 /// host's worker converges (issues TerminateJob, then finalizes). Returns `202
 /// Accepted` when a termination was initiated, or `204 No Content` when the job
 /// was already finalized (idempotent no-op).
 pub async fn terminate(
     State(state): State<AppState>,
-    subject: crate::auth::Subject,
+    caller: Caller,
     Path(IdPath { id: job_id }): Path<IdPath>,
 ) -> Result<StatusCode, StatusCode> {
-    let authorized =
-        engine::can_access_job(state.pool(), subject.user_id(), job_id, JobPermission::Stop)
+    let (actor, reason) = match caller {
+        Caller::User(subject) => {
+            let authorized = engine::can_access_job(
+                state.pool(),
+                subject.user_id(),
+                job_id,
+                JobPermission::Stop,
+            )
             .await
             .or_internal("checking job stop access")?;
-    if !authorized {
-        return Err(StatusCode::FORBIDDEN);
-    }
+            if !authorized {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            (subject.user_id(), job::SqlTerminationReason::UserTerminated)
+        }
+        Caller::Job(job_subject) => {
+            require_own_job(&job_subject, job_id)?;
+            (job_id, job::SqlTerminationReason::WorkloadSelfTerminated)
+        }
+    };
 
     let mut txn = state
         .pool()
         .begin()
         .await
         .or_internal(&format!("opening a transaction to terminate job {job_id}"))?;
-    let outcome = job::request_terminate(job_id, Utc::now(), &mut txn)
+    let outcome = job::request_terminate(job_id, reason, Utc::now(), &mut txn)
         .await
         .or_internal(&format!("requesting termination of job {job_id}"))?;
 
@@ -737,7 +848,7 @@ pub async fn terminate(
         audit::emit(
             &mut txn,
             &events::JobTerminated {
-                actor: AuditSubject(subject.user_id()),
+                actor: AuditSubject(actor),
                 job: AuditJob(job_id),
                 finalized_immediately: outcome == job::TerminateOutcome::FinalizedNow,
             },

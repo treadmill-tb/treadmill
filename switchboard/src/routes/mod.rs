@@ -282,6 +282,36 @@ pub fn api_router() -> ApiRouter<AppState> {
                 })
             }),
         )
+        //  PUT /jobs/{id}/exit-status -- a job reports its own outcome
+        .api_route(
+            "/jobs/{id}/exit-status",
+            put_with(jobs::put_exit_status, |o| {
+                doc(o, "putJobExitStatus", "Jobs", "Report a job's exit status")
+                    .description(
+                        "Sets the job's `task_exit_status` and `exit_message`, replacing \
+                         any earlier report. Only the job's own token may report.",
+                    )
+                    .response_with::<204, (), _>(|r| r.description("The report was recorded."))
+                    .response_with::<409, (), _>(|r| r.description("The job has finalized."))
+            }),
+        )
+        //  PUT /jobs/{id}/services -- a job announces its complete service set
+        .api_route(
+            "/jobs/{id}/services",
+            put_with(jobs::put_services, |o| {
+                doc(o, "putJobServices", "Jobs", "Announce a job's services")
+                    .description(
+                        "Replaces the job's announced services with the given set. \
+                         Only the job's own token may announce.",
+                    )
+                    .response_with::<204, (), _>(|r| {
+                        r.description("The set was recorded, or matched the one in force.")
+                    })
+                    .response_with::<422, (), _>(|r| {
+                        r.description("A service name is invalid or repeated.")
+                    })
+            }),
+        )
         //  GET /jobs/{id}/environment -- what a running job needs to set itself up
         .api_route(
             "/jobs/{id}/environment",
@@ -313,6 +343,10 @@ pub fn api_router() -> ApiRouter<AppState> {
                 })
                 .delete_with(jobs::terminate, |o| {
                     doc(o, "terminateJob", "Jobs", "Terminate a job")
+                        .description(
+                            "Requires `stop` on the job, or the job's own token, with which \
+                             a job terminates itself.",
+                        )
                         .response_with::<202, (), _>(|r| {
                             r.description("Termination was initiated.")
                         })

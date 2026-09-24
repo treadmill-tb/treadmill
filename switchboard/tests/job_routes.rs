@@ -22,13 +22,13 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::hosts::{HostInfo, HostListEntry};
-use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobDefaults, JobEnvironment, JobImageReference, JobInfo,
     JobLeaseExpiryAction, JobListResponse, JobParameter, JobPermission, JobPredecessor,
     JobServiceCredentials, JobServiceEndpoint, LeaseRejection, LeaseRejectionCode,
     NatsConsoleInputCredentials, NatsLogStreamCredentials,
 };
+use treadmill_rs::api::switchboard::jobs::{RestartPolicy, TaskExitStatus};
 use treadmill_rs::api::switchboard::{
     DEFAULT_HOST_CEL_PREDICATE, JobInitSpec, JobRequest, JobState, WhoAmIResponse,
 };
@@ -2350,4 +2350,147 @@ async fn everyone_cannot_own_a_job(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+async fn running_job(pool: &PgPool, client: &reqwest::Client, addr: SocketAddr) -> (String, Uuid) {
+    let user_token = mock_login_token(pool, client, addr, "bob", true).await;
+    let job_id = enqueue_with_secret(pool, client, addr, &user_token).await;
+    mark_running(pool, job_id, chrono::Utc::now()).await;
+    (user_token, job_id)
+}
+
+fn no_redirect_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap()
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_terminates_itself(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (_, job_id) = running_job(&pool, &client, addr).await;
+
+    let resp = client
+        .delete(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(job_token(&pool, job_id).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+
+    let (reason, actor): (Option<String>, Uuid) = sqlx::query_as(
+        "select j.terminate_requested_reason::text, e.actor_id \
+         from tml_switchboard.jobs j \
+         join tml_switchboard.audit_events e on e.event_type like 'job_terminated%' \
+         where j.job_id = $1",
+    )
+    .bind(job_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(reason.as_deref(), Some("workload_self_terminated"));
+    assert_eq!(actor, job_id);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_cannot_terminate_another_job(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
+    let other_job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
+
+    let resp = client
+        .delete(format!("http://{addr}/api/v1/jobs/{other_job_id}"))
+        .bearer_auth(job_token(&pool, job_id).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_reports_its_exit_status(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
+    let token = job_token(&pool, job_id).await;
+    let url = format!("http://{addr}/api/v1/jobs/{job_id}/exit-status");
+
+    let resp = client
+        .put(&url)
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "outcome": "failure", "message": "3 tests failed" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    let info = get_job(&client, addr, &user_token, job_id).await;
+    assert!(matches!(
+        info.task_exit_status,
+        Some(TaskExitStatus::Failure)
+    ));
+    assert_eq!(info.exit_message.as_deref(), Some("3 tests failed"));
+
+    let resp = client
+        .put(&url)
+        .bearer_auth(&user_token)
+        .json(&serde_json::json!({ "outcome": "success", "message": null }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_announces_its_services(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
+    let token = job_token(&pool, job_id).await;
+    let announce = async |services: serde_json::Value| {
+        client
+            .put(format!("http://{addr}/api/v1/jobs/{job_id}/services"))
+            .bearer_auth(&token)
+            .json(&services)
+            .send()
+            .await
+            .unwrap()
+            .status()
+    };
+
+    assert_eq!(
+        announce(serde_json::json!([
+            { "name": "web", "label": "Web UI", "protocol": "webapp" },
+            { "name": "ssh", "label": null, "protocol": "sshws" },
+        ]))
+        .await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+    let info = get_job(&client, addr, &user_token, job_id).await;
+    let names: Vec<&str> = info.services.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["ssh", "web"]);
+
+    assert_eq!(
+        announce(serde_json::json!([
+            { "name": "Not-Valid", "label": null, "protocol": "webapp" },
+        ]))
+        .await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        announce(serde_json::json!([
+            { "name": "web", "label": null, "protocol": "webapp" },
+            { "name": "web", "label": null, "protocol": "sshws" },
+        ]))
+        .await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let info = get_job(&client, addr, &user_token, job_id).await;
+    assert_eq!(info.services.len(), 2);
 }

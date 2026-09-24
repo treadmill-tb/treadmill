@@ -364,6 +364,32 @@ pub struct JobServiceCredentials {
     pub expires_at: DateTime<Utc>,
 }
 
+/// The body of `PUT /jobs/{id}/exit-status`, by which a job reports its own
+/// outcome. It may do so any number of times while it runs, each report
+/// replacing the last.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct JobExitStatusRequest {
+    /// The workload's outcome.
+    pub outcome: TaskExitStatus,
+    /// An optional human-readable note, recorded as the job's `exit_message`.
+    /// Null clears it.
+    pub message: Option<String>,
+}
+
+/// One service a job announces in `PUT /jobs/{id}/services`, which carries the
+/// job's complete set.
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobServiceAnnouncement {
+    /// Identifies the service within its job: 1 to 16 lowercase alphanumeric
+    /// characters, starting with a letter.
+    pub name: String,
+    /// Optional human-readable text to display.
+    pub label: Option<String>,
+    /// A token the client interprets to decide how to connect (`webapp`,
+    /// `sshws`, …).
+    pub protocol: String,
+}
+
 /// A gateway under which a job's services are published.
 #[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobGatewayEndpoint {

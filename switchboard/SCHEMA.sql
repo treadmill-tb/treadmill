@@ -723,8 +723,8 @@ CREATE TABLE tml_switchboard.jobs (
     -- the (untrusted) job. TODO: eventually, the switchboard should validate
     -- that this address is one that is within the internal deployment prefix.
     job_ip_address inet,
-    -- Pending stop signal: set by user-terminate (`DELETE /jobs/{id}`) or by
-    -- the scheduler reclaiming the host. When set, the assigned job's worker
+    -- Pending stop signal: set by user- or self-terminate (`DELETE /jobs/{id}`)
+    -- or by the scheduler reclaiming the host. When set, the assigned job's worker
     -- converges the job to `finalized` with `terminate_requested_reason` (to
     -- distinguish between a job killed because its lease expired, or because it
     -- was reclaimed).
@@ -811,7 +811,11 @@ CREATE TABLE tml_switchboard.jobs (
     ),
     -- The explicitly requestable subset of termination reasons.
     CONSTRAINT terminate_requested_reason_valid CHECK (
-        terminate_requested_reason IN ('user_terminated', 'preempted')
+        terminate_requested_reason IN (
+            'user_terminated',
+            'workload_self_terminated',
+            'preempted'
+        )
     )
 );
 
