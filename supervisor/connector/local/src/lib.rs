@@ -217,6 +217,7 @@ impl Inner {
             gateway: None,
             // A local run has no switchboard to describe the host.
             host_spec: None,
+            job_token: None,
         };
 
         event!(

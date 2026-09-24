@@ -379,6 +379,17 @@
           "type": "string",
           "format": "uuid"
         },
+        "job_token": {
+          "description": "The job's own switchboard API token, which the supervisor relays into\nthe job without using it. `None` from a coordinator that is not a\nswitchboard.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Secret"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "log_streaming": {
           "description": "Per-job log-streaming destination, or `None` when the deployment runs\nwith log streaming disabled. The supervisor captures console output and\npublishes it to the NATS server described here (see\n[`LogStreamingDispatch`]). Additive and optional: older supervisors that\ndo not understand this field simply ignore it and capture nothing.",
           "anyOf": [

@@ -214,6 +214,11 @@ pub struct StartJobMessage {
     /// never been described.
     #[serde(default)]
     pub host_spec: Option<serde_json::Value>,
+
+    /// The job's own switchboard API token, which the supervisor relays into
+    /// the job without using it. `None` from a coordinator that is not a
+    /// switchboard.
+    pub job_token: Option<Secret<String>>,
 }
 
 /// NATS log channel name (`logs.<job-id>.<*channel*>`).

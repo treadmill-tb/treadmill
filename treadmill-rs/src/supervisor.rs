@@ -43,4 +43,9 @@ pub struct SupervisorBaseConfig {
     /// have an internal IP, and any announced services will not be reachable.
     #[serde(default)]
     pub job_address: Option<IpAddr>,
+    /// The switchboard API base URL as the jobs of this supervisor reach it,
+    /// handed to each job together with its token. `None` leaves jobs without
+    /// a way to reach the switchboard.
+    #[serde(default)]
+    pub job_api_url: Option<String>,
 }

@@ -818,6 +818,7 @@ impl NbdNetbootSupervisorConfig {
             job_address: self.base.job_address,
             workdirs,
             control_socket_listen_addr: self.nbd_netboot.tcp_control_socket_listen_addr,
+            job_api_url: self.base.job_api_url.clone(),
             start_script: self.nbd_netboot.start_script.clone(),
             stop_script: self.nbd_netboot.stop_script.clone(),
             log_streaming: self.log_streaming.clone(),
@@ -1224,6 +1225,7 @@ mod tests {
             }),
             gateway: None,
             host_spec: None,
+            job_token: None,
         }
     }
 

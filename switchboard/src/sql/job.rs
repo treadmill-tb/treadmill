@@ -21,6 +21,7 @@ use treadmill_rs::api::switchboard_supervisor::{
 use treadmill_rs::connector::JobErrorKind;
 use treadmill_rs::host_spec::{HostSpec, HostSpecV1};
 use treadmill_rs::image::Digest;
+use treadmill_rs::util::Secret;
 use uuid::Uuid;
 
 pub mod parameters;
@@ -1237,6 +1238,8 @@ pub async fn build_start_job_message(
         None => None,
     };
 
+    let job_token = api_token::fetch_job_token(job.job_id, &mut *conn).await?;
+
     Ok(StartJobMessage {
         job_id: job.job_id,
         image_spec,
@@ -1245,6 +1248,7 @@ pub async fn build_start_job_message(
         log_streaming,
         gateway: gateway.map(crate::job_gateway::build_dispatch),
         host_spec,
+        job_token: Some(Secret::new(job_token.to_string())),
     })
 }
 

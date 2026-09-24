@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::util::Secret;
+
 pub use super::switchboard_supervisor::{JobService, ParameterValue};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,10 +214,19 @@ pub struct JobGatewayInfo {
     pub endpoints: Vec<JobGatewayEndpoint>,
 }
 
+/// How the job reaches the switchboard API, and the token it acts with there.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobApi {
+    pub base_url: String,
+    pub token: Secret<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct JobInfo {
     pub job_id: Uuid,
+    /// `None` when the supervisor has no switchboard to point the job at.
+    pub api: Option<JobApi>,
     pub host_id: Uuid,
     pub gateway: Option<JobGatewayInfo>,
     /// The admin-authored description of the host this job runs on, as the

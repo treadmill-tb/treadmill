@@ -534,6 +534,7 @@ impl QemuSupervisorConfig {
             job_address: self.base.job_address,
             workdirs,
             control_socket_listen_addr: self.qemu.tcp_control_socket_listen_addr,
+            job_api_url: self.base.job_api_url.clone(),
             start_script: self.qemu.start_script.clone(),
             stop_script: self.qemu.stop_script.clone(),
             log_streaming: self.log_streaming.clone(),
@@ -978,6 +979,7 @@ mod tests {
             log_streaming: None,
             gateway: None,
             host_spec: None,
+            job_token: None,
         }
     }
 

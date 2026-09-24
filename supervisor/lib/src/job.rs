@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Level, event, instrument};
 use uuid::Uuid;
 
+use treadmill_rs::api::supervisor_puppet::JobApi;
 use treadmill_rs::api::switchboard_supervisor::{
     ImageSpecification, JobGatewayDispatch, JobInitializingStage, JobService,
     LOG_VIEW_MANIFEST_VERSION, LogChannel, LogFormat, LogRender, LogView, LogViewManifest,
@@ -69,6 +70,10 @@ pub struct JobRunnerConfig {
 
     /// Address the per-job puppet control socket listens on.
     pub control_socket_listen_addr: SocketAddr,
+
+    /// The switchboard API base URL handed to each job, see
+    /// [`SupervisorBaseConfig::job_api_url`](treadmill_rs::supervisor::SupervisorBaseConfig::job_api_url).
+    pub job_api_url: Option<String>,
 
     pub start_script: Option<PathBuf>,
     pub stop_script: Option<PathBuf>,
@@ -232,12 +237,13 @@ pub struct JobFacts {
     pub parameters: Arc<HashMap<String, ParameterValue>>,
     pub gateway: Arc<Option<JobGatewayDispatch>>,
     pub host_spec: Arc<Option<serde_json::Value>>,
+    pub api: Option<JobApi>,
     pub hostname: Arc<str>,
     pub network_address: Option<IpAddr>,
 }
 
 impl JobFacts {
-    fn new(start_job_req: &StartJobMessage) -> Self {
+    fn new(start_job_req: &StartJobMessage, job_api_url: Option<&str>) -> Self {
         let job_id = start_job_req.job_id;
         JobFacts {
             job_id,
@@ -245,6 +251,12 @@ impl JobFacts {
             parameters: Arc::new(start_job_req.parameters.clone()),
             gateway: Arc::new(start_job_req.gateway.clone()),
             host_spec: Arc::new(start_job_req.host_spec.clone()),
+            api: job_api_url
+                .zip(start_job_req.job_token.as_ref())
+                .map(|(base_url, token)| JobApi {
+                    base_url: base_url.to_string(),
+                    token: token.clone(),
+                }),
             hostname: format!("job-{}", format!("{job_id}").split_at(10).0).into(),
             network_address: None,
         }
@@ -463,7 +475,10 @@ impl<B: JobBackend> JobRunner<B> {
         }
 
         let (cmd_tx, cmd_rx) = mpsc::channel(JOB_MAILBOX_CAPACITY);
-        let (facts_tx, facts_rx) = watch::channel(Arc::new(JobFacts::new(&start_job_req)));
+        let (facts_tx, facts_rx) = watch::channel(Arc::new(JobFacts::new(
+            &start_job_req,
+            self.config.job_api_url.as_deref(),
+        )));
 
         let handle = JobHandle {
             job_id: start_job_req.job_id,
@@ -1340,6 +1355,11 @@ impl control_socket::Supervisor for JobControlEndpoint {
     }
 
     #[instrument(skip(self))]
+    async fn job_api(&self, _host_id: Uuid, tgt_job_id: Uuid) -> Option<JobApi> {
+        self.facts(tgt_job_id)?.api.clone()
+    }
+
+    #[instrument(skip(self))]
     async fn puppet_ready(&self, _puppet_event_id: u64, _host_id: Uuid, job_id: Uuid) {
         event!(Level::INFO, "Received puppet ready event");
 
@@ -1449,6 +1469,7 @@ mod tests {
         SupervisorJobEvent,
     };
     use treadmill_rs::control_socket::Supervisor as _;
+    use treadmill_rs::util::Secret;
 
     const COMMAND_MAILBOX_CAPACITY: usize = 8;
 
@@ -1691,6 +1712,7 @@ mod tests {
                 JobWorkdirs::open(&tmp.path().join("state"), RetentionConfig::default()).unwrap(),
             ),
             control_socket_listen_addr: "127.0.0.1:0".parse().unwrap(),
+            job_api_url: None,
             start_script: None,
             stop_script: None,
             log_streaming: LogPublisherConfig::default(),
@@ -1767,6 +1789,7 @@ mod tests {
             log_streaming: None,
             gateway,
             host_spec: None,
+            job_token: None,
         }
     }
 
@@ -1903,6 +1926,62 @@ mod tests {
         let unconfigured = harness(StubBackend::default());
         start_and_boot(&unconfigured, start_msg(Uuid::new_v4())).await;
         assert!(unconfigured.connector.addresses().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_running_job_is_told_how_to_reach_the_switchboard() {
+        let host_id = Uuid::new_v4();
+        let h = harness_with(StubBackend::default(), |_, config| {
+            config.job_api_url = Some("https://switchboard.example".to_string());
+        });
+        let job_id = Uuid::new_v4();
+        start_and_boot(
+            &h,
+            StartJobMessage {
+                job_token: Some(Secret::new("job-token".to_string())),
+                ..start_msg(job_id)
+            },
+        )
+        .await;
+
+        let api = endpoint(&h.runner)
+            .await
+            .job_api(host_id, job_id)
+            .await
+            .expect("a job with a token and a configured URL is told both");
+        assert_eq!(api.base_url, "https://switchboard.example");
+        assert_eq!(api.token.expose(), "job-token");
+
+        let tokenless = harness_with(StubBackend::default(), |_, config| {
+            config.job_api_url = Some("https://switchboard.example".to_string());
+        });
+        let tokenless_job = Uuid::new_v4();
+        start_and_boot(&tokenless, start_msg(tokenless_job)).await;
+        assert!(
+            endpoint(&tokenless.runner)
+                .await
+                .job_api(host_id, tokenless_job)
+                .await
+                .is_none()
+        );
+
+        let unconfigured = harness(StubBackend::default());
+        let unconfigured_job = Uuid::new_v4();
+        start_and_boot(
+            &unconfigured,
+            StartJobMessage {
+                job_token: Some(Secret::new("job-token".to_string())),
+                ..start_msg(unconfigured_job)
+            },
+        )
+        .await;
+        assert!(
+            endpoint(&unconfigured.runner)
+                .await
+                .job_api(host_id, unconfigured_job)
+                .await
+                .is_none()
+        );
     }
 
     /// The puppet asks its supervisor what to validate service tokens against,

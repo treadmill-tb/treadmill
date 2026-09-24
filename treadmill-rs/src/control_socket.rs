@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use tracing::{Level, event};
 use uuid::Uuid;
 
-use crate::api::supervisor_puppet::{self, JobInfo, PuppetEvent, PuppetReq, SupervisorResp};
+use crate::api::supervisor_puppet::{
+    self, JobApi, JobInfo, PuppetEvent, PuppetReq, SupervisorResp,
+};
 
 /// Supervisor interface for control socket servers.
 ///
@@ -67,6 +69,14 @@ pub trait Supervisor: Send + Sync + 'static {
         None
     }
 
+    /// How the job reaches the switchboard API, and its token there.
+    ///
+    /// Returning `None` leaves the job without switchboard access, and is the
+    /// default.
+    async fn job_api(&self, _host_id: Uuid, _job_id: Uuid) -> Option<JobApi> {
+        None
+    }
+
     /// Generic request handler.
     ///
     /// The default implementation of this method calls out to the other methods
@@ -84,6 +94,7 @@ pub trait Supervisor: Send + Sync + 'static {
 
             PuppetReq::JobInfo => SupervisorResp::JobInfo(JobInfo {
                 job_id,
+                api: self.job_api(host_id, job_id).await,
                 host_id,
                 gateway: self.gateway(host_id, job_id).await,
                 host_spec: self.host_spec(host_id, job_id).await,

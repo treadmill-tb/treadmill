@@ -1730,6 +1730,8 @@ mod tests {
             .bind(job_id)
             .execute(pool)
             .await?;
+        sql::api_token::insert_job_token(job_id, chrono::Utc::now(), &mut *pool.acquire().await?)
+            .await?;
         sqlx::query(
             "insert into tml_switchboard.jobs \
              ( \
@@ -1827,6 +1829,8 @@ mod tests {
         sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
             .bind(job_id)
             .execute(pool)
+            .await?;
+        sql::api_token::insert_job_token(job_id, chrono::Utc::now(), &mut *pool.acquire().await?)
             .await?;
         sqlx::query(
             "insert into \
@@ -3644,6 +3648,14 @@ mod tests {
             .await
             .expect("concrete-image StartJob should build");
         assert_eq!(msg.job_id, job_id);
+        assert_eq!(
+            msg.job_token.as_ref().map(|t| t.expose().clone()),
+            Some(
+                sql::api_token::fetch_job_token(job_id, &pool)
+                    .await?
+                    .to_string()
+            )
+        );
         match msg.image_spec {
             ImageSpecification::Image {
                 manifest_digest,
@@ -3669,6 +3681,12 @@ mod tests {
             .bind(resume_job)
             .execute(&pool)
             .await?;
+        sql::api_token::insert_job_token(
+            resume_job,
+            chrono::Utc::now(),
+            &mut *pool.acquire().await?,
+        )
+        .await?;
         sqlx::query(
             "insert into tml_switchboard.jobs \
              (job_id, resume_job_id, restart_job_id, image_id, image_set_id, \

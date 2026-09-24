@@ -128,6 +128,22 @@ pub async fn fetch_job_token_metadata<'c, E: PgExecutor<'c>>(
     })
 }
 
+pub async fn fetch_job_token(
+    job_id: Uuid,
+    conn: impl PgExecutor<'_>,
+) -> Result<SecurityToken, sqlx::Error> {
+    let token = sqlx::query_scalar!(
+        "select token from tml_switchboard.api_tokens \
+         where subject_id = $1 and subject_kind = 'job'",
+        job_id,
+    )
+    .fetch_one(conn)
+    .await?;
+    SecurityToken::try_from(token).map_err(|_| {
+        sqlx::Error::Decode(format!("the token of job {job_id} is not 32 bytes").into())
+    })
+}
+
 pub async fn insert_job_token(
     job_id: Uuid,
     created_at: DateTime<Utc>,
