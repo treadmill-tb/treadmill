@@ -14,7 +14,7 @@
 
       fenixPkgs = fenix.packages.${system};
 
-      mkStaticPuppet =
+      mkStaticTml =
         {
           targetTriple,
           crossPkgs,
@@ -31,14 +31,16 @@
           };
         in
         rustPlatform.buildRustPackage {
-          pname = "tml-puppet";
+          pname = "tml";
           version = "0.1.0";
 
           # Same per-crate fileset as the native crane build: workspace skeleton
-          # + puppet/, treadmill-rs/, supervisor/control-socket/tcp/client/.
+          # + cli/, treadmill-rs/, supervisor/control-socket/tcp/client/.
           # Editing other workspace crates won't invalidate this build.
-          src = cmn.binSrcs.tml-puppet;
-          buildAndTestSubdir = "puppet";
+          src = cmn.binSrcs.tml;
+          buildAndTestSubdir = "cli";
+          buildNoDefaultFeatures = true;
+          buildFeatures = [ "daemon" ];
 
           cargoLock.lockFile = ../Cargo.lock;
 
@@ -48,12 +50,12 @@
     in
     {
       packages = lib.optionalAttrs isLinux {
-        tml-puppet-static-x86_64 = mkStaticPuppet {
+        tml-static-x86_64 = mkStaticTml {
           targetTriple = "x86_64-unknown-linux-musl";
           crossPkgs = pkgs.pkgsCross.musl64;
         };
 
-        tml-puppet-static-aarch64 = mkStaticPuppet {
+        tml-static-aarch64 = mkStaticTml {
           targetTriple = "aarch64-unknown-linux-musl";
           crossPkgs = pkgs.pkgsCross.aarch64-multiplatform;
         };

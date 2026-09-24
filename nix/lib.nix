@@ -70,7 +70,7 @@ let
   # Stub sources for every workspace member NOT in `included`. Cargo requires
   # each member to declare at least one target; since bins are built with
   # `--workspace` (so all members are *selected*), a stub must also satisfy any
-  # member declaring an explicit `[[bin]] path = "src/main.rs"` (cli, puppet) —
+  # member declaring an explicit `[[bin]] path = "src/main.rs"` (cli) —
   # hence both stubs. Neither is ever compiled (the build is `--bin <name>`);
   # they only need to exist. Stubs cover only excluded members, so they never
   # collide with real sources or invalidate the bin cache.
@@ -212,6 +212,7 @@ let
       tml.members = [
         "cli"
         "treadmill-rs"
+        "supervisor/control-socket/tcp/client"
       ];
       swx = {
         members = [
@@ -225,17 +226,12 @@ let
         "image-util"
         "treadmill-rs"
       ];
-      tml-puppet.members = [
-        "puppet"
-        "treadmill-rs"
-        "supervisor/control-socket/tcp/client"
-      ];
       treadmill-qemu-supervisor.members = supervisorShared ++ [ "supervisor/qemu" ];
       treadmill-nbd-netboot-supervisor.members = supervisorShared ++ [ "supervisor/nbd-netboot" ];
     };
 
   # Per-bin source derivation (skeleton + the bin's member sources + stubs for
-  # every other member). Consumed by mkBin and the cross-musl puppet build.
+  # every other member). Consumed by mkBin and the cross-musl tml build.
   binSrcs = lib.mapAttrs (name: args: mkBinSrc ({ inherit name; } // args)) binSources;
 
   workspaceDeps = craneLib.buildDepsOnly (
@@ -283,6 +279,7 @@ let
       extraEnv ? { },
       # Tools the binary execs at runtime; wrapped onto its PATH.
       runtimePath ? [ ],
+      features ? null,
     }:
     craneLib.buildPackage (
       cargoCommonArgs
@@ -290,7 +287,9 @@ let
         src = binSrcs.${bin};
         pname = bin;
         cargoArtifacts = workspaceDeps;
-        cargoExtraArgs = "--locked --workspace --bin ${bin}";
+        cargoExtraArgs =
+          "--locked --workspace --bin ${bin}"
+          + lib.optionalString (features != null) " --no-default-features --features ${features}";
         buildInputs = cargoCommonArgs.buildInputs ++ extraBuildInputs;
         doCheck = false;
       }

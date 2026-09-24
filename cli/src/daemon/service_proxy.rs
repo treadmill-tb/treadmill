@@ -166,7 +166,7 @@ pub fn render(
 }
 
 /// Writes the generated vhost definitions and reloads the server that serves
-/// them. Built only when the puppet is asked for one and the job actually has a
+/// them. Built only when the daemon is asked for one and the job actually has a
 /// gateway.
 pub struct ServiceProxy {
     config_path: PathBuf,

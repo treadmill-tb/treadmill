@@ -14,9 +14,9 @@ image-based, reproducible way to run workloads on them.
 | **Switchboard** (central coordinator) | `switchboard/`                | Central coordinator.                          |
 | **Supervisors**                       | `supervisor/*`                | Control and manage hosts.                     |
 | **Connectors**                        | `supervisor/connector/*`,     | Protocol between switchboard and supervisors. |
-| **Puppet**                            | `puppet/`                     | Agent on hosts talking to supervisors.        |
-| **Control Sockets**                   | `supervisor/control-socket/*` | Protocol between supervisors and puppet.      |
-| **CLI**                               | `cli/`                        | `tml` user-facing command-line client.        |
+| **Control Sockets**                   | `supervisor/control-socket/*` | Protocol between supervisors and the daemon.  |
+| **CLI**                               | `cli/`                        | `tml`: the user-facing client, and the agent  |
+|                                       |                               | inside images (`tml daemon`).                 |
 | **Shared Library**                    | `treadmill-rs/`               | Common types & infrastructure.                |
 | **Web Console (SPA)**                 | `console/`                    | Browser frontend for the switchboard API.     |
 
@@ -49,7 +49,7 @@ nix develop --command bash -c 'cargo build -p treadmill-rs' # default shell
 ### Image builds
 
 Treadmill's OCI disk images are built in a separate repository, which consumes
-this flake as an input for the `image-util`, `tml-puppet-static-*` and
+this flake as an input for the `image-util`, `tml-static-*` and
 `tml-caddy-static-*` packages. Nothing in this repository builds an image.
 
 The image *format* contract lives here: `treadmill-rs/src/image/` defines the
@@ -94,6 +94,14 @@ The Nix flake provides multiple convenience dev apps:
 
   The `switchboard-migrations-consistency` flake check enforces that the SCHEMA
   and migrations are consistent.
+
+### The `tml` binary (`cli/`)
+
+One crate, two additive features: `user` (login, contexts, SSH) for the
+client on a user's machine, and `daemon` (`tml daemon`, D-Bus) for the agent
+inside images. Plain cargo builds enable both, so clippy and the test checks
+cover both. The `tml` package builds only `user`, and the static
+`tml-static-*` packages, for musl, only `daemon`.
 
 ### Web console (`console/`)
 

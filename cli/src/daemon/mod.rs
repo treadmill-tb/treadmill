@@ -7,7 +7,7 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, ValueEnum};
 use log::{debug, error, info, warn};
 use zbus::interface;
 
@@ -25,36 +25,35 @@ const SUPERVISOR_EVENT_CHANNEL_CAP: usize = 1024;
 
 #[derive(Debug, Clone, ValueEnum)]
 #[clap(rename_all = "snake_case")]
-enum PuppetControlSocketTransport {
-    #[cfg(feature = "transport_tcp")]
+pub enum ControlSocketTransport {
     Tcp,
     AutoDiscover,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
-enum PuppetDaemonDbusBus {
+pub enum DaemonDbusBus {
     Session,
     System,
     None,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
-enum PuppetDbusBus {
+pub enum DbusBus {
     Session,
     System,
 }
 
-#[derive(Debug, Clone, Parser)]
-struct ClientBusOptions {
+#[derive(Debug, Clone, Args)]
+pub struct ClientBusOptions {
     /// The D-Bus to connect to:
     #[arg(long, default_value = "system")]
-    dbus_bus: PuppetDbusBus,
+    dbus_bus: DbusBus,
 }
 
-#[derive(Debug, Clone, Parser)]
-struct PuppetDaemonArgs {
+#[derive(Debug, Clone, Args)]
+pub struct DaemonArgs {
     #[arg(long, short = 't')]
-    transport: PuppetControlSocketTransport,
+    transport: ControlSocketTransport,
 
     #[arg(long, required_if_eq("transport", "tcp"))]
     tcp_control_socket_addr: Option<std::net::SocketAddr>,
@@ -85,7 +84,7 @@ struct PuppetDaemonArgs {
     caddy_reload_command: Option<String>,
 
     #[arg(long, default_value = "system")]
-    dbus_bus: PuppetDaemonDbusBus,
+    dbus_bus: DaemonDbusBus,
 }
 
 /// The services declared under `--services-dir`, one [`ServiceDeclaration`] per
@@ -159,7 +158,7 @@ async fn scan_services(services_dir: &Path) -> Result<Vec<ServiceDeclaration>> {
 }
 
 /// Scan the service directory, put the local reverse proxy in front of what it
-/// holds, and announce it, replacing whatever was announced before. A puppet with
+/// holds, and announce it, replacing whatever was announced before. A daemon with
 /// no service directory configured announces nothing at all, rather than an empty
 /// set.
 ///
@@ -208,7 +207,7 @@ async fn announce_services(
     proxy_res
 }
 
-async fn update_job_info_files(args: &PuppetDaemonArgs, job_info: JobInfo) -> Result<()> {
+async fn update_job_info_files(args: &DaemonArgs, job_info: JobInfo) -> Result<()> {
     let job_info_dir = match args.job_info_dir {
         Some(ref path) => path,
         None => return Ok(()),
@@ -278,76 +277,21 @@ async fn update_job_info_files(args: &PuppetDaemonArgs, job_info: JobInfo) -> Re
     Ok(())
 }
 
-#[derive(Debug, Clone, Parser)]
-struct PuppetJobTerminateCommand;
-
-#[derive(Debug, Clone, Subcommand)]
-enum PuppetJobSubcommands {
-    /// Request the current job to be terminated.
-    Terminate(PuppetJobTerminateCommand),
-}
-
-#[derive(Debug, Clone, Parser)]
-struct PuppetJobCommand {
-    #[clap(flatten)]
-    bus_options: ClientBusOptions,
-
-    #[clap(subcommand)]
-    job_command: PuppetJobSubcommands,
-}
-
-#[derive(Debug, Clone, Parser)]
-struct PuppetServiceReloadCommand;
-
-#[derive(Debug, Clone, Subcommand)]
-enum PuppetServiceSubcommands {
-    /// Rescan the service directory for new/changed services.
-    Reload(PuppetServiceReloadCommand),
-}
-
-#[derive(Debug, Clone, Parser)]
-struct PuppetServiceCommand {
-    #[clap(flatten)]
-    bus_options: ClientBusOptions,
-
-    #[clap(subcommand)]
-    service_command: PuppetServiceSubcommands,
-}
-
-#[derive(Debug, Clone, Subcommand)]
-enum PuppetCommands {
-    /// Run a puppet daemon, connecting to a supervisor control socket
-    /// and establishing a DBus socket.
-    Daemon(PuppetDaemonArgs),
-
-    /// Commands related to the job currently executed on this supervisor.
-    Job(PuppetJobCommand),
-
-    /// Commands related to the services this job announces.
-    Service(PuppetServiceCommand),
-}
-
-#[derive(Debug, Clone, Parser)]
-struct PuppetCli {
-    #[clap(subcommand)]
-    puppet_command: PuppetCommands,
-}
-
-struct DbusPuppet {
+struct DbusDaemon {
     control_socket_client: Arc<control_socket_client::ControlSocketClient>,
     services_dir: Option<PathBuf>,
     proxy: Option<Arc<ServiceProxy>>,
 }
 
 #[interface(
-    name = "dev.treadmill.Puppet1",
+    name = "dev.treadmill.Daemon1",
     proxy(
         gen_blocking = false,
-        default_path = "/ci/treadmill/Puppet",
-        default_service = "dev.treadmill.Puppet",
+        default_path = "/dev/treadmill/Daemon",
+        default_service = "dev.treadmill.Daemon",
     )
 )]
-impl DbusPuppet {
+impl DbusDaemon {
     async fn terminate_job(&self) -> zbus::fdo::Result<()> {
         info!("Received D-bus request to terminate job, forwarding to supervisor.");
         self.control_socket_client
@@ -369,7 +313,7 @@ impl DbusPuppet {
 }
 
 async fn update_parameters_dir(
-    args: &PuppetDaemonArgs,
+    args: &DaemonArgs,
     client: &control_socket_client::ControlSocketClient,
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
@@ -437,7 +381,7 @@ async fn update_parameters_dir(
 }
 
 async fn configure_network(
-    args: &PuppetDaemonArgs,
+    args: &DaemonArgs,
     client: &control_socket_client::ControlSocketClient,
 ) -> Result<()> {
     // Request the network configuration, dump it into environment variables and
@@ -788,25 +732,21 @@ async fn run_command(
     }
 }
 
-async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
+async fn daemon_main(args: DaemonArgs) -> Result<()> {
     let mut client = Arc::new(
         async {
             match args.transport {
-                #[cfg(feature = "transport_tcp")]
-                PuppetControlSocketTransport::Tcp => {
-                    Ok(control_socket_client::ControlSocketClient::Tcp(
-                        control_socket_client::tcp::TcpControlSocketClient::new(
-                            args.tcp_control_socket_addr.unwrap(),
-                            SUPERVISOR_EVENT_CHANNEL_CAP,
-                        )
-                        .await?,
-                    ))
-                }
+                ControlSocketTransport::Tcp => Ok(control_socket_client::ControlSocketClient::Tcp(
+                    control_socket_client::tcp::TcpControlSocketClient::new(
+                        args.tcp_control_socket_addr.unwrap(),
+                        SUPERVISOR_EVENT_CHANNEL_CAP,
+                    )
+                    .await?,
+                )),
 
-                PuppetControlSocketTransport::AutoDiscover => {
+                ControlSocketTransport::AutoDiscover => {
                     // Give all known control socket clients a chance to auto-discover,
                     // in no particular order:
-                    #[cfg(feature = "transport_tcp")]
                     if let Some(client_res) =
                         control_socket_client::tcp::TcpControlSocketClient::autodiscover(
                             SUPERVISOR_EVENT_CHANNEL_CAP,
@@ -856,7 +796,7 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
     // that selectively either log or forward errors:
 
     async fn configure_network_wrapper(
-        args: &PuppetDaemonArgs,
+        args: &DaemonArgs,
         client: &control_socket_client::ControlSocketClient,
     ) -> Result<()> {
         let msg = "Failed to configure the network using the provided script";
@@ -884,18 +824,18 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
 
     // Register as a DBus service:
     let dbus_builder_opt = match args.dbus_bus {
-        PuppetDaemonDbusBus::Session => Some(zbus::connection::Builder::session()?),
-        PuppetDaemonDbusBus::System => Some(zbus::connection::Builder::system()?),
-        PuppetDaemonDbusBus::None => None,
+        DaemonDbusBus::Session => Some(zbus::connection::Builder::session()?),
+        DaemonDbusBus::System => Some(zbus::connection::Builder::system()?),
+        DaemonDbusBus::None => None,
     };
 
     let _dbus_conn = if let Some(dbus_builder) = dbus_builder_opt {
         Some(
             dbus_builder
-                .name("dev.treadmill.Puppet")?
+                .name("dev.treadmill.Daemon")?
                 .serve_at(
-                    "/ci/treadmill/Puppet",
-                    DbusPuppet {
+                    "/dev/treadmill/Daemon",
+                    DbusDaemon {
                         control_socket_client: client.clone(),
                         services_dir: args.services_dir.clone(),
                         proxy: proxy.clone(),
@@ -908,18 +848,18 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
         None
     };
 
-    // Report the puppet as ready:
+    // Report the daemon as ready:
     client
         .report_ready()
         .await
-        .context("Reporting puppet ready status to supervisor")?;
+        .context("Reporting daemon ready status to supervisor")?;
 
     // Announce whatever services the job declares at boot.
     announce_services(args.services_dir.as_deref(), proxy.as_deref(), &client).await?;
 
-    info!("Puppet started, waiting for supervisor events. Exit with CTRL+C");
+    info!("Daemon started, waiting for supervisor events. Exit with CTRL+C");
     sd_notify::notify(&[sd_notify::NotifyState::Ready])
-        .context("Notifying service manager that puppet is ready")?;
+        .context("Notifying service manager that the daemon is ready")?;
 
     // Create a HashMap with channels to the executor of a command which is
     // shared between all executors and this main loop. The purpose of this
@@ -1123,35 +1063,7 @@ async fn daemon_main(args: PuppetDaemonArgs) -> Result<()> {
     Ok(())
 }
 
-async fn handle_job_command(job_args: &PuppetJobCommand, proxy: DbusPuppetProxy<'_>) -> Result<()> {
-    match job_args.job_command {
-        PuppetJobSubcommands::Terminate(PuppetJobTerminateCommand) => {
-            info!("Requesting job termination.");
-            proxy
-                .terminate_job()
-                .await
-                .context("Requesting job termination")
-        }
-    }
-}
-
-async fn handle_service_command(
-    service_args: &PuppetServiceCommand,
-    proxy: DbusPuppetProxy<'_>,
-) -> Result<()> {
-    match service_args.service_command {
-        PuppetServiceSubcommands::Reload(PuppetServiceReloadCommand) => {
-            info!("Requesting a service reload.");
-            proxy
-                .reload_services()
-                .await
-                .context("Requesting a service reload")
-        }
-    }
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
+pub async fn run(args: DaemonArgs) -> Result<()> {
     use simplelog::{
         ColorChoice, Config as SimpleLogConfig, LevelFilter, TermLogger, TerminalMode,
     };
@@ -1164,30 +1076,32 @@ async fn main() -> Result<()> {
     )
     .unwrap();
 
-    let args = PuppetCli::parse();
+    daemon_main(args).await
+}
 
-    async fn client_dbus_connect(bus_options: &ClientBusOptions) -> Result<DbusPuppetProxy<'_>> {
-        let conn = match bus_options.dbus_bus {
-            PuppetDbusBus::System => zbus::Connection::system().await?,
-            PuppetDbusBus::Session => zbus::Connection::session().await?,
-        };
+async fn client_dbus_connect(bus_options: &ClientBusOptions) -> Result<DbusDaemonProxy<'_>> {
+    let conn = match bus_options.dbus_bus {
+        DbusBus::System => zbus::Connection::system().await?,
+        DbusBus::Session => zbus::Connection::session().await?,
+    };
 
-        let proxy = DbusPuppetProxy::new(&conn).await?;
+    Ok(DbusDaemonProxy::new(&conn).await?)
+}
 
-        Ok(proxy)
-    }
+pub async fn terminate_job(bus_options: &ClientBusOptions) -> Result<()> {
+    client_dbus_connect(bus_options)
+        .await?
+        .terminate_job()
+        .await
+        .context("Requesting job termination")
+}
 
-    match args.puppet_command {
-        PuppetCommands::Daemon(daemon_args) => daemon_main(daemon_args).await,
-        PuppetCommands::Job(job_args) => {
-            let proxy = client_dbus_connect(&job_args.bus_options).await?;
-            handle_job_command(&job_args, proxy).await
-        }
-        PuppetCommands::Service(service_args) => {
-            let proxy = client_dbus_connect(&service_args.bus_options).await?;
-            handle_service_command(&service_args, proxy).await
-        }
-    }
+pub async fn reload_services(bus_options: &ClientBusOptions) -> Result<()> {
+    client_dbus_connect(bus_options)
+        .await?
+        .reload_services()
+        .await
+        .context("Requesting a service reload")
 }
 
 #[cfg(test)]
@@ -1208,7 +1122,7 @@ mod tests {
     impl ServicesDir {
         fn new() -> Self {
             let path =
-                std::env::temp_dir().join(format!("tml-puppet-services-{}", uuid::Uuid::new_v4()));
+                std::env::temp_dir().join(format!("tml-daemon-services-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&path).unwrap();
             ServicesDir(path)
         }

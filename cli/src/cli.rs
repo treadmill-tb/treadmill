@@ -68,12 +68,16 @@ pub enum ColorChoice {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Authenticate with the switchboard
+    #[cfg(feature = "user")]
     Login(LoginArgs),
     /// Revoke and remove the stored credentials
+    #[cfg(feature = "user")]
     Logout,
     /// Show the current identity
+    #[cfg(feature = "user")]
     Whoami,
     /// Inspect or change local defaults
+    #[cfg(feature = "user")]
     Context {
         #[command(subcommand)]
         command: ContextCommand,
@@ -84,10 +88,15 @@ pub enum Command {
         command: JobCommand,
     },
     /// Integrate Treadmill with the system SSH client
+    #[cfg(feature = "user")]
     Ssh {
         #[command(subcommand)]
         command: SshCommand,
     },
+    /// Run the in-image daemon, connecting to the supervisor's control socket
+    /// and serving D-Bus
+    #[cfg(feature = "daemon")]
+    Daemon(crate::daemon::DaemonArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -142,6 +151,32 @@ pub enum ContextJobCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum JobCommand {
+    #[cfg(feature = "user")]
+    #[command(flatten)]
+    User(UserJobCommand),
+    #[cfg(feature = "daemon")]
+    #[command(flatten)]
+    Daemon(DaemonJobCommand),
+}
+
+#[cfg(feature = "daemon")]
+#[derive(Subcommand, Debug)]
+pub enum DaemonJobCommand {
+    /// Request the job this daemon runs in to be terminated
+    Terminate {
+        #[command(flatten)]
+        bus: crate::daemon::ClientBusOptions,
+    },
+    /// Rescan the service directory and announce the job's services
+    ReloadServices {
+        #[command(flatten)]
+        bus: crate::daemon::ClientBusOptions,
+    },
+}
+
+#[cfg(feature = "user")]
+#[derive(Subcommand, Debug)]
+pub enum UserJobCommand {
     /// Open an interactive SSH session to a job
     Ssh {
         #[command(flatten)]

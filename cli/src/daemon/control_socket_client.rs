@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, bail};
 
 // TCP control socket transport implementation:
-#[cfg(feature = "transport_tcp")]
 pub use treadmill_tcp_control_socket_client as tcp;
 
 use treadmill_rs::api::supervisor_puppet::{
@@ -12,35 +11,30 @@ use treadmill_rs::api::supervisor_puppet::{
 };
 
 pub enum ControlSocketClient {
-    #[cfg(feature = "transport_tcp")]
     Tcp(tcp::TcpControlSocketClient),
 }
 
 impl ControlSocketClient {
     pub async fn request(&self, req: PuppetReq) -> Result<SupervisorResp> {
         match self {
-            #[cfg(feature = "transport_tcp")]
             ControlSocketClient::Tcp(client) => client.request(req).await,
         }
     }
 
     pub async fn send_event(&self, ev: PuppetEvent) -> Result<()> {
         match self {
-            #[cfg(feature = "transport_tcp")]
             ControlSocketClient::Tcp(client) => client.send_event(ev).await,
         }
     }
 
     pub async fn listen(&self) -> Result<(u64, SupervisorEvent)> {
         match self {
-            #[cfg(feature = "transport_tcp")]
             ControlSocketClient::Tcp(client) => client.listen().await,
         }
     }
 
     pub async fn shutdown(self) -> Result<()> {
         match self {
-            #[cfg(feature = "transport_tcp")]
             ControlSocketClient::Tcp(client) => client.shutdown().await,
         }
     }

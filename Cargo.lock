@@ -5099,18 +5099,25 @@ dependencies = [
  "chrono",
  "clap",
  "dialoguer 0.12.0",
+ "ed25519-dalek 3.0.0",
  "figment",
  "futures-util",
+ "log",
+ "nix 0.31.3",
  "rustls",
  "rustls-native-certs",
+ "sd-notify",
  "serde",
  "serde_json",
+ "simplelog",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "toml 1.1.6+spec-1.1.0",
  "treadmill-rs",
+ "treadmill-tcp-control-socket-client",
  "uuid",
  "xdg",
+ "zbus",
 ]
 
 [[package]]
@@ -5161,27 +5168,6 @@ dependencies = [
  "treadmill-supervisor-lib",
  "treadmill-ws-connector",
  "uuid",
-]
-
-[[package]]
-name = "treadmill-puppet"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "clap",
- "ed25519-dalek 3.0.0",
- "log",
- "nix 0.31.3",
- "sd-notify",
- "serde",
- "serde_json",
- "simplelog",
- "tokio",
- "treadmill-rs",
- "treadmill-tcp-control-socket-client",
- "uuid",
- "zbus",
 ]
 
 [[package]]
