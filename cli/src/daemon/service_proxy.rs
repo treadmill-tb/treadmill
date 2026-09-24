@@ -5,7 +5,7 @@ use log::{info, warn};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use treadmill_rs::api::supervisor_puppet::{JobGatewayInfo, JobService};
+use treadmill_rs::api::switchboard::jobs::{JobGatewayInfo, JobServiceAnnouncement};
 
 /// Longest service name the switchboard accepts.
 pub const MAX_SERVICE_NAME_LEN: usize = 16;
@@ -17,14 +17,14 @@ pub fn service_name_valid(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
 }
 
-/// One `*.json` file under the services directory: a [`JobService`] to announce,
+/// One `*.json` file under the services directory: a [`JobServiceAnnouncement`] to announce,
 /// plus the local address a reverse proxy reaches it at. `upstream` stays on
 /// disk and is never announced; the switchboard has no business knowing where a
 /// service listens inside its job.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ServiceDeclaration {
     #[serde(flatten)]
-    pub service: JobService,
+    pub service: JobServiceAnnouncement,
     pub upstream: Option<String>,
 }
 
@@ -244,7 +244,7 @@ async fn write_atomically(path: &Path, contents: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use treadmill_rs::api::supervisor_puppet::JobGatewayEndpoint;
+    use treadmill_rs::api::switchboard::jobs::JobGatewayEndpoint;
 
     use super::*;
 
@@ -271,7 +271,7 @@ mod tests {
 
     fn declaration(name: &str, upstream: Option<&str>) -> ServiceDeclaration {
         ServiceDeclaration {
-            service: JobService {
+            service: JobServiceAnnouncement {
                 name: name.to_string(),
                 label: None,
                 protocol: "webapp".to_string(),

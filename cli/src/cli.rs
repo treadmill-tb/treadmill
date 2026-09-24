@@ -49,6 +49,17 @@ pub struct Globals {
     /// Increase verbosity
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
+
+    /// The D-Bus the tml daemon is on, or none
+    #[cfg(feature = "daemon")]
+    #[arg(
+        long,
+        value_enum,
+        value_name = "BUS",
+        default_value = "system",
+        global = true
+    )]
+    pub dbus_bus: crate::daemon::DbusBus,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +162,12 @@ pub enum ContextJobCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum JobCommand {
+    /// Request a job to be terminated
+    Terminate {
+        /// Target job; defaults to the active job, or inside a job to that job
+        #[arg(long, value_name = "JOB")]
+        job: Option<String>,
+    },
     #[cfg(feature = "user")]
     #[command(flatten)]
     User(UserJobCommand),
@@ -162,16 +179,8 @@ pub enum JobCommand {
 #[cfg(feature = "daemon")]
 #[derive(Subcommand, Debug)]
 pub enum DaemonJobCommand {
-    /// Request the job this daemon runs in to be terminated
-    Terminate {
-        #[command(flatten)]
-        bus: crate::daemon::ClientBusOptions,
-    },
     /// Rescan the service directory and announce the job's services
-    ReloadServices {
-        #[command(flatten)]
-        bus: crate::daemon::ClientBusOptions,
-    },
+    ReloadServices,
 }
 
 #[cfg(feature = "user")]

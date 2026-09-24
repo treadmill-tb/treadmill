@@ -18,12 +18,14 @@ mod state;
 #[cfg(feature = "user")]
 mod wsproxy;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use clap::Parser;
+use treadmill_rs::api::switchboard::client::SwitchboardClient;
+use uuid::Uuid;
 
 #[cfg(feature = "daemon")]
 use cli::DaemonJobCommand;
-use cli::{Cli, Command, JobCommand};
+use cli::{Cli, Command, Globals, JobCommand};
 #[cfg(feature = "user")]
 use cli::{SshCommand, UserJobCommand};
 #[cfg(feature = "user")]
@@ -74,6 +76,9 @@ async fn run(args: Cli) -> Result<()> {
         Command::Context { command } => {
             context::run(&mut Ctx::load(&args.globals)?, &command).await
         }
+        Command::Job {
+            command: JobCommand::Terminate { job },
+        } => terminate(&args.globals, job.as_deref()).await,
         #[cfg(feature = "user")]
         Command::Job {
             command: JobCommand::User(command),
@@ -81,7 +86,7 @@ async fn run(args: Cli) -> Result<()> {
         #[cfg(feature = "daemon")]
         Command::Job {
             command: JobCommand::Daemon(command),
-        } => daemon_job(command).await,
+        } => daemon_job(&args.globals, command).await,
         #[cfg(feature = "user")]
         Command::Ssh { command } => {
             let mut ctx = Ctx::load(&args.globals)?;
@@ -92,16 +97,51 @@ async fn run(args: Cli) -> Result<()> {
             }
         }
         #[cfg(feature = "daemon")]
-        Command::Daemon(daemon_args) => daemon::run(daemon_args).await,
+        Command::Daemon(daemon_args) => daemon::run(daemon_args, args.globals.dbus_bus).await,
     }
 }
 
 #[cfg(feature = "daemon")]
-async fn daemon_job(command: DaemonJobCommand) -> Result<()> {
+async fn daemon_job(globals: &Globals, command: DaemonJobCommand) -> Result<()> {
     match command {
-        DaemonJobCommand::Terminate { bus } => daemon::terminate_job(&bus).await,
-        DaemonJobCommand::ReloadServices { bus } => daemon::reload_services(&bus).await,
+        DaemonJobCommand::ReloadServices => daemon::reload_services(globals.dbus_bus).await,
     }
+}
+
+async fn job_client(globals: &Globals, job: Option<&str>) -> Result<(SwitchboardClient, Uuid)> {
+    #[cfg(feature = "daemon")]
+    if let Some(credentials) = daemon::credentials(globals.dbus_bus).await? {
+        if let Some(job) = job
+            && job.parse::<Uuid>().ok() != Some(credentials.job_id)
+        {
+            anyhow::bail!(
+                "inside a job, only that job ({}) can be acted on",
+                credentials.job_id
+            );
+        }
+        return Ok((
+            SwitchboardClient::new(credentials.base_url, Some(credentials.token)),
+            credentials.job_id,
+        ));
+    }
+
+    #[cfg(feature = "user")]
+    {
+        let ctx = Ctx::load(globals)?;
+        Ok((ctx.authenticated_client()?, ctx.resolve_job(job)?))
+    }
+    #[cfg(not(feature = "user"))]
+    anyhow::bail!("no tml daemon found on D-Bus")
+}
+
+async fn terminate(globals: &Globals, job: Option<&str>) -> Result<()> {
+    let (client, job_id) = job_client(globals, job).await?;
+    client
+        .terminate_job(job_id)
+        .await
+        .with_context(|| format!("requesting termination of job {job_id}"))?;
+    anstream::eprintln!("Requested termination of job {job_id}");
+    Ok(())
 }
 
 #[cfg(feature = "user")]

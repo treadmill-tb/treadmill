@@ -30,6 +30,7 @@ user = [
   "dep:xdg",
 ]
 daemon = [
+  "treadmill-rs/client",
   "dep:ed25519-dalek",
   "dep:log",
   "dep:nix",

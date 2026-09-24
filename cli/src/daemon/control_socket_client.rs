@@ -1,13 +1,10 @@
-use std::collections::HashMap;
-
 use anyhow::{Context, Result, bail};
 
 // TCP control socket transport implementation:
 pub use treadmill_tcp_control_socket_client as tcp;
 
 use treadmill_rs::api::supervisor_puppet::{
-    JobInfo, JobService, NetworkConfig, ParameterValue, PuppetEvent, PuppetReq, SupervisorEvent,
-    SupervisorResp,
+    JobInfo, NetworkConfig, PuppetEvent, PuppetReq, SupervisorEvent, SupervisorResp,
 };
 
 pub enum ControlSocketClient {
@@ -73,38 +70,7 @@ impl ControlSocketClient {
         }
     }
 
-    pub async fn get_parameters(&self) -> Result<HashMap<String, ParameterValue>> {
-        let resp = self
-            .request(PuppetReq::Parameters)
-            .await
-            .context("Sending parameters request to supervisor")?;
-
-        match resp {
-            SupervisorResp::Parameters { parameters } => Ok(parameters),
-            _ => {
-                bail!(
-                    "Invalid supervisor response to parameters request: {:?}",
-                    resp
-                );
-            }
-        }
-    }
-
     pub async fn report_ready(&self) -> Result<()> {
         self.send_event(PuppetEvent::Ready).await
-    }
-
-    pub async fn terminate_job(&self) -> Result<()> {
-        self.send_event(PuppetEvent::TerminateJob {
-            supervisor_event_id: None,
-        })
-        .await
-    }
-
-    /// Announce the job's complete set of services, replacing whatever was
-    /// announced before.
-    pub async fn report_service_set(&self, services: Vec<JobService>) -> Result<()> {
-        self.send_event(PuppetEvent::JobServiceSet { services })
-            .await
     }
 }

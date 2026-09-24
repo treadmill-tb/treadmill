@@ -12,8 +12,11 @@ use log::{debug, error, info, warn};
 use zbus::interface;
 
 use treadmill_rs::api::supervisor_puppet::{
-    CommandOutputStream, JobGatewayEndpoint, JobInfo, PuppetEvent, SupervisorEvent,
+    CommandOutputStream, JobApi, PuppetEvent, SupervisorEvent,
 };
+use treadmill_rs::api::switchboard::client::{ClientError, SwitchboardClient};
+use treadmill_rs::api::switchboard::jobs::{JobEnvironment, JobGatewayEndpoint, JobParameter};
+use uuid::Uuid;
 
 mod control_socket_client;
 mod service_proxy;
@@ -23,6 +26,8 @@ use service_proxy::{ServiceDeclaration, ServiceProxy, service_name_valid};
 // Cache at most 1024 supervisor-sent events:
 const SUPERVISOR_EVENT_CHANNEL_CAP: usize = 1024;
 
+const SWITCHBOARD_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone, ValueEnum)]
 #[clap(rename_all = "snake_case")]
 pub enum ControlSocketTransport {
@@ -30,24 +35,12 @@ pub enum ControlSocketTransport {
     AutoDiscover,
 }
 
-#[derive(Debug, Clone, ValueEnum)]
-pub enum DaemonDbusBus {
-    Session,
-    System,
-    None,
-}
-
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
 pub enum DbusBus {
     Session,
+    #[default]
     System,
-}
-
-#[derive(Debug, Clone, Args)]
-pub struct ClientBusOptions {
-    /// The D-Bus to connect to:
-    #[arg(long, default_value = "system")]
-    dbus_bus: DbusBus,
+    None,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -82,9 +75,6 @@ pub struct DaemonArgs {
     /// Shell command run after the proxy configuration changed.
     #[arg(long)]
     caddy_reload_command: Option<String>,
-
-    #[arg(long, default_value = "system")]
-    dbus_bus: DaemonDbusBus,
 }
 
 /// The services declared under `--services-dir`, one [`ServiceDeclaration`] per
@@ -169,7 +159,7 @@ async fn scan_services(services_dir: &Path) -> Result<Vec<ServiceDeclaration>> {
 async fn announce_services(
     services_dir: Option<&Path>,
     proxy: Option<&ServiceProxy>,
-    client: &control_socket_client::ControlSocketClient,
+    switchboard: &Switchboard,
 ) -> Result<()> {
     let Some(services_dir) = services_dir else {
         return Ok(());
@@ -194,20 +184,24 @@ async fn announce_services(
         "Announcing {} service(s) from {services_dir:?}",
         declarations.len()
     );
-    client
-        .report_service_set(
-            declarations
-                .into_iter()
-                .map(|declaration| declaration.service)
-                .collect(),
-        )
+    let services: Vec<_> = declarations
+        .into_iter()
+        .map(|declaration| declaration.service)
+        .collect();
+    switchboard
+        .client
+        .put_job_services(switchboard.job_id, &services)
         .await
-        .context("Announcing the job's services to the supervisor")?;
+        .context("Announcing the job's services to the switchboard")?;
 
     proxy_res
 }
 
-async fn update_job_info_files(args: &DaemonArgs, job_info: JobInfo) -> Result<()> {
+async fn update_job_info_files(
+    args: &DaemonArgs,
+    job_id: Uuid,
+    environment: Option<&JobEnvironment>,
+) -> Result<()> {
     let job_info_dir = match args.job_info_dir {
         Some(ref path) => path,
         None => return Ok(()),
@@ -219,18 +213,22 @@ async fn update_job_info_files(args: &DaemonArgs, job_info: JobInfo) -> Result<(
 
     let job_id_path = job_info_dir.join("job-id");
     info!("Writing job id to file {job_id_path:?}");
-    tokio::fs::write(job_id_path, job_info.job_id.to_string().as_bytes())
+    tokio::fs::write(job_id_path, job_id.to_string().as_bytes())
         .await
         .context("Writing job id to file")?;
 
+    let Some(environment) = environment else {
+        return Ok(());
+    };
+
     let host_id_path = job_info_dir.join("host-id");
     info!("Writing host id to file {host_id_path:?}");
-    tokio::fs::write(host_id_path, job_info.host_id.to_string().as_bytes())
+    tokio::fs::write(host_id_path, environment.host_id.to_string().as_bytes())
         .await
         .context("Writing host id to file")?;
 
     // Context for offering HTTP/WS services through public gateways.
-    if let Some(gateway) = job_info.gateway {
+    if let Some(gateway) = &environment.gateway {
         let issuer_path = job_info_dir.join("gateway-issuer");
         info!("Writing gateway issuer to file {issuer_path:?}");
         tokio::fs::write(issuer_path, gateway.issuer.as_bytes())
@@ -264,11 +262,10 @@ async fn update_job_info_files(args: &DaemonArgs, job_info: JobInfo) -> Result<(
     // The admin's description of the machine this job runs on, as a document
     // rather than one file per field: it is nested, and a job reads it with
     // `jq` or a JSON parser.
-    if let Some(host_spec) = job_info.host_spec {
+    if let Some(host_spec) = &environment.host_spec {
         let host_spec_path = job_info_dir.join("host-spec.json");
         info!("Writing host spec to file {host_spec_path:?}");
-        let document =
-            serde_json::to_vec_pretty(&host_spec).context("Serializing the host spec")?;
+        let document = serde_json::to_vec_pretty(host_spec).context("Serializing the host spec")?;
         tokio::fs::write(host_spec_path, document)
             .await
             .context("Writing host spec to file")?;
@@ -277,10 +274,52 @@ async fn update_job_info_files(args: &DaemonArgs, job_info: JobInfo) -> Result<(
     Ok(())
 }
 
+struct Switchboard {
+    client: SwitchboardClient,
+    base_url: String,
+    token: String,
+    job_id: Uuid,
+}
+
+impl Switchboard {
+    fn new(job_id: Uuid, api: JobApi) -> Self {
+        let token = api.token.into_inner();
+        Switchboard {
+            client: SwitchboardClient::new(api.base_url.clone(), Some(token.clone())),
+            base_url: api.base_url,
+            token,
+            job_id,
+        }
+    }
+
+    async fn environment(&self) -> Result<JobEnvironment> {
+        loop {
+            match self.client.get_job_environment(self.job_id).await {
+                Ok(environment) => return Ok(environment),
+                Err(ClientError::Transport(e)) => {
+                    warn!(
+                        "Cannot reach the switchboard, retrying in {SWITCHBOARD_RETRY_INTERVAL:?}: {e}"
+                    );
+                    tokio::time::sleep(SWITCHBOARD_RETRY_INTERVAL).await;
+                }
+                Err(e) => return Err(e).context("Fetching the job environment"),
+            }
+        }
+    }
+}
+
 struct DbusDaemon {
-    control_socket_client: Arc<control_socket_client::ControlSocketClient>,
+    switchboard: Option<Arc<Switchboard>>,
     services_dir: Option<PathBuf>,
     proxy: Option<Arc<ServiceProxy>>,
+}
+
+impl DbusDaemon {
+    fn switchboard(&self) -> zbus::fdo::Result<&Switchboard> {
+        self.switchboard.as_deref().ok_or_else(|| {
+            zbus::fdo::Error::Failed("This job has no access to a switchboard.".to_string())
+        })
+    }
 }
 
 #[interface(
@@ -292,12 +331,13 @@ struct DbusDaemon {
     )
 )]
 impl DbusDaemon {
-    async fn terminate_job(&self) -> zbus::fdo::Result<()> {
-        info!("Received D-bus request to terminate job, forwarding to supervisor.");
-        self.control_socket_client
-            .terminate_job()
-            .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    async fn credentials(&self) -> zbus::fdo::Result<(String, String, String)> {
+        let switchboard = self.switchboard()?;
+        Ok((
+            switchboard.base_url.clone(),
+            switchboard.token.clone(),
+            switchboard.job_id.to_string(),
+        ))
     }
 
     async fn reload_services(&self) -> zbus::fdo::Result<()> {
@@ -305,7 +345,7 @@ impl DbusDaemon {
         announce_services(
             self.services_dir.as_deref(),
             self.proxy.as_deref(),
-            &self.control_socket_client,
+            self.switchboard()?,
         )
         .await
         .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
@@ -314,7 +354,7 @@ impl DbusDaemon {
 
 async fn update_parameters_dir(
     args: &DaemonArgs,
-    client: &control_socket_client::ControlSocketClient,
+    parameters: &HashMap<String, JobParameter>,
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
 
@@ -330,17 +370,11 @@ async fn update_parameters_dir(
         .await
         .context("Creating parameters dir (recursively)")?;
 
-    // Fetch the set of parameters:
-    let parameters = client
-        .get_parameters()
-        .await
-        .context("Requesting parameters from supervisor")?;
-
     // Write the parameters to a temporary file, and then atomically
     // rename this file to the target filename. This avoids reads of
     // partially written parameters:
     let tmpfile_path = parameters_dir_path.join(".tmp");
-    for (name, value) in parameters.into_iter() {
+    for (name, value) in parameters {
         // Sanitize the path to ensure we don't have any
         // unrepresentable characters or path separators in there:
         let sanitized_path = parameters_dir_path.join(
@@ -732,7 +766,7 @@ async fn run_command(
     }
 }
 
-async fn daemon_main(args: DaemonArgs) -> Result<()> {
+async fn daemon_main(args: DaemonArgs, dbus_bus: DbusBus) -> Result<()> {
     let mut client = Arc::new(
         async {
             match args.transport {
@@ -769,27 +803,10 @@ async fn daemon_main(args: DaemonArgs) -> Result<()> {
         .await
         .context("Retrieving job_id from supervisor")?;
     info!("Retrieved job info message from supervisor: {job_info:?}");
-    update_job_info_files(&args, job_info.clone()).await?;
-
-    let proxy = match (&args.caddy_config, &job_info.gateway) {
-        (Some(config_path), Some(gateway)) => Some(Arc::new(
-            ServiceProxy::new(
-                config_path.clone(),
-                args.caddy_reload_command.clone(),
-                job_info.job_id,
-                gateway,
-            )
-            .context("Preparing the local service proxy")?,
-        )),
-        (Some(_), None) => {
-            warn!(
-                "A service proxy config was requested, but this job has no gateway. \
-		 Not generating one."
-            );
-            None
-        }
-        (None, _) => None,
-    };
+    let job_id = job_info.job_id;
+    let switchboard = job_info
+        .api
+        .map(|api| Arc::new(Switchboard::new(job_id, api)));
 
     // For certain requests and depending on some command line parameters, we'll
     // want to exit with an error if they fail. We provided these wrappers here
@@ -818,15 +835,47 @@ async fn daemon_main(args: DaemonArgs) -> Result<()> {
     // ourselves as ready, and then listen to supervisor events.
 
     configure_network_wrapper(&args, &client).await?;
-    update_parameters_dir(&args, &client)
-        .await
-        .context("Failed to create / update parameters directory")?;
+
+    let environment = match &switchboard {
+        Some(switchboard) => Some(switchboard.environment().await?),
+        None => {
+            warn!("The supervisor handed out no switchboard access, running without it.");
+            None
+        }
+    };
+    update_job_info_files(&args, job_id, environment.as_ref()).await?;
+    if let Some(environment) = &environment {
+        update_parameters_dir(&args, &environment.parameters)
+            .await
+            .context("Failed to create / update parameters directory")?;
+    }
+
+    let gateway = environment.as_ref().and_then(|e| e.gateway.as_ref());
+    let proxy = match (&args.caddy_config, gateway) {
+        (Some(config_path), Some(gateway)) => Some(Arc::new(
+            ServiceProxy::new(
+                config_path.clone(),
+                args.caddy_reload_command.clone(),
+                job_id,
+                gateway,
+            )
+            .context("Preparing the local service proxy")?,
+        )),
+        (Some(_), None) => {
+            warn!(
+                "A service proxy config was requested, but this job has no gateway. \
+		 Not generating one."
+            );
+            None
+        }
+        (None, _) => None,
+    };
 
     // Register as a DBus service:
-    let dbus_builder_opt = match args.dbus_bus {
-        DaemonDbusBus::Session => Some(zbus::connection::Builder::session()?),
-        DaemonDbusBus::System => Some(zbus::connection::Builder::system()?),
-        DaemonDbusBus::None => None,
+    let dbus_builder_opt = match dbus_bus {
+        DbusBus::Session => Some(zbus::connection::Builder::session()?),
+        DbusBus::System => Some(zbus::connection::Builder::system()?),
+        DbusBus::None => None,
     };
 
     let _dbus_conn = if let Some(dbus_builder) = dbus_builder_opt {
@@ -836,7 +885,7 @@ async fn daemon_main(args: DaemonArgs) -> Result<()> {
                 .serve_at(
                     "/dev/treadmill/Daemon",
                     DbusDaemon {
-                        control_socket_client: client.clone(),
+                        switchboard: switchboard.clone(),
                         services_dir: args.services_dir.clone(),
                         proxy: proxy.clone(),
                     },
@@ -855,7 +904,9 @@ async fn daemon_main(args: DaemonArgs) -> Result<()> {
         .context("Reporting daemon ready status to supervisor")?;
 
     // Announce whatever services the job declares at boot.
-    announce_services(args.services_dir.as_deref(), proxy.as_deref(), &client).await?;
+    if let Some(switchboard) = &switchboard {
+        announce_services(args.services_dir.as_deref(), proxy.as_deref(), switchboard).await?;
+    }
 
     info!("Daemon started, waiting for supervisor events. Exit with CTRL+C");
     sd_notify::notify(&[sd_notify::NotifyState::Ready])
@@ -1063,7 +1114,7 @@ async fn daemon_main(args: DaemonArgs) -> Result<()> {
     Ok(())
 }
 
-pub async fn run(args: DaemonArgs) -> Result<()> {
+pub async fn run(args: DaemonArgs, dbus_bus: DbusBus) -> Result<()> {
     use simplelog::{
         ColorChoice, Config as SimpleLogConfig, LevelFilter, TermLogger, TerminalMode,
     };
@@ -1076,28 +1127,54 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
     )
     .unwrap();
 
-    daemon_main(args).await
+    daemon_main(args, dbus_bus).await
 }
 
-async fn client_dbus_connect(bus_options: &ClientBusOptions) -> Result<DbusDaemonProxy<'_>> {
-    let conn = match bus_options.dbus_bus {
-        DbusBus::System => zbus::Connection::system().await?,
-        DbusBus::Session => zbus::Connection::session().await?,
+pub struct Credentials {
+    pub base_url: String,
+    pub token: String,
+    pub job_id: Uuid,
+}
+
+async fn connect(dbus_bus: DbusBus) -> Result<Option<zbus::Connection>> {
+    Ok(match dbus_bus {
+        DbusBus::System => Some(zbus::Connection::system().await?),
+        DbusBus::Session => Some(zbus::Connection::session().await?),
+        DbusBus::None => None,
+    })
+}
+
+pub async fn credentials(dbus_bus: DbusBus) -> Result<Option<Credentials>> {
+    let Ok(Some(conn)) = connect(dbus_bus).await else {
+        return Ok(None);
     };
-
-    Ok(DbusDaemonProxy::new(&conn).await?)
-}
-
-pub async fn terminate_job(bus_options: &ClientBusOptions) -> Result<()> {
-    client_dbus_connect(bus_options)
+    let owned = zbus::fdo::DBusProxy::new(&conn)
         .await?
-        .terminate_job()
+        .name_has_owner("dev.treadmill.Daemon".try_into()?)
+        .await?;
+    if !owned {
+        return Ok(None);
+    }
+
+    let (base_url, token, job_id) = DbusDaemonProxy::new(&conn)
+        .await?
+        .credentials()
         .await
-        .context("Requesting job termination")
+        .context("Asking the tml daemon for its credentials")?;
+    Ok(Some(Credentials {
+        base_url,
+        token,
+        job_id: job_id
+            .parse()
+            .context("The tml daemon sent a malformed job id")?,
+    }))
 }
 
-pub async fn reload_services(bus_options: &ClientBusOptions) -> Result<()> {
-    client_dbus_connect(bus_options)
+pub async fn reload_services(dbus_bus: DbusBus) -> Result<()> {
+    let conn = connect(dbus_bus)
+        .await?
+        .context("Reloading services needs a D-Bus to reach the tml daemon on")?;
+    DbusDaemonProxy::new(&conn)
         .await?
         .reload_services()
         .await
@@ -1108,7 +1185,7 @@ pub async fn reload_services(bus_options: &ClientBusOptions) -> Result<()> {
 mod tests {
     use super::*;
     use service_proxy::MAX_SERVICE_NAME_LEN;
-    use treadmill_rs::api::supervisor_puppet::JobService;
+    use treadmill_rs::api::switchboard::jobs::JobServiceAnnouncement;
 
     /// A scratch service directory, removed when the test ends.
     struct ServicesDir(PathBuf);
@@ -1144,7 +1221,7 @@ mod tests {
         assert_eq!(
             scan_services(&dir.0).await.unwrap(),
             vec![ServiceDeclaration {
-                service: JobService {
+                service: JobServiceAnnouncement {
                     name: "webide".to_string(),
                     label: Some("Web IDE".to_string()),
                     protocol: "webapp".to_string(),
