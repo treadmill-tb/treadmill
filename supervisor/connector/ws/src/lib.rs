@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use std::net::IpAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -27,7 +26,7 @@ use treadmill_rs::api::switchboard_supervisor::{
     SupervisorEvent, SupervisorJobEvent, SupervisorToSwitchboard, SwitchboardToSupervisor,
     websocket::TREADMILL_WEBSOCKET_PROTOCOL,
 };
-use treadmill_rs::connector::{self, CoordCommand, JobError, RunningJobState};
+use treadmill_rs::connector::{self, CoordCommand};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -105,7 +104,7 @@ struct Inner {
     /// This cannot be accomplished through the [`Arc`] around [`Inner`], so we use a [`Mutex`] for
     /// interior mutability.
     update_rx: Mutex<mpsc::UnboundedReceiver<SupervisorToSwitchboard>>,
-    /// This acts as an interior conduit from the `update_*` methods to the `run()` method.
+    /// This acts as an interior conduit from `emit` and the command acks to the `run()` method.
     update_tx: mpsc::UnboundedSender<SupervisorToSwitchboard>,
 
     shutdown_rx: watch::Receiver<bool>,
@@ -151,20 +150,7 @@ impl connector::SupervisorConnector for WsConnector {
     }
 
     async fn emit(&self, supervisor_event: SupervisorEvent) {
-        match supervisor_event {
-            SupervisorEvent::JobEvent { job_id, event } => match event {
-                SupervisorJobEvent::StateTransition {
-                    new_state,
-                    status_message: _, /* TODO: handle */
-                } => self.inner.update_job_state(job_id, new_state).await,
-                SupervisorJobEvent::Error { error } => {
-                    self.inner.report_job_error(job_id, error).await
-                }
-                SupervisorJobEvent::JobNetworkAddress { address } => {
-                    self.inner.report_job_network_address(job_id, address).await
-                }
-            },
-        }
+        self.inner.emit(supervisor_event).await
     }
 }
 
@@ -347,7 +333,11 @@ impl Inner {
                 let this = Arc::clone(self);
                 tokio::spawn(async move {
                     if let Ok(Err(error)) = acked.await {
-                        this.report_job_error(job_id, error).await;
+                        this.emit(SupervisorEvent::JobEvent {
+                            job_id,
+                            event: SupervisorJobEvent::Error { error },
+                        })
+                        .await;
                     }
                 });
             }
@@ -359,7 +349,11 @@ impl Inner {
                 let this = Arc::clone(self);
                 tokio::spawn(async move {
                     if let Ok(Err(error)) = acked.await {
-                        this.report_job_error(job_id, error).await;
+                        this.emit(SupervisorEvent::JobEvent {
+                            job_id,
+                            event: SupervisorJobEvent::Error { error },
+                        })
+                        .await;
                     }
                 });
             }
@@ -564,65 +558,13 @@ impl Inner {
         )
     }
 
-    async fn update_job_state(&self, job_id: Uuid, job_state: RunningJobState) {
-        tracing::info!(
-            "Supervisor provides job state for job {}: {:#?}",
-            job_id,
-            job_state
-        );
-        // Send the update to the run() loop, which will forward it to the switchboard
+    async fn emit(&self, event: SupervisorEvent) {
+        tracing::info!(?event, "Forwarding supervisor event to the switchboard");
         if let Err(e) = self
             .update_tx
-            .send(SupervisorToSwitchboard::SupervisorEvent(
-                SupervisorEvent::JobEvent {
-                    job_id,
-                    event: SupervisorJobEvent::StateTransition {
-                        new_state: job_state,
-                        status_message: None,
-                    },
-                },
-            ))
+            .send(SupervisorToSwitchboard::SupervisorEvent(event))
         {
-            tracing::error!("failed to send job state update to runloop: {e}")
-        }
-    }
-
-    async fn report_job_error(&self, job_id: Uuid, error: JobError) {
-        tracing::info!(
-            "Supervisor provides job error: job {}, error: {:#?}",
-            job_id,
-            error,
-        );
-        // Send the error to the run() loop, which will forward it to the switchboard
-        if let Err(e) = self
-            .update_tx
-            .send(SupervisorToSwitchboard::SupervisorEvent(
-                SupervisorEvent::JobEvent {
-                    job_id,
-                    event: SupervisorJobEvent::Error { error },
-                },
-            ))
-        {
-            tracing::error!("failed to report job error to runloop: {e}")
-        }
-    }
-
-    async fn report_job_network_address(&self, job_id: Uuid, address: IpAddr) {
-        tracing::info!(
-            "Supervisor provides job network address: job {}, address {}",
-            job_id,
-            address
-        );
-        if let Err(e) = self
-            .update_tx
-            .send(SupervisorToSwitchboard::SupervisorEvent(
-                SupervisorEvent::JobEvent {
-                    job_id,
-                    event: SupervisorJobEvent::JobNetworkAddress { address },
-                },
-            ))
-        {
-            tracing::error!("failed to send job network address to runloop: {e}")
+            tracing::error!("failed to send supervisor event to runloop: {e}")
         }
     }
 }

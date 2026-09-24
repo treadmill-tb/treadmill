@@ -124,17 +124,11 @@ pub trait SupervisorConnector: std::fmt::Debug + Send + Sync + 'static {
 
     async fn emit(&self, supervisor_event: SupervisorEvent);
 
-    async fn update_job_state(
-        &self,
-        job_id: Uuid,
-        job_state: RunningJobState,
-        status_message: Option<String>,
-    ) {
+    async fn update_job_state(&self, job_id: Uuid, job_state: RunningJobState) {
         self.emit(SupervisorEvent::JobEvent {
             job_id,
             event: SupervisorJobEvent::StateTransition {
                 new_state: job_state,
-                status_message,
             },
         })
         .await

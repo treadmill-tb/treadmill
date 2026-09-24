@@ -663,7 +663,7 @@ impl<B: JobBackend> JobTask<B> {
         event!(Level::INFO, ?phase, "Entering phase");
         self.runner
             .connector
-            .update_job_state(self.job_id(), phase.running_job_state(), None)
+            .update_job_state(self.job_id(), phase.running_job_state())
             .await;
         self.update_facts(|facts| facts.phase = phase);
     }

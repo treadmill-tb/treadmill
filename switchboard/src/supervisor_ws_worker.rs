@@ -980,15 +980,8 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         match event {
             // A reported running-state advance: adopt it through the same helper
             // reconcile uses, and keep the status cache in step.
-            SupervisorJobEvent::StateTransition {
-                new_state,
-                status_message,
-            } => {
-                tracing::trace!(
-                    ?new_state,
-                    ?status_message,
-                    "received StateTransition event from supervisor"
-                );
+            SupervisorJobEvent::StateTransition { new_state } => {
+                tracing::trace!(?new_state, "received StateTransition event from supervisor");
                 self.apply_state_transition(job_id, new_state).await
             }
 
@@ -2290,7 +2283,6 @@ mod tests {
                 job_id,
                 event: SupervisorJobEvent::StateTransition {
                     new_state: RunningJobState::Ready,
-                    status_message: None,
                 },
             },
         ))?;
@@ -3612,7 +3604,6 @@ mod tests {
                 job_id,
                 event: SupervisorJobEvent::StateTransition {
                     new_state: RunningJobState::Ready,
-                    status_message: None,
                 },
             })
             .await
@@ -3661,7 +3652,6 @@ mod tests {
                 job_id,
                 event: SupervisorJobEvent::StateTransition {
                     new_state: RunningJobState::Terminated,
-                    status_message: None,
                 },
             })
             .await
@@ -3879,7 +3869,6 @@ mod tests {
                 job_id,
                 event: SupervisorJobEvent::StateTransition {
                     new_state: RunningJobState::Ready,
-                    status_message: None,
                 },
             })
             .await

@@ -131,17 +131,8 @@ impl connector::SupervisorConnector for LocalConnector {
     async fn emit(&self, supervisor_event: SupervisorEvent) {
         let SupervisorEvent::JobEvent { job_id, event } = supervisor_event;
         match event {
-            SupervisorJobEvent::StateTransition {
-                new_state,
-                status_message,
-            } => {
-                event!(
-                    Level::INFO,
-                    %job_id,
-                    ?new_state,
-                    ?status_message,
-                    "job state transition",
-                );
+            SupervisorJobEvent::StateTransition { new_state } => {
+                event!(Level::INFO, %job_id, ?new_state, "job state transition");
                 if matches!(new_state, RunningJobState::Terminated) {
                     let _ = self.inner.terminated_tx.send(true);
                 }
@@ -304,14 +295,14 @@ mod tests {
                         }
                     };
                     held = Some((req.job_id, state.clone()));
-                    connector.update_job_state(req.job_id, state, None).await;
+                    connector.update_job_state(req.job_id, state).await;
                 }
 
                 CoordCommand::TerminateJob { job_id, ack } => {
                     calls.lock().unwrap().push("terminate");
                     held = Some((job_id, RunningJobState::Terminated));
                     connector
-                        .update_job_state(job_id, RunningJobState::Terminated, None)
+                        .update_job_state(job_id, RunningJobState::Terminated)
                         .await;
                     let _ = ack.send(Ok(()));
                 }
