@@ -479,7 +479,7 @@ coord_connector = "ws_connector"
 job_address = "127.0.0.1"
 # The guest reaches this host, and so the switchboard, at QEMU's user-mode
 # gateway address.
-job_api_url = "http://10.0.2.2:$sb_port"
+job_switchboard_api_url = "http://10.0.2.2:$sb_port"
 
 [ws_connector]
 token = "$host_token_bearer"

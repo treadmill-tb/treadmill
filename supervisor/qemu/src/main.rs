@@ -528,7 +528,7 @@ impl QemuSupervisorConfig {
             job_address: self.base.job_address,
             workdirs,
             daemon_api_listen_addr: self.qemu.daemon_api_listen_addr,
-            job_api_url: self.base.job_api_url.clone(),
+            job_switchboard_api_url: self.base.job_switchboard_api_url.clone(),
             start_script: self.qemu.start_script.clone(),
             stop_script: self.qemu.stop_script.clone(),
             log_streaming: self.log_streaming.clone(),

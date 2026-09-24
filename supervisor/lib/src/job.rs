@@ -66,7 +66,7 @@ pub struct JobRunnerConfig {
     /// Address the per-job daemon API listens on.
     pub daemon_api_listen_addr: SocketAddr,
 
-    pub job_api_url: Option<String>,
+    pub job_switchboard_api_url: String,
 
     pub start_script: Option<PathBuf>,
     pub stop_script: Option<PathBuf>,
@@ -224,14 +224,15 @@ pub struct JobFacts {
 }
 
 impl JobFacts {
-    fn new(start_job_req: &StartJobMessage, job_api_url: Option<&str>) -> Self {
+    fn new(start_job_req: &StartJobMessage, job_switchboard_api_url: &str) -> Self {
         JobFacts {
             job_id: start_job_req.job_id,
             phase: Phase::Starting,
-            api: job_api_url
-                .zip(start_job_req.job_token.as_ref())
-                .map(|(base_url, token)| SwitchboardApi {
-                    base_url: base_url.to_string(),
+            api: start_job_req
+                .job_token
+                .as_ref()
+                .map(|token| SwitchboardApi {
+                    base_url: job_switchboard_api_url.to_string(),
                     token: token.clone(),
                 }),
         }
@@ -450,7 +451,7 @@ impl<B: JobBackend> JobRunner<B> {
         let (cmd_tx, cmd_rx) = mpsc::channel(JOB_MAILBOX_CAPACITY);
         let (facts_tx, facts_rx) = watch::channel(Arc::new(JobFacts::new(
             &start_job_req,
-            self.config.job_api_url.as_deref(),
+            &self.config.job_switchboard_api_url,
         )));
 
         let handle = JobHandle {
@@ -1456,7 +1457,7 @@ mod tests {
                 JobWorkdirs::open(&tmp.path().join("state"), RetentionConfig::default()).unwrap(),
             ),
             daemon_api_listen_addr: free_loopback_addr(),
-            job_api_url: None,
+            job_switchboard_api_url: "https://switchboard.example".to_string(),
             start_script: None,
             stop_script: None,
             log_streaming: LogPublisherConfig::default(),
@@ -1660,9 +1661,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_running_job_is_told_how_to_reach_the_switchboard() {
-        let h = harness_with(StubBackend::default(), |_, config| {
-            config.job_api_url = Some("https://switchboard.example".to_string());
-        });
+        let h = harness(StubBackend::default());
         let job_id = Uuid::new_v4();
         start_and_boot(
             &h,
@@ -1677,17 +1676,12 @@ mod tests {
         assert_eq!(job_info.job_id, job_id);
         let api = job_info
             .api
-            .expect("a job with a token and a configured URL is told both");
+            .expect("a job with a token is told how to reach the switchboard");
         assert_eq!(api.base_url, "https://switchboard.example");
         assert_eq!(api.token.expose(), "job-token");
 
-        let url = Some("https://switchboard.example");
+        let url = "https://switchboard.example";
         assert!(JobFacts::new(&start_msg(Uuid::new_v4()), url).api.is_none());
-        let with_token = StartJobMessage {
-            job_token: Some(Secret::new("job-token".to_string())),
-            ..start_msg(Uuid::new_v4())
-        };
-        assert!(JobFacts::new(&with_token, None).api.is_none());
     }
 
     /// A job that fails on its way up still owes the coordinator a terminal

@@ -213,6 +213,7 @@ sup_cfg="$cfg_dir/supervisor.toml"
 [base]
 supervisor_id = "$supervisor_id"
 coord_connector = "local"
+job_switchboard_api_url = ""
 
 [oci_store]
 registry = "$zot_authority"
