@@ -1688,7 +1688,7 @@ export interface components {
              * @description The host the job is (or was) dispatched on; null if unplaced.
              */
             dispatched_on_host_id?: string | null;
-            /** @description A human-readable detail accompanying termination, if any. */
+            /** @description The job's own human-readable note on its outcome, if any. */
             exit_message?: string | null;
             /**
              * @description Host eligibility tags this job requires (superset match against a host's
@@ -1699,6 +1699,11 @@ export interface components {
             image: components["schemas"]["JobImage"];
             /** @description The sub-stage while `state` is `initializing`; null otherwise. */
             initializing_stage?: components["schemas"]["JobInitializingStage"] | null;
+            /**
+             * @description The supervisor's description of the error that ended the job, if one
+             *     did.
+             */
+            job_error?: string | null;
             /** Format: uuid */
             job_id: string;
             /**

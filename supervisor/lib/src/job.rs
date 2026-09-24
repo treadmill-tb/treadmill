@@ -205,12 +205,6 @@ impl Outcome {
     fn job_error(&self) -> Option<JobError> {
         match self {
             Outcome::Failed(error) => Some(error.clone()),
-            Outcome::WorkloadExited(status) if !status.success() => Some(JobError {
-                error_kind: JobErrorKind::InternalError,
-                description: format!(
-                    "Workload process had an internal error with status: {status:?}"
-                ),
-            }),
             _ => None,
         }
     }
@@ -221,7 +215,7 @@ impl Outcome {
                 "Workload process exited successfully.".to_string()
             }
             Outcome::WorkloadExited(status) => {
-                format!("Workload process had an internal error with status: {status:?}")
+                format!("Workload process exited unsuccessfully: {status}")
             }
             Outcome::TerminatedByRequest => "Workload process was killed.".to_string(),
             Outcome::CancelledDuringStartup => "Job terminated while starting up.".to_string(),

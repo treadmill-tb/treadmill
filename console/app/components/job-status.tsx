@@ -166,6 +166,7 @@ function Ended({ job }: { job: JobInfo }) {
       <Headline icon={TONE_ICON[termination.tone]} tone={termination.tone}>
         {termination.label}
       </Headline>
+      {job.job_error != null && <blockquote>{job.job_error}</blockquote>}
       <p className="muted">
         {ran === null
           ? "Never started"

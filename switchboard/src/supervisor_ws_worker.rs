@@ -4136,12 +4136,14 @@ mod tests {
             Some("image_error"),
             "ImageNotFound must map to image_error"
         );
-        let (_outcome, message) = task_outcome_of(&pool, job_id).await?;
-        assert_eq!(
-            message.as_deref(),
-            Some("manifest missing"),
-            "the error description must be recorded as exit_message"
-        );
+        let (job_error, message): (Option<String>, Option<String>) = sqlx::query_as(
+            "select job_error, exit_message from tml_switchboard.jobs where job_id = $1",
+        )
+        .bind(job_id)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(job_error.as_deref(), Some("manifest missing"));
+        assert_eq!(message, None);
 
         // Error finalization does not release the assignment — the supervisor
         // may still hold the job; reconcile releases it once the supervisor

@@ -537,8 +537,11 @@ pub struct JobInfo {
     /// The user workload's success/failure outcome, orthogonal to
     /// `termination_reason`; null if never reported.
     pub task_exit_status: Option<TaskExitStatus>,
-    /// A human-readable detail accompanying termination, if any.
+    /// The job's own human-readable note on its outcome, if any.
     pub exit_message: Option<String>,
+    /// The supervisor's description of the error that ended the job, if one
+    /// did.
+    pub job_error: Option<String>,
     /// When the job was finalized; null until then.
     pub terminated_at: Option<DateTime<Utc>>,
 

@@ -463,6 +463,7 @@ pub struct SqlJob {
     task_exit_status: Option<SqlTaskExitStatus>,
     #[allow(dead_code)]
     exit_message: Option<String>,
+    job_error: Option<String>,
     #[allow(dead_code)]
     terminated_at: Option<DateTime<Utc>>,
 }
@@ -652,6 +653,7 @@ impl SqlJob {
             termination_reason: self.termination_reason.map(Into::into),
             task_exit_status: self.task_exit_status.map(Into::into),
             exit_message: self.exit_message,
+            job_error: self.job_error,
             terminated_at: self.terminated_at,
             services,
             job_ip_address: self.job_ip_address.map(|address| address.ip()),
@@ -718,6 +720,7 @@ pub async fn fetch_by_job_id(
         termination_reason as "termination_reason: _",
         task_exit_status as "task_exit_status: _",
         exit_message,
+        job_error,
         terminated_at,
         job_ip_address
         from tml_switchboard.jobs where job_id = $1;
@@ -1814,9 +1817,9 @@ pub fn termination_reason_for_job_error(kind: &JobErrorKind) -> SqlTerminationRe
 /// within the caller's transaction. Backs the event path's error handling:
 /// records the terminal `termination_reason` (see
 /// [`termination_reason_for_job_error`]) and the error's `description` as
-/// `exit_message` (clearing `initializing_stage`; placement and start time are
-/// retained). The orthogonal `task_exit_status` is left untouched (the protocol
-/// keeps the *why-it-stopped* and the *workload outcome* separate).
+/// `job_error` (clearing `initializing_stage`; placement and start time are
+/// retained). The job's own `task_exit_status` and `exit_message` are left
+/// untouched.
 ///
 /// `hosts.current_job` is **not** released here (see [`finalize_terminated`] for
 /// the rationale): an `Error` is reported out-of-band, before the supervisor's
@@ -1845,7 +1848,7 @@ pub async fn finalize_errored(
         update tml_switchboard.jobs
         set job_state = 'finalized',
             termination_reason = $2,
-            exit_message = $3,
+            job_error = $3,
             initializing_stage = null,
             terminated_at = $4
         where job_id = $1 and job_state <> 'finalized'

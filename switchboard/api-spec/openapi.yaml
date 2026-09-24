@@ -3558,7 +3558,7 @@ components:
           - 'null'
           format: uuid
         exit_message:
-          description: A human-readable detail accompanying termination, if any.
+          description: The job's own human-readable note on its outcome, if any.
           type:
           - string
           - 'null'
@@ -3575,6 +3575,13 @@ components:
           anyOf:
           - $ref: '#/components/schemas/JobInitializingStage'
           - type: 'null'
+        job_error:
+          description: |-
+            The supervisor's description of the error that ended the job, if one
+            did.
+          type:
+          - string
+          - 'null'
         job_id:
           type: string
           format: uuid

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        select\n        job_id,\n        label,\n        owner_id,\n        resume_job_id,\n        restart_job_id,\n        image_id,\n        image_set_id,\n        image_set_generation,\n        resolved_image_id,\n        restart_policy as \"sql_restart_policy: _\",\n        enqueued_by_token_id,\n        host_cel_predicate,\n        lease_duration,\n        lease_expiry_action as \"lease_expiry_action: _\",\n        queued_at,\n        job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\",\n        started_at,\n        dispatched_on_host_id,\n        terminate_requested_at,\n        terminate_requested_reason as \"terminate_requested_reason: _\",\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\",\n        exit_message,\n        terminated_at,\n        job_ip_address\n        from tml_switchboard.jobs where job_id = $1;\n        ",
+  "query": "\n        select\n        job_id,\n        label,\n        owner_id,\n        resume_job_id,\n        restart_job_id,\n        image_id,\n        image_set_id,\n        image_set_generation,\n        resolved_image_id,\n        restart_policy as \"sql_restart_policy: _\",\n        enqueued_by_token_id,\n        host_cel_predicate,\n        lease_duration,\n        lease_expiry_action as \"lease_expiry_action: _\",\n        queued_at,\n        job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\",\n        started_at,\n        dispatched_on_host_id,\n        terminate_requested_at,\n        terminate_requested_reason as \"terminate_requested_reason: _\",\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\",\n        exit_message,\n        job_error,\n        terminated_at,\n        job_ip_address\n        from tml_switchboard.jobs where job_id = $1;\n        ",
   "describe": {
     "columns": [
       {
@@ -371,6 +371,17 @@
       },
       {
         "ordinal": 24,
+        "name": "job_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "job_error"
+          }
+        }
+      },
+      {
+        "ordinal": 25,
         "name": "terminated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -381,7 +392,7 @@
         }
       },
       {
-        "ordinal": 25,
+        "ordinal": 26,
         "name": "job_ip_address",
         "type_info": "Inet",
         "origin": {
@@ -423,8 +434,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "2d96e0f27d474c6abf8b4e1d6fab781de7c22407ba76cc34fff9ec93104ea266"
+  "hash": "16d081cbcef241e6c716d95f86b5a9f3534d3f9e7748adb1ea12170e4cc79a3a"
 }

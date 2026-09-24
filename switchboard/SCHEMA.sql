@@ -738,10 +738,13 @@ CREATE TABLE tml_switchboard.jobs (
     -- `termination_reason` records *why* the job stopped; `task_exit_status`
     -- records the *result of the user workload* (independent of the reason);
     -- `exit_message` is an optional human-readable note. Captured workload
-    -- output is stored in object storage, not here.
+    -- output is stored in object storage, not here. `task_exit_status` and
+    -- `exit_message` belong to the job alone; `job_error` is the supervisor's
+    -- description of an error that ended the job.
     termination_reason tml_switchboard.termination_reason,
     task_exit_status tml_switchboard.task_exit_status,
     exit_message text,
+    job_error text,
     terminated_at timestamp with time zone,
     ---->> INVARIANT CHECKING <<----
     CONSTRAINT valid_init_spec CHECK (
@@ -806,6 +809,10 @@ CREATE TABLE tml_switchboard.jobs (
     ),
     -- A shortened lease floors at zero rather than going negative.
     CONSTRAINT lease_duration_non_negative CHECK (lease_duration >= INTERVAL '0'),
+    CONSTRAINT job_error_only_when_finalized CHECK (
+        job_error IS NULL
+        OR job_state = 'finalized'
+    ),
     CONSTRAINT terminate_request_iso CHECK (
         (terminate_requested_at IS NULL) = (terminate_requested_reason IS NULL)
     ),
