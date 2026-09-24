@@ -243,9 +243,9 @@ pub async fn list_tokens(
     let current_token = subject.token_id();
 
     let rows = sqlx::query!(
-        r#"select token_id, created_at, expires_at, user_agent, comment, created_ip,
+        r#"select token_id, created_at, expires_at as "expires_at!", user_agent, comment, created_ip,
                   revoked as "revoked: crate::sql::api_token::Revocation"
-           from tml_switchboard.api_tokens where user_id = $1
+           from tml_switchboard.api_tokens where subject_id = $1
            order by created_at desc, token_id desc;"#,
         user_id,
     )

@@ -64,10 +64,10 @@ pub async fn fetch_metadata_by_token<'c, E: PgExecutor<'c>>(
 ) -> Result<SqlApiTokenMetadata, TokenError> {
     sqlx::query_as!(
         SqlApiTokenMetadata,
-        r#"SELECT t.token_id, t.user_id, t.revoked as "revoked: _",
-                  t.expires_at, u.locked
+        r#"SELECT t.token_id, t.subject_id as user_id, t.revoked as "revoked: _",
+                  t.expires_at as "expires_at!", u.locked
             FROM tml_switchboard.api_tokens t
-            JOIN tml_switchboard.users u ON u.subject_id = t.user_id
+            JOIN tml_switchboard.users u ON u.subject_id = t.subject_id
             WHERE t.token = $1
             LIMIT 1;"#,
         token.as_bytes(),
@@ -86,10 +86,10 @@ pub async fn fetch_metadata_by_id<'c, E: PgExecutor<'c>>(
 ) -> Result<SqlApiTokenMetadata, TokenError> {
     sqlx::query_as!(
         SqlApiTokenMetadata,
-        r#"SELECT t.token_id, t.user_id, t.revoked as "revoked: _",
-                  t.expires_at, u.locked
+        r#"SELECT t.token_id, t.subject_id as user_id, t.revoked as "revoked: _",
+                  t.expires_at as "expires_at!", u.locked
             FROM tml_switchboard.api_tokens t
-            JOIN tml_switchboard.users u ON u.subject_id = t.user_id
+            JOIN tml_switchboard.users u ON u.subject_id = t.subject_id
             WHERE t.token_id = $1
             LIMIT 1;"#,
         token_id
@@ -135,8 +135,8 @@ impl Transition for IssueSessionToken {
         let expires = created + self.lifetime;
         sqlx::query!(
             "insert into tml_switchboard.api_tokens \
-             (token_id, token, user_id, revoked, created_at, expires_at, user_agent, comment, created_ip, created_port) \
-             values ($1, $2, $3, null, $4, $5, $6, $7, $8, $9);",
+             (token_id, token, subject_id, subject_kind, revoked, created_at, expires_at, user_agent, comment, created_ip, created_port) \
+             values ($1, $2, $3, 'user', null, $4, $5, $6, $7, $8, $9);",
             token_id,
             api_token.as_bytes(),
             self.user_id,

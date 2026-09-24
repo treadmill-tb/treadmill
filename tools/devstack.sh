@@ -440,11 +440,11 @@ insert into tml_switchboard.hosts
 insert into tml_switchboard.host_specs (host_id, revision, spec, spec_version)
   values ('$host_id', 1, '$host_spec_json', 'v1') on conflict do nothing;
 insert into tml_switchboard.api_tokens
-  (token_id, token, user_id, revoked, created_at, expires_at)
+  (token_id, token, subject_id, subject_kind, revoked, created_at, expires_at)
   values (
     '3be73eea-192f-46c0-af01-92f574290c81',
     '\x075a32da4a35c1574629bbca73ff5d2a2ee081960b4cbcdd9b602ce02595d797',
-    '$dev_user_id', null,
+    '$dev_user_id', 'user', null,
     '2024-07-12 13:56:50.616829-07', '2124-07-12 13:56:50.616829-07'
   ) on conflict do nothing;
 SQL

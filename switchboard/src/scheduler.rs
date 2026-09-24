@@ -504,8 +504,8 @@ mod tests {
         let id = Uuid::new_v4();
         sqlx::query(
             "insert into tml_switchboard.api_tokens \
-             (token_id, token, user_id, revoked, created_at, expires_at) \
-             values ($1, $2, $3, null, now(), now() + interval '1 day')",
+             (token_id, token, subject_id, subject_kind, revoked, created_at, expires_at) \
+             values ($1, $2, $3, 'user', null, now(), now() + interval '1 day')",
         )
         .bind(id)
         .bind(vec![0u8; 32])
@@ -698,7 +698,7 @@ mod tests {
         // user. Host authorization (`eligible_hosts`) is evaluated against this
         // owner.
         let owner: Uuid = sqlx::query_scalar(
-            "select user_id from tml_switchboard.api_tokens where token_id = $1",
+            "select subject_id from tml_switchboard.api_tokens where token_id = $1",
         )
         .bind(token)
         .fetch_one(pool)

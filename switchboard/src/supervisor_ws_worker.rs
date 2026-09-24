@@ -1682,8 +1682,8 @@ mod tests {
         let token_id = Uuid::new_v4();
         sqlx::query(
             "insert into tml_switchboard.api_tokens \
-             (token_id, token, user_id, revoked, created_at, expires_at) \
-             values ($1, $2, $3, null, now(), now() + interval '1 day')",
+             (token_id, token, subject_id, subject_kind, revoked, created_at, expires_at) \
+             values ($1, $2, $3, 'user', null, now(), now() + interval '1 day')",
         )
         .bind(token_id)
         .bind(vec![0u8; 32])
@@ -1726,6 +1726,10 @@ mod tests {
     ) -> anyhow::Result<Uuid> {
         let job_id = Uuid::new_v4();
         let image_id = insert_image(pool).await?;
+        sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
+            .bind(job_id)
+            .execute(pool)
+            .await?;
         sqlx::query(
             "insert into tml_switchboard.jobs \
              ( \
@@ -1761,7 +1765,7 @@ mod tests {
                  $4, \
                  ( \
                      select \
-                     user_id \
+                     subject_id \
                      from \
                      tml_switchboard.api_tokens \
                      where \
@@ -1820,6 +1824,10 @@ mod tests {
     ) -> anyhow::Result<Uuid> {
         let job_id = Uuid::new_v4();
         let image_id = insert_image(pool).await?;
+        sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
+            .bind(job_id)
+            .execute(pool)
+            .await?;
         sqlx::query(
             "insert into \
              tml_switchboard.jobs \
@@ -1856,7 +1864,7 @@ mod tests {
                  $3, \
                  ( \
                      select
-                     user_id \
+                     subject_id \
                      from \
                      tml_switchboard.api_tokens \
                      where \
@@ -3657,6 +3665,10 @@ mod tests {
         // original's image reference copied as enqueue does.
         let resume_target = job_id;
         let resume_job = Uuid::new_v4();
+        sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
+            .bind(resume_job)
+            .execute(&pool)
+            .await?;
         sqlx::query(
             "insert into tml_switchboard.jobs \
              (job_id, resume_job_id, restart_job_id, image_id, image_set_id, \

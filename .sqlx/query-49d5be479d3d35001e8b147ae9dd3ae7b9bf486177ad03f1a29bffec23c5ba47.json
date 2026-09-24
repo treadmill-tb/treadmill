@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select token_id, created_at, expires_at, user_agent, comment, created_ip,\n                  revoked as \"revoked: crate::sql::api_token::Revocation\"\n           from tml_switchboard.api_tokens where user_id = $1\n           order by created_at desc, token_id desc;",
+  "query": "select token_id, created_at, expires_at as \"expires_at!\", user_agent, comment, created_ip,\n                  revoked as \"revoked: crate::sql::api_token::Revocation\"\n           from tml_switchboard.api_tokens where subject_id = $1\n           order by created_at desc, token_id desc;",
   "describe": {
     "columns": [
       {
@@ -27,7 +27,7 @@
       },
       {
         "ordinal": 2,
-        "name": "expires_at",
+        "name": "expires_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -105,12 +105,12 @@
     "nullable": [
       false,
       false,
-      false,
+      true,
       true,
       true,
       true,
       true
     ]
   },
-  "hash": "d7ca55ea30cb929fe3986a983f0fb988cf39d7f5fefd32c0c72ac90772a686b4"
+  "hash": "49d5be479d3d35001e8b147ae9dd3ae7b9bf486177ad03f1a29bffec23c5ba47"
 }

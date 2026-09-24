@@ -311,6 +311,13 @@ pub async fn insert(
     };
 
     sqlx::query!(
+        "insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')",
+        as_job_id,
+    )
+    .execute(conn.as_mut())
+    .await?;
+
+    sqlx::query!(
         r#"
         insert into tml_switchboard.jobs
         (
@@ -2014,8 +2021,8 @@ mod tests {
         secret[..16].copy_from_slice(token.as_bytes());
         sqlx::query(
             "insert into tml_switchboard.api_tokens \
-             (token_id, token, user_id, revoked, created_at, expires_at) \
-             values ($1, $2, $3, null, now(), now() + interval '1 day')",
+             (token_id, token, subject_id, subject_kind, revoked, created_at, expires_at) \
+             values ($1, $2, $3, 'user', null, now(), now() + interval '1 day')",
         )
         .bind(token)
         .bind(secret)
@@ -2038,6 +2045,11 @@ mod tests {
         .unwrap();
 
         let job_id = Uuid::now_v7();
+        sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
+            .bind(job_id)
+            .execute(pool)
+            .await
+            .unwrap();
         sqlx::query(
             "insert into tml_switchboard.jobs \
              (job_id, owner_id, image_id, restart_policy, enqueued_by_token_id, \
@@ -2217,6 +2229,12 @@ mod tests {
         let original = insert_job(&pool).await;
         let resume = async |budget: i32| {
             let job_id = Uuid::now_v7();
+            sqlx::query(
+                "insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')",
+            )
+            .bind(job_id)
+            .execute(&pool)
+            .await?;
             sqlx::query(
                 "insert into tml_switchboard.jobs \
                  (job_id, owner_id, resume_job_id, image_id, restart_policy, \

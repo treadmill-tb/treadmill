@@ -150,7 +150,7 @@ async fn whoami(client: &reqwest::Client, addr: SocketAddr, token: &str) -> Uuid
 async fn latest_token_id(pool: &PgPool, user_id: Uuid) -> Uuid {
     sqlx::query_scalar(
         "select token_id from tml_switchboard.api_tokens \
-         where user_id = $1 order by created_at desc limit 1",
+         where subject_id = $1 order by created_at desc limit 1",
     )
     .bind(user_id)
     .fetch_one(pool)
@@ -208,6 +208,11 @@ async fn register_image(pool: &PgPool) -> (Uuid, Digest) {
 async fn seed_job(pool: &PgPool, owner: Uuid, token: Uuid, params: &[(&str, &str, bool)]) -> Uuid {
     let job_id = Uuid::new_v4();
     let (image_id, _) = register_image(pool).await;
+    sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
+        .bind(job_id)
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query(
         "insert into tml_switchboard.jobs \
            (job_id, owner_id, image_id, restart_policy, \
@@ -250,6 +255,11 @@ async fn seed_job_at(
 ) -> Uuid {
     let job_id = Uuid::new_v4();
     let (image_id, _) = register_image(pool).await;
+    sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
+        .bind(job_id)
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query(
         "insert into tml_switchboard.jobs \
            (job_id, owner_id, image_id, restart_policy, \
