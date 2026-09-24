@@ -8,7 +8,7 @@ use crate::util::Secret;
 
 /// How the job reaches the switchboard API, and the token it acts with there.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct JobApi {
+pub struct SwitchboardApi {
     pub base_url: String,
     pub token: Secret<String>,
 }
@@ -17,7 +17,7 @@ pub struct JobApi {
 pub struct JobInfo {
     pub job_id: Uuid,
     /// `None` when the supervisor has no switchboard to point the job at.
-    pub api: Option<JobApi>,
+    pub api: Option<SwitchboardApi>,
 }
 
 pub const JOB_PATH: &str = "/job";

@@ -23,24 +23,13 @@ paths:
           description: The job is ready.
 components:
   schemas:
-    JobApi:
-      description: How the job reaches the switchboard API, and the token it acts with there.
-      type: object
-      properties:
-        base_url:
-          type: string
-        token:
-          $ref: '#/components/schemas/Secret'
-      required:
-      - base_url
-      - token
     JobInfo:
       type: object
       properties:
         api:
           description: '`None` when the supervisor has no switchboard to point the job at.'
           anyOf:
-          - $ref: '#/components/schemas/JobApi'
+          - $ref: '#/components/schemas/SwitchboardApi'
           - type: 'null'
         job_id:
           type: string
@@ -58,3 +47,14 @@ components:
         [`expose`](Self::expose), and no comparison silently picks up a
         non-constant-time `==`.
       type: string
+    SwitchboardApi:
+      description: How the job reaches the switchboard API, and the token it acts with there.
+      type: object
+      properties:
+        base_url:
+          type: string
+        token:
+          $ref: '#/components/schemas/Secret'
+      required:
+      - base_url
+      - token

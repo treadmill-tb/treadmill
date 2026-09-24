@@ -7,7 +7,7 @@ use clap::{Args, ValueEnum};
 use log::{error, info, warn};
 use zbus::interface;
 
-use treadmill_rs::api::supervisor_daemon::{JobApi, SupervisorClient};
+use treadmill_rs::api::supervisor_daemon::{SupervisorClient, SwitchboardApi};
 use treadmill_rs::api::switchboard::client::{ClientError, SwitchboardClient};
 use treadmill_rs::api::switchboard::jobs::{JobEnvironment, JobGatewayEndpoint, JobParameter};
 use uuid::Uuid;
@@ -183,7 +183,7 @@ struct DbusDaemon {
 }
 
 impl DbusDaemon {
-    async fn start(args: &DaemonArgs, job_id: Uuid, api: JobApi) -> Result<Self> {
+    async fn start(args: &DaemonArgs, job_id: Uuid, api: SwitchboardApi) -> Result<Self> {
         let credentials = Credentials {
             base_url: api.base_url,
             token: api.token.into_inner(),

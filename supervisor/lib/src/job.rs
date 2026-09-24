@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Level, event, instrument};
 use uuid::Uuid;
 
-use treadmill_rs::api::supervisor_daemon::JobApi;
+use treadmill_rs::api::supervisor_daemon::SwitchboardApi;
 use treadmill_rs::api::switchboard_supervisor::{
     ImageSpecification, JobInitializingStage, LOG_VIEW_MANIFEST_VERSION, LogChannel, LogFormat,
     LogRender, LogView, LogViewManifest, ReportedSupervisorStatus, RunningJobState,
@@ -220,7 +220,7 @@ impl Outcome {
 pub struct JobFacts {
     pub job_id: Uuid,
     pub phase: Phase,
-    pub api: Option<JobApi>,
+    pub api: Option<SwitchboardApi>,
 }
 
 impl JobFacts {
@@ -230,7 +230,7 @@ impl JobFacts {
             phase: Phase::Starting,
             api: job_api_url
                 .zip(start_job_req.job_token.as_ref())
-                .map(|(base_url, token)| JobApi {
+                .map(|(base_url, token)| SwitchboardApi {
                     base_url: base_url.to_string(),
                     token: token.clone(),
                 }),
