@@ -24,7 +24,10 @@
         # Serve TFTP from a FAT file system off of an NBD export.
         inherit (cmn) nbdfatftpd;
 
-        tml = cmn.mkBin { bin = "tml"; };
+        tml = cmn.mkBin {
+          bin = "tml";
+          features = "treadmill-cli/user";
+        };
 
         swx = cmn.mkBin { bin = "swx"; };
 
@@ -35,8 +38,6 @@
         };
 
         image-util = cmn.mkBin { bin = "image-util"; };
-
-        tml-puppet = cmn.mkBin { bin = "tml-puppet"; };
 
         # Runs qemu-storage-daemon, qemu-img and nbdfatftpd per job, and execs
         # skopeo to copy images into the local Zot.

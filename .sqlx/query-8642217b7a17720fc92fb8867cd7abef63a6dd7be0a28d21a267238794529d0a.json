@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kind as \"kind: SubjectKind\" from tml_switchboard.subjects where subject_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind: SubjectKind",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.subject_kind",
+            "kind": {
+              "Enum": [
+                "user",
+                "group",
+                "system",
+                "job"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.subjects",
+            "name": "kind"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8642217b7a17720fc92fb8867cd7abef63a6dd7be0a28d21a267238794529d0a"
+}

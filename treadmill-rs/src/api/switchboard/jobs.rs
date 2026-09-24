@@ -7,7 +7,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::api::switchboard::hosts::SpecDocument;
 use crate::api::switchboard::{JobState, TerminationReason};
+use crate::host_spec::HostSpec;
 use crate::image::Digest;
 use crate::util::Secret;
 
@@ -223,8 +225,8 @@ pub struct RestartPolicyState {
     pub remaining_restarts: u32,
 }
 
-/// One parameter supplied with a job at enqueue (`POST /jobs`), passed through
-/// to the puppet daemon running the workload.
+/// One parameter supplied with a job at enqueue (`POST /jobs`), which the job
+/// reads from `GET /jobs/{id}/environment`.
 ///
 /// Flag a parameter `secret` to have its value withheld wherever the job is
 /// later read back (it surfaces as a redacted [`JobParameterView`]); non-secret
@@ -362,6 +364,73 @@ pub struct JobServiceCredentials {
     pub expires_at: DateTime<Utc>,
 }
 
+/// The body of `PUT /jobs/{id}/exit-status`, by which a job reports its own
+/// outcome. It may do so any number of times while it runs, each report
+/// replacing the last.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct JobExitStatusRequest {
+    /// The workload's outcome.
+    pub outcome: TaskExitStatus,
+    /// An optional human-readable note, recorded as the job's `exit_message`.
+    /// Null clears it.
+    pub message: Option<String>,
+}
+
+/// One service a job announces in `PUT /jobs/{id}/services`, which carries the
+/// job's complete set.
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobServiceAnnouncement {
+    /// Identifies the service within its job: 1 to 16 lowercase alphanumeric
+    /// characters, starting with a letter.
+    pub name: String,
+    /// Optional human-readable text to display.
+    pub label: Option<String>,
+    /// A token the client interprets to decide how to connect (`webapp`,
+    /// `sshws`, …).
+    pub protocol: String,
+}
+
+/// A gateway under which a job's services are published.
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobGatewayEndpoint {
+    /// The gateway's base domain. A service is reachable at
+    /// `<service>-<job-id>.<base_domain>`.
+    pub base_domain: String,
+    /// The port the gateway listens on.
+    pub port: u16,
+}
+
+/// What a job needs to validate the service tokens its gateways admit, so that
+/// reaching a service takes a valid token at the gateway and at the job.
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobGatewayInfo {
+    /// The `iss` every service token carries.
+    pub issuer: String,
+    /// The switchboard's public key for verifying service tokens, PEM-encoded.
+    pub signing_public_key: String,
+    /// Identifier of `signing_public_key`, carried as a token's `kid`.
+    pub key_id: String,
+    /// The gateways the job's services are published under.
+    pub endpoints: Vec<JobGatewayEndpoint>,
+}
+
+/// Everything a running job needs to set itself up, returned by
+/// `GET /jobs/{id}/environment` to the job's own token.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct JobEnvironment {
+    /// The host the job was dispatched to.
+    pub host_id: Uuid,
+    /// The host's current spec, normalized to the latest version, as a document
+    /// conforming to the schema at `GET /hosts/spec-schema`. Null for a host
+    /// that has never been described.
+    #[schemars(with = "Option<SpecDocument>")]
+    pub host_spec: Option<HostSpec>,
+    /// Gateway material, or null when this deployment runs without gateways.
+    pub gateway: Option<JobGatewayInfo>,
+    /// The job's parameters, secret values included.
+    pub parameters: HashMap<String, JobParameter>,
+}
+
 /// The image a job references: a concrete image, or an image set with its
 /// frozen generation. Resumed and restarted jobs carry their predecessor's.
 #[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -468,8 +537,11 @@ pub struct JobInfo {
     /// The user workload's success/failure outcome, orthogonal to
     /// `termination_reason`; null if never reported.
     pub task_exit_status: Option<TaskExitStatus>,
-    /// A human-readable detail accompanying termination, if any.
+    /// The job's own human-readable note on its outcome, if any.
     pub exit_message: Option<String>,
+    /// The supervisor's description of the error that ended the job, if one
+    /// did.
+    pub job_error: Option<String>,
     /// When the job was finalized; null until then.
     pub terminated_at: Option<DateTime<Utc>>,
 

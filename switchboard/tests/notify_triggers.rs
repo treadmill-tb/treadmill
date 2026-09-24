@@ -65,8 +65,8 @@ async fn insert_token(pool: &PgPool, user_id: Uuid) -> Uuid {
     token[..16].copy_from_slice(id.as_bytes());
     sqlx::query(
         "insert into tml_switchboard.api_tokens \
-         (token_id, token, user_id, revoked, created_at, expires_at) \
-         values ($1, $2, $3, null, now(), now() + interval '1 day')",
+         (token_id, token, subject_id, subject_kind, revoked, created_at, expires_at) \
+         values ($1, $2, $3, 'user', null, now(), now() + interval '1 day')",
     )
     .bind(id)
     .bind(token)
@@ -117,6 +117,11 @@ async fn insert_image(pool: &PgPool) -> Uuid {
 
 async fn insert_job(pool: &PgPool, owner: Uuid, token: Uuid, image: Uuid) -> Uuid {
     let id = Uuid::new_v4();
+    sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query(
         "insert into tml_switchboard.jobs \
          (job_id, owner_id, image_id, restart_policy, enqueued_by_token_id, \

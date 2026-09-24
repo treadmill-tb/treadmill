@@ -1262,3 +1262,52 @@ async fn canonical_names_are_admin_only(pool: PgPool) {
     assert_eq!(renamed.canonical_name, None);
     assert_eq!(renamed.display_name, "Linux");
 }
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn jobs_neither_own_nor_are_granted_images(pool: PgPool) {
+    let mut reg = StubRegistry::default();
+    let m = reg.put(REGISTRY, REPO, image_manifest_bytes("job subject"));
+    let addr = spawn_with_registry(&pool, Arc::new(reg)).await;
+    let client = http_client();
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let base = format!("http://{addr}/api/v1");
+    let job = Uuid::new_v4();
+    sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
+        .bind(job)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let info = register_image(&client, &base, &bob_token, &m).await;
+    let resp = grant_source(
+        &client,
+        &base,
+        &bob_token,
+        &m,
+        info.sources[0].id,
+        job,
+        "use",
+    )
+    .await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+
+    let set = create_set(&client, &base, &bob_token, "job-subject").await;
+    let resp = client
+        .post(format!("{base}/image-sets/{}/grants", set.id))
+        .bearer_auth(&bob_token)
+        .json(&serde_json::json!({ "subject_id": job, "permission": "use" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+
+    let resp = client
+        .put(format!("{base}/image-sets/{}/owner", set.id))
+        .bearer_auth(&bob_token)
+        .json(&serde_json::json!({ "owner": job }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+}

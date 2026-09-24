@@ -64,10 +64,10 @@ pub async fn fetch_metadata_by_token<'c, E: PgExecutor<'c>>(
 ) -> Result<SqlApiTokenMetadata, TokenError> {
     sqlx::query_as!(
         SqlApiTokenMetadata,
-        r#"SELECT t.token_id, t.user_id, t.revoked as "revoked: _",
-                  t.expires_at, u.locked
+        r#"SELECT t.token_id, t.subject_id as user_id, t.revoked as "revoked: _",
+                  t.expires_at as "expires_at!", u.locked
             FROM tml_switchboard.api_tokens t
-            JOIN tml_switchboard.users u ON u.subject_id = t.user_id
+            JOIN tml_switchboard.users u ON u.subject_id = t.subject_id
             WHERE t.token = $1
             LIMIT 1;"#,
         token.as_bytes(),
@@ -86,10 +86,10 @@ pub async fn fetch_metadata_by_id<'c, E: PgExecutor<'c>>(
 ) -> Result<SqlApiTokenMetadata, TokenError> {
     sqlx::query_as!(
         SqlApiTokenMetadata,
-        r#"SELECT t.token_id, t.user_id, t.revoked as "revoked: _",
-                  t.expires_at, u.locked
+        r#"SELECT t.token_id, t.subject_id as user_id, t.revoked as "revoked: _",
+                  t.expires_at as "expires_at!", u.locked
             FROM tml_switchboard.api_tokens t
-            JOIN tml_switchboard.users u ON u.subject_id = t.user_id
+            JOIN tml_switchboard.users u ON u.subject_id = t.subject_id
             WHERE t.token_id = $1
             LIMIT 1;"#,
         token_id
@@ -100,6 +100,68 @@ pub async fn fetch_metadata_by_id<'c, E: PgExecutor<'c>>(
         sqlx::Error::RowNotFound => TokenError::InvalidToken,
         e => TokenError::Database(e),
     })
+}
+
+pub struct SqlJobTokenMetadata {
+    pub token_id: Uuid,
+    pub job_id: Uuid,
+    pub finalized: bool,
+}
+
+pub async fn fetch_job_token_metadata<'c, E: PgExecutor<'c>>(
+    conn: E,
+    token: SecurityToken,
+) -> Result<SqlJobTokenMetadata, TokenError> {
+    sqlx::query_as!(
+        SqlJobTokenMetadata,
+        r#"SELECT t.token_id, j.job_id, j.job_state = 'finalized' as "finalized!"
+            FROM tml_switchboard.api_tokens t
+            JOIN tml_switchboard.jobs j ON j.job_id = t.subject_id
+            WHERE t.token = $1 AND t.subject_kind = 'job'"#,
+        token.as_bytes(),
+    )
+    .fetch_one(conn)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::RowNotFound => TokenError::InvalidToken,
+        e => TokenError::Database(e),
+    })
+}
+
+pub async fn fetch_job_token(
+    job_id: Uuid,
+    conn: impl PgExecutor<'_>,
+) -> Result<SecurityToken, sqlx::Error> {
+    let token = sqlx::query_scalar!(
+        "select token from tml_switchboard.api_tokens \
+         where subject_id = $1 and subject_kind = 'job'",
+        job_id,
+    )
+    .fetch_one(conn)
+    .await?;
+    SecurityToken::try_from(token).map_err(|_| {
+        sqlx::Error::Decode(format!("the token of job {job_id} is not 32 bytes").into())
+    })
+}
+
+pub async fn insert_job_token(
+    job_id: Uuid,
+    created_at: DateTime<Utc>,
+    conn: &mut PgConnection,
+) -> Result<(), sqlx::Error> {
+    let token = SecurityToken::generate();
+    sqlx::query!(
+        "insert into tml_switchboard.api_tokens \
+         (token_id, token, subject_id, subject_kind, created_at, expires_at) \
+         values ($1, $2, $3, 'job', $4, null)",
+        Uuid::now_v7(),
+        token.as_bytes(),
+        job_id,
+        created_at,
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 /// Mint a session/API token for a user, recording its provenance (the client
@@ -135,8 +197,8 @@ impl Transition for IssueSessionToken {
         let expires = created + self.lifetime;
         sqlx::query!(
             "insert into tml_switchboard.api_tokens \
-             (token_id, token, user_id, revoked, created_at, expires_at, user_agent, comment, created_ip, created_port) \
-             values ($1, $2, $3, null, $4, $5, $6, $7, $8, $9);",
+             (token_id, token, subject_id, subject_kind, revoked, created_at, expires_at, user_agent, comment, created_ip, created_port) \
+             values ($1, $2, $3, 'user', null, $4, $5, $6, $7, $8, $9);",
             token_id,
             api_token.as_bytes(),
             self.user_id,

@@ -19,7 +19,8 @@ use crate::api::switchboard::audit::AuditFeedResponse;
 use crate::api::switchboard::hosts::HostInfo;
 use crate::api::switchboard::images::ImageSetInfo;
 use crate::api::switchboard::jobs::{
-    EnqueueJobResponse, JobInfo, JobListResponse, JobServiceCredentials,
+    EnqueueJobResponse, JobEnvironment, JobExitStatusRequest, JobInfo, JobListResponse,
+    JobServiceAnnouncement, JobServiceCredentials,
 };
 use crate::api::switchboard::users::{PublicUserProfile, SelfUserProfile, SessionInfo};
 use crate::api::switchboard::{LoginCompleteRequest, LoginResponse, LoginStagedResponse};
@@ -240,6 +241,35 @@ impl SwitchboardClient {
         self.delete(&format!("/api/v1/jobs/{job_id}")).await
     }
 
+    /// `GET /jobs/{id}/environment` — what a running job needs to set itself
+    /// up. Only the job's own token may read it.
+    pub async fn get_job_environment(&self, job_id: Uuid) -> Result<JobEnvironment, ClientError> {
+        self.get_json(&format!("/api/v1/jobs/{job_id}/environment"))
+            .await
+    }
+
+    /// `PUT /jobs/{id}/exit-status` — report a job's own outcome, with the job's
+    /// own token.
+    pub async fn put_job_exit_status(
+        &self,
+        job_id: Uuid,
+        req: &JobExitStatusRequest,
+    ) -> Result<(), ClientError> {
+        self.put(&format!("/api/v1/jobs/{job_id}/exit-status"), req)
+            .await
+    }
+
+    /// `PUT /jobs/{id}/services` — announce a job's complete set of services,
+    /// with the job's own token.
+    pub async fn put_job_services(
+        &self,
+        job_id: Uuid,
+        services: &[JobServiceAnnouncement],
+    ) -> Result<(), ClientError> {
+        self.put(&format!("/api/v1/jobs/{job_id}/services"), &services)
+            .await
+    }
+
     /// `POST /jobs/{id}/services/{service}/token` — credentials admitting the
     /// caller to one of a running job's announced services: the gateway
     /// endpoints it is published under, and the signed token they accept.
@@ -339,6 +369,29 @@ impl SwitchboardClient {
         let status = resp.status();
         if status.is_success() {
             return Ok(resp.json::<T>().await?);
+        }
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(ClientError::Unauthorized);
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(ClientError::Status {
+            status: status.as_u16(),
+            body,
+        })
+    }
+
+    /// Issue an authenticated `PUT` of `body` (as JSON) to `path`, discarding
+    /// the response body; error mapping matches [`get_json`](Self::get_json).
+    async fn put<B: serde::Serialize>(&self, path: &str, body: &B) -> Result<(), ClientError> {
+        let mut req = self.http.put(format!("{}{path}", self.base_url)).json(body);
+        if let Some(token) = &self.token {
+            req = req.bearer_auth(token);
+        }
+        let resp = req.send().await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
         }
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(ClientError::Unauthorized);

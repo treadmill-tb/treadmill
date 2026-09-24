@@ -2,7 +2,7 @@ pub use crate::api::switchboard_supervisor::JobInitializingStage;
 pub use crate::api::switchboard_supervisor::RunningJobState;
 pub use crate::api::switchboard_supervisor::StartJobMessage;
 use crate::api::switchboard_supervisor::{
-    JobService, ReportedSupervisorStatus, SupervisorEvent, SupervisorJobEvent,
+    ReportedSupervisorStatus, SupervisorEvent, SupervisorJobEvent,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -150,13 +150,6 @@ pub trait SupervisorConnector: std::fmt::Debug + Send + Sync + 'static {
         self.emit(SupervisorEvent::JobEvent {
             job_id,
             event: SupervisorJobEvent::JobNetworkAddress { address },
-        })
-        .await
-    }
-    async fn report_job_service_set(&self, job_id: Uuid, services: Vec<JobService>) {
-        self.emit(SupervisorEvent::JobEvent {
-            job_id,
-            event: SupervisorJobEvent::JobServiceSet { services },
         })
         .await
     }

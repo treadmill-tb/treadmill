@@ -32,7 +32,7 @@ use crate::connector::JobError;
 use crate::image::Digest;
 use crate::util::Secret;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
 pub mod websocket {
@@ -90,36 +90,6 @@ pub struct ServerHello {
 }
 
 // -- StartJobRequest ------------------------------------------------------------------------------
-
-#[derive(schemars::JsonSchema, Serialize, Deserialize, Clone)]
-pub struct ParameterValue {
-    pub value: String,
-    pub secret: bool,
-}
-
-impl std::fmt::Debug for ParameterValue {
-    /// Custom implementation of [`std::fmt::Debug`] for [`ParameterValue`] to
-    /// avoid leaking secrets in logs:
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        let mut debug_struct = f.debug_struct("ParameterValue");
-        debug_struct.field("secret", &self.secret);
-
-        // TODO: Requires nightly feature debug_closure_helpers
-        // debug_struct.field_with("value", |f| {
-        //     if self.secret {
-        //         write!(f, "***")
-        //     } else {
-        //         <String as std::fmt::Debug>::fmt(&self.value, f)
-        //     }
-        // });
-
-        // For now, print the secret as if it were a string (with
-        // quotation marks) with contents "***":
-        debug_struct.field("value", if self.secret { &"***" } else { &self.value });
-
-        debug_struct.finish()
-    }
-}
 
 /// One registry location an image can be pulled from.
 ///
@@ -181,10 +151,6 @@ pub struct StartJobMessage {
 
     pub restart_policy: RestartPolicy,
 
-    /// A hash map of parameters provided to this job execution. These
-    /// parameters are provided to the puppet daemon.
-    pub parameters: HashMap<String, ParameterValue>,
-
     /// Per-job log-streaming destination, or `None` when the deployment runs
     /// with log streaming disabled. The supervisor captures console output and
     /// publishes it to the NATS server described here (see
@@ -193,27 +159,10 @@ pub struct StartJobMessage {
     #[serde(default)]
     pub log_streaming: Option<LogStreamingDispatch>,
 
-    /// Configuration for reaching this job's services through a gateway, or
-    /// `None` when the deployment runs without one. The supervisor relays it
-    /// into the job (see [`JobGatewayDispatch`]).
-    #[serde(default)]
-    pub gateway: Option<JobGatewayDispatch>,
-
-    /// The admin's description of the machine this job runs on, normalized to
-    /// the latest version by the switchboard — a
-    /// [`HostSpec`](crate::host_spec::HostSpec) document, carried opaquely.
-    ///
-    /// Opaque because the supervisor only relays it to the puppet, which writes
-    /// it out as a file: typing it here would make every new spec version a
-    /// change to this protocol and a supervisor that must be rebuilt to pass
-    /// through a document it never reads.
-    ///
-    /// Carried per job rather than per connection because a spec is edited
-    /// while a supervisor stays connected, and what a job should see is the
-    /// description in force when it was dispatched. `None` for a host that has
-    /// never been described.
-    #[serde(default)]
-    pub host_spec: Option<serde_json::Value>,
+    /// The job's own switchboard API token, which the supervisor relays into
+    /// the job without using it. `None` from a coordinator that is not a
+    /// switchboard.
+    pub job_token: Option<Secret<String>>,
 }
 
 /// NATS log channel name (`logs.<job-id>.<*channel*>`).
@@ -436,40 +385,6 @@ pub struct LogStreamingDispatch {
     pub inbox_prefix: Option<String>,
 }
 
-/// A job gateway endpoint, to be handed to a supervisor.
-#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub struct JobGatewayEndpoint {
-    /// The base domain of the gateway, to be pre-prended with the job- and
-    /// service-specific subdomain.
-    pub base_domain: String,
-    /// The port of the gateway.
-    pub port: u16,
-}
-
-/// Gateway material handed to a supervisor in [`StartJobMessage`], to be relayed
-/// into the job.
-///
-/// A job's services are reached through stateless gateways that admit a request
-/// only against a switchboard-minted token. The job is handed the key material
-/// to validate those same tokens itself, so that reaching a service requires a
-/// valid token at both ends.
-#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub struct JobGatewayDispatch {
-    /// The `iss` every minted service token carries, which the job requires of
-    /// a token just as the gateway does.
-    pub issuer: String,
-    /// The switchboard's public key for verifying minted service tokens.
-    pub signing_public_key: String,
-    /// Identifier of `signing_public_key`, carried as the `kid` of a minted
-    /// token's header. Rotating the key yields a new `key_id`.
-    pub key_id: String,
-    /// The gateway endpoints (base-domain & port) under which this job's
-    /// services are reachable.
-    pub endpoints: Vec<JobGatewayEndpoint>,
-}
-
 // -- TerminateJobRequest / RemoveJobRequest --------------------------------------------------------
 
 #[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone)]
@@ -539,10 +454,8 @@ pub enum JobInitializingStage {
 /// the switchboard finalizes it with `termination_reason = workload_exited`; the
 /// reason is implied by the report, not encoded in the variant, which is why
 /// there is deliberately no total `RunningJobState → job_state` conversion. The
-/// workload's [`TaskExitStatus`] is **not** carried here — it is reported
-/// out-of-band via [`SupervisorJobEvent::DeclareExitStatus`] whenever the
-/// supervisor knows it, so by the time a job terminates the switchboard has
-/// already recorded the outcome.
+/// workload's outcome is **not** carried here: the job reports it itself,
+/// through the switchboard API.
 ///
 /// # The retained-terminal contract
 ///
@@ -570,45 +483,11 @@ pub enum RunningJobState {
     Terminating,
     /// The workload has exited. Drives the switchboard's `→ finalized`
     /// transition (`termination_reason = workload_exited`). The workload's
-    /// outcome is *not* carried here — it is reported out-of-band via
-    /// [`SupervisorJobEvent::DeclareExitStatus`]. The supervisor retains this
+    /// outcome is *not* carried here. The supervisor retains this
     /// report until the switchboard acks it with `RemoveJob` (see the type-level
     /// Rustdoc).
     Terminated,
 }
-/// The supervisor's report of how the user's workload is/has turned out — its
-/// *task outcome*.
-///
-/// The supervisor posts this at any point while it is assigned the job (see
-/// [`SupervisorJobEvent::DeclareExitStatus`]), independently of termination, and
-/// may revise it: `Pending` while the result is not yet known, then `Success` or
-/// `Failure`. Once set it is never cleared (it can only move between these three
-/// values). It is orthogonal to *why* a job terminated (see
-/// [`switchboard::TerminationReason`]) — a job may carry any outcome regardless
-/// of its termination reason, or none at all if the supervisor never reported.
-///
-/// [`switchboard::TerminationReason`]: crate::api::switchboard::TerminationReason
-#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Copy, Clone)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskExitStatus {
-    /// The workload is running; its result is not yet determined.
-    Pending,
-    /// The workload completed successfully.
-    Success,
-    /// The workload failed.
-    Failure,
-}
-/// One service a job announces as reachable through a gateway.
-///
-/// Its fields are opaque to the supervisor, interpreted by the switchboard.
-#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub struct JobService {
-    pub name: String,
-    pub label: Option<String>,
-    pub protocol: String,
-}
-
 /// An asynchronous event a supervisor emits about the job it is executing,
 /// wrapped in a [`SupervisorEvent::JobEvent`]. The switchboard mirrors these
 /// into the DB out-of-band of reconciliation; reconciliation itself is driven by
@@ -625,17 +504,6 @@ pub enum SupervisorJobEvent {
         new_state: RunningJobState,
         status_message: Option<String>,
     },
-    /// The supervisor sets (or revises) the job's *task outcome*. This is the
-    /// dedicated channel for the outcome and is independent of job state: the
-    /// supervisor may send it at any point while it is assigned the job, as many
-    /// times as it likes, each one overriding the last. `outcome` is required
-    /// (`pending`/`success`/`failure`); the outcome can never be cleared back to
-    /// unset. `message` is an optional human-readable note recorded as the job's
-    /// `exit_message`; each event replaces it, so passing `None` clears it.
-    DeclareExitStatus {
-        outcome: TaskExitStatus,
-        message: Option<String>,
-    },
     // Technically a state transition
     /// A job-level error. Semantically a transition toward termination; the
     /// switchboard finalizes the job with an appropriate
@@ -649,10 +517,6 @@ pub enum SupervisorJobEvent {
     /// The switchboard trusts this information to be correct. It must not
     /// stem from the job itself and instead be set by the supervisor.
     JobNetworkAddress { address: std::net::IpAddr },
-    /// The complete set of services the job announces. Each event replaces the
-    /// previously announced set in full, so re-announcing after a reconnect is
-    /// idempotent.
-    JobServiceSet { services: Vec<JobService> },
 }
 
 /// A supervisor's point-in-time status snapshot, returned in the

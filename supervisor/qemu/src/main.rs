@@ -76,9 +76,9 @@ pub struct QemuConfig {
     ///   disk device by referencing this node, e.g. `-device
     ///   virtio-blk-device,drive={disk_node}`.
     ///
-    /// - `tcp_control_socket_listen_addr`: the address the per-job control
-    ///   socket is bound to, with an IPv6 address enclosed in square brackets,
-    ///   e.g. `[::1]:8080`.
+    /// - `daemon_api_listen_addr`: the address the per-job daemon API is bound
+    ///   to, with an IPv6 address enclosed in square brackets, e.g.
+    ///   `[::1]:8080`.
     ///
     ///   This is the supervisor's listen address, not necessarily one the guest
     ///   can reach (e.g., it might be bound to the "any interface IP" `0.0.0.0`).
@@ -102,7 +102,7 @@ pub struct QemuConfig {
     /// value will fail.
     working_disk_max_bytes: u64,
 
-    tcp_control_socket_listen_addr: std::net::SocketAddr,
+    daemon_api_listen_addr: std::net::SocketAddr,
 
     /// Retention of the working directories of removed jobs.
     #[serde(default)]
@@ -260,8 +260,8 @@ impl QemuBackend {
         vars.insert("disk_node".to_string(), BackingChain::TOP_NODE.to_string());
 
         vars.insert(
-            "tcp_control_socket_listen_addr".to_string(),
-            self.config.tcp_control_socket_listen_addr.to_string(),
+            "daemon_api_listen_addr".to_string(),
+            self.config.daemon_api_listen_addr.to_string(),
         );
     }
 }
@@ -533,7 +533,8 @@ impl QemuSupervisorConfig {
             supervisor_id: self.base.supervisor_id,
             job_address: self.base.job_address,
             workdirs,
-            control_socket_listen_addr: self.qemu.tcp_control_socket_listen_addr,
+            daemon_api_listen_addr: self.qemu.daemon_api_listen_addr,
+            job_api_url: self.base.job_api_url.clone(),
             start_script: self.qemu.start_script.clone(),
             stop_script: self.qemu.stop_script.clone(),
             log_streaming: self.log_streaming.clone(),
@@ -643,7 +644,6 @@ mod tests {
 
     use super::*;
 
-    use std::collections::HashMap;
     use std::process::ExitStatus;
 
     use oci_spec::image::ImageManifest;
@@ -651,7 +651,7 @@ mod tests {
     use uuid::Uuid;
 
     use treadmill_rs::api::switchboard_supervisor::{
-        ImageLocation, LogStreamingDispatch, ParameterValue, RestartPolicy,
+        ImageLocation, LogStreamingDispatch, RestartPolicy,
     };
     use treadmill_rs::image::Digest;
     use treadmill_rs::image::annotations::Role;
@@ -814,7 +814,7 @@ mod tests {
             state_dir: tmp.path().join("state"),
             qemu_args: qemu_args.into_iter().map(str::to_string).collect(),
             working_disk_max_bytes,
-            tcp_control_socket_listen_addr: "127.0.0.1:3859".parse().unwrap(),
+            daemon_api_listen_addr: "127.0.0.1:3859".parse().unwrap(),
             job_retention: RetentionConfig::default(),
             start_script: None,
             stop_script: None,
@@ -974,10 +974,8 @@ mod tests {
             restart_policy: RestartPolicy {
                 remaining_restart_count: 0,
             },
-            parameters: HashMap::<String, ParameterValue>::new(),
             log_streaming: None,
-            gateway: None,
-            host_spec: None,
+            job_token: None,
         }
     }
 
@@ -1033,16 +1031,16 @@ mod tests {
         );
     }
 
-    /// The address the control socket is bound to is available to the
+    /// The address the daemon API is bound to is available to the
     /// invocation, so a configuration that can use it verbatim -- one bound to
     /// an address the guest can reach -- need not repeat the value.
     #[tokio::test]
-    async fn the_control_socket_address_is_available_to_the_invocation() {
+    async fn the_daemon_api_address_is_available_to_the_invocation() {
         let f = fixture(
             4 * GIB,
             vec![
                 "-fw_cfg",
-                "name=opt/org.tockos.treadmill.tcp-ctrl-socket,string={tcp_control_socket_listen_addr}",
+                "name=opt/dev.treadmill.supervisor-url,string=http://{daemon_api_listen_addr}",
             ],
         );
 
@@ -1063,7 +1061,7 @@ mod tests {
 
         assert!(
             f.launcher.spawned_args().contains(
-                &"name=opt/org.tockos.treadmill.tcp-ctrl-socket,string=127.0.0.1:3859".to_string()
+                &"name=opt/dev.treadmill.supervisor-url,string=http://127.0.0.1:3859".to_string()
             ),
             "{:?}",
             f.launcher.spawned_args(),
@@ -1252,7 +1250,7 @@ mod tests {
             vars.get("disk_node").map(String::as_str),
             Some(BackingChain::TOP_NODE),
         );
-        assert!(vars.contains_key("tcp_control_socket_listen_addr"));
+        assert!(vars.contains_key("daemon_api_listen_addr"));
     }
 
     /// A retired directory this supervisor cannot make sense of is refused as

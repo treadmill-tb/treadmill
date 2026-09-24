@@ -7,16 +7,14 @@ use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use sqlx::{PgPool, Postgres, Transaction};
 use tokio::time::{Duration, Instant, Sleep, interval, sleep};
 use treadmill_rs::api::switchboard_supervisor::{
-    JobService, RemoveJobMessage, ReportedSupervisorStatus, Request, RunningJobState,
-    SupervisorEvent, SupervisorJobEvent, SupervisorToSwitchboard, SwitchboardToSupervisor,
-    TaskExitStatus, TerminateJobMessage,
+    RemoveJobMessage, ReportedSupervisorStatus, Request, RunningJobState, SupervisorEvent,
+    SupervisorJobEvent, SupervisorToSwitchboard, SwitchboardToSupervisor, TerminateJobMessage,
 };
 use uuid::Uuid;
 
 use crate::audit::model::{Host as AuditHost, Job as AuditJob, Subject as AuditSubject};
 use crate::audit::{self, SYSTEM_ACTOR_ID, events};
 use crate::events::{Debounced, EventBus, EventFilter};
-use crate::job_gateway::JobGateway;
 use crate::log_streaming::LogStreaming;
 use crate::sql;
 
@@ -101,11 +99,6 @@ struct WorkerCtx {
     /// lock — see `reconcile`). `None` disables streaming: jobs dispatch with no
     /// `log_streaming` destination.
     log_streaming: Option<LogStreaming>,
-    /// Job-gateway signing material, present iff the deployment enables the
-    /// feature. Handed to the supervisor at dispatch so the job can validate
-    /// the service tokens its callers arrive with. `None` disables gateway
-    /// access: jobs dispatch with no `gateway` material.
-    job_gateway: Option<JobGateway>,
 }
 
 pub struct SupervisorWSWorker<S: SupervisorSocket> {
@@ -409,7 +402,6 @@ async fn resolve_assigned_or_running(
     at: chrono::DateTime<chrono::Utc>,
     txn: &mut Transaction<'_, Postgres>,
     log_streaming_config: Option<&crate::config::LogStreamingConfig>,
-    job_gateway: Option<&JobGateway>,
 ) -> Result<Option<SwitchboardToSupervisor>> {
     use crate::sql::job::SqlJobState;
 
@@ -417,15 +409,9 @@ async fn resolve_assigned_or_running(
         // Assigned + Idle: the supervisor hasn't picked it up yet — (re)dispatch
         // it. No DB change; the next pass adopts the reported running state.
         (SqlJobState::Assigned, ReportedSupervisorStatus::Idle) => {
-            let msg = sql::job::build_start_job_message(
-                job,
-                host_id,
-                txn,
-                log_streaming_config,
-                job_gateway,
-            )
-            .await
-            .context("building StartJob message in reconcile")?;
+            let msg = sql::job::build_start_job_message(job, txn, log_streaming_config)
+                .await
+                .context("building StartJob message in reconcile")?;
             Some(SwitchboardToSupervisor::StartJob(msg))
         }
 
@@ -498,27 +484,16 @@ async fn resolve_assigned_or_running(
 }
 
 impl<S: SupervisorSocket> SupervisorWSWorker<S> {
-    #[tracing::instrument(skip(pool, socket, config, log_streaming, job_gateway, event_bus))]
+    #[tracing::instrument(skip(pool, socket, config, log_streaming, event_bus))]
     pub async fn run(
         pool: PgPool,
         host_id: Uuid,
         socket: S,
         config: SupervisorWSWorkerConfig,
         log_streaming: Option<LogStreaming>,
-        job_gateway: Option<JobGateway>,
         event_bus: EventBus,
     ) {
-        match Self::run_inner(
-            pool,
-            host_id,
-            socket,
-            config,
-            log_streaming,
-            job_gateway,
-            event_bus,
-        )
-        .await
-        {
+        match Self::run_inner(pool, host_id, socket, config, log_streaming, event_bus).await {
             Ok(()) => {
                 tracing::info!("SupervisorWSWorker::run terminated successfully.");
             }
@@ -544,7 +519,6 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         socket: S,
         config: SupervisorWSWorkerConfig,
         log_streaming: Option<LogStreaming>,
-        job_gateway: Option<JobGateway>,
         event_bus: EventBus,
     ) -> WorkerResult<()> {
         // A supervisor has just opened a new WebSocket connection for this host
@@ -597,7 +571,6 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 worker_instance_id,
                 config,
                 log_streaming,
-                job_gateway,
             },
             socket,
             wake,
@@ -737,7 +710,6 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         // The log-streaming config (token minting only) is read inside the txn;
         // stream provisioning (NATS I/O) happens *after* commit, below.
         let log_streaming_config = self.ctx.log_streaming.as_ref().map(|ls| ls.config.clone());
-        let job_gateway = self.ctx.job_gateway.clone();
 
         // All reads and writes run under the takeover/staleness guard. The
         // closure returns the single command (if any) the worker must send
@@ -787,7 +759,6 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                                 at,
                                 txn,
                                 log_streaming_config.as_ref(),
-                                job_gateway.as_ref(),
                             )
                             .await?
                         }
@@ -845,34 +816,6 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         }
 
         Ok(())
-    }
-
-    /// Record a task outcome the supervisor declared via
-    /// [`SupervisorJobEvent::DeclareExitStatus`], out-of-band of reconciliation.
-    ///
-    /// The write only lands while the job is dispatched to this host
-    /// (`sql::job::set_task_outcome` is guarded on the assignment pointer);
-    /// returns `false` if the job is not currently assigned here (e.g. already
-    /// finalized or never dispatched), in which case the event is dropped.
-    ///
-    /// [`SupervisorJobEvent::DeclareExitStatus`]: treadmill_rs::api::switchboard_supervisor::SupervisorJobEvent::DeclareExitStatus
-    async fn apply_task_outcome(
-        &mut self,
-        job_id: Uuid,
-        outcome: TaskExitStatus,
-        message: Option<String>,
-    ) -> WorkerResult<bool> {
-        let host_id = self.ctx.host_id;
-        let applied = self
-            .ctx
-            .with_txn(async move |txn| {
-                Ok(
-                    sql::job::set_task_outcome(job_id, host_id, outcome.into(), message, txn)
-                        .await?,
-                )
-            })
-            .await?;
-        Ok(applied)
     }
 
     /// Serialize a [`SwitchboardToSupervisor`] command as JSON and send it over
@@ -1029,8 +972,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// Mirror an asynchronous [`SupervisorEvent`] into the DB, out-of-band of
     /// reconciliation. These events make the lifecycle update in real time
     /// (rather than only at the next reconcile) and carry data not present in the
-    /// status snapshot — most importantly the task outcome
-    /// ([`SupervisorJobEvent::DeclareExitStatus`]). Each event is applied only
+    /// status snapshot, such as job errors and addresses. Each event is applied only
     /// while the job is the one assigned to this host; events for any other job
     /// are dropped.
     async fn handle_supervisor_event(&mut self, event: SupervisorEvent) -> WorkerResult<PostMsg> {
@@ -1050,22 +992,6 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 self.apply_state_transition(job_id, new_state).await
             }
 
-            // The dedicated task-outcome channel; independent of lifecycle state.
-            SupervisorJobEvent::DeclareExitStatus { outcome, message } => {
-                tracing::trace!(
-                    ?outcome,
-                    ?message,
-                    "received DeclareExitStatus event from supervisor"
-                );
-                if !self.apply_task_outcome(job_id, outcome, message).await? {
-                    tracing::debug!(
-                        %job_id,
-                        "DeclareExitStatus for a job not assigned to this host; dropped"
-                    );
-                }
-                Ok(PostMsg::Continue)
-            }
-
             // A job-level error: finalize terminally with a mapped reason.
             SupervisorJobEvent::Error { error } => {
                 tracing::warn!(?error, "received Error event from supervisor");
@@ -1077,13 +1003,6 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
             SupervisorJobEvent::JobNetworkAddress { address } => {
                 tracing::trace!(?address, "received JobNetworkAddress event from supervisor");
                 self.record_job_ip_address(job_id, address).await?;
-                Ok(PostMsg::Continue)
-            }
-
-            // The job's full set of announced services, relayed by the supervisor.
-            SupervisorJobEvent::JobServiceSet { services } => {
-                tracing::trace!(?services, "received JobServiceSet event from supervisor");
-                self.record_service_set(job_id, services).await?;
                 Ok(PostMsg::Continue)
             }
         }
@@ -1265,50 +1184,6 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         Ok(())
     }
 
-    /// Adopt the full service set a [`SupervisorJobEvent::JobServiceSet`]
-    /// announces, while the job is the one assigned to this host (a stale/foreign
-    /// event is dropped).
-    ///
-    /// A set matching the stored one is left alone rather than rewritten: an
-    /// announcement carries the job's whole set, so a supervisor reconnect
-    /// re-asserts an unchanged one, and [`sql::job::replace_services`] would
-    /// notify watchers of a change that did not happen.
-    async fn record_service_set(
-        &mut self,
-        job_id: Uuid,
-        mut services: Vec<JobService>,
-    ) -> WorkerResult<()> {
-        // Match the order `fetch_services` reads back, so the comparison below
-        // is order-insensitive.
-        services.sort_by(|a, b| a.name.cmp(&b.name));
-        let host_id = self.ctx.host_id;
-
-        let replaced = self
-            .ctx
-            .with_txn(async move |txn| {
-                // Guard: only record against the currently-assigned job.
-                if sql::host::fetch_current_job(host_id, txn).await? != Some(job_id) {
-                    return Ok(None);
-                }
-                if sql::job::fetch_services(job_id, &mut **txn).await? == services {
-                    return Ok(Some(false));
-                }
-                sql::job::replace_services(job_id, &services, txn).await?;
-                Ok(Some(true))
-            })
-            .await?;
-
-        match replaced {
-            Some(true) => tracing::info!(%job_id, "adopted announced job service set"),
-            Some(false) => tracing::debug!(%job_id, "announced job service set is unchanged"),
-            None => tracing::debug!(
-                %job_id,
-                "JobServiceSet for a job not assigned to this host; dropped"
-            ),
-        }
-        Ok(())
-    }
-
     async fn run_loop(&mut self) -> WorkerResult<()> {
         // Keepalive PING message interval, for PING messages sent from the
         // switchboard to the supervisor:
@@ -1459,12 +1334,11 @@ mod tests {
 
     use super::*;
     use crate::auth::token::SecurityToken;
-    use crate::config;
     use std::pin::Pin;
     use std::task::{Context as TaskContext, Poll};
     use treadmill_rs::api::switchboard_supervisor::{
-        ImageSpecification, JobGatewayEndpoint, RunningJobState, SupervisorEvent,
-        SupervisorJobEvent, SwitchboardToSupervisor, TaskExitStatus,
+        ImageSpecification, RunningJobState, SupervisorEvent, SupervisorJobEvent,
+        SwitchboardToSupervisor,
     };
     use treadmill_rs::connector::{JobError, JobErrorKind};
 
@@ -1619,7 +1493,6 @@ mod tests {
                 worker_instance_id,
                 config,
                 log_streaming: None,
-                job_gateway: None,
             },
             socket: NoSocket,
             wake: idle_wake(),
@@ -1650,7 +1523,6 @@ mod tests {
                 worker_instance_id,
                 config,
                 log_streaming: None,
-                job_gateway: None,
             },
             socket,
             wake: idle_wake(),
@@ -1682,8 +1554,8 @@ mod tests {
         let token_id = Uuid::new_v4();
         sqlx::query(
             "insert into tml_switchboard.api_tokens \
-             (token_id, token, user_id, revoked, created_at, expires_at) \
-             values ($1, $2, $3, null, now(), now() + interval '1 day')",
+             (token_id, token, subject_id, subject_kind, revoked, created_at, expires_at) \
+             values ($1, $2, $3, 'user', null, now(), now() + interval '1 day')",
         )
         .bind(token_id)
         .bind(vec![0u8; 32])
@@ -1726,6 +1598,12 @@ mod tests {
     ) -> anyhow::Result<Uuid> {
         let job_id = Uuid::new_v4();
         let image_id = insert_image(pool).await?;
+        sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
+            .bind(job_id)
+            .execute(pool)
+            .await?;
+        sql::api_token::insert_job_token(job_id, chrono::Utc::now(), &mut *pool.acquire().await?)
+            .await?;
         sqlx::query(
             "insert into tml_switchboard.jobs \
              ( \
@@ -1761,7 +1639,7 @@ mod tests {
                  $4, \
                  ( \
                      select \
-                     user_id \
+                     subject_id \
                      from \
                      tml_switchboard.api_tokens \
                      where \
@@ -1820,6 +1698,12 @@ mod tests {
     ) -> anyhow::Result<Uuid> {
         let job_id = Uuid::new_v4();
         let image_id = insert_image(pool).await?;
+        sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
+            .bind(job_id)
+            .execute(pool)
+            .await?;
+        sql::api_token::insert_job_token(job_id, chrono::Utc::now(), &mut *pool.acquire().await?)
+            .await?;
         sqlx::query(
             "insert into \
              tml_switchboard.jobs \
@@ -1856,7 +1740,7 @@ mod tests {
                  $3, \
                  ( \
                      select
-                     user_id \
+                     subject_id \
                      from \
                      tml_switchboard.api_tokens \
                      where \
@@ -2112,7 +1996,6 @@ mod tests {
                 socket,
                 worker_config(50, 250),
                 None,
-                None,
                 EventBus::default(),
             ),
         )
@@ -2138,7 +2021,6 @@ mod tests {
                 host_id,
                 socket,
                 worker_config(50, 250),
-                None,
                 None,
                 EventBus::default(),
             ),
@@ -2174,7 +2056,6 @@ mod tests {
             host_id,
             socket,
             worker_config(50, 5_000),
-            None,
             None,
             EventBus::default(),
         ));
@@ -2257,7 +2138,6 @@ mod tests {
             socket,
             cfg,
             None,
-            None,
             EventBus::default(),
         ));
 
@@ -2297,7 +2177,6 @@ mod tests {
             host_id,
             socket,
             cfg,
-            None,
             None,
             EventBus::default(),
         ));
@@ -2399,7 +2278,6 @@ mod tests {
             host_id,
             socket,
             worker_config(60_000, 600_000),
-            None,
             None,
             bus.clone(),
         ));
@@ -2512,7 +2390,6 @@ mod tests {
             socket,
             cfg,
             None,
-            None,
             EventBus::default(),
         ));
 
@@ -2550,7 +2427,6 @@ mod tests {
             socket,
             cfg,
             None,
-            None,
             EventBus::default(),
         ));
 
@@ -2585,7 +2461,6 @@ mod tests {
             socket,
             cfg,
             None,
-            None,
             EventBus::default(),
         ));
 
@@ -2617,7 +2492,6 @@ mod tests {
             host_id,
             socket,
             cfg,
-            None,
             None,
             EventBus::default(),
         ));
@@ -2825,19 +2699,20 @@ mod tests {
         let (_to_worker, mut from_worker, mut worker) =
             scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
 
-        // The supervisor declares the outcome out-of-band, before reporting the
-        // terminated state. It must survive finalization untouched.
+        // The job reports its outcome out-of-band, before the supervisor
+        // reports the terminated state. It must survive finalization untouched.
+        let mut txn = pool.begin().await?;
         assert!(
-            worker
-                .apply_task_outcome(
-                    job_id,
-                    TaskExitStatus::Success,
-                    Some("workload exited cleanly".to_string()),
-                )
-                .await
-                .expect("declaring the outcome should succeed"),
-            "the outcome must apply while the job is assigned"
+            sql::job::set_exit_status(
+                job_id,
+                sql::job::SqlTaskExitStatus::Success,
+                Some("workload exited cleanly"),
+                &mut txn,
+            )
+            .await?,
+            "the outcome must apply while the job runs"
         );
+        txn.commit().await?;
 
         worker.last_seen_status = Some(ReportedSupervisorStatus::HoldingJob {
             job_id,
@@ -2901,13 +2776,18 @@ mod tests {
             Some(host_id),
             "case 4 (terminated): the dispatch host must be retained on the terminal record"
         );
+        let mut txn = pool.begin().await?;
         assert!(
-            !worker
-                .apply_task_outcome(job_id, TaskExitStatus::Failure, None)
-                .await
-                .expect("declaring an outcome on a finalized job should not error"),
+            !sql::job::set_exit_status(
+                job_id,
+                sql::job::SqlTaskExitStatus::Failure,
+                None,
+                &mut txn
+            )
+            .await?,
             "case 4 (terminated): a finalized job's outcome must not be revisable"
         );
+        txn.rollback().await?;
         match decode_outbound(
             from_worker
                 .try_recv()
@@ -2933,105 +2813,6 @@ mod tests {
             job_state_of(&pool, job_id).await?,
             "finalized",
             "case 4 (terminated): the follow-up must not disturb the terminal row"
-        );
-        Ok(())
-    }
-
-    /// A supervisor may declare the task outcome while it is assigned the job,
-    /// independently of the job's lifecycle state.
-    #[sqlx::test(migrations = "./migrations")]
-    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn apply_task_outcome_while_assigned_persists(pool: PgPool) -> anyhow::Result<()> {
-        let host_id = insert_host(&pool).await?;
-        let user_id = insert_user(&pool).await?;
-        let token_id = insert_token(&pool, user_id).await?;
-        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
-        set_current_job(&pool, host_id, Some(job_id)).await?;
-
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
-        let (_to_worker, _from_worker, mut worker) =
-            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
-
-        assert!(
-            worker
-                .apply_task_outcome(job_id, TaskExitStatus::Pending, Some("booting".to_string()))
-                .await?,
-            "setting the outcome on an assigned job must succeed"
-        );
-        assert_eq!(
-            task_outcome_of(&pool, job_id).await?,
-            (Some("pending".to_string()), Some("booting".to_string())),
-        );
-        Ok(())
-    }
-
-    /// The outcome may be set repeatedly, each call overriding the last value,
-    /// and the message may be revised or cleared (passing `None`).
-    #[sqlx::test(migrations = "./migrations")]
-    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn apply_task_outcome_overrides_and_clears_message(pool: PgPool) -> anyhow::Result<()> {
-        let host_id = insert_host(&pool).await?;
-        let user_id = insert_user(&pool).await?;
-        let token_id = insert_token(&pool, user_id).await?;
-        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
-        set_current_job(&pool, host_id, Some(job_id)).await?;
-
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
-        let (_to_worker, _from_worker, mut worker) =
-            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
-
-        worker
-            .apply_task_outcome(job_id, TaskExitStatus::Pending, Some("running".to_string()))
-            .await?;
-        // Override pending -> success.
-        worker
-            .apply_task_outcome(job_id, TaskExitStatus::Success, Some("done".to_string()))
-            .await?;
-        assert_eq!(
-            task_outcome_of(&pool, job_id).await?,
-            (Some("success".to_string()), Some("done".to_string())),
-            "the latest outcome and message must win"
-        );
-        // A later call may clear the message while keeping an outcome set.
-        worker
-            .apply_task_outcome(job_id, TaskExitStatus::Failure, None)
-            .await?;
-        assert_eq!(
-            task_outcome_of(&pool, job_id).await?,
-            (Some("failure".to_string()), None),
-            "passing None must clear the message; the outcome stays set"
-        );
-        Ok(())
-    }
-
-    /// Declaring an outcome for a job that is dispatched to a *different*
-    /// host is a no-op (returns `false`) and writes nothing: the setter is
-    /// guarded on this host's assignment pointer.
-    #[sqlx::test(migrations = "./migrations")]
-    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn apply_task_outcome_not_assigned_is_noop(pool: PgPool) -> anyhow::Result<()> {
-        let host_id = insert_host(&pool).await?;
-        let other_host = insert_host(&pool).await?;
-        let user_id = insert_user(&pool).await?;
-        let token_id = insert_token(&pool, user_id).await?;
-        // The job is dispatched to `other_host`, not to our worker.
-        let job_id = insert_job(&pool, token_id, other_host, "ready", 0).await?;
-        set_current_job(&pool, other_host, Some(job_id)).await?;
-
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
-        let (_to_worker, _from_worker, mut worker) =
-            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
-
-        assert!(
-            !worker
-                .apply_task_outcome(job_id, TaskExitStatus::Success, Some("nope".to_string()))
-                .await?,
-            "setting the outcome on a job assigned elsewhere must be a no-op"
-        );
-        assert_eq!(
-            task_outcome_of(&pool, job_id).await?,
-            (None, None),
-            "no outcome must be written for a job assigned to another host"
         );
         Ok(())
     }
@@ -3451,7 +3232,6 @@ mod tests {
                     }
                     other => panic!("expected a concrete Image spec, got {other:?}"),
                 }
-                assert!(m.parameters.is_empty(), "insert_job seeds no parameters");
             }
             other => panic!("assigned + idle: expected StartJob, got {other:?}"),
         }
@@ -3632,10 +3412,18 @@ mod tests {
         )
         .await?;
         let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
-        let msg = sql::job::build_start_job_message(&job, host_id, &mut conn, None, None)
+        let msg = sql::job::build_start_job_message(&job, &mut conn, None)
             .await
             .expect("concrete-image StartJob should build");
         assert_eq!(msg.job_id, job_id);
+        assert_eq!(
+            msg.job_token.as_ref().map(|t| t.expose().clone()),
+            Some(
+                sql::api_token::fetch_job_token(job_id, &pool)
+                    .await?
+                    .to_string()
+            )
+        );
         match msg.image_spec {
             ImageSpecification::Image {
                 manifest_digest,
@@ -3657,6 +3445,16 @@ mod tests {
         // original's image reference copied as enqueue does.
         let resume_target = job_id;
         let resume_job = Uuid::new_v4();
+        sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
+            .bind(resume_job)
+            .execute(&pool)
+            .await?;
+        sql::api_token::insert_job_token(
+            resume_job,
+            chrono::Utc::now(),
+            &mut *pool.acquire().await?,
+        )
+        .await?;
         sqlx::query(
             "insert into tml_switchboard.jobs \
              (job_id, resume_job_id, restart_job_id, image_id, image_set_id, \
@@ -3677,7 +3475,7 @@ mod tests {
         .execute(&pool)
         .await?;
         let rjob = sql::job::fetch_by_job_id(resume_job, &pool).await?;
-        let rmsg = sql::job::build_start_job_message(&rjob, host_id, &mut conn, None, None)
+        let rmsg = sql::job::build_start_job_message(&rjob, &mut conn, None)
             .await
             .expect("resume StartJob should build");
         match rmsg.image_spec {
@@ -3721,10 +3519,9 @@ mod tests {
             account_seed: account.seed().expect("account seed"),
         };
 
-        let msg =
-            sql::job::build_start_job_message(&job, host_id, &mut conn, Some(&ls_config), None)
-                .await
-                .expect("StartJob should build with log streaming");
+        let msg = sql::job::build_start_job_message(&job, &mut conn, Some(&ls_config))
+            .await
+            .expect("StartJob should build with log streaming");
 
         let dispatch = msg
             .log_streaming
@@ -3780,150 +3577,10 @@ mod tests {
         );
 
         // Disabled (None) leaves the field unset.
-        let plain = sql::job::build_start_job_message(&job, host_id, &mut conn, None, None)
+        let plain = sql::job::build_start_job_message(&job, &mut conn, None)
             .await
             .expect("StartJob should build without log streaming");
         assert!(plain.log_streaming.is_none());
-
-        Ok(())
-    }
-
-    /// With a gateway configured, `build_start_job_message` hands the supervisor
-    /// what a job needs to validate the service tokens its callers arrive with:
-    /// the public key they are signed under, its `kid`, and every domain the
-    /// job's services are published at.
-    #[sqlx::test(migrations = "./migrations")]
-    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn build_start_job_message_populates_gateway_material(
-        pool: PgPool,
-    ) -> anyhow::Result<()> {
-        let host_id = insert_host(&pool).await?;
-        let user_id = insert_user(&pool).await?;
-        let token_id = insert_token(&pool, user_id).await?;
-        let mut conn = pool.acquire().await?;
-
-        let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
-        register_resolved_image(&pool, job_id).await?;
-        let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
-
-        // A throwaway signing seed, so no real secret enters the source tree.
-        let endpoints = vec![
-            config::JobGatewayEndpoint {
-                base_domain: "gw-us-east-1.treadmillusercontent.com".to_string(),
-                port: 443,
-            },
-            config::JobGatewayEndpoint {
-                base_domain: "gw-eu-central-1.treadmillusercontent.com".to_string(),
-                port: 4433,
-            },
-        ];
-        let gateway = crate::job_gateway::JobGateway::new(crate::config::JobGatewayConfig {
-            issuer: "https://switchboard.example".to_string(),
-            endpoints: endpoints.clone(),
-            token_ttl: std::time::Duration::from_secs(60 * 60),
-            signing_key: hex::encode(rand::random::<[u8; 32]>()),
-        })
-        .expect("gateway configuration is usable");
-
-        let msg = sql::job::build_start_job_message(&job, host_id, &mut conn, None, Some(&gateway))
-            .await
-            .expect("StartJob should build with a gateway");
-
-        let dispatch = msg.gateway.expect("gateway must be populated when enabled");
-        assert_eq!(dispatch.issuer, gateway.config().issuer);
-        assert_eq!(dispatch.signing_public_key, gateway.public_key_pem());
-        assert_eq!(dispatch.key_id, gateway.key_id());
-        assert_eq!(
-            dispatch.endpoints,
-            endpoints
-                .iter()
-                .cloned()
-                .map(
-                    |config::JobGatewayEndpoint { base_domain, port }| JobGatewayEndpoint {
-                        base_domain,
-                        port
-                    }
-                )
-                .collect::<Vec<_>>(),
-            "a job accepts a request arriving at any configured gateway"
-        );
-
-        // A job only ever validates tokens, so what it is handed is the public
-        // half and nothing else.
-        assert!(
-            dispatch
-                .signing_public_key
-                .starts_with("-----BEGIN PUBLIC KEY-----"),
-            "the dispatched key must be the public one"
-        );
-
-        // Disabled (None) leaves the field unset.
-        let plain = sql::job::build_start_job_message(&job, host_id, &mut conn, None, None)
-            .await
-            .expect("StartJob should build without a gateway");
-        assert!(plain.gateway.is_none());
-
-        Ok(())
-    }
-
-    /// A dispatch carries the host's description as an opaque document, read at
-    /// dispatch rather than at connect: a supervisor's connection outlives any
-    /// number of spec edits, and a job should see the one in force when it was
-    /// placed.
-    #[sqlx::test(migrations = "./migrations")]
-    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn build_start_job_message_carries_the_host_spec(pool: PgPool) -> anyhow::Result<()> {
-        use treadmill_rs::host_spec::{HostSpec, HostSpecV1, Platform, Resources, SpecVersionV1};
-
-        let host_id = insert_host(&pool).await?;
-        let user_id = insert_user(&pool).await?;
-        let token_id = insert_token(&pool, user_id).await?;
-        let mut conn = pool.acquire().await?;
-
-        let job_id = insert_job(&pool, token_id, host_id, "assigned", 0).await?;
-        register_resolved_image(&pool, job_id).await?;
-        let job = sql::job::fetch_by_job_id(job_id, &pool).await?;
-
-        // Undescribed until a spec is written, and dispatchable either way.
-        let bare = sql::job::build_start_job_message(&job, host_id, &mut conn, None, None)
-            .await
-            .expect("StartJob should build for an undescribed host");
-        assert!(bare.host_spec.is_none());
-
-        let describe = |site: &str| {
-            HostSpec::V1(HostSpecV1 {
-                spec_version: SpecVersionV1::V1,
-                id: host_id,
-                name: format!("host-{host_id}"),
-                description: None,
-                site: site.to_string(),
-                location: None,
-                platform: Platform::Virtual {
-                    arch: "x86_64".into(),
-                    profiles: vec!["q35-virtio-uefi".into()],
-                    hypervisor: "qemu".into(),
-                },
-                resources: Resources {
-                    cpu_cores: 4,
-                    memory_mb: 8192,
-                    storage_gb: 64,
-                },
-                labels: Default::default(),
-                duts: vec![],
-            })
-        };
-        sql::host_spec::append(host_id, &describe("cambridge"), None, &mut conn).await?;
-        sql::host_spec::append(host_id, &describe("oxford"), None, &mut conn).await?;
-
-        let msg = sql::job::build_start_job_message(&job, host_id, &mut conn, None, None)
-            .await
-            .expect("StartJob should build for a described host");
-        let document = msg.host_spec.expect("the dispatch carries the spec");
-        assert_eq!(
-            document["site"], "oxford",
-            "the newest revision is in force"
-        );
-        assert_eq!(document["id"], serde_json::json!(host_id));
 
         Ok(())
     }
@@ -4050,40 +3707,6 @@ mod tests {
         Ok(())
     }
 
-    /// A `DeclareExitStatus` event records the task outcome via the same path as
-    /// the direct setter.
-    #[sqlx::test(migrations = "./migrations")]
-    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn event_declare_exit_status_records_outcome(pool: PgPool) -> anyhow::Result<()> {
-        let host_id = insert_host(&pool).await?;
-        let user_id = insert_user(&pool).await?;
-        let token_id = insert_token(&pool, user_id).await?;
-        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
-        set_current_job(&pool, host_id, Some(job_id)).await?;
-
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
-        let (_to_worker, _from_worker, mut worker) =
-            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
-
-        worker
-            .handle_supervisor_event(SupervisorEvent::JobEvent {
-                job_id,
-                event: SupervisorJobEvent::DeclareExitStatus {
-                    outcome: TaskExitStatus::Success,
-                    message: Some("all good".to_string()),
-                },
-            })
-            .await
-            .expect("declare-exit-status event should be handled");
-
-        assert_eq!(
-            task_outcome_of(&pool, job_id).await?,
-            (Some("success".to_string()), Some("all good".to_string())),
-            "the event must record the declared outcome"
-        );
-        Ok(())
-    }
-
     /// An `Error` event finalizes the job with the mapped termination reason and
     /// records the error description, clearing the assignment and caching `Idle`.
     #[sqlx::test(migrations = "./migrations")]
@@ -4124,12 +3747,14 @@ mod tests {
             Some("image_error"),
             "ImageNotFound must map to image_error"
         );
-        let (_outcome, message) = task_outcome_of(&pool, job_id).await?;
-        assert_eq!(
-            message.as_deref(),
-            Some("manifest missing"),
-            "the error description must be recorded as exit_message"
-        );
+        let (job_error, message): (Option<String>, Option<String>) = sqlx::query_as(
+            "select job_error, exit_message from tml_switchboard.jobs where job_id = $1",
+        )
+        .bind(job_id)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(job_error.as_deref(), Some("manifest missing"));
+        assert_eq!(message, None);
 
         // Error finalization does not release the assignment — the supervisor
         // may still hold the job; reconcile releases it once the supervisor
@@ -4143,14 +3768,6 @@ mod tests {
             "an Error event must not synthesize an Idle status"
         );
         Ok(())
-    }
-
-    fn service(name: &str, label: Option<&str>, protocol: &str) -> JobService {
-        JobService {
-            name: name.to_string(),
-            label: label.map(str::to_string),
-            protocol: protocol.to_string(),
-        }
     }
 
     /// Drive one `JobNetworkAddress` event through the worker.
@@ -4170,21 +3787,6 @@ mod tests {
             .expect("job-network-address event should be handled");
     }
 
-    /// Drive one `JobServiceSet` event through the worker.
-    async fn announce_services(
-        worker: &mut SupervisorWSWorker<ScriptedSocket>,
-        job_id: Uuid,
-        services: Vec<JobService>,
-    ) {
-        worker
-            .handle_supervisor_event(SupervisorEvent::JobEvent {
-                job_id,
-                event: SupervisorJobEvent::JobServiceSet { services },
-            })
-            .await
-            .expect("job-service-set event should be handled");
-    }
-
     /// Read a job's recorded `job_ip_address`, without the `inet` netmask.
     async fn job_ip_address_of(pool: &PgPool, job_id: Uuid) -> anyhow::Result<Option<String>> {
         let address: Option<String> = sqlx::query_scalar(
@@ -4194,36 +3796,6 @@ mod tests {
         .fetch_one(pool)
         .await?;
         Ok(address)
-    }
-
-    /// Read a job's announced services as `(name, label, protocol)`, by name.
-    async fn services_of(
-        pool: &PgPool,
-        job_id: Uuid,
-    ) -> anyhow::Result<Vec<(String, Option<String>, String)>> {
-        let rows = sqlx::query_as::<_, (String, Option<String>, String)>(
-            "select name, label, protocol from tml_switchboard.job_services \
-             where job_id = $1 order by name",
-        )
-        .bind(job_id)
-        .fetch_all(pool)
-        .await?;
-        Ok(rows)
-    }
-
-    /// The physical versions of a job's service rows: `xmin` is the inserting
-    /// transaction, so it changes if and only if the rows were rewritten. This
-    /// is what distinguishes a skipped write from a delete+insert that happens
-    /// to restore the same values.
-    async fn service_row_versions(pool: &PgPool, job_id: Uuid) -> anyhow::Result<Vec<String>> {
-        let versions: Vec<String> = sqlx::query_scalar(
-            "select xmin::text from tml_switchboard.job_services \
-             where job_id = $1 order by name",
-        )
-        .bind(job_id)
-        .fetch_all(pool)
-        .await?;
-        Ok(versions)
     }
 
     /// A `JobNetworkAddress` event records the supervisor-reported address, and
@@ -4259,121 +3831,6 @@ mod tests {
         Ok(())
     }
 
-    /// A `JobServiceSet` event adopts the announced set wholesale: a second
-    /// announcement drops the names it no longer carries.
-    #[sqlx::test(migrations = "./migrations")]
-    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn event_job_service_set_replaces_the_whole_set(pool: PgPool) -> anyhow::Result<()> {
-        let host_id = insert_host(&pool).await?;
-        let user_id = insert_user(&pool).await?;
-        let token_id = insert_token(&pool, user_id).await?;
-        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
-        set_current_job(&pool, host_id, Some(job_id)).await?;
-
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
-        let (_to_worker, _from_worker, mut worker) =
-            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
-
-        announce_services(
-            &mut worker,
-            job_id,
-            vec![
-                service("webide", Some("Web IDE"), "webapp"),
-                service("shell", None, "sshws"),
-            ],
-        )
-        .await;
-        assert_eq!(
-            services_of(&pool, job_id).await?,
-            vec![
-                ("shell".to_string(), None, "sshws".to_string()),
-                (
-                    "webide".to_string(),
-                    Some("Web IDE".to_string()),
-                    "webapp".to_string()
-                ),
-            ],
-            "the event must record the announced set"
-        );
-
-        announce_services(
-            &mut worker,
-            job_id,
-            vec![service("webide", Some("Editor"), "webapp")],
-        )
-        .await;
-        assert_eq!(
-            services_of(&pool, job_id).await?,
-            vec![(
-                "webide".to_string(),
-                Some("Editor".to_string()),
-                "webapp".to_string()
-            )],
-            "a later announcement replaces the whole set"
-        );
-
-        announce_services(&mut worker, job_id, vec![]).await;
-        assert_eq!(
-            services_of(&pool, job_id).await?,
-            vec![],
-            "an empty announcement clears the set"
-        );
-        Ok(())
-    }
-
-    /// Re-announcing the set already stored — what a supervisor reconnect does —
-    /// is not written back, so watchers see no change notification.
-    #[sqlx::test(migrations = "./migrations")]
-    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn event_job_service_set_leaves_an_unchanged_set_alone(
-        pool: PgPool,
-    ) -> anyhow::Result<()> {
-        let host_id = insert_host(&pool).await?;
-        let user_id = insert_user(&pool).await?;
-        let token_id = insert_token(&pool, user_id).await?;
-        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
-        set_current_job(&pool, host_id, Some(job_id)).await?;
-
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
-        let (_to_worker, _from_worker, mut worker) =
-            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
-
-        let announced = vec![
-            service("webide", Some("Web IDE"), "webapp"),
-            service("shell", None, "sshws"),
-        ];
-        announce_services(&mut worker, job_id, announced.clone()).await;
-        let versions = service_row_versions(&pool, job_id).await?;
-        assert_eq!(versions.len(), 2);
-
-        // Re-announced in the opposite order: the comparison is by set, not by
-        // the order the supervisor happens to send.
-        let mut reordered = announced.clone();
-        reordered.reverse();
-        announce_services(&mut worker, job_id, reordered).await;
-        assert_eq!(
-            service_row_versions(&pool, job_id).await?,
-            versions,
-            "an unchanged set must not rewrite the rows"
-        );
-
-        announce_services(
-            &mut worker,
-            job_id,
-            vec![
-                service("webide", Some("Web IDE"), "webapp"),
-                service("shell", Some("Shell"), "sshws"),
-            ],
-        )
-        .await;
-        assert_ne!(
-            service_row_versions(&pool, job_id).await?,
-            versions,
-            "a set differing only in a label must be written"
-        );
-        Ok(())
-    }
-
     /// A `JobNetworkAddress` for a job that is not the one assigned to this host
     /// is dropped.
     #[sqlx::test(migrations = "./migrations")]
@@ -4397,36 +3854,6 @@ mod tests {
             job_ip_address_of(&pool, job_id).await?,
             None,
             "an address for an unassigned job must not be recorded"
-        );
-        Ok(())
-    }
-
-    /// A `JobServiceSet` for a job that is not the one assigned to this host is
-    /// dropped, leaving whatever it announced while it was assigned.
-    #[sqlx::test(migrations = "./migrations")]
-    #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
-    async fn event_job_service_set_for_unassigned_job_is_dropped(
-        pool: PgPool,
-    ) -> anyhow::Result<()> {
-        let host_id = insert_host(&pool).await?;
-        let user_id = insert_user(&pool).await?;
-        let token_id = insert_token(&pool, user_id).await?;
-        let job_id = insert_job(&pool, token_id, host_id, "ready", 0).await?;
-        set_current_job(&pool, host_id, Some(job_id)).await?;
-
-        let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
-        let (_to_worker, _from_worker, mut worker) =
-            scripted_worker(pool.clone(), host_id, wiid, worker_config(50, 250));
-
-        announce_services(&mut worker, job_id, vec![service("webide", None, "webapp")]).await;
-        set_current_job(&pool, host_id, None).await?;
-
-        announce_services(&mut worker, job_id, vec![service("shell", None, "sshws")]).await;
-
-        assert_eq!(
-            services_of(&pool, job_id).await?,
-            vec![("webide".to_string(), None, "webapp".to_string())],
-            "a set for an unassigned job must not replace the recorded one"
         );
         Ok(())
     }

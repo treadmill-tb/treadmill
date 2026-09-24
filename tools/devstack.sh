@@ -440,11 +440,11 @@ insert into tml_switchboard.hosts
 insert into tml_switchboard.host_specs (host_id, revision, spec, spec_version)
   values ('$host_id', 1, '$host_spec_json', 'v1') on conflict do nothing;
 insert into tml_switchboard.api_tokens
-  (token_id, token, user_id, revoked, created_at, expires_at)
+  (token_id, token, subject_id, subject_kind, revoked, created_at, expires_at)
   values (
     '3be73eea-192f-46c0-af01-92f574290c81',
     '\x075a32da4a35c1574629bbca73ff5d2a2ee081960b4cbcdd9b602ce02595d797',
-    '$dev_user_id', null,
+    '$dev_user_id', 'user', null,
     '2024-07-12 13:56:50.616829-07', '2124-07-12 13:56:50.616829-07'
   ) on conflict do nothing;
 SQL
@@ -477,6 +477,9 @@ coord_connector = "ws_connector"
 # networking and has no address of its own on this host, so the gateway is
 # pointed at the forwarded port below rather than at the guest.
 job_address = "127.0.0.1"
+# The guest reaches this host, and so the switchboard, at QEMU's user-mode
+# gateway address.
+job_api_url = "http://10.0.2.2:$sb_port"
 
 [ws_connector]
 token = "$host_token_bearer"
@@ -494,7 +497,7 @@ qemu_img_binary = "qemu-img"
 state_dir = "$sup_state_dir"
 # 10GB should be enough to run proper Linux images:
 working_disk_max_bytes = 10737418240
-tcp_control_socket_listen_addr = "127.0.0.1:3859"
+daemon_api_listen_addr = "127.0.0.1:3859"
 start_script = "$pflash_vars_start"
 # KVM, EDK2 OVMF UEFI, virtio-blk on the backing chain's writable top node. The
 # serial console is wired automatically by the supervisor when the dispatch
@@ -514,7 +517,7 @@ qemu_args = [
   # until this boots an image that runs one.
   "-netdev", "user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::$job_service_hostfwd_port-:$job_service_port",
   "-device", "virtio-net-pci,netdev=net0",
-  "-fw_cfg", "name=opt/org.tockos.treadmill.tcp-ctrl-socket,string=10.0.2.2:3859",
+  "-fw_cfg", "name=opt/dev.treadmill.supervisor-url,string=http://10.0.2.2:3859",
   "-display", "none",
   "-no-reboot",
 ]

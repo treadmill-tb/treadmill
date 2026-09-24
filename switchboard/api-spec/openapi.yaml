@@ -501,6 +501,144 @@ paths:
           description: Job service gateways are not enabled on this deployment.
       security:
       - token: []
+  /jobs/{id}/exit-status:
+    put:
+      tags:
+      - Jobs
+      summary: Report a job's exit status
+      description: Sets the job's `task_exit_status` and `exit_message`, replacing any earlier report. Only the job's own token may report.
+      operationId: putJobExitStatus
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        description: |-
+          The body of `PUT /jobs/{id}/exit-status`, by which a job reports its own
+          outcome. It may do so any number of times while it runs, each report
+          replacing the last.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobExitStatusRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the job token is missing, malformed, or its job has finalized.'
+        '403':
+          description: The job token belongs to a different job.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Failed to deserialize the JSON body into the target type
+          content:
+            text/plain:
+              schema:
+                type: string
+        '204':
+          description: The report was recorded.
+        '409':
+          description: The job has finalized.
+      security:
+      - job_token: []
+  /jobs/{id}/services:
+    put:
+      tags:
+      - Jobs
+      summary: Announce a job's services
+      description: Replaces the job's announced services with the given set. Only the job's own token may announce.
+      operationId: putJobServices
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/JobServiceAnnouncement'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the job token is missing, malformed, or its job has finalized.'
+        '403':
+          description: The job token belongs to a different job.
+        '400':
+          description: Failed to parse the request body as JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: A service name is invalid or repeated.
+        '204':
+          description: The set was recorded, or matched the one in force.
+      security:
+      - job_token: []
+  /jobs/{id}/environment:
+    get:
+      tags:
+      - Jobs
+      summary: Get a job's environment
+      description: Everything a running job needs to set itself up, including secret parameters. Only the job's own token may read it.
+      operationId: getJobEnvironment
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the job token is missing, malformed, or its job has finalized.'
+        '403':
+          description: The job token belongs to a different job.
+        '200':
+          description: |-
+            Everything a running job needs to set itself up, returned by
+            `GET /jobs/{id}/environment` to the job's own token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobEnvironment'
+        '409':
+          description: The job has not been dispatched to a host.
+      security:
+      - job_token: []
   /jobs/{id}:
     get:
       tags:
@@ -539,6 +677,7 @@ paths:
       tags:
       - Jobs
       summary: Terminate a job
+      description: Requires `stop` on the job, or the job's own token, with which a job terminates itself.
       operationId: terminateJob
       parameters:
       - in: path
@@ -552,15 +691,16 @@ paths:
         style: simple
       responses:
         '401':
-          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+          description: 'Authentication failed: the token is missing, malformed, expired, or revoked, or its job has finalized.'
         '403':
-          description: The authenticated account is locked, or lacks permission for this resource.
+          description: The account is locked or lacks permission for this resource, or the job token belongs to a different job.
         '202':
           description: Termination was initiated.
         '204':
           description: The job was already finalized; nothing to do.
       security:
       - token: []
+      - job_token: []
     patch:
       tags:
       - Jobs
@@ -949,7 +1089,7 @@ paths:
               schema:
                 type: string
         '422':
-          description: No such subject.
+          description: No such subject, or one that cannot own a host.
         '204':
           description: Applied, or the owner was already in force.
       security:
@@ -1026,7 +1166,7 @@ paths:
               schema:
                 type: string
         '422':
-          description: No such subject.
+          description: No such subject, or one that cannot be granted a permission.
         '204':
           description: The grant was recorded, or was already held.
       security:
@@ -1657,11 +1797,7 @@ paths:
               schema:
                 type: string
         '422':
-          description: Failed to deserialize the JSON body into the target type
-          content:
-            text/plain:
-              schema:
-                type: string
+          description: No such subject, or one that cannot be granted a permission.
         '204':
           description: The grant was recorded.
         '404':
@@ -2148,11 +2284,7 @@ paths:
               schema:
                 type: string
         '422':
-          description: Failed to deserialize the JSON body into the target type
-          content:
-            text/plain:
-              schema:
-                type: string
+          description: No such subject, or one that cannot be granted a permission.
         '204':
           description: The grant was recorded.
         '404':
@@ -2209,6 +2341,10 @@ components:
       type: http
       scheme: bearer
       description: 'A Treadmill user API token, presented as `Authorization: Bearer <token>`.'
+    job_token:
+      type: http
+      scheme: bearer
+      description: 'A Treadmill job token, presented as `Authorization: Bearer <token>`. It acts only on its own job.'
   schemas:
     AddImageSourceRequest:
       description: |-
@@ -3261,6 +3397,101 @@ components:
           format: int64
       required:
       - lease_duration_secs
+    JobEnvironment:
+      description: |-
+        Everything a running job needs to set itself up, returned by
+        `GET /jobs/{id}/environment` to the job's own token.
+      type: object
+      properties:
+        gateway:
+          description: Gateway material, or null when this deployment runs without gateways.
+          anyOf:
+          - $ref: '#/components/schemas/JobGatewayInfo'
+          - type: 'null'
+        host_id:
+          description: The host the job was dispatched to.
+          type: string
+          format: uuid
+        host_spec:
+          description: |-
+            The host's current spec, normalized to the latest version, as a document
+            conforming to the schema at `GET /hosts/spec-schema`. Null for a host
+            that has never been described.
+          type:
+          - object
+          - 'null'
+          additionalProperties: true
+        parameters:
+          description: The job's parameters, secret values included.
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/JobParameter'
+      required:
+      - host_id
+      - parameters
+    JobExitStatusRequest:
+      description: |-
+        The body of `PUT /jobs/{id}/exit-status`, by which a job reports its own
+        outcome. It may do so any number of times while it runs, each report
+        replacing the last.
+      type: object
+      properties:
+        message:
+          description: |-
+            An optional human-readable note, recorded as the job's `exit_message`.
+            Null clears it.
+          type:
+          - string
+          - 'null'
+        outcome:
+          description: The workload's outcome.
+          allOf:
+          - $ref: '#/components/schemas/TaskExitStatus'
+      required:
+      - outcome
+    JobGatewayEndpoint:
+      description: A gateway under which a job's services are published.
+      type: object
+      properties:
+        base_domain:
+          description: |-
+            The gateway's base domain. A service is reachable at
+            `<service>-<job-id>.<base_domain>`.
+          type: string
+        port:
+          description: The port the gateway listens on.
+          type: integer
+          format: uint16
+          maximum: 65535
+          minimum: 0
+      required:
+      - base_domain
+      - port
+    JobGatewayInfo:
+      description: |-
+        What a job needs to validate the service tokens its gateways admit, so that
+        reaching a service takes a valid token at the gateway and at the job.
+      type: object
+      properties:
+        endpoints:
+          description: The gateways the job's services are published under.
+          type: array
+          items:
+            $ref: '#/components/schemas/JobGatewayEndpoint'
+        issuer:
+          description: The `iss` every service token carries.
+          type: string
+        key_id:
+          description: Identifier of `signing_public_key`, carried as a token's `kid`.
+          type: string
+        signing_public_key:
+          description: The switchboard's public key for verifying service tokens, PEM-encoded.
+          type: string
+      required:
+      - issuer
+      - signing_public_key
+      - key_id
+      - endpoints
     JobImage:
       description: 'A job''s image: what it references, and the concrete image it runs.'
       type: object
@@ -3327,7 +3558,7 @@ components:
           - 'null'
           format: uuid
         exit_message:
-          description: A human-readable detail accompanying termination, if any.
+          description: The job's own human-readable note on its outcome, if any.
           type:
           - string
           - 'null'
@@ -3344,6 +3575,13 @@ components:
           anyOf:
           - $ref: '#/components/schemas/JobInitializingStage'
           - type: 'null'
+        job_error:
+          description: |-
+            The supervisor's description of the error that ended the job, if one
+            did.
+          type:
+          - string
+          - 'null'
         job_id:
           type: string
           format: uuid
@@ -3577,8 +3815,8 @@ components:
       - jobs
     JobParameter:
       description: |-
-        One parameter supplied with a job at enqueue (`POST /jobs`), passed through
-        to the puppet daemon running the workload.
+        One parameter supplied with a job at enqueue (`POST /jobs`), which the job
+        reads from `GET /jobs/{id}/environment`.
 
         Flag a parameter `secret` to have its value withheld wherever the job is
         later read back (it surfaces as a redacted [`JobParameterView`]); non-secret
@@ -3709,8 +3947,8 @@ components:
           default: null
         parameters:
           description: |-
-            A hash map of parameters provided to this job execution. These
-            parameters are provided to the puppet daemon.
+            A hash map of parameters provided to this job execution, which the job
+            reads from `GET /jobs/{id}/environment`.
           type: object
           additionalProperties:
             $ref: '#/components/schemas/JobParameter'
@@ -3720,6 +3958,30 @@ components:
       - init_spec
       - restart_policy
       - parameters
+    JobServiceAnnouncement:
+      description: |-
+        One service a job announces in `PUT /jobs/{id}/services`, which carries the
+        job's complete set.
+      type: object
+      properties:
+        label:
+          description: Optional human-readable text to display.
+          type:
+          - string
+          - 'null'
+        name:
+          description: |-
+            Identifies the service within its job: 1 to 16 lowercase alphanumeric
+            characters, starting with a letter.
+          type: string
+        protocol:
+          description: |-
+            A token the client interprets to decide how to connect (`webapp`,
+            `sshws`, …).
+          type: string
+      required:
+      - name
+      - protocol
     JobServiceCredentials:
       description: |-
         Access credentials for one of a job's announced services, returned by
@@ -4562,8 +4824,8 @@ components:
         type: string
         const: workload_exited
       - description: |-
-          The job requested its own termination (e.g., by requesting termination
-          through the puppet).
+          The job requested its own termination (e.g., with `tml job terminate`
+          inside the job).
         type: string
         const: workload_self_terminated
       - description: Externally terminated by a user.

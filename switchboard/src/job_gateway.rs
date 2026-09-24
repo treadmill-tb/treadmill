@@ -30,7 +30,7 @@ use jsonwebtoken::jwk::{
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use treadmill_rs::api;
-use treadmill_rs::api::switchboard::jobs::JobServiceEndpoint;
+use treadmill_rs::api::switchboard::jobs::{JobGatewayInfo, JobServiceEndpoint};
 use uuid::Uuid;
 
 use crate::config::{self, JobGatewayConfig};
@@ -195,14 +195,8 @@ pub fn service_endpoint(
     }
 }
 
-/// Build the [`JobGatewayDispatch`] handed to a supervisor in `StartJobMessage`
-/// and relayed by it into the job.
-///
-/// Carries no token, unlike its log-streaming counterpart: the job mints
-/// nothing and only validates the tokens its callers arrive with, for which the
-/// public key and the domains it is published under are all it needs.
-pub fn build_dispatch(gateway: &JobGateway) -> api::switchboard_supervisor::JobGatewayDispatch {
-    api::switchboard_supervisor::JobGatewayDispatch {
+pub fn build_info(gateway: &JobGateway) -> JobGatewayInfo {
+    JobGatewayInfo {
         issuer: gateway.config.issuer.clone(),
         signing_public_key: gateway.public_key_pem.clone(),
         key_id: gateway.key_id.clone(),
@@ -212,7 +206,7 @@ pub fn build_dispatch(gateway: &JobGateway) -> api::switchboard_supervisor::JobG
             .iter()
             .cloned()
             .map(|config::JobGatewayEndpoint { base_domain, port }| {
-                api::switchboard_supervisor::JobGatewayEndpoint { base_domain, port }
+                api::switchboard::jobs::JobGatewayEndpoint { base_domain, port }
             })
             .collect(),
     }

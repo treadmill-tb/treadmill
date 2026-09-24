@@ -343,7 +343,8 @@ define_event! {
 }
 
 define_event! {
-    /// A user requested termination of a job (`DELETE /jobs/{id}`). Visible to
+    /// A user or the job itself requested termination of a job
+    /// (`DELETE /jobs/{id}`). Visible to
     /// anyone who can read the job. `finalized_immediately` distinguishes a job
     /// canceled while still queued (finalized on the spot, no host involved)
     /// from a dispatched job whose stop the owning host's worker converges.
@@ -354,6 +355,19 @@ define_event! {
     }
     event_type = "job_terminated";
     render = "requested job termination";
+}
+
+define_event! {
+    /// A job reported its own outcome (`PUT /jobs/{id}/exit-status`). Visible
+    /// to anyone who can read the job; carries the reported outcome and note.
+    JobExitStatusSet v1 {
+        actor: Subject,
+        job: Job @ view(Read),
+        outcome: String,
+        message: Option<String>,
+    }
+    event_type = "job_exit_status_set";
+    render = "reported exit status {outcome}";
 }
 
 define_event! {

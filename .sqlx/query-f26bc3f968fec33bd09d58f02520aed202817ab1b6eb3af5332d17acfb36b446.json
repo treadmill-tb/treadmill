@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f26bc3f968fec33bd09d58f02520aed202817ab1b6eb3af5332d17acfb36b446"
+}

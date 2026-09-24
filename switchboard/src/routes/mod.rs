@@ -282,6 +282,50 @@ pub fn api_router() -> ApiRouter<AppState> {
                 })
             }),
         )
+        //  PUT /jobs/{id}/exit-status -- a job reports its own outcome
+        .api_route(
+            "/jobs/{id}/exit-status",
+            put_with(jobs::put_exit_status, |o| {
+                doc(o, "putJobExitStatus", "Jobs", "Report a job's exit status")
+                    .description(
+                        "Sets the job's `task_exit_status` and `exit_message`, replacing \
+                         any earlier report. Only the job's own token may report.",
+                    )
+                    .response_with::<204, (), _>(|r| r.description("The report was recorded."))
+                    .response_with::<409, (), _>(|r| r.description("The job has finalized."))
+            }),
+        )
+        //  PUT /jobs/{id}/services -- a job announces its complete service set
+        .api_route(
+            "/jobs/{id}/services",
+            put_with(jobs::put_services, |o| {
+                doc(o, "putJobServices", "Jobs", "Announce a job's services")
+                    .description(
+                        "Replaces the job's announced services with the given set. \
+                         Only the job's own token may announce.",
+                    )
+                    .response_with::<204, (), _>(|r| {
+                        r.description("The set was recorded, or matched the one in force.")
+                    })
+                    .response_with::<422, (), _>(|r| {
+                        r.description("A service name is invalid or repeated.")
+                    })
+            }),
+        )
+        //  GET /jobs/{id}/environment -- what a running job needs to set itself up
+        .api_route(
+            "/jobs/{id}/environment",
+            get_with(jobs::get_environment, |o| {
+                doc(o, "getJobEnvironment", "Jobs", "Get a job's environment")
+                    .description(
+                        "Everything a running job needs to set itself up, including \
+                         secret parameters. Only the job's own token may read it.",
+                    )
+                    .response_with::<409, (), _>(|r| {
+                        r.description("The job has not been dispatched to a host.")
+                    })
+            }),
+        )
         //  GET    /jobs/{id} -- fetch one job's full info
         //  PATCH  /jobs/{id} -- update a job's mutable metadata (label, lease)
         //  DELETE /jobs/{id} -- request termination of a job
@@ -299,6 +343,10 @@ pub fn api_router() -> ApiRouter<AppState> {
                 })
                 .delete_with(jobs::terminate, |o| {
                     doc(o, "terminateJob", "Jobs", "Terminate a job")
+                        .description(
+                            "Requires `stop` on the job, or the job's own token, with which \
+                             a job terminates itself.",
+                        )
                         .response_with::<202, (), _>(|r| {
                             r.description("Termination was initiated.")
                         })
@@ -442,7 +490,9 @@ pub fn api_router() -> ApiRouter<AppState> {
                     .response_with::<403, (), _>(|r| {
                         r.description("The caller lacks `manage` on the host.")
                     })
-                    .response_with::<422, (), _>(|r| r.description("No such subject."))
+                    .response_with::<422, (), _>(|r| {
+                        r.description("No such subject, or one that cannot own a host.")
+                    })
             }),
         )
         //  GET  /hosts/{id}/grants -- list the host's grants
@@ -469,7 +519,9 @@ pub fn api_router() -> ApiRouter<AppState> {
                 .response_with::<403, (), _>(|r| {
                     r.description("The caller lacks `manage` on the host.")
                 })
-                .response_with::<422, (), _>(|r| r.description("No such subject."))
+                .response_with::<422, (), _>(|r| {
+                    r.description("No such subject, or one that cannot be granted a permission.")
+                })
             }),
         )
         //  DELETE /hosts/{id}/grants/{subject_id}/{permission} -- revoke a grant
@@ -649,6 +701,9 @@ pub fn api_router() -> ApiRouter<AppState> {
                 )
                 .response_with::<204, (), _>(|r| r.description("The grant was recorded."))
                 .response_with::<404, (), _>(|r| r.description("No such image or source."))
+                .response_with::<422, (), _>(|r| {
+                    r.description("No such subject, or one that cannot be granted a permission.")
+                })
             })
             .get_with(images::list_image_source_grants, |o| {
                 doc(
@@ -818,6 +873,9 @@ pub fn api_router() -> ApiRouter<AppState> {
                 .response_with::<404, (), _>(|r| {
                     r.description("No such image set, or it is not visible to the caller.")
                 })
+                .response_with::<422, (), _>(|r| {
+                    r.description("No such subject, or one that cannot be granted a permission.")
+                })
             })
             .get_with(images::list_image_set_grants, |o| {
                 doc(
@@ -914,6 +972,23 @@ pub fn openapi_spec() -> aide::openapi::OpenApi {
                 description: Some(
                     "A Treadmill user API token, presented as \
                      `Authorization: Bearer <token>`."
+                        .to_string(),
+                ),
+                extensions: Default::default(),
+            }),
+        );
+
+    api.components
+        .get_or_insert_with(Components::default)
+        .security_schemes
+        .insert(
+            crate::auth::JOB_SECURITY_SCHEME.to_string(),
+            ReferenceOr::Item(SecurityScheme::Http {
+                scheme: "bearer".to_string(),
+                bearer_format: None,
+                description: Some(
+                    "A Treadmill job token, presented as `Authorization: Bearer <token>`. \
+                     It acts only on its own job."
                         .to_string(),
                 ),
                 extensions: Default::default(),

@@ -17,7 +17,6 @@
 //! registry concerns (tag→digest resolution, pulling into the local store) are
 //! the launcher's responsibility, not this connector's.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,8 +26,8 @@ use tracing::{Level, event};
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard_supervisor::{
-    ImageLocation, ImageSpecification, ParameterValue, RestartPolicy, RunningJobState,
-    SupervisorEvent, SupervisorJobEvent,
+    ImageLocation, ImageSpecification, RestartPolicy, RunningJobState, SupervisorEvent,
+    SupervisorJobEvent,
 };
 use treadmill_rs::connector::{self, CoordCommand, JobError, StartJobMessage};
 use treadmill_rs::image::Digest;
@@ -59,10 +58,6 @@ pub struct LocalJobArgs {
     #[arg(long)]
     pub repository: Option<String>,
 
-    /// A job parameter as `key=value` (repeatable).
-    #[arg(short = 'p', long = "param", value_name = "KEY=VALUE", value_parser = parse_param)]
-    pub parameters: Vec<(String, String)>,
-
     /// Stop the job automatically after this duration (e.g. `5m`, `30s`).
     /// Without it the job runs until the guest exits or Ctrl-C.
     #[arg(long, value_parser = humantime::parse_duration)]
@@ -75,13 +70,6 @@ pub struct LocalJobArgs {
 
 fn parse_digest(s: &str) -> Result<Digest, String> {
     s.parse::<Digest>().map_err(|e| e.to_string())
-}
-
-fn parse_param(s: &str) -> Result<(String, String), String> {
-    match s.split_once('=') {
-        Some((k, v)) => Ok((k.to_string(), v.to_string())),
-        None => Err(format!("expected KEY=VALUE, got {s:?}")),
-    }
 }
 
 /// A switchboard-less connector that drives a supervisor through a single job.
@@ -196,27 +184,10 @@ impl Inner {
             restart_policy: RestartPolicy {
                 remaining_restart_count: 0,
             },
-            parameters: self
-                .args
-                .parameters
-                .iter()
-                .cloned()
-                .map(|(k, v)| {
-                    (
-                        k,
-                        ParameterValue {
-                            value: v,
-                            secret: false,
-                        },
-                    )
-                })
-                .collect::<HashMap<_, _>>(),
             // Local runs stream qemu's console straight to the terminal (the
             // supervisor inherits stdio when this is `None`); no NATS needed.
             log_streaming: None,
-            gateway: None,
-            // A local run has no switchboard to describe the host.
-            host_spec: None,
+            job_token: None,
         };
 
         event!(
@@ -373,7 +344,6 @@ mod tests {
                     .unwrap(),
             ),
             repository: Some("treadmill/stub".to_string()),
-            parameters: vec![],
             stop_after: None,
             job_id: Some(Uuid::new_v4()),
         };

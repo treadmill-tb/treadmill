@@ -238,8 +238,8 @@ pub struct JobRequest {
 
     pub restart_policy: RestartPolicy,
 
-    /// A hash map of parameters provided to this job execution. These
-    /// parameters are provided to the puppet daemon.
+    /// A hash map of parameters provided to this job execution, which the job
+    /// reads from `GET /jobs/{id}/environment`.
     pub parameters: HashMap<String, JobParameter>,
 
     /// Host eligibility as a single CEL expression, evaluated with the
@@ -280,8 +280,8 @@ fn default_host_cel_predicate() -> String {
 pub enum TerminationReason {
     /// The job's workload terminated (e.g., QEMU VM shutdown).
     WorkloadExited,
-    /// The job requested its own termination (e.g., by requesting termination
-    /// through the puppet).
+    /// The job requested its own termination (e.g., with `tml job terminate`
+    /// inside the job).
     WorkloadSelfTerminated,
     /// Externally terminated by a user.
     UserTerminated,

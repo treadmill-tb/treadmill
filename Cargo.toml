@@ -3,11 +3,8 @@ resolver = "2"
 members = [
   "cli",
   "image-util",
-  "puppet",
   "supervisor/connector/local",
   "supervisor/connector/ws",
-  "supervisor/control-socket/tcp/client",
-  "supervisor/control-socket/tcp/server",
   "supervisor/lib",
   "supervisor/nbd-netboot",
   "supervisor/qemu",
@@ -34,16 +31,16 @@ name = "treadmill"
 # don't have to repeat relative path strings).
 treadmill-rs = { path = "treadmill-rs", version = "0.3.0" }
 treadmill-supervisor-lib = { path = "supervisor/lib" }
-treadmill-tcp-control-socket-client = { path = "supervisor/control-socket/tcp/client" }
-treadmill-tcp-control-socket-server = { path = "supervisor/control-socket/tcp/server" }
 treadmill-local-connector = { path = "supervisor/connector/local" }
 treadmill-ws-connector = { path = "supervisor/connector/ws" }
 
 # Shared third-party dependencies. Versions here are floors; per-member
 # Cargo.toml selects features and may set `default-features = false`.
+aide = "0.16.0-alpha.4"
 anyhow = "1.0.76"
 async-nats = "0.50.0"
 async-trait = "0.1.81"
+axum = "0.8.9"
 base64 = "0.23.0"
 bytes = "1.11.1"
 # CEL, the expression language for job host predicates and image-set member
@@ -79,6 +76,7 @@ reqwest = { version = "0.13", default-features = false }
 schemars = "1"
 serde = "1.0.204"
 serde_json = "1.0.120"
+serde_norway = "0.9"
 serde_path_to_error = "0.1.20"
 serde_with = "3.8.1"
 sd-notify = "0.5.0"
@@ -87,7 +85,7 @@ subtle = "2.6.1"
 tempfile = "3"
 thiserror = "2"
 # tokio/tokio-util have no meaningful default features; declare false so
-# members that want a minimal feature set (the supervisors, control-socket)
+# members that want a minimal feature set (the supervisors)
 # don't need to repeat the override, and Cargo forbids per-member overrides
 # anyway when `workspace = true`.
 tokio = { version = "1.38.0", default-features = false }

@@ -5,6 +5,9 @@ coord_connector = "ws_connector"
 # IP address of the NBD netboot target, announced to the switchboard.
 # job_address = "fd00::2"
 
+# The switchboard API base URL, as this supervisor's jobs reach it.
+# job_api_url = "https://switchboard.example"
+
 [ws_connector]
 # Placeholder: a supervisor token is 32 bytes, base64-encoded. Read one out of
 # a file instead with `token_file = "..."`.
@@ -34,7 +37,7 @@ store_root = "/var/lib/zot"
 
 state_dir = "./state"
 
-tcp_control_socket_listen_addr = "0.0.0.0:3859"
+daemon_api_listen_addr = "0.0.0.0:3859"
 
 # Listen address for the `qemu-storage-daemon` subprocess (serving `root` and
 # `boot` NBD exports).

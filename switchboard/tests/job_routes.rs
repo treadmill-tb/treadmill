@@ -22,12 +22,13 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::hosts::{HostInfo, HostListEntry};
-use treadmill_rs::api::switchboard::jobs::RestartPolicy;
 use treadmill_rs::api::switchboard::jobs::{
-    EnqueueJobResponse, JobDefaults, JobImageReference, JobInfo, JobLeaseExpiryAction,
-    JobListResponse, JobPermission, JobPredecessor, JobServiceCredentials, JobServiceEndpoint,
-    LeaseRejection, LeaseRejectionCode, NatsConsoleInputCredentials, NatsLogStreamCredentials,
+    EnqueueJobResponse, JobDefaults, JobEnvironment, JobImageReference, JobInfo,
+    JobLeaseExpiryAction, JobListResponse, JobParameter, JobPermission, JobPredecessor,
+    JobServiceCredentials, JobServiceEndpoint, LeaseRejection, LeaseRejectionCode,
+    NatsConsoleInputCredentials, NatsLogStreamCredentials,
 };
+use treadmill_rs::api::switchboard::jobs::{RestartPolicy, TaskExitStatus};
 use treadmill_rs::api::switchboard::{
     DEFAULT_HOST_CEL_PREDICATE, JobInitSpec, JobRequest, JobState, WhoAmIResponse,
 };
@@ -150,7 +151,7 @@ async fn whoami(client: &reqwest::Client, addr: SocketAddr, token: &str) -> Uuid
 async fn latest_token_id(pool: &PgPool, user_id: Uuid) -> Uuid {
     sqlx::query_scalar(
         "select token_id from tml_switchboard.api_tokens \
-         where user_id = $1 order by created_at desc limit 1",
+         where subject_id = $1 order by created_at desc limit 1",
     )
     .bind(user_id)
     .fetch_one(pool)
@@ -208,6 +209,11 @@ async fn register_image(pool: &PgPool) -> (Uuid, Digest) {
 async fn seed_job(pool: &PgPool, owner: Uuid, token: Uuid, params: &[(&str, &str, bool)]) -> Uuid {
     let job_id = Uuid::new_v4();
     let (image_id, _) = register_image(pool).await;
+    sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
+        .bind(job_id)
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query(
         "insert into tml_switchboard.jobs \
            (job_id, owner_id, image_id, restart_policy, \
@@ -250,6 +256,11 @@ async fn seed_job_at(
 ) -> Uuid {
     let job_id = Uuid::new_v4();
     let (image_id, _) = register_image(pool).await;
+    sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
+        .bind(job_id)
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query(
         "insert into tml_switchboard.jobs \
            (job_id, owner_id, image_id, restart_policy, \
@@ -2133,4 +2144,353 @@ async fn resumes_and_restarts_carry_the_image_reference(pool: PgPool) {
         Some(JobPredecessor::Restart { job_id: original })
     );
     assert_eq!(info.restart_policy.remaining_restarts, 2);
+}
+
+async fn job_token(pool: &PgPool, job_id: Uuid) -> String {
+    use base64::Engine as _;
+    let token: Vec<u8> = sqlx::query_scalar(
+        "select token from tml_switchboard.api_tokens \
+         where subject_id = $1 and subject_kind = 'job'",
+    )
+    .bind(job_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    base64::prelude::BASE64_STANDARD.encode(token)
+}
+
+async fn enqueue_with_secret(
+    pool: &PgPool,
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    user_token: &str,
+) -> Uuid {
+    let (_, image) = register_image(pool).await;
+    let mut req = image_job_request(
+        None,
+        JobInitSpec::Image {
+            manifest_digest: image,
+        },
+        None,
+    );
+    req.parameters.insert(
+        "password".to_string(),
+        JobParameter {
+            value: "hunter2".to_string(),
+            secret: true,
+        },
+    );
+    let resp = client
+        .post(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(user_token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    resp.json::<EnqueueJobResponse>().await.unwrap().job_id
+}
+
+async fn get_environment(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    job_id: Uuid,
+) -> reqwest::Response {
+    client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}/environment"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_reads_its_own_environment(pool: PgPool) {
+    let addr = spawn_server(gateway_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let user_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
+    mark_running(&pool, job_id, chrono::Utc::now()).await;
+
+    let resp = get_environment(&client, addr, &job_token(&pool, job_id).await, job_id).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let environment: JobEnvironment = resp.json().await.unwrap();
+
+    let host_id: Uuid = sqlx::query_scalar(
+        "select dispatched_on_host_id from tml_switchboard.jobs where job_id = $1",
+    )
+    .bind(job_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(environment.host_id, host_id);
+    assert!(environment.host_spec.is_none());
+    assert_eq!(environment.parameters["password"].value, "hunter2");
+    assert!(environment.parameters["password"].secret);
+    let gateway = environment.gateway.expect("the gateway is enabled");
+    assert_eq!(gateway.issuer, GATEWAY_ISSUER);
+    assert_eq!(gateway.endpoints.len(), 2);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_cannot_read_another_jobs_environment(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let user_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
+    let other_job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
+    mark_running(&pool, job_id, chrono::Utc::now()).await;
+    mark_running(&pool, other_job_id, chrono::Utc::now()).await;
+
+    let resp = get_environment(&client, addr, &job_token(&pool, job_id).await, other_job_id).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_user_cannot_read_a_jobs_environment(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let user_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
+    mark_running(&pool, job_id, chrono::Utc::now()).await;
+
+    let resp = get_environment(&client, addr, &user_token, job_id).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_finalized_jobs_token_stops_working(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let user_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
+    mark_running(&pool, job_id, chrono::Utc::now()).await;
+    mark_finalized(&pool, job_id).await;
+
+    let resp = get_environment(&client, addr, &job_token(&pool, job_id).await, job_id).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_queued_jobs_environment_is_a_conflict(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let user_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
+
+    let resp = get_environment(&client, addr, &job_token(&pool, job_id).await, job_id).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_token_is_not_a_user_token(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let user_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
+    mark_running(&pool, job_id, chrono::Utc::now()).await;
+
+    let resp = client
+        .get(format!("http://{addr}/api/v1/auth/whoami"))
+        .bearer_auth(job_token(&pool, job_id).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn everyone_cannot_own_a_job(pool: PgPool) {
+    const EVERYONE: Uuid = Uuid::from_u128(4);
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let (_, image) = register_image(&pool).await;
+    let req = image_job_request(
+        Some(EVERYONE),
+        JobInitSpec::Image {
+            manifest_digest: image,
+        },
+        None,
+    );
+    let resp = client
+        .post(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(&token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+async fn running_job(pool: &PgPool, client: &reqwest::Client, addr: SocketAddr) -> (String, Uuid) {
+    let user_token = mock_login_token(pool, client, addr, "bob", true).await;
+    let job_id = enqueue_with_secret(pool, client, addr, &user_token).await;
+    mark_running(pool, job_id, chrono::Utc::now()).await;
+    (user_token, job_id)
+}
+
+fn no_redirect_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap()
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_terminates_itself(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (_, job_id) = running_job(&pool, &client, addr).await;
+
+    let resp = client
+        .delete(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(job_token(&pool, job_id).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+
+    let (reason, actor): (Option<String>, Uuid) = sqlx::query_as(
+        "select j.terminate_requested_reason::text, e.actor_id \
+         from tml_switchboard.jobs j \
+         join tml_switchboard.audit_events e on e.event_type like 'job_terminated%' \
+         where j.job_id = $1",
+    )
+    .bind(job_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(reason.as_deref(), Some("workload_self_terminated"));
+    assert_eq!(actor, job_id);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_cannot_terminate_another_job(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
+    let other_job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
+
+    let resp = client
+        .delete(format!("http://{addr}/api/v1/jobs/{other_job_id}"))
+        .bearer_auth(job_token(&pool, job_id).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_reports_its_exit_status(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
+    let token = job_token(&pool, job_id).await;
+    let url = format!("http://{addr}/api/v1/jobs/{job_id}/exit-status");
+
+    let resp = client
+        .put(&url)
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "outcome": "failure", "message": "3 tests failed" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    let info = get_job(&client, addr, &user_token, job_id).await;
+    assert!(matches!(
+        info.task_exit_status,
+        Some(TaskExitStatus::Failure)
+    ));
+    assert_eq!(info.exit_message.as_deref(), Some("3 tests failed"));
+
+    let resp = client
+        .put(&url)
+        .bearer_auth(&user_token)
+        .json(&serde_json::json!({ "outcome": "success", "message": null }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_announces_its_services(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
+    let token = job_token(&pool, job_id).await;
+    let announce = async |services: serde_json::Value| {
+        client
+            .put(format!("http://{addr}/api/v1/jobs/{job_id}/services"))
+            .bearer_auth(&token)
+            .json(&services)
+            .send()
+            .await
+            .unwrap()
+            .status()
+    };
+
+    assert_eq!(
+        announce(serde_json::json!([
+            { "name": "web", "label": "Web UI", "protocol": "webapp" },
+            { "name": "ssh", "label": null, "protocol": "sshws" },
+        ]))
+        .await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+    let info = get_job(&client, addr, &user_token, job_id).await;
+    let names: Vec<&str> = info.services.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["ssh", "web"]);
+
+    assert_eq!(
+        announce(serde_json::json!([
+            { "name": "Not-Valid", "label": null, "protocol": "webapp" },
+        ]))
+        .await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        announce(serde_json::json!([
+            { "name": "web", "label": null, "protocol": "webapp" },
+            { "name": "web", "label": null, "protocol": "sshws" },
+        ]))
+        .await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let info = get_job(&client, addr, &user_token, job_id).await;
+    assert_eq!(info.services.len(), 2);
 }

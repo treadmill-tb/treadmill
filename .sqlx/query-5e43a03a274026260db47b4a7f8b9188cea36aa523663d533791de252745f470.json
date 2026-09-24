@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tml_switchboard.api_tokens (token_id, token, subject_id, subject_kind, created_at, expires_at) values ($1, $2, $3, 'job', $4, null)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5e43a03a274026260db47b4a7f8b9188cea36aa523663d533791de252745f470"
+}

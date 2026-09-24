@@ -1,4 +1,4 @@
-use super::{host_spec, image};
+use super::{api_token, image};
 use crate::matcher::{GroupMember, select_member};
 use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
@@ -8,19 +8,20 @@ use std::net::IpAddr;
 use treadmill_rs::api::switchboard::jobs::{
     JobImage, JobImageReference, JobInfo, JobInitializingStage as ClientJobInitializingStage,
     JobLeaseExpiryAction as ClientLeaseExpiryAction, JobParameterView,
-    JobPermission as ClientJobPermission, JobPredecessor, JobServiceView, JobSummary,
-    LeaseRejectionCode as ClientLeaseRejectionCode, LeaseSpec,
+    JobPermission as ClientJobPermission, JobPredecessor, JobServiceAnnouncement, JobServiceView,
+    JobSummary, LeaseRejectionCode as ClientLeaseRejectionCode, LeaseSpec,
     RestartPolicy as ClientRestartPolicy, RestartPolicyState,
     TaskExitStatus as ClientTaskExitStatus,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, TerminationReason};
 use treadmill_rs::api::switchboard_supervisor::{
-    ImageLocation, ImageSpecification, JobInitializingStage, JobService, ParameterValue,
-    RestartPolicy, RunningJobState, StartJobMessage, TaskExitStatus,
+    ImageLocation, ImageSpecification, JobInitializingStage, RestartPolicy, RunningJobState,
+    StartJobMessage,
 };
 use treadmill_rs::connector::JobErrorKind;
-use treadmill_rs::host_spec::{HostSpec, HostSpecV1};
+use treadmill_rs::host_spec::HostSpecV1;
 use treadmill_rs::image::Digest;
+use treadmill_rs::util::Secret;
 use uuid::Uuid;
 
 pub mod parameters;
@@ -191,16 +192,15 @@ impl From<SqlTaskExitStatus> for ClientTaskExitStatus {
         }
     }
 }
-impl From<TaskExitStatus> for SqlTaskExitStatus {
-    fn from(value: TaskExitStatus) -> Self {
+impl From<ClientTaskExitStatus> for SqlTaskExitStatus {
+    fn from(value: ClientTaskExitStatus) -> Self {
         match value {
-            TaskExitStatus::Pending => SqlTaskExitStatus::Pending,
-            TaskExitStatus::Success => SqlTaskExitStatus::Success,
-            TaskExitStatus::Failure => SqlTaskExitStatus::Failure,
+            ClientTaskExitStatus::Pending => SqlTaskExitStatus::Pending,
+            ClientTaskExitStatus::Success => SqlTaskExitStatus::Success,
+            ClientTaskExitStatus::Failure => SqlTaskExitStatus::Failure,
         }
     }
 }
-
 #[derive(Debug, Clone, sqlx::Type)]
 #[sqlx(type_name = "tml_switchboard.restart_policy")]
 pub struct SqlRestartPolicy {
@@ -309,6 +309,14 @@ pub async fn insert(
             )
         }
     };
+
+    sqlx::query!(
+        "insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')",
+        as_job_id,
+    )
+    .execute(conn.as_mut())
+    .await?;
+    api_token::insert_job_token(as_job_id, queued_at, conn.as_mut()).await?;
 
     sqlx::query!(
         r#"
@@ -446,6 +454,7 @@ pub struct SqlJob {
     task_exit_status: Option<SqlTaskExitStatus>,
     #[allow(dead_code)]
     exit_message: Option<String>,
+    job_error: Option<String>,
     #[allow(dead_code)]
     terminated_at: Option<DateTime<Utc>>,
 }
@@ -635,6 +644,7 @@ impl SqlJob {
             termination_reason: self.termination_reason.map(Into::into),
             task_exit_status: self.task_exit_status.map(Into::into),
             exit_message: self.exit_message,
+            job_error: self.job_error,
             terminated_at: self.terminated_at,
             services,
             job_ip_address: self.job_ip_address.map(|address| address.ip()),
@@ -701,6 +711,7 @@ pub async fn fetch_by_job_id(
         termination_reason as "termination_reason: _",
         task_exit_status as "task_exit_status: _",
         exit_message,
+        job_error,
         terminated_at,
         job_ip_address
         from tml_switchboard.jobs where job_id = $1;
@@ -1031,9 +1042,9 @@ pub async fn fetch_job_ip_address(
 pub async fn fetch_services(
     job_id: Uuid,
     conn: impl PgExecutor<'_>,
-) -> Result<Vec<JobService>, sqlx::Error> {
+) -> Result<Vec<JobServiceAnnouncement>, sqlx::Error> {
     sqlx::query_as!(
-        JobService,
+        JobServiceAnnouncement,
         r#"select name, label, protocol
            from tml_switchboard.job_services
            where job_id = $1
@@ -1054,7 +1065,7 @@ pub async fn fetch_services(
 /// Announcing a name twice violates the primary key and fails the transaction.
 pub async fn replace_services(
     job_id: Uuid,
-    services: &[JobService],
+    services: &[JobServiceAnnouncement],
     txn: &mut Transaction<'_, Postgres>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
@@ -1136,8 +1147,8 @@ impl std::error::Error for BuildStartJobError {}
 /// re-resolving: a resume becomes [`ImageSpecification::ResumeJob`]; otherwise
 /// the concrete `resolved_image_id` the scheduler pinned at assignment is
 /// paired with that image's catalog locations (a set is *not* re-selected — the
-/// scheduler's chosen member stands). The remaining fields are read straight off
-/// the job row and the `job_parameters` table.
+/// scheduler's chosen member stands). The restart policy and the job's token
+/// are read straight off the database.
 ///
 /// When `log_streaming` is `Some`, the message carries a per-job
 /// [`LogStreamingDispatch`](treadmill_rs::api::switchboard_supervisor::LogStreamingDispatch)
@@ -1147,21 +1158,11 @@ impl std::error::Error for BuildStartJobError {}
 /// transaction; the *stream* is created separately, outside the row lock, by the
 /// caller (see the worker's `reconcile`).
 ///
-/// `gateway` travels the same way: `Some` carries the key material the job
-/// validates service tokens with (see [`crate::job_gateway`]), `None` leaves the
-/// field unset and the job's services unreachable from outside.
-///
-/// `host_id`'s current spec is read here rather than at connect, so a job sees
-/// the description in force when it was dispatched even though the supervisor's
-/// connection outlives any number of spec edits.
-///
 /// Read-only; safe to call inside the worker's `with_txn` (it issues no writes).
 pub async fn build_start_job_message(
     job: &SqlJob,
-    host_id: Uuid,
     conn: &mut sqlx::PgConnection,
     log_streaming: Option<&crate::config::LogStreamingConfig>,
-    gateway: Option<&crate::job_gateway::JobGateway>,
 ) -> Result<StartJobMessage, BuildStartJobError> {
     let image_spec = if let Some(resume_job_id) = job.resume_job_id {
         ImageSpecification::ResumeJob {
@@ -1177,23 +1178,6 @@ pub async fn build_start_job_message(
         concrete_image_spec(rec.id, &rec.manifest_digest, job.owner_id, conn).await?
     };
 
-    // Parameters are stored in the client-facing [`JobParameter`] shape; the
-    // supervisor protocol carries its own structurally-identical
-    // [`ParameterValue`], so translate at this dispatch boundary.
-    let parameters = parameters::fetch_by_job_id(job.job_id, &mut *conn)
-        .await?
-        .into_iter()
-        .map(|(key, p)| {
-            (
-                key,
-                ParameterValue {
-                    value: p.value,
-                    secret: p.secret,
-                },
-            )
-        })
-        .collect();
-
     // Mint the per-job write token when log streaming is enabled. The matching
     // JetStream stream is created by the caller outside the host row lock (NATS
     // I/O must not run inside `with_txn`).
@@ -1201,30 +1185,14 @@ pub async fn build_start_job_message(
         .map(|cfg| crate::log_streaming::build_dispatch(cfg, job.job_id))
         .transpose()?;
 
-    // The description in force at dispatch, normalized and serialized here: the
-    // supervisor and the puppet relay it verbatim, so the document's shape stays
-    // the switchboard's concern. An unreadable one is dropped rather than
-    // failing the dispatch — the job's placement did not depend on it, and a
-    // host that cannot start jobs is the worse outcome.
-    let host_spec = match host_spec::current_for_host(host_id, &mut *conn).await? {
-        Some(Ok(stored)) => Some(
-            serde_json::to_value(HostSpec::V1(stored.normalize())).expect("host spec serializes"),
-        ),
-        Some(Err(e)) => {
-            tracing::error!("dispatching job {} without a host spec: {e}", job.job_id);
-            None
-        }
-        None => None,
-    };
+    let job_token = api_token::fetch_job_token(job.job_id, &mut *conn).await?;
 
     Ok(StartJobMessage {
         job_id: job.job_id,
         image_spec,
         restart_policy: job.restart_policy(),
-        parameters,
         log_streaming,
-        gateway: gateway.map(crate::job_gateway::build_dispatch),
-        host_spec,
+        job_token: Some(Secret::new(job_token.to_string())),
     })
 }
 
@@ -1422,6 +1390,7 @@ pub enum TerminateOutcome {
 /// concurrent placement.
 pub async fn request_terminate(
     job_id: Uuid,
+    reason: SqlTerminationReason,
     at: DateTime<Utc>,
     txn: &mut Transaction<'_, Postgres>,
 ) -> Result<TerminateOutcome, sqlx::Error> {
@@ -1449,12 +1418,13 @@ pub async fn request_terminate(
             sqlx::query!(
                 r#"update tml_switchboard.jobs
                    set job_state = 'finalized',
-                       termination_reason = 'user_terminated',
+                       termination_reason = $3,
                        task_exit_status = null,
                        terminated_at = $2
                    where job_id = $1 and job_state = 'queued'"#,
                 job_id,
                 at,
+                reason as SqlTerminationReason,
             )
             .execute(&mut **txn)
             .await?;
@@ -1470,11 +1440,11 @@ pub async fn request_terminate(
             sqlx::query!(
                 r#"update tml_switchboard.jobs
                    set terminate_requested_at = coalesce(terminate_requested_at, $2),
-                       terminate_requested_reason =
-                           coalesce(terminate_requested_reason, 'user_terminated')
+                       terminate_requested_reason = coalesce(terminate_requested_reason, $3)
                    where job_id = $1"#,
                 job_id,
                 at,
+                reason as SqlTerminationReason,
             )
             .execute(&mut **txn)
             .await?;
@@ -1643,9 +1613,9 @@ pub async fn apply_running_state(
 /// is `Terminated`: the host's workload exited, so the job finalizes with
 /// [`TerminationReason::WorkloadExited`].
 ///
-/// The task outcome (`task_exit_status` / `exit_message`) is *not* set here — it
-/// is reported out-of-band via [`set_task_outcome`], so whatever the supervisor
-/// last declared is preserved across this transition. `initializing_stage` is
+/// The task outcome (`task_exit_status` / `exit_message`) is *not* set here — the
+/// job reports it itself via [`set_exit_status`], so whatever it last reported
+/// is preserved across this transition. `initializing_stage` is
 /// cleared to satisfy its invariant; `dispatched_on_host_id` and `started_at`
 /// are retained so the terminal record keeps its placement and start time.
 ///
@@ -1795,9 +1765,9 @@ pub fn termination_reason_for_job_error(kind: &JobErrorKind) -> SqlTerminationRe
 /// within the caller's transaction. Backs the event path's error handling:
 /// records the terminal `termination_reason` (see
 /// [`termination_reason_for_job_error`]) and the error's `description` as
-/// `exit_message` (clearing `initializing_stage`; placement and start time are
-/// retained). The orthogonal `task_exit_status` is left untouched (the protocol
-/// keeps the *why-it-stopped* and the *workload outcome* separate).
+/// `job_error` (clearing `initializing_stage`; placement and start time are
+/// retained). The job's own `task_exit_status` and `exit_message` are left
+/// untouched.
 ///
 /// `hosts.current_job` is **not** released here (see [`finalize_terminated`] for
 /// the rationale): an `Error` is reported out-of-band, before the supervisor's
@@ -1826,7 +1796,7 @@ pub async fn finalize_errored(
         update tml_switchboard.jobs
         set job_state = 'finalized',
             termination_reason = $2,
-            exit_message = $3,
+            job_error = $3,
             initializing_stage = null,
             terminated_at = $4
         where job_id = $1 and job_state <> 'finalized'
@@ -1843,49 +1813,23 @@ pub async fn finalize_errored(
     Ok(transitioned.is_some())
 }
 
-/// Record the supervisor's *task outcome* for a job it is currently assigned to
-/// `host_id`, within the caller's transaction.
-///
-/// This is the dedicated setter behind [`SupervisorJobEvent::DeclareExitStatus`].
-/// It is independent of the job's lifecycle state: the supervisor may set the
-/// outcome at any point while the job is dispatched to its host, as many times
-/// as it likes, each call overriding the previous `task_exit_status` and
-/// replacing `exit_message` (passing `None` clears the message). The outcome
-/// itself (`pending` / `success` / `failure`) can never be cleared back to unset.
-///
-/// The write is guarded on `dispatched_on_host_id = host_id` plus a
-/// not-finalized check (the dispatch pointer is retained on terminal records):
-/// it is a no-op (returns `false`) for a job assigned to a different host,
-/// never dispatched, or already finalized — a terminal outcome must not be
-/// revised after the fact.
-///
-/// Must be called inside the worker's `with_txn` so the takeover/staleness guard
-/// covers it.
-pub async fn set_task_outcome(
+pub async fn set_exit_status(
     job_id: Uuid,
-    host_id: Uuid,
     outcome: SqlTaskExitStatus,
-    message: Option<String>,
+    message: Option<&str>,
     txn: &mut Transaction<'_, Postgres>,
 ) -> Result<bool, sqlx::Error> {
     let updated = sqlx::query!(
-        r#"
-        update tml_switchboard.jobs
-        set task_exit_status = $3,
-            exit_message = $4
-        where job_id = $1 and dispatched_on_host_id = $2
-              and job_state <> 'finalized'
-        returning job_id
-        "#,
+        r#"update tml_switchboard.jobs
+           set task_exit_status = $2, exit_message = $3
+           where job_id = $1 and job_state <> 'finalized'"#,
         job_id,
-        host_id,
         outcome as SqlTaskExitStatus,
         message,
     )
-    .fetch_optional(&mut **txn)
+    .execute(&mut **txn)
     .await?;
-
-    Ok(updated.is_some())
+    Ok(updated.rows_affected() == 1)
 }
 
 /// Finalize a job the supervisor dropped (`termination_reason = host_dropped_job`)
@@ -2014,8 +1958,8 @@ mod tests {
         secret[..16].copy_from_slice(token.as_bytes());
         sqlx::query(
             "insert into tml_switchboard.api_tokens \
-             (token_id, token, user_id, revoked, created_at, expires_at) \
-             values ($1, $2, $3, null, now(), now() + interval '1 day')",
+             (token_id, token, subject_id, subject_kind, revoked, created_at, expires_at) \
+             values ($1, $2, $3, 'user', null, now(), now() + interval '1 day')",
         )
         .bind(token)
         .bind(secret)
@@ -2038,6 +1982,11 @@ mod tests {
         .unwrap();
 
         let job_id = Uuid::now_v7();
+        sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
+            .bind(job_id)
+            .execute(pool)
+            .await
+            .unwrap();
         sqlx::query(
             "insert into tml_switchboard.jobs \
              (job_id, owner_id, image_id, restart_policy, enqueued_by_token_id, \
@@ -2055,8 +2004,8 @@ mod tests {
         job_id
     }
 
-    fn service(name: &str, label: Option<&str>, protocol: &str) -> JobService {
-        JobService {
+    fn service(name: &str, label: Option<&str>, protocol: &str) -> JobServiceAnnouncement {
+        JobServiceAnnouncement {
             name: name.to_string(),
             label: label.map(str::to_string),
             protocol: protocol.to_string(),
@@ -2088,7 +2037,7 @@ mod tests {
     async fn replace(
         pool: &PgPool,
         job_id: Uuid,
-        services: &[JobService],
+        services: &[JobServiceAnnouncement],
     ) -> Result<(), sqlx::Error> {
         let mut txn = pool.begin().await.unwrap();
         let result = replace_services(job_id, services, &mut txn).await;
@@ -2217,6 +2166,12 @@ mod tests {
         let original = insert_job(&pool).await;
         let resume = async |budget: i32| {
             let job_id = Uuid::now_v7();
+            sqlx::query(
+                "insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')",
+            )
+            .bind(job_id)
+            .execute(&pool)
+            .await?;
             sqlx::query(
                 "insert into tml_switchboard.jobs \
                  (job_id, owner_id, resume_job_id, image_id, restart_policy, \

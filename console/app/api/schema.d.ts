@@ -261,6 +261,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/jobs/{id}/exit-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Report a job's exit status
+         * @description Sets the job's `task_exit_status` and `exit_message`, replacing any earlier report. Only the job's own token may report.
+         */
+        put: operations["putJobExitStatus"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/jobs/{id}/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Announce a job's services
+         * @description Replaces the job's announced services with the given set. Only the job's own token may announce.
+         */
+        put: operations["putJobServices"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/jobs/{id}/environment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a job's environment
+         * @description Everything a running job needs to set itself up, including secret parameters. Only the job's own token may read it.
+         */
+        get: operations["getJobEnvironment"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/jobs/{id}": {
         parameters: {
             query?: never;
@@ -272,7 +332,10 @@ export interface paths {
         get: operations["getJob"];
         put?: never;
         post?: never;
-        /** Terminate a job */
+        /**
+         * Terminate a job
+         * @description Requires `stop` on the job, or the job's own token, with which a job terminates itself.
+         */
         delete: operations["terminateJob"];
         options?: never;
         head?: never;
@@ -1521,6 +1584,72 @@ export interface components {
              */
             lease_duration_secs: number;
         };
+        /**
+         * @description Everything a running job needs to set itself up, returned by
+         *     `GET /jobs/{id}/environment` to the job's own token.
+         */
+        JobEnvironment: {
+            /** @description Gateway material, or null when this deployment runs without gateways. */
+            gateway?: components["schemas"]["JobGatewayInfo"] | null;
+            /**
+             * Format: uuid
+             * @description The host the job was dispatched to.
+             */
+            host_id: string;
+            /**
+             * @description The host's current spec, normalized to the latest version, as a document
+             *     conforming to the schema at `GET /hosts/spec-schema`. Null for a host
+             *     that has never been described.
+             */
+            host_spec?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description The job's parameters, secret values included. */
+            parameters: {
+                [key: string]: components["schemas"]["JobParameter"];
+            };
+        };
+        /**
+         * @description The body of `PUT /jobs/{id}/exit-status`, by which a job reports its own
+         *     outcome. It may do so any number of times while it runs, each report
+         *     replacing the last.
+         */
+        JobExitStatusRequest: {
+            /**
+             * @description An optional human-readable note, recorded as the job's `exit_message`.
+             *     Null clears it.
+             */
+            message?: string | null;
+            /** @description The workload's outcome. */
+            outcome: components["schemas"]["TaskExitStatus"];
+        };
+        /** @description A gateway under which a job's services are published. */
+        JobGatewayEndpoint: {
+            /**
+             * @description The gateway's base domain. A service is reachable at
+             *     `<service>-<job-id>.<base_domain>`.
+             */
+            base_domain: string;
+            /**
+             * Format: uint16
+             * @description The port the gateway listens on.
+             */
+            port: number;
+        };
+        /**
+         * @description What a job needs to validate the service tokens its gateways admit, so that
+         *     reaching a service takes a valid token at the gateway and at the job.
+         */
+        JobGatewayInfo: {
+            /** @description The gateways the job's services are published under. */
+            endpoints: components["schemas"]["JobGatewayEndpoint"][];
+            /** @description The `iss` every service token carries. */
+            issuer: string;
+            /** @description Identifier of `signing_public_key`, carried as a token's `kid`. */
+            key_id: string;
+            /** @description The switchboard's public key for verifying service tokens, PEM-encoded. */
+            signing_public_key: string;
+        };
         /** @description A job's image: what it references, and the concrete image it runs. */
         JobImage: {
             reference: components["schemas"]["JobImageReference"];
@@ -1559,7 +1688,7 @@ export interface components {
              * @description The host the job is (or was) dispatched on; null if unplaced.
              */
             dispatched_on_host_id?: string | null;
-            /** @description A human-readable detail accompanying termination, if any. */
+            /** @description The job's own human-readable note on its outcome, if any. */
             exit_message?: string | null;
             /**
              * @description Host eligibility tags this job requires (superset match against a host's
@@ -1570,6 +1699,11 @@ export interface components {
             image: components["schemas"]["JobImage"];
             /** @description The sub-stage while `state` is `initializing`; null otherwise. */
             initializing_stage?: components["schemas"]["JobInitializingStage"] | null;
+            /**
+             * @description The supervisor's description of the error that ended the job, if one
+             *     did.
+             */
+            job_error?: string | null;
             /** Format: uuid */
             job_id: string;
             /**
@@ -1684,8 +1818,8 @@ export interface components {
             next_cursor?: string | null;
         };
         /**
-         * @description One parameter supplied with a job at enqueue (`POST /jobs`), passed through
-         *     to the puppet daemon running the workload.
+         * @description One parameter supplied with a job at enqueue (`POST /jobs`), which the job
+         *     reads from `GET /jobs/{id}/environment`.
          *
          *     Flag a parameter `secret` to have its value withheld wherever the job is
          *     later read back (it surfaces as a redacted [`JobParameterView`]); non-secret
@@ -1769,13 +1903,31 @@ export interface components {
              */
             owner: string | null;
             /**
-             * @description A hash map of parameters provided to this job execution. These
-             *     parameters are provided to the puppet daemon.
+             * @description A hash map of parameters provided to this job execution, which the job
+             *     reads from `GET /jobs/{id}/environment`.
              */
             parameters: {
                 [key: string]: components["schemas"]["JobParameter"];
             };
             restart_policy: components["schemas"]["RestartPolicy"];
+        };
+        /**
+         * @description One service a job announces in `PUT /jobs/{id}/services`, which carries the
+         *     job's complete set.
+         */
+        JobServiceAnnouncement: {
+            /** @description Optional human-readable text to display. */
+            label?: string | null;
+            /**
+             * @description Identifies the service within its job: 1 to 16 lowercase alphanumeric
+             *     characters, starting with a letter.
+             */
+            name: string;
+            /**
+             * @description A token the client interprets to decide how to connect (`webapp`,
+             *     `sshws`, …).
+             */
+            protocol: string;
         };
         /**
          * @description Access credentials for one of a job's announced services, returned by
@@ -3039,6 +3191,195 @@ export interface operations {
             };
         };
     };
+    putJobExitStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * @description The body of `PUT /jobs/{id}/exit-status`, by which a job reports its own
+         *     outcome. It may do so any number of times while it runs, each report
+         *     replacing the last.
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobExitStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description The report was recorded. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the job token is missing, malformed, or its job has finalized. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The job token belongs to a different job. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The job has finalized. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Failed to deserialize the JSON body into the target type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    putJobServices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobServiceAnnouncement"][];
+            };
+        };
+        responses: {
+            /** @description The set was recorded, or matched the one in force. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Failed to parse the request body as JSON */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Authentication failed: the job token is missing, malformed, or its job has finalized. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The job token belongs to a different job. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description A service name is invalid or repeated. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getJobEnvironment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description Everything a running job needs to set itself up, returned by
+             *     `GET /jobs/{id}/environment` to the job's own token.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobEnvironment"];
+                };
+            };
+            /** @description Authentication failed: the job token is missing, malformed, or its job has finalized. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The job token belongs to a different job. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The job has not been dispatched to a host. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getJob: {
         parameters: {
             query?: never;
@@ -3108,14 +3449,14 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            /** @description Authentication failed: the token is missing, malformed, expired, or revoked, or its job has finalized. */
             401: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            /** @description The account is locked or lacks permission for this resource, or the job token belongs to a different job. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3658,7 +3999,7 @@ export interface operations {
                     "text/plain": string;
                 };
             };
-            /** @description No such subject. */
+            /** @description No such subject, or one that cannot own a host. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -3759,7 +4100,7 @@ export interface operations {
                     "text/plain": string;
                 };
             };
-            /** @description No such subject. */
+            /** @description No such subject, or one that cannot be granted a permission. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -4544,14 +4885,12 @@ export interface operations {
                     "text/plain": string;
                 };
             };
-            /** @description Failed to deserialize the JSON body into the target type */
+            /** @description No such subject, or one that cannot be granted a permission. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "text/plain": string;
-                };
+                content?: never;
             };
         };
     };
@@ -5193,14 +5532,12 @@ export interface operations {
                     "text/plain": string;
                 };
             };
-            /** @description Failed to deserialize the JSON body into the target type */
+            /** @description No such subject, or one that cannot be granted a permission. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "text/plain": string;
-                };
+                content?: never;
             };
         };
     };

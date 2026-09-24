@@ -22,12 +22,17 @@ CREATE SCHEMA tml_switchboard;
 -- role (in which case the system resolves their IDs to some entity internally).
 -- They are seeded out of band, through SQL migrations or by an administrator.
 -- They can't be created / log in interactively.
-CREATE TYPE tml_switchboard.subject_kind AS enum('user', 'group', 'system');
+--
+-- `job` subjects are jobs acting on their own behalf through a job token. A
+-- job's subject id is its job id. Job subjects are never evaluated by the grant
+-- engine.
+CREATE TYPE tml_switchboard.subject_kind AS enum('user', 'group', 'system', 'job');
 
 
 CREATE TABLE tml_switchboard.subjects (
     subject_id uuid NOT NULL PRIMARY KEY,
-    kind tml_switchboard.subject_kind NOT NULL
+    kind tml_switchboard.subject_kind NOT NULL,
+    UNIQUE (subject_id, kind)
 );
 
 
@@ -352,8 +357,9 @@ CREATE TYPE tml_switchboard.api_token_revocation AS (
 -- per-token scoping can be added later as a `token_grants` table without
 -- disturbing this one.
 --
--- Tokens have both natural expiration and an explicit revocation mechanism,
--- which voids a token before it expires.
+-- User tokens have both natural expiration and an explicit revocation
+-- mechanism, which voids a token before it expires. Job tokens never expire
+-- and stop working once their job finalizes.
 --
 -- `user_agent` and `created_ip`/`created_port` record the provenance of a token
 -- at mint time (the client that requested it), surfaced in the session-list API
@@ -362,10 +368,11 @@ CREATE TYPE tml_switchboard.api_token_revocation AS (
 CREATE TABLE tml_switchboard.api_tokens (
     token_id uuid NOT NULL PRIMARY KEY,
     token bytea NOT NULL UNIQUE,
-    user_id uuid NOT NULL REFERENCES tml_switchboard.users (subject_id) ON DELETE CASCADE,
+    subject_id uuid NOT NULL,
+    subject_kind tml_switchboard.subject_kind NOT NULL,
     revoked tml_switchboard.api_token_revocation,
     created_at timestamp with time zone NOT NULL,
-    expires_at timestamp with time zone NOT NULL,
+    expires_at timestamp with time zone,
     user_agent text,
     comment text,
     -- `created_{ip,port}` nullable, for when a token is minted manually by an
@@ -373,7 +380,10 @@ CREATE TABLE tml_switchboard.api_tokens (
     -- appropriately, and an audit event inserted manually.
     created_ip text,
     created_port integer,
-    CHECK (octet_length(token) = 32)
+    CHECK (octet_length(token) = 32),
+    FOREIGN KEY (subject_id, subject_kind) REFERENCES tml_switchboard.subjects (subject_id, kind) ON DELETE CASCADE,
+    CONSTRAINT token_subject_kind CHECK (subject_kind IN ('user', 'job')),
+    CONSTRAINT job_tokens_never_expire CHECK ((subject_kind = 'job') = (expires_at IS NULL))
 );
 
 
@@ -596,7 +606,7 @@ CREATE TYPE tml_switchboard.job_initializing_stage AS enum(
 CREATE TYPE tml_switchboard.termination_reason AS enum(
     -- workload-driven (the job's own process ended it)
     'workload_exited', -- e.g., QEMU process exits
-    'workload_self_terminated', -- e.g., termination requested with puppet
+    'workload_self_terminated', -- e.g., termination requested with `tml job terminate`
     -- externally terminated
     'user_terminated',
     -- reclaimed after lease expiry to place another job
@@ -635,7 +645,7 @@ CREATE TYPE tml_switchboard.task_exit_status AS enum('pending', 'success', 'fail
 
 
 CREATE TABLE tml_switchboard.jobs (
-    job_id uuid NOT NULL PRIMARY KEY,
+    job_id uuid NOT NULL PRIMARY KEY REFERENCES tml_switchboard.subjects (subject_id) ON DELETE CASCADE,
     -- Owning subject (user or group).
     --
     -- NULL means orphaned (see hosts).
@@ -713,8 +723,8 @@ CREATE TABLE tml_switchboard.jobs (
     -- the (untrusted) job. TODO: eventually, the switchboard should validate
     -- that this address is one that is within the internal deployment prefix.
     job_ip_address inet,
-    -- Pending stop signal: set by user-terminate (`DELETE /jobs/{id}`) or by
-    -- the scheduler reclaiming the host. When set, the assigned job's worker
+    -- Pending stop signal: set by user- or self-terminate (`DELETE /jobs/{id}`)
+    -- or by the scheduler reclaiming the host. When set, the assigned job's worker
     -- converges the job to `finalized` with `terminate_requested_reason` (to
     -- distinguish between a job killed because its lease expired, or because it
     -- was reclaimed).
@@ -728,10 +738,13 @@ CREATE TABLE tml_switchboard.jobs (
     -- `termination_reason` records *why* the job stopped; `task_exit_status`
     -- records the *result of the user workload* (independent of the reason);
     -- `exit_message` is an optional human-readable note. Captured workload
-    -- output is stored in object storage, not here.
+    -- output is stored in object storage, not here. `task_exit_status` and
+    -- `exit_message` belong to the job alone; `job_error` is the supervisor's
+    -- description of an error that ended the job.
     termination_reason tml_switchboard.termination_reason,
     task_exit_status tml_switchboard.task_exit_status,
     exit_message text,
+    job_error text,
     terminated_at timestamp with time zone,
     ---->> INVARIANT CHECKING <<----
     CONSTRAINT valid_init_spec CHECK (
@@ -796,12 +809,20 @@ CREATE TABLE tml_switchboard.jobs (
     ),
     -- A shortened lease floors at zero rather than going negative.
     CONSTRAINT lease_duration_non_negative CHECK (lease_duration >= INTERVAL '0'),
+    CONSTRAINT job_error_only_when_finalized CHECK (
+        job_error IS NULL
+        OR job_state = 'finalized'
+    ),
     CONSTRAINT terminate_request_iso CHECK (
         (terminate_requested_at IS NULL) = (terminate_requested_reason IS NULL)
     ),
     -- The explicitly requestable subset of termination reasons.
     CONSTRAINT terminate_requested_reason_valid CHECK (
-        terminate_requested_reason IN ('user_terminated', 'preempted')
+        terminate_requested_reason IN (
+            'user_terminated',
+            'workload_self_terminated',
+            'preempted'
+        )
     )
 );
 

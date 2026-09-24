@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tml_switchboard.jobs\n                   set terminate_requested_at = coalesce(terminate_requested_at, $2),\n                       terminate_requested_reason = coalesce(terminate_requested_reason, $3)\n                   where job_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        {
+          "Custom": {
+            "name": "tml_switchboard.termination_reason",
+            "kind": {
+              "Enum": [
+                "workload_exited",
+                "workload_self_terminated",
+                "user_terminated",
+                "preempted",
+                "queue_timeout",
+                "execution_timeout",
+                "image_error",
+                "host_match_error",
+                "host_start_failure",
+                "host_dropped_job",
+                "host_unreachable",
+                "resume_failed",
+                "internal_error"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d5b9ac7be1b8074ce1353667b499ae5c5a20875a5abdd113e6f05873b097b45a"
+}

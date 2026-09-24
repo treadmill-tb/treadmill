@@ -104,7 +104,7 @@ pub struct NbdNetbootConfig {
 
     working_disk_max_bytes: u64,
 
-    tcp_control_socket_listen_addr: SocketAddr,
+    daemon_api_listen_addr: SocketAddr,
     nbd_server_listen_addr: SocketAddr,
     tftp_listen_addr: SocketAddr,
 
@@ -330,8 +330,8 @@ impl NbdNetbootBackend {
 
     fn seed_vars(&self, vars: &mut JobVars) {
         vars.insert(
-            "tcp_control_socket_listen_addr".to_string(),
-            self.config.tcp_control_socket_listen_addr.to_string(),
+            "daemon_api_listen_addr".to_string(),
+            self.config.daemon_api_listen_addr.to_string(),
         );
         vars.insert(
             "nbd_server_listen_addr".to_string(),
@@ -817,7 +817,8 @@ impl NbdNetbootSupervisorConfig {
             supervisor_id: self.base.supervisor_id,
             job_address: self.base.job_address,
             workdirs,
-            control_socket_listen_addr: self.nbd_netboot.tcp_control_socket_listen_addr,
+            daemon_api_listen_addr: self.nbd_netboot.daemon_api_listen_addr,
+            job_api_url: self.base.job_api_url.clone(),
             start_script: self.nbd_netboot.start_script.clone(),
             stop_script: self.nbd_netboot.stop_script.clone(),
             log_streaming: self.log_streaming.clone(),
@@ -922,7 +923,6 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
 
-    use std::collections::HashMap;
     use std::sync::Mutex;
 
     use oci_spec::image::ImageManifest;
@@ -931,7 +931,7 @@ mod tests {
     use uuid::Uuid;
 
     use treadmill_rs::api::switchboard_supervisor::{
-        ImageLocation, LogStreamingDispatch, ParameterValue, RestartPolicy,
+        ImageLocation, LogStreamingDispatch, RestartPolicy,
     };
     use treadmill_rs::image::Digest;
     use treadmill_rs::image::assemble;
@@ -1121,7 +1121,7 @@ mod tests {
             nbdfatftpd_binary: PathBuf::from("/stub/nbdfatftpd"),
             state_dir: tmp.join("state"),
             working_disk_max_bytes: 4 * GIB,
-            tcp_control_socket_listen_addr: "127.0.0.1:3859".parse().unwrap(),
+            daemon_api_listen_addr: "127.0.0.1:3859".parse().unwrap(),
             nbd_server_listen_addr: SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), nbd_port),
             tftp_listen_addr: "127.0.0.1:6969".parse().unwrap(),
             serial_console: None,
@@ -1214,7 +1214,6 @@ mod tests {
             restart_policy: RestartPolicy {
                 remaining_restart_count: 0,
             },
-            parameters: HashMap::<String, ParameterValue>::new(),
             log_streaming: streaming.then(|| LogStreamingDispatch {
                 nats_url: "nats://127.0.0.1:4222".to_string(),
                 subject_prefix: format!("logs.{job_id}"),
@@ -1222,8 +1221,7 @@ mod tests {
                 console_input_subject: None,
                 inbox_prefix: None,
             }),
-            gateway: None,
-            host_spec: None,
+            job_token: None,
         }
     }
 
@@ -1507,7 +1505,7 @@ mod tests {
             );
         }
         assert!(args.contains(&f.store.blob_path(&digest(3)).display().to_string()));
-        assert!(vars.contains_key("tcp_control_socket_listen_addr"));
+        assert!(vars.contains_key("daemon_api_listen_addr"));
 
         drop(servers);
     }

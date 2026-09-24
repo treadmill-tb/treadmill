@@ -1727,3 +1727,65 @@ async fn irrevocable_host_grant_is_refused(pool: PgPool) {
         .status();
     assert_eq!(status, reqwest::StatusCode::CONFLICT);
 }
+
+async fn seed_subject(pool: &PgPool, kind: &str) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "insert into tml_switchboard.subjects (subject_id, kind) \
+         values ($1, $2::tml_switchboard.subject_kind)",
+    )
+    .bind(id)
+    .bind(kind)
+    .execute(pool)
+    .await
+    .unwrap();
+    id
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn only_users_and_groups_own_or_are_granted_hosts(pool: PgPool) {
+    const EVERYONE: Uuid = Uuid::from_u128(4);
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let bob = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob_id = whoami(&client, addr, &bob).await;
+    let host_id = seed_host_owned(&pool, "cam-rpi4-09", bob_id).await;
+    let job = seed_subject(&pool, "job").await;
+    let system = seed_subject(&pool, "system").await;
+
+    for owner in [job, system, EVERYONE] {
+        let resp = client
+            .put(format!("http://{addr}/api/v1/hosts/{host_id}/owner"))
+            .bearer_auth(&bob)
+            .json(&serde_json::json!({ "owner": owner }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+
+        let resp = client
+            .post(format!("http://{addr}/api/v1/hosts"))
+            .bearer_auth(&admin)
+            .json(&serde_json::json!({
+                "spec": spec_document(Uuid::new_v4(), "cam-qemu-09"),
+                "owner": owner,
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    for grantee in [job, system] {
+        let resp = client
+            .post(format!("http://{addr}/api/v1/hosts/{host_id}/grants"))
+            .bearer_auth(&bob)
+            .json(&serde_json::json!({ "subject_id": grantee, "permission": "read" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+    }
+}

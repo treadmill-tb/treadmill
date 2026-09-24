@@ -166,6 +166,7 @@ function Ended({ job }: { job: JobInfo }) {
       <Headline icon={TONE_ICON[termination.tone]} tone={termination.tone}>
         {termination.label}
       </Headline>
+      {job.job_error != null && <blockquote>{job.job_error}</blockquote>}
       <p className="muted">
         {ran === null
           ? "Never started"
@@ -218,7 +219,8 @@ function WorkloadResult({ job }: { job: JobInfo }) {
       {headline}
       {job.exit_message != null && <blockquote>{job.exit_message}</blockquote>}
       <p className="muted">
-        Report with <code>tml-puppet job result success [&lt;message&gt;]</code>
+        Report with{" "}
+        <code>tml job set-exit-status success|failure [&lt;message&gt;]</code>
       </p>
     </>
   );

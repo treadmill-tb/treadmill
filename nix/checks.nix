@@ -59,14 +59,16 @@
             popd
           '';
 
-        # Validate the committed switchboard OpenAPI spec against the OpenAPI
-        # 3.1 schema. The drift test (`openapi_spec`) keeps this file in sync
-        # with the code; this check additionally guarantees it is a valid
-        # OpenAPI document. `openapi-spec-validator` bundles its schemas, so it
+        # Validate the committed switchboard and supervisor daemon OpenAPI specs
+        # against the OpenAPI 3.1 schema. The drift tests (`openapi_spec`,
+        # `daemon_api_spec`) keep these files in sync with the code; this check
+        # additionally guarantees they are valid OpenAPI documents. `openapi-spec-validator` bundles its schemas, so it
         # runs offline in the build sandbox.
         openapi-spec = pkgs.runCommand "treadmill-openapi-spec-valid" { } ''
           ${pkgs.python3Packages.openapi-spec-validator}/bin/openapi-spec-validator \
             ${../switchboard/api-spec/openapi.yaml}
+          ${pkgs.python3Packages.openapi-spec-validator}/bin/openapi-spec-validator \
+            ${../supervisor/lib/api-spec/daemon-api.yaml}
           touch $out
         '';
 
@@ -369,7 +371,6 @@
           "tml"
           "swx"
           "image-util"
-          "tml-puppet"
           "treadmill-qemu-supervisor"
           "treadmill-nbd-netboot-supervisor"
           "zot"
@@ -377,6 +378,7 @@
           "job-gateway-caddy"
         ]
         ++ lib.optionals pkgs.stdenv.isLinux [
+          "tml-static-x86_64"
           "tml-caddy-static-x86_64"
           "tml-caddy-static-aarch64"
           "tiny-efi-app-base"

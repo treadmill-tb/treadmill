@@ -1,0 +1,60 @@
+openapi: 3.1.0
+info:
+  title: Treadmill Supervisor Daemon API
+  version: 0.1.0
+paths:
+  /job:
+    get:
+      operationId: getJob
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobInfo'
+        '404':
+          description: The job has terminated.
+  /job/ready:
+    put:
+      operationId: reportReady
+      responses:
+        '204':
+          description: The job is ready.
+components:
+  schemas:
+    JobApi:
+      description: How the job reaches the switchboard API, and the token it acts with there.
+      type: object
+      properties:
+        base_url:
+          type: string
+        token:
+          $ref: '#/components/schemas/Secret'
+      required:
+      - base_url
+      - token
+    JobInfo:
+      type: object
+      properties:
+        api:
+          description: '`None` when the supervisor has no switchboard to point the job at.'
+          anyOf:
+          - $ref: '#/components/schemas/JobApi'
+          - type: 'null'
+        job_id:
+          type: string
+          format: uuid
+      required:
+      - job_id
+    Secret:
+      description: |-
+        A value that must not appear in logs.
+
+        The wrapper is transparent on the wire — these types exist to be sent, and
+        serialize as the bare inner value — and redacts only [`Debug`], which is
+        what tracing and `{:?}` reach for. There is deliberately no `Display`,
+        `Deref`, `AsRef` or `PartialEq`: every read is a visible
+        [`expose`](Self::expose), and no comparison silently picks up a
+        non-constant-time `==`.
+      type: string

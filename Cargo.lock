@@ -5099,18 +5099,23 @@ dependencies = [
  "chrono",
  "clap",
  "dialoguer 0.12.0",
+ "ed25519-dalek 3.0.0",
  "figment",
  "futures-util",
+ "log",
  "rustls",
  "rustls-native-certs",
+ "sd-notify",
  "serde",
  "serde_json",
+ "simplelog",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "toml 1.1.6+spec-1.1.0",
  "treadmill-rs",
  "uuid",
  "xdg",
+ "zbus",
 ]
 
 [[package]]
@@ -5164,27 +5169,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "treadmill-puppet"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "clap",
- "ed25519-dalek 3.0.0",
- "log",
- "nix 0.31.3",
- "sd-notify",
- "serde",
- "serde_json",
- "simplelog",
- "tokio",
- "treadmill-rs",
- "treadmill-tcp-control-socket-client",
- "uuid",
- "zbus",
-]
-
-[[package]]
 name = "treadmill-qemu-supervisor"
 version = "0.1.0"
 dependencies = [
@@ -5225,7 +5209,6 @@ dependencies = [
  "subtle",
  "thiserror 2.0.20",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -5233,9 +5216,11 @@ dependencies = [
 name = "treadmill-supervisor-lib"
 version = "0.1.0"
 dependencies = [
+ "aide",
  "anyhow",
  "async-nats",
  "async-trait",
+ "axum",
  "bytes",
  "chrono",
  "futures-util",
@@ -5246,6 +5231,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "serde_norway",
  "sha2 0.11.0",
  "tempfile",
  "tokio",
@@ -5255,7 +5241,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "treadmill-rs",
- "treadmill-tcp-control-socket-server",
  "uuid",
 ]
 
@@ -5317,37 +5302,6 @@ dependencies = [
  "url",
  "uuid",
  "wiremock",
-]
-
-[[package]]
-name = "treadmill-tcp-control-socket-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "futures",
- "log",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "treadmill-rs",
-]
-
-[[package]]
-name = "treadmill-tcp-control-socket-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "futures",
- "log",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "treadmill-rs",
- "uuid",
 ]
 
 [[package]]
