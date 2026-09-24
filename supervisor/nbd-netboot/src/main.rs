@@ -330,10 +330,6 @@ impl NbdNetbootBackend {
 
     fn seed_vars(&self, vars: &mut JobVars) {
         vars.insert(
-            "daemon_api_listen_addr".to_string(),
-            self.config.daemon_api_listen_addr.to_string(),
-        );
-        vars.insert(
             "nbd_server_listen_addr".to_string(),
             self.config.nbd_server_listen_addr.to_string(),
         );
@@ -814,11 +810,10 @@ async fn forward(mut reader: BoxedAsyncRead, output: mpsc::Sender<Bytes>) {
 impl NbdNetbootSupervisorConfig {
     fn job_runner(&self, workdirs: Arc<JobWorkdirs>, job_log: JobLogRegistry) -> JobRunnerConfig {
         JobRunnerConfig {
-            supervisor_id: self.base.supervisor_id,
             job_address: self.base.job_address,
             workdirs,
             daemon_api_listen_addr: self.nbd_netboot.daemon_api_listen_addr,
-            job_api_url: self.base.job_api_url.clone(),
+            job_switchboard_api_url: self.base.job_switchboard_api_url.clone(),
             start_script: self.nbd_netboot.start_script.clone(),
             stop_script: self.nbd_netboot.stop_script.clone(),
             log_streaming: self.log_streaming.clone(),
@@ -1505,7 +1500,6 @@ mod tests {
             );
         }
         assert!(args.contains(&f.store.blob_path(&digest(3)).display().to_string()));
-        assert!(vars.contains_key("daemon_api_listen_addr"));
 
         drop(servers);
     }

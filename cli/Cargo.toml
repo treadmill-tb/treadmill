@@ -18,7 +18,6 @@ path = "src/main.rs"
 [features]
 default = ["user", "daemon"]
 user = [
-  "treadmill-rs/client",
   "dep:chrono",
   "dep:dialoguer",
   "dep:figment",
@@ -30,7 +29,6 @@ user = [
   "dep:xdg",
 ]
 daemon = [
-  "treadmill-rs/client",
   "dep:ed25519-dalek",
   "dep:log",
   "dep:sd-notify",
@@ -45,7 +43,9 @@ daemon = [
 # Needs `version` + `path` (rather than `workspace = true`) for `cargo publish`
 # to be able to resolve treadmill-rs by its published version. Local builds
 # continue to use the path dependency.
-treadmill-rs = { version = "0.3.0", path = "../treadmill-rs" }
+treadmill-rs = { version = "0.3.0", path = "../treadmill-rs", features = [
+  "client",
+] }
 
 anstream = "1.0.0"
 anstyle = "1.0.0"

@@ -201,8 +201,6 @@ fn valid_name(name: &str) -> Result<&str, StatusCode> {
     Ok(name)
 }
 
-const GRANTEE_KINDS: &[SubjectKind] = &[SubjectKind::User, SubjectKind::Group];
-
 /// 403 unless `subject` is a global admin, who alone may set canonical names.
 async fn require_admin(state: &AppState, subject: Uuid) -> Result<(), StatusCode> {
     if engine::is_admin(state.pool(), subject)
@@ -516,7 +514,7 @@ pub async fn grant_image_set(
     Json(req): Json<ImageSetGrantRequest>,
 ) -> Result<StatusCode, StatusCode> {
     require_manage(&state, subject.user_id(), set_id).await?;
-    if !engine::is_subject_of_kind(state.pool(), req.subject_id, GRANTEE_KINDS)
+    if !engine::is_subject_of_kind(state.pool(), req.subject_id, engine::GRANTEE_KINDS)
         .await
         .map_err(internal)?
     {
@@ -597,14 +595,9 @@ pub async fn put_image_set_owner(
         return Ok(StatusCode::NO_CONTENT);
     }
 
-    match image::set_set_owner(&mut tx, set_id, req.owner).await {
-        Ok(()) => {}
-        Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => {
-            tracing::debug!("refusing to re-own image set {set_id}: unknown subject");
-            return Err(StatusCode::UNPROCESSABLE_ENTITY);
-        }
-        Err(e) => return Err(internal(e)),
-    }
+    image::set_set_owner(&mut tx, set_id, req.owner)
+        .await
+        .map_err(internal)?;
     audit::emit(
         &mut tx,
         &events::ImageSetOwnerChanged {
@@ -867,7 +860,7 @@ pub async fn grant_image_source(
     Json(req): Json<ImageSourceGrantRequest>,
 ) -> Result<StatusCode, StatusCode> {
     require_source_manage(&state, subject.user_id(), &digest, source_id).await?;
-    if !engine::is_subject_of_kind(state.pool(), req.subject_id, GRANTEE_KINDS)
+    if !engine::is_subject_of_kind(state.pool(), req.subject_id, engine::GRANTEE_KINDS)
         .await
         .map_err(internal)?
     {

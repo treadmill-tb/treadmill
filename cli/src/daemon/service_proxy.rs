@@ -7,7 +7,6 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::jobs::{JobGatewayInfo, JobServiceAnnouncement};
 
-/// Longest service name the switchboard accepts.
 pub const MAX_SERVICE_NAME_LEN: usize = 16;
 
 pub fn service_name_valid(name: &str) -> bool {
@@ -44,7 +43,6 @@ fn base_domain_valid(domain: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-'))
 }
 
-/// What a job needs to accept the same tokens its gateways accept.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayMaterial {
     pub issuer: String,
@@ -91,11 +89,6 @@ fn sign_key_base64(public_key_pem: &str) -> Result<String> {
 
 /// Render the vhost definitions the image's Caddyfile imports.
 ///
-/// Each service is pinned to the exact `aud` its tokens must carry, rather than
-/// the gateway's trick of comparing a host label against the token's claims: the
-/// job knows its own id and service names when it writes this, so it has no
-/// reason to derive a label offset from a domain it would have to count.
-///
 /// This repeats the check the gateway already made, and deliberately so. The
 /// gateway is what stops a job publishing unauthenticated content to the world;
 /// this is what stops a sibling job on the same trusted network reaching a
@@ -118,11 +111,6 @@ pub fn render(
         let Some(upstream) = declaration.upstream.as_deref() else {
             continue;
         };
-
-        if !service_name_valid(name) {
-            warn!("Not proxying service {name:?}: not a usable service name.");
-            continue;
-        }
 
         if !upstream_valid(upstream) {
             warn!("Not proxying service {name:?}: {upstream:?} is not a usable upstream.");
@@ -165,9 +153,7 @@ pub fn render(
     out
 }
 
-/// Writes the generated vhost definitions and reloads the server that serves
-/// them. Built only when the daemon is asked for one and the job actually has a
-/// gateway.
+#[derive(Clone)]
 pub struct ServiceProxy {
     config_path: PathBuf,
     reload_command: Option<String>,

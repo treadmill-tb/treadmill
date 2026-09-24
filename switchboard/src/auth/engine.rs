@@ -122,6 +122,8 @@ pub enum SubjectKind {
     Job,
 }
 
+pub const GRANTEE_KINDS: &[SubjectKind] = &[SubjectKind::User, SubjectKind::Group];
+
 pub async fn is_subject_of_kind(
     conn: impl PgExecutor<'_>,
     subject_id: Uuid,

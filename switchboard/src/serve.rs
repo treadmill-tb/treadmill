@@ -24,7 +24,7 @@ pub struct AppStateInner {
     log_streaming: Option<LogStreaming>,
     /// Signing material for the tokens admitting a request to a job's
     /// services, present only when the deployment configures a gateway. `None`
-    /// disables the feature: jobs dispatch without gateway material and no
+    /// disables the feature: jobs get no gateway in their environment and no
     /// token can be minted. Derived once at startup.
     job_gateway: Option<JobGateway>,
     /// The per-process fan-out for `tml_events` DB change notifications. In

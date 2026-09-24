@@ -448,14 +448,10 @@ pub struct SqlJob {
     job_ip_address: Option<IpNetwork>,
 
     // Filled out when transitioned into `finalized` job state
-    #[allow(dead_code)]
     termination_reason: Option<SqlTerminationReason>,
-    #[allow(dead_code)]
     task_exit_status: Option<SqlTaskExitStatus>,
-    #[allow(dead_code)]
     exit_message: Option<String>,
     job_error: Option<String>,
-    #[allow(dead_code)]
     terminated_at: Option<DateTime<Utc>>,
 }
 
@@ -1098,7 +1094,7 @@ pub async fn replace_services(
 /// Why building a [`StartJobMessage`] for dispatch failed.
 #[derive(Debug)]
 pub enum BuildStartJobError {
-    /// An underlying database error (job/params lookup).
+    /// An underlying database error (job/token lookup).
     Db(sqlx::Error),
     /// Resolving the recorded image digest to a concrete dispatch spec failed.
     Image(ImageResolveError),
@@ -1787,7 +1783,7 @@ pub fn termination_reason_for_job_error(kind: &JobErrorKind) -> SqlTerminationRe
 pub async fn finalize_errored(
     job_id: Uuid,
     reason: SqlTerminationReason,
-    message: Option<String>,
+    message: &str,
     at: DateTime<Utc>,
     txn: &mut Transaction<'_, Postgres>,
 ) -> Result<bool, sqlx::Error> {

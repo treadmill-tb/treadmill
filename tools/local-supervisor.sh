@@ -202,8 +202,8 @@ SH
 chmod +x "$vars_start"
 
 # ---------------------------------------------------------------------------
-# Render the static supervisor config. Per-job inputs (image digest, repo, ssh
-# keys, parameters) are NOT here — they are passed as command-line flags to the
+# Render the static supervisor config. Per-job inputs (image digest, repo) are
+# NOT here — they are passed as command-line flags to the
 # `local` connector below. The daemon API listens on loopback; the guest
 # reaches it via 10.0.2.2 (the host address in qemu SLIRP networking).
 # ---------------------------------------------------------------------------
@@ -213,6 +213,7 @@ sup_cfg="$cfg_dir/supervisor.toml"
 [base]
 supervisor_id = "$supervisor_id"
 coord_connector = "local"
+job_switchboard_api_url = ""
 
 [oci_store]
 registry = "$zot_authority"

@@ -2205,17 +2205,26 @@ async fn get_environment(
         .unwrap()
 }
 
+async fn running_job(pool: &PgPool, client: &reqwest::Client, addr: SocketAddr) -> (String, Uuid) {
+    let user_token = mock_login_token(pool, client, addr, "bob", true).await;
+    let job_id = enqueue_with_secret(pool, client, addr, &user_token).await;
+    mark_running(pool, job_id, chrono::Utc::now()).await;
+    (user_token, job_id)
+}
+
+fn no_redirect_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap()
+}
+
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn a_job_reads_its_own_environment(pool: PgPool) {
     let addr = spawn_server(gateway_enabled_state(pool.clone())).await;
-    let client = reqwest::Client::builder()
-        .redirect(Policy::none())
-        .build()
-        .unwrap();
-    let user_token = mock_login_token(&pool, &client, addr, "bob", true).await;
-    let job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
-    mark_running(&pool, job_id, chrono::Utc::now()).await;
+    let client = no_redirect_client();
+    let (_, job_id) = running_job(&pool, &client, addr).await;
 
     let resp = get_environment(&client, addr, &job_token(&pool, job_id).await, job_id).await;
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
@@ -2241,15 +2250,9 @@ async fn a_job_reads_its_own_environment(pool: PgPool) {
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn a_job_cannot_read_another_jobs_environment(pool: PgPool) {
     let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
-    let client = reqwest::Client::builder()
-        .redirect(Policy::none())
-        .build()
-        .unwrap();
-    let user_token = mock_login_token(&pool, &client, addr, "bob", true).await;
-    let job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
     let other_job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
-    mark_running(&pool, job_id, chrono::Utc::now()).await;
-    mark_running(&pool, other_job_id, chrono::Utc::now()).await;
 
     let resp = get_environment(&client, addr, &job_token(&pool, job_id).await, other_job_id).await;
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
@@ -2259,13 +2262,8 @@ async fn a_job_cannot_read_another_jobs_environment(pool: PgPool) {
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn a_user_cannot_read_a_jobs_environment(pool: PgPool) {
     let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
-    let client = reqwest::Client::builder()
-        .redirect(Policy::none())
-        .build()
-        .unwrap();
-    let user_token = mock_login_token(&pool, &client, addr, "bob", true).await;
-    let job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
-    mark_running(&pool, job_id, chrono::Utc::now()).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
 
     let resp = get_environment(&client, addr, &user_token, job_id).await;
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
@@ -2275,13 +2273,8 @@ async fn a_user_cannot_read_a_jobs_environment(pool: PgPool) {
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn a_finalized_jobs_token_stops_working(pool: PgPool) {
     let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
-    let client = reqwest::Client::builder()
-        .redirect(Policy::none())
-        .build()
-        .unwrap();
-    let user_token = mock_login_token(&pool, &client, addr, "bob", true).await;
-    let job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
-    mark_running(&pool, job_id, chrono::Utc::now()).await;
+    let client = no_redirect_client();
+    let (_, job_id) = running_job(&pool, &client, addr).await;
     mark_finalized(&pool, job_id).await;
 
     let resp = get_environment(&client, addr, &job_token(&pool, job_id).await, job_id).await;
@@ -2292,10 +2285,7 @@ async fn a_finalized_jobs_token_stops_working(pool: PgPool) {
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn a_queued_jobs_environment_is_a_conflict(pool: PgPool) {
     let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
-    let client = reqwest::Client::builder()
-        .redirect(Policy::none())
-        .build()
-        .unwrap();
+    let client = no_redirect_client();
     let user_token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
 
@@ -2307,13 +2297,8 @@ async fn a_queued_jobs_environment_is_a_conflict(pool: PgPool) {
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn a_job_token_is_not_a_user_token(pool: PgPool) {
     let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
-    let client = reqwest::Client::builder()
-        .redirect(Policy::none())
-        .build()
-        .unwrap();
-    let user_token = mock_login_token(&pool, &client, addr, "bob", true).await;
-    let job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
-    mark_running(&pool, job_id, chrono::Utc::now()).await;
+    let client = no_redirect_client();
+    let (_, job_id) = running_job(&pool, &client, addr).await;
 
     let resp = client
         .get(format!("http://{addr}/api/v1/auth/whoami"))
@@ -2329,10 +2314,7 @@ async fn a_job_token_is_not_a_user_token(pool: PgPool) {
 async fn everyone_cannot_own_a_job(pool: PgPool) {
     const EVERYONE: Uuid = Uuid::from_u128(4);
     let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
-    let client = reqwest::Client::builder()
-        .redirect(Policy::none())
-        .build()
-        .unwrap();
+    let client = no_redirect_client();
     let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let (_, image) = register_image(&pool).await;
     let req = image_job_request(
@@ -2350,20 +2332,6 @@ async fn everyone_cannot_own_a_job(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
-}
-
-async fn running_job(pool: &PgPool, client: &reqwest::Client, addr: SocketAddr) -> (String, Uuid) {
-    let user_token = mock_login_token(pool, client, addr, "bob", true).await;
-    let job_id = enqueue_with_secret(pool, client, addr, &user_token).await;
-    mark_running(pool, job_id, chrono::Utc::now()).await;
-    (user_token, job_id)
-}
-
-fn no_redirect_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .redirect(Policy::none())
-        .build()
-        .unwrap()
 }
 
 #[sqlx::test]

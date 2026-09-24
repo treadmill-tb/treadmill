@@ -44,8 +44,6 @@ pub struct SupervisorBaseConfig {
     #[serde(default)]
     pub job_address: Option<IpAddr>,
     /// The switchboard API base URL as the jobs of this supervisor reach it,
-    /// handed to each job together with its token. `None` leaves jobs without
-    /// a way to reach the switchboard.
-    #[serde(default)]
-    pub job_api_url: Option<String>,
+    /// handed to each job together with its token.
+    pub job_switchboard_api_url: String,
 }

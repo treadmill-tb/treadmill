@@ -290,6 +290,26 @@ fn resolve_unassigned(reported: ReportedSupervisorStatus) -> Option<SwitchboardT
     }
 }
 
+async fn emit_job_finalized(
+    job_id: Uuid,
+    host_id: Uuid,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<()> {
+    if let Some(reason) = sql::job::finalized_reason(job_id, &mut **txn).await? {
+        audit::emit(
+            txn,
+            &events::JobFinalized {
+                actor: AuditSubject(SYSTEM_ACTOR_ID),
+                job: AuditJob(job_id),
+                host: AuditHost(host_id),
+                reason,
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 /// The assigned job is already `Finalized` ("sticky host"): it reached a
 /// terminal state out-of-band but the host pointer was never released. The row
 /// is terminal, so this never re-finalizes, adopts a running state, or applies
@@ -687,8 +707,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
     /// map to a live `job_state`; `apply_running_state` instead finalizes the job
     /// with `termination_reason = workload_exited` (**no** restart — a clean exit
     /// is not a failure) and signals that the worker must `RemoveJob`-ack, which
-    /// the supervisor uses to drop its retained terminal record. The task outcome is
-    /// preserved as last declared out-of-band via `apply_task_outcome`. See the
+    /// the supervisor uses to drop its retained terminal record. See the
     /// `RunningJobState` Rustdoc in `treadmill_rs::api::switchboard_supervisor`
     /// for the retained-terminal contract.
     ///
@@ -770,19 +789,8 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                 // transition worth recording exactly once. The already-finalized
                 // sticky-host case returned early above, so an assigned job that is
                 // finalized *here* must have transitioned during this pass.
-                if let Some(id) = j_sb
-                    && let Some(reason) = sql::job::finalized_reason(id, &mut **txn).await?
-                {
-                    audit::emit(
-                        txn,
-                        &events::JobFinalized {
-                            actor: AuditSubject(SYSTEM_ACTOR_ID),
-                            job: AuditJob(id),
-                            host: AuditHost(host_id),
-                            reason,
-                        },
-                    )
-                    .await?;
+                if let Some(id) = j_sb {
+                    emit_job_finalized(id, host_id, txn).await?;
                 }
 
                 Ok(command)
@@ -907,8 +915,8 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                         Ok(PostMsg::Reconcile)
                     }
 
-                    // Asynchronous job events (state transitions, task outcomes,
-                    // errors) are mirrored into the DB out-of-band of
+                    // Asynchronous job events (state transitions, errors,
+                    // addresses) are mirrored into the DB out-of-band of
                     // reconciliation, and keep the status cache fresh.
                     Ok(SupervisorToSwitchboard::SupervisorEvent(event)) => {
                         tracing::trace!(?event, "received SupervisorEvent from supervisor");
@@ -980,15 +988,8 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         match event {
             // A reported running-state advance: adopt it through the same helper
             // reconcile uses, and keep the status cache in step.
-            SupervisorJobEvent::StateTransition {
-                new_state,
-                status_message,
-            } => {
-                tracing::trace!(
-                    ?new_state,
-                    ?status_message,
-                    "received StateTransition event from supervisor"
-                );
+            SupervisorJobEvent::StateTransition { new_state } => {
+                tracing::trace!(?new_state, "received StateTransition event from supervisor");
                 self.apply_state_transition(job_id, new_state).await
             }
 
@@ -1044,20 +1045,8 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     .is_some();
                 let terminated =
                     sql::job::apply_running_state(job_id, state_for_txn, at, txn).await?;
-                if terminated
-                    && !was_finalized
-                    && let Some(reason) = sql::job::finalized_reason(job_id, &mut **txn).await?
-                {
-                    audit::emit(
-                        txn,
-                        &events::JobFinalized {
-                            actor: AuditSubject(SYSTEM_ACTOR_ID),
-                            job: AuditJob(job_id),
-                            host: AuditHost(host_id),
-                            reason,
-                        },
-                    )
-                    .await?;
+                if terminated && !was_finalized {
+                    emit_job_finalized(job_id, host_id, txn).await?;
                 }
                 Ok(Some(terminated))
             })
@@ -1110,7 +1099,7 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
         let host_id = self.ctx.host_id;
         let at = chrono::Utc::now();
         let reason = sql::job::termination_reason_for_job_error(&error.error_kind);
-        let message = Some(error.description.clone());
+        let description = &error.description;
 
         let finalized = self
             .ctx
@@ -1120,20 +1109,9 @@ impl<S: SupervisorSocket> SupervisorWSWorker<S> {
                     return Ok(false);
                 }
                 let finalized =
-                    sql::job::finalize_errored(job_id, reason, message, at, txn).await?;
-                if finalized
-                    && let Some(reason) = sql::job::finalized_reason(job_id, &mut **txn).await?
-                {
-                    audit::emit(
-                        txn,
-                        &events::JobFinalized {
-                            actor: AuditSubject(SYSTEM_ACTOR_ID),
-                            job: AuditJob(job_id),
-                            host: AuditHost(host_id),
-                            reason,
-                        },
-                    )
-                    .await?;
+                    sql::job::finalize_errored(job_id, reason, description, at, txn).await?;
+                if finalized {
+                    emit_job_finalized(job_id, host_id, txn).await?;
                 }
                 Ok(finalized)
             })
@@ -1334,12 +1312,8 @@ mod tests {
 
     use super::*;
     use crate::auth::token::SecurityToken;
-    use std::pin::Pin;
     use std::task::{Context as TaskContext, Poll};
-    use treadmill_rs::api::switchboard_supervisor::{
-        ImageSpecification, RunningJobState, SupervisorEvent, SupervisorJobEvent,
-        SwitchboardToSupervisor,
-    };
+    use treadmill_rs::api::switchboard_supervisor::ImageSpecification;
     use treadmill_rs::connector::{JobError, JobErrorKind};
 
     /// Build a `SupervisorWSWorkerConfig` with the given ping interval /
@@ -1371,42 +1345,6 @@ mod tests {
             }])],
             Duration::from_secs(3600),
         )
-    }
-
-    /// Minimal `SupervisorSocket` impl used by tests that don't exercise the
-    /// socket: poll_next is forever-pending, the sink discards everything.
-    struct NoSocket;
-
-    impl Stream for NoSocket {
-        type Item = Result<ws::Message, axum::Error>;
-        fn poll_next(self: Pin<&mut Self>, _: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
-            Poll::Pending
-        }
-    }
-
-    impl Sink<ws::Message> for NoSocket {
-        type Error = axum::Error;
-        fn poll_ready(
-            self: Pin<&mut Self>,
-            _: &mut TaskContext<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-        fn start_send(self: Pin<&mut Self>, _: ws::Message) -> Result<(), Self::Error> {
-            Ok(())
-        }
-        fn poll_flush(
-            self: Pin<&mut Self>,
-            _: &mut TaskContext<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-        fn poll_close(
-            self: Pin<&mut Self>,
-            _: &mut TaskContext<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
     }
 
     /// A scripted `SupervisorSocket`: the test pushes inbound items via the
@@ -1480,28 +1418,7 @@ mod tests {
         Ok(host_id)
     }
 
-    fn worker(
-        pool: PgPool,
-        host_id: Uuid,
-        worker_instance_id: u64,
-        config: SupervisorWSWorkerConfig,
-    ) -> SupervisorWSWorker<NoSocket> {
-        SupervisorWSWorker {
-            ctx: WorkerCtx {
-                pool,
-                host_id,
-                worker_instance_id,
-                config,
-                log_streaming: None,
-            },
-            socket: NoSocket,
-            wake: idle_wake(),
-            last_seen_status: None,
-            pending_status_request: None,
-        }
-    }
-
-    /// Like [`worker`], but over a [`ScriptedSocket`] so a test can observe the
+    /// A worker over a [`ScriptedSocket`] so a test can observe the
     /// worker's outgoing commands on the returned receiver. Used by the
     /// reconciliation tests, which assert that `TerminateJob`/`RemoveJob`/
     /// `StartJob` are emitted.
@@ -1585,9 +1502,19 @@ mod tests {
         Ok(image_id)
     }
 
+    async fn insert_job_subject(pool: &PgPool, job_id: Uuid) -> anyhow::Result<()> {
+        sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
+            .bind(job_id)
+            .execute(pool)
+            .await?;
+        sql::api_token::insert_job_token(job_id, chrono::Utc::now(), &mut *pool.acquire().await?)
+            .await?;
+        Ok(())
+    }
+
     /// Insert a job already bound to `host_id` in the given `job_state`
     /// (e.g. `"assigned"`, `"ready"`). `started_at` is set iff the state is one
-    /// of the executing states, matching the `started_at_iso_executing` CHECK.
+    /// of the executing states, matching the `started_at_monotonic` CHECK.
     /// `remaining_restarts` seeds the restart policy (cases 3/5 honor it).
     async fn insert_job(
         pool: &PgPool,
@@ -1598,66 +1525,19 @@ mod tests {
     ) -> anyhow::Result<Uuid> {
         let job_id = Uuid::new_v4();
         let image_id = insert_image(pool).await?;
-        sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
-            .bind(job_id)
-            .execute(pool)
-            .await?;
-        sql::api_token::insert_job_token(job_id, chrono::Utc::now(), &mut *pool.acquire().await?)
-            .await?;
+        insert_job_subject(pool, job_id).await?;
         sqlx::query(
             "insert into tml_switchboard.jobs \
-             ( \
-                 job_id, \
-                 resume_job_id, \
-                 restart_job_id, \
-                 image_id, \
-                 image_set_id, \
-                 image_set_generation, \
-                 restart_policy, \
-                 enqueued_by_token_id, \
-                 owner_id, \
-                 lease_duration, \
-                 job_state, \
-                 initializing_stage, \
-                 queued_at, \
-                 started_at, \
-                 dispatched_on_host_id, \
-                 termination_reason, \
-                 task_exit_status, \
-                 exit_message, \
-                 terminated_at \
-             ) \
+             (job_id, image_id, restart_policy, enqueued_by_token_id, owner_id, lease_duration, \
+              job_state, queued_at, started_at, dispatched_on_host_id) \
              values \
-             ( \
-                 $1, \
-                 null, \
-                 null, \
-                 $2, \
-                 null, \
-                 null, \
-                 row($3)::tml_switchboard.restart_policy, \
-                 $4, \
-                 ( \
-                     select \
-                     subject_id \
-                     from \
-                     tml_switchboard.api_tokens \
-                     where \
-                     token_id = $4 \
-                 ), \
-                 interval '1 hour', \
-                 $5::tml_switchboard.job_state, \
-                 null, \
-                 now(), \
-                 case when $5::tml_switchboard.job_state \
-                     in ('initializing', 'ready', 'terminating') \
-                     then now() else null end, \
-                 $6, \
-                 null, \
-                 null, \
-                 null, \
-                 null \
-             )",
+             ($1, $2, row($3)::tml_switchboard.restart_policy, $4, \
+              (select subject_id from tml_switchboard.api_tokens where token_id = $4), \
+              interval '1 hour', $5::tml_switchboard.job_state, now(), \
+              case when $5::tml_switchboard.job_state \
+                  in ('initializing', 'ready', 'terminating') \
+                  then now() else null end, \
+              $6)",
         )
         .bind(job_id)
         .bind(image_id)
@@ -1696,71 +1576,14 @@ mod tests {
         token_id: Uuid,
         host_id: Uuid,
     ) -> anyhow::Result<Uuid> {
-        let job_id = Uuid::new_v4();
-        let image_id = insert_image(pool).await?;
-        sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
-            .bind(job_id)
-            .execute(pool)
-            .await?;
-        sql::api_token::insert_job_token(job_id, chrono::Utc::now(), &mut *pool.acquire().await?)
-            .await?;
+        let job_id = insert_job(pool, token_id, host_id, "ready", 0).await?;
         sqlx::query(
-            "insert into \
-             tml_switchboard.jobs \
-             (\
-                 job_id, \
-                 resume_job_id, \
-                 restart_job_id, \
-                 image_id, \
-                 image_set_id, \
-                 image_set_generation, \
-                 restart_policy, \
-                 enqueued_by_token_id, \
-                 owner_id, \
-                 lease_duration, \
-                 job_state, \
-                 initializing_stage, \
-                 queued_at, \
-                 started_at, \
-                 dispatched_on_host_id, \
-                 termination_reason, \
-                 task_exit_status, \
-                 exit_message, \
-                 terminated_at \
-             ) \
-             values \
-             (
-                 $1, \
-                 null, \
-                 null, \
-                 $2, \
-                 null, \
-                 null, \
-                 row(0)::tml_switchboard.restart_policy, \
-                 $3, \
-                 ( \
-                     select
-                     subject_id \
-                     from \
-                     tml_switchboard.api_tokens \
-                     where \
-                     token_id = $3 \
-                 ), \
-                 interval '1 hour', \
-                 'finalized', \
-                 null, \
-                 now(), \
-                 null, \
-                 null, \
-                 'workload_exited', \
-                 null, \
-                 null, \
-                 now() \
-             )",
+            "update tml_switchboard.jobs \
+             set job_state = 'finalized', termination_reason = 'workload_exited', \
+                 terminated_at = now() \
+             where job_id = $1",
         )
         .bind(job_id)
-        .bind(image_id)
-        .bind(token_id)
         .execute(pool)
         .await?;
         set_current_job(pool, host_id, Some(job_id)).await?;
@@ -1857,7 +1680,7 @@ mod tests {
     async fn with_txn_runs_closure_and_commits_when_current(pool: PgPool) -> anyhow::Result<()> {
         let host_id = insert_host(&pool).await?;
         let worker_instance_id = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
-        let worker = worker(
+        let (_to_worker, _from_worker, worker) = scripted_worker(
             pool.clone(),
             host_id,
             worker_instance_id,
@@ -1904,7 +1727,8 @@ mod tests {
         let newer_id = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         assert_eq!(newer_id, our_id + 1);
 
-        let worker = worker(pool.clone(), host_id, our_id, worker_config(50, 250));
+        let (_to_worker, _from_worker, worker) =
+            scripted_worker(pool.clone(), host_id, our_id, worker_config(50, 250));
         let err = worker
             .ctx
             .with_txn(async |_txn| -> anyhow::Result<()> {
@@ -1930,7 +1754,7 @@ mod tests {
     async fn with_txn_rolls_back_on_closure_error(pool: PgPool) -> anyhow::Result<()> {
         let host_id = insert_host(&pool).await?;
         let worker_instance_id = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
-        let worker = worker(
+        let (_to_worker, _from_worker, worker) = scripted_worker(
             pool.clone(),
             host_id,
             worker_instance_id,
@@ -2095,7 +1919,8 @@ mod tests {
 
         // Our now-stale worker hits its clean-disconnect path. The `with_txn`
         // guard must reject it as `Stale` and leave the heartbeat untouched.
-        let worker = worker(pool.clone(), host_id, our_id, worker_config(50, 250));
+        let (_to_worker, _from_worker, worker) =
+            scripted_worker(pool.clone(), host_id, our_id, worker_config(50, 250));
         let res = worker
             .ctx
             .with_txn(async |txn| {
@@ -2216,7 +2041,7 @@ mod tests {
         let host_id = insert_host(&pool).await?;
         let wiid = WorkerCtx::obtain_worker_instance_id(&pool, host_id).await?;
         let pong_dead = Duration::from_secs(60);
-        let mut worker = worker(
+        let (_to_worker, _from_worker, mut worker) = scripted_worker(
             pool,
             host_id,
             wiid,
@@ -2261,8 +2086,6 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn terminate_event_drives_reconcile_without_timer(pool: PgPool) -> anyhow::Result<()> {
-        use treadmill_rs::api::switchboard_supervisor::SupervisorToSwitchboard;
-
         let host_id = insert_host(&pool).await?;
         let user_id = insert_user(&pool).await?;
         let token_id = insert_token(&pool, user_id).await?;
@@ -2290,7 +2113,6 @@ mod tests {
                 job_id,
                 event: SupervisorJobEvent::StateTransition {
                     new_state: RunningJobState::Ready,
-                    status_message: None,
                 },
             },
         ))?;
@@ -2497,8 +2319,6 @@ mod tests {
         ));
 
         // Garbage that won't deserialize as a `switchboard_supervisor::Message`.
-        // Until step 3 wires up real dispatch, the only contract we need is
-        // "don't take down the loop."
         to_worker
             .send(Ok(ws::Message::Text("not a valid message".into())))
             .expect("inbound channel must stay open");
@@ -2664,28 +2484,13 @@ mod tests {
         Ok(())
     }
 
-    /// Read a job's `task_exit_status` (as its enum text) and `exit_message`.
-    async fn task_outcome_of(
-        pool: &PgPool,
-        job_id: Uuid,
-    ) -> anyhow::Result<(Option<String>, Option<String>)> {
-        let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
-            "select task_exit_status::text, exit_message \
-             from tml_switchboard.jobs where job_id = $1",
-        )
-        .bind(job_id)
-        .fetch_one(pool)
-        .await?;
-        Ok(row)
-    }
-
     /// Case 4, `Terminated`: the supervisor reports the assigned job has
     /// terminated. The switchboard finalizes it (with `workload_exited`, not
     /// `host_dropped_job`) and `RemoveJob`s the job to acknowledge the terminal
     /// report, but **keeps** the assignment — the supervisor still retains the
     /// terminal record. A follow-up pass that observes `Idle` releases the
-    /// pointer. The task outcome the supervisor declared out-of-band before
-    /// termination must be preserved across the finalize.
+    /// pointer. The outcome the job reported before termination must be
+    /// preserved across the finalize.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn reconcile_case4_terminated_finalizes_and_acks(pool: PgPool) -> anyhow::Result<()> {
@@ -2728,19 +2533,19 @@ mod tests {
             "finalized",
             "case 4 (terminated): the job must be finalized"
         );
-        let reason: Option<String> = sqlx::query_scalar(
-            "select termination_reason::text from tml_switchboard.jobs where job_id = $1",
+        assert_eq!(
+            termination_reason_of(&pool, job_id).await?.as_deref(),
+            Some("workload_exited"),
+            "case 4 (terminated): must finalize as workload_exited, not host_dropped_job"
+        );
+        let outcome: (Option<String>, Option<String>) = sqlx::query_as(
+            "select task_exit_status::text, exit_message from tml_switchboard.jobs where job_id = $1",
         )
         .bind(job_id)
         .fetch_one(&pool)
         .await?;
         assert_eq!(
-            reason.as_deref(),
-            Some("workload_exited"),
-            "case 4 (terminated): must finalize as workload_exited, not host_dropped_job"
-        );
-        assert_eq!(
-            task_outcome_of(&pool, job_id).await?,
+            outcome,
             (
                 Some("success".to_string()),
                 Some("workload exited cleanly".to_string())
@@ -3445,29 +3250,14 @@ mod tests {
         // original's image reference copied as enqueue does.
         let resume_target = job_id;
         let resume_job = Uuid::new_v4();
-        sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'job')")
-            .bind(resume_job)
-            .execute(&pool)
-            .await?;
-        sql::api_token::insert_job_token(
-            resume_job,
-            chrono::Utc::now(),
-            &mut *pool.acquire().await?,
-        )
-        .await?;
+        insert_job_subject(&pool, resume_job).await?;
         sqlx::query(
             "insert into tml_switchboard.jobs \
-             (job_id, resume_job_id, restart_job_id, image_id, image_set_id, \
-              image_set_generation, \
-              restart_policy, enqueued_by_token_id, lease_duration, job_state, \
-              initializing_stage, queued_at, started_at, dispatched_on_host_id, \
-              termination_reason, task_exit_status, exit_message, terminated_at) \
+             (job_id, resume_job_id, image_id, restart_policy, enqueued_by_token_id, \
+              lease_duration, job_state, queued_at) \
              values \
-             ($1, $2, null, \
-              (select image_id from tml_switchboard.jobs where job_id = $2), \
-              null, null, row(0)::tml_switchboard.restart_policy, \
-              $3, interval '1 hour', 'queued', null, now(), null, null, null, \
-              null, null, null)",
+             ($1, $2, (select image_id from tml_switchboard.jobs where job_id = $2), \
+              row(0)::tml_switchboard.restart_policy, $3, interval '1 hour', 'queued', now())",
         )
         .bind(resume_job)
         .bind(resume_target)
@@ -3612,7 +3402,6 @@ mod tests {
                 job_id,
                 event: SupervisorJobEvent::StateTransition {
                     new_state: RunningJobState::Ready,
-                    status_message: None,
                 },
             })
             .await
@@ -3661,7 +3450,6 @@ mod tests {
                 job_id,
                 event: SupervisorJobEvent::StateTransition {
                     new_state: RunningJobState::Terminated,
-                    status_message: None,
                 },
             })
             .await
@@ -3708,7 +3496,7 @@ mod tests {
     }
 
     /// An `Error` event finalizes the job with the mapped termination reason and
-    /// records the error description, clearing the assignment and caching `Idle`.
+    /// records the error description as `job_error`.
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
     async fn event_error_finalizes_with_mapped_reason(pool: PgPool) -> anyhow::Result<()> {
@@ -3736,14 +3524,8 @@ mod tests {
             .expect("error event should be handled");
 
         assert_eq!(job_state_of(&pool, job_id).await?, "finalized");
-        let reason: Option<String> = sqlx::query_scalar(
-            "select termination_reason::text from tml_switchboard.jobs where job_id = $1",
-        )
-        .bind(job_id)
-        .fetch_one(&pool)
-        .await?;
         assert_eq!(
-            reason.as_deref(),
+            termination_reason_of(&pool, job_id).await?.as_deref(),
             Some("image_error"),
             "ImageNotFound must map to image_error"
         );
@@ -3879,7 +3661,6 @@ mod tests {
                 job_id,
                 event: SupervisorJobEvent::StateTransition {
                     new_state: RunningJobState::Ready,
-                    status_message: None,
                 },
             })
             .await

@@ -115,7 +115,8 @@ async fn daemon_job(globals: &Globals, command: DaemonJobCommand) -> Result<()> 
                 ExitOutcome::Success => TaskExitStatus::Success,
                 ExitOutcome::Failure => TaskExitStatus::Failure,
             };
-            SwitchboardClient::new(credentials.base_url, Some(credentials.token))
+            credentials
+                .client()
                 .put_job_exit_status(
                     credentials.job_id,
                     &JobExitStatusRequest { outcome, message },
@@ -138,10 +139,7 @@ async fn job_client(globals: &Globals, job: Option<&str>) -> Result<(Switchboard
                 credentials.job_id
             );
         }
-        return Ok((
-            SwitchboardClient::new(credentials.base_url, Some(credentials.token)),
-            credentials.job_id,
-        ));
+        return Ok((credentials.client(), credentials.job_id));
     }
 
     #[cfg(feature = "user")]

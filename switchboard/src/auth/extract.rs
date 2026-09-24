@@ -5,7 +5,6 @@ use axum::RequestPartsExt;
 use axum::extract::FromRequestParts;
 use axum::response::{IntoResponse, Response};
 use axum_extra::TypedHeader;
-use axum_extra::typed_header::TypedHeaderRejectionReason;
 use chrono::Utc;
 use headers::Authorization;
 use headers::authorization::Bearer;
@@ -14,20 +13,13 @@ use http::request::Parts;
 use std::sync::Arc;
 
 async fn bearer_token(parts: &mut Parts) -> Result<SecurityToken, Response> {
-    let bearer = match parts.extract::<TypedHeader<Authorization<Bearer>>>().await {
-        Ok(x) => x.0.0,
-        Err(rejection) => match rejection.reason() {
-            TypedHeaderRejectionReason::Missing => {
-                tracing::debug!("no token present for request");
-                return Err(StatusCode::UNAUTHORIZED.into_response());
-            }
-            TypedHeaderRejectionReason::Error(e) => {
-                tracing::debug!("failed to extract Authorization<Bearer>: {e:?}");
-                return Err(StatusCode::UNAUTHORIZED.into_response());
-            }
-            _ => unreachable!(),
-        },
-    };
+    let TypedHeader(Authorization(bearer)) = parts
+        .extract::<TypedHeader<Authorization<Bearer>>>()
+        .await
+        .map_err(|rejection| {
+            tracing::debug!("no usable bearer token: {rejection}");
+            StatusCode::UNAUTHORIZED.into_response()
+        })?;
     SecurityToken::try_from(bearer).map_err(|e| {
         tracing::debug!("failed to decode bearer token: {e}");
         StatusCode::UNAUTHORIZED.into_response()
@@ -75,25 +67,13 @@ async fn job_subject(
     state: &AppState,
     token: SecurityToken,
 ) -> Result<Option<JobSubject>, Response> {
-    let token_info = match sql::api_token::fetch_job_token_metadata(state.pool(), token).await {
-        Ok(info) => info,
-        Err(TokenError::InvalidToken) => return Ok(None),
-        Err(e) => {
+    let job_id = sql::api_token::fetch_unfinalized_job_by_token(state.pool(), token)
+        .await
+        .map_err(|e| {
             tracing::error!("failed to look up a job token: {e}");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
-        }
-    };
-    if token_info.finalized {
-        tracing::debug!(
-            "failed to derive job subject: job {} of token ({}) is finalized",
-            token_info.job_id,
-            token_info.token_id,
-        );
-        return Err(StatusCode::UNAUTHORIZED.into_response());
-    }
-    Ok(Some(JobSubject {
-        job_id: token_info.job_id,
-    }))
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        })?;
+    Ok(job_id.map(|job_id| JobSubject { job_id }))
 }
 
 fn no_such_token() -> Response {

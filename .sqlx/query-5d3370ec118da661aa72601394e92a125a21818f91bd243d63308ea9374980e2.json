@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT j.job_id\n            FROM tml_switchboard.api_tokens t\n            JOIN tml_switchboard.jobs j ON j.job_id = t.subject_id\n            WHERE t.token = $1 AND t.subject_kind = 'job' AND j.job_state <> 'finalized'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "job_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5d3370ec118da661aa72601394e92a125a21818f91bd243d63308ea9374980e2"
+}

@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::time::Duration;
 
 use aide::axum::ApiRouter;
 use aide::axum::routing::{get_with, put_with};
@@ -16,9 +15,6 @@ use treadmill_rs::api::supervisor_daemon::{JOB_PATH, JOB_READY_PATH, JobInfo};
 
 use crate::job::JobHandle;
 
-const BIND_ATTEMPTS: usize = 20;
-const BIND_RETRY_INTERVAL: Duration = Duration::from_millis(100);
-
 pub struct DaemonApi {
     shutdown: CancellationToken,
     task: JoinHandle<std::io::Result<()>>,
@@ -26,7 +22,9 @@ pub struct DaemonApi {
 
 impl DaemonApi {
     pub async fn serve(addr: SocketAddr, handle: JobHandle) -> Result<Self> {
-        let listener = bind(addr).await?;
+        let listener = TcpListener::bind(addr)
+            .await
+            .with_context(|| format!("Binding to {addr:?}"))?;
         let shutdown = CancellationToken::new();
         let app: axum::Router = api_router().with_state(handle).into();
         let task = tokio::spawn(
@@ -75,19 +73,6 @@ fn api_router() -> ApiRouter<JobHandle> {
                     .response_with::<204, (), _>(|r| r.description("The job is ready."))
             }),
         )
-}
-
-async fn bind(addr: SocketAddr) -> Result<TcpListener> {
-    let mut attempts_left = BIND_ATTEMPTS;
-    loop {
-        match TcpListener::bind(addr).await {
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && attempts_left > 1 => {
-                attempts_left -= 1;
-                tokio::time::sleep(BIND_RETRY_INTERVAL).await;
-            }
-            res => return res.with_context(|| format!("Binding to {addr:?}")),
-        }
-    }
 }
 
 async fn job_info(State(handle): State<JobHandle>) -> Result<Json<JobInfo>, StatusCode> {

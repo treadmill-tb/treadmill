@@ -453,9 +453,7 @@ pub enum JobInitializingStage {
 /// A supervisor reporting `Terminated` always means a *workload-driven* exit, so
 /// the switchboard finalizes it with `termination_reason = workload_exited`; the
 /// reason is implied by the report, not encoded in the variant, which is why
-/// there is deliberately no total `RunningJobState → job_state` conversion. The
-/// workload's outcome is **not** carried here: the job reports it itself,
-/// through the switchboard API.
+/// there is deliberately no total `RunningJobState → job_state` conversion.
 ///
 /// # The retained-terminal contract
 ///
@@ -482,10 +480,9 @@ pub enum RunningJobState {
     /// Shutting down; the next report is normally `Terminated`.
     Terminating,
     /// The workload has exited. Drives the switchboard's `→ finalized`
-    /// transition (`termination_reason = workload_exited`). The workload's
-    /// outcome is *not* carried here. The supervisor retains this
-    /// report until the switchboard acks it with `RemoveJob` (see the type-level
-    /// Rustdoc).
+    /// transition (`termination_reason = workload_exited`). The supervisor
+    /// retains this report until the switchboard acks it with `RemoveJob` (see
+    /// the type-level Rustdoc).
     Terminated,
 }
 /// An asynchronous event a supervisor emits about the job it is executing,
@@ -498,12 +495,8 @@ pub enum RunningJobState {
 pub enum SupervisorJobEvent {
     /// The job advanced to a new [`RunningJobState`]. The switchboard mirrors
     /// `new_state` into the DB `job_state` column (and a `Terminated` here drives
-    /// the `→ finalized` transition; see [`RunningJobState`]). `status_message`
-    /// is optional free text for the audit log.
-    StateTransition {
-        new_state: RunningJobState,
-        status_message: Option<String>,
-    },
+    /// the `→ finalized` transition; see [`RunningJobState`]).
+    StateTransition { new_state: RunningJobState },
     // Technically a state transition
     /// A job-level error. Semantically a transition toward termination; the
     /// switchboard finalizes the job with an appropriate

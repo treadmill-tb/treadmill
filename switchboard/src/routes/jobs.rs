@@ -683,17 +683,12 @@ pub async fn get_environment(
 ) -> Result<Json<JobEnvironment>, StatusCode> {
     require_own_job(&job_subject, job_id)?;
 
-    let mut conn = state
-        .pool()
-        .acquire()
-        .await
-        .or_internal("acquiring a connection for get_environment")?;
-    let host_id = job::fetch_by_job_id(job_id, &mut *conn)
+    let host_id = job::fetch_by_job_id(job_id, state.pool())
         .await
         .or_internal(&format!("fetching job {job_id} for get_environment"))?
         .dispatched_on_host_id()
         .ok_or(StatusCode::CONFLICT)?;
-    let host_spec = match host_spec::current_for_host(host_id, &mut *conn)
+    let host_spec = match host_spec::current_for_host(host_id, state.pool())
         .await
         .or_internal(&format!("fetching the host spec of host {host_id}"))?
     {
@@ -704,7 +699,7 @@ pub async fn get_environment(
         }
         None => None,
     };
-    let parameters = job::parameters::fetch_by_job_id(job_id, &mut *conn)
+    let parameters = job::parameters::fetch_by_job_id(job_id, state.pool())
         .await
         .or_internal(&format!("fetching the parameters of job {job_id}"))?;
 
