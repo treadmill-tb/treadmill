@@ -453,7 +453,7 @@ SQL
 if [ "$enable_supervisor" = 1 ]; then
   cat > "$cfg_dir/zot.json" <<JSON
 {"storage":{"rootDirectory":"$zot_dir","dedupe":true},
- "http":{"address":"127.0.0.1","port":"$zot_port"},
+ "http":{"address":"127.0.0.1","port":"$zot_port","readTimeout":"15m","writeTimeout":"15m"},
  "log":{"level":"error"}}
 JSON
 
