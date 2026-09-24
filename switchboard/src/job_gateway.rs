@@ -30,7 +30,7 @@ use jsonwebtoken::jwk::{
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use treadmill_rs::api;
-use treadmill_rs::api::switchboard::jobs::JobServiceEndpoint;
+use treadmill_rs::api::switchboard::jobs::{JobGatewayInfo, JobServiceEndpoint};
 use uuid::Uuid;
 
 use crate::config::{self, JobGatewayConfig};
@@ -213,6 +213,23 @@ pub fn build_dispatch(gateway: &JobGateway) -> api::switchboard_supervisor::JobG
             .cloned()
             .map(|config::JobGatewayEndpoint { base_domain, port }| {
                 api::switchboard_supervisor::JobGatewayEndpoint { base_domain, port }
+            })
+            .collect(),
+    }
+}
+
+pub fn build_info(gateway: &JobGateway) -> JobGatewayInfo {
+    JobGatewayInfo {
+        issuer: gateway.config.issuer.clone(),
+        signing_public_key: gateway.public_key_pem.clone(),
+        key_id: gateway.key_id.clone(),
+        endpoints: gateway
+            .config
+            .endpoints
+            .iter()
+            .cloned()
+            .map(|config::JobGatewayEndpoint { base_domain, port }| {
+                api::switchboard::jobs::JobGatewayEndpoint { base_domain, port }
             })
             .collect(),
     }

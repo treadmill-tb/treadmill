@@ -19,7 +19,7 @@ use crate::host_spec::{HostSpec, HostSpecV1, PlatformKind, Resources};
 /// copy in every generated client, and make each new spec version rewrite this
 /// document — for routes that only carry the spec from an admin's editor to the
 /// switchboard and back, and never interpret it.
-type SpecDocument = serde_json::Map<String, serde_json::Value>;
+pub(super) type SpecDocument = serde_json::Map<String, serde_json::Value>;
 
 /// A permission on a host. `permissions` on [`HostInfo`] reports which of these
 /// the viewer holds (an owner or global admin holds all of them).

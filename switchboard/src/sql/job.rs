@@ -1,4 +1,4 @@
-use super::{host_spec, image};
+use super::{api_token, host_spec, image};
 use crate::matcher::{GroupMember, select_member};
 use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
@@ -316,6 +316,7 @@ pub async fn insert(
     )
     .execute(conn.as_mut())
     .await?;
+    api_token::insert_job_token(as_job_id, queued_at, conn.as_mut()).await?;
 
     sqlx::query!(
         r#"

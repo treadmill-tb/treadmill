@@ -358,8 +358,8 @@ CREATE TYPE tml_switchboard.api_token_revocation AS (
 -- disturbing this one.
 --
 -- User tokens have both natural expiration and an explicit revocation
--- mechanism, which voids a token before it expires. Job tokens never expire:
--- they are revoked when their job finalizes.
+-- mechanism, which voids a token before it expires. Job tokens never expire
+-- and stop working once their job finalizes.
 --
 -- `user_agent` and `created_ip`/`created_port` record the provenance of a token
 -- at mint time (the client that requested it), surfaced in the session-list API

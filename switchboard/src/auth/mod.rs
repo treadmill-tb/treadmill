@@ -16,6 +16,8 @@ pub mod token;
 /// [`crate::routes::openapi_spec`].
 pub const SECURITY_SCHEME: &str = "token";
 
+pub const JOB_SECURITY_SCHEME: &str = "job_token";
+
 /// Accessible _subject_ information (see module docs).
 pub struct SubjectDetail {
     token_info: Arc<SqlApiTokenMetadata>,
@@ -46,5 +48,14 @@ impl Subject {
     /// The id of the token the request authenticated with.
     pub fn token_id(&self) -> Uuid {
         self.0.token_id()
+    }
+}
+
+pub struct JobSubject {
+    job_id: Uuid,
+}
+impl JobSubject {
+    pub fn job_id(&self) -> Uuid {
+        self.job_id
     }
 }

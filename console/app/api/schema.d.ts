@@ -261,6 +261,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/jobs/{id}/environment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a job's environment
+         * @description Everything a running job needs to set itself up, including secret parameters. Only the job's own token may read it.
+         */
+        get: operations["getJobEnvironment"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/jobs/{id}": {
         parameters: {
             query?: never;
@@ -1520,6 +1540,58 @@ export interface components {
              *     seconds.
              */
             lease_duration_secs: number;
+        };
+        /**
+         * @description Everything a running job needs to set itself up, returned by
+         *     `GET /jobs/{id}/environment` to the job's own token.
+         */
+        JobEnvironment: {
+            /** @description Gateway material, or null when this deployment runs without gateways. */
+            gateway?: components["schemas"]["JobGatewayInfo"] | null;
+            /**
+             * Format: uuid
+             * @description The host the job was dispatched to.
+             */
+            host_id: string;
+            /**
+             * @description The host's current spec, normalized to the latest version, as a document
+             *     conforming to the schema at `GET /hosts/spec-schema`. Null for a host
+             *     that has never been described.
+             */
+            host_spec?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description The job's parameters, secret values included. */
+            parameters: {
+                [key: string]: components["schemas"]["JobParameter"];
+            };
+        };
+        /** @description A gateway under which a job's services are published. */
+        JobGatewayEndpoint: {
+            /**
+             * @description The gateway's base domain. A service is reachable at
+             *     `<service>-<job-id>.<base_domain>`.
+             */
+            base_domain: string;
+            /**
+             * Format: uint16
+             * @description The port the gateway listens on.
+             */
+            port: number;
+        };
+        /**
+         * @description What a job needs to validate the service tokens its gateways admit, so that
+         *     reaching a service takes a valid token at the gateway and at the job.
+         */
+        JobGatewayInfo: {
+            /** @description The gateways the job's services are published under. */
+            endpoints: components["schemas"]["JobGatewayEndpoint"][];
+            /** @description The `iss` every service token carries. */
+            issuer: string;
+            /** @description Identifier of `signing_public_key`, carried as a token's `kid`. */
+            key_id: string;
+            /** @description The switchboard's public key for verifying service tokens, PEM-encoded. */
+            signing_public_key: string;
         };
         /** @description A job's image: what it references, and the concrete image it runs. */
         JobImage: {
@@ -3032,6 +3104,53 @@ export interface operations {
             };
             /** @description Job service gateways are not enabled on this deployment. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getJobEnvironment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The resource's unique identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description Everything a running job needs to set itself up, returned by
+             *     `GET /jobs/{id}/environment` to the job's own token.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobEnvironment"];
+                };
+            };
+            /** @description Authentication failed: the job token is missing, malformed, or its job has finalized. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The job token belongs to a different job. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The job has not been dispatched to a host. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

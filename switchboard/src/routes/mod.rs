@@ -282,6 +282,20 @@ pub fn api_router() -> ApiRouter<AppState> {
                 })
             }),
         )
+        //  GET /jobs/{id}/environment -- what a running job needs to set itself up
+        .api_route(
+            "/jobs/{id}/environment",
+            get_with(jobs::get_environment, |o| {
+                doc(o, "getJobEnvironment", "Jobs", "Get a job's environment")
+                    .description(
+                        "Everything a running job needs to set itself up, including \
+                         secret parameters. Only the job's own token may read it.",
+                    )
+                    .response_with::<409, (), _>(|r| {
+                        r.description("The job has not been dispatched to a host.")
+                    })
+            }),
+        )
         //  GET    /jobs/{id} -- fetch one job's full info
         //  PATCH  /jobs/{id} -- update a job's mutable metadata (label, lease)
         //  DELETE /jobs/{id} -- request termination of a job
@@ -914,6 +928,23 @@ pub fn openapi_spec() -> aide::openapi::OpenApi {
                 description: Some(
                     "A Treadmill user API token, presented as \
                      `Authorization: Bearer <token>`."
+                        .to_string(),
+                ),
+                extensions: Default::default(),
+            }),
+        );
+
+    api.components
+        .get_or_insert_with(Components::default)
+        .security_schemes
+        .insert(
+            crate::auth::JOB_SECURITY_SCHEME.to_string(),
+            ReferenceOr::Item(SecurityScheme::Http {
+                scheme: "bearer".to_string(),
+                bearer_format: None,
+                description: Some(
+                    "A Treadmill job token, presented as `Authorization: Bearer <token>`. \
+                     It acts only on its own job."
                         .to_string(),
                 ),
                 extensions: Default::default(),

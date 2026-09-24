@@ -501,6 +501,40 @@ paths:
           description: Job service gateways are not enabled on this deployment.
       security:
       - token: []
+  /jobs/{id}/environment:
+    get:
+      tags:
+      - Jobs
+      summary: Get a job's environment
+      description: Everything a running job needs to set itself up, including secret parameters. Only the job's own token may read it.
+      operationId: getJobEnvironment
+      parameters:
+      - in: path
+        name: id
+        description: The resource's unique identifier.
+        required: true
+        schema:
+          description: The resource's unique identifier.
+          type: string
+          format: uuid
+        style: simple
+      responses:
+        '401':
+          description: 'Authentication failed: the job token is missing, malformed, or its job has finalized.'
+        '403':
+          description: The job token belongs to a different job.
+        '200':
+          description: |-
+            Everything a running job needs to set itself up, returned by
+            `GET /jobs/{id}/environment` to the job's own token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobEnvironment'
+        '409':
+          description: The job has not been dispatched to a host.
+      security:
+      - job_token: []
   /jobs/{id}:
     get:
       tags:
@@ -2209,6 +2243,10 @@ components:
       type: http
       scheme: bearer
       description: 'A Treadmill user API token, presented as `Authorization: Bearer <token>`.'
+    job_token:
+      type: http
+      scheme: bearer
+      description: 'A Treadmill job token, presented as `Authorization: Bearer <token>`. It acts only on its own job.'
   schemas:
     AddImageSourceRequest:
       description: |-
@@ -3261,6 +3299,81 @@ components:
           format: int64
       required:
       - lease_duration_secs
+    JobEnvironment:
+      description: |-
+        Everything a running job needs to set itself up, returned by
+        `GET /jobs/{id}/environment` to the job's own token.
+      type: object
+      properties:
+        gateway:
+          description: Gateway material, or null when this deployment runs without gateways.
+          anyOf:
+          - $ref: '#/components/schemas/JobGatewayInfo'
+          - type: 'null'
+        host_id:
+          description: The host the job was dispatched to.
+          type: string
+          format: uuid
+        host_spec:
+          description: |-
+            The host's current spec, normalized to the latest version, as a document
+            conforming to the schema at `GET /hosts/spec-schema`. Null for a host
+            that has never been described.
+          type:
+          - object
+          - 'null'
+          additionalProperties: true
+        parameters:
+          description: The job's parameters, secret values included.
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/JobParameter'
+      required:
+      - host_id
+      - parameters
+    JobGatewayEndpoint:
+      description: A gateway under which a job's services are published.
+      type: object
+      properties:
+        base_domain:
+          description: |-
+            The gateway's base domain. A service is reachable at
+            `<service>-<job-id>.<base_domain>`.
+          type: string
+        port:
+          description: The port the gateway listens on.
+          type: integer
+          format: uint16
+          maximum: 65535
+          minimum: 0
+      required:
+      - base_domain
+      - port
+    JobGatewayInfo:
+      description: |-
+        What a job needs to validate the service tokens its gateways admit, so that
+        reaching a service takes a valid token at the gateway and at the job.
+      type: object
+      properties:
+        endpoints:
+          description: The gateways the job's services are published under.
+          type: array
+          items:
+            $ref: '#/components/schemas/JobGatewayEndpoint'
+        issuer:
+          description: The `iss` every service token carries.
+          type: string
+        key_id:
+          description: Identifier of `signing_public_key`, carried as a token's `kid`.
+          type: string
+        signing_public_key:
+          description: The switchboard's public key for verifying service tokens, PEM-encoded.
+          type: string
+      required:
+      - issuer
+      - signing_public_key
+      - key_id
+      - endpoints
     JobImage:
       description: 'A job''s image: what it references, and the concrete image it runs.'
       type: object

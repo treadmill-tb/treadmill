@@ -12,16 +12,18 @@ use sqlx::postgres::types::PgInterval;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::jobs::{
-    EnqueueJobResponse, JobDefaults, JobInfo, JobLeaseExpiryAction, JobListResponse,
-    JobPermission as ApiJobPermission, JobServiceCredentials, LeaseRejection, LeaseRejectionCode,
-    NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
+    EnqueueJobResponse, JobDefaults, JobEnvironment, JobInfo, JobLeaseExpiryAction,
+    JobListResponse, JobPermission as ApiJobPermission, JobServiceCredentials, LeaseRejection,
+    LeaseRejectionCode, NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
+use treadmill_rs::host_spec::HostSpec;
 use treadmill_rs::util::Secret;
 
 use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_entity};
 use crate::audit::model::{Job as AuditJob, Subject as AuditSubject};
 use crate::audit::{self, events};
+use crate::auth::JobSubject;
 use crate::auth::engine::{self, ImageSetPermission, JobPermission};
 use crate::events::EventFilter;
 use crate::http_error::OrInternal;
@@ -29,7 +31,7 @@ use crate::job_gateway::{self, MintError, service_endpoint};
 use crate::log_streaming::{self, TokenScope};
 use crate::routes::params::{IdPath, JobServicePath};
 use crate::serve::AppState;
-use crate::sql::{image, job};
+use crate::sql::{host_spec, image, job};
 
 /// Default and maximum page sizes for `GET /jobs`.
 const DEFAULT_LIST_LIMIT: u32 = 50;
@@ -646,6 +648,52 @@ pub async fn get_job(
         .or_internal(&format!("rendering job {job_id} into JobInfo"))?;
 
     Ok(Json(info))
+}
+
+pub async fn get_environment(
+    State(state): State<AppState>,
+    job_subject: JobSubject,
+    Path(IdPath { id: job_id }): Path<IdPath>,
+) -> Result<Json<JobEnvironment>, StatusCode> {
+    if job_subject.job_id() != job_id {
+        tracing::debug!(
+            "refusing the environment of job {job_id} to the token of job {}",
+            job_subject.job_id()
+        );
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let mut conn = state
+        .pool()
+        .acquire()
+        .await
+        .or_internal("acquiring a connection for get_environment")?;
+    let host_id = job::fetch_by_job_id(job_id, &mut *conn)
+        .await
+        .or_internal(&format!("fetching job {job_id} for get_environment"))?
+        .dispatched_on_host_id()
+        .ok_or(StatusCode::CONFLICT)?;
+    let host_spec = match host_spec::current_for_host(host_id, &mut *conn)
+        .await
+        .or_internal(&format!("fetching the host spec of host {host_id}"))?
+    {
+        Some(Ok(stored)) => Some(HostSpec::V1(stored.normalize())),
+        Some(Err(e)) => {
+            tracing::error!("serving the environment of job {job_id} without a host spec: {e}");
+            None
+        }
+        None => None,
+    };
+    let parameters = job::parameters::fetch_by_job_id(job_id, &mut *conn)
+        .await
+        .or_internal(&format!("fetching the parameters of job {job_id}"))?;
+
+    Ok(Json(JobEnvironment {
+        host_id,
+        host_spec,
+        gateway: state.job_gateway().map(job_gateway::build_info),
+        parameters,
+    }))
 }
 
 /// Axum handler for `DELETE /jobs/{id}` — request termination of a job.

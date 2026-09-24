@@ -7,7 +7,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::api::switchboard::hosts::SpecDocument;
 use crate::api::switchboard::{JobState, TerminationReason};
+use crate::host_spec::HostSpec;
 use crate::image::Digest;
 use crate::util::Secret;
 
@@ -360,6 +362,47 @@ pub struct JobServiceCredentials {
     /// an already-minted token is not invalidated before this by anything,
     /// including the job ending or the caller's access being revoked.
     pub expires_at: DateTime<Utc>,
+}
+
+/// A gateway under which a job's services are published.
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobGatewayEndpoint {
+    /// The gateway's base domain. A service is reachable at
+    /// `<service>-<job-id>.<base_domain>`.
+    pub base_domain: String,
+    /// The port the gateway listens on.
+    pub port: u16,
+}
+
+/// What a job needs to validate the service tokens its gateways admit, so that
+/// reaching a service takes a valid token at the gateway and at the job.
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobGatewayInfo {
+    /// The `iss` every service token carries.
+    pub issuer: String,
+    /// The switchboard's public key for verifying service tokens, PEM-encoded.
+    pub signing_public_key: String,
+    /// Identifier of `signing_public_key`, carried as a token's `kid`.
+    pub key_id: String,
+    /// The gateways the job's services are published under.
+    pub endpoints: Vec<JobGatewayEndpoint>,
+}
+
+/// Everything a running job needs to set itself up, returned by
+/// `GET /jobs/{id}/environment` to the job's own token.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct JobEnvironment {
+    /// The host the job was dispatched to.
+    pub host_id: Uuid,
+    /// The host's current spec, normalized to the latest version, as a document
+    /// conforming to the schema at `GET /hosts/spec-schema`. Null for a host
+    /// that has never been described.
+    #[schemars(with = "Option<SpecDocument>")]
+    pub host_spec: Option<HostSpec>,
+    /// Gateway material, or null when this deployment runs without gateways.
+    pub gateway: Option<JobGatewayInfo>,
+    /// The job's parameters, secret values included.
+    pub parameters: HashMap<String, JobParameter>,
 }
 
 /// The image a job references: a concrete image, or an image set with its
