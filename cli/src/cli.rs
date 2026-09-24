@@ -16,7 +16,7 @@ pub struct Cli {
     pub command: Command,
 }
 
-#[derive(Args, Debug, Clone, Default)]
+#[derive(Args, Debug, Clone)]
 pub struct Globals {
     /// Switchboard API URL
     #[arg(long, value_name = "URL", global = true)]
@@ -50,7 +50,7 @@ pub struct Globals {
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
 
-    /// The D-Bus the tml daemon is on, or none
+    /// The D-Bus the tml daemon is on
     #[cfg(feature = "daemon")]
     #[arg(
         long,

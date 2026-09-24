@@ -1,7 +1,5 @@
 use std::collections::HashMap;
-use std::mem;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -23,12 +21,10 @@ const FW_CFG_SUPERVISOR_URL: &str =
 
 const SWITCHBOARD_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
-#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum DbusBus {
     Session,
-    #[default]
     System,
-    None,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -36,15 +32,12 @@ pub struct DaemonArgs {
     #[arg(long)]
     supervisor_url: Option<String>,
 
-    #[arg(long)]
-    parameters_dir: Option<PathBuf>,
-
-    #[arg(long)]
-    job_info_dir: Option<PathBuf>,
+    #[arg(long, default_value = "/run/tml")]
+    job_info_dir: PathBuf,
 
     /// Directory of `*.json` service declarations to announce.
-    #[arg(long)]
-    services_dir: Option<PathBuf>,
+    #[arg(long, default_value = "/etc/tml/services.d")]
+    services_dir: PathBuf,
 
     /// Where to write the generated reverse proxy vhost definitions. Without
     /// it, no proxy configuration is generated at all.
@@ -126,178 +119,167 @@ async fn scan_services(services_dir: &Path) -> Result<Vec<ServiceDeclaration>> {
     Ok(services)
 }
 
-/// Scan the service directory, put the local reverse proxy in front of what it
-/// holds, and announce it, replacing whatever was announced before. A daemon with
-/// no service directory configured announces nothing at all, rather than an empty
-/// set.
-///
-/// The proxy is configured before the announcement, so a service is never
-/// mintable at a gateway before the job can serve it. A proxy that could not be
-/// configured is reported, but does not hold back the announcement: what the
-/// switchboard knows about a job should not depend on the job's own proxy.
-async fn announce_services(
-    services_dir: Option<&Path>,
-    proxy: Option<&ServiceProxy>,
-    switchboard: &Switchboard,
-) -> Result<()> {
-    let Some(services_dir) = services_dir else {
-        return Ok(());
-    };
-
-    let declarations = scan_services(services_dir)
-        .await
-        .context("Scanning the service directory")?;
-
-    let proxy_res = match proxy {
-        Some(proxy) => proxy
-            .apply(&declarations)
-            .await
-            .context("Configuring the local service proxy"),
-        None => Ok(()),
-    };
-    if let Err(ref e) = proxy_res {
-        error!("Failed to configure the local service proxy: {e:?}");
-    }
-
-    info!(
-        "Announcing {} service(s) from {services_dir:?}",
-        declarations.len()
-    );
-    let services: Vec<_> = declarations
-        .into_iter()
-        .map(|declaration| declaration.service)
-        .collect();
-    switchboard
-        .client
-        .put_job_services(switchboard.job_id, &services)
-        .await
-        .context("Announcing the job's services to the switchboard")?;
-
-    proxy_res
+#[derive(Clone)]
+pub struct Credentials {
+    pub base_url: String,
+    pub token: String,
+    pub job_id: Uuid,
 }
 
-async fn update_job_info_files(
-    args: &DaemonArgs,
-    job_id: Uuid,
-    environment: Option<&JobEnvironment>,
-) -> Result<()> {
-    let job_info_dir = match args.job_info_dir {
-        Some(ref path) => path,
-        None => return Ok(()),
-    };
+impl Credentials {
+    pub fn client(&self) -> SwitchboardClient {
+        SwitchboardClient::new(self.base_url.clone(), Some(self.token.clone()))
+    }
+}
 
-    tokio::fs::create_dir_all(job_info_dir)
+async fn fetch_environment(credentials: &Credentials) -> Result<JobEnvironment> {
+    let client = credentials.client();
+    loop {
+        match client.get_job_environment(credentials.job_id).await {
+            Ok(environment) => return Ok(environment),
+            Err(ClientError::Transport(e)) => {
+                warn!(
+                    "Cannot reach the switchboard, retrying in {SWITCHBOARD_RETRY_INTERVAL:?}: {e}"
+                );
+                tokio::time::sleep(SWITCHBOARD_RETRY_INTERVAL).await;
+            }
+            Err(e) => return Err(e).context("Fetching the job environment"),
+        }
+    }
+}
+
+async fn write_file(dir: &Path, name: &str, contents: impl AsRef<[u8]>) -> Result<()> {
+    let path = dir.join(name);
+    let tmp_path = dir.join(format!(".{name}.tmp"));
+    info!("Writing {path:?}");
+    tokio::fs::write(&tmp_path, contents)
         .await
-        .context("Creating job_info_dir directory (recursively)")?;
-
-    let job_id_path = job_info_dir.join("job-id");
-    info!("Writing job id to file {job_id_path:?}");
-    tokio::fs::write(job_id_path, job_id.to_string().as_bytes())
+        .with_context(|| format!("Writing {tmp_path:?}"))?;
+    tokio::fs::rename(&tmp_path, &path)
         .await
-        .context("Writing job id to file")?;
+        .with_context(|| format!("Renaming {tmp_path:?} to {path:?}"))
+}
 
-    let Some(environment) = environment else {
-        return Ok(());
-    };
-
-    let host_id_path = job_info_dir.join("host-id");
-    info!("Writing host id to file {host_id_path:?}");
-    tokio::fs::write(host_id_path, environment.host_id.to_string().as_bytes())
+async fn write_parameters(dir: &Path, parameters: &HashMap<String, JobParameter>) -> Result<()> {
+    tokio::fs::create_dir_all(dir)
         .await
-        .context("Writing host id to file")?;
-
-    // Context for offering HTTP/WS services through public gateways.
-    if let Some(gateway) = &environment.gateway {
-        let issuer_path = job_info_dir.join("gateway-issuer");
-        info!("Writing gateway issuer to file {issuer_path:?}");
-        tokio::fs::write(issuer_path, gateway.issuer.as_bytes())
-            .await
-            .context("Writing gateway issuer to file")?;
-
-        let key_path = job_info_dir.join("gateway-key.pem");
-        info!("Writing gateway signing key to file {key_path:?}");
-        tokio::fs::write(key_path, gateway.signing_public_key.as_bytes())
-            .await
-            .context("Writing gateway signing key to file")?;
-
-        let key_id_path = job_info_dir.join("gateway-key-id");
-        info!("Writing gateway key id to file {key_id_path:?}");
-        tokio::fs::write(key_id_path, gateway.key_id.as_bytes())
-            .await
-            .context("Writing gateway key id to file")?;
-
-        let endpoints_path = job_info_dir.join("gateway-endpoints");
-        info!("Writing gateway endpoints to file {endpoints_path:?}");
-        let endpoints: String = gateway
-            .endpoints
-            .iter()
-            .map(|JobGatewayEndpoint { base_domain, port }| format!("{base_domain}:{port}\n"))
+        .context("Creating the parameters directory")?;
+    for (name, parameter) in parameters {
+        let file_name: String = name
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '_'))
+            .take(128)
             .collect();
-        tokio::fs::write(endpoints_path, endpoints.as_bytes())
-            .await
-            .context("Writing gateway endpoints to file")?;
+        write_file(dir, &file_name, &parameter.value).await?;
     }
-
-    // The admin's description of the machine this job runs on, as a document
-    // rather than one file per field: it is nested, and a job reads it with
-    // `jq` or a JSON parser.
-    if let Some(host_spec) = &environment.host_spec {
-        let host_spec_path = job_info_dir.join("host-spec.json");
-        info!("Writing host spec to file {host_spec_path:?}");
-        let document = serde_json::to_vec_pretty(host_spec).context("Serializing the host spec")?;
-        tokio::fs::write(host_spec_path, document)
-            .await
-            .context("Writing host spec to file")?;
-    }
-
     Ok(())
 }
 
-struct Switchboard {
-    client: SwitchboardClient,
-    base_url: String,
-    token: String,
-    job_id: Uuid,
-}
-
-impl Switchboard {
-    fn new(job_id: Uuid, api: JobApi) -> Self {
-        let token = api.token.into_inner();
-        Switchboard {
-            client: SwitchboardClient::new(api.base_url.clone(), Some(token.clone())),
-            base_url: api.base_url,
-            token,
-            job_id,
-        }
-    }
-
-    async fn environment(&self) -> Result<JobEnvironment> {
-        loop {
-            match self.client.get_job_environment(self.job_id).await {
-                Ok(environment) => return Ok(environment),
-                Err(ClientError::Transport(e)) => {
-                    warn!(
-                        "Cannot reach the switchboard, retrying in {SWITCHBOARD_RETRY_INTERVAL:?}: {e}"
-                    );
-                    tokio::time::sleep(SWITCHBOARD_RETRY_INTERVAL).await;
-                }
-                Err(e) => return Err(e).context("Fetching the job environment"),
-            }
-        }
-    }
-}
-
+#[derive(Clone)]
 struct DbusDaemon {
-    switchboard: Option<Arc<Switchboard>>,
-    services_dir: Option<PathBuf>,
-    proxy: Option<Arc<ServiceProxy>>,
+    credentials: Credentials,
+    services_dir: PathBuf,
+    proxy: Option<ServiceProxy>,
 }
 
 impl DbusDaemon {
-    fn switchboard(&self) -> zbus::fdo::Result<&Switchboard> {
-        self.switchboard.as_deref().ok_or_else(|| {
-            zbus::fdo::Error::Failed("This job has no access to a switchboard.".to_string())
+    async fn start(args: &DaemonArgs, job_id: Uuid, api: JobApi) -> Result<Self> {
+        let credentials = Credentials {
+            base_url: api.base_url,
+            token: api.token.into_inner(),
+            job_id,
+        };
+        let environment = fetch_environment(&credentials).await?;
+
+        write_file(
+            &args.job_info_dir,
+            "host-id",
+            environment.host_id.to_string(),
+        )
+        .await?;
+        if let Some(gateway) = &environment.gateway {
+            let endpoints: String = gateway
+                .endpoints
+                .iter()
+                .map(|JobGatewayEndpoint { base_domain, port }| format!("{base_domain}:{port}\n"))
+                .collect();
+            write_file(&args.job_info_dir, "gateway-issuer", &gateway.issuer).await?;
+            write_file(
+                &args.job_info_dir,
+                "gateway-key.pem",
+                &gateway.signing_public_key,
+            )
+            .await?;
+            write_file(&args.job_info_dir, "gateway-key-id", &gateway.key_id).await?;
+            write_file(&args.job_info_dir, "gateway-endpoints", endpoints).await?;
+        }
+        if let Some(host_spec) = &environment.host_spec {
+            let document =
+                serde_json::to_vec_pretty(host_spec).context("Serializing the host spec")?;
+            write_file(&args.job_info_dir, "host-spec.json", document).await?;
+        }
+        write_parameters(
+            &args.job_info_dir.join("parameters"),
+            &environment.parameters,
+        )
+        .await?;
+
+        let proxy = match (&args.caddy_config, &environment.gateway) {
+            (Some(config_path), Some(gateway)) => Some(
+                ServiceProxy::new(
+                    config_path.clone(),
+                    args.caddy_reload_command.clone(),
+                    job_id,
+                    gateway,
+                )
+                .context("Preparing the local service proxy")?,
+            ),
+            _ => None,
+        };
+
+        Ok(DbusDaemon {
+            credentials,
+            services_dir: args.services_dir.clone(),
+            proxy,
         })
+    }
+
+    /// The proxy is configured before the announcement, so a service is never
+    /// mintable at a gateway before the job can serve it. A proxy that could not be
+    /// configured is reported, but does not hold back the announcement: what the
+    /// switchboard knows about a job should not depend on the job's own proxy.
+    async fn announce_services(&self) -> Result<()> {
+        let declarations = scan_services(&self.services_dir)
+            .await
+            .context("Scanning the service directory")?;
+
+        let proxy_res = match &self.proxy {
+            Some(proxy) => proxy
+                .apply(&declarations)
+                .await
+                .context("Configuring the local service proxy"),
+            None => Ok(()),
+        };
+        if let Err(ref e) = proxy_res {
+            error!("Failed to configure the local service proxy: {e:?}");
+        }
+
+        info!(
+            "Announcing {} service(s) from {:?}",
+            declarations.len(),
+            self.services_dir
+        );
+        let services: Vec<_> = declarations
+            .into_iter()
+            .map(|declaration| declaration.service)
+            .collect();
+        self.credentials
+            .client()
+            .put_job_services(self.credentials.job_id, &services)
+            .await
+            .context("Announcing the job's services to the switchboard")?;
+
+        proxy_res
     }
 }
 
@@ -310,87 +292,20 @@ impl DbusDaemon {
     )
 )]
 impl DbusDaemon {
-    async fn credentials(&self) -> zbus::fdo::Result<(String, String, String)> {
-        let switchboard = self.switchboard()?;
-        Ok((
-            switchboard.base_url.clone(),
-            switchboard.token.clone(),
-            switchboard.job_id.to_string(),
-        ))
+    async fn credentials(&self) -> (String, String, String) {
+        (
+            self.credentials.base_url.clone(),
+            self.credentials.token.clone(),
+            self.credentials.job_id.to_string(),
+        )
     }
 
     async fn reload_services(&self) -> zbus::fdo::Result<()> {
         info!("Received D-bus request to reload services, rescanning and announcing.");
-        announce_services(
-            self.services_dir.as_deref(),
-            self.proxy.as_deref(),
-            self.switchboard()?,
-        )
-        .await
-        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+        self.announce_services()
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
-}
-
-async fn update_parameters_dir(
-    args: &DaemonArgs,
-    parameters: &HashMap<String, JobParameter>,
-) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
-
-    let parameters_dir_path = match args.parameters_dir {
-        Some(ref path) => path,
-        None => return Ok(()),
-    };
-
-    info!("Updating parameters dir: {parameters_dir_path:?}");
-
-    // First, make sure that the directory exists:
-    tokio::fs::create_dir_all(&parameters_dir_path)
-        .await
-        .context("Creating parameters dir (recursively)")?;
-
-    // Write the parameters to a temporary file, and then atomically
-    // rename this file to the target filename. This avoids reads of
-    // partially written parameters:
-    let tmpfile_path = parameters_dir_path.join(".tmp");
-    for (name, value) in parameters {
-        // Sanitize the path to ensure we don't have any
-        // unrepresentable characters or path separators in there:
-        let sanitized_path = parameters_dir_path.join(
-            name.chars()
-                .filter(|c| c.is_ascii_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
-                .take(128)
-                .collect::<String>(),
-        );
-
-        // Dump the parameter value to a tempfile:
-        let mut tmpfile = tokio::fs::File::create(&tmpfile_path)
-            .await
-            .context("Writing temporary parameter file")?;
-        tmpfile
-            .write_all(value.value.as_bytes())
-            .await
-            .context("Writing temporary parameter file")?;
-
-        // To close the file immediately, we need to flush it and then
-        // drop its handle:
-        tmpfile
-            .flush()
-            .await
-            .context("Flushing temporary parameter file")?;
-        mem::drop(tmpfile);
-
-        // Finally, rename the parameter to its sanitized path:
-        tokio::fs::rename(&tmpfile_path, &sanitized_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "Renaming temporary parameter file {tmpfile_path:?} to target file {sanitized_path:?}"
-                )
-            })?;
-    }
-
-    Ok(())
 }
 
 async fn supervisor_url(args: &DaemonArgs) -> Result<String> {
@@ -404,102 +319,11 @@ async fn supervisor_url(args: &DaemonArgs) -> Result<String> {
     }
 }
 
-async fn daemon_main(args: DaemonArgs, dbus_bus: DbusBus) -> Result<()> {
-    let supervisor = SupervisorClient::new(supervisor_url(&args).await?);
-
-    let job_info = supervisor
-        .job_info()
-        .await
-        .context("Retrieving the job info from the supervisor")?;
-    info!("Retrieved job info from supervisor: {job_info:?}");
-    let job_id = job_info.job_id;
-    let switchboard = job_info
-        .api
-        .map(|api| Arc::new(Switchboard::new(job_id, api)));
-
-    let environment = match &switchboard {
-        Some(switchboard) => Some(switchboard.environment().await?),
-        None => {
-            warn!("The supervisor handed out no switchboard access, running without it.");
-            None
-        }
-    };
-    update_job_info_files(&args, job_id, environment.as_ref()).await?;
-    if let Some(environment) = &environment {
-        update_parameters_dir(&args, &environment.parameters)
-            .await
-            .context("Failed to create / update parameters directory")?;
+async fn connect(dbus_bus: DbusBus) -> zbus::Result<zbus::Connection> {
+    match dbus_bus {
+        DbusBus::System => zbus::Connection::system().await,
+        DbusBus::Session => zbus::Connection::session().await,
     }
-
-    let gateway = environment.as_ref().and_then(|e| e.gateway.as_ref());
-    let proxy = match (&args.caddy_config, gateway) {
-        (Some(config_path), Some(gateway)) => Some(Arc::new(
-            ServiceProxy::new(
-                config_path.clone(),
-                args.caddy_reload_command.clone(),
-                job_id,
-                gateway,
-            )
-            .context("Preparing the local service proxy")?,
-        )),
-        (Some(_), None) => {
-            warn!(
-                "A service proxy config was requested, but this job has no gateway. \
-		 Not generating one."
-            );
-            None
-        }
-        (None, _) => None,
-    };
-
-    // Register as a DBus service:
-    let dbus_builder_opt = match dbus_bus {
-        DbusBus::Session => Some(zbus::connection::Builder::session()?),
-        DbusBus::System => Some(zbus::connection::Builder::system()?),
-        DbusBus::None => None,
-    };
-
-    let _dbus_conn = if let Some(dbus_builder) = dbus_builder_opt {
-        Some(
-            dbus_builder
-                .name("dev.treadmill.Daemon")?
-                .serve_at(
-                    "/dev/treadmill/Daemon",
-                    DbusDaemon {
-                        switchboard: switchboard.clone(),
-                        services_dir: args.services_dir.clone(),
-                        proxy: proxy.clone(),
-                    },
-                )?
-                .build()
-                .await?,
-        )
-    } else {
-        None
-    };
-
-    // Report the daemon as ready:
-    supervisor
-        .report_ready()
-        .await
-        .context("Reporting ready to the supervisor")?;
-
-    // Announce whatever services the job declares at boot.
-    if let Some(switchboard) = &switchboard {
-        announce_services(args.services_dir.as_deref(), proxy.as_deref(), switchboard).await?;
-    }
-
-    info!("Daemon started. Exit with CTRL+C");
-    sd_notify::notify(&[sd_notify::NotifyState::Ready])
-        .context("Notifying service manager that the daemon is ready")?;
-
-    tokio::signal::ctrl_c()
-        .await
-        .context("Unable to listen for shutdown signal")?;
-
-    info!("Shutdown complete.");
-
-    Ok(())
 }
 
 pub async fn run(args: DaemonArgs, dbus_bus: DbusBus) -> Result<()> {
@@ -515,25 +339,62 @@ pub async fn run(args: DaemonArgs, dbus_bus: DbusBus) -> Result<()> {
     )
     .unwrap();
 
-    daemon_main(args, dbus_bus).await
-}
+    let supervisor = SupervisorClient::new(supervisor_url(&args).await?);
+    let job_info = supervisor
+        .job_info()
+        .await
+        .context("Retrieving the job info from the supervisor")?;
+    info!("Retrieved job info from supervisor: {job_info:?}");
 
-pub struct Credentials {
-    pub base_url: String,
-    pub token: String,
-    pub job_id: Uuid,
-}
+    tokio::fs::create_dir_all(&args.job_info_dir)
+        .await
+        .context("Creating the job info directory")?;
+    write_file(&args.job_info_dir, "job-id", job_info.job_id.to_string()).await?;
 
-async fn connect(dbus_bus: DbusBus) -> Result<Option<zbus::Connection>> {
-    Ok(match dbus_bus {
-        DbusBus::System => Some(zbus::Connection::system().await?),
-        DbusBus::Session => Some(zbus::Connection::session().await?),
-        DbusBus::None => None,
-    })
+    let daemon = match job_info.api {
+        Some(api) => Some(DbusDaemon::start(&args, job_info.job_id, api).await?),
+        None => {
+            warn!("The supervisor handed out no switchboard access, running without it.");
+            None
+        }
+    };
+
+    let _dbus_conn = match &daemon {
+        Some(daemon) => {
+            let conn = connect(dbus_bus).await?;
+            conn.object_server()
+                .at("/dev/treadmill/Daemon", daemon.clone())
+                .await?;
+            conn.request_name("dev.treadmill.Daemon").await?;
+            Some(conn)
+        }
+        None => None,
+    };
+
+    supervisor
+        .report_ready()
+        .await
+        .context("Reporting ready to the supervisor")?;
+
+    if let Some(daemon) = &daemon {
+        daemon.announce_services().await?;
+    }
+
+    info!("Daemon started. Exit with CTRL+C");
+    sd_notify::notify(&[sd_notify::NotifyState::Ready])
+        .context("Notifying service manager that the daemon is ready")?;
+
+    tokio::signal::ctrl_c()
+        .await
+        .context("Unable to listen for shutdown signal")?;
+
+    info!("Shutdown complete.");
+
+    Ok(())
 }
 
 pub async fn credentials(dbus_bus: DbusBus) -> Result<Option<Credentials>> {
-    let Ok(Some(conn)) = connect(dbus_bus).await else {
+    let Ok(conn) = connect(dbus_bus).await else {
         return Ok(None);
     };
     let owned = zbus::fdo::DBusProxy::new(&conn)
@@ -559,10 +420,7 @@ pub async fn credentials(dbus_bus: DbusBus) -> Result<Option<Credentials>> {
 }
 
 pub async fn reload_services(dbus_bus: DbusBus) -> Result<()> {
-    let conn = connect(dbus_bus)
-        .await?
-        .context("Reloading services needs a D-Bus to reach the tml daemon on")?;
-    DbusDaemonProxy::new(&conn)
+    DbusDaemonProxy::new(&connect(dbus_bus).await?)
         .await?
         .reload_services()
         .await
