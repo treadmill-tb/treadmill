@@ -258,11 +258,6 @@ impl QemuBackend {
         // The disk is attached by referencing the writable top node of the
         // backing chain the supervisor prepends as `-blockdev` args at launch.
         vars.insert("disk_node".to_string(), BackingChain::TOP_NODE.to_string());
-
-        vars.insert(
-            "daemon_api_listen_addr".to_string(),
-            self.config.daemon_api_listen_addr.to_string(),
-        );
     }
 }
 
@@ -530,7 +525,6 @@ fn qemu_log_views() -> Vec<LogView> {
 impl QemuSupervisorConfig {
     fn job_runner(&self, workdirs: Arc<JobWorkdirs>, job_log: JobLogRegistry) -> JobRunnerConfig {
         JobRunnerConfig {
-            supervisor_id: self.base.supervisor_id,
             job_address: self.base.job_address,
             workdirs,
             daemon_api_listen_addr: self.qemu.daemon_api_listen_addr,
@@ -1031,43 +1025,6 @@ mod tests {
         );
     }
 
-    /// The address the daemon API is bound to is available to the
-    /// invocation, so a configuration that can use it verbatim -- one bound to
-    /// an address the guest can reach -- need not repeat the value.
-    #[tokio::test]
-    async fn the_daemon_api_address_is_available_to_the_invocation() {
-        let f = fixture(
-            4 * GIB,
-            vec![
-                "-fw_cfg",
-                "name=opt/dev.treadmill.supervisor-url,string=http://{daemon_api_listen_addr}",
-            ],
-        );
-
-        let job_id = Uuid::new_v4();
-        let mut vars = runner_vars(job_id, f.tmp.path());
-        let head = digest(3);
-        let image = image(vec![base_layer(head, Some(GIB))], head);
-        let chain = f
-            .backend
-            .allocate(&start_msg(job_id), f.tmp.path(), image, &mut vars)
-            .await
-            .unwrap();
-
-        f.backend
-            .launch(&start_msg(job_id), f.tmp.path(), chain, &vars)
-            .await
-            .unwrap();
-
-        assert!(
-            f.launcher.spawned_args().contains(
-                &"name=opt/dev.treadmill.supervisor-url,string=http://127.0.0.1:3859".to_string()
-            ),
-            "{:?}",
-            f.launcher.spawned_args(),
-        );
-    }
-
     /// The captured serial console has to be QEMU's first `-serial`, or a
     /// configuration that points one of its own somewhere else takes the
     /// guest's console with it and the capture ships nothing.
@@ -1250,7 +1207,6 @@ mod tests {
             vars.get("disk_node").map(String::as_str),
             Some(BackingChain::TOP_NODE),
         );
-        assert!(vars.contains_key("daemon_api_listen_addr"));
     }
 
     /// A retired directory this supervisor cannot make sense of is refused as

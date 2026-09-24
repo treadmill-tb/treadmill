@@ -9,8 +9,7 @@
 //! Ctrl-C. No Postgres, NATS, or switchboard is involved.
 //!
 //! The connector drives the supervisor through a [`connector::CoordCommand`]
-//! channel, so it works with any supervisor that wires it in (the QEMU
-//! supervisor today; the nbd-netboot supervisor once its job core lands). The
+//! channel, so it works with any supervisor that wires it in. The
 //! per-job inputs are parsed by the reusable [`LocalJobArgs`] (a
 //! [`clap::Args`] each supervisor `main` can
 //! `#[command(flatten)]`), keeping the supervisor protocol digest-addressed:
@@ -189,7 +188,7 @@ impl Inner {
             "starting one-shot local job",
         );
         // A start failure has no acknowledgement: the supervisor reports it as
-        // a job error, which `emit` folds into `terminated_tx` below.
+        // a job error followed by a `Terminated` transition.
         if self
             .commands
             .send(CoordCommand::StartJob(start))

@@ -54,8 +54,6 @@ pub type JobVars = HashMap<String, String>;
 /// What a supervisor needs to know to run a job.
 #[derive(Debug, Clone)]
 pub struct JobRunnerConfig {
-    pub supervisor_id: Uuid,
-
     /// Statically configured address of the host a job runs on, reported to the
     /// coordinator when set.
     ///
@@ -68,8 +66,6 @@ pub struct JobRunnerConfig {
     /// Address the per-job daemon API listens on.
     pub daemon_api_listen_addr: SocketAddr,
 
-    /// The switchboard API base URL handed to each job, see
-    /// [`SupervisorBaseConfig::job_api_url`](treadmill_rs::supervisor::SupervisorBaseConfig::job_api_url).
     pub job_api_url: Option<String>,
 
     pub start_script: Option<PathBuf>,
@@ -204,13 +200,6 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    fn job_error(&self) -> Option<JobError> {
-        match self {
-            Outcome::Failed(error) => Some(error.clone()),
-            _ => None,
-        }
-    }
-
     fn status_message(&self) -> String {
         match self {
             Outcome::WorkloadExited(status) if status.success() => {
@@ -232,14 +221,12 @@ pub struct JobFacts {
     pub job_id: Uuid,
     pub phase: Phase,
     pub api: Option<JobApi>,
-    pub network_address: Option<IpAddr>,
 }
 
 impl JobFacts {
     fn new(start_job_req: &StartJobMessage, job_api_url: Option<&str>) -> Self {
-        let job_id = start_job_req.job_id;
         JobFacts {
-            job_id,
+            job_id: start_job_req.job_id,
             phase: Phase::Starting,
             api: job_api_url
                 .zip(start_job_req.job_token.as_ref())
@@ -247,7 +234,6 @@ impl JobFacts {
                     base_url: base_url.to_string(),
                     token: token.clone(),
                 }),
-            network_address: None,
         }
     }
 }
@@ -445,17 +431,17 @@ impl<B: JobBackend> JobRunner<B> {
                 JobError {
                     error_kind: JobErrorKind::MaxConcurrentJobs,
                     description: format!(
-                        "Supervisor {:?} still retains the terminated job {:?}, which has to be \
+                        "This supervisor still retains the terminated job {:?}, which has to be \
                          removed before another job can be started.",
-                        self.config.supervisor_id, facts.job_id,
+                        facts.job_id,
                     ),
                 }
             } else {
                 JobError {
                     error_kind: JobErrorKind::AlreadyRunning,
                     description: format!(
-                        "Supervisor {:?} is already running job {:?}.",
-                        self.config.supervisor_id, facts.job_id,
+                        "This supervisor is already running job {:?}.",
+                        facts.job_id,
                     ),
                 }
             });
@@ -718,6 +704,10 @@ impl<B: JobBackend> JobTask<B> {
         self.resources
             .job_vars
             .insert("job_workdir".to_string(), job_workdir.display().to_string());
+        self.resources.job_vars.insert(
+            "daemon_api_listen_addr".to_string(),
+            self.runner.config.daemon_api_listen_addr.to_string(),
+        );
 
         // Before the image fetch: that is the phase whose logs are most wanted
         // and the one that most often fails.
@@ -969,7 +959,6 @@ impl<B: JobBackend> JobTask<B> {
             return;
         };
 
-        self.update_facts(|facts| facts.network_address = Some(job_address));
         self.runner
             .connector
             .report_job_network_address(self.job_id(), job_address)
@@ -1046,10 +1035,10 @@ impl<B: JobBackend> JobTask<B> {
             event!(Level::WARN, error = ?e, "Failed to kill the workload process");
         }
 
-        if let Some(error) = outcome.job_error() {
+        if let Outcome::Failed(error) = &outcome {
             self.runner
                 .connector
-                .report_job_error(self.job_id(), error)
+                .report_job_error(self.job_id(), error.clone())
                 .await;
         }
 
@@ -1461,9 +1450,7 @@ mod tests {
         let connector = Arc::new(RecordingConnector::default());
         let backend = Arc::new(backend);
 
-        // No job address: a deployment without a gateway has none.
         let mut config = JobRunnerConfig {
-            supervisor_id: Uuid::new_v4(),
             job_address: None,
             workdirs: Arc::new(
                 JobWorkdirs::open(&tmp.path().join("state"), RetentionConfig::default()).unwrap(),
@@ -1629,7 +1616,6 @@ mod tests {
         );
         assert_eq!(h.backend.launched(), 1);
 
-        // The daemon reports ready → the job goes Ready.
         supervisor_client(&h).report_ready().await.unwrap();
         wait_for(&mut facts, ready).await;
         assert_eq!(
@@ -1695,36 +1681,13 @@ mod tests {
         assert_eq!(api.base_url, "https://switchboard.example");
         assert_eq!(api.token.expose(), "job-token");
 
-        let tokenless = harness_with(StubBackend::default(), |_, config| {
-            config.job_api_url = Some("https://switchboard.example".to_string());
-        });
-        start_and_boot(&tokenless, start_msg(Uuid::new_v4())).await;
-        assert!(
-            supervisor_client(&tokenless)
-                .job_info()
-                .await
-                .unwrap()
-                .api
-                .is_none()
-        );
-
-        let unconfigured = harness(StubBackend::default());
-        start_and_boot(
-            &unconfigured,
-            StartJobMessage {
-                job_token: Some(Secret::new("job-token".to_string())),
-                ..start_msg(Uuid::new_v4())
-            },
-        )
-        .await;
-        assert!(
-            supervisor_client(&unconfigured)
-                .job_info()
-                .await
-                .unwrap()
-                .api
-                .is_none()
-        );
+        let url = Some("https://switchboard.example");
+        assert!(JobFacts::new(&start_msg(Uuid::new_v4()), url).api.is_none());
+        let with_token = StartJobMessage {
+            job_token: Some(Secret::new("job-token".to_string())),
+            ..start_msg(Uuid::new_v4())
+        };
+        assert!(JobFacts::new(&with_token, None).api.is_none());
     }
 
     /// A job that fails on its way up still owes the coordinator a terminal

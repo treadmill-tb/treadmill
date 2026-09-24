@@ -24,7 +24,6 @@ pub const JOB_PATH: &str = "/job";
 pub const JOB_READY_PATH: &str = "/job/ready";
 
 #[cfg(feature = "client")]
-#[derive(Clone)]
 pub struct SupervisorClient {
     http: reqwest::Client,
     base_url: String,
