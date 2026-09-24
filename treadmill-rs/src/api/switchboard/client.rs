@@ -2,9 +2,8 @@
 //!
 //! Every method returns the *same* `api::switchboard::*` types the switchboard
 //! serializes from, so a change to a request/response shape — or to an endpoint
-//! method/path defined here — is a compile error in every consumer (the web
-//! console, an eventual CLI). That closes both the payload gap and the route
-//! gap with no codegen and no spec to drift.
+//! method/path defined here — is a compile error in every consumer. That closes
+//! both the payload gap and the route gap with no codegen and no spec to drift.
 //!
 //! Enabled by the `client` cargo feature (off by default, so non-HTTP consumers
 //! don't pull `reqwest`).
@@ -148,14 +147,7 @@ impl SwitchboardClient {
         if status == reqwest::StatusCode::CONFLICT {
             return Ok(LoginCompleteOutcome::Staged(resp.json().await?));
         }
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(ClientError::Unauthorized);
-        }
-        let body = resp.text().await.unwrap_or_default();
-        Err(ClientError::Status {
-            status: status.as_u16(),
-            body,
-        })
+        Err(error_of(resp).await)
     }
 
     /// `GET /auth/whoami` — the identity behind the current token.
@@ -298,132 +290,71 @@ impl SwitchboardClient {
         self.get_json("/api/v1/image-sets").await
     }
 
-    /// Issue an authenticated `GET` for `path` and deserialize the JSON body,
-    /// mapping `401` to [`ClientError::Unauthorized`] and any other non-success
-    /// status to [`ClientError::Status`].
-    async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
-        let mut req = self.http.get(format!("{}{path}", self.base_url));
-        if let Some(token) = &self.token {
-            req = req.bearer_auth(token);
+    fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        let req = self
+            .http
+            .request(method, format!("{}{path}", self.base_url));
+        match &self.token {
+            Some(token) => req.bearer_auth(token),
+            None => req,
         }
-        let resp = req.send().await?;
-
-        let status = resp.status();
-        if status.is_success() {
-            return Ok(resp.json::<T>().await?);
-        }
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(ClientError::Unauthorized);
-        }
-        let body = resp.text().await.unwrap_or_default();
-        Err(ClientError::Status {
-            status: status.as_u16(),
-            body,
-        })
     }
 
-    /// Issue an authenticated `POST` of `body` (as JSON) to `path` and
-    /// deserialize the JSON response, with the same error mapping as
-    /// [`get_json`](Self::get_json). Any 2xx is treated as success.
+    async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
+        Ok(send(self.request(reqwest::Method::GET, path))
+            .await?
+            .json()
+            .await?)
+    }
+
     async fn post_json<B: serde::Serialize, T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
         body: &B,
     ) -> Result<T, ClientError> {
-        let mut req = self
-            .http
-            .post(format!("{}{path}", self.base_url))
-            .json(body);
-        if let Some(token) = &self.token {
-            req = req.bearer_auth(token);
-        }
-        let resp = req.send().await?;
-
-        let status = resp.status();
-        if status.is_success() {
-            return Ok(resp.json::<T>().await?);
-        }
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(ClientError::Unauthorized);
-        }
-        let body = resp.text().await.unwrap_or_default();
-        Err(ClientError::Status {
-            status: status.as_u16(),
-            body,
-        })
+        Ok(send(self.request(reqwest::Method::POST, path).json(body))
+            .await?
+            .json()
+            .await?)
     }
 
-    /// Issue an authenticated, bodyless `POST` to `path` and deserialize the
-    /// JSON response, with the same error mapping as
-    /// [`get_json`](Self::get_json).
     async fn post_empty<T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
     ) -> Result<T, ClientError> {
-        let mut req = self.http.post(format!("{}{path}", self.base_url));
-        if let Some(token) = &self.token {
-            req = req.bearer_auth(token);
-        }
-        let resp = req.send().await?;
-
-        let status = resp.status();
-        if status.is_success() {
-            return Ok(resp.json::<T>().await?);
-        }
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(ClientError::Unauthorized);
-        }
-        let body = resp.text().await.unwrap_or_default();
-        Err(ClientError::Status {
-            status: status.as_u16(),
-            body,
-        })
+        Ok(send(self.request(reqwest::Method::POST, path))
+            .await?
+            .json()
+            .await?)
     }
 
-    /// Issue an authenticated `PUT` of `body` (as JSON) to `path`, discarding
-    /// the response body; error mapping matches [`get_json`](Self::get_json).
     async fn put<B: serde::Serialize>(&self, path: &str, body: &B) -> Result<(), ClientError> {
-        let mut req = self.http.put(format!("{}{path}", self.base_url)).json(body);
-        if let Some(token) = &self.token {
-            req = req.bearer_auth(token);
-        }
-        let resp = req.send().await?;
-
-        let status = resp.status();
-        if status.is_success() {
-            return Ok(());
-        }
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(ClientError::Unauthorized);
-        }
-        let body = resp.text().await.unwrap_or_default();
-        Err(ClientError::Status {
-            status: status.as_u16(),
-            body,
-        })
+        send(self.request(reqwest::Method::PUT, path).json(body)).await?;
+        Ok(())
     }
 
-    /// Issue an authenticated `DELETE` for `path`, discarding the (typically
-    /// empty) response body. Any 2xx — including `202 Accepted` and `204 No
-    /// Content` — is success; error mapping matches [`get_json`](Self::get_json).
     async fn delete(&self, path: &str) -> Result<(), ClientError> {
-        let mut req = self.http.delete(format!("{}{path}", self.base_url));
-        if let Some(token) = &self.token {
-            req = req.bearer_auth(token);
-        }
-        let resp = req.send().await?;
+        send(self.request(reqwest::Method::DELETE, path)).await?;
+        Ok(())
+    }
+}
 
-        let status = resp.status();
-        if status.is_success() {
-            return Ok(());
-        }
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(ClientError::Unauthorized);
-        }
-        let body = resp.text().await.unwrap_or_default();
-        Err(ClientError::Status {
-            status: status.as_u16(),
-            body,
-        })
+async fn send(req: reqwest::RequestBuilder) -> Result<reqwest::Response, ClientError> {
+    let resp = req.send().await?;
+    if resp.status().is_success() {
+        Ok(resp)
+    } else {
+        Err(error_of(resp).await)
+    }
+}
+
+async fn error_of(resp: reqwest::Response) -> ClientError {
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return ClientError::Unauthorized;
+    }
+    ClientError::Status {
+        status: status.as_u16(),
+        body: resp.text().await.unwrap_or_default(),
     }
 }
