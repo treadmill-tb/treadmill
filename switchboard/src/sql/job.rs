@@ -448,14 +448,10 @@ pub struct SqlJob {
     job_ip_address: Option<IpNetwork>,
 
     // Filled out when transitioned into `finalized` job state
-    #[allow(dead_code)]
     termination_reason: Option<SqlTerminationReason>,
-    #[allow(dead_code)]
     task_exit_status: Option<SqlTaskExitStatus>,
-    #[allow(dead_code)]
     exit_message: Option<String>,
     job_error: Option<String>,
-    #[allow(dead_code)]
     terminated_at: Option<DateTime<Utc>>,
 }
 
@@ -1787,7 +1783,7 @@ pub fn termination_reason_for_job_error(kind: &JobErrorKind) -> SqlTerminationRe
 pub async fn finalize_errored(
     job_id: Uuid,
     reason: SqlTerminationReason,
-    message: Option<String>,
+    message: &str,
     at: DateTime<Utc>,
     txn: &mut Transaction<'_, Postgres>,
 ) -> Result<bool, sqlx::Error> {
