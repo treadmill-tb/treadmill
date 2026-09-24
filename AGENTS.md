@@ -238,7 +238,7 @@ registry (on-demand pull-through by default; `--copy` does an upfront `skopeo
 copy`), resolves the tag to a manifest digest, and runs the QEMU supervisor
 under the switchboard-less **`local` connector** (`supervisor/connector/local`,
 `coord_connector = "local"`). The connector synthesizes one `StartJobMessage`
-from CLI flags (`--ssh-key`, `-p key=val`, `--stop-after`, …), streams the guest
+from CLI flags (`--stop-after`, …), streams the guest
 console to the terminal, and tears down on guest-exit or Ctrl-C. The wrapper
 lives in `tools/local-supervisor.sh` (`--arch`, `--no-kvm`, `--mem`, etc.). For
 the full stack instead, use `nix run .#devstack`.

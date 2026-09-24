@@ -225,8 +225,8 @@ pub struct RestartPolicyState {
     pub remaining_restarts: u32,
 }
 
-/// One parameter supplied with a job at enqueue (`POST /jobs`), passed through
-/// to the puppet daemon running the workload.
+/// One parameter supplied with a job at enqueue (`POST /jobs`), which the job
+/// reads from `GET /jobs/{id}/environment`.
 ///
 /// Flag a parameter `secret` to have its value withheld wherever the job is
 /// later read back (it surfaces as a redacted [`JobParameterView`]); non-secret

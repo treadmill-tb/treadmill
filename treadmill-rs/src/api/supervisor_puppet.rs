@@ -1,14 +1,10 @@
 //! Types used in the interface between supervisors and the puppet
 //! daemon running on hosts.
 
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::util::Secret;
-
-pub use super::switchboard_supervisor::{JobService, ParameterValue};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -18,7 +14,6 @@ pub enum PuppetReq {
     Ping,
     JobInfo,
     NetworkConfig,
-    Parameters,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,21 +77,6 @@ pub enum PuppetEvent {
         exit_code: Option<i32>,
         killed: bool,
     },
-
-    /// Ask the supervisor to terminate this job.
-    ///
-    /// This is an infallible operation, and the puppet will not have a chance
-    /// to be notified of the successful completion of this operation. Thus we
-    /// implement it as an event, not as a request.
-    ///
-    /// If this termination is performed in response to a request by a
-    /// supervisor, the puppet should include this original supervisor event ID
-    /// here:
-    TerminateJob { supervisor_event_id: Option<u64> },
-
-    /// The complete set of services the job announces. Each event replaces the
-    /// previously announced set in full;  re-announcing is idempotent.
-    JobServiceSet { services: Vec<JobService> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,32 +168,6 @@ pub struct NetworkConfig {
     pub ipv6: Option<Ipv6NetworkConfig>,
 }
 
-/// Individual job gateway endpoints, specified as a base-domain (which will be
-/// prepended the service name and job ID as a subdomain), and the port it
-/// listens on.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub struct JobGatewayEndpoint {
-    /// The base domain of the gateway, to be pre-prended with the job- and
-    /// service-specific subdomain.
-    pub base_domain: String,
-    /// The port of the gateway.
-    pub port: u16,
-}
-
-/// Gateway material relayed into the job, to validate the same tokens that
-/// admit a request at the gateway itself. This prevents untrusted sibling
-/// jobs from sending unauthenticated requests to these endpoints, and
-/// allows jobs to solely trust the switchboard-issued JWT.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub struct JobGatewayInfo {
-    pub issuer: String,
-    pub signing_public_key: String,
-    pub key_id: String,
-    pub endpoints: Vec<JobGatewayEndpoint>,
-}
-
 /// How the job reaches the switchboard API, and the token it acts with there.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobApi {
@@ -227,15 +181,6 @@ pub struct JobInfo {
     pub job_id: Uuid,
     /// `None` when the supervisor has no switchboard to point the job at.
     pub api: Option<JobApi>,
-    pub host_id: Uuid,
-    pub gateway: Option<JobGatewayInfo>,
-    /// The admin-authored description of the host this job runs on, as the
-    /// switchboard dispatched it: a [`HostSpec`](crate::host_spec::HostSpec)
-    /// document, relayed verbatim rather than typed (see
-    /// [`StartJobMessage::host_spec`](crate::api::switchboard_supervisor::StartJobMessage::host_spec)).
-    /// `None` for a host that has never been described, or a supervisor that
-    /// does not relay one.
-    pub host_spec: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,9 +192,6 @@ pub enum SupervisorResp {
     PingResp,
     JobInfo(JobInfo),
     NetworkConfig(NetworkConfig),
-    Parameters {
-        parameters: HashMap<String, ParameterValue>,
-    },
 
     // Error responses:
     UnsupportedRequest,

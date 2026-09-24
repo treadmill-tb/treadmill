@@ -3815,8 +3815,8 @@ components:
       - jobs
     JobParameter:
       description: |-
-        One parameter supplied with a job at enqueue (`POST /jobs`), passed through
-        to the puppet daemon running the workload.
+        One parameter supplied with a job at enqueue (`POST /jobs`), which the job
+        reads from `GET /jobs/{id}/environment`.
 
         Flag a parameter `secret` to have its value withheld wherever the job is
         later read back (it surfaces as a redacted [`JobParameterView`]); non-secret
@@ -3947,8 +3947,8 @@ components:
           default: null
         parameters:
           description: |-
-            A hash map of parameters provided to this job execution. These
-            parameters are provided to the puppet daemon.
+            A hash map of parameters provided to this job execution, which the job
+            reads from `GET /jobs/{id}/environment`.
           type: object
           additionalProperties:
             $ref: '#/components/schemas/JobParameter'
@@ -4824,8 +4824,8 @@ components:
         type: string
         const: workload_exited
       - description: |-
-          The job requested its own termination (e.g., by requesting termination
-          through the puppet).
+          The job requested its own termination (e.g., with `tml job terminate`
+          inside the job).
         type: string
         const: workload_self_terminated
       - description: Externally terminated by a user.

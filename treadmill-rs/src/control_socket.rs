@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use async_trait::async_trait;
 use tracing::{Level, event};
 use uuid::Uuid;
@@ -34,41 +32,6 @@ pub trait Supervisor: Send + Sync + 'static {
         job_id: Uuid,
     ) -> Option<supervisor_puppet::NetworkConfig>;
 
-    /// Puppet job parameters request.
-    ///
-    /// If the supervisor deems that this job is currently active, it should
-    /// respond with the full set of parameters supplied by the coordinator.
-    ///
-    /// Returning `None` implies that this job id is currently not active. If a
-    /// job has no parameters defined, the `parameters` field should be an empty
-    /// `HashMap`.
-    async fn parameters(
-        &self,
-        host_id: Uuid,
-        job_id: Uuid,
-    ) -> Option<HashMap<String, supervisor_puppet::ParameterValue>>;
-
-    /// Gateway material to relay into the job.
-    ///
-    /// Returning `None` means that this supervisor's jobs are not reachable
-    /// through a gateway, and is the default.
-    async fn gateway(
-        &self,
-        _host_id: Uuid,
-        _job_id: Uuid,
-    ) -> Option<supervisor_puppet::JobGatewayInfo> {
-        None
-    }
-
-    /// The host spec the coordinator dispatched this job with, relayed
-    /// verbatim.
-    ///
-    /// Returning `None` means the job carries no description of its host, and
-    /// is the default.
-    async fn host_spec(&self, _host_id: Uuid, _job_id: Uuid) -> Option<serde_json::Value> {
-        None
-    }
-
     /// How the job reaches the switchboard API, and its token there.
     ///
     /// Returning `None` leaves the job without switchboard access, and is the
@@ -95,17 +58,7 @@ pub trait Supervisor: Send + Sync + 'static {
             PuppetReq::JobInfo => SupervisorResp::JobInfo(JobInfo {
                 job_id,
                 api: self.job_api(host_id, job_id).await,
-                host_id,
-                gateway: self.gateway(host_id, job_id).await,
-                host_spec: self.host_spec(host_id, job_id).await,
             }),
-
-            PuppetReq::Parameters => self
-                .parameters(host_id, job_id)
-                .await
-                .map_or(SupervisorResp::JobNotFound, |parameters| {
-                    SupervisorResp::Parameters { parameters }
-                }),
 
             PuppetReq::NetworkConfig => self
                 .network_config(host_id, job_id)
@@ -144,18 +97,6 @@ pub trait Supervisor: Send + Sync + 'static {
                     .await
             }
 
-            PuppetEvent::TerminateJob {
-                supervisor_event_id,
-            } => {
-                self.terminate_job(puppet_event_id, supervisor_event_id, host_id, job_id)
-                    .await
-            }
-
-            PuppetEvent::JobServiceSet { services } => {
-                self.job_service_set(puppet_event_id, services, host_id, job_id)
-                    .await
-            }
-
             PuppetEvent::RunCommandError { .. }
             | PuppetEvent::RunCommandOutput { .. }
             | PuppetEvent::RunCommandExitCode { .. } => {
@@ -190,33 +131,4 @@ pub trait Supervisor: Send + Sync + 'static {
         host_id: Uuid,
         job_id: Uuid,
     );
-
-    /// Puppet requests job to be terminated.
-    async fn terminate_job(
-        &self,
-        puppet_event_id: u64,
-        supervisor_event_id: Option<u64>,
-        host_id: Uuid,
-        job_id: Uuid,
-    );
-
-    /// The puppet announces the complete set of services of its job.
-    ///
-    /// The default implementation drops the announcement, for supervisors that
-    /// have no coordinator to forward it to.
-    async fn job_service_set(
-        &self,
-        puppet_event_id: u64,
-        services: Vec<supervisor_puppet::JobService>,
-        _host_id: Uuid,
-        job_id: Uuid,
-    ) {
-        event!(
-            Level::WARN,
-            ?job_id,
-            puppet_event_id,
-            "Dropping unhandled puppet job service set: {:?}",
-            services,
-        )
-    }
 }

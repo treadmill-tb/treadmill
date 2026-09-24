@@ -1818,8 +1818,8 @@ export interface components {
             next_cursor?: string | null;
         };
         /**
-         * @description One parameter supplied with a job at enqueue (`POST /jobs`), passed through
-         *     to the puppet daemon running the workload.
+         * @description One parameter supplied with a job at enqueue (`POST /jobs`), which the job
+         *     reads from `GET /jobs/{id}/environment`.
          *
          *     Flag a parameter `secret` to have its value withheld wherever the job is
          *     later read back (it surfaces as a redacted [`JobParameterView`]); non-secret
@@ -1903,8 +1903,8 @@ export interface components {
              */
             owner: string | null;
             /**
-             * @description A hash map of parameters provided to this job execution. These
-             *     parameters are provided to the puppet daemon.
+             * @description A hash map of parameters provided to this job execution, which the job
+             *     reads from `GET /jobs/{id}/environment`.
              */
             parameters: {
                 [key: string]: components["schemas"]["JobParameter"];

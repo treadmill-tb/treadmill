@@ -18,7 +18,6 @@ use treadmill_rs::api::switchboard::jobs::{
     NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
-use treadmill_rs::api::switchboard_supervisor::JobService;
 use treadmill_rs::host_spec::HostSpec;
 use treadmill_rs::util::Secret;
 
@@ -762,14 +761,7 @@ pub async fn put_services(
 ) -> Result<StatusCode, StatusCode> {
     require_own_job(&job_subject, job_id)?;
 
-    let mut services: Vec<JobService> = announced
-        .into_iter()
-        .map(|s| JobService {
-            name: s.name,
-            label: s.label,
-            protocol: s.protocol,
-        })
-        .collect();
+    let mut services = announced;
     services.sort_by(|a, b| a.name.cmp(&b.name));
 
     let mut txn = state.pool().begin().await.or_internal(&format!(

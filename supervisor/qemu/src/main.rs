@@ -644,7 +644,6 @@ mod tests {
 
     use super::*;
 
-    use std::collections::HashMap;
     use std::process::ExitStatus;
 
     use oci_spec::image::ImageManifest;
@@ -652,7 +651,7 @@ mod tests {
     use uuid::Uuid;
 
     use treadmill_rs::api::switchboard_supervisor::{
-        ImageLocation, LogStreamingDispatch, ParameterValue, RestartPolicy,
+        ImageLocation, LogStreamingDispatch, RestartPolicy,
     };
     use treadmill_rs::image::Digest;
     use treadmill_rs::image::annotations::Role;
@@ -975,10 +974,7 @@ mod tests {
             restart_policy: RestartPolicy {
                 remaining_restart_count: 0,
             },
-            parameters: HashMap::<String, ParameterValue>::new(),
             log_streaming: None,
-            gateway: None,
-            host_spec: None,
             job_token: None,
         }
     }

@@ -15,9 +15,8 @@ use uuid::Uuid;
 
 use treadmill_rs::api::supervisor_puppet::JobApi;
 use treadmill_rs::api::switchboard_supervisor::{
-    ImageSpecification, JobGatewayDispatch, JobInitializingStage, JobService,
-    LOG_VIEW_MANIFEST_VERSION, LogChannel, LogFormat, LogRender, LogView, LogViewManifest,
-    ParameterValue, ReportedSupervisorStatus, RunningJobState,
+    ImageSpecification, JobInitializingStage, LOG_VIEW_MANIFEST_VERSION, LogChannel, LogFormat,
+    LogRender, LogView, LogViewManifest, ReportedSupervisorStatus, RunningJobState,
 };
 use treadmill_rs::connector::{
     CoordCommand, JobError, JobErrorKind, StartJobMessage, SupervisorConnector,
@@ -234,9 +233,6 @@ impl Outcome {
 pub struct JobFacts {
     pub job_id: Uuid,
     pub phase: Phase,
-    pub parameters: Arc<HashMap<String, ParameterValue>>,
-    pub gateway: Arc<Option<JobGatewayDispatch>>,
-    pub host_spec: Arc<Option<serde_json::Value>>,
     pub api: Option<JobApi>,
     pub hostname: Arc<str>,
     pub network_address: Option<IpAddr>,
@@ -248,9 +244,6 @@ impl JobFacts {
         JobFacts {
             job_id,
             phase: Phase::Starting,
-            parameters: Arc::new(start_job_req.parameters.clone()),
-            gateway: Arc::new(start_job_req.gateway.clone()),
-            host_spec: Arc::new(start_job_req.host_spec.clone()),
             api: job_api_url
                 .zip(start_job_req.job_token.as_ref())
                 .map(|(base_url, token)| JobApi {
@@ -271,8 +264,6 @@ pub enum JobCommand {
         ack: oneshot::Sender<Result<(), JobError>>,
     },
     PuppetReady,
-    PuppetTerminate,
-    PuppetServiceSet(Vec<JobService>),
 }
 
 /// The only external reference to a running job: a command mailbox, a lock-free
@@ -1040,11 +1031,6 @@ impl<B: JobBackend> JobTask<B> {
                     return Outcome::TerminatedByRequest;
                 }
 
-                Wake::Command(Some(JobCommand::PuppetTerminate)) => {
-                    self.resources.workload = Some(workload);
-                    return Outcome::TerminatedByRequest;
-                }
-
                 Wake::Command(Some(JobCommand::Remove { ack })) => {
                     let _ = ack.send(Err(JobError {
                         error_kind: JobErrorKind::NotTerminated,
@@ -1057,13 +1043,6 @@ impl<B: JobBackend> JobTask<B> {
 
                 Wake::Command(Some(JobCommand::PuppetReady)) => {
                     self.set_phase(Phase::Ready).await;
-                }
-
-                Wake::Command(Some(JobCommand::PuppetServiceSet(services))) => {
-                    self.runner
-                        .connector
-                        .report_job_service_set(self.job_id(), services)
-                        .await;
                 }
             }
         }
@@ -1108,9 +1087,7 @@ impl<B: JobBackend> JobTask<B> {
                     let _ = ack.send(Ok(()));
                 }
 
-                JobCommand::PuppetReady
-                | JobCommand::PuppetTerminate
-                | JobCommand::PuppetServiceSet(_) => (),
+                JobCommand::PuppetReady => (),
             }
         }
 
@@ -1305,56 +1282,6 @@ impl control_socket::Supervisor for JobControlEndpoint {
     }
 
     #[instrument(skip(self))]
-    async fn parameters(
-        &self,
-        _host_id: Uuid,
-        tgt_job_id: Uuid,
-    ) -> Option<HashMap<String, ParameterValue>> {
-        let facts = self.facts(tgt_job_id)?;
-        Some((*facts.parameters).clone())
-    }
-
-    #[instrument(skip(self))]
-    async fn gateway(
-        &self,
-        _host_id: Uuid,
-        tgt_job_id: Uuid,
-    ) -> Option<treadmill_rs::api::supervisor_puppet::JobGatewayInfo> {
-        let facts = self.facts(tgt_job_id)?;
-
-        // Hand back whatever the coordinator dispatched this job with:
-        facts.gateway.as_ref().as_ref().map(|gateway| {
-            treadmill_rs::api::supervisor_puppet::JobGatewayInfo {
-                issuer: gateway.issuer.clone(),
-                signing_public_key: gateway.signing_public_key.clone(),
-                key_id: gateway.key_id.clone(),
-                endpoints: gateway
-                    .endpoints
-                    .iter()
-                    .cloned()
-                    .map(
-                        |treadmill_rs::api::switchboard_supervisor::JobGatewayEndpoint {
-                             base_domain,
-                             port,
-                         }| {
-                            treadmill_rs::api::supervisor_puppet::JobGatewayEndpoint {
-                                base_domain,
-                                port,
-                            }
-                        },
-                    )
-                    .collect(),
-            }
-        })
-    }
-
-    #[instrument(skip(self))]
-    async fn host_spec(&self, _host_id: Uuid, tgt_job_id: Uuid) -> Option<serde_json::Value> {
-        let facts = self.facts(tgt_job_id)?;
-        facts.host_spec.as_ref().clone()
-    }
-
-    #[instrument(skip(self))]
     async fn job_api(&self, _host_id: Uuid, tgt_job_id: Uuid) -> Option<JobApi> {
         self.facts(tgt_job_id)?.api.clone()
     }
@@ -1402,46 +1329,6 @@ impl control_socket::Supervisor for JobControlEndpoint {
         // See `puppet_shutdown`: a puppet-reported reboot is not a supervisor
         // state transition.
     }
-
-    #[instrument(skip(self))]
-    async fn terminate_job(
-        &self,
-        _puppet_event_id: u64,
-        _supervisor_event_id: Option<u64>,
-        _host_id: Uuid,
-        job_id: Uuid,
-    ) {
-        event!(
-            Level::INFO,
-            ?job_id,
-            "Received puppet event to terminate job",
-        );
-
-        if let Some(handle) = self.handle(job_id) {
-            handle.cancel.cancel();
-            handle.notify(JobCommand::PuppetTerminate);
-        }
-    }
-
-    #[instrument(skip(self))]
-    async fn job_service_set(
-        &self,
-        _puppet_event_id: u64,
-        services: Vec<JobService>,
-        _host_id: Uuid,
-        job_id: Uuid,
-    ) {
-        event!(
-            Level::INFO,
-            ?job_id,
-            "Received puppet event announcing {} job service(s)",
-            services.len(),
-        );
-
-        if let Some(handle) = self.handle(job_id) {
-            handle.notify(JobCommand::PuppetServiceSet(services));
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1463,10 +1350,8 @@ mod tests {
     use tokio::sync::{Notify, oneshot};
     use uuid::Uuid;
 
-    use treadmill_rs::api;
     use treadmill_rs::api::switchboard_supervisor::{
-        ImageLocation, ImageSpecification, JobGatewayDispatch, RestartPolicy, SupervisorEvent,
-        SupervisorJobEvent,
+        ImageLocation, ImageSpecification, RestartPolicy, SupervisorEvent, SupervisorJobEvent,
     };
     use treadmill_rs::control_socket::Supervisor as _;
     use treadmill_rs::util::Secret;
@@ -1480,7 +1365,6 @@ mod tests {
         states: std::sync::Mutex<Vec<RunningJobState>>,
         errors: std::sync::Mutex<Vec<JobError>>,
         addresses: std::sync::Mutex<Vec<IpAddr>>,
-        service_sets: std::sync::Mutex<Vec<Vec<JobService>>>,
     }
 
     impl RecordingConnector {
@@ -1494,10 +1378,6 @@ mod tests {
 
         fn addresses(&self) -> Vec<IpAddr> {
             self.addresses.lock().unwrap().clone()
-        }
-
-        fn service_sets(&self) -> Vec<Vec<JobService>> {
-            self.service_sets.lock().unwrap().clone()
         }
     }
 
@@ -1539,10 +1419,6 @@ mod tests {
                 SupervisorJobEvent::JobNetworkAddress { address } => {
                     self.addresses.lock().unwrap().push(address);
                 }
-                SupervisorJobEvent::JobServiceSet { services } => {
-                    self.service_sets.lock().unwrap().push(services);
-                }
-                _ => {}
             }
         }
     }
@@ -1764,15 +1640,6 @@ mod tests {
     const STUB_OVERLAY: &str = "disk";
 
     fn start_msg(job_id: Uuid) -> StartJobMessage {
-        start_msg_with_gateway(job_id, None)
-    }
-
-    /// Like [`start_msg`], for a job the coordinator dispatched with gateway
-    /// material for the supervisor to relay into it.
-    fn start_msg_with_gateway(
-        job_id: Uuid,
-        gateway: Option<JobGatewayDispatch>,
-    ) -> StartJobMessage {
         StartJobMessage {
             job_id,
             image_spec: ImageSpecification::Image {
@@ -1785,10 +1652,7 @@ mod tests {
             restart_policy: RestartPolicy {
                 remaining_restart_count: 0,
             },
-            parameters: HashMap::new(),
             log_streaming: None,
-            gateway,
-            host_spec: None,
             job_token: None,
         }
     }
@@ -1982,109 +1846,6 @@ mod tests {
                 .await
                 .is_none()
         );
-    }
-
-    /// The puppet asks its supervisor what to validate service tokens against,
-    /// and gets back exactly what the coordinator dispatched the job with —
-    /// nothing if the job was dispatched without a gateway.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_running_job_is_told_its_gateway_material() {
-        let host_id = Uuid::new_v4();
-        let dispatched = JobGatewayDispatch {
-            issuer: "https://switchboard.example".to_string(),
-            signing_public_key: "-----BEGIN PUBLIC KEY-----\nstub\n-----END PUBLIC KEY-----\n"
-                .to_string(),
-            key_id: "wI9c-yvsF8".to_string(),
-            endpoints: vec![
-                api::switchboard_supervisor::JobGatewayEndpoint {
-                    base_domain: "gw-us-east-1.treadmillusercontent.com".to_string(),
-                    port: 443,
-                },
-                api::switchboard_supervisor::JobGatewayEndpoint {
-                    base_domain: "gw-eu-central-1.treadmillusercontent.com".to_string(),
-                    port: 4433,
-                },
-            ],
-        };
-
-        let h = harness(StubBackend::default());
-        let job_id = Uuid::new_v4();
-
-        start_and_boot(&h, start_msg_with_gateway(job_id, Some(dispatched.clone()))).await;
-        let puppet = endpoint(&h.runner).await;
-
-        // Nothing is answered for a job this endpoint does not serve.
-        assert!(puppet.gateway(host_id, Uuid::new_v4()).await.is_none());
-
-        let relayed = puppet
-            .gateway(host_id, job_id)
-            .await
-            .expect("a job dispatched with a gateway is told about it");
-        assert_eq!(relayed.issuer, dispatched.issuer);
-        assert_eq!(relayed.signing_public_key, dispatched.signing_public_key);
-        assert_eq!(relayed.key_id, dispatched.key_id);
-        assert_eq!(
-            relayed.endpoints,
-            dispatched
-                .endpoints
-                .iter()
-                .cloned()
-                .map(
-                    |api::switchboard_supervisor::JobGatewayEndpoint { base_domain, port }| {
-                        api::supervisor_puppet::JobGatewayEndpoint { base_domain, port }
-                    }
-                )
-                .collect::<Vec<_>>()
-        );
-
-        // A job dispatched without one has none to be told about.
-        let plain = harness(StubBackend::default());
-        let plain_job = Uuid::new_v4();
-        start_and_boot(&plain, start_msg(plain_job)).await;
-        assert!(
-            endpoint(&plain.runner)
-                .await
-                .gateway(host_id, plain_job)
-                .await
-                .is_none()
-        );
-    }
-
-    /// A service announcement is relayed to the coordinator as it arrives: the
-    /// supervisor stores nothing and interprets nothing. An announcement
-    /// carries a job's whole set, so a later one replaces the earlier rather
-    /// than adding to it — including an empty one.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_announced_service_set_is_relayed_to_the_coordinator() {
-        let h = harness(StubBackend::default());
-
-        let job_id = Uuid::new_v4();
-        let host_id = Uuid::new_v4();
-        start_and_boot(&h, start_msg(job_id)).await;
-        assert!(h.connector.service_sets().is_empty());
-
-        let announced = vec![
-            JobService {
-                name: "webide".to_string(),
-                label: Some("Web IDE".to_string()),
-                protocol: "webapp".to_string(),
-            },
-            JobService {
-                name: "shell".to_string(),
-                label: None,
-                protocol: "sshws".to_string(),
-            },
-        ];
-        let puppet = endpoint(&h.runner).await;
-        puppet
-            .job_service_set(0, announced.clone(), host_id, job_id)
-            .await;
-        puppet.job_service_set(1, Vec::new(), host_id, job_id).await;
-
-        // Puppet events are ordered against the job's state changes, so a
-        // terminate the job has acted on proves both were relayed first.
-        h.runner.terminate_job(job_id).await.unwrap();
-        assert_eq!(h.connector.service_sets(), vec![announced, Vec::new()]);
     }
 
     /// A job that fails on its way up still owes the coordinator a terminal

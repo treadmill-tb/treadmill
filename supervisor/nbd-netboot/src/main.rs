@@ -923,7 +923,6 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
 
-    use std::collections::HashMap;
     use std::sync::Mutex;
 
     use oci_spec::image::ImageManifest;
@@ -932,7 +931,7 @@ mod tests {
     use uuid::Uuid;
 
     use treadmill_rs::api::switchboard_supervisor::{
-        ImageLocation, LogStreamingDispatch, ParameterValue, RestartPolicy,
+        ImageLocation, LogStreamingDispatch, RestartPolicy,
     };
     use treadmill_rs::image::Digest;
     use treadmill_rs::image::assemble;
@@ -1215,7 +1214,6 @@ mod tests {
             restart_policy: RestartPolicy {
                 remaining_restart_count: 0,
             },
-            parameters: HashMap::<String, ParameterValue>::new(),
             log_streaming: streaming.then(|| LogStreamingDispatch {
                 nats_url: "nats://127.0.0.1:4222".to_string(),
                 subject_prefix: format!("logs.{job_id}"),
@@ -1223,8 +1221,6 @@ mod tests {
                 console_input_subject: None,
                 inbox_prefix: None,
             }),
-            gateway: None,
-            host_spec: None,
             job_token: None,
         }
     }

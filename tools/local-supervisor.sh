@@ -36,8 +36,6 @@ keep_state=0
 mem="4G"
 disk_max_bytes="34359738368"  # 32 GiB ceiling for the per-job overlay
 image=""
-ssh_keys=()
-params=()
 extra_qemu_args=()
 stop_after=""
 
@@ -57,8 +55,6 @@ Options:
   --no-kvm               Force TCG even when /dev/kvm is available.
   --mem SIZE             Guest RAM (default: $mem).
   --disk-max-bytes N     Per-job overlay ceiling (default: $disk_max_bytes).
-  --ssh-key KEY          SSH public key to deploy (repeatable).
-  -p, --param KEY=VALUE  Job parameter (repeatable).
   --stop-after DURATION  Auto-stop the job after e.g. 5m (default: run until
                          the guest exits or Ctrl-C).
   --qemu-arg ARG         Extra raw qemu argument (repeatable).
@@ -80,8 +76,6 @@ while [ $# -gt 0 ]; do
     --no-kvm)         use_kvm="no"; shift ;;
     --mem)            mem="$2"; shift 2 ;;
     --disk-max-bytes) disk_max_bytes="$2"; shift 2 ;;
-    --ssh-key)        ssh_keys+=("$2"); shift 2 ;;
-    -p|--param)       params+=("$2"); shift 2 ;;
     --stop-after)     stop_after="$2"; shift 2 ;;
     --qemu-arg)       extra_qemu_args+=("$2"); shift 2 ;;
     --keep)           keep_state=1; shift ;;
@@ -316,8 +310,6 @@ echo "  $repo:$ref => $manifest_digest"
 # Assemble the per-job CLI flags for the `local` connector and run it.
 # ---------------------------------------------------------------------------
 job_args=(--manifest-digest "$manifest_digest" --repository "$repo")
-for k in "${ssh_keys[@]}"; do job_args+=(--ssh-key "$k"); done
-for p in "${params[@]}"; do job_args+=(--param "$p"); done
 if [ -n "$stop_after" ]; then job_args+=(--stop-after "$stop_after"); fi
 
 cat <<EOF
