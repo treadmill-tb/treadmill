@@ -102,30 +102,19 @@ pub async fn fetch_metadata_by_id<'c, E: PgExecutor<'c>>(
     })
 }
 
-pub struct SqlJobTokenMetadata {
-    pub token_id: Uuid,
-    pub job_id: Uuid,
-    pub finalized: bool,
-}
-
-pub async fn fetch_job_token_metadata<'c, E: PgExecutor<'c>>(
+pub async fn fetch_unfinalized_job_by_token<'c, E: PgExecutor<'c>>(
     conn: E,
     token: SecurityToken,
-) -> Result<SqlJobTokenMetadata, TokenError> {
-    sqlx::query_as!(
-        SqlJobTokenMetadata,
-        r#"SELECT t.token_id, j.job_id, j.job_state = 'finalized' as "finalized!"
+) -> Result<Option<Uuid>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT j.job_id
             FROM tml_switchboard.api_tokens t
             JOIN tml_switchboard.jobs j ON j.job_id = t.subject_id
-            WHERE t.token = $1 AND t.subject_kind = 'job'"#,
+            WHERE t.token = $1 AND t.subject_kind = 'job' AND j.job_state <> 'finalized'"#,
         token.as_bytes(),
     )
-    .fetch_one(conn)
+    .fetch_optional(conn)
     .await
-    .map_err(|e| match e {
-        sqlx::Error::RowNotFound => TokenError::InvalidToken,
-        e => TokenError::Database(e),
-    })
 }
 
 pub async fn fetch_job_token(
