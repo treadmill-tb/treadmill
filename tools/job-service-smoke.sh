@@ -4,7 +4,7 @@
 #   tools/job-service-smoke.sh <manifest-digest> [<ghcr-repository>]
 #
 # Registers an image built by the images workflow, enqueues a job on it, waits
-# for the puppet to announce a service, mints a token for it, and drives the
+# for the daemon to announce a service, mints a token for it, and drives the
 # gateway with that token, without one, and at another job's host. Set
 # TML_TEST_JOB_ID to reuse a job that is already running instead of enqueueing.
 #

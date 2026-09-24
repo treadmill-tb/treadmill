@@ -19,8 +19,8 @@ use crate::api::switchboard::audit::AuditFeedResponse;
 use crate::api::switchboard::hosts::HostInfo;
 use crate::api::switchboard::images::ImageSetInfo;
 use crate::api::switchboard::jobs::{
-    EnqueueJobResponse, JobEnvironment, JobInfo, JobListResponse, JobServiceAnnouncement,
-    JobServiceCredentials,
+    EnqueueJobResponse, JobEnvironment, JobExitStatusRequest, JobInfo, JobListResponse,
+    JobServiceAnnouncement, JobServiceCredentials,
 };
 use crate::api::switchboard::users::{PublicUserProfile, SelfUserProfile, SessionInfo};
 use crate::api::switchboard::{LoginCompleteRequest, LoginResponse, LoginStagedResponse};
@@ -245,6 +245,17 @@ impl SwitchboardClient {
     /// up. Only the job's own token may read it.
     pub async fn get_job_environment(&self, job_id: Uuid) -> Result<JobEnvironment, ClientError> {
         self.get_json(&format!("/api/v1/jobs/{job_id}/environment"))
+            .await
+    }
+
+    /// `PUT /jobs/{id}/exit-status` — report a job's own outcome, with the job's
+    /// own token.
+    pub async fn put_job_exit_status(
+        &self,
+        job_id: Uuid,
+        req: &JobExitStatusRequest,
+    ) -> Result<(), ClientError> {
+        self.put(&format!("/api/v1/jobs/{job_id}/exit-status"), req)
             .await
     }
 

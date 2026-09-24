@@ -23,13 +23,15 @@ use clap::Parser;
 use treadmill_rs::api::switchboard::client::SwitchboardClient;
 use uuid::Uuid;
 
-#[cfg(feature = "daemon")]
-use cli::DaemonJobCommand;
 use cli::{Cli, Command, Globals, JobCommand};
+#[cfg(feature = "daemon")]
+use cli::{DaemonJobCommand, ExitOutcome};
 #[cfg(feature = "user")]
 use cli::{SshCommand, UserJobCommand};
 #[cfg(feature = "user")]
 use ctx::Ctx;
+#[cfg(feature = "daemon")]
+use treadmill_rs::api::switchboard::jobs::{JobExitStatusRequest, TaskExitStatus};
 
 fn main() -> std::process::ExitCode {
     let args = Cli::parse();
@@ -105,6 +107,23 @@ async fn run(args: Cli) -> Result<()> {
 async fn daemon_job(globals: &Globals, command: DaemonJobCommand) -> Result<()> {
     match command {
         DaemonJobCommand::ReloadServices => daemon::reload_services(globals.dbus_bus).await,
+        DaemonJobCommand::SetExitStatus { outcome, message } => {
+            let credentials = daemon::credentials(globals.dbus_bus)
+                .await?
+                .context("reporting an exit status needs the tml daemon of a job")?;
+            let outcome = match outcome {
+                ExitOutcome::Success => TaskExitStatus::Success,
+                ExitOutcome::Failure => TaskExitStatus::Failure,
+            };
+            SwitchboardClient::new(credentials.base_url, Some(credentials.token))
+                .put_job_exit_status(
+                    credentials.job_id,
+                    &JobExitStatusRequest { outcome, message },
+                )
+                .await
+                .context("reporting the job's exit status")?;
+            Ok(())
+        }
     }
 }
 

@@ -181,6 +181,20 @@ pub enum JobCommand {
 pub enum DaemonJobCommand {
     /// Rescan the service directory and announce the job's services
     ReloadServices,
+    /// Report the outcome of the job this daemon runs in
+    SetExitStatus {
+        /// Whether the workload succeeded
+        outcome: ExitOutcome,
+        /// A note on the outcome, shown with the job
+        message: Option<String>,
+    },
+}
+
+#[cfg(feature = "daemon")]
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum ExitOutcome {
+    Success,
+    Failure,
 }
 
 #[cfg(feature = "user")]
