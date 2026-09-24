@@ -153,6 +153,19 @@ async fn require_manage(
     }
 }
 
+const GRANTEE_KINDS: &[SubjectKind] = &[SubjectKind::User, SubjectKind::Group];
+
+async fn may_own_host(state: &AppState, owner: Uuid) -> Result<bool, StatusCode> {
+    Ok(owner != EVERYONE_SUBJECT_ID
+        && is_subject_of_kind(
+            state.pool(),
+            owner,
+            &[SubjectKind::User, SubjectKind::Group],
+        )
+        .await
+        .or_internal("checking the kind of a host owner")?)
+}
+
 /// Axum handler for `PUT /hosts/{id}/owner` — transfer a host to another
 /// subject, or orphan it.
 ///
@@ -170,6 +183,12 @@ pub async fn put_owner(
     use crate::audit::{self, events};
 
     require_manage(&state, &subject, host_id, "an owner change").await?;
+    if let Some(owner) = req.owner
+        && !may_own_host(&state, owner).await?
+    {
+        tracing::debug!("refusing to re-own host {host_id} to {owner}");
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
 
     let mut txn = state
         .pool()
@@ -256,6 +275,13 @@ pub async fn create_grant(
     use crate::audit::{self, events};
 
     require_manage(&state, &subject, host_id, "a grant").await?;
+    if !is_subject_of_kind(state.pool(), req.subject_id, GRANTEE_KINDS)
+        .await
+        .or_internal("checking the kind of a host grantee")?
+    {
+        tracing::debug!("refusing a grant on host {host_id} to {}", req.subject_id);
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
     let permission = host_perm_from_api(req.permission).as_str();
 
     let mut txn = state
@@ -502,6 +528,15 @@ pub async fn create(
         Err(rejection) => return Ok(refuse(rejection)),
     };
     let host_id = spec.id;
+    if let Some(owner) = req.owner
+        && !may_own_host(&state, owner).await?
+    {
+        tracing::debug!("refusing to create host {host_id}: {owner} may not own it");
+        return Ok(refuse(HostSpecRejection {
+            path: "owner".to_string(),
+            message: "not a subject that may own a host".to_string(),
+        }));
+    }
     let name = spec.name.clone();
 
     let auth_token = SecurityToken::generate();
@@ -819,6 +854,7 @@ use treadmill_rs::api::switchboard_supervisor::{ProtocolVersion, ServerHello};
 
 use uuid::Uuid;
 
+use crate::auth::engine::{EVERYONE_SUBJECT_ID, SubjectKind, is_subject_of_kind};
 use crate::auth::token::SecurityToken;
 use crate::events::EventFilter;
 use crate::http_error::OrInternal;

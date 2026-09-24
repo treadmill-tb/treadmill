@@ -33,7 +33,9 @@ use treadmill_rs::image::{Digest, media_types};
 use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_entity};
 use crate::audit::model::{ImageSet as AuditImageSet, Subject as AuditSubject};
 use crate::audit::{self, events};
-use crate::auth::engine::{self, ImageSetPermission as Perm, ImageSourcePermission as SourcePerm};
+use crate::auth::engine::{
+    self, ImageSetPermission as Perm, ImageSourcePermission as SourcePerm, SubjectKind,
+};
 use crate::http_error::internal;
 use crate::predicate::{CelEngine, Engine};
 use crate::registry::RegistryError;
@@ -198,6 +200,8 @@ fn valid_name(name: &str) -> Result<&str, StatusCode> {
     }
     Ok(name)
 }
+
+const GRANTEE_KINDS: &[SubjectKind] = &[SubjectKind::User, SubjectKind::Group];
 
 /// 403 unless `subject` is a global admin, who alone may set canonical names.
 async fn require_admin(state: &AppState, subject: Uuid) -> Result<(), StatusCode> {
@@ -512,6 +516,16 @@ pub async fn grant_image_set(
     Json(req): Json<ImageSetGrantRequest>,
 ) -> Result<StatusCode, StatusCode> {
     require_manage(&state, subject.user_id(), set_id).await?;
+    if !engine::is_subject_of_kind(state.pool(), req.subject_id, GRANTEE_KINDS)
+        .await
+        .map_err(internal)?
+    {
+        tracing::debug!(
+            "refusing a grant on image set {set_id} to {}",
+            req.subject_id
+        );
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
     let permission = Perm::from(req.permission);
     let mut tx = state.pool().begin().await.map_err(internal)?;
     image::grant_image_set(&mut *tx, set_id, req.subject_id, permission.as_str())
@@ -550,6 +564,18 @@ pub async fn put_image_set_owner(
 
     if req.owner == Some(engine::EVERYONE_SUBJECT_ID) {
         tracing::debug!("refusing to re-own image set {set_id}: `everyone` cannot own");
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    if let Some(owner) = req.owner
+        && !engine::is_subject_of_kind(
+            state.pool(),
+            owner,
+            &[SubjectKind::User, SubjectKind::Group, SubjectKind::System],
+        )
+        .await
+        .map_err(internal)?
+    {
+        tracing::debug!("refusing to re-own image set {set_id} to {owner}");
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
     if req.owner == Some(audit::SYSTEM_ACTOR_ID)
@@ -841,6 +867,16 @@ pub async fn grant_image_source(
     Json(req): Json<ImageSourceGrantRequest>,
 ) -> Result<StatusCode, StatusCode> {
     require_source_manage(&state, subject.user_id(), &digest, source_id).await?;
+    if !engine::is_subject_of_kind(state.pool(), req.subject_id, GRANTEE_KINDS)
+        .await
+        .map_err(internal)?
+    {
+        tracing::debug!(
+            "refusing a grant on image source {source_id} to {}",
+            req.subject_id
+        );
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
     let permission = SourcePerm::from(req.permission);
     image::grant_image_source(state.pool(), source_id, req.subject_id, permission.as_str())
         .await

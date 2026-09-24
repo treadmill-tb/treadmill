@@ -113,6 +113,29 @@ pub async fn is_admin(conn: impl PgExecutor<'_>, subject_id: Uuid) -> Result<boo
     .fetch_one(conn)
     .await
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[sqlx(type_name = "tml_switchboard.subject_kind", rename_all = "snake_case")]
+pub enum SubjectKind {
+    User,
+    Group,
+    System,
+    Job,
+}
+
+pub async fn is_subject_of_kind(
+    conn: impl PgExecutor<'_>,
+    subject_id: Uuid,
+    allowed: &[SubjectKind],
+) -> Result<bool, sqlx::Error> {
+    let kind = sqlx::query_scalar!(
+        r#"select kind as "kind: SubjectKind" from tml_switchboard.subjects where subject_id = $1"#,
+        subject_id,
+    )
+    .fetch_optional(conn)
+    .await?;
+    Ok(kind.is_some_and(|kind| allowed.contains(&kind)))
+}
+
 pub async fn can_access_host(
     conn: impl PgExecutor<'_>,
     subject_id: Uuid,

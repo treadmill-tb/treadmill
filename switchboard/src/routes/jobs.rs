@@ -134,6 +134,10 @@ pub(crate) async fn resolve_owner(
     let Some(requested) = requested else {
         return Ok(caller);
     };
+    if requested == engine::EVERYONE_SUBJECT_ID {
+        tracing::debug!("refusing `everyone` as a job owner");
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
     let reachable = sqlx::query_scalar!(
         "select exists(select 1 from tml_switchboard.principals($1) p where p.id = $2) as \"ok!\"",
         caller,

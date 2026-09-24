@@ -456,7 +456,9 @@ pub fn api_router() -> ApiRouter<AppState> {
                     .response_with::<403, (), _>(|r| {
                         r.description("The caller lacks `manage` on the host.")
                     })
-                    .response_with::<422, (), _>(|r| r.description("No such subject."))
+                    .response_with::<422, (), _>(|r| {
+                        r.description("No such subject, or one that cannot own a host.")
+                    })
             }),
         )
         //  GET  /hosts/{id}/grants -- list the host's grants
@@ -483,7 +485,9 @@ pub fn api_router() -> ApiRouter<AppState> {
                 .response_with::<403, (), _>(|r| {
                     r.description("The caller lacks `manage` on the host.")
                 })
-                .response_with::<422, (), _>(|r| r.description("No such subject."))
+                .response_with::<422, (), _>(|r| {
+                    r.description("No such subject, or one that cannot be granted a permission.")
+                })
             }),
         )
         //  DELETE /hosts/{id}/grants/{subject_id}/{permission} -- revoke a grant
@@ -663,6 +667,9 @@ pub fn api_router() -> ApiRouter<AppState> {
                 )
                 .response_with::<204, (), _>(|r| r.description("The grant was recorded."))
                 .response_with::<404, (), _>(|r| r.description("No such image or source."))
+                .response_with::<422, (), _>(|r| {
+                    r.description("No such subject, or one that cannot be granted a permission.")
+                })
             })
             .get_with(images::list_image_source_grants, |o| {
                 doc(
@@ -831,6 +838,9 @@ pub fn api_router() -> ApiRouter<AppState> {
                 .response_with::<204, (), _>(|r| r.description("The grant was recorded."))
                 .response_with::<404, (), _>(|r| {
                     r.description("No such image set, or it is not visible to the caller.")
+                })
+                .response_with::<422, (), _>(|r| {
+                    r.description("No such subject, or one that cannot be granted a permission.")
                 })
             })
             .get_with(images::list_image_set_grants, |o| {

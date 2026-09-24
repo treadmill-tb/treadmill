@@ -2323,3 +2323,31 @@ async fn a_job_token_is_not_a_user_token(pool: PgPool) {
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
 }
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn everyone_cannot_own_a_job(pool: PgPool) {
+    const EVERYONE: Uuid = Uuid::from_u128(4);
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let (_, image) = register_image(&pool).await;
+    let req = image_job_request(
+        Some(EVERYONE),
+        JobInitSpec::Image {
+            manifest_digest: image,
+        },
+        None,
+    );
+    let resp = client
+        .post(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(&token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+}

@@ -3777,7 +3777,7 @@ export interface operations {
                     "text/plain": string;
                 };
             };
-            /** @description No such subject. */
+            /** @description No such subject, or one that cannot own a host. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -3878,7 +3878,7 @@ export interface operations {
                     "text/plain": string;
                 };
             };
-            /** @description No such subject. */
+            /** @description No such subject, or one that cannot be granted a permission. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -4663,14 +4663,12 @@ export interface operations {
                     "text/plain": string;
                 };
             };
-            /** @description Failed to deserialize the JSON body into the target type */
+            /** @description No such subject, or one that cannot be granted a permission. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "text/plain": string;
-                };
+                content?: never;
             };
         };
     };
@@ -5312,14 +5310,12 @@ export interface operations {
                     "text/plain": string;
                 };
             };
-            /** @description Failed to deserialize the JSON body into the target type */
+            /** @description No such subject, or one that cannot be granted a permission. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "text/plain": string;
-                };
+                content?: never;
             };
         };
     };

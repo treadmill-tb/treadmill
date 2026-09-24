@@ -983,7 +983,7 @@ paths:
               schema:
                 type: string
         '422':
-          description: No such subject.
+          description: No such subject, or one that cannot own a host.
         '204':
           description: Applied, or the owner was already in force.
       security:
@@ -1060,7 +1060,7 @@ paths:
               schema:
                 type: string
         '422':
-          description: No such subject.
+          description: No such subject, or one that cannot be granted a permission.
         '204':
           description: The grant was recorded, or was already held.
       security:
@@ -1691,11 +1691,7 @@ paths:
               schema:
                 type: string
         '422':
-          description: Failed to deserialize the JSON body into the target type
-          content:
-            text/plain:
-              schema:
-                type: string
+          description: No such subject, or one that cannot be granted a permission.
         '204':
           description: The grant was recorded.
         '404':
@@ -2182,11 +2178,7 @@ paths:
               schema:
                 type: string
         '422':
-          description: Failed to deserialize the JSON body into the target type
-          content:
-            text/plain:
-              schema:
-                type: string
+          description: No such subject, or one that cannot be granted a permission.
         '204':
           description: The grant was recorded.
         '404':
