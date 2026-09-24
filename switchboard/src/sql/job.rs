@@ -1098,7 +1098,7 @@ pub async fn replace_services(
 /// Why building a [`StartJobMessage`] for dispatch failed.
 #[derive(Debug)]
 pub enum BuildStartJobError {
-    /// An underlying database error (job/params lookup).
+    /// An underlying database error (job/token lookup).
     Db(sqlx::Error),
     /// Resolving the recorded image digest to a concrete dispatch spec failed.
     Image(ImageResolveError),

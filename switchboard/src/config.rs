@@ -24,7 +24,7 @@ pub struct SwitchboardConfig {
     #[serde(default)]
     pub log_streaming: Option<LogStreamingConfig>,
     /// Gateway access to the services a job announces. Absent (the default)
-    /// disables the feature: jobs dispatch without gateway material and the
+    /// disables the feature: jobs get no gateway in their environment and the
     /// service-token API is unavailable.
     #[serde(default)]
     pub job_gateway: Option<JobGatewayConfig>,

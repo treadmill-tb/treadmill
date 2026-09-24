@@ -961,39 +961,31 @@ pub fn openapi_spec() -> aide::openapi::OpenApi {
 
     let _ = api_router().finish_api(&mut api);
 
-    api.components
+    let schemes = &mut api
+        .components
         .get_or_insert_with(Components::default)
-        .security_schemes
-        .insert(
-            crate::auth::SECURITY_SCHEME.to_string(),
+        .security_schemes;
+    for (name, description) in [
+        (
+            crate::auth::SECURITY_SCHEME,
+            "A Treadmill user API token, presented as `Authorization: Bearer <token>`.",
+        ),
+        (
+            crate::auth::JOB_SECURITY_SCHEME,
+            "A Treadmill job token, presented as `Authorization: Bearer <token>`. \
+             It acts only on its own job.",
+        ),
+    ] {
+        schemes.insert(
+            name.to_string(),
             ReferenceOr::Item(SecurityScheme::Http {
                 scheme: "bearer".to_string(),
                 bearer_format: None,
-                description: Some(
-                    "A Treadmill user API token, presented as \
-                     `Authorization: Bearer <token>`."
-                        .to_string(),
-                ),
+                description: Some(description.to_string()),
                 extensions: Default::default(),
             }),
         );
-
-    api.components
-        .get_or_insert_with(Components::default)
-        .security_schemes
-        .insert(
-            crate::auth::JOB_SECURITY_SCHEME.to_string(),
-            ReferenceOr::Item(SecurityScheme::Http {
-                scheme: "bearer".to_string(),
-                bearer_format: None,
-                description: Some(
-                    "A Treadmill job token, presented as `Authorization: Bearer <token>`. \
-                     It acts only on its own job."
-                        .to_string(),
-                ),
-                extensions: Default::default(),
-            }),
-        );
+    }
 
     api
 }

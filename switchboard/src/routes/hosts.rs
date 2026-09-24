@@ -153,17 +153,11 @@ async fn require_manage(
     }
 }
 
-const GRANTEE_KINDS: &[SubjectKind] = &[SubjectKind::User, SubjectKind::Group];
-
 async fn may_own_host(state: &AppState, owner: Uuid) -> Result<bool, StatusCode> {
     Ok(owner != EVERYONE_SUBJECT_ID
-        && is_subject_of_kind(
-            state.pool(),
-            owner,
-            &[SubjectKind::User, SubjectKind::Group],
-        )
-        .await
-        .or_internal("checking the kind of a host owner")?)
+        && is_subject_of_kind(state.pool(), owner, GRANTEE_KINDS)
+            .await
+            .or_internal("checking the kind of a host owner")?)
 }
 
 /// Axum handler for `PUT /hosts/{id}/owner` — transfer a host to another
@@ -205,14 +199,9 @@ pub async fn put_owner(
         return Ok(StatusCode::NO_CONTENT);
     }
 
-    match sql::host::set_owner(host_id, req.owner, &mut txn).await {
-        Ok(()) => {}
-        Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => {
-            tracing::debug!("refusing to re-own host {host_id}: unknown subject");
-            return Err(StatusCode::UNPROCESSABLE_ENTITY);
-        }
-        Err(e) => return Err(crate::http_error::internal(e)),
-    }
+    sql::host::set_owner(host_id, req.owner, &mut txn)
+        .await
+        .or_internal(&format!("re-owning host {host_id}"))?;
     audit::emit(
         &mut txn,
         &events::HostOwnerChanged {
@@ -290,16 +279,9 @@ pub async fn create_grant(
         .await
         .or_internal(&format!("opening a transaction to grant on host {host_id}"))?;
 
-    let added = match sql::host::grant(host_id, req.subject_id, permission, &mut *txn).await {
-        Ok(added) => added,
-        Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => {
-            // The host was authorized above, so it is the subject that is unknown
-            // (or the host was deleted in between, which reads the same).
-            tracing::debug!("refusing a grant on host {host_id}: unknown subject");
-            return Err(StatusCode::UNPROCESSABLE_ENTITY);
-        }
-        Err(e) => return Err(crate::http_error::internal(e)),
-    };
+    let added = sql::host::grant(host_id, req.subject_id, permission, &mut *txn)
+        .await
+        .or_internal(&format!("granting on host {host_id}"))?;
     if added {
         audit::emit(
             &mut txn,
@@ -554,13 +536,6 @@ pub async fn create(
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
             tracing::debug!("refusing to create host {host_id}: already exists");
             return Ok(StatusCode::CONFLICT.into_response());
-        }
-        Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => {
-            tracing::debug!("refusing to create host {host_id}: unknown owner");
-            return Ok(refuse(HostSpecRejection {
-                path: "owner".to_string(),
-                message: "no such subject".to_string(),
-            }));
         }
         Err(e) => return Err(crate::http_error::internal(e)),
     }
@@ -854,7 +829,7 @@ use treadmill_rs::api::switchboard_supervisor::{ProtocolVersion, ServerHello};
 
 use uuid::Uuid;
 
-use crate::auth::engine::{EVERYONE_SUBJECT_ID, SubjectKind, is_subject_of_kind};
+use crate::auth::engine::{EVERYONE_SUBJECT_ID, GRANTEE_KINDS, is_subject_of_kind};
 use crate::auth::token::SecurityToken;
 use crate::events::EventFilter;
 use crate::http_error::OrInternal;
@@ -955,8 +930,6 @@ pub async fn connect(
     // Shared with the worker so it can mint per-job write tokens and provision
     // streams at dispatch; `None` when log streaming is disabled.
     let log_streaming = state.log_streaming().cloned();
-    // Likewise for the gateway material the worker hands a job at dispatch;
-    // `None` when the deployment runs without a gateway.
     let event_bus = state.event_bus().clone();
 
     let mut response =
