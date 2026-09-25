@@ -2459,15 +2459,63 @@ dialog h4 {
   list-style: none;
 }
 
-.job-filters {
+.job-filters,
+.host-filters {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
 }
 
-.job-filters > input {
+.job-filters > input,
+.host-filters > input {
   flex: 1 1 16rem;
   margin: 0;
+}
+
+.host-filters {
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.host-filters > label {
+  margin: 0;
+}
+
+.host-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.host-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.host-tile > p {
+  margin: 0;
+}
+
+.host-tile > .host-name > svg {
+  color: var(--pico-muted-color);
+}
+
+.host-tile-profiles {
+  margin-top: auto;
+}
+
+.host-tile-profiles > .chip {
+  color: var(--pico-muted-color);
+  font-size: var(--text-xs);
+}
+
+.host-group {
+  margin-bottom: 0.75rem;
+  font-size: 1rem;
 }
 
 .job-filters > select {
