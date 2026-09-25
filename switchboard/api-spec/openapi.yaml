@@ -3313,11 +3313,11 @@ components:
           - 'null'
           format: uint32
           minimum: 0
-        owner_id:
-          type:
-          - string
-          - 'null'
-          format: uuid
+        owner:
+          description: The set's owner, or null if orphaned.
+          anyOf:
+          - $ref: '#/components/schemas/SubjectRef'
+          - type: 'null'
         platforms:
           description: |-
             The platform profiles of the latest generation's members, in member
@@ -3390,12 +3390,11 @@ components:
         id:
           type: string
           format: uuid
-        owner_id:
+        owner:
           description: The source's owner, or null if orphaned.
-          type:
-          - string
-          - 'null'
-          format: uuid
+          anyOf:
+          - $ref: '#/components/schemas/SubjectRef'
+          - type: 'null'
         permissions:
           description: The viewer's permissions on this source.
           type: array

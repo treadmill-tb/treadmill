@@ -1513,8 +1513,8 @@ export interface components {
              * @description The set's latest generation number, or null if it has none yet.
              */
             latest_generation?: number | null;
-            /** Format: uuid */
-            owner_id?: string | null;
+            /** @description The set's owner, or null if orphaned. */
+            owner?: components["schemas"]["SubjectRef"] | null;
             /**
              * @description The platform profiles of the latest generation's members, in member
              *     order, without duplicates.
@@ -1557,11 +1557,8 @@ export interface components {
         ImageSourceInfo: {
             /** Format: uuid */
             id: string;
-            /**
-             * Format: uuid
-             * @description The source's owner, or null if orphaned.
-             */
-            owner_id?: string | null;
+            /** @description The source's owner, or null if orphaned. */
+            owner?: components["schemas"]["SubjectRef"] | null;
             /** @description The viewer's permissions on this source. */
             permissions: components["schemas"]["ImageSourcePermission"][];
             registry: string;

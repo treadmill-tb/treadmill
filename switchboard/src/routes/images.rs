@@ -99,12 +99,18 @@ async fn image_info(
             .into_iter()
             .map(source_perm_to_api)
             .collect();
+        let owner = match s.owner_subject {
+            Some(id) => crate::sql::subject::subject_ref(state.pool(), id)
+                .await
+                .map_err(internal)?,
+            None => None,
+        };
         sources.push(ImageSourceInfo {
             id: s.id,
             registry: s.registry,
             repository: s.repository,
             status: s.status,
-            owner_id: s.owner_subject,
+            owner,
             permissions,
         });
     }
@@ -180,11 +186,17 @@ async fn set_info(state: &AppState, set: image::SetRecord) -> Result<ImageSetInf
             }
         }
     }
+    let owner = match set.owner_subject {
+        Some(id) => crate::sql::subject::subject_ref(state.pool(), id)
+            .await
+            .map_err(internal)?,
+        None => None,
+    };
     Ok(ImageSetInfo {
         id: set.id,
         display_name: set.display_name,
         canonical_name: set.canonical_name,
-        owner_id: set.owner_subject,
+        owner,
         created_at: set.created_at,
         latest_generation,
         platforms,

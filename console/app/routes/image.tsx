@@ -28,7 +28,7 @@ import { HelpTip } from "../components/help-tip";
 import { ImageShareDialog } from "../components/image-share";
 import { RelTime } from "../components/rel-time";
 import { RequestError } from "../components/request-error";
-import { SubjectName } from "../components/subject";
+import { SubjectLink, SubjectName } from "../components/subject";
 import { VariantList } from "../components/variant-list";
 import { CanonicalNameField } from "./images";
 import type { Route } from "./+types/image";
@@ -275,7 +275,7 @@ function OwnerDialog({
   const invalidate = useInvalidateImage(set.id);
   const whoami = $api.useQuery("get", "/auth/whoami");
   const me = $api.useQuery("get", "/users/me");
-  const [choice, setChoice] = useState<string>(set.owner_id ?? ME);
+  const [choice, setChoice] = useState<string>(set.owner?.id ?? ME);
   const put = $api.useMutation("put", "/image-sets/{id}/owner", {
     onSuccess: async () => {
       await invalidate();
@@ -299,7 +299,7 @@ function OwnerDialog({
             type="button"
             className="primary"
             disabled={
-              put.isPending || owner === undefined || owner === set.owner_id
+              put.isPending || owner === undefined || owner === set.owner?.id
             }
             onClick={() =>
               owner !== undefined &&
@@ -520,10 +520,10 @@ export default function Image({ params }: Route.ComponentProps) {
         )}
         <span>
           Owner:{" "}
-          {data.owner_id == null ? (
+          {data.owner == null ? (
             <span className="muted">none</span>
           ) : (
-            <SubjectName id={data.owner_id} />
+            <SubjectLink subject={data.owner} />
           )}
           {canManage && (
             <button
@@ -580,7 +580,7 @@ export default function Image({ params }: Route.ComponentProps) {
         onClose={() => setDialog(null)}
         setId={data.id}
         title={data.display_name}
-        ownerId={data.owner_id}
+        ownerId={data.owner?.id}
         grants={grants.data}
         grantsError={grants.error}
         variants={version.data?.members ?? []}

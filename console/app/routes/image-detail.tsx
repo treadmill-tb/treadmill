@@ -7,6 +7,7 @@ import { Digest } from "../components/digest";
 import { EntityLink } from "../components/entity-link";
 import { RelTime } from "../components/rel-time";
 import { RequestError } from "../components/request-error";
+import { SubjectLink } from "../components/subject";
 import { EVERYONE_SUBJECT } from "../api/subjects";
 import type { Route } from "./+types/image-detail";
 
@@ -404,7 +405,11 @@ export default function ImageDetail({ params }: Route.ComponentProps) {
                         <span className="badge">{src.status}</span>
                       </td>
                       <td>
-                        <EntityLink kind="user" id={src.owner_id} />
+                        {src.owner == null ? (
+                          <span className="muted">—</span>
+                        ) : (
+                          <SubjectLink subject={src.owner} />
+                        )}
                       </td>
                       <td>
                         {src.permissions.length === 0 ? (
