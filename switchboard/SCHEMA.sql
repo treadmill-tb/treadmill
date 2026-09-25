@@ -763,11 +763,11 @@ CREATE TABLE tml_switchboard.jobs (
     ),
     -- Restart count >= 0
     CONSTRAINT valid_restart_policy CHECK ((restart_policy).remaining_restart_count >= 0),
-    -- Labels must be 1 to 256 chars, start/end with ASCII alphanumeric, and
-    -- contain only ASCII alphanumeric, space, hyphen, or underscore.
+    -- Labels must be 1 to 256 chars of ASCII alphanumeric, space, and
+    -- `()_,.#-`, and must not start or end with a space.
     CONSTRAINT valid_label CHECK (
         char_length(label) BETWEEN 1 AND 256
-        AND label ~ '^[A-Za-z0-9]([A-Za-z0-9 _-]*[A-Za-z0-9])?$'
+        AND label ~ '^[A-Za-z0-9()_,.#-]([A-Za-z0-9 ()_,.#-]*[A-Za-z0-9()_,.#-])?$'
     ),
     -- A host is bound from `assigned` onwards; the binding is set once and
     -- retained through `finalized`. NULL in `finalized` means the job was
@@ -1073,11 +1073,10 @@ WHERE
     job_state = 'queued';
 
 
--- `GET /jobs` lists readable jobs newest-first with keyset pagination on
--- `(queued_at, job_id)`. This index (matching that order) turns the listing
--- into an index range scan and makes the keyset seek depth-independent, across
--- all job states (unlike the partial index above).
-CREATE INDEX jobs_queued_at_job_id_idx ON tml_switchboard.jobs (queued_at DESC, job_id DESC);
+CREATE INDEX jobs_listing_idx ON tml_switchboard.jobs (
+    (coalesce(terminated_at, queued_at)) DESC,
+    job_id DESC
+);
 
 
 -- Hosts the job owner is authorized to `start` on, ignoring occupancy,

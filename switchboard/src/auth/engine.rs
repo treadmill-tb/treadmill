@@ -122,6 +122,18 @@ pub enum SubjectKind {
     Job,
 }
 
+impl From<SubjectKind> for treadmill_rs::api::switchboard::SubjectKind {
+    fn from(kind: SubjectKind) -> Self {
+        use treadmill_rs::api::switchboard::SubjectKind as Api;
+        match kind {
+            SubjectKind::User => Api::User,
+            SubjectKind::Group => Api::Group,
+            SubjectKind::System => Api::System,
+            SubjectKind::Job => Api::Job,
+        }
+    }
+}
+
 pub const GRANTEE_KINDS: &[SubjectKind] = &[SubjectKind::User, SubjectKind::Group];
 
 pub async fn is_subject_of_kind(

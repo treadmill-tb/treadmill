@@ -1,47 +1,25 @@
-import {
-  CircleAlert,
-  CircleCheck,
-  CircleDashed,
-  CirclePlay,
-  CircleStop,
-  CircleX,
-  Clock,
-  Hourglass,
-  LoaderCircle,
-  type LucideIcon,
-} from "lucide-react";
+import { CircleDashed } from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { components } from "../api/schema";
-import { INITIALIZING_STAGES, TERMINATION_REASONS, type Tone } from "./badges";
+import {
+  INITIALIZING_STAGES,
+  lifecycle,
+  LifecycleIcon,
+  ResultBadge,
+  TERMINATION_REASONS,
+} from "./badges";
 import { formatSeconds, JobLease } from "./job-lease";
 import { RelTime } from "./rel-time";
 
 type JobInfo = components["schemas"]["JobInfo"];
 type JobInitializingStage = components["schemas"]["JobInitializingStage"];
 
-const TONE_ICON: Record<Tone, LucideIcon> = {
-  ok: CircleCheck,
-  active: CircleDashed,
-  warn: CircleAlert,
-  danger: CircleX,
-  "": CircleStop,
-};
-
-type HeadlineTone = Tone | "neutral";
-
-function Headline({
-  icon: Icon,
-  tone,
-  children,
-}: {
-  icon: LucideIcon;
-  tone: HeadlineTone;
-  children: ReactNode;
-}) {
+function Headline({ job, children }: { job: JobInfo; children: ReactNode }) {
+  const life = lifecycle(job);
   return (
-    <p className={`outcome-headline tone-${tone || "neutral"}`}>
-      <Icon size={22} aria-hidden="true" />
+    <p className={`outcome-headline tone-${life.tone}`}>
+      <LifecycleIcon life={life} size={22} />
       {children}
     </p>
   );
@@ -75,9 +53,7 @@ function Lifecycle({ job }: { job: JobInfo }) {
     case "queued":
       return (
         <>
-          <Headline icon={Clock} tone="warn">
-            Waiting for a host
-          </Headline>
+          <Headline job={job}>Waiting for a host</Headline>
           <p className="muted">Position in the queue: not available yet.</p>
           {lease}
         </>
@@ -85,9 +61,7 @@ function Lifecycle({ job }: { job: JobInfo }) {
     case "assigned":
       return (
         <>
-          <Headline icon={Hourglass} tone="warn">
-            Assigned to a host
-          </Headline>
+          <Headline job={job}>Assigned to a host</Headline>
           <p>Waiting for the host to start the job.</p>
           {lease}
         </>
@@ -95,9 +69,7 @@ function Lifecycle({ job }: { job: JobInfo }) {
     case "initializing":
       return (
         <>
-          <Headline icon={LoaderCircle} tone="active">
-            Starting up
-          </Headline>
+          <Headline job={job}>Starting up</Headline>
           <StageProgress stage={job.initializing_stage} />
           {lease}
         </>
@@ -105,18 +77,14 @@ function Lifecycle({ job }: { job: JobInfo }) {
     case "ready":
       return (
         <>
-          <Headline icon={CirclePlay} tone="active">
-            Running
-          </Headline>
+          <Headline job={job}>Running</Headline>
           {lease}
         </>
       );
     case "terminating":
       return (
         <>
-          <Headline icon={CircleStop} tone="warn">
-            Shutting down
-          </Headline>
+          <Headline job={job}>Shutting down</Headline>
           <p>The host is stopping the job.</p>
         </>
       );
@@ -153,7 +121,7 @@ function Ended({ job }: { job: JobInfo }) {
   const termination =
     job.termination_reason != null
       ? TERMINATION_REASONS[job.termination_reason]
-      : { label: "Ended for an unrecorded reason", tone: "" as const };
+      : { label: "Ended for an unrecorded reason", issue: false };
   const ran =
     job.started_at != null && job.terminated_at != null
       ? Math.round(
@@ -163,8 +131,10 @@ function Ended({ job }: { job: JobInfo }) {
 
   return (
     <>
-      <Headline icon={TONE_ICON[termination.tone]} tone={termination.tone}>
-        {termination.label}
+      <Headline job={job}>
+        {termination.issue
+          ? `Job error: ${termination.label.charAt(0).toLowerCase()}${termination.label.slice(1)}`
+          : termination.label}
       </Headline>
       {job.job_error != null && <blockquote>{job.job_error}</blockquote>}
       <p className="muted">
@@ -185,38 +155,27 @@ function Ended({ job }: { job: JobInfo }) {
 /** What the workload itself reported, independent of how the job fares. */
 function WorkloadResult({ job }: { job: JobInfo }) {
   const finished = job.state === "finalized";
-  let headline: ReactNode;
-  switch (job.task_exit_status) {
-    case "success":
-      headline = (
-        <Headline icon={CircleCheck} tone="ok">
-          Succeeded
-        </Headline>
-      );
-      break;
-    case "failure":
-      headline = (
-        <Headline icon={CircleX} tone="danger">
-          Failed
-        </Headline>
-      );
-      break;
-    default:
-      headline =
-        job.started_at == null && !finished ? (
-          <Headline icon={Hourglass} tone="neutral">
-            Waiting for the job to start
-          </Headline>
-        ) : (
-          <Headline icon={CircleDashed} tone="neutral">
-            {finished ? "No result reported" : "No result reported yet"}
-          </Headline>
-        );
-  }
+  const reported =
+    job.task_exit_status === "success" || job.task_exit_status === "failure";
 
   return (
     <>
-      {headline}
+      {reported ? (
+        <ResultBadge
+          status={job.task_exit_status}
+          size={22}
+          className="outcome-headline result-block"
+        />
+      ) : (
+        <p className="outcome-headline tone-neutral">
+          <CircleDashed size={22} className="life-neutral" aria-hidden="true" />
+          {job.started_at == null && !finished
+            ? "Waiting for the job to start"
+            : finished
+              ? "No result reported"
+              : "No result reported yet"}
+        </p>
+      )}
       {job.exit_message != null && <blockquote>{job.exit_message}</blockquote>}
       <p className="muted">
         Report with{" "}

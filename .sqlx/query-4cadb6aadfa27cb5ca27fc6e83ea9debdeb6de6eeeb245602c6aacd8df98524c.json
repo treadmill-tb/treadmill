@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        select s.kind as \"kind: SubjectKind\", coalesce(u.name, g.name) as name\n        from tml_switchboard.subjects s\n        left join tml_switchboard.users u on u.subject_id = s.subject_id\n        left join tml_switchboard.groups g on g.subject_id = s.subject_id\n        where s.subject_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind: SubjectKind",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.subject_kind",
+            "kind": {
+              "Enum": [
+                "user",
+                "group",
+                "system",
+                "job"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.subjects",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "4cadb6aadfa27cb5ca27fc6e83ea9debdeb6de6eeeb245602c6aacd8df98524c"
+}
