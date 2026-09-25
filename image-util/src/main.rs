@@ -54,6 +54,18 @@ struct AssembleArgs {
     #[arg(long)]
     description: Option<String>,
 
+    /// `org.opencontainers.image.created` (RFC 3339 timestamp).
+    #[arg(long)]
+    created: Option<String>,
+
+    /// `org.opencontainers.image.revision` (source commit).
+    #[arg(long)]
+    revision: Option<String>,
+
+    /// `org.opencontainers.image.documentation` (documentation URL).
+    #[arg(long)]
+    documentation: Option<String>,
+
     /// A layer blob as `ROLE=FORMAT:PATH`, placed on top of ROLE's chain, where
     /// FORMAT is `qcow2` or `raw`. Repeatable: the first blob of a role is its
     /// chain's base, and each later one backs onto the one before it. Only the
@@ -97,6 +109,9 @@ fn assemble_layout(args: &AssembleArgs) -> anyhow::Result<()> {
         title: Some(args.title.clone()),
         version: args.version.clone(),
         description: args.description.clone(),
+        created: args.created.clone(),
+        revision: args.revision.clone(),
+        documentation: args.documentation.clone(),
         base_name: None,
     });
     for layer in &args.layers {
