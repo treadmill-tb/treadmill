@@ -5,6 +5,7 @@ pub mod image;
 pub(crate) mod job;
 pub mod oauth_flow;
 pub mod staged_login;
+pub mod subject;
 pub mod user;
 
 #[derive(Debug, Clone, Copy, sqlx::Type)]

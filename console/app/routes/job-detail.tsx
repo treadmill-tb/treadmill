@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Check, Pencil, Server, User, Users, X } from "lucide-react";
+import { Check, Pencil, Server, X } from "lucide-react";
 import { useState } from "react";
 import { useSearchParams } from "react-router";
 
@@ -21,6 +21,7 @@ import { JobServices } from "../components/job-services";
 import { JobStatus } from "../components/job-status";
 import { RelTime } from "../components/rel-time";
 import { RequestError } from "../components/request-error";
+import { SubjectLink } from "../components/subject";
 import { useResourceWatch } from "../hooks/use-resource-watch";
 import { useUpdateJob } from "../hooks/use-update-job";
 import type { Route } from "./+types/job-detail";
@@ -266,18 +267,8 @@ function JobContext({
         Owner:{" "}
         {job.owner == null ? (
           <span className="muted">none</span>
-        ) : job.owner.kind === "user" ? (
-          <EntityLink
-            kind="user"
-            id={job.owner.id}
-            label={job.owner.name ?? undefined}
-            icon={User}
-          />
         ) : (
-          <span className="subject" title={job.owner.id}>
-            <Users size={14} aria-hidden="true" />{" "}
-            {job.owner.name ?? <ShortId id={job.owner.id} />}
-          </span>
+          <SubjectLink subject={job.owner} />
         )}
       </span>
       <span>

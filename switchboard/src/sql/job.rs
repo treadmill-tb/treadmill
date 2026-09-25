@@ -597,7 +597,7 @@ impl SqlJob {
             .collect();
 
         let owner = match self.owner_id {
-            Some(id) => fetch_subject_ref(&mut *conn, id).await?,
+            Some(id) => super::subject::subject_ref(&mut *conn, id).await?,
             None => None,
         };
 
@@ -803,29 +803,6 @@ impl std::error::Error for JobInfoError {}
 
 /// Recover the manifest digest behind an internal image id (images are
 /// immortal, so a missing row is a data-integrity fault on `job_id`).
-async fn fetch_subject_ref(
-    conn: &mut sqlx::PgConnection,
-    id: Uuid,
-) -> Result<Option<SubjectRef>, sqlx::Error> {
-    let row = sqlx::query!(
-        r#"
-        select s.kind as "kind: SubjectKind", coalesce(u.name, g.name) as name
-        from tml_switchboard.subjects s
-        left join tml_switchboard.users u on u.subject_id = s.subject_id
-        left join tml_switchboard.groups g on g.subject_id = s.subject_id
-        where s.subject_id = $1
-        "#,
-        id,
-    )
-    .fetch_optional(conn)
-    .await?;
-    Ok(row.map(|r| SubjectRef {
-        id,
-        kind: r.kind.into(),
-        name: r.name,
-    }))
-}
-
 async fn digest_for_image_id(
     conn: &mut sqlx::PgConnection,
     id: Uuid,

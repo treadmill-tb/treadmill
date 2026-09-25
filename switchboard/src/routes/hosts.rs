@@ -4,13 +4,13 @@ use axum::extract::Query;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use treadmill_rs::api::switchboard::JobInitSpec;
 use treadmill_rs::api::switchboard::hosts::{
     HostCreateRequest, HostCreateResponse, HostGrantInfo, HostGrantRequest, HostInfo,
     HostListEntry, HostOwnerUpdateRequest, HostPermission as ApiHostPermission,
     HostRequirementsReport, HostRequirementsRequest, HostSpecRejection, HostSpecUpdateRequest,
     HostSpecUpdateResponse, HostSummary, HostUpdateRequest, SpecDocument,
 };
+use treadmill_rs::api::switchboard::{JobInitSpec, SubjectRef};
 use treadmill_rs::host_spec::{HostSpec, HostSpecLatest};
 
 /// Axum handler for the `/hosts/{id}/events` path.
@@ -739,12 +739,20 @@ pub async fn get(
         .map(host_perm_to_api)
         .collect();
 
-    Ok(Json(host_info(host, spec, permissions, &state)))
+    let owner = match host.owner_id {
+        Some(id) => sql::subject::subject_ref(state.pool(), id)
+            .await
+            .or_internal(&format!("naming the owner of host {host_id}"))?,
+        None => None,
+    };
+
+    Ok(Json(host_info(host, owner, spec, permissions, &state)))
 }
 
 /// Assemble the client view of a host from its row and current spec.
 fn host_info(
     host: sql::host::SqlHostListing,
+    owner: Option<SubjectRef>,
     spec: Option<(i32, SpecDocument)>,
     permissions: Vec<ApiHostPermission>,
     state: &AppState,
@@ -754,7 +762,7 @@ fn host_info(
         live: is_live(&host, state),
         host_id: host.host_id,
         name: host.name,
-        owner_id: host.owner_id,
+        owner,
         maintenance: host.maintenance,
         busy: host.busy,
         current_lease_expires_at: host.current_lease_expires_at,

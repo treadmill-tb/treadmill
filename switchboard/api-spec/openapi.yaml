@@ -2833,14 +2833,13 @@ components:
           type: boolean
         name:
           type: string
-        owner_id:
+        owner:
           description: |-
-            Subject (user or group) owning the host; null if it is orphaned, and so
-            manageable only by global admins.
-          type:
-          - string
-          - 'null'
-          format: uuid
+            The owning subject (user or group); null if the host is orphaned, and
+            so manageable only by global admins.
+          anyOf:
+          - $ref: '#/components/schemas/SubjectRef'
+          - type: 'null'
         permissions:
           description: The viewer's permissions on this host.
           type: array

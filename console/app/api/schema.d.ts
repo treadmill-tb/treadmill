@@ -1215,11 +1215,10 @@ export interface components {
             maintenance: boolean;
             name: string;
             /**
-             * Format: uuid
-             * @description Subject (user or group) owning the host; null if it is orphaned, and so
-             *     manageable only by global admins.
+             * @description The owning subject (user or group); null if the host is orphaned, and
+             *     so manageable only by global admins.
              */
-            owner_id?: string | null;
+            owner?: components["schemas"]["SubjectRef"] | null;
             /** @description The viewer's permissions on this host. */
             permissions: components["schemas"]["HostPermission"][];
             /**

@@ -9,11 +9,11 @@ import type { HostSpecV2 } from "../api/host-spec";
 import type { components } from "../api/schema";
 import { LiveBadge } from "../components/badges";
 import { AuditLog } from "../components/audit-log";
-import { EntityLink } from "../components/entity-link";
 import { DutCard } from "../components/dut-card";
 import { HostTopology } from "../components/host-topology";
 import { RelTime } from "../components/rel-time";
 import { RequestError } from "../components/request-error";
+import { SubjectLink } from "../components/subject";
 import {
   ShareDialog,
   type ApplyAccess,
@@ -154,7 +154,7 @@ function HostShareDialog({
 }: {
   open: boolean;
   onClose: () => void;
-  host: { host_id: string; name: string; owner_id?: string | null };
+  host: { host_id: string; name: string; owner?: { id: string } | null };
 }) {
   const invalidate = useInvalidateHost(host.host_id);
   const grants = $api.useQuery(
@@ -200,7 +200,7 @@ function HostShareDialog({
       open={open}
       onClose={onClose}
       title={host.name}
-      ownerId={host.owner_id}
+      ownerId={host.owner?.id}
       grants={grants.data}
       grantsError={grants.error}
       roles={HOST_ROLES}
@@ -369,18 +369,19 @@ export default function HostDetail({ params }: Route.ComponentProps) {
                 )}
                 <dt>Owner</dt>
                 <dd>
-                  {host.data.owner_id == null ? (
+                  {host.data.owner == null ? (
                     <span className="muted">orphaned</span>
                   ) : (
-                    <EntityLink kind="user" id={host.data.owner_id} />
+                    <SubjectLink subject={host.data.owner} />
                   )}
                   {canManage && (
                     <button
                       type="button"
-                      className="link-btn"
+                      className="icon-btn"
+                      aria-label="Change owner"
                       onClick={() => setShowOwnerForm(!showOwnerForm)}
                     >
-                      change
+                      <Pencil size={14} />
                     </button>
                   )}
                 </dd>
@@ -404,7 +405,7 @@ export default function HostDetail({ params }: Route.ComponentProps) {
           {canManage && showOwnerForm && (
             <OwnerForm
               hostId={params.id}
-              owner={host.data.owner_id}
+              owner={host.data.owner?.id}
               onDone={() => setShowOwnerForm(false)}
             />
           )}

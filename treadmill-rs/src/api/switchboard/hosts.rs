@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-use crate::api::switchboard::JobInitSpec;
+use crate::api::switchboard::{JobInitSpec, SubjectRef};
 use crate::host_spec::{HostSpecLatest, Platform, PlatformKind, Resources};
 
 /// How a [`HostSpec`](crate::host_spec::HostSpec) appears in this API's
@@ -44,9 +44,9 @@ pub enum HostPermission {
 pub struct HostInfo {
     pub host_id: Uuid,
     pub name: String,
-    /// Subject (user or group) owning the host; null if it is orphaned, and so
-    /// manageable only by global admins.
-    pub owner_id: Option<Uuid>,
+    /// The owning subject (user or group); null if the host is orphaned, and
+    /// so manageable only by global admins.
+    pub owner: Option<SubjectRef>,
     /// Whether the host's supervisor has heartbeat recently enough to be
     /// considered schedulable, computed with the deployment's liveness window.
     pub live: bool,

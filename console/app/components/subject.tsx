@@ -3,8 +3,46 @@ import { useState } from "react";
 import { Link } from "react-router";
 
 import { $api } from "../api/client";
+import type { components } from "../api/schema";
 import { EVERYONE_SUBJECT, isUuid, SYSTEM_SUBJECT } from "../api/subjects";
-import { ShortId } from "./entity-link";
+import { EntityLink, ShortId } from "./entity-link";
+
+type SubjectRef = components["schemas"]["SubjectRef"];
+
+export function SubjectLink({ subject }: { subject: SubjectRef }) {
+  const name = subject.name ?? <ShortId id={subject.id} />;
+  switch (subject.kind) {
+    case "user":
+      return (
+        <EntityLink
+          kind="user"
+          id={subject.id}
+          label={subject.name ?? undefined}
+          icon={User}
+        />
+      );
+    case "group":
+      return (
+        <span className="subject" title={subject.id}>
+          <Users size={14} aria-hidden="true" /> {name}
+        </span>
+      );
+    case "job":
+      return <EntityLink kind="job" id={subject.id} />;
+    default:
+      if (subject.id === EVERYONE_SUBJECT)
+        return (
+          <span className="subject">
+            <Globe size={14} aria-hidden="true" /> Everyone
+          </span>
+        );
+      return (
+        <span className="subject" title={subject.id}>
+          {subject.id === SYSTEM_SUBJECT ? "Treadmill" : name}
+        </span>
+      );
+  }
+}
 
 /** A group the viewer isn't in has no name to look up: short ID. */
 export function SubjectName({ id }: { id: string }) {

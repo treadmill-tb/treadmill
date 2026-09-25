@@ -14,12 +14,12 @@ use std::sync::Arc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use treadmill_rs::api::switchboard::WhoAmIResponse;
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::hosts::{
     HostCreateResponse, HostGrantInfo, HostInfo, HostListEntry, HostPermission,
     HostRequirementsReport, HostSpecRejection, HostSpecUpdateResponse,
 };
+use treadmill_rs::api::switchboard::{SubjectKind, WhoAmIResponse};
 use treadmill_rs::host_spec::PlatformKind;
 use treadmill_switchboard::events::EventBus;
 use treadmill_switchboard::registry::OciRegistryClient;
@@ -1625,7 +1625,10 @@ async fn put_owner_transfers_the_host(pool: PgPool) {
         reqwest::StatusCode::UNPROCESSABLE_ENTITY
     );
     let info: HostInfo = get(&bob).await.json().await.unwrap();
-    assert_eq!(info.owner_id, Some(bob_id));
+    let owner = info.owner.expect("the host has an owner");
+    assert_eq!(owner.id, bob_id);
+    assert!(matches!(owner.kind, SubjectKind::User));
+    assert!(owner.name.is_some());
 
     // The owner already in force is a no-op, and records nothing.
     assert_eq!(
@@ -1644,7 +1647,7 @@ async fn put_owner_transfers_the_host(pool: PgPool) {
         reqwest::StatusCode::NO_CONTENT
     );
     let info: HostInfo = get(&carol).await.json().await.unwrap();
-    assert_eq!(info.owner_id, Some(carol_id));
+    assert_eq!(info.owner.map(|o| o.id), Some(carol_id));
     assert_eq!(
         host_event_types(&client, addr, &carol, host_id).await[0],
         "host_owner_changed.v1"
@@ -1660,7 +1663,7 @@ async fn put_owner_transfers_the_host(pool: PgPool) {
     );
     assert_eq!(get(&carol).await.status(), reqwest::StatusCode::FORBIDDEN);
     let info: HostInfo = get(&admin).await.json().await.unwrap();
-    assert_eq!(info.owner_id, None);
+    assert!(info.owner.is_none());
 }
 
 /// The grant routes list, add and revoke entries of a host's ACL, each gated on
