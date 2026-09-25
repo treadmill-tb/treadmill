@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Pencil, Play, RotateCcw, Share2, Wrench } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 import { Link } from "react-router";
 
 import { $api, client } from "../api/client";
@@ -11,6 +11,7 @@ import { LiveBadge } from "../components/badges";
 import { AuditLog } from "../components/audit-log";
 import { DutCard } from "../components/dut-card";
 import { HostTopology } from "../components/host-topology";
+import { OwnerDialog } from "../components/owner-dialog";
 import { RelTime } from "../components/rel-time";
 import { RequestError } from "../components/request-error";
 import { SubjectLink } from "../components/subject";
@@ -46,79 +47,40 @@ function useInvalidateHost(hostId: string) {
     ]);
 }
 
-function OwnerForm({
+function HostOwnerDialog({
   hostId,
   owner,
-  onDone,
+  onClose,
 }: {
   hostId: string;
-  owner: string | null | undefined;
-  onDone: () => void;
+  owner: string | null;
+  onClose: () => void;
 }) {
   const invalidate = useInvalidateHost(hostId);
-  const [value, setValue] = useState(owner ?? "");
   const put = $api.useMutation("put", "/hosts/{id}/owner", {
     onSuccess: async () => {
       await invalidate();
-      onDone();
+      onClose();
     },
   });
 
-  function submit(newOwner: string | null) {
-    const message =
-      newOwner == null
-        ? "Orphan this host? Only global admins will be able to manage it."
-        : `Transfer this host to ${newOwner}? Unless you hold a grant on it or are a global admin, you lose access.`;
-    if (window.confirm(message)) {
-      put.mutate({
-        params: { path: { id: hostId } },
-        body: { owner: newOwner },
-      });
-    }
-  }
-
-  function onSubmit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    submit(value.trim());
-  }
-
   return (
-    <form className="form card" onSubmit={onSubmit}>
-      <label className="field">
-        <span>New owner (user or group UUID)</span>
-        <input
-          required
-          className="mono"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-        />
-      </label>
-      <RequestError
-        error={put.error}
-        messages={{
-          403: "You are not allowed to manage this host.",
-          422: "There is no user or group with that ID.",
-        }}
-      />
-      <div className="toolbar">
-        <button type="submit" disabled={put.isPending}>
-          {put.isPending ? "Transferring…" : "Transfer"}
-        </button>
-        {owner != null && (
-          <button
-            type="button"
-            className="danger"
-            disabled={put.isPending}
-            onClick={() => submit(null)}
-          >
-            Orphan
-          </button>
-        )}
-        <button type="button" onClick={onDone}>
-          Cancel
-        </button>
-      </div>
-    </form>
+    <OwnerDialog
+      current={owner}
+      pending={put.isPending}
+      error={put.error}
+      errorMessages={{
+        403: "You are not allowed to manage this host.",
+        422: "There is no user or group with that ID.",
+      }}
+      onSave={(newOwner) =>
+        put.mutate({
+          params: { path: { id: hostId } },
+          body: { owner: newOwner },
+        })
+      }
+      onClose={onClose}
+    />
   );
 }
 
@@ -219,7 +181,7 @@ export default function HostDetail({ params }: Route.ComponentProps) {
     "/hosts/{id}",
     { params: { path: { id: params.id } } },
   ]);
-  const [showOwnerForm, setShowOwnerForm] = useState(false);
+  const [owning, setOwning] = useState(false);
   const [sharing, setSharing] = useState(false);
   const invalidate = useInvalidateHost(params.id);
   const patch = $api.useMutation("patch", "/hosts/{id}", {
@@ -379,7 +341,7 @@ export default function HostDetail({ params }: Route.ComponentProps) {
                       type="button"
                       className="icon-btn"
                       aria-label="Change owner"
-                      onClick={() => setShowOwnerForm(!showOwnerForm)}
+                      onClick={() => setOwning(true)}
                     >
                       <Pencil size={14} />
                     </button>
@@ -402,11 +364,11 @@ export default function HostDetail({ params }: Route.ComponentProps) {
               </dl>
             </div>
           </section>
-          {canManage && showOwnerForm && (
-            <OwnerForm
+          {canManage && owning && (
+            <HostOwnerDialog
               hostId={params.id}
-              owner={host.data.owner?.id}
-              onDone={() => setShowOwnerForm(false)}
+              owner={host.data.owner?.id ?? null}
+              onClose={() => setOwning(false)}
             />
           )}
 

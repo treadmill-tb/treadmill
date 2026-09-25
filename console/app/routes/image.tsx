@@ -21,11 +21,12 @@ import {
   type Variant,
 } from "../api/images";
 import type { components } from "../api/schema";
-import { EVERYONE_SUBJECT, SYSTEM_SUBJECT } from "../api/subjects";
+import { EVERYONE_SUBJECT } from "../api/subjects";
 import { AuditLog } from "../components/audit-log";
 import { ConfirmDialog, Dialog } from "../components/dialog";
 import { HelpTip } from "../components/help-tip";
 import { ImageShareDialog } from "../components/image-share";
+import { OwnerDialog } from "../components/owner-dialog";
 import { RelTime } from "../components/rel-time";
 import { RequestError } from "../components/request-error";
 import { SubjectLink, SubjectName } from "../components/subject";
@@ -263,9 +264,7 @@ function RenameDialog({
   );
 }
 
-const ME = "me";
-
-function OwnerDialog({
+function ImageOwnerDialog({
   onClose,
   set,
 }: {
@@ -274,101 +273,38 @@ function OwnerDialog({
 }) {
   const invalidate = useInvalidateImage(set.id);
   const whoami = $api.useQuery("get", "/auth/whoami");
-  const me = $api.useQuery("get", "/users/me");
-  const [choice, setChoice] = useState<string>(set.owner?.id ?? ME);
   const put = $api.useMutation("put", "/image-sets/{id}/owner", {
     onSuccess: async () => {
       await invalidate();
       onClose();
     },
   });
-  const myId = me.data?.user_id;
-  const owner = choice === ME ? myId : choice;
 
   return (
-    <Dialog
-      open
-      onClose={onClose}
-      title="Owner"
-      footer={
-        <>
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="primary"
-            disabled={
-              put.isPending || owner === undefined || owner === set.owner?.id
-            }
-            onClick={() =>
-              owner !== undefined &&
-              put.mutate({
-                params: { path: { id: set.id } },
-                body: { owner },
-              })
-            }
-          >
-            {put.isPending ? "Saving…" : "Save"}
-          </button>
-        </>
+    <OwnerDialog
+      current={set.owner?.id ?? null}
+      system={
+        whoami.data?.admin === true ? (
+          <>
+            Treadmill (standard image){" "}
+            <HelpTip label="About standard images">
+              Shown to everyone and preselected for new jobs. Make it public
+              too.
+            </HelpTip>
+          </>
+        ) : undefined
       }
-    >
-      <fieldset className="choice-list">
-        {whoami.data?.admin && (
-          <label>
-            <input
-              type="radio"
-              name="owner"
-              checked={choice === SYSTEM_SUBJECT}
-              onChange={() => setChoice(SYSTEM_SUBJECT)}
-            />
-            <span>
-              <strong>
-                Treadmill (standard image){" "}
-                <HelpTip label="About standard images">
-                  Shown to everyone and preselected for new jobs. Make it public
-                  too.
-                </HelpTip>
-              </strong>
-            </span>
-          </label>
-        )}
-        <label>
-          <input
-            type="radio"
-            name="owner"
-            checked={choice === ME || choice === myId}
-            onChange={() => setChoice(ME)}
-          />
-          <span>
-            <strong>{me.data ? `${me.data.name} (you)` : "You"}</strong>
-          </span>
-        </label>
-        {me.data?.groups
-          .filter((g) => g.group_id !== EVERYONE_SUBJECT)
-          .map((g) => (
-            <label key={g.group_id}>
-              <input
-                type="radio"
-                name="owner"
-                checked={choice === g.group_id}
-                onChange={() => setChoice(g.group_id)}
-              />
-              <span>
-                <strong>Group: {g.name}</strong>
-              </span>
-            </label>
-          ))}
-      </fieldset>
-      <RequestError
-        error={put.error}
-        messages={{
-          403: "You can't give this image to that owner.",
-          422: "That can't own an image.",
-        }}
-      />
-    </Dialog>
+      pending={put.isPending}
+      error={put.error}
+      errorMessages={{
+        403: "You can't give this image to that owner.",
+        422: "That can't own an image.",
+      }}
+      onSave={(owner) =>
+        put.mutate({ params: { path: { id: set.id } }, body: { owner } })
+      }
+      onClose={onClose}
+    />
   );
 }
 
@@ -528,10 +464,11 @@ export default function Image({ params }: Route.ComponentProps) {
           {canManage && (
             <button
               type="button"
-              className="link-btn"
+              className="icon-btn"
+              aria-label="Change owner"
               onClick={() => setDialog("owner")}
             >
-              change
+              <Pencil size={14} />
             </button>
           )}
         </span>
@@ -586,7 +523,7 @@ export default function Image({ params }: Route.ComponentProps) {
         variants={version.data?.members ?? []}
       />
       {dialog === "owner" && (
-        <OwnerDialog onClose={() => setDialog(null)} set={data} />
+        <ImageOwnerDialog onClose={() => setDialog(null)} set={data} />
       )}
       {dialog === "rename" && (
         <RenameDialog onClose={() => setDialog(null)} set={data} />
