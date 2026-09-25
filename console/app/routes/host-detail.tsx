@@ -1,15 +1,17 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Play, RotateCcw, Share2, Wrench } from "lucide-react";
+import { Pencil, Play, RotateCcw, Share2, Wrench } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 
 import { $api, client } from "../api/client";
 import { ApiError } from "../api/errors";
+import type { HostSpecV2 } from "../api/host-spec";
 import type { components } from "../api/schema";
 import { LiveBadge } from "../components/badges";
 import { AuditLog } from "../components/audit-log";
 import { EntityLink } from "../components/entity-link";
-import { HostSpecView } from "../components/host-spec";
+import { DutCard } from "../components/dut-card";
+import { HostTopology } from "../components/host-topology";
 import { RelTime } from "../components/rel-time";
 import { RequestError } from "../components/request-error";
 import {
@@ -18,9 +20,15 @@ import {
   type Role,
 } from "../components/share-dialog";
 import { useResourceWatch } from "../hooks/use-resource-watch";
+import { PlatformIcon } from "../icons";
 import type { Route } from "./+types/host-detail";
 
 type HostPermission = components["schemas"]["HostPermission"];
+
+function formatMemory(mb: number): string {
+  const gb = mb / 1024;
+  return `${gb < 10 ? gb.toFixed(1).replace(/\.0$/, "") : Math.round(gb)} GB`;
+}
 
 /// Invalidate everything a change to a host's owner or ACL can affect: the host
 /// itself (its owner and the viewer's permissions), the listing, its grants and
@@ -230,6 +238,7 @@ export default function HostDetail({ params }: Route.ComponentProps) {
     }
   }
 
+  const spec = host.data?.spec as HostSpecV2 | null | undefined;
   const canManage = host.data?.permissions.includes("manage") ?? false;
   const canStart = host.data?.permissions.includes("start") ?? false;
 
@@ -242,11 +251,33 @@ export default function HostDetail({ params }: Route.ComponentProps) {
       />
       {host.data && (
         <>
-          <h1>
-            Host {host.data.name} <LiveBadge live={host.data.live} />
-            {host.data.maintenance && (
-              <span className="badge warn">maintenance</span>
-            )}{" "}
+          <div className="toolbar">
+            <h1 className="host-name">
+              {spec != null && (
+                <PlatformIcon
+                  platform={spec.platform}
+                  size={28}
+                  aria-hidden="true"
+                />
+              )}
+              {host.data.name}
+              <LiveBadge live={host.data.live} />
+              {host.data.live && host.data.busy && (
+                <span className="badge warn">busy</span>
+              )}
+              {host.data.maintenance && (
+                <span className="badge warn">maintenance</span>
+              )}
+            </h1>
+            <span className="spacer" />
+            {canStart && (
+              <Link
+                className="btn primary"
+                to={`/jobs/new?host=${host.data.host_id}`}
+              >
+                <Play size={14} aria-hidden="true" /> Run job
+              </Link>
+            )}
             {canManage && (
               <button
                 type="button"
@@ -263,53 +294,113 @@ export default function HostDetail({ params }: Route.ComponentProps) {
                   </>
                 )}
               </button>
-            )}{" "}
+            )}
             {canManage && (
               <button type="button" onClick={() => setSharing(true)}>
                 <Share2 size={14} aria-hidden="true" /> Share
               </button>
-            )}{" "}
-            {canStart && (
-              <Link
-                className="btn primary"
-                to={`/jobs/new?host=${host.data.host_id}`}
-              >
-                <Play size={14} aria-hidden="true" /> Run job here
+            )}
+            {canManage && (
+              <Link className="btn" to={`/hosts/${params.id}/spec`}>
+                <Pencil size={14} aria-hidden="true" />{" "}
+                {spec == null ? "Write spec" : "Edit spec"}
               </Link>
             )}
-          </h1>
+          </div>
           <RequestError
             error={patch.error}
             messages={{ 403: "You are not allowed to manage this host." }}
           />
-          <dl className="props">
-            <dt>Id</dt>
-            <dd className="mono">{host.data.host_id}</dd>
-            <dt>Owner</dt>
-            <dd>
-              {host.data.owner_id == null ? (
-                <span className="muted">orphaned (global admins only)</span>
-              ) : (
-                <EntityLink kind="user" id={host.data.owner_id} />
+          <section className="card host-overview">
+            {spec?.description != null && (
+              <p className="muted">{spec.description}</p>
+            )}
+            <div className="host-overview-columns">
+              {spec != null && (
+                <dl className="props">
+                  <dt>Platform</dt>
+                  <dd>
+                    {spec.platform.kind === "physical"
+                      ? `${spec.platform.vendor} · ${spec.platform.model}`
+                      : `${spec.platform.hypervisor} (virtual)`}
+                  </dd>
+                  <dt>Architecture</dt>
+                  <dd className="mono">{spec.platform.arch}</dd>
+                  <dt>Resources</dt>
+                  <dd>
+                    {spec.resources.cpu_cores} cores,{" "}
+                    {formatMemory(spec.resources.memory_mb)} memory,{" "}
+                    {spec.resources.storage_gb} GB storage
+                  </dd>
+                  <dt>Profiles</dt>
+                  <dd>
+                    {spec.platform.profiles.map((p) => (
+                      <span key={p} className="chip mono">
+                        {p}
+                      </span>
+                    ))}
+                  </dd>
+                </dl>
               )}
-              {canManage && (
-                <>
-                  {" "}
-                  <button onClick={() => setShowOwnerForm(!showOwnerForm)}>
-                    Change
-                  </button>
-                </>
-              )}
-            </dd>
-            <dt>Last seen</dt>
-            <dd>
-              <RelTime iso={host.data.last_seen_at} />
-            </dd>
-            <dt>Spec revision</dt>
-            <dd>
-              {host.data.spec_revision ?? <span className="muted">—</span>}
-            </dd>
-          </dl>
+              <dl className="props">
+                {spec != null && (
+                  <>
+                    <dt>Site</dt>
+                    <dd>{spec.site}</dd>
+                    {spec.location != null && (
+                      <>
+                        <dt>Location</dt>
+                        <dd>{spec.location}</dd>
+                      </>
+                    )}
+                    {Object.keys(spec.labels).length > 0 && (
+                      <>
+                        <dt>Labels</dt>
+                        <dd>
+                          {Object.entries(spec.labels).map(([key, value]) => (
+                            <span key={key} className="chip mono">
+                              {key}={value}
+                            </span>
+                          ))}
+                        </dd>
+                      </>
+                    )}
+                  </>
+                )}
+                <dt>Owner</dt>
+                <dd>
+                  {host.data.owner_id == null ? (
+                    <span className="muted">orphaned</span>
+                  ) : (
+                    <EntityLink kind="user" id={host.data.owner_id} />
+                  )}
+                  {canManage && (
+                    <button
+                      type="button"
+                      className="link-btn"
+                      onClick={() => setShowOwnerForm(!showOwnerForm)}
+                    >
+                      change
+                    </button>
+                  )}
+                </dd>
+                <dt>Last seen</dt>
+                <dd>
+                  {host.data.last_seen_at == null ? (
+                    <span className="muted">never</span>
+                  ) : (
+                    <RelTime iso={host.data.last_seen_at} />
+                  )}
+                </dd>
+                <dt>Spec revision</dt>
+                <dd>
+                  {host.data.spec_revision ?? (
+                    <span className="muted">none</span>
+                  )}
+                </dd>
+              </dl>
+            </div>
+          </section>
           {canManage && showOwnerForm && (
             <OwnerForm
               hostId={params.id}
@@ -318,25 +409,39 @@ export default function HostDetail({ params }: Route.ComponentProps) {
             />
           )}
 
-          <section>
-            <h2>Spec</h2>
-            {canManage && (
-              <div className="toolbar">
-                <Link className="btn" to={`/hosts/${params.id}/spec`}>
-                  {host.data.spec == null ? "Write a spec" : "Edit spec"}
-                </Link>
-              </div>
-            )}
-            {host.data.spec == null ? (
-              <p className="muted">
-                This host has no spec. Nothing can be scheduled onto it: there
-                is no description to evaluate a job&rsquo;s predicate against,
-                and no platform profile for an image set to match.
-              </p>
-            ) : (
-              <HostSpecView spec={host.data.spec} />
-            )}
-          </section>
+          {spec == null ? (
+            <p className="muted">No spec. Nothing can be scheduled here.</p>
+          ) : (
+            <>
+              {(spec.duts.length > 0 ||
+                Object.keys(spec.gpio_controllers).length > 0) && (
+                <section>
+                  <h2>Topology</h2>
+                  <HostTopology spec={spec} />
+                </section>
+              )}
+              {spec.duts.length > 0 && (
+                <section>
+                  <h2>Devices</h2>
+                  <div className="dut-cards">
+                    {spec.duts.map((dut, i) => (
+                      <DutCard key={i} dut={dut} />
+                    ))}
+                  </div>
+                </section>
+              )}
+              <section>
+                <details className="collapsible">
+                  <summary>
+                    <h2>Raw spec</h2>
+                  </summary>
+                  <pre className="raw-spec">
+                    <code>{JSON.stringify(spec, null, 2)}</code>
+                  </pre>
+                </details>
+              </section>
+            </>
+          )}
 
           {canManage && (
             <HostShareDialog
