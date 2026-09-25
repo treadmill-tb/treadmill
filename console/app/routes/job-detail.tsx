@@ -15,6 +15,7 @@ import { EntityLink, ShortId } from "../components/entity-link";
 import { HostCard, UnreadableHostCard } from "../components/host-card";
 import { JobDetails } from "../components/job-details";
 import { JobLog, parseReplayBytes } from "../components/job-log";
+import { JobInfoName } from "../components/job-name";
 import { RerunButtons } from "../components/job-rerun";
 import { JobServices } from "../components/job-services";
 import { JobStatus } from "../components/job-status";
@@ -76,7 +77,7 @@ export default function JobDetail({ params }: Route.ComponentProps) {
     <>
       <header className="page-head">
         <div className="page-head-title">
-          <JobName job={data} />
+          <JobTitle job={data} />
           <span className="page-id">
             (
             <ShortId id={data.job_id} />
@@ -84,7 +85,7 @@ export default function JobDetail({ params }: Route.ComponentProps) {
           </span>
         </div>
         <div className="page-head-actions">
-          <JobStateBadge state={data.state} stage={data.initializing_stage} />
+          <JobStateBadge job={data} />
           {finalized
             ? canManage && <RerunButtons job={data} />
             : data.permissions.includes("stop") && (
@@ -125,7 +126,10 @@ export default function JobDetail({ params }: Route.ComponentProps) {
         onCancel={() => setConfirmTerminate(false)}
       >
         <p>
-          {data.label != null ? <strong>{data.label}</strong> : "This job"} (
+          <strong>
+            <JobInfoName job={data} />
+          </strong>{" "}
+          (
           <ShortId id={data.job_id} />) will be stopped
           {data.dispatched_on_host_id != null && " and its host freed up"}. This
           cannot be undone.
@@ -170,7 +174,7 @@ export default function JobDetail({ params }: Route.ComponentProps) {
 }
 
 /** The job's name as the page title; the pencil turns it into a text box. */
-function JobName({ job }: { job: JobInfo }) {
+function JobTitle({ job }: { job: JobInfo }) {
   const update = useUpdateJob(job.job_id);
   const [draft, setDraft] = useState<string | null>(null);
   const cancel = () => {
@@ -196,7 +200,7 @@ function JobName({ job }: { job: JobInfo }) {
       >
         <input
           aria-label="Job name"
-          placeholder="Unnamed Job"
+          placeholder="Name"
           autoFocus
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -230,7 +234,9 @@ function JobName({ job }: { job: JobInfo }) {
 
   return (
     <>
-      <h1>{job.label ?? <em className="muted">Unnamed Job</em>}</h1>
+      <h1>
+        <JobInfoName job={job} />
+      </h1>
       {job.permissions.includes("manage") && (
         <button
           type="button"

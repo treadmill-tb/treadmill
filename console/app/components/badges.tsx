@@ -1,3 +1,16 @@
+import {
+  CircleCheck,
+  CirclePlay,
+  CircleStop,
+  CircleX,
+  Clock,
+  Flag,
+  Hourglass,
+  LoaderCircle,
+  type LucideIcon,
+  TriangleAlert,
+} from "lucide-react";
+
 import type { components } from "../api/schema";
 
 type JobState = components["schemas"]["JobState"];
@@ -10,14 +23,62 @@ type TerminationReason = components["schemas"]["TerminationReason"];
 
 export type Tone = "ok" | "active" | "warn" | "danger" | "";
 
-const JOB_STATES: Record<JobState, { label: string; tone: Tone }> = {
-  queued: { label: "Queued", tone: "warn" },
-  assigned: { label: "Assigned", tone: "warn" },
-  initializing: { label: "Starting up", tone: "active" },
-  ready: { label: "Running", tone: "active" },
-  terminating: { label: "Shutting down", tone: "warn" },
-  finalized: { label: "Finished", tone: "" },
+export type LifecycleTone = "neutral" | "active" | "warn";
+
+export interface Lifecycle {
+  label: string;
+  icon: LucideIcon;
+  tone: LifecycleTone;
+  spin?: boolean;
+}
+
+const LIFECYCLE: Record<JobState, Lifecycle> = {
+  queued: { label: "Queued", icon: Clock, tone: "neutral" },
+  assigned: { label: "Assigned", icon: Hourglass, tone: "neutral" },
+  initializing: {
+    label: "Starting up",
+    icon: LoaderCircle,
+    tone: "active",
+    spin: true,
+  },
+  ready: { label: "Running", icon: CirclePlay, tone: "active" },
+  terminating: { label: "Shutting down", icon: CircleStop, tone: "active" },
+  finalized: { label: "Finished", icon: Flag, tone: "neutral" },
 };
+
+const JOB_ERROR: Lifecycle = {
+  label: "Job error",
+  icon: TriangleAlert,
+  tone: "warn",
+};
+
+export function lifecycle(job: {
+  state: JobState;
+  termination_reason?: TerminationReason | null;
+}): Lifecycle {
+  return job.state === "finalized" &&
+    job.termination_reason != null &&
+    TERMINATION_REASONS[job.termination_reason].issue
+    ? JOB_ERROR
+    : LIFECYCLE[job.state];
+}
+
+export function LifecycleIcon({
+  life,
+  size = 16,
+}: {
+  life: Lifecycle;
+  size?: number;
+}) {
+  const Icon = life.icon;
+  return (
+    <Icon
+      size={size}
+      className={`life-icon life-${life.tone}${life.spin ? " spin" : ""}`}
+      aria-hidden="true"
+    />
+  );
+}
 
 export const INITIALIZING_STAGES: Record<JobInitializingStage, string> = {
   starting: "Starting",
@@ -27,63 +88,71 @@ export const INITIALIZING_STAGES: Record<JobInitializingStage, string> = {
   booting: "Booting",
 };
 
-const TASK_EXITS: Record<TaskExitStatus, { label: string; tone: Tone }> = {
-  pending: { label: "No result yet", tone: "active" },
-  success: { label: "Succeeded", tone: "ok" },
-  failure: { label: "Failed", tone: "danger" },
-};
-
 /** Why a job ended, as a sentence a newcomer understands. */
 export const TERMINATION_REASONS: Record<
   TerminationReason,
-  { label: string; tone: Tone }
+  { label: string; issue: boolean }
 > = {
-  workload_exited: { label: "Job terminated normally", tone: "" },
-  workload_self_terminated: { label: "Job shut itself down", tone: "" },
-  user_terminated: { label: "Terminated by a user", tone: "" },
-  execution_timeout: { label: "Stopped when its lease ran out", tone: "warn" },
-  preempted: {
-    label: "Host reclaimed after the lease ended",
-    tone: "warn",
+  workload_exited: { label: "Job terminated normally", issue: false },
+  workload_self_terminated: { label: "Job shut itself down", issue: false },
+  user_terminated: { label: "Terminated by a user", issue: false },
+  execution_timeout: { label: "Stopped when its lease ran out", issue: true },
+  preempted: { label: "Host reclaimed after the lease ended", issue: true },
+  queue_timeout: { label: "Gave up waiting for a host", issue: true },
+  image_error: { label: "The image could not be used", issue: true },
+  host_match_error: { label: "No host matched the job", issue: true },
+  host_start_failure: {
+    label: "The host failed to start the job",
+    issue: true,
   },
-  queue_timeout: { label: "Gave up waiting for a host", tone: "warn" },
-  image_error: { label: "Its image could not be used", tone: "danger" },
-  host_match_error: { label: "No host matched it", tone: "danger" },
-  host_start_failure: { label: "The host failed to start it", tone: "danger" },
-  host_dropped_job: { label: "Host dropped job", tone: "danger" },
-  host_unreachable: { label: "The host became unreachable", tone: "danger" },
-  resume_failed: { label: "Resuming job failed", tone: "danger" },
-  internal_error: { label: "Switchboard error", tone: "danger" },
+  host_dropped_job: { label: "The host dropped the job", issue: true },
+  host_unreachable: { label: "The host became unreachable", issue: true },
+  resume_failed: { label: "Resuming the job failed", issue: true },
+  internal_error: { label: "Internal error on the host", issue: true },
 };
 
 export function JobStateBadge({
-  state,
-  stage,
+  job,
 }: {
-  state: JobState;
-  stage?: JobInitializingStage | null;
+  job: {
+    state: JobState;
+    initializing_stage?: JobInitializingStage | null;
+    termination_reason?: TerminationReason | null;
+  };
 }) {
-  const { label, tone } = JOB_STATES[state];
+  const life = lifecycle(job);
   return (
-    <span className={`badge ${tone}`} title={state}>
-      {state === "initializing" && stage != null
-        ? `${label}: ${INITIALIZING_STAGES[stage].toLowerCase()}`
-        : label}
+    <span className={`badge state-${life.tone}`} title={job.state}>
+      <LifecycleIcon life={life} size={14} />
+      {job.state === "initializing" && job.initializing_stage != null
+        ? `${life.label}: ${INITIALIZING_STAGES[job.initializing_stage].toLowerCase()}`
+        : life.label}
     </span>
   );
 }
 
-export function TaskExitBadge({
+const RESULTS: Record<
+  Exclude<TaskExitStatus, "pending">,
+  { label: string; icon: LucideIcon; tone: "ok" | "danger" }
+> = {
+  success: { label: "Succeeded", icon: CircleCheck, tone: "ok" },
+  failure: { label: "Failed", icon: CircleX, tone: "danger" },
+};
+
+export function ResultBadge({
   status,
+  size = 14,
+  className = "badge",
 }: {
   status: TaskExitStatus | null | undefined;
+  size?: number;
+  className?: string;
 }) {
-  if (status == null) {
-    return <span className="muted">—</span>;
-  }
-  const { label, tone } = TASK_EXITS[status];
+  if (status == null || status === "pending") return null;
+  const { label, icon: Icon, tone } = RESULTS[status];
   return (
-    <span className={`badge ${tone}`} title={status}>
+    <span className={`${className} result-${tone}`} title={status}>
+      <Icon size={size} className="filled" aria-hidden="true" />
       {label}
     </span>
   );
@@ -97,9 +166,9 @@ export function TerminationBadge({
   if (reason == null) {
     return <span className="muted">—</span>;
   }
-  const { label, tone } = TERMINATION_REASONS[reason];
+  const { label, issue } = TERMINATION_REASONS[reason];
   return (
-    <span className={`badge ${tone}`} title={reason}>
+    <span className={`badge ${issue ? "warn" : ""}`} title={reason}>
       {label}
     </span>
   );

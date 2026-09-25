@@ -8,6 +8,7 @@ import type { components } from "../api/schema";
 import { Digest } from "./digest";
 import { EntityLink, ShortId, shortId } from "./entity-link";
 import { formatSeconds } from "./job-lease";
+import { JobInfoName } from "./job-name";
 import { RelTime } from "./rel-time";
 
 type JobInfo = components["schemas"]["JobInfo"];
@@ -132,7 +133,7 @@ function JobOrigin({ jobId }: { jobId: string }) {
   return (
     <>
       <Link to={`/jobs/${jobId}`} className="origin-name">
-        {info.data.label ?? <em>Unnamed Job</em>}
+        <JobInfoName job={info.data} />
       </Link>{" "}
       <span className="muted">
         (<ShortId id={jobId} />)

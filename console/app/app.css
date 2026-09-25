@@ -596,6 +596,84 @@ dl.props > .spec-field:last-child > dd {
   background: var(--danger-mark);
 }
 
+.badge.state-active {
+  border-color: transparent;
+  background: var(--active-tint);
+  color: var(--active);
+}
+
+.badge.state-warn {
+  border-color: transparent;
+  background: var(--warn-tint);
+  color: var(--warn);
+}
+
+.life-neutral {
+  color: var(--pico-muted-color);
+}
+
+.life-active {
+  color: var(--active-mark);
+}
+
+.life-warn {
+  color: var(--warn-mark);
+}
+
+.spin {
+  animation: spin 1.2s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+
+.result-ok {
+  border-color: transparent;
+  background: var(--ok-tint);
+  color: var(--ok);
+}
+
+.result-danger {
+  border-color: transparent;
+  background: var(--danger-tint);
+  color: var(--danger);
+}
+
+.result-ok > .filled {
+  color: var(--ok-mark);
+}
+
+.result-danger > .filled {
+  color: var(--danger-mark);
+}
+
+.filled circle {
+  fill: currentColor;
+}
+
+.filled path {
+  stroke: var(--pico-background-color);
+}
+
+.outcome-headline.result-block {
+  display: inline-flex;
+  padding: 0.25rem 0.75rem 0.25rem 0.5rem;
+  border-radius: var(--pico-border-radius);
+}
+
+.job-name-sep {
+  color: var(--pico-muted-color);
+}
+
 /* Data values rendered as tokens (platform profiles, DUT boards, …). */
 .chip {
   display: inline-flex;

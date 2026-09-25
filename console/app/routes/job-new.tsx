@@ -14,6 +14,7 @@ import type { components } from "../api/schema";
 import { ShortId } from "../components/entity-link";
 import { HostChoice, type HostMode } from "../components/host-choice";
 import { ImageChoice } from "../components/image-choice";
+import { JobInfoName } from "../components/job-name";
 import {
   availabilityVerdict,
   HostItem,
@@ -555,11 +556,9 @@ function JobForm({ base }: { base: Base | null }) {
       <h1>
         {job === undefined ? (
           "Enqueue Job"
-        ) : job.label != null ? (
-          `${action} Job "${job.label}"`
         ) : (
           <>
-            {action} <em>Unnamed Job</em>
+            {action} Job <JobInfoName job={job} />
           </>
         )}
       </h1>
@@ -584,7 +583,7 @@ function JobForm({ base }: { base: Base | null }) {
                     {describeImage(job.image.reference, sets.data)}
                   </strong>
                   <span className="muted">
-                    from {job.label ?? <em>Unnamed Job</em>} (
+                    from <JobInfoName job={job} /> (
                     <Link to={`/jobs/${job.job_id}`}>
                       <ShortId id={job.job_id} />
                     </Link>

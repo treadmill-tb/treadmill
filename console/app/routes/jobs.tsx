@@ -6,7 +6,7 @@ import { ApiError } from "../api/errors";
 import type { components } from "../api/schema";
 import {
   JobStateBadge,
-  TaskExitBadge,
+  ResultBadge,
   TerminationBadge,
 } from "../components/badges";
 import { EntityLink } from "../components/entity-link";
@@ -74,7 +74,7 @@ export default function Jobs() {
                           )}
                         </td>
                         <td>
-                          <JobStateBadge state={job.state} />
+                          <JobStateBadge job={job} />
                         </td>
                         <td>
                           <ImageRef
@@ -97,13 +97,13 @@ export default function Jobs() {
                         <td>
                           {job.state === "finalized" ? (
                             <>
-                              <TaskExitBadge status={job.task_exit_status} />{" "}
+                              <ResultBadge status={job.task_exit_status} />{" "}
                               <TerminationBadge
                                 reason={job.termination_reason}
                               />
                             </>
                           ) : (
-                            <TaskExitBadge status={job.task_exit_status} />
+                            <ResultBadge status={job.task_exit_status} />
                           )}
                         </td>
                       </tr>

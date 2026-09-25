@@ -6,6 +6,7 @@ import type { components } from "./schema";
 import { EVERYONE_SUBJECT, SYSTEM_SUBJECT } from "./subjects";
 
 type ImageInfo = components["schemas"]["ImageInfo"];
+type JobImageReference = components["schemas"]["JobImageReference"];
 type ImageSetInfo = components["schemas"]["ImageSetInfo"];
 type ImageSourceInfo = components["schemas"]["ImageSourceInfo"];
 
@@ -17,6 +18,15 @@ export type Variant = {
 
 export function isStandard(set: Pick<ImageSetInfo, "owner_id">): boolean {
   return set.owner_id === SYSTEM_SUBJECT;
+}
+
+export function jobImageName(
+  reference: JobImageReference,
+  setName: string | null | undefined,
+): string {
+  return reference.type === "image"
+    ? shortDigest(reference.manifest_digest)
+    : `${setName ?? "Image"} v${reference.generation}`;
 }
 
 export function shortDigest(digest: string): string {
