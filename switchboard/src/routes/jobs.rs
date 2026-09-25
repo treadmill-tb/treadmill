@@ -18,7 +18,6 @@ use treadmill_rs::api::switchboard::jobs::{
     NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
-use treadmill_rs::host_spec::HostSpec;
 use treadmill_rs::util::Secret;
 
 use crate::audit::feed::{AuditFeedQuery, AuditFeedResponse, fetch_events_for_entity};
@@ -760,7 +759,7 @@ pub async fn get_environment(
         .await
         .or_internal(&format!("fetching the host spec of host {host_id}"))?
     {
-        Some(Ok(stored)) => Some(HostSpec::V1(stored.normalize())),
+        Some(Ok(stored)) => Some(stored.document()),
         Some(Err(e)) => {
             tracing::error!("serving the environment of job {job_id} without a host spec: {e}");
             None

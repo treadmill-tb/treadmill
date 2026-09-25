@@ -5,6 +5,7 @@
 //! write is an insert at the next revision.
 
 use sqlx::PgExecutor;
+use treadmill_rs::api::switchboard::hosts::SpecDocument;
 use treadmill_rs::host_spec::HostSpec;
 use uuid::Uuid;
 
@@ -21,6 +22,13 @@ impl StoredSpec {
     /// through here, so nothing downstream sees an outdated version.
     pub fn normalize(self) -> treadmill_rs::host_spec::HostSpecV1 {
         self.spec.into_latest()
+    }
+
+    pub fn document(self) -> SpecDocument {
+        match serde_json::to_value(HostSpec::V1(self.normalize())) {
+            Ok(serde_json::Value::Object(document)) => document,
+            other => unreachable!("a host spec serializes to an object, got {other:?}"),
+        }
     }
 }
 

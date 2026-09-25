@@ -15,7 +15,7 @@ use crate::api::switchboard::JobRequest;
 use crate::api::switchboard::TosInfoResponse;
 use crate::api::switchboard::WhoAmIResponse;
 use crate::api::switchboard::audit::AuditFeedResponse;
-use crate::api::switchboard::hosts::HostInfo;
+use crate::api::switchboard::hosts::HostListEntry;
 use crate::api::switchboard::images::ImageSetInfo;
 use crate::api::switchboard::jobs::{
     EnqueueJobResponse, JobEnvironment, JobExitStatusRequest, JobInfo, JobServiceAnnouncement,
@@ -255,7 +255,7 @@ impl SwitchboardClient {
 
     /// `GET /hosts` — the read-only host listing (tags, targets, liveness),
     /// e.g. to populate a host picker.
-    pub async fn list_hosts(&self) -> Result<Vec<HostInfo>, ClientError> {
+    pub async fn list_hosts(&self) -> Result<Vec<HostListEntry>, ClientError> {
         self.get_json("/api/v1/hosts").await
     }
 

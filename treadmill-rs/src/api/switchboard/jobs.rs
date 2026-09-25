@@ -9,7 +9,6 @@ use uuid::Uuid;
 
 use crate::api::switchboard::hosts::SpecDocument;
 use crate::api::switchboard::{JobState, SubjectRef, TerminationReason};
-use crate::host_spec::HostSpec;
 use crate::image::Digest;
 use crate::util::Secret;
 
@@ -423,8 +422,7 @@ pub struct JobEnvironment {
     /// The host's current spec, normalized to the latest version, as a document
     /// conforming to the schema at `GET /hosts/spec-schema`. Null for a host
     /// that has never been described.
-    #[schemars(with = "Option<SpecDocument>")]
-    pub host_spec: Option<HostSpec>,
+    pub host_spec: Option<SpecDocument>,
     /// Gateway material, or null when this deployment runs without gateways.
     pub gateway: Option<JobGatewayInfo>,
     /// The job's parameters, secret values included.

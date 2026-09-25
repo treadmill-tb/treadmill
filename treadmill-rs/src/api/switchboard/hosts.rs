@@ -1,8 +1,9 @@
 //! Host-scoped client API types.
 //!
-//! A host's description is its [`HostSpec`]; these types carry the operational
-//! state around it — liveness, maintenance — and none of the supervisor
-//! credentials or worker bookkeeping on the underlying row.
+//! A host's description is its [`HostSpec`](crate::host_spec::HostSpec);
+//! these types carry the operational state around it — liveness, maintenance —
+//! and none of the supervisor credentials or worker bookkeeping on the
+//! underlying row.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -10,16 +11,17 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use crate::api::switchboard::JobInitSpec;
-use crate::host_spec::{HostSpec, HostSpecV1, PlatformKind, Resources};
+use crate::host_spec::{HostSpecV1, PlatformKind, Resources};
 
-/// How a [`HostSpec`] appears in this API's schema: an opaque JSON object.
+/// How a [`HostSpec`](crate::host_spec::HostSpec) appears in this API's
+/// schema: an opaque JSON object.
 ///
 /// The spec's own schema is published at `GET /hosts/spec-schema` and
 /// snapshotted alongside the type. Expanding it here too would put a second
 /// copy in every generated client, and make each new spec version rewrite this
 /// document — for routes that only carry the spec from an admin's editor to the
 /// switchboard and back, and never interpret it.
-pub(super) type SpecDocument = serde_json::Map<String, serde_json::Value>;
+pub type SpecDocument = serde_json::Map<String, serde_json::Value>;
 
 /// A permission on a host. `permissions` on [`HostInfo`] reports which of these
 /// the viewer holds (an owner or global admin holds all of them).
@@ -62,8 +64,7 @@ pub struct HostInfo {
     /// The host's current spec, normalized to the latest version, as a document
     /// conforming to the schema at `GET /hosts/spec-schema`. Null only for a
     /// host that has never been described.
-    #[schemars(with = "Option<SpecDocument>")]
-    pub spec: Option<HostSpec>,
+    pub spec: Option<SpecDocument>,
     /// The revision `spec` was read at. Null exactly when `spec` is.
     pub spec_revision: Option<i32>,
     /// The viewer's permissions on this host.

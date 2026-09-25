@@ -20,7 +20,7 @@ use treadmill_rs::api::switchboard::hosts::{
     HostCreateResponse, HostGrantInfo, HostInfo, HostListEntry, HostPermission,
     HostRequirementsReport, HostSpecRejection, HostSpecUpdateResponse,
 };
-use treadmill_rs::host_spec::{HostSpec, PlatformKind};
+use treadmill_rs::host_spec::PlatformKind;
 use treadmill_switchboard::events::EventBus;
 use treadmill_switchboard::registry::OciRegistryClient;
 use treadmill_switchboard::serve::AppState;
@@ -569,9 +569,12 @@ async fn create_host_writes_the_row_and_its_first_spec(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(host.spec_revision, Some(1));
-    let HostSpec::V1(spec) = host.spec.expect("the host is described");
-    assert_eq!(spec.name, "cam-qemu-04");
-    assert_eq!(spec.platform.profiles(), ["q35-virtio-uefi"]);
+    let spec = host.spec.expect("the host is described");
+    assert_eq!(spec["name"], "cam-qemu-04");
+    assert_eq!(
+        spec["platform"]["profiles"],
+        serde_json::json!(["q35-virtio-uefi"])
+    );
 
     // The id is the client's to choose, so reusing it is a conflict.
     let again = client
@@ -792,8 +795,8 @@ async fn put_spec_appends_a_revision(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(host.spec_revision, Some(2));
-    let HostSpec::V1(spec) = host.spec.expect("the host is described");
-    assert_eq!(spec.site, "oxford");
+    let spec = host.spec.expect("the host is described");
+    assert_eq!(spec["site"], "oxford");
 
     let revisions: Vec<i32> = sqlx::query_scalar(
         "select revision from tml_switchboard.host_specs where host_id = $1 order by revision",
