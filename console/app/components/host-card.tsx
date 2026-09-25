@@ -1,7 +1,8 @@
-import { Cpu, Server } from "lucide-react";
+import { Server } from "lucide-react";
 import { useState } from "react";
 
 import type { components } from "../api/schema";
+import { DevBoardIcon, PlatformIcon } from "../icons";
 import { LiveBadge } from "./badges";
 import { EntityLink, ShortId } from "./entity-link";
 
@@ -27,7 +28,11 @@ export function HostCard({ host }: { host: HostListEntry }) {
   return (
     <aside className="card host-card">
       <h3 className="card-head">
-        <Server size={18} aria-hidden="true" />
+        {spec != null ? (
+          <PlatformIcon platform={spec.platform} size={18} aria-hidden="true" />
+        ) : (
+          <Server size={18} aria-hidden="true" />
+        )}
         Assigned Host
       </h3>
       <p className="host-name">
@@ -60,7 +65,7 @@ export function HostCard({ host }: { host: HostListEntry }) {
         <ul className="dut-list">
           {shown.map((dut, i) => (
             <li key={i}>
-              <Cpu size={18} aria-hidden="true" />
+              <DevBoardIcon size={18} aria-hidden="true" />
               <span>
                 {dut.name != null && <>{dut.name} </>}
                 <span className={dut.name != null ? "muted" : undefined}>

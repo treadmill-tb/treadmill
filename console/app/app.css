@@ -2377,6 +2377,7 @@ dialog h4 {
   margin: 0;
 }
 
+.host-item > strong > svg,
 .host-item-meta > svg,
 .host-details svg {
   vertical-align: -0.125em;
