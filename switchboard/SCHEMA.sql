@@ -1073,11 +1073,10 @@ WHERE
     job_state = 'queued';
 
 
--- `GET /jobs` lists readable jobs newest-first with keyset pagination on
--- `(queued_at, job_id)`. This index (matching that order) turns the listing
--- into an index range scan and makes the keyset seek depth-independent, across
--- all job states (unlike the partial index above).
-CREATE INDEX jobs_queued_at_job_id_idx ON tml_switchboard.jobs (queued_at DESC, job_id DESC);
+CREATE INDEX jobs_listing_idx ON tml_switchboard.jobs (
+    (coalesce(terminated_at, queued_at)) DESC,
+    job_id DESC
+);
 
 
 -- Hosts the job owner is authorized to `start` on, ignoring occupancy,

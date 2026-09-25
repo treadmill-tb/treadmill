@@ -1804,19 +1804,21 @@ export interface components {
         /** @description What happens when a job's lease expires. */
         JobLeaseExpiryAction: "terminate" | "preempt";
         /**
-         * @description Response body of `GET /jobs`: a page of jobs the caller can read, newest
-         *     first.
+         * @description Response body of `GET /jobs`: a page of the jobs matching the query.
          *
-         *     Pagination is **keyset** on `(queued_at, job_id)` descending: when
-         *     `next_cursor` is non-null, pass it back as the `cursor` query parameter to
-         *     fetch the next page; a null `next_cursor` means the last page. There is no
-         *     total count.
+         *     Active jobs are ordered newest-queued first, finished jobs newest-ended
+         *     first. Pagination is **keyset**: when `next_cursor` is non-null, pass it
+         *     back as the `cursor` query parameter, together with the same `include`,
+         *     `state` and `q`, to fetch the next page; a null `next_cursor` means the
+         *     last page. There is no total count.
          */
         JobListResponse: {
             jobs: components["schemas"]["JobSummary"][];
             /** @description Opaque cursor for the next page, or null on the last page. */
             next_cursor?: string | null;
         };
+        /** @enum {string} */
+        JobListState: "active" | "finished";
         /**
          * @description One parameter supplied with a job at enqueue (`POST /jobs`), which the job
          *     reads from `GET /jobs/{id}/environment`.
@@ -2008,7 +2010,17 @@ export interface components {
              * @description The host the job is (or was) dispatched on; null if unplaced.
              */
             dispatched_on_host_id?: string | null;
+            /**
+             * @description The name of that host; null if unplaced, or if the caller cannot read
+             *     the host.
+             */
+            host_name?: string | null;
             image: components["schemas"]["JobImage"];
+            /**
+             * @description The name of the job's image set; null for a concrete image, or if the
+             *     caller cannot read the set.
+             */
+            image_name?: string | null;
             /** Format: uuid */
             job_id: string;
             /** @description The user-provided display label, if any. */
@@ -2019,11 +2031,8 @@ export interface components {
              */
             lease_expires_at?: string | null;
             lease_expiry_action: components["schemas"]["JobLeaseExpiryAction"];
-            /**
-             * Format: uuid
-             * @description Owning subject (user or group); null if orphaned.
-             */
-            owner_id?: string | null;
+            /** @description The owning subject, for display; null if orphaned. */
+            owner?: components["schemas"]["SubjectRef"] | null;
             predecessor?: components["schemas"]["JobPredecessor"] | null;
             /** Format: date-time */
             queued_at: string;
@@ -2074,11 +2083,28 @@ export interface components {
             /** @description Opaque keyset cursor from a previous response's `next_cursor`. */
             cursor?: string | null;
             /**
+             * @description Whose jobs to list, as a comma-separated set of `mine` (owned by the
+             *     caller), `groups` (owned by one of the caller's groups), `shared`
+             *     (granted to the caller or one of their groups), `all` (every job the
+             *     caller can read) and `global` (every job; admins only). The result is
+             *     the union of the listed sets.
+             */
+            include: string;
+            /**
              * Format: uint32
              * @description Maximum number of jobs per page. Omitted or out-of-range values fall
              *     back to the server's default and bounds.
              */
             limit?: number | null;
+            /**
+             * @description A search query of whitespace-separated terms, all of which must match.
+             *     A term `^<hex>` matches jobs whose id ends in those hex digits; any
+             *     other term matches the job's label, image name, host name or owner
+             *     name, ignoring case. Terms of the form `<key>:<value>` are reserved.
+             */
+            q?: string | null;
+            /** @description Whether to list active or finished jobs. */
+            state: components["schemas"]["JobListState"];
         };
         /**
          * @description Request body for `POST /auth/login/complete`: finish a staged login. Sent as
@@ -2459,6 +2485,19 @@ export interface components {
             validate_only?: boolean | null;
         };
         /**
+         * @description What kind of subject an id names.
+         * @enum {string}
+         */
+        SubjectKind: "user" | "group" | "system" | "job";
+        /** @description A reference to a subject, with what is needed to display it. */
+        SubjectRef: {
+            /** Format: uuid */
+            id: string;
+            kind: components["schemas"]["SubjectKind"];
+            /** @description The user's or group's name; null for system subjects. */
+            name?: string | null;
+        };
+        /**
          * @description The user workload's success/failure outcome, exposed as `task_exit_status`
          *     on [`JobInfo`]/[`JobSummary`].
          *
@@ -2783,14 +2822,31 @@ export interface operations {
     };
     listJobs: {
         parameters: {
-            query?: {
+            query: {
                 /** @description Opaque keyset cursor from a previous response's `next_cursor`. */
                 cursor?: string;
+                /**
+                 * @description Whose jobs to list, as a comma-separated set of `mine` (owned by the
+                 *     caller), `groups` (owned by one of the caller's groups), `shared`
+                 *     (granted to the caller or one of their groups), `all` (every job the
+                 *     caller can read) and `global` (every job; admins only). The result is
+                 *     the union of the listed sets.
+                 */
+                include: string;
                 /**
                  * @description Maximum number of jobs per page. Omitted or out-of-range values fall
                  *     back to the server's default and bounds.
                  */
                 limit?: number;
+                /**
+                 * @description A search query of whitespace-separated terms, all of which must match.
+                 *     A term `^<hex>` matches jobs whose id ends in those hex digits; any
+                 *     other term matches the job's label, image name, host name or owner
+                 *     name, ignoring case. Terms of the form `<key>:<value>` are reserved.
+                 */
+                q?: string;
+                /** @description Whether to list active or finished jobs. */
+                state: components["schemas"]["JobListState"];
             };
             header?: never;
             path?: never;
@@ -2799,13 +2855,13 @@ export interface operations {
         requestBody?: never;
         responses: {
             /**
-             * @description Response body of `GET /jobs`: a page of jobs the caller can read, newest
-             *     first.
+             * @description Response body of `GET /jobs`: a page of the jobs matching the query.
              *
-             *     Pagination is **keyset** on `(queued_at, job_id)` descending: when
-             *     `next_cursor` is non-null, pass it back as the `cursor` query parameter to
-             *     fetch the next page; a null `next_cursor` means the last page. There is no
-             *     total count.
+             *     Active jobs are ordered newest-queued first, finished jobs newest-ended
+             *     first. Pagination is **keyset**: when `next_cursor` is non-null, pass it
+             *     back as the `cursor` query parameter, together with the same `include`,
+             *     `state` and `q`, to fetch the next page; a null `next_cursor` means the
+             *     last page. There is no total count.
              */
             200: {
                 headers: {

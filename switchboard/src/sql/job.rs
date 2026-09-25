@@ -1,4 +1,5 @@
 use super::{api_token, image};
+use crate::auth::engine::SubjectKind;
 use crate::matcher::{GroupMember, select_member};
 use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
@@ -13,7 +14,9 @@ use treadmill_rs::api::switchboard::jobs::{
     RestartPolicy as ClientRestartPolicy, RestartPolicyState,
     TaskExitStatus as ClientTaskExitStatus,
 };
-use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState, TerminationReason};
+use treadmill_rs::api::switchboard::{
+    JobInitSpec, JobRequest, JobState, SubjectRef, TerminationReason,
+};
 use treadmill_rs::api::switchboard_supervisor::{
     ImageLocation, ImageSpecification, JobInitializingStage, RestartPolicy, RunningJobState,
     StartJobMessage,
@@ -838,22 +841,32 @@ fn job_predecessor(
     }
 }
 
-/// Fetch a page of jobs the subject `caller` may **read**, newest first.
-///
-/// Visibility mirrors [`crate::auth::engine::can_access_job`] as a set query: a
-/// job is included when `caller` is a global admin (member of the admins group),
-/// owns it via `principals(caller)`, or holds any `job_grant` on it through a
-/// principal. Ordered by `(queued_at, job_id)` descending; when `after` is
-/// `Some((queued_at, job_id))`, only rows strictly before that key are returned
-/// (keyset pagination). At most `limit` rows come back.
+#[derive(Debug, Default)]
+pub struct ListInclude {
+    pub mine: bool,
+    pub groups: bool,
+    pub shared: bool,
+    pub all: bool,
+    pub global: bool,
+}
+
+#[derive(Debug)]
+pub struct ListFilter {
+    pub include: ListInclude,
+    pub finished: bool,
+    pub terms: Vec<String>,
+    pub tails: Vec<String>,
+}
+
 pub async fn list_visible(
     caller: Uuid,
+    filter: &ListFilter,
     after: Option<(DateTime<Utc>, Uuid)>,
     limit: i64,
     conn: impl PgExecutor<'_>,
-) -> Result<Vec<JobSummary>, JobInfoError> {
-    let (after_queued_at, after_job_id) = match after {
-        Some((q, id)) => (Some(q), Some(id)),
+) -> Result<Vec<(DateTime<Utc>, JobSummary)>, JobInfoError> {
+    let (after_sort_at, after_job_id) = match after {
+        Some((t, id)) => (Some(t), Some(id)),
         None => (None, None),
     };
     let rows = sqlx::query!(
@@ -863,6 +876,8 @@ pub async fn list_visible(
           j.job_id,
           j.label,
           j.owner_id,
+          os.kind as "owner_kind?: SubjectKind",
+          coalesce(u.name, g.name) as owner_name,
           j.job_state as "job_state: SqlJobState",
           j.resume_job_id,
           j.restart_job_id,
@@ -870,33 +885,88 @@ pub async fn list_visible(
           r.manifest_digest as "resolved_digest?",
           j.image_set_id,
           j.image_set_generation,
+          s.display_name as "image_name?",
           j.queued_at,
           j.started_at,
           j.terminated_at,
+          coalesce(j.terminated_at, j.queued_at) as "sort_at!",
           (j.started_at + j.lease_duration) as "lease_expires_at?",
           j.lease_expiry_action as "lease_expiry_action: SqlLeaseExpiryAction",
           j.dispatched_on_host_id,
+          h.name as "host_name?",
           j.termination_reason as "termination_reason: SqlTerminationReason",
           j.task_exit_status as "task_exit_status: SqlTaskExitStatus"
         from tml_switchboard.jobs j
         left join tml_switchboard.images i on i.id = j.image_id
         left join tml_switchboard.images r on r.id = j.resolved_image_id
-        where (
+        left join tml_switchboard.subjects os on os.subject_id = j.owner_id
+        left join tml_switchboard.users u on u.subject_id = j.owner_id
+        left join tml_switchboard.groups g on g.subject_id = j.owner_id
+        left join tml_switchboard.image_sets s on s.id = j.image_set_id and (
             exists (select 1 from p where p.id = $2)
-            or j.owner_id in (select id from p)
+            or s.owner_subject in (select id from p)
             or exists (
-                select 1 from tml_switchboard.job_grants g
-                join p on g.subject_id = p.id
-                where g.job_id = j.job_id
+                select 1 from tml_switchboard.image_set_grants sg
+                join p on sg.subject_id = p.id
+                where sg.set_id = s.id and sg.permission = 'use'
             )
         )
-        and ($3::timestamptz is null or (j.queued_at, j.job_id) < ($3, $4))
-        order by j.queued_at desc, j.job_id desc
-        limit $5
+        left join tml_switchboard.hosts h on h.host_id = j.dispatched_on_host_id and (
+            exists (select 1 from p where p.id = $2)
+            or h.owner_id in (select id from p)
+            or exists (
+                select 1 from tml_switchboard.host_grants hg
+                join p on hg.subject_id = p.id
+                where hg.host_id = h.host_id and hg.permission = 'read'
+            )
+        )
+        where (j.job_state = 'finalized') = $4
+        and (
+            $5
+            or ($6 and j.owner_id = $1)
+            or ($7 and j.owner_id in (select id from p where id <> $1 and id <> $3))
+            or ($8 and exists (
+                select 1 from tml_switchboard.job_grants jg
+                join p on jg.subject_id = p.id
+                where jg.job_id = j.job_id and p.id <> $3
+            ))
+            or ($9 and (
+                j.owner_id in (select id from p)
+                or exists (
+                    select 1 from tml_switchboard.job_grants jg
+                    join p on jg.subject_id = p.id
+                    where jg.job_id = j.job_id
+                )
+            ))
+        )
+        and not exists (
+            select 1 from unnest($10::text[]) t(term)
+            where strpos(lower(coalesce(j.label, '')), lower(t.term)) = 0
+            and strpos(lower(coalesce(s.display_name, '')), lower(t.term)) = 0
+            and strpos(lower(coalesce(h.name, '')), lower(t.term)) = 0
+            and strpos(lower(coalesce(u.name, g.name, '')), lower(t.term)) = 0
+        )
+        and not exists (
+            select 1 from unnest($11::text[]) t(tail)
+            where right(replace(j.job_id::text, '-', ''), length(t.tail)) <> t.tail
+        )
+        and ($12::timestamptz is null
+             or (coalesce(j.terminated_at, j.queued_at), j.job_id) < ($12, $13))
+        order by coalesce(j.terminated_at, j.queued_at) desc, j.job_id desc
+        limit $14
         "#,
         caller,
         crate::auth::engine::ADMINS_GROUP_ID,
-        after_queued_at,
+        crate::auth::engine::EVERYONE_SUBJECT_ID,
+        filter.finished,
+        filter.include.global,
+        filter.include.mine,
+        filter.include.groups,
+        filter.include.shared,
+        filter.include.all,
+        &filter.terms,
+        &filter.tails,
+        after_sort_at,
         after_job_id,
         limit,
     )
@@ -911,30 +981,40 @@ pub async fn list_visible(
             };
             let image_digest = parse(r.image_digest)?;
             let resolved_digest = parse(r.resolved_digest)?;
-            Ok(JobSummary {
-                job_id: r.job_id,
-                label: r.label,
-                owner_id: r.owner_id,
-                state: r.job_state.into(),
-                image: JobImage {
-                    reference: job_image_reference(
-                        image_digest,
-                        r.image_set_id,
-                        r.image_set_generation,
-                        r.job_id,
-                    )?,
-                    resolved_digest,
+            let owner = r.owner_id.zip(r.owner_kind).map(|(id, kind)| SubjectRef {
+                id,
+                kind: kind.into(),
+                name: r.owner_name,
+            });
+            Ok((
+                r.sort_at,
+                JobSummary {
+                    job_id: r.job_id,
+                    label: r.label,
+                    owner,
+                    state: r.job_state.into(),
+                    image: JobImage {
+                        reference: job_image_reference(
+                            image_digest,
+                            r.image_set_id,
+                            r.image_set_generation,
+                            r.job_id,
+                        )?,
+                        resolved_digest,
+                    },
+                    image_name: r.image_name,
+                    predecessor: job_predecessor(r.resume_job_id, r.restart_job_id),
+                    queued_at: r.queued_at,
+                    started_at: r.started_at,
+                    terminated_at: r.terminated_at,
+                    dispatched_on_host_id: r.dispatched_on_host_id,
+                    host_name: r.host_name,
+                    termination_reason: r.termination_reason.map(Into::into),
+                    task_exit_status: r.task_exit_status.map(Into::into),
+                    lease_expires_at: r.lease_expires_at,
+                    lease_expiry_action: r.lease_expiry_action.into(),
                 },
-                predecessor: job_predecessor(r.resume_job_id, r.restart_job_id),
-                queued_at: r.queued_at,
-                started_at: r.started_at,
-                terminated_at: r.terminated_at,
-                dispatched_on_host_id: r.dispatched_on_host_id,
-                termination_reason: r.termination_reason.map(Into::into),
-                task_exit_status: r.task_exit_status.map(Into::into),
-                lease_expires_at: r.lease_expires_at,
-                lease_expiry_action: r.lease_expiry_action.into(),
-            })
+            ))
         })
         .collect()
 }

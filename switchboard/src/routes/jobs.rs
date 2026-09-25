@@ -41,6 +41,19 @@ const MAX_LIST_LIMIT: u32 = 200;
 /// Query parameters for `GET /jobs`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub(crate) struct ListQuery {
+    /// Whose jobs to list, as a comma-separated set of `mine` (owned by the
+    /// caller), `groups` (owned by one of the caller's groups), `shared`
+    /// (granted to the caller or one of their groups), `all` (every job the
+    /// caller can read) and `global` (every job; admins only). The result is
+    /// the union of the listed sets.
+    include: String,
+    /// Whether to list active or finished jobs.
+    state: JobListState,
+    /// A search query of whitespace-separated terms, all of which must match.
+    /// A term `^<hex>` matches jobs whose id ends in those hex digits; any
+    /// other term matches the job's label, image name, host name or owner
+    /// name, ignoring case. Terms of the form `<key>:<value>` are reserved.
+    q: Option<String>,
     /// Maximum number of jobs per page. Omitted or out-of-range values fall
     /// back to the server's default and bounds.
     limit: Option<u32>,
@@ -48,65 +61,124 @@ pub(crate) struct ListQuery {
     cursor: Option<String>,
 }
 
-/// The keyset position encoded in an opaque list `cursor`: the `(queued_at,
-/// job_id)` of the last row of the previous page.
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum JobListState {
+    Active,
+    Finished,
+}
+
 #[derive(Serialize, Deserialize)]
 struct JobCursor {
-    q: DateTime<Utc>,
+    t: DateTime<Utc>,
     id: Uuid,
 }
 
-fn encode_cursor(queued_at: DateTime<Utc>, job_id: Uuid) -> String {
+fn encode_cursor(sort_at: DateTime<Utc>, job_id: Uuid) -> String {
     let json = serde_json::to_vec(&JobCursor {
-        q: queued_at,
+        t: sort_at,
         id: job_id,
     })
     .expect("JobCursor serializes");
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
 }
 
-/// Decode an opaque list cursor; `None` on any malformation (yielding a 400 at
-/// the call site).
 fn decode_cursor(cursor: &str) -> Option<(DateTime<Utc>, Uuid)> {
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(cursor)
         .ok()?;
     let parsed: JobCursor = serde_json::from_slice(&bytes).ok()?;
-    Some((parsed.q, parsed.id))
+    Some((parsed.t, parsed.id))
+}
+
+fn parse_include(include: &str) -> Option<job::ListInclude> {
+    let mut parsed = job::ListInclude::default();
+    for part in include.split(',') {
+        match part {
+            "mine" => parsed.mine = true,
+            "groups" => parsed.groups = true,
+            "shared" => parsed.shared = true,
+            "all" => parsed.all = true,
+            "global" => parsed.global = true,
+            _ => return None,
+        }
+    }
+    Some(parsed)
+}
+
+fn parse_search(q: &str) -> Option<(Vec<String>, Vec<String>)> {
+    let mut terms = Vec::new();
+    let mut tails = Vec::new();
+    for token in q.split_whitespace() {
+        if let Some(tail) = token.strip_prefix('^') {
+            if tail.is_empty() || tail.len() > 32 || !tail.bytes().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            tails.push(tail.to_ascii_lowercase());
+        } else if token
+            .split_once(':')
+            .is_some_and(|(key, _)| !key.is_empty() && key.bytes().all(|c| c.is_ascii_lowercase()))
+        {
+            return None;
+        } else {
+            terms.push(token.to_string());
+        }
+    }
+    Some((terms, tails))
 }
 
 /// Axum handler for `GET /jobs` — a keyset-paginated listing of the jobs the
-/// caller may read (owned via principals, granted, or all for a global admin),
-/// newest first.
+/// caller asked for with `include`, `state` and `q`.
 pub async fn list(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<JobListResponse>, StatusCode> {
-    let limit = query
-        .limit
-        .unwrap_or(DEFAULT_LIST_LIMIT)
-        .clamp(1, MAX_LIST_LIMIT);
-
+    let caller = subject.user_id();
+    let include = parse_include(&query.include).ok_or(StatusCode::BAD_REQUEST)?;
+    let (terms, tails) =
+        parse_search(query.q.as_deref().unwrap_or("")).ok_or(StatusCode::BAD_REQUEST)?;
     let after = match query.cursor.as_deref() {
         Some(c) => Some(decode_cursor(c).ok_or(StatusCode::BAD_REQUEST)?),
         None => None,
     };
+    if include.global
+        && !engine::is_admin(state.pool(), caller)
+            .await
+            .or_internal("checking admin status for listing all jobs")?
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_LIST_LIMIT)
+        .clamp(1, MAX_LIST_LIMIT);
+    let filter = job::ListFilter {
+        include,
+        finished: matches!(query.state, JobListState::Finished),
+        terms,
+        tails,
+    };
 
     // Fetch one extra row to learn whether a further page exists.
     let fetch = i64::from(limit) + 1;
-    let mut jobs = job::list_visible(subject.user_id(), after, fetch, state.pool())
+    let mut jobs = job::list_visible(caller, &filter, after, fetch, state.pool())
         .await
         .or_internal("listing visible jobs")?;
 
     let next_cursor = if jobs.len() as i64 > i64::from(limit) {
         jobs.truncate(limit as usize);
-        jobs.last().map(|j| encode_cursor(j.queued_at, j.job_id))
+        jobs.last()
+            .map(|(sort_at, j)| encode_cursor(*sort_at, j.job_id))
     } else {
         None
     };
 
-    Ok(Json(JobListResponse { jobs, next_cursor }))
+    Ok(Json(JobListResponse {
+        jobs: jobs.into_iter().map(|(_, j)| j).collect(),
+        next_cursor,
+    }))
 }
 
 /// Read tokens are deliberately short-lived. A NATS bearer JWT is only checked

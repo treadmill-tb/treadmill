@@ -30,13 +30,14 @@ use treadmill_rs::api::switchboard::jobs::{
 };
 use treadmill_rs::api::switchboard::jobs::{RestartPolicy, TaskExitStatus};
 use treadmill_rs::api::switchboard::{
-    DEFAULT_HOST_CEL_PREDICATE, JobInitSpec, JobRequest, JobState, WhoAmIResponse,
+    DEFAULT_HOST_CEL_PREDICATE, JobInitSpec, JobRequest, JobState, SubjectKind, WhoAmIResponse,
 };
 use treadmill_rs::image::Digest;
 
 /// The built-in admins group subject (`engine::ADMINS_GROUP_ID`). `alice` is a
 /// member, so she may file a job under it.
 const ADMINS_GROUP_ID: Uuid = Uuid::from_u128(1);
+const EVERYONE_SUBJECT_ID: Uuid = Uuid::from_u128(4);
 use treadmill_switchboard::config::{JobGatewayConfig, JobGatewayEndpoint, LogStreamingConfig};
 use treadmill_switchboard::events::EventBus;
 use treadmill_switchboard::job_gateway::JobGateway;
@@ -301,7 +302,9 @@ async fn list_paginates_readable_jobs_newest_first(pool: PgPool) {
 
     // First page of 2: newest first (j2, j1), with a cursor for more.
     let page1: JobListResponse = client
-        .get(format!("http://{addr}/api/v1/jobs?limit=2"))
+        .get(format!(
+            "http://{addr}/api/v1/jobs?include=mine&state=active&limit=2"
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -315,7 +318,9 @@ async fn list_paginates_readable_jobs_newest_first(pool: PgPool) {
 
     // Second page: the remaining job (j0), no further cursor.
     let page2: JobListResponse = client
-        .get(format!("http://{addr}/api/v1/jobs?limit=2&cursor={cursor}"))
+        .get(format!(
+            "http://{addr}/api/v1/jobs?include=mine&state=active&limit=2&cursor={cursor}"
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -337,7 +342,6 @@ async fn list_scopes_to_readable_jobs(pool: PgPool) {
         .build()
         .unwrap();
 
-    // One job each for alice and bob.
     let alice_token = mock_login_token(&pool, &client, addr, "alice", true).await;
     let alice = whoami(&client, addr, &alice_token).await;
     let alice_tok = latest_token_id(&pool, alice).await;
@@ -348,32 +352,357 @@ async fn list_scopes_to_readable_jobs(pool: PgPool) {
     let bob_tok = latest_token_id(&pool, bob).await;
     let bob_job = seed_job(&pool, bob, bob_tok, &[]).await;
 
-    // `bob` sees only his own job.
-    let bob_list: JobListResponse = client
-        .get(format!("http://{addr}/api/v1/jobs"))
-        .bearer_auth(&bob_token)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let bob_ids: Vec<Uuid> = bob_list.jobs.iter().map(|j| j.job_id).collect();
-    assert_eq!(bob_ids, vec![bob_job]);
+    assert_eq!(
+        list_ids(&client, addr, &bob_token, "include=all&state=active").await,
+        vec![bob_job]
+    );
+    assert_eq!(
+        list_ids(&client, addr, &alice_token, "include=all&state=active").await,
+        vec![alice_job]
+    );
+    let global = list_ids(&client, addr, &alice_token, "include=global&state=active").await;
+    assert!(global.contains(&alice_job));
+    assert!(global.contains(&bob_job));
 
-    // `alice`, a global admin, sees both.
-    let alice_list: JobListResponse = client
-        .get(format!("http://{addr}/api/v1/jobs"))
-        .bearer_auth(&alice_token)
+    let resp = list(&client, addr, &bob_token, "include=global&state=active").await;
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+async fn list(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    query: &str,
+) -> reqwest::Response {
+    client
+        .get(format!("http://{addr}/api/v1/jobs?{query}"))
+        .bearer_auth(token)
         .send()
         .await
         .unwrap()
-        .json()
+}
+
+async fn list_page(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    query: &str,
+) -> JobListResponse {
+    let resp = list(client, addr, token, query).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK, "GET /jobs?{query}");
+    resp.json().await.unwrap()
+}
+
+async fn list_ids(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    query: &str,
+) -> Vec<Uuid> {
+    list_page(client, addr, token, query)
+        .await
+        .jobs
+        .iter()
+        .map(|j| j.job_id)
+        .collect()
+}
+
+async fn seed_group(pool: &PgPool, name: &str, member: Uuid) -> Uuid {
+    let group_id = Uuid::new_v4();
+    sqlx::query("insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'group')")
+        .bind(group_id)
+        .execute(pool)
         .await
         .unwrap();
-    let alice_ids: Vec<Uuid> = alice_list.jobs.iter().map(|j| j.job_id).collect();
-    assert!(alice_ids.contains(&alice_job));
-    assert!(alice_ids.contains(&bob_job));
+    sqlx::query("insert into tml_switchboard.groups (subject_id, name) values ($1, $2)")
+        .bind(group_id)
+        .bind(name)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into tml_switchboard.group_members (group_id, member_id, source, source_ref) \
+         values ($1, $2, 'manual', '')",
+    )
+    .bind(group_id)
+    .bind(member)
+    .execute(pool)
+    .await
+    .unwrap();
+    group_id
+}
+
+async fn grant_job_read(pool: &PgPool, job_id: Uuid, subject: Uuid) {
+    sqlx::query(
+        "insert into tml_switchboard.job_grants (job_id, subject_id, permission) \
+         values ($1, $2, 'read')",
+    )
+    .bind(job_id)
+    .bind(subject)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn set_label(pool: &PgPool, job_id: Uuid, label: &str) {
+    sqlx::query("update tml_switchboard.jobs set label = $2 where job_id = $1")
+        .bind(job_id)
+        .bind(label)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn finalize_at(pool: &PgPool, job_id: Uuid, terminated_at: chrono::DateTime<chrono::Utc>) {
+    sqlx::query(
+        "update tml_switchboard.jobs \
+         set job_state = 'finalized', terminated_at = $2, \
+             termination_reason = 'queue_timeout' \
+         where job_id = $1",
+    )
+    .bind(job_id)
+    .bind(terminated_at)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn list_requires_a_valid_include_and_state(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+
+    for query in [
+        "",
+        "state=active",
+        "include=&state=active",
+        "include=mine,nobody&state=active",
+        "include=mine",
+        "include=mine&state=queued",
+    ] {
+        let resp = list(&client, addr, &token, query).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST, "{query}");
+    }
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn list_includes_the_requested_owners(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &bob_token).await;
+    let bob_tok = latest_token_id(&pool, bob).await;
+    let carol_token = mock_login_token(&pool, &client, addr, "carol", true).await;
+    let carol = whoami(&client, addr, &carol_token).await;
+    let carol_tok = latest_token_id(&pool, carol).await;
+    let group = seed_group(&pool, "tock-ci", bob).await;
+
+    let base = chrono::Utc::now() - chrono::Duration::hours(1);
+    let own = seed_job_at(&pool, bob, bob_tok, base).await;
+    let group_job = seed_job_at(&pool, group, bob_tok, base + chrono::Duration::minutes(1)).await;
+    let shared = seed_job_at(&pool, carol, carol_tok, base + chrono::Duration::minutes(2)).await;
+    grant_job_read(&pool, shared, bob).await;
+    let shared_with_group =
+        seed_job_at(&pool, carol, carol_tok, base + chrono::Duration::minutes(3)).await;
+    grant_job_read(&pool, shared_with_group, group).await;
+    let public = seed_job_at(&pool, carol, carol_tok, base + chrono::Duration::minutes(4)).await;
+    grant_job_read(&pool, public, EVERYONE_SUBJECT_ID).await;
+    seed_job_at(&pool, carol, carol_tok, base + chrono::Duration::minutes(5)).await;
+
+    let ids = |query: &'static str| {
+        let (client, token) = (&client, &bob_token);
+        async move { list_ids(client, addr, token, query).await }
+    };
+    assert_eq!(ids("include=mine&state=active").await, vec![own]);
+    assert_eq!(ids("include=groups&state=active").await, vec![group_job]);
+    assert_eq!(
+        ids("include=mine,groups&state=active").await,
+        vec![group_job, own]
+    );
+    assert_eq!(
+        ids("include=shared&state=active").await,
+        vec![shared_with_group, shared]
+    );
+    assert_eq!(
+        ids("include=all&state=active").await,
+        vec![public, shared_with_group, shared, group_job, own]
+    );
+
+    let page = list_page(&client, addr, &bob_token, "include=groups&state=active").await;
+    let owner = page.jobs[0].owner.as_ref().unwrap();
+    assert_eq!(owner.id, group);
+    assert_eq!(owner.kind, SubjectKind::Group);
+    assert_eq!(owner.name.as_deref(), Some("tock-ci"));
+    let page = list_page(&client, addr, &carol_token, "include=mine&state=active").await;
+    let owner = page.jobs[0].owner.as_ref().unwrap();
+    assert_eq!(owner.kind, SubjectKind::User);
+    assert!(owner.name.is_some());
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn list_orders_finished_jobs_by_when_they_ended(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &token).await;
+    let tok = latest_token_id(&pool, bob).await;
+
+    let base = chrono::Utc::now() - chrono::Duration::hours(1);
+    let first = seed_job_at(&pool, bob, tok, base).await;
+    let second = seed_job_at(&pool, bob, tok, base + chrono::Duration::minutes(1)).await;
+    let third = seed_job_at(&pool, bob, tok, base + chrono::Duration::minutes(2)).await;
+    let active = seed_job_at(&pool, bob, tok, base + chrono::Duration::minutes(3)).await;
+    finalize_at(&pool, first, base + chrono::Duration::minutes(30)).await;
+    finalize_at(&pool, second, base + chrono::Duration::minutes(10)).await;
+    finalize_at(&pool, third, base + chrono::Duration::minutes(20)).await;
+
+    assert_eq!(
+        list_ids(&client, addr, &token, "include=mine&state=active").await,
+        vec![active]
+    );
+    let page1 = list_page(&client, addr, &token, "include=mine&state=finished&limit=2").await;
+    assert_eq!(
+        page1.jobs.iter().map(|j| j.job_id).collect::<Vec<_>>(),
+        vec![first, third]
+    );
+    let cursor = page1.next_cursor.unwrap();
+    let page2 = list_page(
+        &client,
+        addr,
+        &token,
+        &format!("include=mine&state=finished&limit=2&cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(
+        page2.jobs.iter().map(|j| j.job_id).collect::<Vec<_>>(),
+        vec![second]
+    );
+    assert!(page2.next_cursor.is_none());
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn list_searches_names_and_id_tails(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &token).await;
+    let tok = latest_token_id(&pool, bob).await;
+
+    let base = chrono::Utc::now() - chrono::Duration::hours(1);
+    let blinky = seed_job_at(&pool, bob, tok, base).await;
+    set_label(&pool, blinky, "Zephyr blinky (nrf52)").await;
+    let flash = seed_job_at(&pool, bob, tok, base + chrono::Duration::minutes(1)).await;
+    set_label(&pool, flash, "zephyr flash_test").await;
+    let unnamed = seed_job_at(&pool, bob, tok, base + chrono::Duration::minutes(2)).await;
+
+    let search = |q: String| {
+        let (client, token) = (&client, &token);
+        async move {
+            list_ids(
+                client,
+                addr,
+                token,
+                &format!("include=mine&state=active&q={}", urlencode(&q)),
+            )
+            .await
+        }
+    };
+    assert_eq!(search("ZEPHYR".into()).await, vec![flash, blinky]);
+    assert_eq!(search("zephyr (nrf".into()).await, vec![blinky]);
+    assert_eq!(search("_test".into()).await, vec![flash]);
+    assert_eq!(search("%".into()).await, Vec::<Uuid>::new());
+    assert_eq!(search("  ".into()).await, vec![unnamed, flash, blinky]);
+
+    let hex = unnamed.simple().to_string();
+    assert_eq!(search(format!("^{}", &hex[28..])).await, vec![unnamed]);
+    assert_eq!(
+        search(format!("^{}", hex.to_uppercase())).await,
+        vec![unnamed]
+    );
+    let name: String =
+        sqlx::query_scalar("select name from tml_switchboard.users where subject_id = $1")
+            .bind(bob)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(search(name).await, vec![unnamed, flash, blinky]);
+
+    for q in [
+        "^",
+        "^xyz",
+        "owner:^ab12",
+        "^0123456789abcdef0123456789abcdef0",
+    ] {
+        let resp = list(
+            &client,
+            addr,
+            &token,
+            &format!("include=mine&state=active&q={}", urlencode(q)),
+        )
+        .await;
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST, "{q}");
+    }
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn list_names_only_hosts_the_caller_can_read(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let alice_token = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let bob_token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let bob = whoami(&client, addr, &bob_token).await;
+    let tok = latest_token_id(&pool, bob).await;
+    let job_id = seed_job(&pool, bob, tok, &[]).await;
+    mark_running(&pool, job_id, chrono::Utc::now()).await;
+
+    let page = list_page(&client, addr, &bob_token, "include=mine&state=active").await;
+    assert!(page.jobs[0].dispatched_on_host_id.is_some());
+    assert_eq!(page.jobs[0].host_name, None);
+    assert!(
+        list_ids(
+            &client,
+            addr,
+            &bob_token,
+            "include=mine&state=active&q=host-"
+        )
+        .await
+        .is_empty()
+    );
+
+    let page = list_page(&client, addr, &alice_token, "include=global&state=active").await;
+    assert!(
+        page.jobs[0]
+            .host_name
+            .as_deref()
+            .unwrap()
+            .starts_with("host-")
+    );
+}
+
+fn urlencode(s: &str) -> String {
+    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
 #[sqlx::test]
@@ -388,7 +717,7 @@ async fn list_rejects_a_malformed_cursor(pool: PgPool) {
     let token = mock_login_token(&pool, &client, addr, "bob", true).await;
     let resp = client
         .get(format!(
-            "http://{addr}/api/v1/jobs?cursor=not-a-valid-cursor"
+            "http://{addr}/api/v1/jobs?include=mine&state=active&cursor=not-a-valid-cursor"
         ))
         .bearer_auth(&token)
         .send()
@@ -623,7 +952,9 @@ async fn job_label_is_set_at_enqueue_and_mutable_via_patch(pool: PgPool) {
         Some("nightly ci run #3 (v1.2, retry)")
     );
     let list: JobListResponse = client
-        .get(format!("http://{addr}/api/v1/jobs"))
+        .get(format!(
+            "http://{addr}/api/v1/jobs?include=mine&state=active"
+        ))
         .bearer_auth(&token)
         .send()
         .await

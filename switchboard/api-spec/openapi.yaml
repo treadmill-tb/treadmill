@@ -198,6 +198,24 @@ paths:
           type: string
         style: form
       - in: query
+        name: include
+        description: |-
+          Whose jobs to list, as a comma-separated set of `mine` (owned by the
+          caller), `groups` (owned by one of the caller's groups), `shared`
+          (granted to the caller or one of their groups), `all` (every job the
+          caller can read) and `global` (every job; admins only). The result is
+          the union of the listed sets.
+        required: true
+        schema:
+          description: |-
+            Whose jobs to list, as a comma-separated set of `mine` (owned by the
+            caller), `groups` (owned by one of the caller's groups), `shared`
+            (granted to the caller or one of their groups), `all` (every job the
+            caller can read) and `global` (every job; admins only). The result is
+            the union of the listed sets.
+          type: string
+        style: form
+      - in: query
         name: limit
         description: |-
           Maximum number of jobs per page. Omitted or out-of-range values fall
@@ -210,6 +228,29 @@ paths:
           format: uint32
           minimum: 0
         style: form
+      - in: query
+        name: q
+        description: |-
+          A search query of whitespace-separated terms, all of which must match.
+          A term `^<hex>` matches jobs whose id ends in those hex digits; any
+          other term matches the job's label, image name, host name or owner
+          name, ignoring case. Terms of the form `<key>:<value>` are reserved.
+        schema:
+          description: |-
+            A search query of whitespace-separated terms, all of which must match.
+            A term `^<hex>` matches jobs whose id ends in those hex digits; any
+            other term matches the job's label, image name, host name or owner
+            name, ignoring case. Terms of the form `<key>:<value>` are reserved.
+          type: string
+        style: form
+      - in: query
+        name: state
+        description: Whether to list active or finished jobs.
+        required: true
+        schema:
+          description: Whether to list active or finished jobs.
+          $ref: '#/components/schemas/JobListState'
+        style: form
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -217,13 +258,13 @@ paths:
           description: The authenticated account is locked, or lacks permission for this resource.
         '200':
           description: |-
-            Response body of `GET /jobs`: a page of jobs the caller can read, newest
-            first.
+            Response body of `GET /jobs`: a page of the jobs matching the query.
 
-            Pagination is **keyset** on `(queued_at, job_id)` descending: when
-            `next_cursor` is non-null, pass it back as the `cursor` query parameter to
-            fetch the next page; a null `next_cursor` means the last page. There is no
-            total count.
+            Active jobs are ordered newest-queued first, finished jobs newest-ended
+            first. Pagination is **keyset**: when `next_cursor` is non-null, pass it
+            back as the `cursor` query parameter, together with the same `include`,
+            `state` and `q`, to fetch the next page; a null `next_cursor` means the
+            last page. There is no total count.
           content:
             application/json:
               schema:
@@ -3793,13 +3834,13 @@ components:
         const: preempt
     JobListResponse:
       description: |-
-        Response body of `GET /jobs`: a page of jobs the caller can read, newest
-        first.
+        Response body of `GET /jobs`: a page of the jobs matching the query.
 
-        Pagination is **keyset** on `(queued_at, job_id)` descending: when
-        `next_cursor` is non-null, pass it back as the `cursor` query parameter to
-        fetch the next page; a null `next_cursor` means the last page. There is no
-        total count.
+        Active jobs are ordered newest-queued first, finished jobs newest-ended
+        first. Pagination is **keyset**: when `next_cursor` is non-null, pass it
+        back as the `cursor` query parameter, together with the same `include`,
+        `state` and `q`, to fetch the next page; a null `next_cursor` means the
+        last page. There is no total count.
       type: object
       properties:
         jobs:
@@ -3813,6 +3854,11 @@ components:
           - 'null'
       required:
       - jobs
+    JobListState:
+      type: string
+      enum:
+      - active
+      - finished
     JobParameter:
       description: |-
         One parameter supplied with a job at enqueue (`POST /jobs`), which the job
@@ -4106,8 +4152,22 @@ components:
           - string
           - 'null'
           format: uuid
+        host_name:
+          description: |-
+            The name of that host; null if unplaced, or if the caller cannot read
+            the host.
+          type:
+          - string
+          - 'null'
         image:
           $ref: '#/components/schemas/JobImage'
+        image_name:
+          description: |-
+            The name of the job's image set; null for a concrete image, or if the
+            caller cannot read the set.
+          type:
+          - string
+          - 'null'
         job_id:
           type: string
           format: uuid
@@ -4124,12 +4184,11 @@ components:
           format: date-time
         lease_expiry_action:
           $ref: '#/components/schemas/JobLeaseExpiryAction'
-        owner_id:
-          description: Owning subject (user or group); null if orphaned.
-          type:
-          - string
-          - 'null'
-          format: uuid
+        owner:
+          description: The owning subject, for display; null if orphaned.
+          anyOf:
+          - $ref: '#/components/schemas/SubjectRef'
+          - type: 'null'
         predecessor:
           anyOf:
           - $ref: '#/components/schemas/JobPredecessor'
@@ -4234,6 +4293,14 @@ components:
           type:
           - string
           - 'null'
+        include:
+          description: |-
+            Whose jobs to list, as a comma-separated set of `mine` (owned by the
+            caller), `groups` (owned by one of the caller's groups), `shared`
+            (granted to the caller or one of their groups), `all` (every job the
+            caller can read) and `global` (every job; admins only). The result is
+            the union of the listed sets.
+          type: string
         limit:
           description: |-
             Maximum number of jobs per page. Omitted or out-of-range values fall
@@ -4243,6 +4310,22 @@ components:
           - 'null'
           format: uint32
           minimum: 0
+        q:
+          description: |-
+            A search query of whitespace-separated terms, all of which must match.
+            A term `^<hex>` matches jobs whose id ends in those hex digits; any
+            other term matches the job's label, image name, host name or owner
+            name, ignoring case. Terms of the form `<key>:<value>` are reserved.
+          type:
+          - string
+          - 'null'
+        state:
+          description: Whether to list active or finished jobs.
+          allOf:
+          - $ref: '#/components/schemas/JobListState'
+      required:
+      - include
+      - state
     LoginCompleteRequest:
       description: |-
         Request body for `POST /auth/login/complete`: finish a staged login. Sent as
@@ -4794,6 +4877,31 @@ components:
           type:
           - boolean
           - 'null'
+    SubjectKind:
+      description: What kind of subject an id names.
+      type: string
+      enum:
+      - user
+      - group
+      - system
+      - job
+    SubjectRef:
+      description: A reference to a subject, with what is needed to display it.
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          $ref: '#/components/schemas/SubjectKind'
+        name:
+          description: The user's or group's name; null for system subjects.
+          type:
+          - string
+          - 'null'
+      required:
+      - id
+      - kind
     TaskExitStatus:
       description: |-
         The user workload's success/failure outcome, exposed as `task_exit_status`

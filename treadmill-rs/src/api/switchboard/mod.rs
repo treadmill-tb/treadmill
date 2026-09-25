@@ -168,6 +168,25 @@ pub struct MockIdentityInfo {
     pub login_path: String,
 }
 
+/// What kind of subject an id names.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubjectKind {
+    User,
+    Group,
+    System,
+    Job,
+}
+
+/// A reference to a subject, with what is needed to display it.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct SubjectRef {
+    pub id: Uuid,
+    pub kind: SubjectKind,
+    /// The user's or group's name; null for system subjects.
+    pub name: Option<String>,
+}
+
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]

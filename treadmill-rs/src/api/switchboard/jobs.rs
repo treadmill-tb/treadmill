@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::switchboard::hosts::SpecDocument;
-use crate::api::switchboard::{JobState, TerminationReason};
+use crate::api::switchboard::{JobState, SubjectRef, TerminationReason};
 use crate::host_spec::HostSpec;
 use crate::image::Digest;
 use crate::util::Secret;
@@ -608,16 +608,22 @@ pub struct JobSummary {
     pub job_id: Uuid,
     /// The user-provided display label, if any.
     pub label: Option<String>,
-    /// Owning subject (user or group); null if orphaned.
-    pub owner_id: Option<Uuid>,
+    /// The owning subject, for display; null if orphaned.
+    pub owner: Option<SubjectRef>,
     pub state: JobState,
     pub image: JobImage,
+    /// The name of the job's image set; null for a concrete image, or if the
+    /// caller cannot read the set.
+    pub image_name: Option<String>,
     pub predecessor: Option<JobPredecessor>,
     pub queued_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub terminated_at: Option<DateTime<Utc>>,
     /// The host the job is (or was) dispatched on; null if unplaced.
     pub dispatched_on_host_id: Option<Uuid>,
+    /// The name of that host; null if unplaced, or if the caller cannot read
+    /// the host.
+    pub host_name: Option<String>,
     pub termination_reason: Option<TerminationReason>,
     pub task_exit_status: Option<TaskExitStatus>,
     /// When the lease expires; null until the job starts.
@@ -625,13 +631,13 @@ pub struct JobSummary {
     pub lease_expiry_action: JobLeaseExpiryAction,
 }
 
-/// Response body of `GET /jobs`: a page of jobs the caller can read, newest
-/// first.
+/// Response body of `GET /jobs`: a page of the jobs matching the query.
 ///
-/// Pagination is **keyset** on `(queued_at, job_id)` descending: when
-/// `next_cursor` is non-null, pass it back as the `cursor` query parameter to
-/// fetch the next page; a null `next_cursor` means the last page. There is no
-/// total count.
+/// Active jobs are ordered newest-queued first, finished jobs newest-ended
+/// first. Pagination is **keyset**: when `next_cursor` is non-null, pass it
+/// back as the `cursor` query parameter, together with the same `include`,
+/// `state` and `q`, to fetch the next page; a null `next_cursor` means the
+/// last page. There is no total count.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct JobListResponse {
     pub jobs: Vec<JobSummary>,

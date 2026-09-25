@@ -22,7 +22,7 @@ export default function Jobs() {
     queryFn: async ({ pageParam }): Promise<JobListResponse> => {
       const { data, error, response } = await client.GET("/jobs", {
         params: {
-          query: pageParam !== undefined ? { cursor: pageParam } : {},
+          query: { include: "all", state: "active", cursor: pageParam },
         },
       });
       if (data === undefined) {

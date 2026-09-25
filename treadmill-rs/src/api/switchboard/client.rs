@@ -18,8 +18,8 @@ use crate::api::switchboard::audit::AuditFeedResponse;
 use crate::api::switchboard::hosts::HostInfo;
 use crate::api::switchboard::images::ImageSetInfo;
 use crate::api::switchboard::jobs::{
-    EnqueueJobResponse, JobEnvironment, JobExitStatusRequest, JobInfo, JobListResponse,
-    JobServiceAnnouncement, JobServiceCredentials,
+    EnqueueJobResponse, JobEnvironment, JobExitStatusRequest, JobInfo, JobServiceAnnouncement,
+    JobServiceCredentials,
 };
 use crate::api::switchboard::users::{PublicUserProfile, SelfUserProfile, SessionInfo};
 use crate::api::switchboard::{LoginCompleteRequest, LoginResponse, LoginStagedResponse};
@@ -183,31 +183,6 @@ impl SwitchboardClient {
     pub async fn user_events(&self, user_id: Uuid) -> Result<AuditFeedResponse, ClientError> {
         self.get_json(&format!("/api/v1/users/{user_id}/events"))
             .await
-    }
-
-    /// `GET /jobs` — a keyset-paginated page of the jobs the caller may read,
-    /// newest first. Pass `cursor` from a previous response's `next_cursor` to
-    /// fetch the next page, and an optional `limit` (the switchboard clamps it).
-    pub async fn list_jobs(
-        &self,
-        limit: Option<u32>,
-        cursor: Option<&str>,
-    ) -> Result<JobListResponse, ClientError> {
-        // Both parameters are URL-safe as-is (limit is digits; cursor is
-        // URL_SAFE_NO_PAD base64), so no percent-encoding is needed here.
-        let mut params: Vec<String> = Vec::new();
-        if let Some(limit) = limit {
-            params.push(format!("limit={limit}"));
-        }
-        if let Some(cursor) = cursor {
-            params.push(format!("cursor={cursor}"));
-        }
-        let path = if params.is_empty() {
-            "/api/v1/jobs".to_string()
-        } else {
-            format!("/api/v1/jobs?{}", params.join("&"))
-        };
-        self.get_json(&path).await
     }
 
     /// `GET /jobs/{id}` — the full view of one job (caller must be able to read
