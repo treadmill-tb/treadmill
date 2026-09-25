@@ -9,7 +9,7 @@ use treadmill_rs::api::switchboard::hosts::{
     HostCreateRequest, HostCreateResponse, HostGrantInfo, HostGrantRequest, HostInfo,
     HostListEntry, HostOwnerUpdateRequest, HostPermission as ApiHostPermission,
     HostRequirementsReport, HostRequirementsRequest, HostSpecRejection, HostSpecUpdateRequest,
-    HostSpecUpdateResponse, HostSummary, HostUpdateRequest,
+    HostSpecUpdateResponse, HostSummary, HostUpdateRequest, SpecDocument,
 };
 use treadmill_rs::host_spec::{HostSpec, HostSpecV1};
 
@@ -688,7 +688,7 @@ pub async fn get(
         .await
         .or_internal(&format!("reading the spec of host {host_id}"))?
     {
-        Some(Ok(stored)) => Some((stored.revision, stored.spec)),
+        Some(Ok(stored)) => Some((stored.revision, stored.document())),
         // A document this build cannot read is reported as no spec rather than
         // failing the whole request; the listing does the same.
         Some(Err(e)) => {
@@ -711,15 +711,11 @@ pub async fn get(
 /// Assemble the client view of a host from its row and current spec.
 fn host_info(
     host: sql::host::SqlHostListing,
-    spec: Option<(i32, HostSpec)>,
+    spec: Option<(i32, SpecDocument)>,
     permissions: Vec<ApiHostPermission>,
     state: &AppState,
 ) -> HostInfo {
-    let (spec_revision, spec) = match spec {
-        // Normalize on read: nothing downstream sees an old version.
-        Some((revision, spec)) => (Some(revision), Some(HostSpec::V1(spec.into_latest()))),
-        None => (None, None),
-    };
+    let (spec_revision, spec) = spec.unzip();
     HostInfo {
         live: is_live(&host, state),
         host_id: host.host_id,
