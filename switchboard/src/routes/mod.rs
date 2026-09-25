@@ -420,7 +420,7 @@ pub fn api_router() -> ApiRouter<AppState> {
             "/hosts/spec-schema",
             get_with(hosts::spec_schema, |o| {
                 doc(o, "getHostSpecSchema", "Hosts", "Get the host spec schema").description(
-                    "The same artifact as the committed `host_spec.schema.json` snapshot.",
+                    "The same artifact as the committed `host_spec_latest.schema.json` snapshot.",
                 )
             }),
         )

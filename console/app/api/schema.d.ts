@@ -394,7 +394,7 @@ export interface paths {
         };
         /**
          * Get the host spec schema
-         * @description The same artifact as the committed `host_spec.schema.json` snapshot.
+         * @description The same artifact as the committed `host_spec_latest.schema.json` snapshot.
          */
         get: operations["getHostSpecSchema"];
         put?: never;

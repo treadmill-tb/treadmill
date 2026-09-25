@@ -18,12 +18,12 @@
 
 use std::fmt;
 
-use treadmill_rs::host_spec::HostSpecV1;
+use treadmill_rs::host_spec::HostSpecLatest;
 
 /// A compiled host predicate.
 pub trait Predicate: Send + Sync {
     /// Evaluate against one host spec.
-    fn eval(&self, host: &HostSpecV1) -> Result<bool, EvalError>;
+    fn eval(&self, host: &HostSpecLatest) -> Result<bool, EvalError>;
 }
 
 /// A runtime that compiles host predicates.
@@ -81,7 +81,7 @@ impl Engine for CelEngine {
 struct CelPredicate(cel::Program);
 
 impl Predicate for CelPredicate {
-    fn eval(&self, host: &HostSpecV1) -> Result<bool, EvalError> {
+    fn eval(&self, host: &HostSpecLatest) -> Result<bool, EvalError> {
         let mut context = cel::Context::default();
         context
             .add_variable("host", host)
@@ -120,15 +120,16 @@ mod tests {
     use std::collections::BTreeMap;
 
     use treadmill_rs::host_spec::{
-        Console, DebugAccess, DebugProbe, Dut, HostSpecV1, Platform, Resources, SpecVersionV1,
+        Console, DebugAccess, DebugProbe, DutV2, GpioController, GpioPin, HostSpecLatest, Platform,
+        Resources, SpecVersionV2,
     };
     use uuid::Uuid;
 
     use super::*;
 
-    fn host() -> HostSpecV1 {
-        HostSpecV1 {
-            spec_version: SpecVersionV1::V1,
+    fn host() -> HostSpecLatest {
+        HostSpecLatest {
+            spec_version: SpecVersionV2::V2,
             id: Uuid::nil(),
             name: "cam-rpi4-01".into(),
             description: None,
@@ -146,8 +147,18 @@ mod tests {
                 storage_gb: 64,
             },
             labels: BTreeMap::from([("bench".to_string(), "nordic-bringup".to_string())]),
+            gpio_controllers: BTreeMap::from([(
+                "rp1".to_string(),
+                GpioController {
+                    driver: "linux-gpiochip".into(),
+                    config: serde_json::json!({ "label": "pinctrl-rp1" })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                },
+            )]),
             duts: vec![
-                Dut {
+                DutV2 {
                     name: Some("nRF52840-DK #1".into()),
                     serial: Some("1050123456".into()),
                     vendor: "Nordic Semiconductor".into(),
@@ -166,9 +177,21 @@ mod tests {
                         device: "/dev/ttyACM0".into(),
                         baud: 115200,
                     }),
+                    gpio: BTreeMap::from([(
+                        "P0.11".to_string(),
+                        GpioPin {
+                            label: Some("BUTTON1".into()),
+                            modes: vec!["digital_in".into(), "digital_out".into()],
+                            controller: "rp1".into(),
+                            config: serde_json::json!({ "offset": 21 })
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                        },
+                    )]),
                     labels: BTreeMap::from([("radio".to_string(), "ble".to_string())]),
                 },
-                Dut {
+                DutV2 {
                     name: Some("STM32F4 Discovery".into()),
                     serial: None,
                     vendor: "STMicroelectronics".into(),
@@ -177,6 +200,7 @@ mod tests {
                     connectivity: vec!["usb".into()],
                     debug: None,
                     console: None,
+                    gpio: BTreeMap::new(),
                     labels: BTreeMap::new(),
                 },
             ],
@@ -239,6 +263,20 @@ mod tests {
         assert!(matches(
             "'rpi4-uboot-sd' in host.platform.profiles && host.description == null"
         ));
+    }
+
+    #[test]
+    fn gpio_pins_and_controllers() {
+        assert!(matches(
+            "host.duts.exists(d, 'P0.11' in d.gpio \
+             && 'digital_out' in d.gpio['P0.11'].modes \
+             && host.gpio_controllers[d.gpio['P0.11'].controller].driver == 'linux-gpiochip')"
+        ));
+        assert!(matches(
+            "host.duts.exists(d, d.gpio.exists(p, d.gpio[p].label == 'BUTTON1'))"
+        ));
+        assert!(matches("host.duts[0].gpio['P0.11'].config.offset == 21"));
+        assert!(!matches("host.duts[1].gpio.size() > 0"));
     }
 
     /// A misspelled field errors rather than quietly reading as null, which is

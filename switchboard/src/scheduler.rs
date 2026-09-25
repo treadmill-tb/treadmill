@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, TimeDelta, Utc};
 use futures_util::TryStreamExt;
 use sqlx::PgPool;
-use treadmill_rs::host_spec::HostSpecV1;
+use treadmill_rs::host_spec::HostSpecLatest;
 use uuid::Uuid;
 
 use crate::audit::model::{Host as AuditHost, Job as AuditJob, Subject as AuditSubject};
@@ -181,7 +181,7 @@ impl Scheduler {
     /// A row that does not deserialize is dropped with a log line rather than
     /// failing the pass: one corrupt document must not stop the fleet from
     /// scheduling.
-    async fn host_specs(&self) -> anyhow::Result<HashMap<Uuid, HostSpecV1>> {
+    async fn host_specs(&self) -> anyhow::Result<HashMap<Uuid, HostSpecLatest>> {
         let rows = sql::host_spec::current_for_all_hosts(&self.pool).await?;
         Ok(rows
             .into_iter()
@@ -264,7 +264,7 @@ impl Scheduler {
         &self,
         job_id: Uuid,
         host_id: Uuid,
-        host_spec: Option<&HostSpecV1>,
+        host_spec: Option<&HostSpecLatest>,
     ) -> anyhow::Result<AssignOutcome> {
         let cutoff = Utc::now() - self.host_liveness_timeout;
         let mut txn = self.pool.begin().await?;
@@ -414,7 +414,7 @@ fn admitted_by_predicate(
     job_id: Uuid,
     source: &str,
     candidates: Vec<Uuid>,
-    specs: &HashMap<Uuid, HostSpecV1>,
+    specs: &HashMap<Uuid, HostSpecLatest>,
 ) -> Vec<Uuid> {
     let compiled = match CelEngine.compile(source) {
         Ok(compiled) => compiled,
@@ -832,11 +832,11 @@ mod tests {
         dut_boards: &[&str],
     ) -> anyhow::Result<()> {
         use treadmill_rs::host_spec::{
-            Dut, HostSpec, HostSpecV1, Platform, Resources, SpecVersionV1,
+            DutV2, HostSpec, HostSpecV2, Platform, Resources, SpecVersionV2,
         };
 
-        let spec = HostSpec::V1(HostSpecV1 {
-            spec_version: SpecVersionV1::V1,
+        let spec = HostSpec::V2(HostSpecV2 {
+            spec_version: SpecVersionV2::V2,
             id: host_id,
             name: format!("host-{host_id}"),
             description: None,
@@ -853,9 +853,10 @@ mod tests {
                 storage_gb: 64,
             },
             labels: Default::default(),
+            gpio_controllers: Default::default(),
             duts: dut_boards
                 .iter()
-                .map(|board| Dut {
+                .map(|board| DutV2 {
                     name: None,
                     serial: None,
                     vendor: "ACME".into(),
@@ -864,6 +865,7 @@ mod tests {
                     connectivity: vec![],
                     debug: None,
                     console: None,
+                    gpio: Default::default(),
                     labels: Default::default(),
                 })
                 .collect(),
@@ -880,10 +882,10 @@ mod tests {
         profile: &str,
         memory_mb: u32,
     ) -> anyhow::Result<()> {
-        use treadmill_rs::host_spec::{HostSpec, HostSpecV1, Platform, Resources, SpecVersionV1};
+        use treadmill_rs::host_spec::{HostSpec, HostSpecV2, Platform, Resources, SpecVersionV2};
 
-        let spec = HostSpec::V1(HostSpecV1 {
-            spec_version: SpecVersionV1::V1,
+        let spec = HostSpec::V2(HostSpecV2 {
+            spec_version: SpecVersionV2::V2,
             id: host_id,
             name: format!("host-{host_id}"),
             description: None,
@@ -900,6 +902,7 @@ mod tests {
                 storage_gb: 64,
             },
             labels: Default::default(),
+            gpio_controllers: Default::default(),
             duts: vec![],
         });
         let mut conn = pool.acquire().await?;

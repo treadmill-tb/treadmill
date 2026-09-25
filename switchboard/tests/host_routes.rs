@@ -496,10 +496,10 @@ async fn listing_reports_maintenance(pool: PgPool) {
 
 // -- host creation and spec writes ----------------------------------------
 
-/// A valid v1 spec document for `host_id`, as an admin would hand-write it.
+/// A valid v2 spec document for `host_id`, as an admin would hand-write it.
 fn spec_document(host_id: Uuid, name: &str) -> serde_json::Value {
     serde_json::json!({
-        "spec_version": "v1",
+        "spec_version": "v2",
         "id": host_id,
         "name": name,
         "description": null,
@@ -511,6 +511,7 @@ fn spec_document(host_id: Uuid, name: &str) -> serde_json::Value {
         },
         "resources": { "cpu_cores": 8, "memory_mb": 16384, "storage_gb": 200 },
         "labels": {},
+        "gpio_controllers": {},
         "duts": []
     })
 }
@@ -729,7 +730,7 @@ async fn create_host_rejects_a_bad_spec_with_a_field_path(pool: PgPool) {
     let mut spec = spec_document(Uuid::new_v4(), "cam-qemu-04");
     spec["duts"] = serde_json::json!([{
         "name": null, "serial": null, "vendor": "SEGGER", "board": "nrf52840dk",
-        "arch": [], "connectivity": [], "console": null, "labels": {},
+        "arch": [], "connectivity": [], "console": null, "gpio": {}, "labels": {},
         "debug": { "protocol": "swd", "probe": {
             "vendor": "SEGGER", "model": "J-Link OB", "serail": "000683012345"
         } }
@@ -742,6 +743,97 @@ async fn create_host_rejects_a_bad_spec_with_a_field_path(pool: PgPool) {
     let mut spec = spec_document(Uuid::new_v4(), "cam-qemu-04");
     spec["spec_version"] = "v99".into();
     assert_eq!(post(spec).await.path, "spec_version");
+}
+
+#[sqlx::test]
+#[ignore = "requires a database; run via the nextest-db check"]
+async fn create_host_rejects_a_v1_spec(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+
+    let mut spec = spec_document(Uuid::new_v4(), "cam-qemu-04");
+    spec["spec_version"] = "v1".into();
+    spec.as_object_mut().unwrap().remove("gpio_controllers");
+    let resp = client
+        .post(format!("http://{addr}/api/v1/hosts"))
+        .bearer_auth(&admin)
+        .json(&serde_json::json!({ "spec": spec }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+    let rejection: HostSpecRejection = resp.json().await.unwrap();
+    assert_eq!(rejection.path, "spec_version");
+}
+
+#[sqlx::test]
+#[ignore = "requires a database; run via the nextest-db check"]
+async fn create_host_rejects_bad_gpio_and_board(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let admin = mock_login_token(&pool, &client, addr, "alice", true).await;
+
+    let post = async |spec: serde_json::Value| {
+        let resp = client
+            .post(format!("http://{addr}/api/v1/hosts"))
+            .bearer_auth(&admin)
+            .json(&serde_json::json!({ "spec": spec }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+        resp.json::<HostSpecRejection>().await.unwrap()
+    };
+    let dut = |board: &str| {
+        serde_json::json!({
+            "name": null, "serial": null, "vendor": "Nordic Semiconductor", "board": board,
+            "arch": [], "connectivity": [], "debug": null, "console": null, "labels": {},
+            "gpio": { "P0.13": {
+                "label": "LED1", "modes": ["digital_in"],
+                "controller": "rp1", "config": { "offset": 20 }
+            } }
+        })
+    };
+
+    let mut spec = spec_document(Uuid::new_v4(), "cam-rpi5-01");
+    spec["gpio_controllers"] = serde_json::json!({
+        "expander": { "driver": "linux-gpiochip", "config": { "label": "ftdi-cbus" } }
+    });
+    spec["duts"] = serde_json::json!([dut("nrf52840dk")]);
+    assert_eq!(post(spec).await.path, "duts[0].gpio.P0.13.controller");
+
+    let mut spec = spec_document(Uuid::new_v4(), "cam-rpi5-01");
+    spec["gpio_controllers"] = serde_json::json!({
+        "rp1": { "driver": "linux-gpiochip", "config": { "label": "pinctrl-rp1" } }
+    });
+    spec["duts"] = serde_json::json!([dut("nrf52840dk"), dut("nRF52840-DK")]);
+    assert_eq!(post(spec).await.path, "duts[1].board");
+}
+
+#[sqlx::test]
+#[ignore = "requires a database; run via the nextest-db check"]
+async fn stored_v1_spec_reads_back_as_v2(pool: PgPool) {
+    let addr = spawn_server(test_state(pool.clone())).await;
+    let client = client();
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let owner = whoami(&client, addr, &token).await;
+    let host_id = seed_live_host(&pool, "rpi-lab-03", owner).await;
+
+    let host: HostInfo = client
+        .get(format!("http://{addr}/api/v1/hosts/{host_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let spec = host.spec.expect("the host is described");
+    assert_eq!(spec["spec_version"], "v2");
+    assert_eq!(spec["gpio_controllers"], serde_json::json!({}));
+    assert_eq!(spec["duts"][0]["gpio"], serde_json::json!({}));
+    assert_eq!(spec["duts"][0]["board"], "nrf52840dk");
 }
 
 /// Spec writes are append-only: a write adds a revision, the newest is the one
@@ -997,7 +1089,7 @@ async fn spec_schema_is_the_committed_artifact(pool: PgPool) {
 
     let path = std::env::current_dir()
         .unwrap_or_default()
-        .join("../treadmill-rs/protocol-schema/host_spec.schema.json");
+        .join("../treadmill-rs/protocol-schema/host_spec_latest.schema.json");
     let snapshot = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("could not read {}: {err}", path.display()));
     let committed: serde_json::Value = serde_json::from_str(&snapshot).unwrap();

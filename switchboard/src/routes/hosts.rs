@@ -11,7 +11,7 @@ use treadmill_rs::api::switchboard::hosts::{
     HostRequirementsReport, HostRequirementsRequest, HostSpecRejection, HostSpecUpdateRequest,
     HostSpecUpdateResponse, HostSummary, HostUpdateRequest, SpecDocument,
 };
-use treadmill_rs::host_spec::{HostSpec, HostSpecV1};
+use treadmill_rs::host_spec::{HostSpec, HostSpecLatest};
 
 /// Axum handler for the `/hosts/{id}/events` path.
 pub async fn list_events(
@@ -357,16 +357,18 @@ pub async fn revoke_grant(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Axum handler for `GET /hosts/spec-schema` — the JSON Schema of a host spec.
+/// Axum handler for `GET /hosts/spec-schema` — the JSON Schema of the host
+/// spec version accepted on write.
 ///
-/// The same artifact as the committed `host_spec.schema.json` snapshot, served
-/// so the console can render an editor and a field reference from it instead
-/// of vendoring a copy that would drift. schemars lifts the Rust type's
+/// The same artifact as the committed `host_spec_latest.schema.json` snapshot,
+/// served so the console can render an editor and a field reference from it
+/// instead of vendoring a copy that would drift. schemars lifts the Rust type's
 /// rustdoc into `description`, which makes the type the single source for the
 /// validator, the CEL environment and the UI copy alike.
 pub async fn spec_schema() -> Json<serde_json::Value> {
     static SCHEMA: std::sync::LazyLock<serde_json::Value> = std::sync::LazyLock::new(|| {
-        serde_json::to_value(schemars::schema_for!(HostSpec)).expect("the spec schema serializes")
+        serde_json::to_value(schemars::schema_for!(HostSpecLatest))
+            .expect("the spec schema serializes")
     });
     Json(SCHEMA.clone())
 }
@@ -425,29 +427,61 @@ pub async fn match_hosts(
 
 /// Validate a submitted spec document.
 ///
-/// The version is probed first and each version deserialized as its own type:
-/// going through the untagged [`HostSpec`] would report every failure at the
-/// document root. `serde_path_to_error` then names the offending field rather
-/// than a byte offset, which for a hand-edited document is the difference
-/// between a usable error and a puzzle.
-fn validate_spec(document: serde_json::Value) -> Result<HostSpecV1, HostSpecRejection> {
+/// Only the current version is writable; stored older versions are upgraded
+/// on read. The version is probed first so a rejection names the offending
+/// field rather than the document root, and `serde_path_to_error` names that
+/// field rather than a byte offset, which for a hand-edited document is the
+/// difference between a usable error and a puzzle.
+fn validate_spec(document: serde_json::Value) -> Result<HostSpecLatest, HostSpecRejection> {
     let rejection = |path: &str, message: String| HostSpecRejection {
         path: path.to_string(),
         message,
     };
-    match document.get("spec_version").and_then(|v| v.as_str()) {
-        Some("v1") => serde_path_to_error::deserialize::<_, HostSpecV1>(document).map_err(|e| {
-            HostSpecRejection {
-                path: e.path().to_string(),
-                message: e.into_inner().to_string(),
+    let spec = match document.get("spec_version").and_then(|v| v.as_str()) {
+        Some("v2") => {
+            serde_path_to_error::deserialize::<_, HostSpecLatest>(document).map_err(|e| {
+                HostSpecRejection {
+                    path: e.path().to_string(),
+                    message: e.into_inner().to_string(),
+                }
+            })?
+        }
+        Some(other) => {
+            return Err(rejection(
+                "spec_version",
+                format!("must be the current version `v2`, not `{other}`"),
+            ));
+        }
+        None => return Err(rejection("spec_version", "missing".to_string())),
+    };
+    for (i, dut) in spec.duts.iter().enumerate() {
+        if !is_board_identifier(&dut.board) {
+            return Err(rejection(
+                &format!("duts[{i}].board"),
+                "must match `^[a-z0-9][a-z0-9_-]*$`".to_string(),
+            ));
+        }
+        for (pin_name, pin) in &dut.gpio {
+            if !spec.gpio_controllers.contains_key(&pin.controller) {
+                return Err(rejection(
+                    &format!("duts[{i}].gpio.{pin_name}.controller"),
+                    format!(
+                        "no GPIO controller `{}` in `gpio_controllers`",
+                        pin.controller
+                    ),
+                ));
             }
-        }),
-        Some(other) => Err(rejection(
-            "spec_version",
-            format!("unknown spec version `{other}`"),
-        )),
-        None => Err(rejection("spec_version", "missing".to_string())),
+        }
     }
+    Ok(spec)
+}
+
+fn is_board_identifier(board: &str) -> bool {
+    let mut chars = board.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
 fn refuse(rejection: HostSpecRejection) -> Response {
@@ -541,7 +575,7 @@ pub async fn create(
     }
     let spec_revision = sql::host_spec::append(
         host_id,
-        &HostSpec::V1(spec),
+        &HostSpec::V2(spec),
         Some(subject.user_id()),
         &mut txn,
     )
@@ -630,7 +664,7 @@ pub async fn put_spec(
 
     let revision = sql::host_spec::append(
         host_id,
-        &HostSpec::V1(spec),
+        &HostSpec::V2(spec),
         Some(subject.user_id()),
         &mut txn,
     )

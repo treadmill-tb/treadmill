@@ -20,12 +20,12 @@ pub struct StoredSpec {
 impl StoredSpec {
     /// Fold the document forward to the current version. Every read path goes
     /// through here, so nothing downstream sees an outdated version.
-    pub fn normalize(self) -> treadmill_rs::host_spec::HostSpecV1 {
+    pub fn normalize(self) -> treadmill_rs::host_spec::HostSpecLatest {
         self.spec.into_latest()
     }
 
     pub fn document(self) -> SpecDocument {
-        match serde_json::to_value(HostSpec::V1(self.normalize())) {
+        match serde_json::to_value(self.normalize()) {
             Ok(serde_json::Value::Object(document)) => document,
             other => unreachable!("a host spec serializes to an object, got {other:?}"),
         }
@@ -45,19 +45,26 @@ pub struct MalformedSpec {
 fn decode(
     host_id: Uuid,
     revision: i32,
+    spec_version: &str,
     spec: serde_json::Value,
 ) -> Result<StoredSpec, MalformedSpec> {
-    serde_json::from_value(spec)
-        .map(|spec| StoredSpec {
-            host_id,
-            revision,
-            spec,
-        })
-        .map_err(|source| MalformedSpec {
-            host_id,
-            revision,
-            source,
-        })
+    let spec = match spec_version {
+        "v1" => serde_json::from_value(spec).map(HostSpec::V1),
+        "v2" => serde_json::from_value(spec).map(HostSpec::V2),
+        other => Err(serde::de::Error::custom(format!(
+            "unknown spec version `{other}`"
+        ))),
+    };
+    spec.map(|spec| StoredSpec {
+        host_id,
+        revision,
+        spec,
+    })
+    .map_err(|source| MalformedSpec {
+        host_id,
+        revision,
+        source,
+    })
 }
 
 /// The current spec of every host that has one.
@@ -69,7 +76,7 @@ pub async fn current_for_all_hosts(
     conn: impl PgExecutor<'_>,
 ) -> Result<Vec<Result<StoredSpec, MalformedSpec>>, sqlx::Error> {
     let rows = sqlx::query!(
-        r#"select distinct on (host_id) host_id, revision, spec
+        r#"select distinct on (host_id) host_id, revision, spec_version, spec
            from tml_switchboard.host_specs
            order by host_id, revision desc"#,
     )
@@ -78,7 +85,7 @@ pub async fn current_for_all_hosts(
 
     Ok(rows
         .into_iter()
-        .map(|r| decode(r.host_id, r.revision, r.spec))
+        .map(|r| decode(r.host_id, r.revision, &r.spec_version, r.spec))
         .collect())
 }
 
@@ -91,7 +98,7 @@ pub async fn current_for_hosts(
     conn: impl PgExecutor<'_>,
 ) -> Result<Vec<Result<StoredSpec, MalformedSpec>>, sqlx::Error> {
     let rows = sqlx::query!(
-        r#"select distinct on (host_id) host_id, revision, spec
+        r#"select distinct on (host_id) host_id, revision, spec_version, spec
            from tml_switchboard.host_specs
            where host_id = any($1)
            order by host_id, revision desc"#,
@@ -102,7 +109,7 @@ pub async fn current_for_hosts(
 
     Ok(rows
         .into_iter()
-        .map(|r| decode(r.host_id, r.revision, r.spec))
+        .map(|r| decode(r.host_id, r.revision, &r.spec_version, r.spec))
         .collect())
 }
 
@@ -112,7 +119,7 @@ pub async fn current_for_host(
     conn: impl PgExecutor<'_>,
 ) -> Result<Option<Result<StoredSpec, MalformedSpec>>, sqlx::Error> {
     let row = sqlx::query!(
-        r#"select revision, spec
+        r#"select revision, spec_version, spec
            from tml_switchboard.host_specs
            where host_id = $1
            order by revision desc
@@ -122,7 +129,7 @@ pub async fn current_for_host(
     .fetch_optional(conn)
     .await?;
 
-    Ok(row.map(|r| decode(host_id, r.revision, r.spec)))
+    Ok(row.map(|r| decode(host_id, r.revision, &r.spec_version, r.spec)))
 }
 
 /// Append `spec` as the host's next revision, attributed to `written_by`.

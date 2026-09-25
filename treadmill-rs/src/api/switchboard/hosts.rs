@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use crate::api::switchboard::JobInitSpec;
-use crate::host_spec::{HostSpecV1, PlatformKind, Resources};
+use crate::host_spec::{HostSpecLatest, PlatformKind, Resources};
 
 /// How a [`HostSpec`](crate::host_spec::HostSpec) appears in this API's
 /// schema: an opaque JSON object.
@@ -131,8 +131,8 @@ pub struct DutSummary {
     pub board: String,
 }
 
-impl From<HostSpecV1> for HostSummary {
-    fn from(spec: HostSpecV1) -> Self {
+impl From<HostSpecLatest> for HostSummary {
+    fn from(spec: HostSpecLatest) -> Self {
         HostSummary {
             description: spec.description,
             site: spec.site,

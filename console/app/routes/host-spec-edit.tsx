@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router";
 
 import { $api } from "../api/client";
 import { ApiError } from "../api/errors";
+import { specVersion } from "../api/hosts";
 import type { components } from "../api/schema";
 import { JsonEditor } from "../components/json-editor";
 import { RequestError } from "../components/request-error";
@@ -46,13 +47,19 @@ function SpecError({ error }: { error: unknown }) {
   );
 }
 
-function SpecForm({ host }: { host: HostInfo }) {
+function SpecForm({
+  host,
+  version,
+}: {
+  host: HostInfo;
+  version: string | undefined;
+}) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   const [initialValue] = useState(() =>
     JSON.stringify(
-      host.spec ?? { spec_version: "v1", id: host.host_id },
+      host.spec ?? { spec_version: version, id: host.host_id },
       null,
       2,
     ),
@@ -144,16 +151,20 @@ export default function HostSpecEdit({ params }: Route.ComponentProps) {
   const host = $api.useQuery("get", "/hosts/{id}", {
     params: { path: { id: params.id } },
   });
+  const schema = $api.useQuery("get", "/hosts/spec-schema");
 
   return (
     <>
       <h1>Edit host spec</h1>
-      {host.isPending && <p className="muted">Loading…</p>}
+      {(host.isPending || schema.isPending) && (
+        <p className="muted">Loading…</p>
+      )}
       <RequestError
-        error={host.error}
+        error={host.error ?? schema.error}
         messages={{ 403: "No such host, or you cannot read it." }}
       />
       {host.data &&
+        schema.isSuccess &&
         (host.data.permissions.includes("manage") ? (
           <>
             <p className="muted">
@@ -163,7 +174,7 @@ export default function HostSpecEdit({ params }: Route.ComponentProps) {
               )}
               . Saving appends a revision; every earlier one is kept.
             </p>
-            <SpecForm host={host.data} />
+            <SpecForm host={host.data} version={specVersion(schema.data)} />
           </>
         ) : (
           <p className="error">

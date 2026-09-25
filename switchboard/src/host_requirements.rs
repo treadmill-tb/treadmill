@@ -14,7 +14,7 @@ use sqlx::PgPool;
 use treadmill_rs::api::switchboard::hosts::{
     HostMatch, HostPredicateError, HostRequirementsReport,
 };
-use treadmill_rs::host_spec::HostSpecV1;
+use treadmill_rs::host_spec::HostSpecLatest;
 use uuid::Uuid;
 
 use crate::matcher::{GroupMember, select_member};
@@ -92,7 +92,7 @@ pub async fn evaluate(
     };
 
     for host in hosts {
-        let spec: Option<&HostSpecV1> = specs.get(&host.host_id);
+        let spec: Option<&HostSpecLatest> = specs.get(&host.host_id);
 
         // An undescribed host is dispatchable by nothing, so it neither
         // matches nor errors; it is simply one of `authorized`.

@@ -20,6 +20,18 @@ export const STATUS_TONE: Record<HostStatus, Tone> = {
   offline: "danger",
 };
 
+type SpecSchema = {
+  properties?: { spec_version?: { $ref?: string } };
+  $defs?: Record<string, { enum?: unknown[] }>;
+};
+
+export function specVersion(schema: unknown): string | undefined {
+  const { properties, $defs } = (schema ?? {}) as SpecSchema;
+  const name = properties?.spec_version?.$ref?.replace("#/$defs/", "");
+  const version = name === undefined ? undefined : $defs?.[name]?.enum?.[0];
+  return typeof version === "string" ? version : undefined;
+}
+
 export function singleHostPredicate(hostId: string): string {
   return `host.id == "${hostId}"`;
 }

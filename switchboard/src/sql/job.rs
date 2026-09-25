@@ -22,7 +22,7 @@ use treadmill_rs::api::switchboard_supervisor::{
     StartJobMessage,
 };
 use treadmill_rs::connector::JobErrorKind;
-use treadmill_rs::host_spec::HostSpecV1;
+use treadmill_rs::host_spec::HostSpecLatest;
 use treadmill_rs::image::Digest;
 use treadmill_rs::util::Secret;
 use uuid::Uuid;
@@ -477,7 +477,7 @@ impl SqlJob {
     /// member, since such a host advertises no platform profiles.
     pub async fn resolve_image_spec(
         &self,
-        host_spec: Option<&HostSpecV1>,
+        host_spec: Option<&HostSpecLatest>,
         conn: &mut sqlx::PgConnection,
     ) -> Result<(ImageSpecification, Option<Uuid>), ImageResolveError> {
         if let Some(resume_job_id) = self.resume_job_id {
