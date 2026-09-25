@@ -1878,8 +1878,9 @@ export interface components {
             /** @description What kind of job this is. */
             init_spec: components["schemas"]["JobInitSpec"];
             /**
-             * @description An optional display label for the job: printable ASCII, bounded in
-             *     length, not unique. Changeable after enqueue via `PATCH /jobs/{id}`.
+             * @description An optional display label for the job: 1 to 256 characters of ASCII
+             *     letters, digits, spaces and `()_,.#-`, not starting or ending with a
+             *     space, and not unique. Changeable after enqueue via `PATCH /jobs/{id}`.
              * @default null
              */
             label: string | null;
@@ -2522,7 +2523,8 @@ export interface components {
          */
         UpdateJobRequest: {
             /**
-             * @description The job's display label: printable ASCII, bounded in length, not
+             * @description The job's display label: 1 to 256 characters of ASCII letters, digits,
+             *     spaces and `()_,.#-`, not starting or ending with a space, and not
              *     unique.
              */
             label?: string | null;

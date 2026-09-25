@@ -224,8 +224,9 @@ pub struct JobRequest {
     /// What kind of job this is.
     pub init_spec: JobInitSpec,
 
-    /// An optional display label for the job: printable ASCII, bounded in
-    /// length, not unique. Changeable after enqueue via `PATCH /jobs/{id}`.
+    /// An optional display label for the job: 1 to 256 characters of ASCII
+    /// letters, digits, spaces and `()_,.#-`, not starting or ending with a
+    /// space, and not unique. Changeable after enqueue via `PATCH /jobs/{id}`.
     #[serde(default)]
     pub label: Option<String>,
 

@@ -449,19 +449,15 @@ pub async fn enqueue(
     ))
 }
 
-/// A job label must be printable ASCII, non-empty, start & end with an
-/// alphanumeric character, and bounded in length (must be identical or a
+/// A job label must be 1 to 256 characters of ASCII alphanumeric, space, and
+/// `()_,.#-`, not starting or ending with a space (must be identical or a
 /// superset of the constraints enforced by the `valid_label` DB constraint).
 fn label_valid(s: &str) -> bool {
-    let b = s.as_bytes();
-    let len = b.len();
-
-    (1..=256).contains(&len)
-        && b[0].is_ascii_alphanumeric()
-        && b[len - 1].is_ascii_alphanumeric()
-        && b[1..len - 1]
-            .iter()
-            .all(|&c| c.is_ascii_alphanumeric() || c == b' ' || c == b'-' || c == b'_')
+    (1..=256).contains(&s.len())
+        && !s.starts_with(' ')
+        && !s.ends_with(' ')
+        && s.bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b" ()_,.#-".contains(&c))
 }
 
 /// Axum handler for `PATCH /jobs/{id}` — update a job's mutable metadata.
@@ -1116,4 +1112,24 @@ pub async fn service_token(
         token: Secret::new(minted.token),
         expires_at: minted.expires_at,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::label_valid;
+
+    #[test]
+    fn labels_allow_punctuation_but_no_outer_spaces() {
+        assert!(label_valid("nightly ci run"));
+        assert!(label_valid("#1432 (retry 2), v1.2_rc-1"));
+        assert!(label_valid("(x)"));
+        assert!(!label_valid(""));
+        assert!(!label_valid(" padded"));
+        assert!(!label_valid("padded "));
+        assert!(!label_valid("bad\x7flabel"));
+        assert!(!label_valid("no \"quotes\""));
+        assert!(!label_valid("colon: no"));
+        assert!(!label_valid(&"a".repeat(257)));
+        assert!(label_valid(&"a".repeat(256)));
+    }
 }

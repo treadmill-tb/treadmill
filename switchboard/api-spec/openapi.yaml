@@ -3915,8 +3915,9 @@ components:
           - $ref: '#/components/schemas/JobInitSpec'
         label:
           description: |-
-            An optional display label for the job: printable ASCII, bounded in
-            length, not unique. Changeable after enqueue via `PATCH /jobs/{id}`.
+            An optional display label for the job: 1 to 256 characters of ASCII
+            letters, digits, spaces and `()_,.#-`, not starting or ending with a
+            space, and not unique. Changeable after enqueue via `PATCH /jobs/{id}`.
           type:
           - string
           - 'null'
@@ -4927,7 +4928,8 @@ components:
       properties:
         label:
           description: |-
-            The job's display label: printable ASCII, bounded in length, not
+            The job's display label: 1 to 256 characters of ASCII letters, digits,
+            spaces and `()_,.#-`, not starting or ending with a space, and not
             unique.
           type:
           - string

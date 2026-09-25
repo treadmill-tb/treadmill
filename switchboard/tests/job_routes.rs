@@ -587,7 +587,17 @@ async fn job_label_is_set_at_enqueue_and_mutable_via_patch(pool: PgPool) {
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
 
-    req.label = Some("nightly ci run".to_string());
+    req.label = Some(" nightly".to_string());
+    let resp = client
+        .post(format!("http://{addr}/api/v1/jobs"))
+        .bearer_auth(&token)
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    req.label = Some("nightly ci run #3 (v1.2, retry)".to_string());
     let resp = client
         .post(format!("http://{addr}/api/v1/jobs"))
         .bearer_auth(&token)
@@ -608,7 +618,10 @@ async fn job_label_is_set_at_enqueue_and_mutable_via_patch(pool: PgPool) {
         .json()
         .await
         .unwrap();
-    assert_eq!(info.label.as_deref(), Some("nightly ci run"));
+    assert_eq!(
+        info.label.as_deref(),
+        Some("nightly ci run #3 (v1.2, retry)")
+    );
     let list: JobListResponse = client
         .get(format!("http://{addr}/api/v1/jobs"))
         .bearer_auth(&token)
@@ -618,7 +631,10 @@ async fn job_label_is_set_at_enqueue_and_mutable_via_patch(pool: PgPool) {
         .json()
         .await
         .unwrap();
-    assert_eq!(list.jobs[0].label.as_deref(), Some("nightly ci run"));
+    assert_eq!(
+        list.jobs[0].label.as_deref(),
+        Some("nightly ci run #3 (v1.2, retry)")
+    );
 
     // The owner (who holds `manage`) can change and clear the label; a request
     // carrying any field other than the mutable set is rejected.

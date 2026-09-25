@@ -579,7 +579,8 @@ pub struct JobDefaults {
 #[derive(schemars::JsonSchema, Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateJobRequest {
-    /// The job's display label: printable ASCII, bounded in length, not
+    /// The job's display label: 1 to 256 characters of ASCII letters, digits,
+    /// spaces and `()_,.#-`, not starting or ending with a space, and not
     /// unique.
     #[serde(
         default,
