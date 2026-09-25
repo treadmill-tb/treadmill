@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Play, Share2 } from "lucide-react";
+import { Play, RotateCcw, Share2, Wrench } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 
@@ -213,6 +213,22 @@ export default function HostDetail({ params }: Route.ComponentProps) {
   ]);
   const [showOwnerForm, setShowOwnerForm] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const invalidate = useInvalidateHost(params.id);
+  const patch = $api.useMutation("patch", "/hosts/{id}", {
+    onSuccess: invalidate,
+  });
+
+  function setMaintenance(maintenance: boolean) {
+    const message = maintenance
+      ? "Put this host into maintenance?"
+      : "Resume this host?";
+    if (window.confirm(message)) {
+      patch.mutate({
+        params: { path: { id: params.id } },
+        body: { maintenance },
+      });
+    }
+  }
 
   const canManage = host.data?.permissions.includes("manage") ?? false;
   const canStart = host.data?.permissions.includes("start") ?? false;
@@ -232,6 +248,23 @@ export default function HostDetail({ params }: Route.ComponentProps) {
               <span className="badge warn">maintenance</span>
             )}{" "}
             {canManage && (
+              <button
+                type="button"
+                disabled={patch.isPending}
+                onClick={() => setMaintenance(!host.data.maintenance)}
+              >
+                {host.data.maintenance ? (
+                  <>
+                    <RotateCcw size={14} aria-hidden="true" /> Resume
+                  </>
+                ) : (
+                  <>
+                    <Wrench size={14} aria-hidden="true" /> Maintenance
+                  </>
+                )}
+              </button>
+            )}{" "}
+            {canManage && (
               <button type="button" onClick={() => setSharing(true)}>
                 <Share2 size={14} aria-hidden="true" /> Share
               </button>
@@ -245,6 +278,10 @@ export default function HostDetail({ params }: Route.ComponentProps) {
               </Link>
             )}
           </h1>
+          <RequestError
+            error={patch.error}
+            messages={{ 403: "You are not allowed to manage this host." }}
+          />
           <dl className="props">
             <dt>Id</dt>
             <dd className="mono">{host.data.host_id}</dd>
