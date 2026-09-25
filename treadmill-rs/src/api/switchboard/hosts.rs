@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use crate::api::switchboard::JobInitSpec;
-use crate::host_spec::{HostSpecLatest, PlatformKind, Resources};
+use crate::host_spec::{HostSpecLatest, Platform, PlatformKind, Resources};
 
 /// How a [`HostSpec`](crate::host_spec::HostSpec) appears in this API's
 /// schema: an opaque JSON object.
@@ -114,13 +114,19 @@ pub struct HostSummary {
     pub duts: Vec<DutSummary>,
 }
 
-/// A [`Platform`](crate::host_spec::Platform) without its variant-specific
-/// fields — vendor and model, or hypervisor.
+/// A [`Platform`](crate::host_spec::Platform), flattened: each
+/// variant-specific field is null on the variant that lacks it.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformSummary {
     pub kind: PlatformKind,
     pub arch: String,
     pub profiles: Vec<String>,
+    /// Null on a virtual host.
+    pub vendor: Option<String>,
+    /// Null on a virtual host.
+    pub model: Option<String>,
+    /// Null on a physical host.
+    pub hypervisor: Option<String>,
 }
 
 /// One attached DUT, as a listing names it.
@@ -137,10 +143,32 @@ impl From<HostSpecLatest> for HostSummary {
             description: spec.description,
             site: spec.site,
             location: spec.location,
-            platform: PlatformSummary {
-                kind: spec.platform.kind(),
-                arch: spec.platform.arch().to_string(),
-                profiles: spec.platform.profiles().to_vec(),
+            platform: match spec.platform {
+                Platform::Physical {
+                    arch,
+                    profiles,
+                    vendor,
+                    model,
+                } => PlatformSummary {
+                    kind: PlatformKind::Physical,
+                    arch,
+                    profiles,
+                    vendor: Some(vendor),
+                    model: Some(model),
+                    hypervisor: None,
+                },
+                Platform::Virtual {
+                    arch,
+                    profiles,
+                    hypervisor,
+                } => PlatformSummary {
+                    kind: PlatformKind::Virtual,
+                    arch,
+                    profiles,
+                    vendor: None,
+                    model: None,
+                    hypervisor: Some(hypervisor),
+                },
             },
             resources: spec.resources,
             labels: spec.labels,

@@ -139,6 +139,12 @@ async fn lists_hosts_with_a_spec_projection(pool: PgPool) {
     assert_eq!(spec.platform.kind, PlatformKind::Physical);
     assert_eq!(spec.platform.arch, "aarch64");
     assert_eq!(spec.platform.profiles, ["rpi4-uboot-sd"]);
+    assert_eq!(spec.platform.vendor.as_deref(), Some("Raspberry Pi Ltd"));
+    assert_eq!(
+        spec.platform.model.as_deref(),
+        Some("Raspberry Pi 4 Model B")
+    );
+    assert_eq!(spec.platform.hypervisor, None);
     assert_eq!(spec.resources.memory_mb, 8192);
     assert_eq!(spec.duts.len(), 1);
     assert_eq!(spec.duts[0].board, "nrf52840dk");
@@ -151,7 +157,7 @@ async fn lists_hosts_with_a_spec_projection(pool: PgPool) {
     // The rest of the document is the detail view's, so a listing does not grow
     // with what is wired to each host.
     let listed = serde_json::to_value(host).unwrap();
-    for dropped in ["serial", "connectivity", "debug", "console", "model"] {
+    for dropped in ["serial", "connectivity", "debug", "console", "gpio"] {
         assert!(
             !listed.to_string().contains(dropped),
             "the listing must not carry `{dropped}`"

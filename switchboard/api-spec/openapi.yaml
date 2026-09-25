@@ -4585,18 +4585,33 @@ components:
       - virtual
     PlatformSummary:
       description: |-
-        A [`Platform`](crate::host_spec::Platform) without its variant-specific
-        fields — vendor and model, or hypervisor.
+        A [`Platform`](crate::host_spec::Platform), flattened: each
+        variant-specific field is null on the variant that lacks it.
       type: object
       properties:
         arch:
           type: string
+        hypervisor:
+          description: Null on a physical host.
+          type:
+          - string
+          - 'null'
         kind:
           $ref: '#/components/schemas/PlatformKind'
+        model:
+          description: Null on a virtual host.
+          type:
+          - string
+          - 'null'
         profiles:
           type: array
           items:
             type: string
+        vendor:
+          description: Null on a virtual host.
+          type:
+          - string
+          - 'null'
       required:
       - kind
       - arch

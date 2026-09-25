@@ -2302,13 +2302,19 @@ export interface components {
          */
         PlatformKind: "physical" | "virtual";
         /**
-         * @description A [`Platform`](crate::host_spec::Platform) without its variant-specific
-         *     fields — vendor and model, or hypervisor.
+         * @description A [`Platform`](crate::host_spec::Platform), flattened: each
+         *     variant-specific field is null on the variant that lacks it.
          */
         PlatformSummary: {
             arch: string;
+            /** @description Null on a physical host. */
+            hypervisor?: string | null;
             kind: components["schemas"]["PlatformKind"];
+            /** @description Null on a virtual host. */
+            model?: string | null;
             profiles: string[];
+            /** @description Null on a virtual host. */
+            vendor?: string | null;
         };
         /** @description The `{provider}` segment of an OAuth login route. */
         ProviderPath: {
