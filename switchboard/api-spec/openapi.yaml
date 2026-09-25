@@ -3653,14 +3653,13 @@ components:
           description: What happens when the lease expires.
           allOf:
           - $ref: '#/components/schemas/JobLeaseExpiryAction'
-        owner_id:
+        owner:
           description: |-
-            Owning subject (user or group); null if the owner was deleted
+            The owning subject (user or group); null if the owner was deleted
             (orphaned).
-          type:
-          - string
-          - 'null'
-          format: uuid
+          anyOf:
+          - $ref: '#/components/schemas/SubjectRef'
+          - type: 'null'
         parameters:
           description: Job parameters, keyed by name; secret values are redacted.
           type: object

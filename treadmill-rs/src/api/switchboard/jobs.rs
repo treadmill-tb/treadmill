@@ -497,9 +497,9 @@ pub struct JobInfo {
     pub job_id: Uuid,
     /// The user-provided display label, if any.
     pub label: Option<String>,
-    /// Owning subject (user or group); null if the owner was deleted
+    /// The owning subject (user or group); null if the owner was deleted
     /// (orphaned).
-    pub owner_id: Option<Uuid>,
+    pub owner: Option<SubjectRef>,
 
     /// Where the job is in its lifecycle.
     pub state: JobState,

@@ -1727,11 +1727,10 @@ export interface components {
             /** @description What happens when the lease expires. */
             lease_expiry_action: components["schemas"]["JobLeaseExpiryAction"];
             /**
-             * Format: uuid
-             * @description Owning subject (user or group); null if the owner was deleted
+             * @description The owning subject (user or group); null if the owner was deleted
              *     (orphaned).
              */
-            owner_id?: string | null;
+            owner?: components["schemas"]["SubjectRef"] | null;
             /** @description Job parameters, keyed by name; secret values are redacted. */
             parameters: {
                 [key: string]: components["schemas"]["JobParameterView"];

@@ -17,10 +17,11 @@ export function EligibleHostsCard({
   hosts: HostListEntry[] | undefined;
 }) {
   const me = $api.useQuery("get", "/users/me");
+  const ownerId = job.owner?.id;
   const ownerView =
-    job.owner_id != null &&
-    (job.owner_id === me.data?.user_id ||
-      (me.data?.groups.some((g) => g.group_id === job.owner_id) ?? false));
+    ownerId != null &&
+    (ownerId === me.data?.user_id ||
+      (me.data?.groups.some((g) => g.group_id === ownerId) ?? false));
   const report = $api.useQuery(
     "post",
     "/hosts/match",
@@ -29,7 +30,7 @@ export function EligibleHostsCard({
         host_cel_predicate: job.host_cel_predicate,
         init_spec:
           job.predecessor?.type === "resume" ? null : jobImageSpec(job),
-        owner: job.owner_id ?? null,
+        owner: ownerId ?? null,
       },
     },
     { enabled: ownerView },

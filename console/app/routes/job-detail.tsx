@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Check, Pencil, Server, User, X } from "lucide-react";
+import { Check, Pencil, Server, User, Users, X } from "lucide-react";
 import { useState } from "react";
 import { useSearchParams } from "react-router";
 
@@ -260,27 +260,24 @@ function JobContext({
   job: JobInfo;
   hostName: string | undefined;
 }) {
-  // A group owner has no profile to fetch, and falls back to its short ID.
-  const owner = $api.useQuery(
-    "get",
-    "/users/{id}",
-    { params: { path: { id: job.owner_id ?? "" } } },
-    { enabled: job.owner_id != null },
-  );
-
   return (
     <p className="page-context">
       <span>
         Owner:{" "}
-        {job.owner_id == null ? (
+        {job.owner == null ? (
           <span className="muted">none</span>
-        ) : (
+        ) : job.owner.kind === "user" ? (
           <EntityLink
             kind="user"
-            id={job.owner_id}
-            label={owner.data?.name}
+            id={job.owner.id}
+            label={job.owner.name ?? undefined}
             icon={User}
           />
+        ) : (
+          <span className="subject" title={job.owner.id}>
+            <Users size={14} aria-hidden="true" />{" "}
+            {job.owner.name ?? <ShortId id={job.owner.id} />}
+          </span>
         )}
       </span>
       <span>

@@ -343,9 +343,7 @@ function JobForm({ base }: { base: Base | null }) {
     })),
   );
   const [owner, setOwner] = useState(
-    job?.owner_id == null || job.owner_id === me.data?.user_id
-      ? ""
-      : job.owner_id,
+    job?.owner == null || job.owner.id === me.data?.user_id ? "" : job.owner.id,
   );
   const [restarts, setRestarts] = useState(0);
 

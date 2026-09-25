@@ -876,7 +876,7 @@ async fn enqueue_creates_a_queued_job_owned_by_caller(pool: PgPool) {
         .json()
         .await
         .unwrap();
-    assert_eq!(info.owner_id, Some(bob));
+    assert_eq!(info.owner.as_ref().map(|o| o.id), Some(bob));
     assert_eq!(info.state, JobState::Queued);
     assert_eq!(info.lease_duration_secs, 3600);
     assert_eq!(info.lease_expires_at, None);
@@ -1266,7 +1266,7 @@ async fn enqueue_under_a_group_the_caller_belongs_to(pool: PgPool) {
         .json()
         .await
         .unwrap();
-    assert_eq!(info.owner_id, Some(ADMINS_GROUP_ID));
+    assert_eq!(info.owner.as_ref().map(|o| o.id), Some(ADMINS_GROUP_ID));
 }
 
 #[sqlx::test]
@@ -1649,7 +1649,7 @@ async fn owner_reads_own_job_with_secret_redacted(pool: PgPool) {
 
     let info: JobInfo = resp.json().await.unwrap();
     assert_eq!(info.job_id, job_id);
-    assert_eq!(info.owner_id, Some(bob));
+    assert_eq!(info.owner.as_ref().map(|o| o.id), Some(bob));
     assert_eq!(info.state, JobState::Queued);
     assert!(
         matches!(info.image.reference, JobImageReference::Image { manifest_digest: got } if got.encoded() == image_digest)
