@@ -35,7 +35,7 @@ export function formatSeconds(secs: number): string {
 }
 
 /** A countdown, only as precise as its size warrants. */
-function formatRemaining(ms: number): string {
+export function formatRemaining(ms: number): string {
   const secs = Math.max(0, Math.floor(ms / 1000));
   const d = Math.floor(secs / 86400);
   const h = Math.floor((secs % 86400) / 3600);
