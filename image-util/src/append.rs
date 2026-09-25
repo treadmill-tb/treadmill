@@ -41,6 +41,21 @@ pub struct AppendArgs {
     #[arg(long)]
     description: Option<String>,
 
+    /// `org.opencontainers.image.created` (RFC 3339 timestamp).
+    /// Inherited from the lower image on append if omitted.
+    #[arg(long)]
+    created: Option<String>,
+
+    /// `org.opencontainers.image.revision` (source commit).
+    /// Inherited from the lower image on append if omitted.
+    #[arg(long)]
+    revision: Option<String>,
+
+    /// `org.opencontainers.image.documentation` (documentation URL).
+    /// Inherited from the lower image on append if omitted.
+    #[arg(long)]
+    documentation: Option<String>,
+
     /// `org.opencontainers.image.base.name`; defaults to the lower layout's
     /// manifest digest.
     #[arg(long)]
@@ -88,6 +103,15 @@ pub fn append(args: &AppendArgs) -> anyhow::Result<()> {
     }
     if let Some(description) = &args.description {
         meta.description = Some(description.clone());
+    }
+    if let Some(created) = &args.created {
+        meta.created = Some(created.clone());
+    }
+    if let Some(revision) = &args.revision {
+        meta.revision = Some(revision.clone());
+    }
+    if let Some(documentation) = &args.documentation {
+        meta.documentation = Some(documentation.clone());
     }
     meta.base_name = Some(
         args.base_name

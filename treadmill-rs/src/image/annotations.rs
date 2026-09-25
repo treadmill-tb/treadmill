@@ -40,6 +40,12 @@ pub mod oci {
     pub const DESCRIPTION: &str = "org.opencontainers.image.description";
     /// User-supplied version/revision.
     pub const VERSION: &str = "org.opencontainers.image.version";
+    /// Image creation time (RFC 3339).
+    pub const CREATED: &str = "org.opencontainers.image.created";
+    /// Source control revision of the image build.
+    pub const REVISION: &str = "org.opencontainers.image.revision";
+    /// URL of documentation for the image.
+    pub const DOCUMENTATION: &str = "org.opencontainers.image.documentation";
     /// Name of the image this one was derived from.
     pub const BASE_NAME: &str = "org.opencontainers.image.base.name";
 }

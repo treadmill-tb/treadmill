@@ -127,6 +127,10 @@ pub struct ImageMeta {
     pub title: Option<String>,
     pub version: Option<String>,
     pub description: Option<String>,
+    /// Image creation time in RFC 3339 format.
+    pub created: Option<String>,
+    pub revision: Option<String>,
+    pub documentation: Option<String>,
     /// Name (or digest) of the image this one was derived from.
     pub base_name: Option<String>,
 }
@@ -590,6 +594,9 @@ pub fn parse_image(manifest: &ImageManifest) -> Result<TreadmillImage, ImageErro
         title: annotation(annotations::oci::TITLE),
         version: annotation(annotations::oci::VERSION),
         description: annotation(annotations::oci::DESCRIPTION),
+        created: annotation(annotations::oci::CREATED),
+        revision: annotation(annotations::oci::REVISION),
+        documentation: annotation(annotations::oci::DOCUMENTATION),
         base_name: annotation(annotations::oci::BASE_NAME),
     };
 

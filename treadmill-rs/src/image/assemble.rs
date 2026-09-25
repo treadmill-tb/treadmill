@@ -207,6 +207,9 @@ impl TreadmillImage {
             (annotations::oci::TITLE, &meta.title),
             (annotations::oci::VERSION, &meta.version),
             (annotations::oci::DESCRIPTION, &meta.description),
+            (annotations::oci::CREATED, &meta.created),
+            (annotations::oci::REVISION, &meta.revision),
+            (annotations::oci::DOCUMENTATION, &meta.documentation),
             (annotations::oci::BASE_NAME, &meta.base_name),
         ]
         .into_iter()
@@ -265,6 +268,11 @@ mod tests {
         let mut builder = ImageBuilder::new(ImageMeta {
             title: Some("Netboot".to_string()),
             version: Some("13".to_string()),
+            created: Some("2026-09-25T14:30:12Z".to_string()),
+            revision: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            documentation: Some(
+                "https://github.com/example/images/blob/0123456/README.md".to_string(),
+            ),
             base_name: Some("ghcr.io/example/base@sha256:abc".to_string()),
             ..Default::default()
         });
