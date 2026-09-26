@@ -1,16 +1,52 @@
-import type { DutV2 } from "../api/host-spec";
-import { DevBoardIcon } from "../icons";
-import { DRIVE_NAMES } from "./gpio";
+import { ArrowLeft, ArrowLeftRight, ArrowRight } from "lucide-react";
 
-function formatConfig(config: Record<string, unknown>): string {
-  return Object.entries(config)
-    .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
-    .join(" ");
+import type { DutV2, GpioController, GpioPin } from "../api/host-spec";
+import { DevBoardIcon } from "../icons";
+import { CopyButton } from "./copy-button";
+import { DRIVE_NAMES, pinDirection } from "./gpio";
+
+const DIRECTION_ICONS = {
+  out: ArrowRight,
+  in: ArrowLeft,
+  both: ArrowLeftRight,
+};
+
+function Direction({ pin }: { pin: GpioPin }) {
+  const modes = pin.modes.join(", ");
+  const direction = pinDirection(pin);
+  const known = pin.modes.every(
+    (mode) => mode === "digital_in" || mode === "digital_out",
+  );
+  if (direction === "none" || !known) {
+    return <span className="mono">{modes}</span>;
+  }
+  const Icon = DIRECTION_ICONS[direction];
+  return (
+    <span className="pin-direction" title={modes}>
+      <Icon size={16} aria-label={modes} />
+    </span>
+  );
 }
 
-export function DutCard({ dut }: { dut: DutV2 }) {
+function byController(gpio: DutV2["gpio"]): [string, [string, GpioPin][]][] {
+  const groups = new Map<string, [string, GpioPin][]>();
+  for (const [name, pin] of Object.entries(gpio)) {
+    const group = groups.get(pin.controller) ?? [];
+    group.push([name, pin]);
+    groups.set(pin.controller, group);
+  }
+  return [...groups];
+}
+
+export function DutCard({
+  dut,
+  controllers,
+}: {
+  dut: DutV2;
+  controllers: Record<string, GpioController>;
+}) {
   const probe = dut.debug?.probe;
-  const pins = Object.entries(dut.gpio);
+  const groups = byController(dut.gpio);
   const labels = Object.entries(dut.labels);
   return (
     <section className="card dut-card">
@@ -47,67 +83,86 @@ export function DutCard({ dut }: { dut: DutV2 }) {
           {dut.console != null && (
             <>
               <dt>Console</dt>
-              <dd>
-                <span className="mono">{dut.console.device}</span> ·{" "}
-                {dut.console.baud} baud
+              <dd className="console-device">
+                <span>{dut.console.baud} baud ·</span>
+                <span className="mono ellipsis" title={dut.console.device}>
+                  {dut.console.device}
+                </span>
+                <CopyButton
+                  value={dut.console.device}
+                  label="Copy console device"
+                />
               </dd>
             </>
           )}
         </dl>
       )}
-      {pins.length > 0 && (
-        <div className="overflow-auto">
-          <table>
-            <thead>
-              <tr>
-                <th>Pin</th>
-                <th>Label</th>
-                <th>Modes</th>
-                <th>Active</th>
-                <th>Wiring</th>
-                <th>Controller</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pins.map(([name, pin]) => (
-                <tr key={name}>
-                  <td className="mono">{name}</td>
-                  <td>
-                    {pin.label != null ? (
-                      <span
-                        className={
-                          pin.active === "low" ? "active-low" : undefined
-                        }
-                        title={pin.active === "low" ? "Active low" : undefined}
-                      >
-                        {pin.label}
-                      </span>
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
-                  </td>
-                  <td className="mono">{pin.modes.join(", ")}</td>
-                  <td>{pin.active ?? <span className="muted">—</span>}</td>
-                  <td>
-                    {[
-                      pin.inverted === true ? "inverted" : null,
-                      pin.drive != null ? DRIVE_NAMES[pin.drive] : null,
-                    ]
-                      .filter(Boolean)
-                      .join(", ") || <span className="muted">—</span>}
-                    {pin.note != null && (
-                      <div className="muted">{pin.note}</div>
-                    )}
-                  </td>
-                  <td className="mono">
-                    {pin.controller}{" "}
-                    <span className="muted">{formatConfig(pin.config)}</span>
-                  </td>
+      {groups.length > 0 && (
+        <>
+          <h4>GPIO</h4>
+          <div className="pin-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Pin</th>
+                  <th>Direction</th>
+                  <th>Wiring</th>
                 </tr>
+              </thead>
+              {groups.map(([controller, pins]) => (
+                <tbody key={controller}>
+                  <tr className="pin-group">
+                    <th colSpan={3} scope="colgroup">
+                      <span className="mono">{controller}</span>
+                      {controllers[controller] != null &&
+                        ` · ${controllers[controller].driver}`}
+                    </th>
+                  </tr>
+                  {pins.map(([name, pin]) => (
+                    <tr key={name}>
+                      <td>
+                        <div className="mono">{name}</div>
+                        {pin.label != null && (
+                          <div
+                            className={
+                              pin.active === "low"
+                                ? "muted active-low"
+                                : "muted"
+                            }
+                            title={
+                              pin.active === "low" ? "Active low" : undefined
+                            }
+                          >
+                            {pin.label}
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        <Direction pin={pin} />
+                      </td>
+                      <td>
+                        {[
+                          pin.active != null ? `active ${pin.active}` : null,
+                          pin.inverted === true ? "inverted" : null,
+                          pin.drive != null ? DRIVE_NAMES[pin.drive] : null,
+                        ]
+                          .filter((chip) => chip != null)
+                          .map((chip) => (
+                            <span key={chip} className="chip">
+                              {chip}
+                            </span>
+                          ))}
+                        {pin.note != null && (
+                          <div className="muted">{pin.note}</div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </table>
+          </div>
+        </>
       )}
       {labels.length > 0 && (
         <p>

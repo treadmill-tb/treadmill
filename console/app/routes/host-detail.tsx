@@ -385,10 +385,14 @@ export default function HostDetail({ params }: Route.ComponentProps) {
               )}
               {spec.duts.length > 0 && (
                 <section>
-                  <h2>Devices</h2>
+                  <h2>Devices under test</h2>
                   <div className="dut-cards">
                     {spec.duts.map((dut, i) => (
-                      <DutCard key={i} dut={dut} />
+                      <DutCard
+                        key={i}
+                        dut={dut}
+                        controllers={spec.gpio_controllers}
+                      />
                     ))}
                   </div>
                 </section>
