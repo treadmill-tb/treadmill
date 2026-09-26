@@ -84,7 +84,7 @@ function slotHeight(slot: Slot): number {
     case "controller":
       return Math.max(ADAPTER_H, slot.wires.length * WIRE + 2 * WIRE_PAD);
     case "lane":
-      return slot.wires.length * WIRE;
+      return slot.wires.length * WIRE + 2 * WIRE_PAD;
     case "uart":
       return LINE_H;
     default:
