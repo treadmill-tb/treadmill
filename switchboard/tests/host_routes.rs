@@ -814,7 +814,15 @@ async fn create_host_rejects_bad_gpio_and_board(pool: PgPool) {
         "rp1": { "driver": "linux-gpiochip", "config": { "label": "pinctrl-rp1" } }
     });
     spec["duts"] = serde_json::json!([dut("nrf52840dk"), dut("nRF52840-DK")]);
-    assert_eq!(post(spec).await.path, "duts[1].board");
+    assert_eq!(post(spec.clone()).await.path, "duts[1].board");
+
+    spec["duts"] = serde_json::json!([dut("nrf52840dk")]);
+    spec["duts"][0]["gpio"]["P0.13"]["drive"] = "push_pull".into();
+    assert_eq!(post(spec.clone()).await.path, "duts[0].gpio.P0.13.drive");
+
+    spec["duts"][0]["gpio"]["P0.13"]["modes"] = serde_json::json!(["digital_out"]);
+    spec["duts"][0]["gpio"]["P0.13"]["drive"] = serde_json::Value::Null;
+    assert_eq!(post(spec).await.path, "duts[0].gpio.P0.13.drive");
 }
 
 #[sqlx::test]

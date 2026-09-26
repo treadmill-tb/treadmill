@@ -6,15 +6,25 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { TransformComponent, TransformWrapper } from "react-zoom-pan-pinch";
+import {
+  TransformComponent,
+  TransformWrapper,
+  type ReactZoomPanPinchRef,
+} from "react-zoom-pan-pinch";
 
-import type { DutV2, GpioController, HostSpecV2 } from "../api/host-spec";
+import type {
+  DutV2,
+  GpioController,
+  GpioPin,
+  HostSpecV2,
+} from "../api/host-spec";
 import {
   DebuggerIcon,
   DevBoardIcon,
   GpioControllerIcon,
   PlatformIcon,
 } from "../icons";
+import { pinDirection, pinSummary } from "./gpio";
 
 const FONT = 12;
 const MARGIN = 48;
@@ -31,11 +41,12 @@ const HOST_W = 180;
 const ADAPTER_W = 150;
 const DUT_W = 180;
 const PAD = 2;
+const GLYPHS = 48;
 
 const ADAPTER_X = PAD + HOST_W + COL_GAP;
 const ADAPTER_RIGHT = ADAPTER_X + ADAPTER_W;
 
-type Wire = { dut: number; pin: string; label: string | null };
+type Wire = { dut: number; pin: string; spec: GpioPin };
 
 type Slot =
   | {
@@ -91,7 +102,7 @@ function wiresOf(spec: HostSpecV2, controller: string): Wire[] {
   return spec.duts.flatMap((dut, i) =>
     Object.entries(dut.gpio)
       .filter(([, pin]) => pin.controller === controller)
-      .map(([pin, { label }]) => ({ dut: i, pin, label: label ?? null })),
+      .map(([pin, spec]) => ({ dut: i, pin, spec })),
   );
 }
 
@@ -198,7 +209,8 @@ function layout(spec: HostSpecV2) {
       return slot.wires.length;
     }),
   );
-  const dutX = ADAPTER_RIGHT + Math.max(COL_GAP, 16 + bends * BEND + 24);
+  const dutX =
+    ADAPTER_RIGHT + Math.max(COL_GAP, 16 + bends * BEND + 24 + GLYPHS);
   const height = Math.max(y - SPACING, PAD + BOX_H) + PAD;
   return { placed, dutSpans, lanes, dutX, height };
 }
@@ -280,12 +292,69 @@ function EdgeLabel({
 
 function PinLabel({ x, y, wire }: { x: number; y: number; wire: Wire }) {
   const chars = Math.floor((DUT_W - 16) / 6);
-  const text = wire.label != null ? `${wire.pin} (${wire.label})` : wire.pin;
+  const { label, active } = wire.spec;
+  const text = fit(label != null ? `${wire.pin} (${label})` : wire.pin, chars);
+  if (active !== "low") {
+    return (
+      <text className="pin" x={x} y={y + 3.5}>
+        {text}
+      </text>
+    );
+  }
+  const start = label != null ? wire.pin.length + 2 : 0;
+  const end = label != null && text.endsWith(")") ? -1 : undefined;
   return (
     <text className="pin" x={x} y={y + 3.5}>
-      <title>{text}</title>
-      {fit(text, chars)}
+      {text.slice(0, start)}
+      <tspan className="active-low">{text.slice(start, end)}</tspan>
+      {end !== undefined && ")"}
     </text>
+  );
+}
+
+function Inverter({ x, y, wire }: { x: number; y: number; wire: Wire }) {
+  switch (pinDirection(wire.spec)) {
+    case "out":
+      return (
+        <g className="glyph">
+          <title>Inverter</title>
+          <path d={`M${x - 6} ${y - 4}L${x + 2} ${y}L${x - 6} ${y + 4}Z`} />
+          <circle cx={x + 4} cy={y} r={2} />
+        </g>
+      );
+    case "in":
+      return (
+        <g className="glyph">
+          <title>Inverter</title>
+          <path d={`M${x + 6} ${y - 4}L${x - 2} ${y}L${x + 6} ${y + 4}Z`} />
+          <circle cx={x - 4} cy={y} r={2} />
+        </g>
+      );
+    default:
+      return (
+        <g className="glyph">
+          <title>Bidirectional inverter</title>
+          <path d={`M${x} ${y - 4}L${x - 8} ${y}L${x} ${y + 4}Z`} />
+          <path d={`M${x} ${y - 4}L${x + 8} ${y}L${x} ${y + 4}Z`} />
+          <circle cx={x - 10} cy={y} r={2} />
+          <circle cx={x + 10} cy={y} r={2} />
+        </g>
+      );
+  }
+}
+
+function DriveMark({ x, y, wire }: { x: number; y: number; wire: Wire }) {
+  const { drive } = wire.spec;
+  if (drive !== "open_drain" && drive !== "open_source") return null;
+  const bar = drive === "open_drain" ? y + 5 : y - 5;
+  return (
+    <g className="glyph">
+      <title>{drive === "open_drain" ? "Open drain" : "Open source"}</title>
+      <path
+        d={`M${x} ${y - 3.5}L${x + 3.5} ${y}L${x} ${y + 3.5}L${x - 3.5} ${y}Z`}
+      />
+      <path d={`M${x - 3.5} ${bar}H${x + 3.5}`} />
+    </g>
   );
 }
 
@@ -351,14 +420,34 @@ function Controller({
       {slot.wires.map((wire, k) => {
         const start = starts[k] ?? cy;
         const target = targets[k];
+        const y = target ?? start;
         const d =
           target === undefined
             ? `M${ADAPTER_RIGHT} ${start}H${dutX}`
             : `M${ADAPTER_RIGHT} ${start}H${bendOf(k)}V${target}H${dutX}`;
+        const direction = pinDirection(wire.spec);
         return (
           <g key={`${wire.dut}/${wire.pin}`}>
-            <path className="wire" d={d} markerEnd={wireArrow} />
-            <PinLabel x={dutX + 8} y={target ?? start} wire={wire} />
+            <title>{pinSummary(wire.pin, wire.spec)}</title>
+            <path
+              className="wire"
+              d={d}
+              markerStart={
+                direction === "in" || direction === "both"
+                  ? wireArrow
+                  : undefined
+              }
+              markerEnd={
+                direction === "out" || direction === "both"
+                  ? wireArrow
+                  : undefined
+              }
+            />
+            {wire.spec.inverted === true && (
+              <Inverter x={dutX - 32} y={y} wire={wire} />
+            )}
+            <DriveMark x={dutX - 14} y={y} wire={wire} />
+            <PinLabel x={dutX + 8} y={y} wire={wire} />
           </g>
         );
       })}
@@ -376,12 +465,25 @@ function ZoomView({
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const transform = useRef<ReactZoomPanPinchRef>(null);
   const [view, setView] = useState<{
     initial: number;
     fit: number;
     margin: number;
+    x: number;
   } | null>(null);
-  const [zoomed, setZoomed] = useState(false);
+  const [pannable, setPannable] = useState(false);
+
+  const updatePannable = (zoom: ReactZoomPanPinchRef) => {
+    const { wrapperComponent: wrapper, contentComponent: content } =
+      zoom.instance;
+    if (wrapper === null || content === null) return;
+    const { scale } = zoom.state;
+    setPannable(
+      content.offsetWidth * scale > wrapper.clientWidth + 1 ||
+        content.offsetHeight * scale > wrapper.clientHeight + 1,
+    );
+  };
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -391,11 +493,16 @@ function ZoomView({
       const fit = el.clientWidth / width;
       const initial = Math.min(font, Math.max(fit, 0.75 * font));
       const margin = Math.min(MARGIN, el.clientWidth * 0.05);
+      const x = Math.max(0, (el.clientWidth - width * initial) / 2 - margin);
       setView((prev) =>
-        prev?.initial === initial && prev.fit === fit && prev.margin === margin
+        prev?.initial === initial &&
+        prev.fit === fit &&
+        prev.margin === margin &&
+        prev.x === x
           ? prev
-          : { initial, fit, margin },
+          : { initial, fit, margin, x },
       );
+      if (transform.current !== null) updatePannable(transform.current);
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -406,7 +513,7 @@ function ZoomView({
   return (
     <div
       ref={ref}
-      className="topology"
+      className={pannable ? "topology pannable" : "topology"}
       style={
         view === null
           ? undefined
@@ -417,21 +524,22 @@ function ZoomView({
     >
       {view !== null && (
         <TransformWrapper
-          key={`${view.initial}/${view.fit}`}
+          key={`${view.initial}/${view.fit}/${view.x}`}
+          ref={transform}
           initialScale={view.initial}
+          initialPositionX={view.x}
+          initialPositionY={0}
           minScale={Math.min(view.fit, view.initial)}
           maxScale={view.initial * 4}
-          centerOnInit
           centerZoomedOut
           wheel={{ wheelDisabled: true }}
           trackPadPanning={{ disabled: true }}
-          panning={{ disabled: !zoomed }}
+          panning={{ disabled: !pannable }}
           doubleClick={{ disabled: true }}
-          onTransform={(_, { scale }) =>
-            setZoomed(scale > Math.min(view.fit, view.initial) * 1.01)
-          }
+          onInit={updatePannable}
+          onTransform={updatePannable}
         >
-          {({ zoomIn, zoomOut, centerView }) => (
+          {({ zoomIn, zoomOut, setTransform }) => (
             <>
               <div className="topology-controls">
                 <button
@@ -454,7 +562,7 @@ function ZoomView({
                   type="button"
                   className="icon-btn"
                   aria-label="Reset zoom"
-                  onClick={() => void centerView(view.initial)}
+                  onClick={() => void setTransform(view.x, 0, view.initial)}
                 >
                   <RotateCcw size={16} />
                 </button>
@@ -462,7 +570,9 @@ function ZoomView({
               <TransformComponent
                 wrapperStyle={{ width: "100%", height: "100%" }}
               >
-                {children}
+                <div style={{ padding: view.margin / view.initial }}>
+                  {children}
+                </div>
               </TransformComponent>
             </>
           )}
@@ -512,7 +622,7 @@ export function HostTopology({ spec }: { spec: HostSpecV2 }) {
             refY={4}
             markerWidth={5}
             markerHeight={5}
-            orient="auto"
+            orient="auto-start-reverse"
           >
             <path d="M0 0L8 4L0 8Z" />
           </marker>

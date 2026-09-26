@@ -19,6 +19,37 @@ export type Console = {
   kind: "uart";
 };
 /**
+ * The level at which a DUT pin's function is asserted.
+ */
+export type GpioActive = "low" | "high";
+/**
+ * The output drive at a DUT pin.
+ *
+ * An NPN transistor to ground, for example, only ever pulls the pin low.
+ *
+ * A job writes the level it wants at the DUT pin. The supervisor sets the
+ * host line to that value, or to its opposite if the pin is `inverted`. The
+ * DUT pin then ends up as follows:
+ *
+ * | drive         | inverted | job writes | host line set to | DUT pin             |
+ * |---------------|----------|------------|------------------|---------------------|
+ * | `push_pull`   | `false`  | 0          | 0                | DUT pin is low      |
+ * | `push_pull`   | `false`  | 1          | 1                | DUT pin is high     |
+ * | `push_pull`   | `true`   | 0          | 1                | DUT pin is low      |
+ * | `push_pull`   | `true`   | 1          | 0                | DUT pin is high     |
+ * | `open_drain`  | `false`  | 0          | 0                | DUT pin is low      |
+ * | `open_drain`  | `false`  | 1          | 1                | DUT pin is released |
+ * | `open_drain`  | `true`   | 0          | 1                | DUT pin is low      |
+ * | `open_drain`  | `true`   | 1          | 0                | DUT pin is released |
+ * | `open_source` | `false`  | 0          | 0                | DUT pin is released |
+ * | `open_source` | `false`  | 1          | 1                | DUT pin is high     |
+ * | `open_source` | `true`   | 0          | 1                | DUT pin is released |
+ * | `open_source` | `true`   | 1          | 0                | DUT pin is high     |
+ *
+ * A released DUT pin floats, unless the DUT pulls it up or down.
+ */
+export type GpioDrive = "push_pull" | "open_drain" | "open_source";
+/**
  * The machine a host is, and the images it can boot.
  */
 export type Platform =
@@ -187,8 +218,74 @@ export interface DebugProbe {
 }
 /**
  * One DUT pin wired to a host GPIO controller.
+ *
+ * # Examples
+ *
+ * Other fields are left out below.
+ *
+ * An LED on the DUT board, which the DUT turns on by pulling its pin low. The
+ * host reads the pin:
+ *
+ * ```json
+ * "LED1": {
+ *   "modes": ["digital_in"],
+ *   "active": "low",
+ *   "inverted": false,
+ *   "drive": null,
+ *   "note": null
+ * }
+ * ```
+ *
+ * A button on the DUT board that connects its pin to ground. The host wire
+ * connects to the same pin and presses the button by pulling the pin low. The
+ * button can pull the pin low at the same time, so the host must never drive
+ * it high:
+ *
+ * ```json
+ * "BUTTON1": {
+ *   "modes": ["digital_out"],
+ *   "active": "low",
+ *   "inverted": false,
+ *   "drive": "open_drain",
+ *   "note": null
+ * }
+ * ```
+ *
+ * A Pico 2's `RUN` line, pulled to ground by an NPN transistor whose base the
+ * host drives. Asserting the pin holds the board in reset. Releasing it lets
+ * the Pico's pull-up take `RUN` high:
+ *
+ * ```json
+ * "RUN": {
+ *   "modes": ["digital_out"],
+ *   "active": "low",
+ *   "inverted": true,
+ *   "drive": "open_drain",
+ *   "note": "NPN, 1k base"
+ * }
+ * ```
+ *
+ * A general-purpose DUT pin that the host can read and drive. A series
+ * resistor limits the current when the host and the DUT drive the pin to
+ * opposite levels:
+ *
+ * ```json
+ * "P1.01": {
+ *   "modes": ["digital_in", "digital_out"],
+ *   "active": null,
+ *   "inverted": false,
+ *   "drive": "push_pull",
+ *   "note": "1k series"
+ * }
+ * ```
  */
 export interface GpioPin {
+  /**
+   * The DUT pin's function is asserted at this level, e.g. `low` for a reset
+   * line or a button to ground. This is a property of the board. `null`
+   * means the pin has no asserted level.
+   */
+  active?: GpioActive | null;
   /**
    * Driver-specific settings that locate the pin on its controller.
    */
@@ -200,6 +297,18 @@ export interface GpioPin {
    */
   controller: string;
   /**
+   * How the host can drive the DUT pin. Set only on pins with a
+   * `digital_out` mode.
+   */
+  drive?: GpioDrive | null;
+  /**
+   * Set when the wiring inverts the signal, e.g. through an inverter or a
+   * transistor. The DUT pin then sits at the opposite level of the host
+   * line. The supervisor applies the inversion, so jobs always see the DUT
+   * pin's level.
+   */
+  inverted?: boolean;
+  /**
    * What the pin is for on the board, e.g. `LED1`, `BUTTON1`.
    */
   label?: string | null;
@@ -208,6 +317,10 @@ export interface GpioPin {
    * convention, not a registry.
    */
   modes: string[];
+  /**
+   * Human-readable notes, e.g. `NPN, 1k base` or `470Ω series`.
+   */
+  note?: string | null;
 }
 /**
  * A GPIO controller on the host, e.g. a SoC's pin controller or a USB GPIO

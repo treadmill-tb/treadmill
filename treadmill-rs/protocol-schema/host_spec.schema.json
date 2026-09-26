@@ -244,6 +244,14 @@
         "labels"
       ]
     },
+    "GpioActive": {
+      "description": "The level at which a DUT pin's function is asserted.",
+      "type": "string",
+      "enum": [
+        "low",
+        "high"
+      ]
+    },
     "GpioController": {
       "description": "A GPIO controller on the host, e.g. a SoC's pin controller or a USB GPIO\nexpander.",
       "type": "object",
@@ -264,10 +272,41 @@
         "config"
       ]
     },
+    "GpioDrive": {
+      "description": "The output drive at a DUT pin.\n\nAn NPN transistor to ground, for example, only ever pulls the pin low.\n\nA job writes the level it wants at the DUT pin. The supervisor sets the\nhost line to that value, or to its opposite if the pin is `inverted`. The\nDUT pin then ends up as follows:\n\n| drive         | inverted | job writes | host line set to | DUT pin             |\n|---------------|----------|------------|------------------|---------------------|\n| `push_pull`   | `false`  | 0          | 0                | DUT pin is low      |\n| `push_pull`   | `false`  | 1          | 1                | DUT pin is high     |\n| `push_pull`   | `true`   | 0          | 1                | DUT pin is low      |\n| `push_pull`   | `true`   | 1          | 0                | DUT pin is high     |\n| `open_drain`  | `false`  | 0          | 0                | DUT pin is low      |\n| `open_drain`  | `false`  | 1          | 1                | DUT pin is released |\n| `open_drain`  | `true`   | 0          | 1                | DUT pin is low      |\n| `open_drain`  | `true`   | 1          | 0                | DUT pin is released |\n| `open_source` | `false`  | 0          | 0                | DUT pin is released |\n| `open_source` | `false`  | 1          | 1                | DUT pin is high     |\n| `open_source` | `true`   | 0          | 1                | DUT pin is released |\n| `open_source` | `true`   | 1          | 0                | DUT pin is high     |\n\nA released DUT pin floats, unless the DUT pulls it up or down.",
+      "oneOf": [
+        {
+          "description": "The host can drive the DUT pin high and low. Examples: a direct wire,\nwith or without a series resistor, or a push-pull buffer or inverter.",
+          "type": "string",
+          "const": "push_pull"
+        },
+        {
+          "description": "The host can pull the DUT pin low or release it. Examples: an NPN\ntransistor or N-MOSFET to ground, an open-drain buffer, a diode with its\ncathode towards the host, or a direct wire that another part of the\nboard also pulls low.",
+          "type": "string",
+          "const": "open_drain"
+        },
+        {
+          "description": "The host can drive the DUT pin high or release it. Examples: a PNP\ntransistor or P-MOSFET to the supply, an open-source buffer, a diode\nwith its anode towards the host, or a direct wire that another part of\nthe board also drives high.",
+          "type": "string",
+          "const": "open_source"
+        }
+      ]
+    },
     "GpioPin": {
-      "description": "One DUT pin wired to a host GPIO controller.",
+      "description": "One DUT pin wired to a host GPIO controller.\n\n# Examples\n\nOther fields are left out below.\n\nAn LED on the DUT board, which the DUT turns on by pulling its pin low. The\nhost reads the pin:\n\n```json\n\"LED1\": {\n  \"modes\": [\"digital_in\"],\n  \"active\": \"low\",\n  \"inverted\": false,\n  \"drive\": null,\n  \"note\": null\n}\n```\n\nA button on the DUT board that connects its pin to ground. The host wire\nconnects to the same pin and presses the button by pulling the pin low. The\nbutton can pull the pin low at the same time, so the host must never drive\nit high:\n\n```json\n\"BUTTON1\": {\n  \"modes\": [\"digital_out\"],\n  \"active\": \"low\",\n  \"inverted\": false,\n  \"drive\": \"open_drain\",\n  \"note\": null\n}\n```\n\nA Pico 2's `RUN` line, pulled to ground by an NPN transistor whose base the\nhost drives. Asserting the pin holds the board in reset. Releasing it lets\nthe Pico's pull-up take `RUN` high:\n\n```json\n\"RUN\": {\n  \"modes\": [\"digital_out\"],\n  \"active\": \"low\",\n  \"inverted\": true,\n  \"drive\": \"open_drain\",\n  \"note\": \"NPN, 1k base\"\n}\n```\n\nA general-purpose DUT pin that the host can read and drive. A series\nresistor limits the current when the host and the DUT drive the pin to\nopposite levels:\n\n```json\n\"P1.01\": {\n  \"modes\": [\"digital_in\", \"digital_out\"],\n  \"active\": null,\n  \"inverted\": false,\n  \"drive\": \"push_pull\",\n  \"note\": \"1k series\"\n}\n```",
       "type": "object",
       "properties": {
+        "active": {
+          "description": "The DUT pin's function is asserted at this level, e.g. `low` for a reset\nline or a button to ground. This is a property of the board. `null`\nmeans the pin has no asserted level.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpioActive"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "config": {
           "description": "Driver-specific settings that locate the pin on its controller.",
           "type": "object",
@@ -276,6 +315,22 @@
         "controller": {
           "description": "The key of the controller in `gpio_controllers`.",
           "type": "string"
+        },
+        "drive": {
+          "description": "How the host can drive the DUT pin. Set only on pins with a\n`digital_out` mode.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpioDrive"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inverted": {
+          "description": "Set when the wiring inverts the signal, e.g. through an inverter or a\ntransistor. The DUT pin then sits at the opposite level of the host\nline. The supervisor applies the inversion, so jobs always see the DUT\npin's level.",
+          "type": "boolean",
+          "default": false
         },
         "label": {
           "description": "What the pin is for on the board, e.g. `LED1`, `BUTTON1`.",
@@ -290,6 +345,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "note": {
+          "description": "Human-readable notes, e.g. `NPN, 1k base` or `470Ω series`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false,

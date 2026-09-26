@@ -2492,6 +2492,14 @@ dialog h4 {
   resize: vertical;
 }
 
+.topology.pannable {
+  cursor: grab;
+}
+
+.topology.pannable:active {
+  cursor: grabbing;
+}
+
 .topology-controls {
   position: absolute;
   top: 0.25rem;
@@ -2556,6 +2564,17 @@ dialog h4 {
 
 .topology marker path {
   fill: var(--pico-muted-color);
+}
+
+.topology .glyph > * {
+  fill: var(--pico-background-color);
+  stroke: var(--pico-muted-color);
+  stroke-width: 1;
+}
+
+.topology tspan.active-low,
+.dut-card .active-low {
+  text-decoration: overline;
 }
 
 .host-overview-columns {

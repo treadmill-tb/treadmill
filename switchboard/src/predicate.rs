@@ -120,8 +120,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use treadmill_rs::host_spec::{
-        Console, DebugAccess, DebugProbe, DutV2, GpioController, GpioPin, HostSpecLatest, Platform,
-        Resources, SpecVersionV2,
+        Console, DebugAccess, DebugProbe, DutV2, GpioActive, GpioController, GpioDrive, GpioPin,
+        HostSpecLatest, Platform, Resources, SpecVersionV2,
     };
     use uuid::Uuid;
 
@@ -187,6 +187,10 @@ mod tests {
                                 .as_object()
                                 .unwrap()
                                 .clone(),
+                            active: Some(GpioActive::Low),
+                            inverted: false,
+                            drive: Some(GpioDrive::OpenDrain),
+                            note: None,
                         },
                     )]),
                     labels: BTreeMap::from([("radio".to_string(), "ble".to_string())]),
@@ -277,6 +281,11 @@ mod tests {
         ));
         assert!(matches("host.duts[0].gpio['P0.11'].config.offset == 21"));
         assert!(!matches("host.duts[1].gpio.size() > 0"));
+        assert!(matches(
+            "host.duts[0].gpio['P0.11'].active == 'low' \
+             && host.duts[0].gpio['P0.11'].drive == 'open_drain' \
+             && !host.duts[0].gpio['P0.11'].inverted"
+        ));
     }
 
     /// A misspelled field errors rather than quietly reading as null, which is

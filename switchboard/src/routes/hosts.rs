@@ -471,6 +471,17 @@ fn validate_spec(document: serde_json::Value) -> Result<HostSpecLatest, HostSpec
                     ),
                 ));
             }
+            let output = pin.modes.iter().any(|m| m == "digital_out");
+            if output != pin.drive.is_some() {
+                return Err(rejection(
+                    &format!("duts[{i}].gpio.{pin_name}.drive"),
+                    if output {
+                        "required on pins with a `digital_out` mode".to_string()
+                    } else {
+                        "set only on pins with a `digital_out` mode".to_string()
+                    },
+                ));
+            }
         }
     }
     Ok(spec)

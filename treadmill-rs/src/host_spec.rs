@@ -341,6 +341,66 @@ pub struct GpioController {
 }
 
 /// One DUT pin wired to a host GPIO controller.
+///
+/// # Examples
+///
+/// Other fields are left out below.
+///
+/// An LED on the DUT board, which the DUT turns on by pulling its pin low. The
+/// host reads the pin:
+///
+/// ```json
+/// "LED1": {
+///   "modes": ["digital_in"],
+///   "active": "low",
+///   "inverted": false,
+///   "drive": null,
+///   "note": null
+/// }
+/// ```
+///
+/// A button on the DUT board that connects its pin to ground. The host wire
+/// connects to the same pin and presses the button by pulling the pin low. The
+/// button can pull the pin low at the same time, so the host must never drive
+/// it high:
+///
+/// ```json
+/// "BUTTON1": {
+///   "modes": ["digital_out"],
+///   "active": "low",
+///   "inverted": false,
+///   "drive": "open_drain",
+///   "note": null
+/// }
+/// ```
+///
+/// A Pico 2's `RUN` line, pulled to ground by an NPN transistor whose base the
+/// host drives. Asserting the pin holds the board in reset. Releasing it lets
+/// the Pico's pull-up take `RUN` high:
+///
+/// ```json
+/// "RUN": {
+///   "modes": ["digital_out"],
+///   "active": "low",
+///   "inverted": true,
+///   "drive": "open_drain",
+///   "note": "NPN, 1k base"
+/// }
+/// ```
+///
+/// A general-purpose DUT pin that the host can read and drive. A series
+/// resistor limits the current when the host and the DUT drive the pin to
+/// opposite levels:
+///
+/// ```json
+/// "P1.01": {
+///   "modes": ["digital_in", "digital_out"],
+///   "active": null,
+///   "inverted": false,
+///   "drive": "push_pull",
+///   "note": "1k series"
+/// }
+/// ```
 #[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GpioPin {
@@ -353,6 +413,71 @@ pub struct GpioPin {
     pub controller: String,
     /// Driver-specific settings that locate the pin on its controller.
     pub config: serde_json::Map<String, serde_json::Value>,
+    /// The DUT pin's function is asserted at this level, e.g. `low` for a reset
+    /// line or a button to ground. This is a property of the board. `null`
+    /// means the pin has no asserted level.
+    pub active: Option<GpioActive>,
+    /// Set when the wiring inverts the signal, e.g. through an inverter or a
+    /// transistor. The DUT pin then sits at the opposite level of the host
+    /// line. The supervisor applies the inversion, so jobs always see the DUT
+    /// pin's level.
+    #[serde(default)]
+    pub inverted: bool,
+    /// How the host can drive the DUT pin. Set only on pins with a
+    /// `digital_out` mode.
+    pub drive: Option<GpioDrive>,
+    /// Human-readable notes, e.g. `NPN, 1k base` or `470Ω series`.
+    pub note: Option<String>,
+}
+
+/// The level at which a DUT pin's function is asserted.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GpioActive {
+    Low,
+    High,
+}
+
+/// The output drive at a DUT pin.
+///
+/// An NPN transistor to ground, for example, only ever pulls the pin low.
+///
+/// A job writes the level it wants at the DUT pin. The supervisor sets the
+/// host line to that value, or to its opposite if the pin is `inverted`. The
+/// DUT pin then ends up as follows:
+///
+/// | drive         | inverted | job writes | host line set to | DUT pin             |
+/// |---------------|----------|------------|------------------|---------------------|
+/// | `push_pull`   | `false`  | 0          | 0                | DUT pin is low      |
+/// | `push_pull`   | `false`  | 1          | 1                | DUT pin is high     |
+/// | `push_pull`   | `true`   | 0          | 1                | DUT pin is low      |
+/// | `push_pull`   | `true`   | 1          | 0                | DUT pin is high     |
+/// | `open_drain`  | `false`  | 0          | 0                | DUT pin is low      |
+/// | `open_drain`  | `false`  | 1          | 1                | DUT pin is released |
+/// | `open_drain`  | `true`   | 0          | 1                | DUT pin is low      |
+/// | `open_drain`  | `true`   | 1          | 0                | DUT pin is released |
+/// | `open_source` | `false`  | 0          | 0                | DUT pin is released |
+/// | `open_source` | `false`  | 1          | 1                | DUT pin is high     |
+/// | `open_source` | `true`   | 0          | 1                | DUT pin is released |
+/// | `open_source` | `true`   | 1          | 0                | DUT pin is high     |
+///
+/// A released DUT pin floats, unless the DUT pulls it up or down.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GpioDrive {
+    /// The host can drive the DUT pin high and low. Examples: a direct wire,
+    /// with or without a series resistor, or a push-pull buffer or inverter.
+    PushPull,
+    /// The host can pull the DUT pin low or release it. Examples: an NPN
+    /// transistor or N-MOSFET to ground, an open-drain buffer, a diode with its
+    /// cathode towards the host, or a direct wire that another part of the
+    /// board also pulls low.
+    OpenDrain,
+    /// The host can drive the DUT pin high or release it. Examples: a PNP
+    /// transistor or P-MOSFET to the supply, an open-source buffer, a diode
+    /// with its anode towards the host, or a direct wire that another part of
+    /// the board also drives high.
+    OpenSource,
 }
 
 /// How the board is programmed and debugged.
@@ -458,6 +583,10 @@ mod tests {
                 modes: vec!["digital_in".into()],
                 controller: "rp1".into(),
                 config: json!({ "offset": 20 }).as_object().unwrap().clone(),
+                active: Some(GpioActive::Low),
+                inverted: false,
+                drive: None,
+                note: None,
             },
         )]);
         spec
@@ -520,6 +649,35 @@ mod tests {
                 "accepted an unknown field at `{pointer}`"
             );
         }
+    }
+
+    #[test]
+    fn gpio_wiring_fields_serialize() {
+        let mut spec = v2();
+        let pin = spec.duts[0].gpio.get_mut("P0.13").unwrap();
+        pin.modes = vec!["digital_out".into()];
+        pin.inverted = true;
+        pin.drive = Some(GpioDrive::OpenDrain);
+        let json = serde_json::to_value(&spec).unwrap();
+        let pin = &json["duts"][0]["gpio"]["P0.13"];
+        assert_eq!(pin["active"], "low");
+        assert_eq!(pin["inverted"], true);
+        assert_eq!(pin["drive"], "open_drain");
+        assert_eq!(pin["note"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn gpio_wiring_fields_may_be_omitted() {
+        let mut json = serde_json::to_value(v2()).unwrap();
+        let pin = json["duts"][0]["gpio"]["P0.13"].as_object_mut().unwrap();
+        for field in ["active", "inverted", "drive", "note"] {
+            pin.remove(field);
+        }
+        let spec: HostSpecV2 = serde_json::from_value(json).unwrap();
+        let pin = &spec.duts[0].gpio["P0.13"];
+        assert_eq!(pin.active, None);
+        assert!(!pin.inverted);
+        assert_eq!(pin.drive, None);
     }
 
     #[test]
