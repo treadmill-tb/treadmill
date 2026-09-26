@@ -25,6 +25,13 @@ import {
   PlatformIcon,
 } from "../icons";
 import { pinDirection, pinSummary } from "./gpio";
+import {
+  consoleOnProbe,
+  controllerLink,
+  dutLinks,
+  probeLink,
+  usbProbe,
+} from "./topology-heuristics";
 
 const FONT = 12;
 const MARGIN = 48;
@@ -33,6 +40,8 @@ const ADAPTER_H = 54;
 const SPACING = 12;
 const ROW_GAP = 16;
 const COL_GAP = 100;
+const MIN_HOST_GAP = 48;
+const BRANCH = 48;
 const WIRE = 12;
 const WIRE_PAD = 8;
 const BEND = 5;
@@ -43,9 +52,6 @@ const DUT_W = 180;
 const PAD = 2;
 const GLYPHS = 48;
 
-const ADAPTER_X = PAD + HOST_W + COL_GAP;
-const ADAPTER_RIGHT = ADAPTER_X + ADAPTER_W;
-
 type Wire = { dut: number; pin: string; spec: GpioPin };
 
 type Slot =
@@ -55,8 +61,9 @@ type Slot =
       protocol: string;
       uart: boolean;
       usb: boolean;
+      link: string | undefined;
     }
-  | { kind: "uart" }
+  | { kind: "link"; label: string }
   | {
       kind: "controller";
       name: string;
@@ -69,23 +76,13 @@ type Slot =
 
 type Placed = Slot & { top: number; height: number };
 
-function uartFolded(dut: DutV2): boolean {
-  const serial = dut.debug?.probe.serial;
-  return (
-    dut.console != null &&
-    serial != null &&
-    serial !== "" &&
-    dut.console.device.includes(serial)
-  );
-}
-
 function slotHeight(slot: Slot): number {
   switch (slot.kind) {
     case "controller":
       return Math.max(ADAPTER_H, slot.wires.length * WIRE + 2 * WIRE_PAD);
     case "lane":
       return slot.wires.length * WIRE + 2 * WIRE_PAD;
-    case "uart":
+    case "link":
       return LINE_H;
     default:
       return ADAPTER_H;
@@ -111,16 +108,16 @@ function layout(spec: HostSpecV2) {
     const row: Slot[] = [];
     if (dut.debug != null) {
       const protocol = dut.debug.protocol.toUpperCase();
-      const folded = uartFolded(dut);
       row.push({
         kind: "debugger",
         dut,
         protocol,
-        uart: folded,
-        usb: folded && /usb/i.test(dut.console?.device ?? ""),
+        uart: consoleOnProbe(dut),
+        usb: usbProbe(dut),
+        link: probeLink(dut.debug.probe),
       });
     }
-    if (dut.console != null && !uartFolded(dut)) row.push({ kind: "uart" });
+    for (const label of dutLinks(dut)) row.push({ kind: "link", label });
     return row;
   });
   const above: Slot[][] = spec.duts.map(() => []);
@@ -209,10 +206,12 @@ function layout(spec: HostSpecV2) {
       return slot.wires.length;
     }),
   );
-  const dutX =
-    ADAPTER_RIGHT + Math.max(COL_GAP, 16 + bends * BEND + 24 + GLYPHS);
+  const reach = (bends > 0 ? BRANCH + bends * BEND : 0) + 24 + GLYPHS;
+  const dutGap = Math.max(COL_GAP, reach);
+  const adapterX = PAD + HOST_W + Math.max(MIN_HOST_GAP, 2 * COL_GAP - dutGap);
+  const dutX = adapterX + ADAPTER_W + dutGap;
   const height = Math.max(y - SPACING, PAD + BOX_H) + PAD;
-  return { placed, dutSpans, lanes, dutX, height };
+  return { placed, dutSpans, lanes, adapterX, dutX, height };
 }
 
 function fit(text: string, chars: number): string {
@@ -361,18 +360,20 @@ function DriveMark({ x, y, wire }: { x: number; y: number; wire: Wire }) {
 function Controller({
   slot,
   lanes,
+  adapterX,
   dutX,
-  arrow,
   wireArrow,
 }: {
   slot: Extract<Placed, { kind: "controller" }>;
   lanes: Map<string, Placed>;
+  adapterX: number;
   dutX: number;
-  arrow: string;
   wireArrow: string;
 }) {
   const hostRight = PAD + HOST_W;
+  const adapterRight = adapterX + ADAPTER_W;
   const cy = slot.top + ADAPTER_H / 2;
+  const link = controllerLink(slot.controller);
   const starts = wireYs(slot);
   const targets = slot.wires.map((wire) => {
     const lane = lanes.get(`${slot.name}/${wire.dut}`);
@@ -389,18 +390,19 @@ function Controller({
     .reverse();
   const bendOf = (k: number) => {
     const order = up.includes(k) ? up.indexOf(k) : down.indexOf(k);
-    return ADAPTER_RIGHT + 16 + order * BEND;
+    return adapterRight + BRANCH + order * BEND;
   };
 
   return (
     <g>
-      <path
-        className="edge"
-        d={`M${hostRight} ${cy}H${ADAPTER_X}`}
-        markerEnd={arrow}
-      />
+      <path className="edge" d={`M${hostRight} ${cy}H${adapterX}`} />
+      {link !== undefined && (
+        <EdgeLabel x={hostRight + 8} y={cy - 6}>
+          {link}
+        </EdgeLabel>
+      )}
       <Node
-        x={ADAPTER_X}
+        x={adapterX}
         y={slot.top}
         width={ADAPTER_W}
         height={slot.height}
@@ -423,8 +425,8 @@ function Controller({
         const y = target ?? start;
         const d =
           target === undefined
-            ? `M${ADAPTER_RIGHT} ${start}H${dutX}`
-            : `M${ADAPTER_RIGHT} ${start}H${bendOf(k)}V${target}H${dutX}`;
+            ? `M${adapterRight} ${start}H${dutX}`
+            : `M${adapterRight} ${start}H${bendOf(k)}V${target}H${dutX}`;
         const direction = pinDirection(wire.spec);
         return (
           <g key={`${wire.dut}/${wire.pin}`}>
@@ -584,9 +586,9 @@ function ZoomView({
 
 export function HostTopology({ spec }: { spec: HostSpecV2 }) {
   const id = useId().replace(/[^a-zA-Z0-9]/g, "");
-  const arrow = `url(#arrow-${id})`;
   const wireArrow = `url(#wire-${id})`;
-  const { placed, dutSpans, lanes, dutX, height } = layout(spec);
+  const { placed, dutSpans, lanes, adapterX, dutX, height } = layout(spec);
+  const adapterRight = adapterX + ADAPTER_W;
   const width = dutX + DUT_W + PAD;
   const hostRight = PAD + HOST_W;
   const platform = spec.platform;
@@ -604,17 +606,6 @@ export function HostTopology({ spec }: { spec: HostSpecV2 }) {
         style={{ fontSize: FONT }}
       >
         <defs>
-          <marker
-            id={`arrow-${id}`}
-            viewBox="0 0 8 8"
-            refX={8}
-            refY={4}
-            markerWidth={8}
-            markerHeight={8}
-            orient="auto"
-          >
-            <path d="M0 0L8 4L0 8Z" />
-          </marker>
           <marker
             id={`wire-${id}`}
             viewBox="0 0 8 8"
@@ -679,11 +670,15 @@ export function HostTopology({ spec }: { spec: HostSpecV2 }) {
                 <g key={i}>
                   <path
                     className="edge"
-                    d={`M${hostRight} ${cy}H${ADAPTER_X}`}
-                    markerEnd={arrow}
+                    d={`M${hostRight} ${cy}H${adapterX}`}
                   />
+                  {slot.link !== undefined && (
+                    <EdgeLabel x={hostRight + 8} y={cy - 6}>
+                      {slot.link}
+                    </EdgeLabel>
+                  )}
                   <Node
-                    x={ADAPTER_X}
+                    x={adapterX}
                     y={slot.top}
                     width={ADAPTER_W}
                     height={ADAPTER_H}
@@ -704,10 +699,9 @@ export function HostTopology({ spec }: { spec: HostSpecV2 }) {
                     <g key={label}>
                       <path
                         className="edge"
-                        d={`M${ADAPTER_RIGHT} ${y}H${dutX}`}
-                        markerEnd={arrow}
+                        d={`M${adapterRight} ${y}H${dutX}`}
                       />
-                      <EdgeLabel x={ADAPTER_RIGHT + 8} y={y - 6}>
+                      <EdgeLabel x={adapterRight + 8} y={y - 6}>
                         {label}
                       </EdgeLabel>
                     </g>
@@ -715,16 +709,12 @@ export function HostTopology({ spec }: { spec: HostSpecV2 }) {
                 </g>
               );
             }
-            case "uart":
+            case "link":
               return (
                 <g key={i}>
-                  <path
-                    className="edge"
-                    d={`M${hostRight} ${cy}H${dutX}`}
-                    markerEnd={arrow}
-                  />
-                  <EdgeLabel x={ADAPTER_RIGHT + 8} y={cy - 6}>
-                    UART
+                  <path className="edge" d={`M${hostRight} ${cy}H${dutX}`} />
+                  <EdgeLabel x={hostRight + 8} y={cy - 6}>
+                    {slot.label}
                   </EdgeLabel>
                 </g>
               );
@@ -734,8 +724,8 @@ export function HostTopology({ spec }: { spec: HostSpecV2 }) {
                   key={i}
                   slot={slot}
                   lanes={lanes}
+                  adapterX={adapterX}
                   dutX={dutX}
-                  arrow={arrow}
                   wireArrow={wireArrow}
                 />
               );

@@ -2547,7 +2547,7 @@ dialog h4 {
 .topology .edge {
   fill: none;
   stroke: var(--pico-muted-color);
-  stroke-width: 1.5;
+  stroke-width: 2.5;
 }
 
 .topology .wire {
