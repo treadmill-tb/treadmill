@@ -959,7 +959,7 @@ paths:
       tags:
       - Hosts
       summary: Get the host spec schema
-      description: The same artifact as the committed `host_spec.schema.json` snapshot.
+      description: The same artifact as the committed `host_spec_latest.schema.json` snapshot.
       operationId: getHostSpecSchema
       responses:
         '200':
@@ -2833,14 +2833,13 @@ components:
           type: boolean
         name:
           type: string
-        owner_id:
+        owner:
           description: |-
-            Subject (user or group) owning the host; null if it is orphaned, and so
-            manageable only by global admins.
-          type:
-          - string
-          - 'null'
-          format: uuid
+            The owning subject (user or group); null if the host is orphaned, and
+            so manageable only by global admins.
+          anyOf:
+          - $ref: '#/components/schemas/SubjectRef'
+          - type: 'null'
         permissions:
           description: The viewer's permissions on this host.
           type: array
@@ -3314,11 +3313,11 @@ components:
           - 'null'
           format: uint32
           minimum: 0
-        owner_id:
-          type:
-          - string
-          - 'null'
-          format: uuid
+        owner:
+          description: The set's owner, or null if orphaned.
+          anyOf:
+          - $ref: '#/components/schemas/SubjectRef'
+          - type: 'null'
         platforms:
           description: |-
             The platform profiles of the latest generation's members, in member
@@ -3391,12 +3390,11 @@ components:
         id:
           type: string
           format: uuid
-        owner_id:
+        owner:
           description: The source's owner, or null if orphaned.
-          type:
-          - string
-          - 'null'
-          format: uuid
+          anyOf:
+          - $ref: '#/components/schemas/SubjectRef'
+          - type: 'null'
         permissions:
           description: The viewer's permissions on this source.
           type: array
@@ -4585,18 +4583,33 @@ components:
       - virtual
     PlatformSummary:
       description: |-
-        A [`Platform`](crate::host_spec::Platform) without its variant-specific
-        fields — vendor and model, or hypervisor.
+        A [`Platform`](crate::host_spec::Platform), flattened: each
+        variant-specific field is null on the variant that lacks it.
       type: object
       properties:
         arch:
           type: string
+        hypervisor:
+          description: Null on a physical host.
+          type:
+          - string
+          - 'null'
         kind:
           $ref: '#/components/schemas/PlatformKind'
+        model:
+          description: Null on a virtual host.
+          type:
+          - string
+          - 'null'
         profiles:
           type: array
           items:
             type: string
+        vendor:
+          description: Null on a virtual host.
+          type:
+          - string
+          - 'null'
       required:
       - kind
       - arch

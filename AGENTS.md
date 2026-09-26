@@ -108,16 +108,19 @@ cover both. The `tml` package builds only `user`, and the static
 The SPA console is an npm package (React + React Router v7 in SPA mode,
 `ssr: false`), not a Cargo crate. Its API client types are **generated** from
 `switchboard/api-spec/openapi.yaml` into the committed
-`console/app/api/schema.d.ts`; after any switchboard API change, regenerate
-and commit the diff:
+`console/app/api/schema.d.ts`, and its host spec types from
+`treadmill-rs/protocol-schema/host_spec_latest.schema.json` into
+`console/app/api/host-spec.d.ts`; after any switchboard API or host spec
+change, regenerate and commit the diff:
 
 ```bash
 cd console && npm ci && npm run codegen
 ```
 
 The `console` Nix package (`nix build .#console`, also a fast-tier flake
-check) is the frontend CI gate: it fails on schema drift, then runs
-`npm run lint`, `npm run typecheck` (strict tsc), and the vite build. Dev loop:
+check) is the frontend CI gate: it fails on drift of either generated file,
+then runs `npm run lint`, `npm run typecheck` (strict tsc), and the vite build.
+Dev loop:
 `npm run dev` (in the default dev shell, which carries node) proxies `/api` to
 a local switchboard at `127.0.0.1:8000`, where `nix run .#devstack` serves it
 (override with `TML_DEV_PROXY`). The

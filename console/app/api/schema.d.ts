@@ -394,7 +394,7 @@ export interface paths {
         };
         /**
          * Get the host spec schema
-         * @description The same artifact as the committed `host_spec.schema.json` snapshot.
+         * @description The same artifact as the committed `host_spec_latest.schema.json` snapshot.
          */
         get: operations["getHostSpecSchema"];
         put?: never;
@@ -1215,11 +1215,10 @@ export interface components {
             maintenance: boolean;
             name: string;
             /**
-             * Format: uuid
-             * @description Subject (user or group) owning the host; null if it is orphaned, and so
-             *     manageable only by global admins.
+             * @description The owning subject (user or group); null if the host is orphaned, and
+             *     so manageable only by global admins.
              */
-            owner_id?: string | null;
+            owner?: components["schemas"]["SubjectRef"] | null;
             /** @description The viewer's permissions on this host. */
             permissions: components["schemas"]["HostPermission"][];
             /**
@@ -1514,8 +1513,8 @@ export interface components {
              * @description The set's latest generation number, or null if it has none yet.
              */
             latest_generation?: number | null;
-            /** Format: uuid */
-            owner_id?: string | null;
+            /** @description The set's owner, or null if orphaned. */
+            owner?: components["schemas"]["SubjectRef"] | null;
             /**
              * @description The platform profiles of the latest generation's members, in member
              *     order, without duplicates.
@@ -1558,11 +1557,8 @@ export interface components {
         ImageSourceInfo: {
             /** Format: uuid */
             id: string;
-            /**
-             * Format: uuid
-             * @description The source's owner, or null if orphaned.
-             */
-            owner_id?: string | null;
+            /** @description The source's owner, or null if orphaned. */
+            owner?: components["schemas"]["SubjectRef"] | null;
             /** @description The viewer's permissions on this source. */
             permissions: components["schemas"]["ImageSourcePermission"][];
             registry: string;
@@ -2302,13 +2298,19 @@ export interface components {
          */
         PlatformKind: "physical" | "virtual";
         /**
-         * @description A [`Platform`](crate::host_spec::Platform) without its variant-specific
-         *     fields — vendor and model, or hypervisor.
+         * @description A [`Platform`](crate::host_spec::Platform), flattened: each
+         *     variant-specific field is null on the variant that lacks it.
          */
         PlatformSummary: {
             arch: string;
+            /** @description Null on a physical host. */
+            hypervisor?: string | null;
             kind: components["schemas"]["PlatformKind"];
+            /** @description Null on a virtual host. */
+            model?: string | null;
             profiles: string[];
+            /** @description Null on a virtual host. */
+            vendor?: string | null;
         };
         /** @description The `{provider}` segment of an OAuth login route. */
         ProviderPath: {

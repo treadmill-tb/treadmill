@@ -40,6 +40,7 @@
           # Generated (openapi-typescript); kept as raw codegen output so the
           # drift check in nix/console.nix is a byte-for-byte diff.
           "console/app/api/schema.d.ts"
+          "console/app/api/host-spec.d.ts"
           "console/node_modules/**"
           "console/build/**"
           "console/.react-router/**"

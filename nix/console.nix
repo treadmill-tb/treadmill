@@ -19,6 +19,7 @@
             fileset = pkgs.lib.fileset.unions [
               ../console
               ../switchboard/api-spec/openapi.yaml
+              ../treadmill-rs/protocol-schema/host_spec_latest.schema.json
             ];
           };
           sourceRoot = "source/console";
@@ -37,6 +38,7 @@
 
           preBuild = ''
             cp app/api/schema.d.ts schema.committed.d.ts
+            cp app/api/host-spec.d.ts host-spec.committed.d.ts
             npm run codegen
             if ! diff -u schema.committed.d.ts app/api/schema.d.ts; then
               echo 'console/app/api/schema.d.ts is out of date with' >&2
@@ -44,7 +46,14 @@
               echo '`npm run codegen` in console/ and commit the diff.' >&2
               exit 1
             fi
-            rm schema.committed.d.ts
+            if ! diff -u host-spec.committed.d.ts app/api/host-spec.d.ts; then
+              echo 'console/app/api/host-spec.d.ts is out of date with' >&2
+              echo 'treadmill-rs/protocol-schema/host_spec_latest.schema.json;' >&2
+              echo 'regenerate it with `npm run codegen` in console/ and commit' >&2
+              echo 'the diff.' >&2
+              exit 1
+            fi
+            rm schema.committed.d.ts host-spec.committed.d.ts
 
             npm run lint
             npm run typecheck

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 
 import { reactRouter } from "@react-router/dev/vite";
 import { defineConfig } from "vite";
+import svgr from "vite-plugin-svgr";
 
 // Fall back to git only when the version isn't supplied in an env var.
 process.env.VITE_TML_CONSOLE_REV ??= (() => {
@@ -15,7 +16,7 @@ process.env.VITE_TML_CONSOLE_REV ??= (() => {
 })();
 
 export default defineConfig({
-  plugins: [reactRouter()],
+  plugins: [svgr(), reactRouter()],
   server: {
     // Dev-only: forward API calls to a local switchboard (e.g. `nix run
     // .#devstack`), so the SPA runs same-origin with an empty VITE_TML_API_URL.

@@ -1,14 +1,78 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "HostSpec",
-  "description": "A host spec at whatever version it was written under.\n\nUntagged because each version type carries its own `spec_version` field:\nthat keeps the discriminant inside the document being validated, so a\nrejection names the offending path (`duts[2].debug.probe.serail`) instead of\nthe document root, which an internally-tagged enum cannot do.",
-  "anyOf": [
-    {
-      "$ref": "#/$defs/HostSpecV1"
+  "title": "HostSpecV2",
+  "description": "Version 2 of the host spec.",
+  "type": "object",
+  "properties": {
+    "description": {
+      "description": "What this host is, in prose.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
-    {
-      "$ref": "#/$defs/HostSpecV2"
+    "duts": {
+      "description": "The devices under test wired to this host, in the order the operator\nlisted them. May be empty.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DutV2"
+      }
+    },
+    "gpio_controllers": {
+      "description": "The host's GPIO controllers, keyed by a name the DUTs' pins refer to,\ne.g. `rp1`. May be empty.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/GpioController"
+      }
+    },
+    "id": {
+      "description": "Must equal the `host_id` of the host this document describes.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "labels": {
+      "description": "Operator-defined labels. CEL map indexing errors on an absent key, so\npredicates guard with `'key' in host.labels`.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "location": {
+      "description": "Where in the site, e.g. `rack4/shelf2`. Free text.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "description": "Display handle, e.g. `cam-rpi5-01`. Deliberately not unique; nothing\nroutes on it.",
+      "type": "string"
+    },
+    "platform": {
+      "$ref": "#/$defs/Platform"
+    },
+    "resources": {
+      "$ref": "#/$defs/Resources"
+    },
+    "site": {
+      "description": "The site the host lives at, e.g. `cambridge`. Flat, so a predicate reads\n`host.site == 'cambridge'`.",
+      "type": "string"
+    },
+    "spec_version": {
+      "$ref": "#/$defs/SpecVersionV2"
     }
+  },
+  "additionalProperties": false,
+  "required": [
+    "spec_version",
+    "id",
+    "name",
+    "site",
+    "platform",
+    "resources",
+    "labels",
+    "gpio_controllers",
+    "duts"
   ],
   "$defs": {
     "Console": {
@@ -82,82 +146,6 @@
       "required": [
         "vendor",
         "model"
-      ]
-    },
-    "DutV1": {
-      "description": "One device under test wired to a host.",
-      "type": "object",
-      "properties": {
-        "arch": {
-          "description": "The architectures of the board's cores, e.g. `cortex-m4`. An array\nbecause a heterogeneous-core part has more than one. May be empty.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "board": {
-          "description": "The board this is, e.g. `nrf52840dk`.",
-          "type": "string"
-        },
-        "connectivity": {
-          "description": "What the board can talk over, e.g. `ble`, `ieee802154`, `usb`, `wifi`,\n`ethernet`, `can`. Governed by convention, not a registry. May be empty.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "console": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Console"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "debug": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/DebugAccess"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "labels": {
-          "description": "As [`HostSpecV1::labels`], scoped to this DUT.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "name": {
-          "description": "Display label, e.g. `nRF52840-DK #1`.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "serial": {
-          "description": "The board's **own** serial number, not its debug probe's.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "vendor": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "vendor",
-        "board",
-        "arch",
-        "connectivity",
-        "labels"
       ]
     },
     "DutV2": {
@@ -361,148 +349,6 @@
         "config"
       ]
     },
-    "HostSpecV1": {
-      "description": "Version 1 of the host spec.",
-      "type": "object",
-      "properties": {
-        "description": {
-          "description": "What this host is, in prose.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "duts": {
-          "description": "The devices under test wired to this host, in the order the operator\nlisted them. May be empty.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/DutV1"
-          }
-        },
-        "id": {
-          "description": "Must equal the `host_id` of the host this document describes.",
-          "type": "string",
-          "format": "uuid"
-        },
-        "labels": {
-          "description": "Operator-defined labels. CEL map indexing errors on an absent key, so\npredicates guard with `'key' in host.labels`.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "location": {
-          "description": "Where in the site, e.g. `rack4/shelf2`. Free text.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "name": {
-          "description": "Display handle, e.g. `cam-rpi4-01`. Deliberately not unique; nothing\nroutes on it.",
-          "type": "string"
-        },
-        "platform": {
-          "$ref": "#/$defs/Platform"
-        },
-        "resources": {
-          "$ref": "#/$defs/Resources"
-        },
-        "site": {
-          "description": "The site the host lives at, e.g. `cambridge`. Flat, so a predicate reads\n`host.site == 'cambridge'`.",
-          "type": "string"
-        },
-        "spec_version": {
-          "$ref": "#/$defs/SpecVersionV1"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "spec_version",
-        "id",
-        "name",
-        "site",
-        "platform",
-        "resources",
-        "labels",
-        "duts"
-      ]
-    },
-    "HostSpecV2": {
-      "description": "Version 2 of the host spec.",
-      "type": "object",
-      "properties": {
-        "description": {
-          "description": "What this host is, in prose.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "duts": {
-          "description": "The devices under test wired to this host, in the order the operator\nlisted them. May be empty.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/DutV2"
-          }
-        },
-        "gpio_controllers": {
-          "description": "The host's GPIO controllers, keyed by a name the DUTs' pins refer to,\ne.g. `rp1`. May be empty.",
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/GpioController"
-          }
-        },
-        "id": {
-          "description": "Must equal the `host_id` of the host this document describes.",
-          "type": "string",
-          "format": "uuid"
-        },
-        "labels": {
-          "description": "Operator-defined labels. CEL map indexing errors on an absent key, so\npredicates guard with `'key' in host.labels`.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "location": {
-          "description": "Where in the site, e.g. `rack4/shelf2`. Free text.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "name": {
-          "description": "Display handle, e.g. `cam-rpi5-01`. Deliberately not unique; nothing\nroutes on it.",
-          "type": "string"
-        },
-        "platform": {
-          "$ref": "#/$defs/Platform"
-        },
-        "resources": {
-          "$ref": "#/$defs/Resources"
-        },
-        "site": {
-          "description": "The site the host lives at, e.g. `cambridge`. Flat, so a predicate reads\n`host.site == 'cambridge'`.",
-          "type": "string"
-        },
-        "spec_version": {
-          "$ref": "#/$defs/SpecVersionV2"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "spec_version",
-        "id",
-        "name",
-        "site",
-        "platform",
-        "resources",
-        "labels",
-        "gpio_controllers",
-        "duts"
-      ]
-    },
     "Platform": {
       "description": "The machine a host is, and the images it can boot.",
       "oneOf": [
@@ -598,13 +444,6 @@
         "cpu_cores",
         "memory_mb",
         "storage_gb"
-      ]
-    },
-    "SpecVersionV1": {
-      "description": "The `spec_version` discriminant of a [`HostSpecV1`] document.",
-      "type": "string",
-      "enum": [
-        "v1"
       ]
     },
     "SpecVersionV2": {

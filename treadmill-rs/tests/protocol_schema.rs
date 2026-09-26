@@ -18,7 +18,7 @@ use schemars::schema_for;
 use treadmill_rs::api::switchboard_supervisor::{
     ServerHello, SupervisorToSwitchboard, SwitchboardToSupervisor,
 };
-use treadmill_rs::host_spec::HostSpec;
+use treadmill_rs::host_spec::{HostSpec, HostSpecLatest};
 
 fn snapshot_dir() -> PathBuf {
     std::env::current_dir()
@@ -81,11 +81,15 @@ fn server_hello_schema() {
     check_schema("server_hello", pretty::<ServerHello>());
 }
 
-/// The host spec is a wire type twice over: the switchboard publishes this
-/// schema at `GET /hosts/spec-schema` for the console to render from, and hands
-/// a job the spec of the host it runs on in
-/// [`StartJobMessage`](treadmill_rs::api::switchboard_supervisor::StartJobMessage).
 #[test]
 fn host_spec_schema() {
     check_schema("host_spec", pretty::<HostSpec>());
+}
+
+/// The host spec is a wire type twice over: the switchboard publishes this
+/// schema at `GET /hosts/spec-schema` for the console to render from, and hands
+/// a job the spec of the host it runs on.
+#[test]
+fn host_spec_latest_schema() {
+    check_schema("host_spec_latest", pretty::<HostSpecLatest>());
 }

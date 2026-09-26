@@ -871,7 +871,7 @@ async fn image_source_grants_gate_visibility_and_use(pool: PgPool) {
     let info = register_image(&client, &base, &bob_token, &m).await;
     assert_eq!(info.sources.len(), 1);
     let source_id = info.sources[0].id;
-    assert_eq!(info.sources[0].owner_id, Some(bob));
+    assert_eq!(info.sources[0].owner.as_ref().map(|o| o.id), Some(bob));
     for p in [ImageSourcePermission::Use, ImageSourcePermission::Manage] {
         assert!(
             info.sources[0].permissions.contains(&p),
@@ -1122,7 +1122,7 @@ async fn image_set_owner_transfer_and_system_ownership(pool: PgPool) {
         .await
         .unwrap();
     let listed = listed.iter().find(|s| s.id == set.id).unwrap();
-    assert_eq!(listed.owner_id, Some(SYSTEM_SUBJECT));
+    assert_eq!(listed.owner.as_ref().map(|o| o.id), Some(SYSTEM_SUBJECT));
 
     // A public set's `use` grant does not let others re-own it.
     assert_eq!(

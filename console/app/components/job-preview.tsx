@@ -1,8 +1,9 @@
-import { ChevronDown, ChevronUp, Cpu } from "lucide-react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { Fragment, useState, type ReactNode } from "react";
 
 import { hostStatus, STATUS_TONE, type HostStatus } from "../api/hosts";
 import type { components } from "../api/schema";
+import { DevBoardIcon, PlatformIcon } from "../icons";
 import type { Tone } from "./badges";
 import { RelTime } from "./rel-time";
 
@@ -155,7 +156,18 @@ export function HostLine({
   return (
     <span className={`host-item${incompatible ? " dim" : ""}`}>
       <span className={`dot ${STATUS_TONE[hostStatus(host)]}`} />
-      <strong>{match.name}</strong>
+      <strong>
+        {spec != null && (
+          <>
+            <PlatformIcon
+              platform={spec.platform}
+              size={14}
+              aria-hidden="true"
+            />{" "}
+          </>
+        )}
+        {match.name}
+      </strong>
       <span className="host-item-actions">{action}</span>
       <small className="host-item-meta">
         {incompatible ? (
@@ -173,7 +185,7 @@ export function HostLine({
       </small>
       {duts.length > 0 && (
         <small className="host-item-meta">
-          <Cpu size={12} aria-hidden="true" /> {dutSummary(duts)}
+          <DevBoardIcon size={12} aria-hidden="true" /> {dutSummary(duts)}
         </small>
       )}
     </span>
@@ -200,7 +212,7 @@ function HostDetails({ spec }: { spec: NonNullable<HostListEntry["spec"]> }) {
         <ul>
           {spec.duts.map((dut, i) => (
             <li key={i}>
-              <Cpu size={12} aria-hidden="true" />{" "}
+              <DevBoardIcon size={12} aria-hidden="true" />{" "}
               {dut.name != null && <>{dut.name} </>}
               <span className={dut.name != null ? "muted" : undefined}>
                 {dut.vendor} {dut.board}

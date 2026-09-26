@@ -16,8 +16,8 @@ export type Variant = {
   predicate?: string | null;
 };
 
-export function isStandard(set: Pick<ImageSetInfo, "owner_id">): boolean {
-  return set.owner_id === SYSTEM_SUBJECT;
+export function isStandard(set: Pick<ImageSetInfo, "owner">): boolean {
+  return set.owner?.id === SYSTEM_SUBJECT;
 }
 
 export function jobImageName(

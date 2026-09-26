@@ -12,7 +12,7 @@
 //! wins. Author order is the ranking, because arbitrary predicates admit no
 //! specificity order to infer.
 
-use treadmill_rs::host_spec::HostSpecV1;
+use treadmill_rs::host_spec::HostSpecLatest;
 
 use crate::predicate::{CelEngine, Engine};
 
@@ -35,7 +35,7 @@ impl<T> GroupMember<T> {
     /// A refinement that errors or fails to compile makes the member
     /// inadmissible rather than failing the job, matching how a job's own
     /// predicate treats a host it cannot evaluate against.
-    fn admissible_for(&self, host: &HostSpecV1) -> bool {
+    fn admissible_for(&self, host: &HostSpecLatest) -> bool {
         if !host.platform.profiles().contains(&self.platform_profile) {
             return false;
         }
@@ -57,7 +57,7 @@ impl<T> GroupMember<T> {
 /// tried. A host with no spec advertises no profiles, so it admits nothing.
 pub fn select_member<'a, T>(
     members: &'a [GroupMember<T>],
-    host: Option<&HostSpecV1>,
+    host: Option<&HostSpecLatest>,
 ) -> Option<&'a GroupMember<T>> {
     let host = host?;
     members.iter().find(|m| m.admissible_for(host))
@@ -65,8 +65,6 @@ pub fn select_member<'a, T>(
 
 #[cfg(test)]
 mod tests {
-    use treadmill_rs::host_spec::HostSpecV1;
-
     use super::*;
 
     fn member(handle: &str, profile: &str, predicate: Option<&str>) -> GroupMember<String> {
@@ -78,10 +76,10 @@ mod tests {
     }
 
     /// A virtual host advertising `profiles` with `memory_mb` of RAM.
-    fn spec(profiles: &[&str], memory_mb: u32) -> HostSpecV1 {
-        use treadmill_rs::host_spec::{Platform, Resources, SpecVersionV1};
-        HostSpecV1 {
-            spec_version: SpecVersionV1::V1,
+    fn spec(profiles: &[&str], memory_mb: u32) -> HostSpecLatest {
+        use treadmill_rs::host_spec::{Platform, Resources, SpecVersionV2};
+        HostSpecLatest {
+            spec_version: SpecVersionV2::V2,
             id: uuid::Uuid::nil(),
             name: "h".into(),
             description: None,
@@ -98,6 +96,7 @@ mod tests {
                 storage_gb: 64,
             },
             labels: Default::default(),
+            gpio_controllers: Default::default(),
             duts: vec![],
         }
     }

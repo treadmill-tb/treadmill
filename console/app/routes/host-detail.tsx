@@ -1,26 +1,35 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Play, Share2 } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { Pencil, Play, RotateCcw, Share2, Wrench } from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router";
 
 import { $api, client } from "../api/client";
 import { ApiError } from "../api/errors";
+import type { HostSpecV2 } from "../api/host-spec";
 import type { components } from "../api/schema";
 import { LiveBadge } from "../components/badges";
 import { AuditLog } from "../components/audit-log";
-import { EntityLink } from "../components/entity-link";
-import { HostSpecView } from "../components/host-spec";
+import { DutCard } from "../components/dut-card";
+import { HostTopology } from "../components/host-topology";
+import { OwnerDialog } from "../components/owner-dialog";
 import { RelTime } from "../components/rel-time";
 import { RequestError } from "../components/request-error";
+import { SubjectLink } from "../components/subject";
 import {
   ShareDialog,
   type ApplyAccess,
   type Role,
 } from "../components/share-dialog";
 import { useResourceWatch } from "../hooks/use-resource-watch";
+import { PlatformIcon } from "../icons";
 import type { Route } from "./+types/host-detail";
 
 type HostPermission = components["schemas"]["HostPermission"];
+
+function formatMemory(mb: number): string {
+  const gb = mb / 1024;
+  return `${gb < 10 ? gb.toFixed(1).replace(/\.0$/, "") : Math.round(gb)} GB`;
+}
 
 /// Invalidate everything a change to a host's owner or ACL can affect: the host
 /// itself (its owner and the viewer's permissions), the listing, its grants and
@@ -38,79 +47,40 @@ function useInvalidateHost(hostId: string) {
     ]);
 }
 
-function OwnerForm({
+function HostOwnerDialog({
   hostId,
   owner,
-  onDone,
+  onClose,
 }: {
   hostId: string;
-  owner: string | null | undefined;
-  onDone: () => void;
+  owner: string | null;
+  onClose: () => void;
 }) {
   const invalidate = useInvalidateHost(hostId);
-  const [value, setValue] = useState(owner ?? "");
   const put = $api.useMutation("put", "/hosts/{id}/owner", {
     onSuccess: async () => {
       await invalidate();
-      onDone();
+      onClose();
     },
   });
 
-  function submit(newOwner: string | null) {
-    const message =
-      newOwner == null
-        ? "Orphan this host? Only global admins will be able to manage it."
-        : `Transfer this host to ${newOwner}? Unless you hold a grant on it or are a global admin, you lose access.`;
-    if (window.confirm(message)) {
-      put.mutate({
-        params: { path: { id: hostId } },
-        body: { owner: newOwner },
-      });
-    }
-  }
-
-  function onSubmit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    submit(value.trim());
-  }
-
   return (
-    <form className="form card" onSubmit={onSubmit}>
-      <label className="field">
-        <span>New owner (user or group UUID)</span>
-        <input
-          required
-          className="mono"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-        />
-      </label>
-      <RequestError
-        error={put.error}
-        messages={{
-          403: "You are not allowed to manage this host.",
-          422: "There is no user or group with that ID.",
-        }}
-      />
-      <div className="toolbar">
-        <button type="submit" disabled={put.isPending}>
-          {put.isPending ? "Transferring…" : "Transfer"}
-        </button>
-        {owner != null && (
-          <button
-            type="button"
-            className="danger"
-            disabled={put.isPending}
-            onClick={() => submit(null)}
-          >
-            Orphan
-          </button>
-        )}
-        <button type="button" onClick={onDone}>
-          Cancel
-        </button>
-      </div>
-    </form>
+    <OwnerDialog
+      current={owner}
+      pending={put.isPending}
+      error={put.error}
+      errorMessages={{
+        403: "You are not allowed to manage this host.",
+        422: "There is no user or group with that ID.",
+      }}
+      onSave={(newOwner) =>
+        put.mutate({
+          params: { path: { id: hostId } },
+          body: { owner: newOwner },
+        })
+      }
+      onClose={onClose}
+    />
   );
 }
 
@@ -146,7 +116,7 @@ function HostShareDialog({
 }: {
   open: boolean;
   onClose: () => void;
-  host: { host_id: string; name: string; owner_id?: string | null };
+  host: { host_id: string; name: string; owner?: { id: string } | null };
 }) {
   const invalidate = useInvalidateHost(host.host_id);
   const grants = $api.useQuery(
@@ -192,7 +162,7 @@ function HostShareDialog({
       open={open}
       onClose={onClose}
       title={host.name}
-      ownerId={host.owner_id}
+      ownerId={host.owner?.id}
       grants={grants.data}
       grantsError={grants.error}
       roles={HOST_ROLES}
@@ -211,9 +181,26 @@ export default function HostDetail({ params }: Route.ComponentProps) {
     "/hosts/{id}",
     { params: { path: { id: params.id } } },
   ]);
-  const [showOwnerForm, setShowOwnerForm] = useState(false);
+  const [owning, setOwning] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const invalidate = useInvalidateHost(params.id);
+  const patch = $api.useMutation("patch", "/hosts/{id}", {
+    onSuccess: invalidate,
+  });
 
+  function setMaintenance(maintenance: boolean) {
+    const message = maintenance
+      ? "Put this host into maintenance?"
+      : "Resume this host?";
+    if (window.confirm(message)) {
+      patch.mutate({
+        params: { path: { id: params.id } },
+        body: { maintenance },
+      });
+    }
+  }
+
+  const spec = host.data?.spec as HostSpecV2 | null | undefined;
   const canManage = host.data?.permissions.includes("manage") ?? false;
   const canStart = host.data?.permissions.includes("start") ?? false;
 
@@ -226,80 +213,202 @@ export default function HostDetail({ params }: Route.ComponentProps) {
       />
       {host.data && (
         <>
-          <h1>
-            Host {host.data.name} <LiveBadge live={host.data.live} />
-            {host.data.maintenance && (
-              <span className="badge warn">maintenance</span>
-            )}{" "}
-            {canManage && (
-              <button type="button" onClick={() => setSharing(true)}>
-                <Share2 size={14} aria-hidden="true" /> Share
-              </button>
-            )}{" "}
+          <div className="toolbar">
+            <h1 className="host-name">
+              {spec != null && (
+                <PlatformIcon
+                  platform={spec.platform}
+                  size={28}
+                  aria-hidden="true"
+                />
+              )}
+              {host.data.name}
+              <LiveBadge live={host.data.live} />
+              {host.data.live && host.data.busy && (
+                <span className="badge warn">busy</span>
+              )}
+              {host.data.maintenance && (
+                <span className="badge warn">maintenance</span>
+              )}
+            </h1>
+            <span className="spacer" />
             {canStart && (
               <Link
                 className="btn primary"
                 to={`/jobs/new?host=${host.data.host_id}`}
               >
-                <Play size={14} aria-hidden="true" /> Run job here
+                <Play size={14} aria-hidden="true" /> Run job
               </Link>
             )}
-          </h1>
-          <dl className="props">
-            <dt>Id</dt>
-            <dd className="mono">{host.data.host_id}</dd>
-            <dt>Owner</dt>
-            <dd>
-              {host.data.owner_id == null ? (
-                <span className="muted">orphaned (global admins only)</span>
-              ) : (
-                <EntityLink kind="user" id={host.data.owner_id} />
+            {canManage && (
+              <button
+                type="button"
+                disabled={patch.isPending}
+                onClick={() => setMaintenance(!host.data.maintenance)}
+              >
+                {host.data.maintenance ? (
+                  <>
+                    <RotateCcw size={14} aria-hidden="true" /> Resume
+                  </>
+                ) : (
+                  <>
+                    <Wrench size={14} aria-hidden="true" /> Maintenance
+                  </>
+                )}
+              </button>
+            )}
+            {canManage && (
+              <button type="button" onClick={() => setSharing(true)}>
+                <Share2 size={14} aria-hidden="true" /> Share
+              </button>
+            )}
+            {canManage && (
+              <Link className="btn" to={`/hosts/${params.id}/spec`}>
+                <Pencil size={14} aria-hidden="true" />{" "}
+                {spec == null ? "Write spec" : "Edit spec"}
+              </Link>
+            )}
+          </div>
+          <RequestError
+            error={patch.error}
+            messages={{ 403: "You are not allowed to manage this host." }}
+          />
+          <section className="card host-overview">
+            {spec?.description != null && (
+              <p className="muted">{spec.description}</p>
+            )}
+            <div className="host-overview-columns">
+              {spec != null && (
+                <dl className="props">
+                  <dt>Platform</dt>
+                  <dd>
+                    {spec.platform.kind === "physical"
+                      ? `${spec.platform.vendor} · ${spec.platform.model}`
+                      : `${spec.platform.hypervisor} (virtual)`}
+                  </dd>
+                  <dt>Architecture</dt>
+                  <dd className="mono">{spec.platform.arch}</dd>
+                  <dt>Resources</dt>
+                  <dd>
+                    {spec.resources.cpu_cores} cores,{" "}
+                    {formatMemory(spec.resources.memory_mb)} memory,{" "}
+                    {spec.resources.storage_gb} GB storage
+                  </dd>
+                  <dt>Profiles</dt>
+                  <dd>
+                    {spec.platform.profiles.map((p) => (
+                      <span key={p} className="chip mono">
+                        {p}
+                      </span>
+                    ))}
+                  </dd>
+                </dl>
               )}
-              {canManage && (
-                <>
-                  {" "}
-                  <button onClick={() => setShowOwnerForm(!showOwnerForm)}>
-                    Change
-                  </button>
-                </>
-              )}
-            </dd>
-            <dt>Last seen</dt>
-            <dd>
-              <RelTime iso={host.data.last_seen_at} />
-            </dd>
-            <dt>Spec revision</dt>
-            <dd>
-              {host.data.spec_revision ?? <span className="muted">—</span>}
-            </dd>
-          </dl>
-          {canManage && showOwnerForm && (
-            <OwnerForm
+              <dl className="props">
+                {spec != null && (
+                  <>
+                    <dt>Site</dt>
+                    <dd>{spec.site}</dd>
+                    {spec.location != null && (
+                      <>
+                        <dt>Location</dt>
+                        <dd>{spec.location}</dd>
+                      </>
+                    )}
+                    {Object.keys(spec.labels).length > 0 && (
+                      <>
+                        <dt>Labels</dt>
+                        <dd>
+                          {Object.entries(spec.labels).map(([key, value]) => (
+                            <span key={key} className="chip mono">
+                              {key}={value}
+                            </span>
+                          ))}
+                        </dd>
+                      </>
+                    )}
+                  </>
+                )}
+                <dt>Owner</dt>
+                <dd>
+                  {host.data.owner == null ? (
+                    <span className="muted">orphaned</span>
+                  ) : (
+                    <SubjectLink subject={host.data.owner} />
+                  )}
+                  {canManage && (
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-label="Change owner"
+                      onClick={() => setOwning(true)}
+                    >
+                      <Pencil size={14} />
+                    </button>
+                  )}
+                </dd>
+                <dt>Last seen</dt>
+                <dd>
+                  {host.data.last_seen_at == null ? (
+                    <span className="muted">never</span>
+                  ) : (
+                    <RelTime iso={host.data.last_seen_at} />
+                  )}
+                </dd>
+                <dt>Spec revision</dt>
+                <dd>
+                  {host.data.spec_revision ?? (
+                    <span className="muted">none</span>
+                  )}
+                </dd>
+              </dl>
+            </div>
+          </section>
+          {canManage && owning && (
+            <HostOwnerDialog
               hostId={params.id}
-              owner={host.data.owner_id}
-              onDone={() => setShowOwnerForm(false)}
+              owner={host.data.owner?.id ?? null}
+              onClose={() => setOwning(false)}
             />
           )}
 
-          <section>
-            <h2>Spec</h2>
-            {canManage && (
-              <div className="toolbar">
-                <Link className="btn" to={`/hosts/${params.id}/spec`}>
-                  {host.data.spec == null ? "Write a spec" : "Edit spec"}
-                </Link>
-              </div>
-            )}
-            {host.data.spec == null ? (
-              <p className="muted">
-                This host has no spec. Nothing can be scheduled onto it: there
-                is no description to evaluate a job&rsquo;s predicate against,
-                and no platform profile for an image set to match.
-              </p>
-            ) : (
-              <HostSpecView spec={host.data.spec} />
-            )}
-          </section>
+          {spec == null ? (
+            <p className="muted">No spec. Nothing can be scheduled here.</p>
+          ) : (
+            <>
+              {(spec.duts.length > 0 ||
+                Object.keys(spec.gpio_controllers).length > 0) && (
+                <section>
+                  <h2>Topology</h2>
+                  <HostTopology spec={spec} />
+                </section>
+              )}
+              {spec.duts.length > 0 && (
+                <section>
+                  <h2>Devices under test</h2>
+                  <div className="dut-cards">
+                    {spec.duts.map((dut, i) => (
+                      <DutCard
+                        key={i}
+                        dut={dut}
+                        controllers={spec.gpio_controllers}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
+              <section>
+                <details className="collapsible">
+                  <summary>
+                    <h2>Raw spec</h2>
+                  </summary>
+                  <pre className="raw-spec">
+                    <code>{JSON.stringify(spec, null, 2)}</code>
+                  </pre>
+                </details>
+              </section>
+            </>
+          )}
 
           {canManage && (
             <HostShareDialog

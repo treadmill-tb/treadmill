@@ -10,7 +10,7 @@ import { Dialog } from "../components/dialog";
 import { HelpTip } from "../components/help-tip";
 import { RelTime } from "../components/rel-time";
 import { RequestError } from "../components/request-error";
-import { SubjectName } from "../components/subject";
+import { SubjectLink } from "../components/subject";
 
 type ImageSetInfo = components["schemas"]["ImageSetInfo"];
 type ImageSetGenerationInfo = components["schemas"]["ImageSetGenerationInfo"];
@@ -172,10 +172,10 @@ function ImageRows({
               </td>
               {showOwner && (
                 <td>
-                  {s.owner_id == null ? (
+                  {s.owner == null ? (
                     <span className="muted">—</span>
                   ) : (
-                    <SubjectName id={s.owner_id} />
+                    <SubjectLink subject={s.owner} />
                   )}
                 </td>
               )}
@@ -222,7 +222,7 @@ export default function Images() {
     ...(me.data?.groups.map((g) => g.group_id) ?? []),
   ]);
   const isMine = (s: ImageSetInfo) =>
-    !isStandard(s) && s.owner_id != null && mine.has(s.owner_id);
+    !isStandard(s) && s.owner != null && mine.has(s.owner.id);
   const standard = matching.filter(isStandard);
   const yours = matching.filter(isMine);
   const others = matching.filter((s) => !isStandard(s) && !isMine(s));
@@ -292,7 +292,7 @@ export default function Images() {
               <ImageRows
                 sets={yours}
                 versions={versions}
-                showOwner={yours.some((s) => s.owner_id !== me.data?.user_id)}
+                showOwner={yours.some((s) => s.owner?.id !== me.data?.user_id)}
               />
             ) : (
               <p className="muted">None</p>

@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::api::switchboard::SubjectRef;
 use crate::image::Digest;
 
 /// A permission on an image source. A "public" (unauthenticated) source is one
@@ -34,7 +35,7 @@ pub struct ImageSourceInfo {
     /// `external`, `canonical`, or `system`.
     pub status: String,
     /// The source's owner, or null if orphaned.
-    pub owner_id: Option<Uuid>,
+    pub owner: Option<SubjectRef>,
     /// The viewer's permissions on this source.
     pub permissions: Vec<ImageSourcePermission>,
 }
@@ -143,7 +144,8 @@ pub struct ImageSetInfo {
     pub display_name: String,
     /// The set's globally-unique handle, if an admin gave it one.
     pub canonical_name: Option<String>,
-    pub owner_id: Option<Uuid>,
+    /// The set's owner, or null if orphaned.
+    pub owner: Option<SubjectRef>,
     pub created_at: DateTime<Utc>,
     /// The set's latest generation number, or null if it has none yet.
     pub latest_generation: Option<u32>,

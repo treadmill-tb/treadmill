@@ -4,6 +4,7 @@ import { Link } from "react-router";
 
 import { $api } from "../api/client";
 import { ApiError } from "../api/errors";
+import { specVersion } from "../api/hosts";
 import type { components } from "../api/schema";
 import { JsonEditor } from "../components/json-editor";
 import { RequestError } from "../components/request-error";
@@ -48,10 +49,10 @@ function CreateError({ error }: { error: unknown }) {
   );
 }
 
-function template(hostId: string): string {
+function template(hostId: string, version: string | undefined): string {
   return JSON.stringify(
     {
-      spec_version: "v1",
+      spec_version: version,
       id: hostId,
       name: "",
       description: null,
@@ -65,6 +66,7 @@ function template(hostId: string): string {
       },
       resources: { cpu_cores: 4, memory_mb: 8192, storage_gb: 100 },
       labels: {},
+      gpio_controllers: {},
       duts: [],
     },
     null,
@@ -109,12 +111,12 @@ function Credential({ created }: { created: HostCreateResponse }) {
   );
 }
 
-function CreateForm() {
+function CreateForm({ version }: { version: string | undefined }) {
   const queryClient = useQueryClient();
   const me = $api.useQuery("get", "/users/me");
 
   const [hostId] = useState(() => crypto.randomUUID());
-  const [initialValue] = useState(() => template(hostId));
+  const [initialValue] = useState(() => template(hostId, version));
   const [text, setText] = useState(initialValue);
   const [parseError, setParseError] = useState<string | null>(null);
   const [ownerKind, setOwnerKind] = useState("none");
@@ -228,15 +230,19 @@ function CreateForm() {
 
 export default function HostNew() {
   const whoami = $api.useQuery("get", "/auth/whoami");
+  const schema = $api.useQuery("get", "/hosts/spec-schema");
 
   return (
     <>
       <h1>Register a supervisor</h1>
-      {whoami.isPending && <p className="muted">Loading…</p>}
-      <RequestError error={whoami.error} />
+      {(whoami.isPending || schema.isPending) && (
+        <p className="muted">Loading…</p>
+      )}
+      <RequestError error={whoami.error ?? schema.error} />
       {whoami.data &&
+        schema.isSuccess &&
         (whoami.data.admin ? (
-          <CreateForm />
+          <CreateForm version={specVersion(schema.data)} />
         ) : (
           <p className="error">
             Registering a supervisor mints a credential and puts a machine into
