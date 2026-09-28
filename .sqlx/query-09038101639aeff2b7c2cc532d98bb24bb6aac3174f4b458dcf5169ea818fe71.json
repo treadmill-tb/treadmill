@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select key, value from tml_switchboard.job_annotations\n           where job_id = $1 and key = any($2::text[])",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.job_annotations",
+            "name": "key"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "value",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.job_annotations",
+            "name": "value"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "09038101639aeff2b7c2cc532d98bb24bb6aac3174f4b458dcf5169ea818fe71"
+}

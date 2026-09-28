@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        select\n        job_id,\n        label,\n        owner_id,\n        resume_job_id,\n        restart_job_id,\n        image_id,\n        image_set_id,\n        image_set_generation,\n        resolved_image_id,\n        restart_policy as \"sql_restart_policy: _\",\n        enqueued_by_token_id,\n        host_cel_predicate,\n        lease_duration,\n        lease_expiry_action as \"lease_expiry_action: _\",\n        queued_at,\n        job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\",\n        started_at,\n        dispatched_on_host_id,\n        terminate_requested_at,\n        terminate_requested_reason as \"terminate_requested_reason: _\",\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\",\n        exit_message,\n        job_error,\n        terminated_at,\n        job_ip_address\n        from tml_switchboard.jobs where job_id = $1;\n        ",
+  "query": "\n        select\n        job_id,\n        label,\n        revision,\n        owner_id,\n        resume_job_id,\n        restart_job_id,\n        image_id,\n        image_set_id,\n        image_set_generation,\n        resolved_image_id,\n        restart_policy as \"sql_restart_policy: _\",\n        enqueued_by_token_id,\n        host_cel_predicate,\n        lease_duration,\n        lease_expiry_action as \"lease_expiry_action: _\",\n        queued_at,\n        job_state as \"job_state: _\",\n        initializing_stage as \"initializing_stage: _\",\n        started_at,\n        dispatched_on_host_id,\n        terminate_requested_at,\n        terminate_requested_reason as \"terminate_requested_reason: _\",\n        termination_reason as \"termination_reason: _\",\n        task_exit_status as \"task_exit_status: _\",\n        exit_message,\n        job_error,\n        terminated_at,\n        job_ip_address\n        from tml_switchboard.jobs where job_id = $1;\n        ",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,17 @@
       },
       {
         "ordinal": 2,
+        "name": "revision",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "revision"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "owner_id",
         "type_info": "Uuid",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "resume_job_id",
         "type_info": "Uuid",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "restart_job_id",
         "type_info": "Uuid",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "image_id",
         "type_info": "Uuid",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "image_set_id",
         "type_info": "Uuid",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "image_set_generation",
         "type_info": "Int4",
         "origin": {
@@ -92,7 +103,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "resolved_image_id",
         "type_info": "Uuid",
         "origin": {
@@ -103,7 +114,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "sql_restart_policy: _",
         "type_info": {
           "Custom": {
@@ -126,7 +137,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "enqueued_by_token_id",
         "type_info": "Uuid",
         "origin": {
@@ -137,7 +148,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "host_cel_predicate",
         "type_info": "Text",
         "origin": {
@@ -148,7 +159,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "lease_duration",
         "type_info": "Interval",
         "origin": {
@@ -159,7 +170,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "lease_expiry_action: _",
         "type_info": {
           "Custom": {
@@ -180,7 +191,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "queued_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -191,7 +202,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "job_state: _",
         "type_info": {
           "Custom": {
@@ -216,7 +227,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "initializing_stage: _",
         "type_info": {
           "Custom": {
@@ -240,7 +251,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "started_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -251,7 +262,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 19,
         "name": "dispatched_on_host_id",
         "type_info": "Uuid",
         "origin": {
@@ -262,7 +273,7 @@
         }
       },
       {
-        "ordinal": 19,
+        "ordinal": 20,
         "name": "terminate_requested_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -273,7 +284,7 @@
         }
       },
       {
-        "ordinal": 20,
+        "ordinal": 21,
         "name": "terminate_requested_reason: _",
         "type_info": {
           "Custom": {
@@ -305,7 +316,7 @@
         }
       },
       {
-        "ordinal": 21,
+        "ordinal": 22,
         "name": "termination_reason: _",
         "type_info": {
           "Custom": {
@@ -337,7 +348,7 @@
         }
       },
       {
-        "ordinal": 22,
+        "ordinal": 23,
         "name": "task_exit_status: _",
         "type_info": {
           "Custom": {
@@ -359,7 +370,7 @@
         }
       },
       {
-        "ordinal": 23,
+        "ordinal": 24,
         "name": "exit_message",
         "type_info": "Text",
         "origin": {
@@ -370,7 +381,7 @@
         }
       },
       {
-        "ordinal": 24,
+        "ordinal": 25,
         "name": "job_error",
         "type_info": "Text",
         "origin": {
@@ -381,7 +392,7 @@
         }
       },
       {
-        "ordinal": 25,
+        "ordinal": 26,
         "name": "terminated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -392,7 +403,7 @@
         }
       },
       {
-        "ordinal": 26,
+        "ordinal": 27,
         "name": "job_ip_address",
         "type_info": "Inet",
         "origin": {
@@ -411,6 +422,7 @@
     "nullable": [
       false,
       true,
+      false,
       true,
       true,
       true,
@@ -438,5 +450,5 @@
       true
     ]
   },
-  "hash": "16d081cbcef241e6c716d95f86b5a9f3534d3f9e7748adb1ea12170e4cc79a3a"
+  "hash": "0032f078f86c4cbdcd3d2baba596cb05937179b495368bf6f2416ef3909d59cf"
 }

@@ -13,7 +13,7 @@ use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Display, Formatter};
 use subtle::{Choice, ConstantTimeEq};
 use uuid::Uuid;
@@ -281,6 +281,12 @@ pub struct JobRequest {
     /// What happens when the lease expires. Absent, `terminate`.
     #[serde(default)]
     pub lease_expiry_action: Option<crate::api::switchboard::jobs::JobLeaseExpiryAction>,
+
+    /// Key-value metadata about the job, never handed to the job itself, and
+    /// changeable after enqueue via `PATCH /jobs/{id}`: at most 64, with keys
+    /// and values as for [`JobInfo::annotations`](jobs::JobInfo::annotations).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub annotations: BTreeMap<String, String>,
 }
 
 /// The [`JobRequest::host_cel_predicate`] of a job that named none: matches

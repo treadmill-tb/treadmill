@@ -702,12 +702,7 @@ paths:
         '403':
           description: The authenticated account is locked, or lacks permission for this resource.
         '200':
-          description: |-
-            The full server-side view of a single job, returned by `GET /jobs/{id}`.
-
-            Covers the job's identity, ownership, lifecycle state, the spec it was
-            enqueued with, and — once it has run — its placement and terminal outcome.
-            Secret parameters are redacted (see [`JobParameterView`]).
+          description: The job; its `ETag` header is the job's revision.
           content:
             application/json:
               schema:
@@ -757,6 +752,11 @@ paths:
           type: string
           format: uuid
         style: simple
+      - in: header
+        name: if-match
+        schema:
+          type: string
+        style: simple
       requestBody:
         description: |-
           A patch to a job (`PATCH /jobs/{id}`). Only the fields listed here are
@@ -791,13 +791,15 @@ paths:
               schema:
                 type: string
         '204':
-          description: The job was updated.
+          description: The job was updated; the `ETag` header is its new revision.
         '409':
           description: The requested lease change was refused; nothing was applied.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/LeaseRejection'
+        '412':
+          description: The job is no longer at a revision `If-Match` names; nothing was applied.
       security:
       - token: []
   /hosts:
@@ -3590,6 +3592,19 @@ components:
         Secret parameters are redacted (see [`JobParameterView`]).
       type: object
       properties:
+        annotations:
+          description: |-
+            Key-value metadata about the job.
+
+            In contrast to parameters, this is not injected into the job's runtime
+            state or environment, and can be changed after the job's been scheduled.
+            Keys are 1 to 128 characters of lowercase ASCII letters, digits and
+            `._/-`, starting and ending with a letter or digit; values up to 1024
+            characters without control characters. A job has at most 64
+            ([`MAX_JOB_ANNOTATIONS`]).
+          type: object
+          additionalProperties:
+            type: string
         dispatched_on_host_id:
           description: The host the job is (or was) dispatched on; null if unplaced.
           type:
@@ -3679,6 +3694,16 @@ components:
           format: date-time
         restart_policy:
           $ref: '#/components/schemas/RestartPolicyState'
+        revision:
+          description: |-
+            The revision of the job's config (e.g., `label`, the lease duration,
+            `annotations`).
+
+            Bumped by every applied `PATCH /jobs/{id}`. Also served as the `ETag` of
+            `GET /jobs/{id}` (see [`job_etag`]), supported in `If-Match` for `PATCH`
+            requests.
+          type: integer
+          format: int64
         services:
           description: The set of currently announced services by the job.
           type: array
@@ -3714,6 +3739,8 @@ components:
           - type: 'null'
       required:
       - job_id
+      - revision
+      - annotations
       - state
       - image
       - restart_policy
@@ -3829,6 +3856,48 @@ components:
           Absent that demand it runs on past its lease.
         type: string
         const: preempt
+    JobListQuery:
+      description: Query parameters for `GET /jobs`.
+      type: object
+      properties:
+        cursor:
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
+          type:
+          - string
+          - 'null'
+        include:
+          description: |-
+            Whose jobs to list, as a comma-separated set of `mine` (owned by the
+            caller), `groups` (owned by one of the caller's groups), `shared`
+            (granted to the caller or one of their groups), `all` (every job the
+            caller can read) and `global` (every job; admins only). The result is
+            the union of the listed sets.
+          type: string
+        limit:
+          description: |-
+            Maximum number of jobs per page. Omitted or out-of-range values fall
+            back to the server's default and bounds.
+          type:
+          - integer
+          - 'null'
+          format: uint32
+          minimum: 0
+        q:
+          description: |-
+            A search query of whitespace-separated terms, all of which must match.
+            A term `^<hex>` matches jobs whose id ends in those hex digits; any
+            other term matches the job's label, image name, host name or owner
+            name, ignoring case. Terms of the form `<key>:<value>` are reserved.
+          type:
+          - string
+          - 'null'
+        state:
+          description: Whether to list active or finished jobs.
+          allOf:
+          - $ref: '#/components/schemas/JobListState'
+      required:
+      - include
+      - state
     JobListResponse:
       description: |-
         Response body of `GET /jobs`: a page of the jobs matching the query.
@@ -3852,6 +3921,7 @@ components:
       required:
       - jobs
     JobListState:
+      description: Which jobs `GET /jobs` lists, by lifecycle.
       type: string
       enum:
       - active
@@ -3941,6 +4011,14 @@ components:
     JobRequest:
       type: object
       properties:
+        annotations:
+          description: |-
+            Key-value metadata about the job, never handed to the job itself, and
+            changeable after enqueue via `PATCH /jobs/{id}`: at most 64, with keys
+            and values as for [`JobInfo::annotations`](jobs::JobInfo::annotations).
+          type: object
+          additionalProperties:
+            type: string
         host_cel_predicate:
           description: |-
             Host eligibility as a single CEL expression, evaluated with the
@@ -4143,6 +4221,11 @@ components:
         full view with `GET /jobs/{id}`.
       type: object
       properties:
+        annotations:
+          description: See [`JobInfo::annotations`].
+          type: object
+          additionalProperties:
+            type: string
         dispatched_on_host_id:
           description: The host the job is (or was) dispatched on; null if unplaced.
           type:
@@ -4193,6 +4276,10 @@ components:
         queued_at:
           type: string
           format: date-time
+        revision:
+          description: See [`JobInfo::revision`].
+          type: integer
+          format: int64
         started_at:
           type:
           - string
@@ -4215,6 +4302,8 @@ components:
           - type: 'null'
       required:
       - job_id
+      - revision
+      - annotations
       - state
       - image
       - queued_at
@@ -4281,48 +4370,6 @@ components:
       required:
       - login
       - profile_url
-    ListQuery:
-      description: Query parameters for `GET /jobs`.
-      type: object
-      properties:
-        cursor:
-          description: Opaque keyset cursor from a previous response's `next_cursor`.
-          type:
-          - string
-          - 'null'
-        include:
-          description: |-
-            Whose jobs to list, as a comma-separated set of `mine` (owned by the
-            caller), `groups` (owned by one of the caller's groups), `shared`
-            (granted to the caller or one of their groups), `all` (every job the
-            caller can read) and `global` (every job; admins only). The result is
-            the union of the listed sets.
-          type: string
-        limit:
-          description: |-
-            Maximum number of jobs per page. Omitted or out-of-range values fall
-            back to the server's default and bounds.
-          type:
-          - integer
-          - 'null'
-          format: uint32
-          minimum: 0
-        q:
-          description: |-
-            A search query of whitespace-separated terms, all of which must match.
-            A term `^<hex>` matches jobs whose id ends in those hex digits; any
-            other term matches the job's label, image name, host name or owner
-            name, ignoring case. Terms of the form `<key>:<value>` are reserved.
-          type:
-          - string
-          - 'null'
-        state:
-          description: Whether to list active or finished jobs.
-          allOf:
-          - $ref: '#/components/schemas/JobListState'
-      required:
-      - include
-      - state
     LoginCompleteRequest:
       description: |-
         Request body for `POST /auth/login/complete`: finish a staged login. Sent as
@@ -5046,6 +5093,17 @@ components:
         leaves it unchanged; sending an explicit `null` clears it.
       type: object
       properties:
+        annotations:
+          description: |-
+            Changes to the job's annotations, merged into the existing ones.
+
+            A string value sets that key, `null` removes it, keys not listed are
+            left unchanged.
+          type: object
+          additionalProperties:
+            type:
+            - string
+            - 'null'
         label:
           description: |-
             The job's display label: 1 to 256 characters of ASCII letters, digits,

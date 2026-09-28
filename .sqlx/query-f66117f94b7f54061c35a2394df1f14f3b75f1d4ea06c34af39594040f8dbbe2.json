@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select revision from tml_switchboard.jobs where job_id = $1 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "revision",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "revision"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f66117f94b7f54061c35a2394df1f14f3b75f1d4ea06c34af39594040f8dbbe2"
+}

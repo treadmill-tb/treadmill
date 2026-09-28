@@ -693,6 +693,7 @@ mod tests {
             host_cel_predicate: host_cel_predicate.to_string(),
             lease_duration: None,
             lease_expiry_action: None,
+            annotations: Default::default(),
         };
         // Mirror the enqueue route: the job is owned by the enqueuing token's
         // user. Host authorization (`eligible_hosts`) is evaluated against this

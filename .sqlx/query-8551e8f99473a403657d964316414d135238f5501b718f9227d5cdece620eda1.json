@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        insert into tml_switchboard.job_annotations (job_id, key, value)\n        select $1, key, value from unnest($2::text[], $3::text[]) as a(key, value)\n        on conflict (job_id, key) do update set value = excluded.value\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8551e8f99473a403657d964316414d135238f5501b718f9227d5cdece620eda1"
+}

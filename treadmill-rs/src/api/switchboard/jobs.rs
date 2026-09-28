@@ -1,6 +1,6 @@
 //! Job-scoped client API types.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 
 use chrono::{DateTime, Utc};
@@ -498,6 +498,22 @@ pub struct JobInfo {
     /// The owning subject (user or group); null if the owner was deleted
     /// (orphaned).
     pub owner: Option<SubjectRef>,
+    /// The revision of the job's config (e.g., `label`, the lease duration,
+    /// `annotations`).
+    ///
+    /// Bumped by every applied `PATCH /jobs/{id}`. Also served as the `ETag` of
+    /// `GET /jobs/{id}` (see [`job_etag`]), supported in `If-Match` for `PATCH`
+    /// requests.
+    pub revision: i64,
+    /// Key-value metadata about the job.
+    ///
+    /// In contrast to parameters, this is not injected into the job's runtime
+    /// state or environment, and can be changed after the job's been scheduled.
+    /// Keys are 1 to 128 characters of lowercase ASCII letters, digits and
+    /// `._/-`, starting and ending with a letter or digit; values up to 1024
+    /// characters without control characters. A job has at most 64
+    /// ([`MAX_JOB_ANNOTATIONS`]).
+    pub annotations: BTreeMap<String, String>,
 
     /// Where the job is in its lifecycle.
     pub state: JobState,
@@ -595,6 +611,62 @@ pub struct UpdateJobRequest {
     /// What should happen when the lease expires.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease_expiry_action: Option<JobLeaseExpiryAction>,
+
+    /// Changes to the job's annotations, merged into the existing ones.
+    ///
+    /// A string value sets that key, `null` removes it, keys not listed are
+    /// left unchanged.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub annotations: BTreeMap<String, Option<String>>,
+}
+
+/// The most annotations a job may carry.
+pub const MAX_JOB_ANNOTATIONS: usize = 64;
+
+/// The `ETag` of a job at `revision` (see [`JobInfo::revision`]): the revision
+/// as a strong entity tag, e.g. `"7"`. Send it as `If-Match` to make a
+/// `PATCH /jobs/{id}` conditional on the job still being at that revision.
+pub fn job_etag(revision: i64) -> String {
+    format!("\"{revision}\"")
+}
+
+/// The revision a job `ETag` (see [`job_etag`]) names, if it is one.
+pub fn parse_job_etag(etag: &str) -> Option<i64> {
+    etag.strip_prefix('"')?.strip_suffix('"')?.parse().ok()
+}
+
+/// Query parameters for `GET /jobs`.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct JobListQuery {
+    /// Whose jobs to list, as a comma-separated set of `mine` (owned by the
+    /// caller), `groups` (owned by one of the caller's groups), `shared`
+    /// (granted to the caller or one of their groups), `all` (every job the
+    /// caller can read) and `global` (every job; admins only). The result is
+    /// the union of the listed sets.
+    pub include: String,
+    /// Whether to list active or finished jobs.
+    pub state: JobListState,
+    /// A search query of whitespace-separated terms, all of which must match.
+    /// A term `^<hex>` matches jobs whose id ends in those hex digits; any
+    /// other term matches the job's label, image name, host name or owner
+    /// name, ignoring case. Terms of the form `<key>:<value>` are reserved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub q: Option<String>,
+    /// Maximum number of jobs per page. Omitted or out-of-range values fall
+    /// back to the server's default and bounds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    /// Opaque keyset cursor from a previous response's `next_cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// Which jobs `GET /jobs` lists, by lifecycle.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobListState {
+    Active,
+    Finished,
 }
 
 /// A compact per-job row for the `GET /jobs` listing — identity, ownership,
@@ -608,6 +680,10 @@ pub struct JobSummary {
     pub label: Option<String>,
     /// The owning subject, for display; null if orphaned.
     pub owner: Option<SubjectRef>,
+    /// See [`JobInfo::revision`].
+    pub revision: i64,
+    /// See [`JobInfo::annotations`].
+    pub annotations: BTreeMap<String, String>,
     pub state: JobState,
     pub image: JobImage,
     /// The name of the job's image set; null for a concrete image, or if the
@@ -647,6 +723,15 @@ pub struct JobListResponse {
 mod tests {
     use super::*;
     use chrono::TimeDelta;
+
+    #[test]
+    fn job_etags_round_trip_and_reject_other_tags() {
+        assert_eq!(job_etag(7), "\"7\"");
+        assert_eq!(parse_job_etag(&job_etag(7)), Some(7));
+        assert_eq!(parse_job_etag("7"), None);
+        assert_eq!(parse_job_etag("W/\"7\""), None);
+        assert_eq!(parse_job_etag("\"seven\""), None);
+    }
 
     fn parse(s: &str) -> LeaseSpec {
         s.parse().unwrap()

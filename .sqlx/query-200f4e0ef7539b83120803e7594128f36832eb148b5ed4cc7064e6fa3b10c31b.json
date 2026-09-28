@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from tml_switchboard.job_annotations\n           where job_id = $1 and key = any($2::text[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "200f4e0ef7539b83120803e7594128f36832eb148b5ed4cc7064e6fa3b10c31b"
+}
