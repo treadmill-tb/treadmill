@@ -8,6 +8,7 @@
 //! and all mark that relation `SelfAccess` so the user can see their own history.
 
 use chrono::{DateTime, Utc};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use crate::audit::model::{Host, ImageSet, Job, Subject};
@@ -381,6 +382,20 @@ define_event! {
     }
     event_type = "job_label_changed";
     render = "changed the job label";
+}
+
+pub type AnnotationValues = BTreeMap<String, Option<String>>;
+
+define_event! {
+    /// A user changed a job's annotations (`PATCH /jobs/{id}`).
+    JobAnnotationsChanged v1 {
+        actor: Subject,
+        job: Job @ view(Read),
+        old_annotations: AnnotationValues,
+        new_annotations: AnnotationValues,
+    }
+    event_type = "job_annotations_changed";
+    render = "changed the job annotations";
 }
 
 define_event! {

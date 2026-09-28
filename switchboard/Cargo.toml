@@ -177,6 +177,8 @@ tokio = { workspace = true, features = ["macros"] }
 # In-process mock HTTP server for exercising the OAuth provider flow without a
 # real third-party service.
 wiremock = "0.6"
+# The typed switchboard client, to drive routes through it in tests.
+treadmill-rs = { workspace = true, features = ["client"] }
 
 [lints]
 workspace = true

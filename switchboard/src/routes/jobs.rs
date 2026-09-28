@@ -2,20 +2,24 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::extract::Path;
-use axum::extract::{Query, State};
+use axum::extract::{FromRequestParts, Query, State};
 use axum::response::{IntoResponse, Response};
+use axum_extra::TypedHeader;
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
+use headers::ETag;
 use http::StatusCode;
+use http::request::Parts;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::types::PgInterval;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobDefaults, JobEnvironment, JobExitStatusRequest, JobInfo,
-    JobLeaseExpiryAction, JobListResponse, JobPermission as ApiJobPermission,
-    JobServiceAnnouncement, JobServiceCredentials, LeaseRejection, LeaseRejectionCode,
-    NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
+    JobLeaseExpiryAction, JobListQuery, JobListResponse, JobListState,
+    JobPermission as ApiJobPermission, JobServiceAnnouncement, JobServiceCredentials,
+    LeaseRejection, LeaseRejectionCode, MAX_JOB_ANNOTATIONS, NatsConsoleInputCredentials,
+    NatsLogStreamCredentials, UpdateJobRequest, job_etag, parse_job_etag,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
 use treadmill_rs::util::Secret;
@@ -36,36 +40,6 @@ use crate::sql::{host_spec, image, job};
 /// Default and maximum page sizes for `GET /jobs`.
 const DEFAULT_LIST_LIMIT: u32 = 50;
 const MAX_LIST_LIMIT: u32 = 200;
-
-/// Query parameters for `GET /jobs`.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub(crate) struct ListQuery {
-    /// Whose jobs to list, as a comma-separated set of `mine` (owned by the
-    /// caller), `groups` (owned by one of the caller's groups), `shared`
-    /// (granted to the caller or one of their groups), `all` (every job the
-    /// caller can read) and `global` (every job; admins only). The result is
-    /// the union of the listed sets.
-    include: String,
-    /// Whether to list active or finished jobs.
-    state: JobListState,
-    /// A search query of whitespace-separated terms, all of which must match.
-    /// A term `^<hex>` matches jobs whose id ends in those hex digits; any
-    /// other term matches the job's label, image name, host name or owner
-    /// name, ignoring case. Terms of the form `<key>:<value>` are reserved.
-    q: Option<String>,
-    /// Maximum number of jobs per page. Omitted or out-of-range values fall
-    /// back to the server's default and bounds.
-    limit: Option<u32>,
-    /// Opaque keyset cursor from a previous response's `next_cursor`.
-    cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum JobListState {
-    Active,
-    Finished,
-}
 
 #[derive(Serialize, Deserialize)]
 struct JobCursor {
@@ -131,7 +105,7 @@ fn parse_search(q: &str) -> Option<(Vec<String>, Vec<String>)> {
 pub async fn list(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
-    Query(query): Query<ListQuery>,
+    Query(query): Query<JobListQuery>,
 ) -> Result<Json<JobListResponse>, StatusCode> {
     let caller = subject.user_id();
     let include = parse_include(&query.include).ok_or(StatusCode::BAD_REQUEST)?;
@@ -266,6 +240,14 @@ pub async fn enqueue(
 
     if let Some(label) = req.label.as_deref()
         && !label_valid(label)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if req.annotations.len() > MAX_JOB_ANNOTATIONS
+        || !req
+            .annotations
+            .iter()
+            .all(|(key, value)| annotation_key_valid(key) && annotation_value_valid(value))
     {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -531,20 +513,117 @@ fn label_valid(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || b" ()_,.#-".contains(&c))
 }
 
+/// Annotation key format:
+/// - 1 to 128 characters of lowercase ASCII letters, digits and `._/-`,
+/// - starting and ending with a letter or digit.
+fn annotation_key_valid(key: &str) -> bool {
+    let edge = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit();
+    (1..=128).contains(&key.len())
+        && key.bytes().next().is_some_and(edge)
+        && key.bytes().next_back().is_some_and(edge)
+        && key.bytes().all(|c| edge(c) || b"._/-".contains(&c))
+}
+
+/// Annotation value: at most 1024 characters, without control characters.
+fn annotation_value_valid(value: &str) -> bool {
+    value.chars().count() <= 1024 && !value.chars().any(char::is_control)
+}
+
+/// The `If-Match` precondition of a request, if it carries one: `*`, or the
+/// revisions its strong job entity tags name (see [`job_etag`]).
+///
+/// Parsed here rather than with `headers::IfMatch`, which decodes an absent
+/// header as a list of no tags (matching nothing) and skips malformed tags
+/// rather than rejecting them.
+pub(crate) enum IfMatchRevision {
+    Absent,
+    Any,
+    Revisions(Vec<i64>),
+}
+
+impl IfMatchRevision {
+    fn passes(&self, revision: i64) -> bool {
+        match self {
+            IfMatchRevision::Absent | IfMatchRevision::Any => true,
+            IfMatchRevision::Revisions(revisions) => revisions.contains(&revision),
+        }
+    }
+
+    fn parse<'a>(values: impl Iterator<Item = &'a str>) -> Option<Self> {
+        let tags: Vec<&str> = values
+            .flat_map(|value| value.split(','))
+            .map(str::trim)
+            .filter(|tag| !tag.is_empty())
+            .collect();
+        if tags == ["*"] {
+            return Some(IfMatchRevision::Any);
+        }
+        let mut revisions = Vec::new();
+        for tag in tags {
+            tag.parse::<ETag>().ok()?;
+            revisions.extend(parse_job_etag(tag));
+        }
+        Some(IfMatchRevision::Revisions(revisions))
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for IfMatchRevision {
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, StatusCode> {
+        let values = parts.headers.get_all(http::header::IF_MATCH);
+        if values.iter().next().is_none() {
+            return Ok(IfMatchRevision::Absent);
+        }
+        values
+            .iter()
+            .map(|value| value.to_str().ok())
+            .collect::<Option<Vec<_>>>()
+            .and_then(|values| Self::parse(values.into_iter()))
+            .ok_or_else(|| {
+                tracing::debug!("rejecting a malformed If-Match header");
+                StatusCode::BAD_REQUEST
+            })
+    }
+}
+
+impl aide::OperationInput for IfMatchRevision {
+    fn operation_input(
+        ctx: &mut aide::generate::GenContext,
+        operation: &mut aide::openapi::Operation,
+    ) {
+        Option::<TypedHeader<headers::IfMatch>>::operation_input(ctx, operation);
+    }
+}
+
+/// The `ETag` header of a job at `revision`.
+fn etag(revision: i64) -> TypedHeader<ETag> {
+    TypedHeader(
+        job_etag(revision)
+            .parse()
+            .expect("a job revision is a valid entity tag"),
+    )
+}
+
 /// Axum handler for `PATCH /jobs/{id}` — update a job's mutable metadata.
 ///
 /// Only the fields [`UpdateJobRequest`] carries can be changed (a request with
-/// any other field is rejected at deserialization): the display label and the
-/// job's lease. Gated on the caller's `manage` permission (403 for
-/// unauthorized, including a nonexistent job).
+/// any other field is rejected at deserialization): the display label, the
+/// job's lease and its annotations. Gated on the caller's `manage` permission
+/// (403 for unauthorized, including a nonexistent job).
 ///
 /// The patch is all-or-nothing: a refused lease change returns `409` with a
 /// [`LeaseRejection`] and applies no part of the request, so a caller never has
 /// to reason about which half landed.
+///
+/// With `If-Match`, the patch applies only if the job is still at one of the
+/// named revisions (its `ETag`), else `412`. Each successful PATCH increments
+/// the revision.
 pub async fn update_job(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Path(IdPath { id: job_id }): Path<IdPath>,
+    if_match: IfMatchRevision,
     Json(req): Json<UpdateJobRequest>,
 ) -> Result<Response, StatusCode> {
     let authorized = engine::can_access_job(
@@ -559,12 +638,14 @@ pub async fn update_job(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    if req.label.is_none() && req.lease.is_none() && req.lease_expiry_action.is_none() {
-        return Ok(StatusCode::NO_CONTENT.into_response());
-    }
     if let Some(Some(label)) = req.label.as_ref()
         && !label_valid(label)
     {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if !req.annotations.iter().all(|(key, value)| {
+        annotation_key_valid(key) && value.as_deref().is_none_or(annotation_value_valid)
+    }) {
         return Err(StatusCode::BAD_REQUEST);
     }
 
@@ -573,6 +654,22 @@ pub async fn update_job(
         .begin()
         .await
         .or_internal(&format!("opening a transaction to update job {job_id}"))?;
+
+    let revision = job::lock_for_update(job_id, &mut txn)
+        .await
+        .or_internal(&format!("locking job {job_id} for update"))?;
+    if !if_match.passes(revision) {
+        tracing::debug!("refusing a patch of job {job_id}, which is at revision {revision}");
+        return Err(StatusCode::PRECONDITION_FAILED);
+    }
+
+    if req.label.is_none()
+        && req.lease.is_none()
+        && req.lease_expiry_action.is_none()
+        && req.annotations.is_empty()
+    {
+        return Ok((StatusCode::NO_CONTENT, etag(revision)).into_response());
+    }
 
     if req.lease.is_some() || req.lease_expiry_action.is_some() {
         let outcome = job::apply_lease_change(
@@ -632,11 +729,42 @@ pub async fn update_job(
         }
     }
 
+    if !req.annotations.is_empty() {
+        let change = job::annotations::apply_changes(job_id, &req.annotations, &mut txn)
+            .await
+            .or_internal(&format!("changing the annotations of job {job_id}"))?;
+        if change.count > MAX_JOB_ANNOTATIONS as i64 {
+            tracing::debug!(
+                "refusing a patch leaving job {job_id} with {} annotations",
+                change.count
+            );
+            return Err(StatusCode::BAD_REQUEST);
+        }
+
+        if !change.new.is_empty() {
+            audit::emit(
+                &mut txn,
+                &events::JobAnnotationsChanged {
+                    actor: AuditSubject(subject.user_id()),
+                    job: AuditJob(job_id),
+                    old_annotations: change.old,
+                    new_annotations: change.new,
+                },
+            )
+            .await
+            .or_internal(&format!("emitting JobAnnotationsChanged for {job_id}"))?;
+        }
+    }
+
+    let revision = job::bump_revision(job_id, &mut txn)
+        .await
+        .or_internal(&format!("bumping the revision of job {job_id}"))?;
+
     txn.commit()
         .await
         .or_internal(&format!("committing the update of job {job_id}"))?;
 
-    Ok(StatusCode::NO_CONTENT.into_response())
+    Ok((StatusCode::NO_CONTENT, etag(revision)).into_response())
 }
 
 fn exit_status_name(outcome: job::SqlTaskExitStatus) -> String {
@@ -692,12 +820,13 @@ fn job_perm_to_api(p: JobPermission) -> ApiJobPermission {
 /// permissions on it — gated on the caller's `read` permission. A caller who
 /// cannot read the job — including the case where the job does not exist —
 /// gets `403` rather than a signal of the job's (non-)existence, matching the
-/// log-token route.
+/// log-token route. The job's revision is also served as its `ETag`, for a
+/// conditional `PATCH`.
 pub async fn get_job(
     State(state): State<AppState>,
     subject: crate::auth::Subject,
     Path(IdPath { id: job_id }): Path<IdPath>,
-) -> Result<Json<JobInfo>, StatusCode> {
+) -> Result<(TypedHeader<ETag>, Json<JobInfo>), StatusCode> {
     let authorized =
         engine::can_access_job(state.pool(), subject.user_id(), job_id, JobPermission::Read)
             .await
@@ -728,7 +857,7 @@ pub async fn get_job(
         .await
         .or_internal(&format!("rendering job {job_id} into JobInfo"))?;
 
-    Ok(Json(info))
+    Ok((etag(info.revision), Json(info)))
 }
 
 fn require_own_job(job_subject: &JobSubject, job_id: Uuid) -> Result<(), StatusCode> {
@@ -1187,7 +1316,46 @@ pub async fn service_token(
 
 #[cfg(test)]
 mod tests {
-    use super::label_valid;
+    use super::{IfMatchRevision, annotation_key_valid, annotation_value_valid, label_valid};
+
+    #[test]
+    fn if_match_names_revisions_by_strong_tags() {
+        let parse = |value: &str| IfMatchRevision::parse(std::iter::once(value));
+        assert!(parse("*").unwrap().passes(7));
+        let tags = parse("\"3\", W/\"7\", \"other\"").unwrap();
+        assert!(tags.passes(3));
+        assert!(!tags.passes(7));
+        let split = IfMatchRevision::parse(["\"1\"", "\"2\""].into_iter()).unwrap();
+        assert!(split.passes(2));
+        assert!(parse("7").is_none());
+        assert!(parse("\"7\", *").is_none());
+    }
+
+    #[test]
+    fn annotation_keys_are_namespaced_lowercase_names() {
+        assert!(annotation_key_valid("a"));
+        assert!(annotation_key_valid("tock-harness.pool"));
+        assert!(annotation_key_valid("example.org/claim_2"));
+        assert!(!annotation_key_valid(""));
+        assert!(!annotation_key_valid("Pool"));
+        assert!(!annotation_key_valid(".pool"));
+        assert!(!annotation_key_valid("pool/"));
+        assert!(!annotation_key_valid("two words"));
+        assert!(!annotation_key_valid("k=v"));
+        assert!(annotation_key_valid(&"a".repeat(128)));
+        assert!(!annotation_key_valid(&"a".repeat(129)));
+    }
+
+    #[test]
+    fn annotation_values_are_bounded_and_free_of_control_characters() {
+        assert!(annotation_value_valid(""));
+        assert!(annotation_value_valid("any text: \"quoted\", ünïcode"));
+        assert!(!annotation_value_valid("line\nbreak"));
+        assert!(!annotation_value_valid("tab\t"));
+        assert!(!annotation_value_valid("\u{85}"));
+        assert!(annotation_value_valid(&"ü".repeat(1024)));
+        assert!(!annotation_value_valid(&"a".repeat(1025)));
+    }
 
     #[test]
     fn labels_allow_punctuation_but_no_outer_spaces() {

@@ -1680,6 +1680,19 @@ export interface components {
          */
         JobInfo: {
             /**
+             * @description Key-value metadata about the job.
+             *
+             *     In contrast to parameters, this is not injected into the job's runtime
+             *     state or environment, and can be changed after the job's been scheduled.
+             *     Keys are 1 to 128 characters of lowercase ASCII letters, digits and
+             *     `._/-`, starting and ending with a letter or digit; values up to 1024
+             *     characters without control characters. A job has at most 64
+             *     ([`MAX_JOB_ANNOTATIONS`]).
+             */
+            annotations: {
+                [key: string]: string;
+            };
+            /**
              * Format: uuid
              * @description The host the job is (or was) dispatched on; null if unplaced.
              */
@@ -1741,6 +1754,16 @@ export interface components {
              */
             queued_at: string;
             restart_policy: components["schemas"]["RestartPolicyState"];
+            /**
+             * Format: int64
+             * @description The revision of the job's config (e.g., `label`, the lease duration,
+             *     `annotations`).
+             *
+             *     Bumped by every applied `PATCH /jobs/{id}`. Also served as the `ETag` of
+             *     `GET /jobs/{id}` (see [`job_etag`]), supported in `If-Match` for `PATCH`
+             *     requests.
+             */
+            revision: number;
             /** @description The set of currently announced services by the job. */
             services: components["schemas"]["JobServiceView"][];
             /**
@@ -1798,6 +1821,34 @@ export interface components {
         JobInitializingStage: "starting" | "fetching_image" | "allocating" | "provisioning" | "booting";
         /** @description What happens when a job's lease expires. */
         JobLeaseExpiryAction: "terminate" | "preempt";
+        /** @description Query parameters for `GET /jobs`. */
+        JobListQuery: {
+            /** @description Opaque keyset cursor from a previous response's `next_cursor`. */
+            cursor?: string | null;
+            /**
+             * @description Whose jobs to list, as a comma-separated set of `mine` (owned by the
+             *     caller), `groups` (owned by one of the caller's groups), `shared`
+             *     (granted to the caller or one of their groups), `all` (every job the
+             *     caller can read) and `global` (every job; admins only). The result is
+             *     the union of the listed sets.
+             */
+            include: string;
+            /**
+             * Format: uint32
+             * @description Maximum number of jobs per page. Omitted or out-of-range values fall
+             *     back to the server's default and bounds.
+             */
+            limit?: number | null;
+            /**
+             * @description A search query of whitespace-separated terms, all of which must match.
+             *     A term `^<hex>` matches jobs whose id ends in those hex digits; any
+             *     other term matches the job's label, image name, host name or owner
+             *     name, ignoring case. Terms of the form `<key>:<value>` are reserved.
+             */
+            q?: string | null;
+            /** @description Whether to list active or finished jobs. */
+            state: components["schemas"]["JobListState"];
+        };
         /**
          * @description Response body of `GET /jobs`: a page of the jobs matching the query.
          *
@@ -1812,7 +1863,10 @@ export interface components {
             /** @description Opaque cursor for the next page, or null on the last page. */
             next_cursor?: string | null;
         };
-        /** @enum {string} */
+        /**
+         * @description Which jobs `GET /jobs` lists, by lifecycle.
+         * @enum {string}
+         */
         JobListState: "active" | "finished";
         /**
          * @description One parameter supplied with a job at enqueue (`POST /jobs`), which the job
@@ -1861,6 +1915,14 @@ export interface components {
             type: "restart";
         };
         JobRequest: {
+            /**
+             * @description Key-value metadata about the job, never handed to the job itself, and
+             *     changeable after enqueue via `PATCH /jobs/{id}`: at most 64, with keys
+             *     and values as for [`JobInfo::annotations`](jobs::JobInfo::annotations).
+             */
+            annotations?: {
+                [key: string]: string;
+            };
             /**
              * @description Host eligibility as a single CEL expression, evaluated with the
              *     candidate host's spec bound as `host`; the host runs the job only if it
@@ -2000,6 +2062,10 @@ export interface components {
          *     full view with `GET /jobs/{id}`.
          */
         JobSummary: {
+            /** @description See [`JobInfo::annotations`]. */
+            annotations: {
+                [key: string]: string;
+            };
             /**
              * Format: uuid
              * @description The host the job is (or was) dispatched on; null if unplaced.
@@ -2031,6 +2097,11 @@ export interface components {
             predecessor?: components["schemas"]["JobPredecessor"] | null;
             /** Format: date-time */
             queued_at: string;
+            /**
+             * Format: int64
+             * @description See [`JobInfo::revision`].
+             */
+            revision: number;
             /** Format: date-time */
             started_at?: string | null;
             state: components["schemas"]["JobState"];
@@ -2072,34 +2143,6 @@ export interface components {
             login: string;
             /** @description Canonical URL of the GitHub profile (`https://github.com/<login>`). */
             profile_url: string;
-        };
-        /** @description Query parameters for `GET /jobs`. */
-        ListQuery: {
-            /** @description Opaque keyset cursor from a previous response's `next_cursor`. */
-            cursor?: string | null;
-            /**
-             * @description Whose jobs to list, as a comma-separated set of `mine` (owned by the
-             *     caller), `groups` (owned by one of the caller's groups), `shared`
-             *     (granted to the caller or one of their groups), `all` (every job the
-             *     caller can read) and `global` (every job; admins only). The result is
-             *     the union of the listed sets.
-             */
-            include: string;
-            /**
-             * Format: uint32
-             * @description Maximum number of jobs per page. Omitted or out-of-range values fall
-             *     back to the server's default and bounds.
-             */
-            limit?: number | null;
-            /**
-             * @description A search query of whitespace-separated terms, all of which must match.
-             *     A term `^<hex>` matches jobs whose id ends in those hex digits; any
-             *     other term matches the job's label, image name, host name or owner
-             *     name, ignoring case. Terms of the form `<key>:<value>` are reserved.
-             */
-            q?: string | null;
-            /** @description Whether to list active or finished jobs. */
-            state: components["schemas"]["JobListState"];
         };
         /**
          * @description Request body for `POST /auth/login/complete`: finish a staged login. Sent as
@@ -2562,6 +2605,15 @@ export interface components {
          *     leaves it unchanged; sending an explicit `null` clears it.
          */
         UpdateJobRequest: {
+            /**
+             * @description Changes to the job's annotations, merged into the existing ones.
+             *
+             *     A string value sets that key, `null` removes it, keys not listed are
+             *     left unchanged.
+             */
+            annotations?: {
+                [key: string]: string | null;
+            };
             /**
              * @description The job's display label: 1 to 256 characters of ASCII letters, digits,
              *     spaces and `()_,.#-`, not starting or ending with a space, and not
@@ -3451,13 +3503,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /**
-             * @description The full server-side view of a single job, returned by `GET /jobs/{id}`.
-             *
-             *     Covers the job's identity, ownership, lifecycle state, the spec it was
-             *     enqueued with, and — once it has run — its placement and terminal outcome.
-             *     Secret parameters are redacted (see [`JobParameterView`]).
-             */
+            /** @description The job; its `ETag` header is the job's revision. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3527,7 +3573,9 @@ export interface operations {
     updateJob: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "if-match"?: string;
+            };
             path: {
                 /** @description The resource's unique identifier. */
                 id: string;
@@ -3545,7 +3593,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The job was updated. */
+            /** @description The job was updated; the `ETag` header is its new revision. */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -3583,6 +3631,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["LeaseRejection"];
                 };
+            };
+            /** @description The job is no longer at a revision `If-Match` names; nothing was applied. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Expected request with `Content-Type: application/json` */
             415: {

@@ -18,8 +18,9 @@ use crate::api::switchboard::audit::AuditFeedResponse;
 use crate::api::switchboard::hosts::HostListEntry;
 use crate::api::switchboard::images::ImageSetInfo;
 use crate::api::switchboard::jobs::{
-    EnqueueJobResponse, JobEnvironment, JobExitStatusRequest, JobInfo, JobServiceAnnouncement,
-    JobServiceCredentials,
+    EnqueueJobResponse, JobEnvironment, JobExitStatusRequest, JobInfo, JobListQuery,
+    JobListResponse, JobServiceAnnouncement, JobServiceCredentials, UpdateJobRequest, job_etag,
+    parse_job_etag,
 };
 use crate::api::switchboard::users::{PublicUserProfile, SelfUserProfile, SessionInfo};
 use crate::api::switchboard::{LoginCompleteRequest, LoginResponse, LoginStagedResponse};
@@ -189,6 +190,51 @@ impl SwitchboardClient {
     /// it).
     pub async fn get_job(&self, job_id: Uuid) -> Result<JobInfo, ClientError> {
         self.get_json(&format!("/api/v1/jobs/{job_id}")).await
+    }
+
+    /// `GET /jobs` — one page of the jobs filtered by `query`.
+    ///
+    /// Pass the response's `next_cursor` back as `query.cursor` for the next.
+    pub async fn list_jobs(&self, query: &JobListQuery) -> Result<JobListResponse, ClientError> {
+        Ok(send(
+            self.request(reqwest::Method::GET, "/api/v1/jobs")
+                .query(query),
+        )
+        .await?
+        .json()
+        .await?)
+    }
+
+    /// `PATCH /jobs/{id}` — change a job's label, lease or annotations, all or
+    /// nothing.
+    ///
+    /// With `if_revision`, requires the current job state to have revision
+    /// (`If-Match`), else `412`. Successful PATCH increments the revision.
+    ///
+    /// A refused lease change is a `409` with a [`LeaseRejection`] body; both
+    /// arrive as [`ClientError::Status`].
+    ///
+    /// [`LeaseRejection`]: crate::api::switchboard::jobs::LeaseRejection
+    pub async fn update_job(
+        &self,
+        job_id: Uuid,
+        req: &UpdateJobRequest,
+        if_revision: Option<i64>,
+    ) -> Result<i64, ClientError> {
+        let mut builder = self
+            .request(reqwest::Method::PATCH, &format!("/api/v1/jobs/{job_id}"))
+            .json(req);
+        if let Some(revision) = if_revision {
+            builder = builder.header(reqwest::header::IF_MATCH, job_etag(revision));
+        }
+        let resp = send(builder).await?;
+        resp.headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|etag| parse_job_etag(etag.to_str().ok()?))
+            .ok_or_else(|| ClientError::Status {
+                status: resp.status().as_u16(),
+                body: "the response carries no job ETag".to_string(),
+            })
     }
 
     /// `GET /jobs/{id}/events` — one job's audit feed.

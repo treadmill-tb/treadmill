@@ -10,7 +10,7 @@
 //! Queries here use sqlx's runtime API (not the `query!` macros), so the test
 //! needs no entry in the offline `.sqlx` cache.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
@@ -21,12 +21,13 @@ use sqlx::types::ipnetwork::IpNetwork;
 use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
+use treadmill_rs::api::switchboard::client::{ClientError, SwitchboardClient};
 use treadmill_rs::api::switchboard::hosts::{HostInfo, HostListEntry};
 use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobDefaults, JobEnvironment, JobImageReference, JobInfo,
-    JobLeaseExpiryAction, JobListResponse, JobParameter, JobPermission, JobPredecessor,
-    JobServiceCredentials, JobServiceEndpoint, LeaseRejection, LeaseRejectionCode,
-    NatsConsoleInputCredentials, NatsLogStreamCredentials,
+    JobLeaseExpiryAction, JobListQuery, JobListResponse, JobListState, JobParameter, JobPermission,
+    JobPredecessor, JobServiceCredentials, JobServiceEndpoint, LeaseRejection, LeaseRejectionCode,
+    MAX_JOB_ANNOTATIONS, NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
 };
 use treadmill_rs::api::switchboard::jobs::{RestartPolicy, TaskExitStatus};
 use treadmill_rs::api::switchboard::{
@@ -821,6 +822,7 @@ fn image_job_request(
         host_cel_predicate: DEFAULT_HOST_CEL_PREDICATE.to_string(),
         lease_duration,
         lease_expiry_action: None,
+        annotations: Default::default(),
     }
 }
 
@@ -1006,6 +1008,257 @@ async fn job_label_is_set_at_enqueue_and_mutable_via_patch(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+fn patch_annotations(changes: &[(&str, Option<&str>)]) -> UpdateJobRequest {
+    UpdateJobRequest {
+        annotations: changes
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.map(str::to_string)))
+            .collect(),
+        ..Default::default()
+    }
+}
+
+fn annotations(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+    entries
+        .iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
+fn status_of(err: ClientError) -> u16 {
+    match err {
+        ClientError::Status { status, .. } => status,
+        other => panic!("expected an HTTP error status, got {other}"),
+    }
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn job_annotations_are_set_at_enqueue_and_merged_by_patch(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let token = mock_login_token(&pool, &client, addr, "bob", true).await;
+    let sb = SwitchboardClient::new(format!("http://{addr}"), Some(token.clone()));
+    let (_, image) = register_image(&pool).await;
+    let mut req = image_job_request(
+        None,
+        JobInitSpec::Image {
+            manifest_digest: image,
+        },
+        None,
+    );
+
+    // Malformed keys and values, and too many annotations, are rejected up
+    // front.
+    for bad in [
+        annotations(&[("Upper", "x")]),
+        annotations(&[("trailing-", "x")]),
+        annotations(&[("tool.pool", "new\nline")]),
+        (0..=MAX_JOB_ANNOTATIONS)
+            .map(|i| (format!("k{i}"), String::new()))
+            .collect(),
+    ] {
+        req.annotations = bad;
+        assert_eq!(
+            status_of(sb.enqueue_job(&req).await.unwrap_err()),
+            400,
+            "{:?}",
+            req.annotations
+        );
+    }
+
+    req.annotations = annotations(&[("tool.pool", "a"), ("tool/note", "")]);
+    let job_id = sb.enqueue_job(&req).await.unwrap().job_id;
+
+    // Annotations and the initial revision read back on the detail view, whose
+    // ETag is the revision, and on the listing.
+    let info = sb.get_job(job_id).await.unwrap();
+    assert_eq!(info.annotations, req.annotations);
+    assert_eq!(info.revision, 1);
+    let resp = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.headers()[reqwest::header::ETAG], "\"1\"");
+    let list = sb
+        .list_jobs(&JobListQuery {
+            include: "mine".to_string(),
+            state: JobListState::Active,
+            q: None,
+            limit: None,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(list.jobs.len(), 1);
+    assert_eq!(list.jobs[0].annotations, req.annotations);
+    assert_eq!(list.jobs[0].revision, 1);
+
+    // A patch sets and removes keys, leaves the others alone, and bumps the
+    // revision.
+    let revision = sb
+        .update_job(
+            job_id,
+            &patch_annotations(&[("tool.claim", Some("x")), ("tool.pool", None)]),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(revision, 2);
+    let info = sb.get_job(job_id).await.unwrap();
+    assert_eq!(
+        info.annotations,
+        annotations(&[("tool.claim", "x"), ("tool/note", "")])
+    );
+    assert_eq!(info.revision, 2);
+
+    // Invalid changes, and a patch that would exceed the limit, apply nothing.
+    for bad in [
+        patch_annotations(&[("tool.claim", None), ("bad key", Some("x"))]),
+        patch_annotations(&[("tool.claim", Some("\u{7}"))]),
+    ] {
+        assert_eq!(
+            status_of(sb.update_job(job_id, &bad, None).await.unwrap_err()),
+            400
+        );
+    }
+    let too_many = UpdateJobRequest {
+        label: Some(Some("overflowed".to_string())),
+        annotations: (0..MAX_JOB_ANNOTATIONS - 1)
+            .map(|i| (format!("k{i}"), Some(String::new())))
+            .collect(),
+        ..Default::default()
+    };
+    assert_eq!(
+        status_of(sb.update_job(job_id, &too_many, None).await.unwrap_err()),
+        400
+    );
+    let unchanged = sb.get_job(job_id).await.unwrap();
+    assert_eq!(unchanged.annotations, info.annotations);
+    assert_eq!(unchanged.label, None);
+    assert_eq!(unchanged.revision, 2);
+
+    // Only the patch that changed annotations is audited, with just the keys
+    // it changed.
+    let payloads: Vec<serde_json::Value> = sqlx::query_scalar(
+        "select e.payload from tml_switchboard.audit_events e \
+         join tml_switchboard.audit_event_relations r on r.event_id = e.event_id \
+         where r.entity_kind = 'job' and r.entity_id = $1 \
+           and e.event_type = 'job_annotations_changed.v1'",
+    )
+    .bind(job_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(
+        payloads[0]["old_annotations"],
+        serde_json::json!({ "tool.claim": null, "tool.pool": "a" })
+    );
+    assert_eq!(
+        payloads[0]["new_annotations"],
+        serde_json::json!({ "tool.claim": "x", "tool.pool": null })
+    );
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn patch_with_if_match_applies_only_at_that_revision(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let (token, job_id) = enqueue_for_lease_test(&pool, addr).await;
+    let sb = SwitchboardClient::new(format!("http://{addr}"), Some(token.clone()));
+    let label = |label: &str| UpdateJobRequest {
+        label: Some(Some(label.to_string())),
+        ..Default::default()
+    };
+
+    // A patch conditional on the current revision applies; a second one from
+    // the same, now stale, revision is refused and applies nothing.
+    assert_eq!(
+        sb.update_job(job_id, &label("first"), Some(1))
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        status_of(
+            sb.update_job(job_id, &label("second"), Some(1))
+                .await
+                .unwrap_err()
+        ),
+        412
+    );
+    let info = sb.get_job(job_id).await.unwrap();
+    assert_eq!(info.label.as_deref(), Some("first"));
+    assert_eq!(info.revision, 2);
+
+    // An empty patch checks the precondition without bumping the revision.
+    assert_eq!(
+        sb.update_job(job_id, &UpdateJobRequest::default(), Some(2))
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        status_of(
+            sb.update_job(job_id, &UpdateJobRequest::default(), Some(1))
+                .await
+                .unwrap_err()
+        ),
+        412
+    );
+
+    // `*` matches any revision; a list matches any revision in it; a weak tag
+    // never matches, and a malformed header is a bad request.
+    let client = reqwest::Client::new();
+    let patch = async |if_match: &str| {
+        client
+            .patch(format!("http://{addr}/api/v1/jobs/{job_id}"))
+            .bearer_auth(&token)
+            .header(reqwest::header::IF_MATCH, if_match)
+            .json(&serde_json::json!({ "label": "by header" }))
+            .send()
+            .await
+            .unwrap()
+    };
+    let resp = patch("*").await;
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    assert_eq!(resp.headers()[reqwest::header::ETAG], "\"3\"");
+    assert_eq!(
+        patch("\"1\", \"3\"").await.status(),
+        reqwest::StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        patch("W/\"4\"").await.status(),
+        reqwest::StatusCode::PRECONDITION_FAILED
+    );
+    assert_eq!(patch("4").await.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    // Of concurrent patches from the same revision, exactly one wins.
+    let (claim_a, claim_b) = (
+        patch_annotations(&[("tool.claim", Some("a"))]),
+        patch_annotations(&[("tool.claim", Some("b"))]),
+    );
+    let (a, b) = tokio::join!(
+        sb.update_job(job_id, &claim_a, Some(4)),
+        sb.update_job(job_id, &claim_b, Some(4)),
+    );
+    let winner = match (a.map_err(status_of), b.map_err(status_of)) {
+        (Ok(5), Err(412)) => "a",
+        (Err(412), Ok(5)) => "b",
+        other => panic!("expected exactly one claim to win, got {other:?}"),
+    };
+    assert_eq!(
+        sb.get_job(job_id).await.unwrap().annotations,
+        annotations(&[("tool.claim", winner)])
+    );
 }
 
 /// Enqueue a default-lease job owned by `bob` and return `(token, job_id)`.

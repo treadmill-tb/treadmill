@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        with p(id) as (select id from tml_switchboard.principals($1))\n        select\n          j.job_id,\n          j.label,\n          j.owner_id,\n          os.kind as \"owner_kind?: SubjectKind\",\n          coalesce(u.name, g.name) as owner_name,\n          j.job_state as \"job_state: SqlJobState\",\n          j.resume_job_id,\n          j.restart_job_id,\n          i.manifest_digest as \"image_digest?\",\n          r.manifest_digest as \"resolved_digest?\",\n          j.image_set_id,\n          j.image_set_generation,\n          s.display_name as \"image_name?\",\n          j.queued_at,\n          j.started_at,\n          j.terminated_at,\n          coalesce(j.terminated_at, j.queued_at) as \"sort_at!\",\n          (j.started_at + j.lease_duration) as \"lease_expires_at?\",\n          j.lease_expiry_action as \"lease_expiry_action: SqlLeaseExpiryAction\",\n          j.dispatched_on_host_id,\n          h.name as \"host_name?\",\n          j.termination_reason as \"termination_reason: SqlTerminationReason\",\n          j.task_exit_status as \"task_exit_status: SqlTaskExitStatus\"\n        from tml_switchboard.jobs j\n        left join tml_switchboard.images i on i.id = j.image_id\n        left join tml_switchboard.images r on r.id = j.resolved_image_id\n        left join tml_switchboard.subjects os on os.subject_id = j.owner_id\n        left join tml_switchboard.users u on u.subject_id = j.owner_id\n        left join tml_switchboard.groups g on g.subject_id = j.owner_id\n        left join tml_switchboard.image_sets s on s.id = j.image_set_id and (\n            exists (select 1 from p where p.id = $2)\n            or s.owner_subject in (select id from p)\n            or exists (\n                select 1 from tml_switchboard.image_set_grants sg\n                join p on sg.subject_id = p.id\n                where sg.set_id = s.id and sg.permission = 'use'\n            )\n        )\n        left join tml_switchboard.hosts h on h.host_id = j.dispatched_on_host_id and (\n            exists (select 1 from p where p.id = $2)\n            or h.owner_id in (select id from p)\n            or exists (\n                select 1 from tml_switchboard.host_grants hg\n                join p on hg.subject_id = p.id\n                where hg.host_id = h.host_id and hg.permission = 'read'\n            )\n        )\n        where (j.job_state = 'finalized') = $4\n        and (\n            $5\n            or ($6 and j.owner_id = $1)\n            or ($7 and j.owner_id in (select id from p where id <> $1 and id <> $3))\n            or ($8 and exists (\n                select 1 from tml_switchboard.job_grants jg\n                join p on jg.subject_id = p.id\n                where jg.job_id = j.job_id and p.id <> $3\n            ))\n            or ($9 and (\n                j.owner_id in (select id from p)\n                or exists (\n                    select 1 from tml_switchboard.job_grants jg\n                    join p on jg.subject_id = p.id\n                    where jg.job_id = j.job_id\n                )\n            ))\n        )\n        and not exists (\n            select 1 from unnest($10::text[]) t(term)\n            where strpos(lower(coalesce(j.label, '')), lower(t.term)) = 0\n            and strpos(lower(coalesce(s.display_name, '')), lower(t.term)) = 0\n            and strpos(lower(coalesce(h.name, '')), lower(t.term)) = 0\n            and strpos(lower(coalesce(u.name, g.name, '')), lower(t.term)) = 0\n        )\n        and not exists (\n            select 1 from unnest($11::text[]) t(tail)\n            where right(replace(j.job_id::text, '-', ''), length(t.tail)) <> t.tail\n        )\n        and ($12::timestamptz is null\n             or (coalesce(j.terminated_at, j.queued_at), j.job_id) < ($12, $13))\n        order by coalesce(j.terminated_at, j.queued_at) desc, j.job_id desc\n        limit $14\n        ",
+  "query": "\n        with p(id) as (select id from tml_switchboard.principals($1))\n        select\n          j.job_id,\n          j.label,\n          j.revision,\n          coalesce(\n            (select jsonb_object_agg(a.key, a.value)\n             from tml_switchboard.job_annotations a where a.job_id = j.job_id),\n            '{}'\n          ) as \"annotations!: sqlx::types::Json<BTreeMap<String, String>>\",\n          j.owner_id,\n          os.kind as \"owner_kind?: SubjectKind\",\n          coalesce(u.name, g.name) as owner_name,\n          j.job_state as \"job_state: SqlJobState\",\n          j.resume_job_id,\n          j.restart_job_id,\n          i.manifest_digest as \"image_digest?\",\n          r.manifest_digest as \"resolved_digest?\",\n          j.image_set_id,\n          j.image_set_generation,\n          s.display_name as \"image_name?\",\n          j.queued_at,\n          j.started_at,\n          j.terminated_at,\n          coalesce(j.terminated_at, j.queued_at) as \"sort_at!\",\n          (j.started_at + j.lease_duration) as \"lease_expires_at?\",\n          j.lease_expiry_action as \"lease_expiry_action: SqlLeaseExpiryAction\",\n          j.dispatched_on_host_id,\n          h.name as \"host_name?\",\n          j.termination_reason as \"termination_reason: SqlTerminationReason\",\n          j.task_exit_status as \"task_exit_status: SqlTaskExitStatus\"\n        from tml_switchboard.jobs j\n        left join tml_switchboard.images i on i.id = j.image_id\n        left join tml_switchboard.images r on r.id = j.resolved_image_id\n        left join tml_switchboard.subjects os on os.subject_id = j.owner_id\n        left join tml_switchboard.users u on u.subject_id = j.owner_id\n        left join tml_switchboard.groups g on g.subject_id = j.owner_id\n        left join tml_switchboard.image_sets s on s.id = j.image_set_id and (\n            exists (select 1 from p where p.id = $2)\n            or s.owner_subject in (select id from p)\n            or exists (\n                select 1 from tml_switchboard.image_set_grants sg\n                join p on sg.subject_id = p.id\n                where sg.set_id = s.id and sg.permission = 'use'\n            )\n        )\n        left join tml_switchboard.hosts h on h.host_id = j.dispatched_on_host_id and (\n            exists (select 1 from p where p.id = $2)\n            or h.owner_id in (select id from p)\n            or exists (\n                select 1 from tml_switchboard.host_grants hg\n                join p on hg.subject_id = p.id\n                where hg.host_id = h.host_id and hg.permission = 'read'\n            )\n        )\n        where (j.job_state = 'finalized') = $4\n        and (\n            $5\n            or ($6 and j.owner_id = $1)\n            or ($7 and j.owner_id in (select id from p where id <> $1 and id <> $3))\n            or ($8 and exists (\n                select 1 from tml_switchboard.job_grants jg\n                join p on jg.subject_id = p.id\n                where jg.job_id = j.job_id and p.id <> $3\n            ))\n            or ($9 and (\n                j.owner_id in (select id from p)\n                or exists (\n                    select 1 from tml_switchboard.job_grants jg\n                    join p on jg.subject_id = p.id\n                    where jg.job_id = j.job_id\n                )\n            ))\n        )\n        and not exists (\n            select 1 from unnest($10::text[]) t(term)\n            where strpos(lower(coalesce(j.label, '')), lower(t.term)) = 0\n            and strpos(lower(coalesce(s.display_name, '')), lower(t.term)) = 0\n            and strpos(lower(coalesce(h.name, '')), lower(t.term)) = 0\n            and strpos(lower(coalesce(u.name, g.name, '')), lower(t.term)) = 0\n        )\n        and not exists (\n            select 1 from unnest($11::text[]) t(tail)\n            where right(replace(j.job_id::text, '-', ''), length(t.tail)) <> t.tail\n        )\n        and ($12::timestamptz is null\n             or (coalesce(j.terminated_at, j.queued_at), j.job_id) < ($12, $13))\n        order by coalesce(j.terminated_at, j.queued_at) desc, j.job_id desc\n        limit $14\n        ",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,23 @@
       },
       {
         "ordinal": 2,
+        "name": "revision",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "revision"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "annotations!: sqlx::types::Json<BTreeMap<String, String>>",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
         "name": "owner_id",
         "type_info": "Uuid",
         "origin": {
@@ -37,7 +54,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 5,
         "name": "owner_kind?: SubjectKind",
         "type_info": {
           "Custom": {
@@ -60,13 +77,13 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 6,
         "name": "owner_name",
         "type_info": "Text",
         "origin": "Expression"
       },
       {
-        "ordinal": 5,
+        "ordinal": 7,
         "name": "job_state: SqlJobState",
         "type_info": {
           "Custom": {
@@ -91,7 +108,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 8,
         "name": "resume_job_id",
         "type_info": "Uuid",
         "origin": {
@@ -102,7 +119,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 9,
         "name": "restart_job_id",
         "type_info": "Uuid",
         "origin": {
@@ -113,7 +130,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 10,
         "name": "image_digest?",
         "type_info": "Text",
         "origin": {
@@ -124,7 +141,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 11,
         "name": "resolved_digest?",
         "type_info": "Text",
         "origin": {
@@ -135,7 +152,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 12,
         "name": "image_set_id",
         "type_info": "Uuid",
         "origin": {
@@ -146,7 +163,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "image_set_generation",
         "type_info": "Int4",
         "origin": {
@@ -157,7 +174,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 14,
         "name": "image_name?",
         "type_info": "Text",
         "origin": {
@@ -168,7 +185,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 15,
         "name": "queued_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -179,7 +196,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 16,
         "name": "started_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -190,7 +207,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 17,
         "name": "terminated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -201,19 +218,19 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 18,
         "name": "sort_at!",
         "type_info": "Timestamptz",
         "origin": "Expression"
       },
       {
-        "ordinal": 17,
+        "ordinal": 19,
         "name": "lease_expires_at?",
         "type_info": "Timestamptz",
         "origin": "Expression"
       },
       {
-        "ordinal": 18,
+        "ordinal": 20,
         "name": "lease_expiry_action: SqlLeaseExpiryAction",
         "type_info": {
           "Custom": {
@@ -234,7 +251,7 @@
         }
       },
       {
-        "ordinal": 19,
+        "ordinal": 21,
         "name": "dispatched_on_host_id",
         "type_info": "Uuid",
         "origin": {
@@ -245,7 +262,7 @@
         }
       },
       {
-        "ordinal": 20,
+        "ordinal": 22,
         "name": "host_name?",
         "type_info": "Text",
         "origin": {
@@ -256,7 +273,7 @@
         }
       },
       {
-        "ordinal": 21,
+        "ordinal": 23,
         "name": "termination_reason: SqlTerminationReason",
         "type_info": {
           "Custom": {
@@ -288,7 +305,7 @@
         }
       },
       {
-        "ordinal": 22,
+        "ordinal": 24,
         "name": "task_exit_status: SqlTaskExitStatus",
         "type_info": {
           "Custom": {
@@ -331,6 +348,8 @@
     "nullable": [
       false,
       true,
+      false,
+      null,
       true,
       false,
       null,
@@ -354,5 +373,5 @@
       true
     ]
   },
-  "hash": "664bb4180651439587fe59bf7e84af6c9686022f2155e833389214a2922ca9b3"
+  "hash": "81591bf8982659cc3a171150eaf33870e3bedcd7219d61f2368b271103c59beb"
 }

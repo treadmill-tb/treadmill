@@ -22,7 +22,7 @@ use treadmill_rs::api::switchboard::hosts::{
     HostCreateResponse, HostSpecRejection, HostSpecUpdateResponse,
 };
 use treadmill_rs::api::switchboard::images::{ImageInfo, ImageSetGenerationInfo, ImageSetInfo};
-use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, LeaseRejection};
+use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, JobInfo, LeaseRejection};
 use treadmill_rs::api::switchboard::{LoginResponse, LoginStagedResponse};
 
 pub fn build_router(state: AppState) -> Router<()> {
@@ -331,29 +331,39 @@ pub fn api_router() -> ApiRouter<AppState> {
         //  DELETE /jobs/{id} -- request termination of a job
         .api_route(
             "/jobs/{id}",
-            get_with(jobs::get_job, |o| doc(o, "getJob", "Jobs", "Get a job"))
-                .patch_with(jobs::update_job, |o| {
-                    doc(o, "updateJob", "Jobs", "Update a job")
-                        .response_with::<204, (), _>(|r| r.description("The job was updated."))
-                        .response_with::<409, Json<LeaseRejection>, _>(|r| {
-                            r.description(
-                                "The requested lease change was refused; nothing was applied.",
-                            )
-                        })
+            get_with(jobs::get_job, |o| {
+                doc(o, "getJob", "Jobs", "Get a job").response_with::<200, Json<JobInfo>, _>(|r| {
+                    r.description("The job; its `ETag` header is the job's revision.")
                 })
-                .delete_with(jobs::terminate, |o| {
-                    doc(o, "terminateJob", "Jobs", "Terminate a job")
-                        .description(
-                            "Requires `stop` on the job, or the job's own token, with which \
-                             a job terminates itself.",
+            })
+            .patch_with(jobs::update_job, |o| {
+                doc(o, "updateJob", "Jobs", "Update a job")
+                    .response_with::<204, (), _>(|r| {
+                        r.description("The job was updated; the `ETag` header is its new revision.")
+                    })
+                    .response_with::<409, Json<LeaseRejection>, _>(|r| {
+                        r.description(
+                            "The requested lease change was refused; nothing was applied.",
                         )
-                        .response_with::<202, (), _>(|r| {
-                            r.description("Termination was initiated.")
-                        })
-                        .response_with::<204, (), _>(|r| {
-                            r.description("The job was already finalized; nothing to do.")
-                        })
-                }),
+                    })
+                    .response_with::<412, (), _>(|r| {
+                        r.description(
+                            "The job is no longer at a revision `If-Match` names; nothing \
+                             was applied.",
+                        )
+                    })
+            })
+            .delete_with(jobs::terminate, |o| {
+                doc(o, "terminateJob", "Jobs", "Terminate a job")
+                    .description(
+                        "Requires `stop` on the job, or the job's own token, with which \
+                             a job terminates itself.",
+                    )
+                    .response_with::<202, (), _>(|r| r.description("Termination was initiated."))
+                    .response_with::<204, (), _>(|r| {
+                        r.description("The job was already finalized; nothing to do.")
+                    })
+            }),
         )
         // supervisor management group
         //  GET /supervisors (+ <FILTERS>)

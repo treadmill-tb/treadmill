@@ -659,6 +659,8 @@ CREATE TABLE tml_switchboard.jobs (
     -- Optional user-provided display label (see the `valid_label` constraint
     -- for its shape). Non-unique, mutable after enqueue.
     label text,
+    -- Revision of the job's configuration, used as the `ETag`.
+    revision bigint NOT NULL DEFAULT 1,
     -- Every job references an image in the catalog: either a concrete image
     -- (`image_id`) or an image set (`image_set_id` plus the frozen
     -- `image_set_generation`) resolved to a concrete member at dispatch.
@@ -809,6 +811,7 @@ CREATE TABLE tml_switchboard.jobs (
     ),
     -- A shortened lease floors at zero rather than going negative.
     CONSTRAINT lease_duration_non_negative CHECK (lease_duration >= INTERVAL '0'),
+    CONSTRAINT revision_positive CHECK (revision >= 1),
     CONSTRAINT job_error_only_when_finalized CHECK (
         job_error IS NULL
         OR job_state = 'finalized'
@@ -1025,6 +1028,32 @@ CREATE TABLE tml_switchboard.job_parameters (
     key text NOT NULL,
     value tml_switchboard.parameter_value NOT NULL,
     PRIMARY KEY (job_id, key)
+);
+
+
+-- =============================================================================
+-- JOB ANNOTATIONS
+-- =============================================================================
+--
+-- Key-value metadata about a job. This is not populated into the job's
+-- environment, and remains mutable throughout the job's execution.
+CREATE TABLE tml_switchboard.job_annotations (
+    job_id uuid NOT NULL REFERENCES tml_switchboard.jobs (job_id) ON DELETE CASCADE,
+    key text NOT NULL,
+    value text NOT NULL,
+    PRIMARY KEY (job_id, key),
+    -- 1 to 128 characters of lowercase ASCII letters, digits and `._/-`. No
+    -- other constraints imposed, but intended to be used as namespaces
+    -- (`tml.somekey=somevalue`).
+    CONSTRAINT valid_annotation_key CHECK (
+        char_length(key) BETWEEN 1 AND 128
+        AND key ~ '^[a-z0-9]([a-z0-9._/-]*[a-z0-9])?$'
+    ),
+    -- Free-form, up to 1024 characters, no control characters.
+    CONSTRAINT valid_annotation_value CHECK (
+        char_length(value) <= 1024
+        AND value !~ '[[:cntrl:]]'
+    )
 );
 
 

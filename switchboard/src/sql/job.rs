@@ -5,6 +5,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::postgres::types::PgInterval;
 use sqlx::types::ipnetwork::IpNetwork;
 use sqlx::{PgExecutor, Postgres, Transaction};
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use treadmill_rs::api::switchboard::jobs::{
     JobImage, JobImageReference, JobInfo, JobInitializingStage as ClientJobInitializingStage,
@@ -27,6 +28,7 @@ use treadmill_rs::image::Digest;
 use treadmill_rs::util::Secret;
 use uuid::Uuid;
 
+pub mod annotations;
 pub mod parameters;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, sqlx::Type)]
@@ -400,6 +402,7 @@ pub async fn insert(
     )
     .execute(conn.as_mut())
     .await?;
+    annotations::insert(as_job_id, &job_request.annotations, conn.as_mut()).await?;
 
     Ok(())
 }
@@ -409,6 +412,8 @@ pub struct SqlJob {
     job_id: Uuid,
     // The user-provided display label, if any.
     label: Option<String>,
+    // The revision of the job's user-mutable settings; see `SCHEMA.sql`.
+    revision: i64,
     owner_id: Option<Uuid>,
     resume_job_id: Option<Uuid>,
     #[allow(dead_code)]
@@ -586,6 +591,8 @@ impl SqlJob {
             })
             .collect();
 
+        let annotations = annotations::fetch_by_job_id(self.job_id, &mut *conn).await?;
+
         let services = fetch_services(self.job_id, &mut *conn)
             .await?
             .into_iter()
@@ -632,6 +639,8 @@ impl SqlJob {
             job_id: self.job_id,
             label: self.label,
             owner,
+            revision: self.revision,
+            annotations,
             state: self.job_state.into(),
             initializing_stage: self.initializing_stage.map(Into::into),
             image,
@@ -693,6 +702,7 @@ pub async fn fetch_by_job_id(
         select
         job_id,
         label,
+        revision,
         owner_id,
         resume_job_id,
         restart_job_id,
@@ -880,6 +890,12 @@ pub async fn list_visible(
         select
           j.job_id,
           j.label,
+          j.revision,
+          coalesce(
+            (select jsonb_object_agg(a.key, a.value)
+             from tml_switchboard.job_annotations a where a.job_id = j.job_id),
+            '{}'
+          ) as "annotations!: sqlx::types::Json<BTreeMap<String, String>>",
           j.owner_id,
           os.kind as "owner_kind?: SubjectKind",
           coalesce(u.name, g.name) as owner_name,
@@ -997,6 +1013,8 @@ pub async fn list_visible(
                     job_id: r.job_id,
                     label: r.label,
                     owner,
+                    revision: r.revision,
+                    annotations: r.annotations.0,
                     state: r.job_state.into(),
                     image: JobImage {
                         reference: job_image_reference(
@@ -1329,6 +1347,35 @@ pub async fn update_label(
     .execute(&mut **txn)
     .await?;
     Ok(old)
+}
+
+/// Lock a job's row for a patch, within the caller's transaction, and return
+/// its current revision, for the caller to check a precondition against.
+pub async fn lock_for_update(
+    job_id: Uuid,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"select revision from tml_switchboard.jobs where job_id = $1 for update"#,
+        job_id,
+    )
+    .fetch_one(&mut **txn)
+    .await
+}
+
+/// Bump a job's revision after a patch was applied, within the caller's
+/// transaction, returning the new revision.
+pub async fn bump_revision(
+    job_id: Uuid,
+    txn: &mut Transaction<'_, Postgres>,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"update tml_switchboard.jobs set revision = revision + 1
+           where job_id = $1 returning revision"#,
+        job_id,
+    )
+    .fetch_one(&mut **txn)
+    .await
 }
 
 fn interval_to_delta(interval: &PgInterval) -> TimeDelta {
@@ -1970,6 +2017,7 @@ pub async fn finalize_dropped_and_maybe_restart(
     // another job, so its id should index with the same insert locality.
     let successor_id = Uuid::now_v7();
     let parameters = parameters::fetch_by_job_id(job_id, &mut **txn).await?;
+    let annotations = annotations::fetch_by_job_id(job_id, &mut **txn).await?;
     let job_request = JobRequest {
         init_spec: JobInitSpec::Restart { job_id },
         label: predecessor.label.clone(),
@@ -1983,6 +2031,7 @@ pub async fn finalize_dropped_and_maybe_restart(
         host_cel_predicate: predecessor.host_cel_predicate.clone(),
         lease_duration: None,
         lease_expiry_action: None,
+        annotations,
     };
     insert(
         job_request,

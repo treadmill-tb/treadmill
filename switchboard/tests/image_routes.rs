@@ -259,6 +259,7 @@ async fn enqueue_set(
         host_cel_predicate: DEFAULT_HOST_CEL_PREDICATE.to_string(),
         lease_duration: None,
         lease_expiry_action: None,
+        annotations: Default::default(),
     };
     client
         .post(format!("{base}/jobs"))
@@ -313,6 +314,7 @@ async fn enqueue_image_job(
         host_cel_predicate: DEFAULT_HOST_CEL_PREDICATE.to_string(),
         lease_duration: None,
         lease_expiry_action: None,
+        annotations: Default::default(),
     };
     client
         .post(format!("{base}/jobs"))
