@@ -1,0 +1,120 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with principals (id) as (\n               select id from tml_switchboard.principals($1::uuid)\n           )\n           select h.host_id, h.name, h.owner_id, h.maintenance, h.last_seen_at,\n                  h.current_job is not null as \"busy!\",\n                  coalesce(j.job_state <> 'finalized'\n                           and j.lease_expiry_action = 'preempt'\n                           and j.terminate_requested_at is null\n                           and j.started_at + j.lease_duration <= now(), false) as \"reclaimable!\",\n                  (j.started_at + j.lease_duration) as \"current_lease_expires_at?\",\n                  j.lease_expiry_action as \"current_lease_expiry_action?: super::job::SqlLeaseExpiryAction\"\n           from tml_switchboard.hosts h\n           left join tml_switchboard.jobs j on j.job_id = h.current_job\n           where exists (select 1 from principals where id = $2::uuid)\n              or exists (select 1 from principals p where p.id = h.owner_id)\n              or exists (\n                     select 1\n                     from tml_switchboard.host_grants g\n                     join principals p on g.subject_id = p.id\n                     where g.host_id = h.host_id and g.permission = 'read'\n                 )\n           order by h.name, h.host_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "host_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.hosts",
+            "name": "host_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.hosts",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "owner_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.hosts",
+            "name": "owner_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "maintenance",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.hosts",
+            "name": "maintenance"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.hosts",
+            "name": "last_seen_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "busy!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "reclaimable!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "current_lease_expires_at?",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "current_lease_expiry_action?: super::job::SqlLeaseExpiryAction",
+        "type_info": {
+          "Custom": {
+            "name": "tml_switchboard.lease_expiry_action",
+            "kind": {
+              "Enum": [
+                "terminate",
+                "preempt"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.jobs",
+            "name": "lease_expiry_action"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      null,
+      null,
+      null,
+      false
+    ]
+  },
+  "hash": "19456de90a5df7f6060ab5957d440f56f4c77ef981c8de2f24f3f01b1375cd4e"
+}

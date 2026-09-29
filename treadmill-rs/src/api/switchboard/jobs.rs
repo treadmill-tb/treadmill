@@ -644,7 +644,7 @@ pub struct JobListQuery {
     /// caller can read) and `global` (every job; admins only). The result is
     /// the union of the listed sets.
     pub include: String,
-    /// Whether to list active or finished jobs.
+    /// Whether to list active, reclaimable or finished jobs.
     pub state: JobListState,
     /// A search query of whitespace-separated terms, all of which must match.
     /// A term `^<hex>` matches jobs whose id ends in those hex digits; any
@@ -666,6 +666,7 @@ pub struct JobListQuery {
 #[serde(rename_all = "snake_case")]
 pub enum JobListState {
     Active,
+    Reclaimable,
     Finished,
 }
 

@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 
 use treadmill_rs::api::switchboard::hosts::{
     HostCreateRequest, HostCreateResponse, HostGrantInfo, HostGrantRequest, HostInfo,
-    HostListEntry, HostOwnerUpdateRequest, HostPermission as ApiHostPermission,
+    HostLeaseState, HostListEntry, HostOwnerUpdateRequest, HostPermission as ApiHostPermission,
     HostRequirementsReport, HostRequirementsRequest, HostSpecRejection, HostSpecUpdateRequest,
     HostSpecUpdateResponse, HostSummary, HostUpdateRequest, SpecDocument,
 };
@@ -771,12 +771,13 @@ fn host_info(
     let (spec_revision, spec) = spec.unzip();
     HostInfo {
         live: is_live(&host, state),
+        lease_state: lease_state(&host),
         host_id: host.host_id,
         name: host.name,
         owner,
         maintenance: host.maintenance,
-        busy: host.busy,
         current_lease_expires_at: host.current_lease_expires_at,
+        current_lease_expiry_action: host.current_lease_expiry_action.map(Into::into),
         last_seen_at: host.last_seen_at,
         spec,
         spec_revision,
@@ -798,14 +799,23 @@ fn host_entry(
     };
     HostListEntry {
         live: is_live(&host, state),
+        lease_state: lease_state(&host),
         host_id: host.host_id,
         name: host.name,
         maintenance: host.maintenance,
-        busy: host.busy,
         current_lease_expires_at: host.current_lease_expires_at,
+        current_lease_expiry_action: host.current_lease_expiry_action.map(Into::into),
         last_seen_at: host.last_seen_at,
         spec,
         spec_revision,
+    }
+}
+
+fn lease_state(host: &sql::host::SqlHostListing) -> HostLeaseState {
+    match (host.busy, host.reclaimable) {
+        (false, _) => HostLeaseState::Idle,
+        (true, false) => HostLeaseState::Busy,
+        (true, true) => HostLeaseState::Reclaimable,
     }
 }
 

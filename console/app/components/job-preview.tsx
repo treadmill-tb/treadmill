@@ -22,7 +22,13 @@ export type Verdict = {
   facts: ReactNode[];
 };
 
-const STATUS_ORDER: HostStatus[] = ["free", "busy", "maintenance", "offline"];
+const STATUS_ORDER: HostStatus[] = [
+  "free",
+  "reclaimable",
+  "busy",
+  "maintenance",
+  "offline",
+];
 
 export function byStatus(a: HostCandidate, b: HostCandidate): number {
   return (
@@ -76,12 +82,20 @@ export function failureVerdict(report: Report): Verdict | null {
 
 export function availabilityVerdict(eligible: HostCandidate[]): Verdict {
   const total = eligible.length;
-  const free = eligible.filter((c) => hostStatus(c.host) === "free");
+  const free = eligible.filter((c) =>
+    ["free", "reclaimable"].includes(hostStatus(c.host)),
+  );
   if (free.length > 0) {
+    const reclaimable = free.filter(
+      (c) => hostStatus(c.host) === "reclaimable",
+    ).length;
     return {
       tone: "ok",
       title: "Hosts available",
-      facts: [`${free.length} / ${total} eligible free`],
+      facts: [
+        `${free.length} / ${total} eligible free`,
+        ...(reclaimable > 0 ? [`${reclaimable} reclaimable`] : []),
+      ],
     };
   }
   const busy = eligible.filter((c) => hostStatus(c.host) === "busy");
@@ -120,6 +134,14 @@ function StatusText({ host }: { host: HostListEntry | undefined }) {
     return (
       <>
         busy · lease ends <RelTime iso={host.current_lease_expires_at} />
+      </>
+    );
+  }
+  if (status === "reclaimable" && host?.current_lease_expires_at != null) {
+    return (
+      <>
+        reclaimable · lease ended{" "}
+        <RelTime iso={host.current_lease_expires_at} />
       </>
     );
   }

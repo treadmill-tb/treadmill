@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 use treadmill_rs::api::switchboard::jobs::{
     JobImage, JobImageReference, JobInfo, JobInitializingStage as ClientJobInitializingStage,
-    JobLeaseExpiryAction as ClientLeaseExpiryAction, JobParameterView,
+    JobLeaseExpiryAction as ClientLeaseExpiryAction, JobListState, JobParameterView,
     JobPermission as ClientJobPermission, JobPredecessor, JobServiceAnnouncement, JobServiceView,
     JobSummary, LeaseRejectionCode as ClientLeaseRejectionCode, LeaseSpec,
     RestartPolicy as ClientRestartPolicy, RestartPolicyState,
@@ -868,7 +868,7 @@ pub struct ListInclude {
 #[derive(Debug)]
 pub struct ListFilter {
     pub include: ListInclude,
-    pub finished: bool,
+    pub state: JobListState,
     pub terms: Vec<String>,
     pub tails: Vec<String>,
 }
@@ -941,7 +941,13 @@ pub async fn list_visible(
                 where hg.host_id = h.host_id and hg.permission = 'read'
             )
         )
-        where (j.job_state = 'finalized') = $4
+        where case
+            when j.job_state = 'finalized' then $4 = 'finished'
+            when j.lease_expiry_action = 'preempt'
+             and j.terminate_requested_at is null
+             and j.started_at + j.lease_duration <= now() then $4 = 'reclaimable'
+            else $4 = 'active'
+        end
         and (
             $5
             or ($6 and j.owner_id = $1)
@@ -979,7 +985,11 @@ pub async fn list_visible(
         caller,
         crate::auth::engine::ADMINS_GROUP_ID,
         crate::auth::engine::EVERYONE_SUBJECT_ID,
-        filter.finished,
+        match filter.state {
+            JobListState::Active => "active",
+            JobListState::Reclaimable => "reclaimable",
+            JobListState::Finished => "finished",
+        },
         filter.include.global,
         filter.include.mine,
         filter.include.groups,

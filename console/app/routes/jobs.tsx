@@ -95,6 +95,7 @@ export default function Jobs() {
   }, [debounced, q, setParams]);
 
   const active = useJobList("active", scope.include, q);
+  const reclaimable = useJobList("reclaimable", scope.include, q);
   const finished = useJobList("finished", scope.include, q);
   const me = whoami.data?.user_id;
 
@@ -144,6 +145,9 @@ export default function Jobs() {
         me={me}
         empty={q === "" ? "Nothing is running." : "No active job matches."}
       />
+      {reclaimable.data?.pages[0]?.jobs.length ? (
+        <JobSection title="Reclaimable" list={reclaimable} me={me} empty="" />
+      ) : null}
       <JobSection
         title="Finished"
         list={finished}
@@ -299,7 +303,15 @@ function Meta({
       <span className="life-text-active">{ACTIVE_TEXT[job.state]}</span>,
     );
     if (job.state === "ready" && job.lease_expires_at != null) {
-      parts.push(<LeaseLeft job={job} now={now} />);
+      parts.push(
+        Date.parse(job.lease_expires_at) > now ? (
+          <LeaseLeft job={job} now={now} />
+        ) : (
+          <>
+            lease ended <RelTime iso={job.lease_expires_at} />
+          </>
+        ),
+      );
     }
     parts.push(
       job.started_at != null ? (

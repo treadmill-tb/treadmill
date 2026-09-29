@@ -245,10 +245,10 @@ paths:
         style: form
       - in: query
         name: state
-        description: Whether to list active or finished jobs.
+        description: Whether to list active, reclaimable or finished jobs.
         required: true
         schema:
-          description: Whether to list active or finished jobs.
+          description: Whether to list active, reclaimable or finished jobs.
           $ref: '#/components/schemas/JobListState'
         style: form
       responses:
@@ -2801,9 +2801,6 @@ components:
         whole admin-authored spec describing what it is.
       type: object
       properties:
-        busy:
-          description: Whether a job is assigned to the host.
-          type: boolean
         current_lease_expires_at:
           description: |-
             When the lease of the host's current job expires. Null if the host is
@@ -2812,6 +2809,11 @@ components:
           - string
           - 'null'
           format: date-time
+        current_lease_expiry_action:
+          description: The lease expiry action of the host's current job. Null if the host is idle.
+          anyOf:
+          - $ref: '#/components/schemas/JobLeaseExpiryAction'
+          - type: 'null'
         host_id:
           type: string
           format: uuid
@@ -2823,6 +2825,10 @@ components:
           - string
           - 'null'
           format: date-time
+        lease_state:
+          description: The state of the host's current job lease.
+          allOf:
+          - $ref: '#/components/schemas/HostLeaseState'
         live:
           description: |-
             Whether the host's supervisor has heartbeat recently enough to be
@@ -2867,8 +2873,20 @@ components:
       - name
       - live
       - maintenance
-      - busy
+      - lease_state
       - permissions
+    HostLeaseState:
+      description: A host's lease state, as reported on [`HostInfo`].
+      oneOf:
+      - description: No job is assigned to the host.
+        type: string
+        const: idle
+      - description: The host's job may not be reclaimed.
+        type: string
+        const: busy
+      - description: The scheduler may stop the host's job to place a queued job.
+        type: string
+        const: reclaimable
     HostListEntry:
       description: |-
         A host as returned by `GET /hosts`: its operational state plus a projection
@@ -2880,15 +2898,17 @@ components:
         document is served by `GET /hosts/{id}` alone.
       type: object
       properties:
-        busy:
-          description: As [`HostInfo::busy`].
-          type: boolean
         current_lease_expires_at:
           description: As [`HostInfo::current_lease_expires_at`].
           type:
           - string
           - 'null'
           format: date-time
+        current_lease_expiry_action:
+          description: As [`HostInfo::current_lease_expiry_action`].
+          anyOf:
+          - $ref: '#/components/schemas/JobLeaseExpiryAction'
+          - type: 'null'
         host_id:
           type: string
           format: uuid
@@ -2898,6 +2918,10 @@ components:
           - string
           - 'null'
           format: date-time
+        lease_state:
+          description: As [`HostInfo::lease_state`].
+          allOf:
+          - $ref: '#/components/schemas/HostLeaseState'
         live:
           description: As [`HostInfo::live`].
           type: boolean
@@ -2924,7 +2948,7 @@ components:
       - name
       - live
       - maintenance
-      - busy
+      - lease_state
     HostMatch:
       description: How one authorized host meets a job's requirements.
       type: object
@@ -3892,7 +3916,7 @@ components:
           - string
           - 'null'
         state:
-          description: Whether to list active or finished jobs.
+          description: Whether to list active, reclaimable or finished jobs.
           allOf:
           - $ref: '#/components/schemas/JobListState'
       required:
@@ -3925,6 +3949,7 @@ components:
       type: string
       enum:
       - active
+      - reclaimable
       - finished
     JobParameter:
       description: |-
