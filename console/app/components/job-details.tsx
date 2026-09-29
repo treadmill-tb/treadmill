@@ -179,21 +179,34 @@ export function JobAnnotations({ job }: { job: JobInfo }) {
       );
     };
 
+    // Rows left completely blank are ignored, so adding one isn't an error.
+    const rows = draft.filter(({ name, value }) => name !== "" || value !== "");
+    const names = rows.map(({ name }) => name);
+    const duplicate = names.find((name, i) => names.indexOf(name) !== i);
+    const invalid = names.includes("")
+      ? "Every annotation needs a name."
+      : duplicate !== undefined
+        ? `The name “${duplicate}” is used more than once.`
+        : null;
+
     return (
       <>
         <form
           className="set-annotations"
           onSubmit={(e) => {
             e.preventDefault();
+            if (invalid !== null) {
+              return;
+            }
 
-            const draftNames = new Set(draft.map(({ name }) => name));
+            const draftNames = new Set(names);
             const deletions = Object.fromEntries(
               Object.keys(job.annotations)
                 .filter((k) => !draftNames.has(k))
                 .map((k) => [k, null]),
             );
             const updates = Object.fromEntries(
-              draft.flatMap(({ name, value }) => {
+              rows.flatMap(({ name, value }) => {
                 if (
                   Object.hasOwn(job.annotations, name) &&
                   job.annotations[name] === value
@@ -226,7 +239,7 @@ export function JobAnnotations({ job }: { job: JobInfo }) {
               className="icon-btn"
               title="Save job annotations"
               aria-label="Save job annotations"
-              disabled={update.isPending}
+              disabled={update.isPending || invalid !== null}
             >
               <Check size={20} aria-hidden="true" />
             </button>
@@ -297,6 +310,7 @@ export function JobAnnotations({ job }: { job: JobInfo }) {
               ))}
             </dl>
           )}
+          {invalid !== null && <p className="error">{invalid}</p>}
           <RequestError
             error={update.error}
             messages={{
