@@ -1,4 +1,4 @@
-import { Info, Workflow } from "lucide-react";
+import { Info, Workflow, Pencil, Plus, Check, Trash2, X } from "lucide-react";
 import { Fragment, useState } from "react";
 import { Link } from "react-router";
 
@@ -10,11 +10,16 @@ import { EntityLink, ShortId, shortId } from "./entity-link";
 import { formatSeconds } from "./job-lease";
 import { JobInfoName } from "./job-name";
 import { RelTime } from "./rel-time";
+import { RequestError } from "./request-error";
+import { useUpdateJob } from "../hooks/use-update-job";
 
 type JobInfo = components["schemas"]["JobInfo"];
 
 /** Parameters shown before "Show all". */
 const PARAMETERS_SHOWN = 3;
+
+/** Annotations shown before "Show all". */
+const ANNOTATIONS_SHOWN = 3;
 
 /** What the job runs, as the first rows of the details card. */
 function Origin({ job }: { job: JobInfo }) {
@@ -142,15 +147,242 @@ function JobOrigin({ jobId }: { jobId: string }) {
   );
 }
 
-/**
- * What the job was started with: its image (or the job it continues) and its
- * parameters up front, the rest behind "More details".
- */
+export function JobAnnotations({ job }: { job: JobInfo }) {
+  const [allAnnotations, setAllAnnotations] = useState(false);
+  const annotations = Object.entries(job.annotations);
+  const shownAnnotations = allAnnotations
+    ? annotations
+    : annotations.slice(0, ANNOTATIONS_SHOWN);
+  const update = useUpdateJob(job.job_id);
+  const [draft, setDraft] = useState<
+    { key: number; name: string; value: string }[] | null
+  >(null);
+  const cancel = () => {
+    setDraft(null);
+    update.reset();
+  };
+
+  if (draft !== null) {
+    const updateAnnotation = (key: number, name: string, value: string) => {
+      setDraft((d) =>
+        (d ?? []).map((old) => {
+          if (key !== old.key) {
+            return old;
+          } else {
+            return {
+              key,
+              name,
+              value,
+            };
+          }
+        }),
+      );
+    };
+
+    // Rows left completely blank are ignored, so adding one isn't an error.
+    const rows = draft.filter(({ name, value }) => name !== "" || value !== "");
+    const names = rows.map(({ name }) => name);
+    const duplicate = names.find((name, i) => names.indexOf(name) !== i);
+    const invalid = names.includes("")
+      ? "Every annotation needs a name."
+      : duplicate !== undefined
+        ? `The name “${duplicate}” is used more than once.`
+        : null;
+
+    return (
+      <>
+        <form
+          className="set-annotations"
+          onKeyDown={(e) => e.key === "Escape" && cancel()}
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (invalid !== null) {
+              return;
+            }
+
+            const draftNames = new Set(names);
+            const deletions = Object.fromEntries(
+              Object.keys(job.annotations)
+                .filter((k) => !draftNames.has(k))
+                .map((k) => [k, null]),
+            );
+            const updates = Object.fromEntries(
+              rows.flatMap(({ name, value }) => {
+                if (
+                  Object.hasOwn(job.annotations, name) &&
+                  job.annotations[name] === value
+                ) {
+                  return []; // Nothing to update
+                } else {
+                  return [[name, value]];
+                }
+              }),
+            );
+            const patch = { ...deletions, ...updates };
+
+            if (Object.keys(patch).length === 0) {
+              setDraft(null);
+            } else {
+              update.mutate(
+                {
+                  params: { path: { id: job.job_id } },
+                  body: { annotations: patch },
+                },
+                { onSuccess: () => setDraft(null) },
+              );
+            }
+          }}
+        >
+          <div className="job-annotations-header">
+            <h4>Annotations</h4>
+            <button
+              type="submit"
+              className="icon-btn"
+              title="Save job annotations"
+              aria-label="Save job annotations"
+              disabled={update.isPending || invalid !== null}
+            >
+              <Check size={20} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              title="Cancel"
+              aria-label="Cancel editing annotations"
+              onClick={cancel}
+            >
+              <X size={20} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="icon-btn job-annotations-add"
+              title="Add a new job annotation field"
+              aria-label="Add a new job annotation field"
+              onClick={() => {
+                const newKey = (draft.at(-1)?.key ?? 0) + 1;
+                setDraft((d) =>
+                  (d ?? []).concat([{ key: newKey, name: "", value: "" }]),
+                );
+              }}
+            >
+              <Plus size={18} aria-hidden="true" />
+            </button>
+          </div>
+          {draft.length === 0 ? (
+            <p className="muted">No annotations.</p>
+          ) : (
+            <dl className="props truncate">
+              {draft.map(({ key, name, value }) => (
+                <Fragment key={key}>
+                  <dt className="mono" title={name}>
+                    <input
+                      value={name}
+                      aria-label="The name / key of this job annotation"
+                      onChange={(e) =>
+                        updateAnnotation(key, e.target.value, value)
+                      }
+                    />
+                  </dt>
+                  <dd className="mono job-annotation-value">
+                    <input
+                      value={value}
+                      aria-label="The value of this job annotation"
+                      onChange={(e) =>
+                        updateAnnotation(key, name, e.target.value)
+                      }
+                    />
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      title="Delete annotation"
+                      aria-label={
+                        name === ""
+                          ? "Delete annotation"
+                          : `Delete annotation ${name}`
+                      }
+                      onClick={() =>
+                        setDraft((d) => (d ?? []).filter((a) => a.key !== key))
+                      }
+                    >
+                      <Trash2 size={18} aria-hidden="true" />
+                    </button>
+                  </dd>
+                </Fragment>
+              ))}
+            </dl>
+          )}
+          {invalid !== null && <p className="error">{invalid}</p>}
+          <RequestError
+            error={update.error}
+            messages={{
+              403: "You are not allowed to change this job's annotations.",
+            }}
+          />
+        </form>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="job-annotations-header">
+        <h4>Annotations</h4>
+        {job.permissions.includes("manage") && (
+          <button
+            type="button"
+            className="icon-btn"
+            title="Modify job annotations"
+            aria-label="Modify job annotations"
+            onClick={() =>
+              setDraft(
+                annotations.map(([name, value], idx) => ({
+                  key: idx,
+                  name,
+                  value,
+                })),
+              )
+            }
+          >
+            <Pencil size={18} aria-hidden="true" />
+          </button>
+        )}
+      </div>
+      {annotations.length === 0 ? (
+        <p className="muted">No annotations.</p>
+      ) : (
+        <dl className="props truncate">
+          {shownAnnotations.map(([name, value]) => (
+            <Fragment key={name}>
+              <dt className="mono" title={name}>
+                {name}
+              </dt>
+              <dd className="mono" title={value}>
+                {value}
+              </dd>
+            </Fragment>
+          ))}
+        </dl>
+      )}
+      {annotations.length > ANNOTATIONS_SHOWN && (
+        <button
+          type="button"
+          className="link-btn"
+          onClick={() => setAllAnnotations((a) => !a)}
+        >
+          {allAnnotations
+            ? "Show fewer annotations"
+            : `Show all ${annotations.length} annotations`}
+        </button>
+      )}
+    </>
+  );
+}
+
 export function JobDetails({ job }: { job: JobInfo }) {
   const [allParameters, setAllParameters] = useState(false);
   const [more, setMore] = useState(false);
   const parameters = Object.entries(job.parameters);
-  const shown = allParameters
+  const shownParameters = allParameters
     ? parameters
     : parameters.slice(0, PARAMETERS_SHOWN);
 
@@ -169,7 +401,7 @@ export function JobDetails({ job }: { job: JobInfo }) {
         <p className="muted">No parameters.</p>
       ) : (
         <dl className="props truncate">
-          {shown.map(([name, p]) => (
+          {shownParameters.map(([name, p]) => (
             <Fragment key={name}>
               <dt className="mono" title={name}>
                 {name}
@@ -198,6 +430,8 @@ export function JobDetails({ job }: { job: JobInfo }) {
             : `Show all ${parameters.length} parameters`}
         </button>
       )}
+
+      <JobAnnotations job={job} />
 
       {more && (
         <dl className="props more-props">
