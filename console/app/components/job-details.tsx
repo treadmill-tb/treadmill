@@ -193,6 +193,7 @@ export function JobAnnotations({ job }: { job: JobInfo }) {
       <>
         <form
           className="set-annotations"
+          onKeyDown={(e) => e.key === "Escape" && cancel()}
           onSubmit={(e) => {
             e.preventDefault();
             if (invalid !== null) {
