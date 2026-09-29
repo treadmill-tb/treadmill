@@ -1302,6 +1302,37 @@ a.icon-link:hover {
 
 /* ------------------------------------------------------- Job detail page */
 
+.job-annotations-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.625rem;
+  min-width: 0;
+}
+
+.job-annotations-header > h4 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Pushed to the right edge, in line with each row's delete button. */
+.job-annotations-header > .job-annotations-add {
+  margin-left: auto;
+}
+
+/* An annotation's value being edited, with its delete button beside it. */
+.job-annotation-value {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.job-annotation-value > input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
 /* Details and host side by side, mirroring each other; the log and events
    below span the full width. */
 .job-cards {
