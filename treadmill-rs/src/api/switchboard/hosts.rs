@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+use crate::api::switchboard::jobs::JobLeaseExpiryAction;
 use crate::api::switchboard::{JobInitSpec, SubjectRef};
 use crate::host_spec::{HostSpecLatest, Platform, PlatformKind, Resources};
 
@@ -38,6 +39,18 @@ pub enum HostPermission {
     Manage,
 }
 
+/// A host's lease state, as reported on [`HostInfo`].
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostLeaseState {
+    /// No job is assigned to the host.
+    Idle,
+    /// The host's job may not be reclaimed.
+    Busy,
+    /// The scheduler may stop the host's job to place a queued job.
+    Reclaimable,
+}
+
 /// A host as returned by `GET /hosts/{id}`: its operational state plus the
 /// whole admin-authored spec describing what it is.
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
@@ -56,11 +69,13 @@ pub struct HostInfo {
     /// Whether an operator has withheld this host from scheduling. A host in
     /// maintenance is neither dispatched onto nor preempted to free capacity.
     pub maintenance: bool,
-    /// Whether a job is assigned to the host.
-    pub busy: bool,
+    /// The state of the host's current job lease.
+    pub lease_state: HostLeaseState,
     /// When the lease of the host's current job expires. Null if the host is
     /// not busy, or its job has not started.
     pub current_lease_expires_at: Option<DateTime<Utc>>,
+    /// The lease expiry action of the host's current job. Null if the host is idle.
+    pub current_lease_expiry_action: Option<JobLeaseExpiryAction>,
     /// The host's current spec, normalized to the latest version, as a document
     /// conforming to the schema at `GET /hosts/spec-schema`. Null only for a
     /// host that has never been described.
@@ -88,10 +103,12 @@ pub struct HostListEntry {
     pub last_seen_at: Option<DateTime<Utc>>,
     /// As [`HostInfo::maintenance`].
     pub maintenance: bool,
-    /// As [`HostInfo::busy`].
-    pub busy: bool,
+    /// As [`HostInfo::lease_state`].
+    pub lease_state: HostLeaseState,
     /// As [`HostInfo::current_lease_expires_at`].
     pub current_lease_expires_at: Option<DateTime<Utc>>,
+    /// As [`HostInfo::current_lease_expiry_action`].
+    pub current_lease_expiry_action: Option<JobLeaseExpiryAction>,
     /// The projection of the host's current spec. Null only for a host that has
     /// never been described.
     pub spec: Option<HostSummary>,

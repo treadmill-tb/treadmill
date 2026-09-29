@@ -7,7 +7,7 @@ import { $api, client } from "../api/client";
 import { ApiError } from "../api/errors";
 import type { HostSpecV2 } from "../api/host-spec";
 import type { components } from "../api/schema";
-import { LiveBadge } from "../components/badges";
+import { LeaseBadge, LiveBadge } from "../components/badges";
 import { AuditLog } from "../components/audit-log";
 import { DutCard } from "../components/dut-card";
 import { HostTopology } from "../components/host-topology";
@@ -224,9 +224,7 @@ export default function HostDetail({ params }: Route.ComponentProps) {
               )}
               {host.data.name}
               <LiveBadge live={host.data.live} />
-              {host.data.live && host.data.busy && (
-                <span className="badge warn">busy</span>
-              )}
+              {host.data.live && <LeaseBadge state={host.data.lease_state} />}
               {host.data.maintenance && (
                 <span className="badge warn">maintenance</span>
               )}

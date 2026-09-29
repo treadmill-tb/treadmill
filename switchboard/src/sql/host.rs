@@ -23,7 +23,9 @@ pub struct SqlHostListing {
     pub maintenance: bool,
     pub last_seen_at: Option<chrono::DateTime<chrono::Utc>>,
     pub busy: bool,
+    pub reclaimable: bool,
     pub current_lease_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub current_lease_expiry_action: Option<super::job::SqlLeaseExpiryAction>,
 }
 
 /// A host reduced to what a matching report needs to name it.
@@ -52,7 +54,12 @@ pub async fn list_readable(
            )
            select h.host_id, h.name, h.owner_id, h.maintenance, h.last_seen_at,
                   h.current_job is not null as "busy!",
-                  (j.started_at + j.lease_duration) as "current_lease_expires_at?"
+                  coalesce(j.job_state <> 'finalized'
+                           and j.lease_expiry_action = 'preempt'
+                           and j.terminate_requested_at is null
+                           and j.started_at + j.lease_duration <= now(), false) as "reclaimable!",
+                  (j.started_at + j.lease_duration) as "current_lease_expires_at?",
+                  j.lease_expiry_action as "current_lease_expiry_action?: super::job::SqlLeaseExpiryAction"
            from tml_switchboard.hosts h
            left join tml_switchboard.jobs j on j.job_id = h.current_job
            where exists (select 1 from principals where id = $2::uuid)
@@ -82,7 +89,12 @@ pub async fn fetch_listing(
         SqlHostListing,
         r#"select h.host_id, h.name, h.owner_id, h.maintenance, h.last_seen_at,
                   h.current_job is not null as "busy!",
-                  (j.started_at + j.lease_duration) as "current_lease_expires_at?"
+                  coalesce(j.job_state <> 'finalized'
+                           and j.lease_expiry_action = 'preempt'
+                           and j.terminate_requested_at is null
+                           and j.started_at + j.lease_duration <= now(), false) as "reclaimable!",
+                  (j.started_at + j.lease_duration) as "current_lease_expires_at?",
+                  j.lease_expiry_action as "current_lease_expiry_action?: super::job::SqlLeaseExpiryAction"
            from tml_switchboard.hosts h
            left join tml_switchboard.jobs j on j.job_id = h.current_job
            where h.host_id = $1"#,

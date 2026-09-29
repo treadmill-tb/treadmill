@@ -16,10 +16,10 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobDefaults, JobEnvironment, JobExitStatusRequest, JobInfo,
-    JobLeaseExpiryAction, JobListQuery, JobListResponse, JobListState,
-    JobPermission as ApiJobPermission, JobServiceAnnouncement, JobServiceCredentials,
-    LeaseRejection, LeaseRejectionCode, MAX_JOB_ANNOTATIONS, NatsConsoleInputCredentials,
-    NatsLogStreamCredentials, UpdateJobRequest, job_etag, parse_job_etag,
+    JobLeaseExpiryAction, JobListQuery, JobListResponse, JobPermission as ApiJobPermission,
+    JobServiceAnnouncement, JobServiceCredentials, LeaseRejection, LeaseRejectionCode,
+    MAX_JOB_ANNOTATIONS, NatsConsoleInputCredentials, NatsLogStreamCredentials, UpdateJobRequest,
+    job_etag, parse_job_etag,
 };
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest};
 use treadmill_rs::util::Secret;
@@ -129,7 +129,7 @@ pub async fn list(
         .clamp(1, MAX_LIST_LIMIT);
     let filter = job::ListFilter {
         include,
-        finished: matches!(query.state, JobListState::Finished),
+        state: query.state,
         terms,
         tails,
     };

@@ -2,7 +2,7 @@ import { Link, useSearchParams } from "react-router";
 
 import { $api } from "../api/client";
 import type { components } from "../api/schema";
-import { LiveBadge } from "../components/badges";
+import { LeaseBadge, LiveBadge } from "../components/badges";
 import { EntityLink } from "../components/entity-link";
 import { RequestError } from "../components/request-error";
 import { DevBoardIcon, PlatformIcon } from "../icons";
@@ -40,7 +40,7 @@ function HostTile({ host }: { host: HostListEntry }) {
         )}
         <EntityLink kind="host" id={host.host_id} label={host.name} />
         <LiveBadge live={host.live} />
-        {host.live && host.busy && <span className="badge warn">busy</span>}
+        {host.live && <LeaseBadge state={host.lease_state} />}
         {host.maintenance && <span className="badge warn">maintenance</span>}
       </p>
       {spec == null ? (

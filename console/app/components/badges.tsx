@@ -174,6 +174,17 @@ export function TerminationBadge({
   );
 }
 
+export function LeaseBadge({
+  state,
+}: {
+  state: components["schemas"]["HostLeaseState"];
+}) {
+  if (state === "idle") return null;
+  return (
+    <span className={`badge ${state === "busy" ? "warn" : "ok"}`}>{state}</span>
+  );
+}
+
 export function LiveBadge({ live }: { live: boolean }) {
   return (
     <span className={`badge ${live ? "ok" : "danger"}`}>

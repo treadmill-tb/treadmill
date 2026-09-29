@@ -5,16 +5,18 @@ type HostListEntry = components["schemas"]["HostListEntry"];
 type JobInfo = components["schemas"]["JobInfo"];
 type JobInitSpec = components["schemas"]["JobInitSpec"];
 
-export type HostStatus = "free" | "busy" | "maintenance" | "offline";
+export type HostStatus =
+  "free" | "reclaimable" | "busy" | "maintenance" | "offline";
 
 export function hostStatus(host: HostListEntry | undefined): HostStatus {
   if (host === undefined || !host.live) return "offline";
   if (host.maintenance) return "maintenance";
-  return host.busy ? "busy" : "free";
+  return host.lease_state === "idle" ? "free" : host.lease_state;
 }
 
 export const STATUS_TONE: Record<HostStatus, Tone> = {
   free: "ok",
+  reclaimable: "ok",
   busy: "warn",
   maintenance: "",
   offline: "danger",

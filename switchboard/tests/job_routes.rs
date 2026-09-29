@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use treadmill_rs::api::switchboard::audit::AuditFeedResponse;
 use treadmill_rs::api::switchboard::client::{ClientError, SwitchboardClient};
-use treadmill_rs::api::switchboard::hosts::{HostInfo, HostListEntry};
+use treadmill_rs::api::switchboard::hosts::{HostInfo, HostLeaseState, HostListEntry};
 use treadmill_rs::api::switchboard::jobs::{
     EnqueueJobResponse, JobDefaults, JobEnvironment, JobImageReference, JobInfo,
     JobLeaseExpiryAction, JobListQuery, JobListResponse, JobListState, JobParameter, JobPermission,
@@ -1739,7 +1739,7 @@ async fn host_reports_its_current_job_lease(pool: PgPool) {
         .json()
         .await
         .unwrap();
-    assert!(host.busy);
+    assert_eq!(host.lease_state, HostLeaseState::Busy);
     assert_eq!(
         host.current_lease_expires_at,
         Some(started_at + chrono::Duration::hours(1))
@@ -1755,10 +1755,89 @@ async fn host_reports_its_current_job_lease(pool: PgPool) {
         .await
         .unwrap();
     let entry = hosts.iter().find(|h| h.host_id == host_id).unwrap();
-    assert!(entry.busy);
+    assert_eq!(entry.lease_state, HostLeaseState::Busy);
     assert_eq!(
         entry.current_lease_expires_at,
         host.current_lease_expires_at
+    );
+
+    let lease_state = async |sql: &'static str| {
+        sqlx::query(sql).bind(job_id).execute(&pool).await.unwrap();
+        let host: HostInfo = client
+            .get(format!("http://{addr}/api/v1/hosts/{host_id}"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        (host.lease_state, host.current_lease_expiry_action)
+    };
+    assert_eq!(
+        lease_state(
+            "update tml_switchboard.jobs \
+             set started_at = now() - interval '2 hours' where job_id = $1"
+        )
+        .await,
+        (HostLeaseState::Busy, Some(JobLeaseExpiryAction::Terminate))
+    );
+    assert_eq!(
+        lease_state(
+            "update tml_switchboard.jobs \
+             set lease_expiry_action = 'preempt' where job_id = $1"
+        )
+        .await,
+        (
+            HostLeaseState::Reclaimable,
+            Some(JobLeaseExpiryAction::Preempt)
+        )
+    );
+    assert_eq!(
+        lease_state(
+            "update tml_switchboard.jobs \
+             set terminate_requested_at = now(), terminate_requested_reason = 'preempted' \
+             where job_id = $1"
+        )
+        .await,
+        (HostLeaseState::Busy, Some(JobLeaseExpiryAction::Preempt))
+    );
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn list_splits_reclaimable_from_active(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let token = mock_login_token(&pool, &client, addr, "alice", true).await;
+    let alice = whoami(&client, addr, &token).await;
+    let alice_token = latest_token_id(&pool, alice).await;
+    let expired = chrono::Utc::now() - chrono::Duration::hours(2);
+
+    let queued = seed_job(&pool, alice, alice_token, &[]).await;
+    let terminate = seed_job(&pool, alice, alice_token, &[]).await;
+    mark_running(&pool, terminate, expired).await;
+    let preempt = seed_job(&pool, alice, alice_token, &[]).await;
+    mark_running(&pool, preempt, expired).await;
+    sqlx::query(
+        "update tml_switchboard.jobs set lease_expiry_action = 'preempt' where job_id = $1",
+    )
+    .bind(preempt)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut active = list_ids(&client, addr, &token, "include=mine&state=active").await;
+    active.sort();
+    let mut expected = vec![queued, terminate];
+    expected.sort();
+    assert_eq!(active, expected);
+    assert_eq!(
+        list_ids(&client, addr, &token, "include=mine&state=reclaimable").await,
+        vec![preempt]
     );
 }
 

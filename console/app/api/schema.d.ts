@@ -1187,14 +1187,14 @@ export interface components {
          *     whole admin-authored spec describing what it is.
          */
         HostInfo: {
-            /** @description Whether a job is assigned to the host. */
-            busy: boolean;
             /**
              * Format: date-time
              * @description When the lease of the host's current job expires. Null if the host is
              *     not busy, or its job has not started.
              */
             current_lease_expires_at?: string | null;
+            /** @description The lease expiry action of the host's current job. Null if the host is idle. */
+            current_lease_expiry_action?: components["schemas"]["JobLeaseExpiryAction"] | null;
             /** Format: uuid */
             host_id: string;
             /**
@@ -1203,6 +1203,8 @@ export interface components {
              *     supervisor disconnected cleanly).
              */
             last_seen_at?: string | null;
+            /** @description The state of the host's current job lease. */
+            lease_state: components["schemas"]["HostLeaseState"];
             /**
              * @description Whether the host's supervisor has heartbeat recently enough to be
              *     considered schedulable, computed with the deployment's liveness window.
@@ -1235,6 +1237,8 @@ export interface components {
              */
             spec_revision?: number | null;
         };
+        /** @description A host's lease state, as reported on [`HostInfo`]. */
+        HostLeaseState: "idle" | "busy" | "reclaimable";
         /**
          * @description A host as returned by `GET /hosts`: its operational state plus a projection
          *     of its spec.
@@ -1245,13 +1249,13 @@ export interface components {
          *     document is served by `GET /hosts/{id}` alone.
          */
         HostListEntry: {
-            /** @description As [`HostInfo::busy`]. */
-            busy: boolean;
             /**
              * Format: date-time
              * @description As [`HostInfo::current_lease_expires_at`].
              */
             current_lease_expires_at?: string | null;
+            /** @description As [`HostInfo::current_lease_expiry_action`]. */
+            current_lease_expiry_action?: components["schemas"]["JobLeaseExpiryAction"] | null;
             /** Format: uuid */
             host_id: string;
             /**
@@ -1259,6 +1263,8 @@ export interface components {
              * @description As [`HostInfo::last_seen_at`].
              */
             last_seen_at?: string | null;
+            /** @description As [`HostInfo::lease_state`]. */
+            lease_state: components["schemas"]["HostLeaseState"];
             /** @description As [`HostInfo::live`]. */
             live: boolean;
             /** @description As [`HostInfo::maintenance`]. */
@@ -1846,7 +1852,7 @@ export interface components {
              *     name, ignoring case. Terms of the form `<key>:<value>` are reserved.
              */
             q?: string | null;
-            /** @description Whether to list active or finished jobs. */
+            /** @description Whether to list active, reclaimable or finished jobs. */
             state: components["schemas"]["JobListState"];
         };
         /**
@@ -1867,7 +1873,7 @@ export interface components {
          * @description Which jobs `GET /jobs` lists, by lifecycle.
          * @enum {string}
          */
-        JobListState: "active" | "finished";
+        JobListState: "active" | "reclaimable" | "finished";
         /**
          * @description One parameter supplied with a job at enqueue (`POST /jobs`), which the job
          *     reads from `GET /jobs/{id}/environment`.
@@ -2898,7 +2904,7 @@ export interface operations {
                  *     name, ignoring case. Terms of the form `<key>:<value>` are reserved.
                  */
                 q?: string;
-                /** @description Whether to list active or finished jobs. */
+                /** @description Whether to list active, reclaimable or finished jobs. */
                 state: components["schemas"]["JobListState"];
             };
             header?: never;
