@@ -283,6 +283,105 @@ pub enum UserJobCommand {
     WsProxy { job: Uuid, service: String },
     /// Alias for `context job set`
     SetActive { job: Uuid },
+    /// Change a job's label, lease or annotations
+    ///
+    /// All changes apply together or not at all. A lease change that would
+    /// leave less than five minutes asks for confirmation first. Exits with 3
+    /// if `--if-revision` names a revision the job is no longer at, and with 4
+    /// if the switchboard refuses the lease change (e.g. the job is stopping).
+    Update(JobUpdateArgs),
+    /// Change a job's lease; shorthand for `update --lease`/`--lease-until`
+    ///
+    /// A change that would leave less than five minutes asks for confirmation
+    /// first. Exits with 3 if `--if-revision` names a revision the job is no
+    /// longer at, and with 4 if the switchboard refuses the lease change.
+    #[command(group = clap::ArgGroup::new("new_lease").required(true))]
+    Lease {
+        /// Target job (UUID or `^<hex>` short id); defaults to the active job
+        #[arg(long, value_name = "JOB")]
+        job: Option<String>,
+        /// The lease's length from the job's start (`30m`), or a change to it
+        /// (`+30m`, `-10m`)
+        #[arg(
+            value_name = "LENGTH",
+            group = "new_lease",
+            value_parser = parse_lease_length,
+            allow_hyphen_values = true
+        )]
+        length: Option<LeaseSpec>,
+        /// When the lease ends instead: a time (RFC 3339), or relative to now
+        /// (`now`, `now+20m`, `now-5m`)
+        #[arg(long, value_name = "TIME", group = "new_lease", value_parser = parse_lease_until)]
+        until: Option<LeaseUntil>,
+        /// Only apply if the job is still at this revision
+        #[arg(long, value_name = "REVISION")]
+        if_revision: Option<i64>,
+        /// Don't ask before leaving the lease (almost) expired
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+}
+
+#[cfg(feature = "user")]
+#[derive(Args, Debug)]
+pub struct JobUpdateArgs {
+    /// Target job (UUID or `^<hex>` short id); defaults to the active job
+    #[arg(long, value_name = "JOB")]
+    pub job: Option<String>,
+    /// Set the display label
+    #[arg(long, value_name = "LABEL", conflicts_with = "clear_label")]
+    pub label: Option<String>,
+    /// Remove the display label
+    #[arg(long)]
+    pub clear_label: bool,
+    /// The lease's length from the job's start (`30m`), or a change to it
+    /// (`+30m`, `-10m`)
+    #[arg(
+        long,
+        value_name = "LENGTH",
+        conflicts_with = "lease_until",
+        value_parser = parse_lease_length,
+        allow_hyphen_values = true
+    )]
+    pub lease: Option<LeaseSpec>,
+    /// When the lease ends: a time (RFC 3339), or relative to now (`now`,
+    /// `now+20m`, `now-5m`)
+    #[arg(long, value_name = "TIME", value_parser = parse_lease_until)]
+    pub lease_until: Option<LeaseUntil>,
+    /// What happens when the lease expires
+    #[arg(long, value_enum, value_name = "ACTION")]
+    pub expiry_action: Option<ExpiryAction>,
+    /// Set an annotation, repeatable
+    #[arg(long = "annotation", value_name = "KEY=VALUE", value_parser = parse_param)]
+    pub annotations: Vec<(String, String)>,
+    /// Remove an annotation, repeatable
+    #[arg(long = "remove-annotation", value_name = "KEY")]
+    pub remove_annotations: Vec<String>,
+    /// Only apply if the job is still at this revision
+    #[arg(long, value_name = "REVISION")]
+    pub if_revision: Option<i64>,
+    /// Don't ask before leaving the lease (almost) expired
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+}
+
+/// What happens when a job's lease expires.
+#[cfg(feature = "user")]
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpiryAction {
+    /// The job is stopped
+    Terminate,
+    /// The job runs on, but its host may be reclaimed for another job
+    Preempt,
+}
+
+/// When a lease should end, as given on the command line. One relative to now
+/// is resolved against this machine's clock when the request is sent.
+#[cfg(feature = "user")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaseUntil {
+    At(chrono::DateTime<chrono::Utc>),
+    FromNow(chrono::TimeDelta),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -362,9 +461,140 @@ pub fn parse_duration(s: &str) -> Result<chrono::TimeDelta, String> {
     }
 }
 
+/// A lease length or a change to it: `30m`, `+30m`, `-10m`.
+#[cfg(feature = "user")]
+fn parse_lease_length(s: &str) -> Result<LeaseSpec, String> {
+    let end_time = || {
+        format!("{s:?} is an end time; pass it with `--lease-until` (`--until` for `job lease`)")
+    };
+    if s.starts_with("now") {
+        return Err(end_time());
+    }
+    match s.parse()? {
+        LeaseSpec::ExpiresAt(_) => Err(end_time()),
+        spec => Ok(spec),
+    }
+}
+
+/// A lease end: an RFC 3339 time, `now`, `now+DURATION` or `now-DURATION`.
+#[cfg(feature = "user")]
+fn parse_lease_until(s: &str) -> Result<LeaseUntil, String> {
+    if let Some(offset) = s.strip_prefix("now") {
+        if offset.is_empty() {
+            return Ok(LeaseUntil::FromNow(chrono::TimeDelta::zero()));
+        }
+        return match offset.parse() {
+            Ok(LeaseSpec::Adjust(offset)) => Ok(LeaseUntil::FromNow(offset)),
+            _ => Err(format!(
+                "{s:?} is not of the form `now`, `now+DURATION` or `now-DURATION`"
+            )),
+        };
+    }
+    match s.parse() {
+        Ok(LeaseSpec::ExpiresAt(at)) => Ok(LeaseUntil::At(at)),
+        Ok(_) => Err(format!(
+            "{s:?} is a lease length; pass it with `--lease` (as `job lease {s}`), or \
+             write `now+{}` for an end relative to now",
+            s.trim_start_matches(['+', '-'])
+        )),
+        Err(_) => Err(format!(
+            "{s:?} is not an RFC 3339 time, `now`, `now+DURATION` or `now-DURATION`"
+        )),
+    }
+}
+
 #[cfg(feature = "user")]
 fn parse_param(s: &str) -> Result<(String, String), String> {
     s.split_once('=')
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .ok_or_else(|| format!("{s:?} is not of the form KEY=VALUE"))
+}
+
+#[cfg(all(test, feature = "user"))]
+mod tests {
+    use super::*;
+    use chrono::TimeDelta;
+
+    #[test]
+    fn lease_lengths_are_durations_or_changes_to_them() {
+        assert_eq!(
+            parse_lease_length("30m"),
+            Ok(LeaseSpec::Set(TimeDelta::minutes(30)))
+        );
+        assert_eq!(
+            parse_lease_length("+30m"),
+            Ok(LeaseSpec::Adjust(TimeDelta::minutes(30)))
+        );
+        assert_eq!(
+            parse_lease_length("-10m"),
+            Ok(LeaseSpec::Adjust(TimeDelta::minutes(-10)))
+        );
+        for end in ["2026-08-28T14:00:00Z", "now", "now+20m"] {
+            let err = parse_lease_length(end).unwrap_err();
+            assert!(err.contains("--lease-until"), "{end}: {err}");
+        }
+    }
+
+    #[test]
+    fn lease_ends_are_times_or_relative_to_now() {
+        assert!(matches!(
+            parse_lease_until("2026-08-28T14:00:00Z"),
+            Ok(LeaseUntil::At(_))
+        ));
+        assert_eq!(
+            parse_lease_until("now"),
+            Ok(LeaseUntil::FromNow(TimeDelta::zero()))
+        );
+        assert_eq!(
+            parse_lease_until("now+20m"),
+            Ok(LeaseUntil::FromNow(TimeDelta::minutes(20)))
+        );
+        assert_eq!(
+            parse_lease_until("now-5m"),
+            Ok(LeaseUntil::FromNow(TimeDelta::minutes(-5)))
+        );
+        let err = parse_lease_until("20m").unwrap_err();
+        assert!(err.contains("--lease") && err.contains("now+20m"), "{err}");
+        assert!(parse_lease_until("now20m").is_err());
+        assert!(parse_lease_until("nowish").is_err());
+        assert!(parse_lease_until("soon").is_err());
+    }
+
+    #[test]
+    fn job_commands_parse() {
+        Cli::try_parse_from(["tml", "job", "lease", "-10m", "--job", "x"]).unwrap();
+        Cli::try_parse_from(["tml", "job", "lease", "--until", "now+20m", "-y"]).unwrap();
+        assert!(Cli::try_parse_from(["tml", "job", "lease"]).is_err());
+        assert!(Cli::try_parse_from(["tml", "job", "lease", "30m", "--until", "now"]).is_err());
+        Cli::try_parse_from([
+            "tml",
+            "job",
+            "update",
+            "--lease-until",
+            "now+20m",
+            "--annotation",
+            "a.b=c=d",
+            "--remove-annotation",
+            "e",
+            "--if-revision",
+            "3",
+            "--yes",
+        ])
+        .unwrap();
+        assert!(
+            Cli::try_parse_from([
+                "tml",
+                "job",
+                "update",
+                "--lease",
+                "30m",
+                "--lease-until",
+                "now"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["tml", "job", "update", "--label", "x", "--clear-label"]).is_err()
+        );
+    }
 }

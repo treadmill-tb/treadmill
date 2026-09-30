@@ -62,6 +62,28 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+/// An error that exits `tml` with a status of its own, rather than 1, so that
+/// scripts can tell it apart from other failures.
+#[derive(Debug)]
+pub struct ExitError {
+    code: u8,
+    message: String,
+}
+
+impl ExitError {
+    pub fn new(code: u8, message: String) -> Self {
+        Self { code, message }
+    }
+}
+
+impl std::fmt::Display for ExitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ExitError {}
+
 fn fail(error: &anyhow::Error) -> std::process::ExitCode {
     if let Some(io) = error.downcast_ref::<std::io::Error>()
         && io.kind() == std::io::ErrorKind::Interrupted
@@ -71,7 +93,10 @@ fn fail(error: &anyhow::Error) -> std::process::ExitCode {
 
     let style = anstyle::AnsiColor::Red.on_default() | anstyle::Effects::BOLD;
     anstream::eprintln!("{style}error:{style:#} {error:#}");
-    std::process::ExitCode::FAILURE
+    match error.downcast_ref::<ExitError>() {
+        Some(exit) => std::process::ExitCode::from(exit.code),
+        None => std::process::ExitCode::FAILURE,
+    }
 }
 
 async fn run(args: Cli) -> Result<()> {
@@ -223,5 +248,20 @@ async fn user_job(ctx: &mut Ctx, command: &UserJobCommand) -> Result<()> {
         } => ssh::download(ctx, target, remote, local.as_deref()).await,
         UserJobCommand::SetActive { job } => context::set_active(ctx, *job),
         UserJobCommand::WsProxy { job, service } => wsproxy::run(ctx, *job, service, None).await,
+        UserJobCommand::Update(args) => job::update(ctx, args).await,
+        UserJobCommand::Lease {
+            job,
+            length,
+            until,
+            if_revision,
+            yes,
+        } => {
+            let lease = match (length, until) {
+                (Some(length), _) => *length,
+                (None, Some(until)) => job::resolve_lease_until(*until),
+                (None, None) => unreachable!("clap requires a LENGTH or --until"),
+            };
+            job::lease(ctx, job.as_deref(), lease, *if_revision, *yes).await
+        }
     }
 }

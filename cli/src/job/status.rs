@@ -56,6 +56,7 @@ async fn lines(ctx: &Ctx, client: &SwitchboardClient, job: &JobInfo) -> Vec<Line
                 "Download",
                 format!("{tml} job download{flag} <remote> [local]"),
             ),
+            ("Extend", format!("{tml} job lease{flag} +30m")),
             ("Stop", format!("{tml} job terminate{flag}")),
         ],
         JobState::Queued | JobState::Assigned | JobState::Initializing => vec![
