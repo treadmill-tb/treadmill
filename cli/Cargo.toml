@@ -28,6 +28,7 @@ user = [
   "dep:tokio-tungstenite",
   "dep:toml",
   "dep:xdg",
+  "tokio/process",
 ]
 daemon = [
   "dep:ed25519-dalek",

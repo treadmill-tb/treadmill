@@ -291,6 +291,8 @@ pub enum UserJobCommand {
         /// Job UUID or ^<hex> suffix
         job: JobRef,
     },
+    /// List the jobs visible to you
+    List(JobListArgs),
     /// Change a job's label, lease or annotations
     ///
     /// All changes apply together or not at all. A lease change that would
@@ -328,6 +330,49 @@ pub enum UserJobCommand {
         #[arg(short = 'y', long)]
         yes: bool,
     },
+}
+
+#[cfg(feature = "user")]
+#[derive(Args, Debug)]
+#[command(group = clap::ArgGroup::new("section").args(["active", "reclaimable", "finished"]))]
+pub struct JobListArgs {
+    /// Only jobs matching all these terms: `^<hex>` for an id suffix, anything
+    /// else for the label, image, host or owner name
+    #[arg(value_name = "TERMS")]
+    pub terms: Vec<String>,
+    /// Include jobs you own
+    #[arg(long)]
+    pub mine: bool,
+    /// Include jobs owned by one of your groups
+    #[arg(long)]
+    pub groups: bool,
+    /// Include jobs shared with you or your groups
+    #[arg(long)]
+    pub shared: bool,
+    /// Include every job (admins only)
+    #[arg(long)]
+    pub global: bool,
+    /// List only running jobs with a lease left
+    #[arg(long)]
+    pub active: bool,
+    /// List only running jobs whose host may be reclaimed for another job
+    #[arg(long)]
+    pub reclaimable: bool,
+    /// List finished jobs
+    #[arg(long)]
+    pub finished: bool,
+    /// Jobs per page; without a pager, the most jobs listed per section
+    #[arg(long, value_name = "N", default_value_t = 50)]
+    pub limit: usize,
+    /// Continue a previous listing from its cursor
+    #[arg(long, value_name = "CURSOR", requires = "section")]
+    pub cursor: Option<String>,
+    /// Refresh the list until quit
+    #[arg(long, conflicts_with_all = ["finished", "cursor"])]
+    pub watch: bool,
+    /// Print only the first `--limit` jobs per section, without a pager
+    #[arg(long)]
+    pub no_pager: bool,
 }
 
 #[cfg(feature = "user")]
@@ -671,5 +716,6 @@ mod tests {
         assert!(
             Cli::try_parse_from(["tml", "job", "update", "--label", "x", "--clear-label"]).is_err()
         );
+        Cli::try_parse_from(["tml", "job", "list", "--mine", "--finished", "-o", "json"]).unwrap();
     }
 }

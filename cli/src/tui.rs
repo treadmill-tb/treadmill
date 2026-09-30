@@ -168,6 +168,10 @@ pub fn width() -> io::Result<usize> {
     Ok(usize::from(terminal::size()?.0).saturating_sub(1))
 }
 
+pub fn terminal_height() -> io::Result<usize> {
+    Ok(usize::from(terminal::size()?.1))
+}
+
 pub fn fit(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
         format!("{text:<width$}")

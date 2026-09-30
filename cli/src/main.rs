@@ -14,6 +14,8 @@ mod event;
 #[cfg(feature = "user")]
 mod job;
 #[cfg(feature = "user")]
+mod listing;
+#[cfg(feature = "user")]
 mod login;
 #[cfg(feature = "user")]
 mod ssh;
@@ -278,6 +280,7 @@ async fn user_job(ctx: &mut Ctx, command: &UserJobCommand) -> Result<()> {
         UserJobCommand::WsProxy { job, service } => {
             wsproxy::run(ctx, ctx.resolve_job(job.as_ref()).await?, service, None).await
         }
+        UserJobCommand::List(args) => job::list::run(ctx, args).await,
         UserJobCommand::Update(args) => job::update(ctx, args).await,
         UserJobCommand::Lease {
             job,

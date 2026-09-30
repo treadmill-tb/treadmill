@@ -19,6 +19,7 @@ use crate::event::Event;
 use crate::tui;
 
 mod create_ui;
+pub mod list;
 pub mod status;
 pub mod wait;
 
