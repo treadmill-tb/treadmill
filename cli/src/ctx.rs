@@ -6,7 +6,8 @@ use uuid::Uuid;
 
 use crate::cli::{ColorChoice, Globals, OutputFormat};
 use crate::config::{self, Config, DEFAULT_PROFILE};
-use crate::display::short;
+use crate::display::{program, short};
+use crate::event::{self, Event};
 use crate::state::State;
 
 pub struct Ctx {
@@ -72,11 +73,12 @@ impl Ctx {
     pub fn authenticated_client(&self) -> Result<SwitchboardClient> {
         if self.config.token.is_none() && !self.state.token_valid() {
             if self.state.token.is_some() {
-                bail!("the stored session has expired; run `tml login`");
+                bail!("the stored session has expired; run `{} login`", program());
             }
             bail!(
-                "not logged in to {}; run `tml login`",
-                self.config.switchboard
+                "not logged in to {}; run `{} login`",
+                self.config.switchboard,
+                program()
             );
         }
         self.client()
@@ -101,6 +103,18 @@ impl Ctx {
         self.output == OutputFormat::Human
     }
 
+    pub fn interactive(&self) -> bool {
+        self.human() && !self.quiet && crate::tui::interactive()
+    }
+
+    pub fn job_flag(&self, job_id: Uuid) -> String {
+        if self.state.active_job == Some(job_id) {
+            String::new()
+        } else {
+            format!(" --job {job_id}")
+        }
+    }
+
     /// Resolve a `[JOB]` reference: an explicit UUID, a `^<hex>` id suffix
     /// matching exactly one job, `@active`, or — when omitted — the active
     /// job.
@@ -114,7 +128,7 @@ impl Ctx {
                 let job = self
                     .state
                     .active_job
-                    .context("no job given and no active job set; pass --job or run `tml context job set <UUID>`")?;
+                    .with_context(|| format!("no job given and no active job set; pass --job or run `{} context job set <UUID>`", program()))?;
                 self.note(&format!("Using active job {}", short(job)));
                 Ok(job)
             }
@@ -181,7 +195,12 @@ impl Ctx {
         anstream::eprintln!("{message}");
     }
 
+    pub fn event(&self, event: Event) {
+        event::emit(self.output, event);
+    }
+
     pub fn warn(&self, message: &str) {
+        self.event(Event::Warning { message });
         let style = anstyle::AnsiColor::Yellow.on_default() | anstyle::Effects::BOLD;
         anstream::eprintln!("{style}warning:{style:#} {message}");
     }

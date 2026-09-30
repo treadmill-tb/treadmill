@@ -10,7 +10,11 @@ mod daemon;
 #[cfg(feature = "user")]
 mod display;
 #[cfg(feature = "user")]
+mod event;
+#[cfg(feature = "user")]
 mod host;
+#[cfg(feature = "user")]
+mod job;
 #[cfg(feature = "user")]
 mod login;
 #[cfg(feature = "user")]
@@ -19,6 +23,8 @@ mod ssh;
 mod sshconfig;
 #[cfg(feature = "user")]
 mod state;
+#[cfg(feature = "user")]
+mod tui;
 #[cfg(feature = "user")]
 mod wsproxy;
 
@@ -185,9 +191,23 @@ fn require_streaming(ctx: &Ctx, streams: bool) {
 async fn user_job(ctx: &mut Ctx, command: &UserJobCommand) -> Result<()> {
     // The SSH family hands the terminal to another program, so it has no
     // structured rendering to offer.
-    require_streaming(ctx, !matches!(command, UserJobCommand::SetActive { .. }));
+    require_streaming(
+        ctx,
+        matches!(
+            command,
+            UserJobCommand::Ssh { .. }
+                | UserJobCommand::Exec { .. }
+                | UserJobCommand::Sftp { .. }
+                | UserJobCommand::Upload { .. }
+                | UserJobCommand::Download { .. }
+                | UserJobCommand::WsProxy { .. }
+        ),
+    );
 
     match command {
+        UserJobCommand::Create(args) => job::create(ctx, args).await,
+        UserJobCommand::Wait { job } => job::wait::run(ctx, job.as_deref()).await,
+        UserJobCommand::Status { job } => job::status::run(ctx, job.as_deref()).await,
         UserJobCommand::Ssh { target, args } => ssh::ssh(ctx, target, args).await,
         UserJobCommand::Exec { target, command } => ssh::exec_command(ctx, target, command).await,
         UserJobCommand::Sftp { target, args } => ssh::sftp(ctx, target, args).await,
