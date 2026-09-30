@@ -2,7 +2,8 @@ use anyhow::Result;
 use uuid::Uuid;
 
 use crate::cli::{ContextCommand, ContextJobCommand};
-use crate::ctx::{Ctx, short};
+use crate::ctx::Ctx;
+use crate::display::short;
 
 pub async fn run(ctx: &mut Ctx, command: &ContextCommand) -> Result<()> {
     match command {

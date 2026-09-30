@@ -8,7 +8,8 @@ use treadmill_rs::api::switchboard::jobs::{JobServiceCredentials, JobServiceEndp
 use uuid::Uuid;
 
 use crate::cli::JobTarget;
-use crate::ctx::{Ctx, short};
+use crate::ctx::Ctx;
+use crate::display::short;
 use crate::state::CachedJobServiceToken;
 
 pub const SSHWS_PROTOCOL: &str = "sshws";

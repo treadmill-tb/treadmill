@@ -99,6 +99,12 @@ pub enum Command {
         #[command(subcommand)]
         command: JobCommand,
     },
+    /// Inspect hosts
+    #[cfg(feature = "user")]
+    Host {
+        #[command(subcommand)]
+        command: HostCommand,
+    },
     /// Integrate Treadmill with the system SSH client
     #[cfg(feature = "user")]
     Ssh {
@@ -109,6 +115,18 @@ pub enum Command {
     /// serving D-Bus
     #[cfg(feature = "daemon")]
     Daemon(crate::daemon::DaemonArgs),
+}
+
+#[cfg(feature = "user")]
+#[derive(Subcommand, Debug)]
+pub enum HostCommand {
+    /// List the hosts visible to you
+    List,
+    /// Show a host, including its full spec
+    Show {
+        /// Host UUID or name
+        host: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]

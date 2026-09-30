@@ -8,6 +8,10 @@ mod ctx;
 #[cfg(feature = "daemon")]
 mod daemon;
 #[cfg(feature = "user")]
+mod display;
+#[cfg(feature = "user")]
+mod host;
+#[cfg(feature = "user")]
 mod login;
 #[cfg(feature = "user")]
 mod ssh;
@@ -89,6 +93,8 @@ async fn run(args: Cli) -> Result<()> {
         Command::Job {
             command: JobCommand::Daemon(command),
         } => daemon_job(&args.globals, command).await,
+        #[cfg(feature = "user")]
+        Command::Host { command } => host::run(&Ctx::load(&args.globals)?, &command).await,
         #[cfg(feature = "user")]
         Command::Ssh { command } => {
             let mut ctx = Ctx::load(&args.globals)?;

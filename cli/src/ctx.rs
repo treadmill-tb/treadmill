@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::cli::{ColorChoice, Globals, OutputFormat};
 use crate::config::{self, Config, DEFAULT_PROFILE};
+use crate::display::short;
 use crate::state::State;
 
 pub struct Ctx {
@@ -184,12 +185,6 @@ impl Ctx {
         let style = anstyle::AnsiColor::Yellow.on_default() | anstyle::Effects::BOLD;
         anstream::eprintln!("{style}warning:{style:#} {message}");
     }
-}
-
-/// Short display form of a UUID: `^` plus its final eight hexadecimal digits.
-pub fn short(id: Uuid) -> String {
-    let text = id.simple().to_string();
-    format!("^{}", &text[text.len() - 8..])
 }
 
 pub fn set_color(choice: Option<ColorChoice>) {
