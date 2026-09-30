@@ -7,9 +7,9 @@ mod context;
 mod ctx;
 #[cfg(feature = "daemon")]
 mod daemon;
-#[cfg(feature = "user")]
+#[cfg_attr(not(feature = "user"), allow(dead_code))]
 mod display;
-#[cfg(feature = "user")]
+#[cfg_attr(not(feature = "user"), allow(dead_code))]
 mod event;
 #[cfg(feature = "user")]
 mod host;
@@ -23,12 +23,15 @@ mod ssh;
 mod sshconfig;
 #[cfg(feature = "user")]
 mod state;
-#[cfg(feature = "user")]
+mod terminate;
+#[cfg_attr(not(feature = "user"), allow(dead_code))]
 mod tui;
 #[cfg(feature = "user")]
 mod wsproxy;
 
-use anyhow::{Context as _, Result};
+#[cfg(feature = "daemon")]
+use anyhow::Context as _;
+use anyhow::Result;
 use clap::Parser;
 use treadmill_rs::api::switchboard::client::SwitchboardClient;
 use uuid::Uuid;
@@ -114,8 +117,8 @@ async fn run(args: Cli) -> Result<()> {
             context::run(&mut Ctx::load(&args.globals)?, &command).await
         }
         Command::Job {
-            command: JobCommand::Terminate { job },
-        } => terminate(&args.globals, job.as_deref()).await,
+            command: JobCommand::Terminate { job, yes },
+        } => terminate(&args.globals, job.as_deref(), yes).await,
         #[cfg(feature = "user")]
         Command::Job {
             command: JobCommand::User(command),
@@ -190,14 +193,9 @@ async fn job_client(globals: &Globals, job: Option<&str>) -> Result<(Switchboard
     anyhow::bail!("no tml daemon found on D-Bus")
 }
 
-async fn terminate(globals: &Globals, job: Option<&str>) -> Result<()> {
+async fn terminate(globals: &Globals, job: Option<&str>, yes: bool) -> Result<()> {
     let (client, job_id) = job_client(globals, job).await?;
-    client
-        .terminate_job(job_id)
-        .await
-        .with_context(|| format!("requesting termination of job {job_id}"))?;
-    anstream::eprintln!("Requested termination of job {job_id}");
-    Ok(())
+    terminate::run(globals, &client, job_id, yes).await
 }
 
 #[cfg(feature = "user")]

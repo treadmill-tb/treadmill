@@ -31,7 +31,10 @@ user = [
   "tokio/process",
 ]
 daemon = [
+  "dep:chrono",
+  "dep:crossterm",
   "dep:ed25519-dalek",
+  "dep:futures-util",
   "dep:log",
   "dep:sd-notify",
   "dep:simplelog",

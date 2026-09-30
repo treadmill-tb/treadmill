@@ -188,6 +188,9 @@ pub enum JobCommand {
         /// Target job (UUID or `^<hex>` short id); defaults to the active job, or inside a job to that job
         #[arg(long, value_name = "JOB")]
         job: Option<String>,
+        /// Terminate without asking for confirmation
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
     #[cfg(feature = "user")]
     #[command(flatten)]
