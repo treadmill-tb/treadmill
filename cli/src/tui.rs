@@ -469,6 +469,11 @@ pub async fn input(
     }
 }
 
+pub async fn ask(title: &str) -> anyhow::Result<bool> {
+    let mut term = Terminal::open()?;
+    Ok(confirm(&mut term, title, false).await? == Some(true))
+}
+
 pub async fn confirm(
     term: &mut Terminal,
     title: &str,
