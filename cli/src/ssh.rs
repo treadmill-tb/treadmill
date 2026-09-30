@@ -224,7 +224,7 @@ impl Connection {
 
 async fn connect(ctx: &mut Ctx, target: &JobTarget) -> Result<Connection> {
     let client = ctx.authenticated_client()?;
-    let job_id = ctx.resolve_job(target.job.as_deref())?;
+    let job_id = ctx.resolve_job(&client, target.job.as_deref()).await?;
 
     let service = match &target.service {
         Some(service) => service.clone(),

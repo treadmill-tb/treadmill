@@ -145,7 +145,9 @@ async fn job_client(globals: &Globals, job: Option<&str>) -> Result<(Switchboard
     #[cfg(feature = "user")]
     {
         let ctx = Ctx::load(globals)?;
-        Ok((ctx.authenticated_client()?, ctx.resolve_job(job)?))
+        let client = ctx.authenticated_client()?;
+        let job_id = ctx.resolve_job(&client, job).await?;
+        Ok((client, job_id))
     }
     #[cfg(not(feature = "user"))]
     anyhow::bail!("no tml daemon found on D-Bus")

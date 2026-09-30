@@ -165,7 +165,7 @@ pub enum ContextJobCommand {
 pub enum JobCommand {
     /// Request a job to be terminated
     Terminate {
-        /// Target job; defaults to the active job, or inside a job to that job
+        /// Target job (UUID or `^<hex>` short id); defaults to the active job, or inside a job to that job
         #[arg(long, value_name = "JOB")]
         job: Option<String>,
     },
@@ -249,7 +249,7 @@ pub enum UserJobCommand {
 
 #[derive(Args, Debug, Clone)]
 pub struct JobTarget {
-    /// Target job; defaults to the active job
+    /// Target job (UUID or `^<hex>` short id); defaults to the active job
     #[arg(long, value_name = "JOB")]
     pub job: Option<String>,
 

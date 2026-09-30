@@ -1,6 +1,7 @@
 use anyhow::{Context as _, Result, bail};
 use std::path::PathBuf;
 use treadmill_rs::api::switchboard::client::SwitchboardClient;
+use treadmill_rs::api::switchboard::jobs::{JobListQuery, JobListState};
 use uuid::Uuid;
 
 use crate::cli::{ColorChoice, Globals, OutputFormat};
@@ -99,9 +100,14 @@ impl Ctx {
         self.output == OutputFormat::Human
     }
 
-    /// Resolve a `[JOB]` reference: an explicit UUID, `@active`, or — when
-    /// omitted — the active job. Never picks a job by any other means.
-    pub fn resolve_job(&self, reference: Option<&str>) -> Result<Uuid> {
+    /// Resolve a `[JOB]` reference: an explicit UUID, a `^<hex>` id suffix
+    /// matching exactly one job, `@active`, or — when omitted — the active
+    /// job.
+    pub async fn resolve_job(
+        &self,
+        client: &SwitchboardClient,
+        reference: Option<&str>,
+    ) -> Result<Uuid> {
         match reference {
             None | Some("@active") => {
                 let job = self
@@ -111,9 +117,49 @@ impl Ctx {
                 self.note(&format!("Using active job {}", short(job)));
                 Ok(job)
             }
-            Some(reference) => Uuid::parse_str(reference).with_context(|| {
-                format!("{reference:?} is not a job UUID (shortened ids are display-only)")
-            }),
+            Some(reference) if reference.starts_with('^') => {
+                self.resolve_short_job(client, reference).await
+            }
+            Some(reference) => Uuid::parse_str(reference)
+                .with_context(|| format!("{reference:?} is not a job UUID or a `^<hex>` short id")),
+        }
+    }
+
+    async fn resolve_short_job(&self, client: &SwitchboardClient, reference: &str) -> Result<Uuid> {
+        let hex = &reference[1..];
+        if hex.is_empty() || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            bail!("{reference:?} is not a `^<hex>` short id");
+        }
+        let mut matches = Vec::new();
+        for state in [
+            JobListState::Active,
+            JobListState::Reclaimable,
+            JobListState::Finished,
+        ] {
+            let query = JobListQuery {
+                include: "all".to_string(),
+                state,
+                q: Some(reference.to_lowercase()),
+                limit: Some(2),
+                cursor: None,
+            };
+            let page = client
+                .list_jobs(&query)
+                .await
+                .with_context(|| format!("looking up job {reference}"))?;
+            matches.extend(page.jobs.into_iter().map(|job| job.job_id));
+        }
+        match matches.as_slice() {
+            [job_id] => Ok(*job_id),
+            [] => bail!("no job matches {reference}"),
+            _ => bail!(
+                "{reference} matches several jobs ({}); give more digits",
+                matches
+                    .iter()
+                    .map(|id| short(*id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         }
     }
 
