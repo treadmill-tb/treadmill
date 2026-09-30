@@ -4,6 +4,7 @@ use uuid::Uuid;
 use crate::cli::{ContextCommand, ContextJobCommand};
 use crate::ctx::Ctx;
 use crate::display::short;
+use crate::state::State;
 
 pub async fn run(ctx: &mut Ctx, command: &ContextCommand) -> Result<()> {
     match command {
@@ -16,8 +17,7 @@ pub async fn run(ctx: &mut Ctx, command: &ContextCommand) -> Result<()> {
 }
 
 pub fn set_active(ctx: &mut Ctx, job: Uuid) -> Result<()> {
-    ctx.state.active_job = Some(job);
-    ctx.state.store(&ctx.state_path)?;
+    ctx.state = State::update(&ctx.state_path, |state| state.active_job = Some(job))?;
 
     if ctx.human() {
         anstream::println!("Active job: {}  ({job})", short(job));
@@ -28,8 +28,7 @@ pub fn set_active(ctx: &mut Ctx, job: Uuid) -> Result<()> {
 }
 
 fn clear(ctx: &mut Ctx) -> Result<()> {
-    ctx.state.active_job = None;
-    ctx.state.store(&ctx.state_path)?;
+    ctx.state = State::update(&ctx.state_path, |state| state.active_job = None)?;
     anstream::println!("Cleared the active job");
     Ok(())
 }

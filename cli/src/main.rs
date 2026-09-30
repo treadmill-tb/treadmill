@@ -15,6 +15,7 @@ mod event;
 mod host;
 #[cfg(feature = "user")]
 mod job;
+mod locked_file;
 #[cfg(feature = "user")]
 mod login;
 #[cfg(feature = "user")]

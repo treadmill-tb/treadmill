@@ -8,6 +8,7 @@ use treadmill_rs::util::Secret;
 
 use crate::cli::LoginArgs;
 use crate::ctx::Ctx;
+use crate::state::State;
 
 pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
     let client = ctx.anonymous_client()?;
@@ -52,9 +53,10 @@ pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
             .context("completing the staged login")?
         {
             LoginCompleteOutcome::Complete(response) => {
-                ctx.state.token = Some(response.token.encode_for_http());
-                ctx.state.expires_at = Some(response.expires_at);
-                ctx.state.store(&ctx.state_path)?;
+                ctx.state = State::update(&ctx.state_path, |state| {
+                    state.token = Some(response.token.encode_for_http());
+                    state.expires_at = Some(response.expires_at);
+                })?;
 
                 let whoami = ctx.client()?.whoami().await?;
                 anstream::println!("Logged in as {}", whoami.name);
@@ -82,9 +84,10 @@ pub async fn logout(ctx: &mut Ctx) -> Result<()> {
         )),
     }
 
-    ctx.state.token = None;
-    ctx.state.expires_at = None;
-    ctx.state.store(&ctx.state_path)?;
+    ctx.state = State::update(&ctx.state_path, |state| {
+        state.token = None;
+        state.expires_at = None;
+    })?;
     anstream::println!("Removed the stored credentials");
     Ok(())
 }

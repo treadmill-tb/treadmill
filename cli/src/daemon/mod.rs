@@ -12,6 +12,8 @@ use treadmill_rs::api::switchboard::client::{ClientError, SwitchboardClient};
 use treadmill_rs::api::switchboard::jobs::{JobEnvironment, JobGatewayEndpoint, JobParameter};
 use uuid::Uuid;
 
+use crate::locked_file;
+
 mod service_proxy;
 
 use service_proxy::{ServiceDeclaration, ServiceProxy, service_name_valid};
@@ -148,16 +150,13 @@ async fn fetch_environment(credentials: &Credentials) -> Result<JobEnvironment> 
     }
 }
 
-async fn write_file(dir: &Path, name: &str, contents: impl AsRef<[u8]>) -> Result<()> {
+async fn write_file(dir: &Path, name: &str, contents: impl Into<String>) -> Result<()> {
     let path = dir.join(name);
-    let tmp_path = dir.join(format!(".{name}.tmp"));
     info!("Writing {path:?}");
-    tokio::fs::write(&tmp_path, contents)
+    let contents = contents.into();
+    tokio::task::spawn_blocking(move || locked_file::replace(&path, 0o666, &contents))
         .await
-        .with_context(|| format!("Writing {tmp_path:?}"))?;
-    tokio::fs::rename(&tmp_path, &path)
-        .await
-        .with_context(|| format!("Renaming {tmp_path:?} to {path:?}"))
+        .context("Joining the file writer")?
 }
 
 async fn write_parameters(dir: &Path, parameters: &HashMap<String, JobParameter>) -> Result<()> {
@@ -215,7 +214,7 @@ impl DbusDaemon {
         }
         if let Some(host_spec) = &environment.host_spec {
             let document =
-                serde_json::to_vec_pretty(host_spec).context("Serializing the host spec")?;
+                serde_json::to_string_pretty(host_spec).context("Serializing the host spec")?;
             write_file(&args.job_info_dir, "host-spec.json", document).await?;
         }
         write_parameters(

@@ -3,9 +3,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use treadmill_rs::api::switchboard::jobs::JobServiceEndpoint;
 use uuid::Uuid;
+
+use crate::locked_file;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct State {
@@ -37,18 +39,21 @@ impl State {
         }
     }
 
-    /// Write via a sibling temporary file so an interrupted write cannot leave
-    /// a half-written credential behind, and so the `0600` mode is in place
-    /// before any secret reaches the filesystem.
-    pub fn store(&self, path: &Path) -> Result<()> {
-        let parent = path.parent().context("state path has no parent")?;
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-
-        let tmp: PathBuf = path.with_extension("json.tmp");
-        let contents = serde_json::to_vec_pretty(self)?;
-        write_private(&tmp, &contents).with_context(|| format!("writing {}", tmp.display()))?;
-        fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
-        Ok(())
+    /// Apply `change` to the state stored at `path`, and return the state as
+    /// stored: as one atomic step, which concurrent `tml` invocations take in
+    /// turn, each changing the state the one before it stored (see
+    /// [`locked_file::update`]). The file is `0600` before any secret reaches
+    /// it.
+    pub fn update(path: &Path, change: impl FnOnce(&mut State)) -> Result<State> {
+        locked_file::update(path, 0o600, |contents| {
+            let mut state: State = contents
+                .as_deref()
+                .and_then(|contents| serde_json::from_str(contents).ok())
+                .unwrap_or_default();
+            change(&mut state);
+            *contents = Some(serde_json::to_string_pretty(&state)?);
+            Ok(state)
+        })
     }
 
     pub fn token_valid(&self) -> bool {
@@ -73,35 +78,20 @@ impl State {
         service: &str,
         failed_token: &str,
     ) -> Result<()> {
-        let mut state = Self::load(path)?;
-        if state
-            .job_service_tokens
-            .get(&job_id)
-            .and_then(|services| services.get(service))
-            .is_some_and(|cached| cached.token == failed_token)
-        {
-            if let Some(services) = state.job_service_tokens.get_mut(&job_id) {
+        Self::update(path, |state| {
+            if state
+                .job_service_tokens
+                .get(&job_id)
+                .and_then(|services| services.get(service))
+                .is_some_and(|cached| cached.token == failed_token)
+                && let Some(services) = state.job_service_tokens.get_mut(&job_id)
+            {
                 services.remove(service);
                 if services.is_empty() {
                     state.job_service_tokens.remove(&job_id);
                 }
             }
-            state.store(path)?;
-        }
+        })?;
         Ok(())
     }
-}
-
-fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(contents)?;
-    file.sync_all()
 }
