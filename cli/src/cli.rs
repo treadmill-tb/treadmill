@@ -222,6 +222,9 @@ pub enum ExitOutcome {
 #[derive(Subcommand, Debug)]
 pub enum UserJobCommand {
     /// Enqueue a new job
+    ///
+    /// Without `--image` or `--resume`, asks for the missing options in a
+    /// terminal.
     Create(JobCreateArgs),
     /// Show a job's state, host, lease and services
     #[command(visible_alias = "show")]
@@ -345,6 +348,10 @@ pub struct JobCreateArgs {
     /// Leave the active job unchanged
     #[arg(long)]
     pub no_set_active: bool,
+
+    /// Never ask for missing options
+    #[arg(long)]
+    pub non_interactive: bool,
 }
 
 #[cfg(feature = "user")]

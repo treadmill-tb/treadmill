@@ -15,13 +15,19 @@ use crate::ctx::Ctx;
 use crate::display::{HostState, short};
 use crate::event::Event;
 
+mod create_ui;
 pub mod status;
 pub mod wait;
 
 pub async fn create(ctx: &mut Ctx, args: &JobCreateArgs) -> Result<()> {
     let client = ctx.authenticated_client()?;
 
-    let interactive = ctx.interactive();
+    let interactive = !args.non_interactive && ctx.interactive();
+    let args = if args.image.is_none() && args.resume.is_none() && interactive {
+        create_ui::run(ctx, &client, args).await?
+    } else {
+        args.clone()
+    };
 
     let init_spec = match (&args.resume, &args.image) {
         (Some(job_id), _) => JobInitSpec::Resume { job_id: *job_id },
@@ -30,6 +36,10 @@ pub async fn create(ctx: &mut Ctx, args: &JobCreateArgs) -> Result<()> {
             generation: None,
         },
         (None, None) => bail!("missing `--image` or `--resume`"),
+    };
+    let set_id = match init_spec {
+        JobInitSpec::ImageSet { set_id, .. } => Some(set_id),
+        _ => None,
     };
 
     let request = JobRequest {
@@ -60,6 +70,9 @@ pub async fn create(ctx: &mut Ctx, args: &JobCreateArgs) -> Result<()> {
         .context("enqueueing the job")?;
     let job_id = enqueued.job_id;
 
+    if set_id.is_some() {
+        ctx.state.last_image_set = set_id;
+    }
     if !args.no_set_active {
         ctx.state.active_job = Some(job_id);
     }

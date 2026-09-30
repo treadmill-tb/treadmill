@@ -16,6 +16,8 @@ pub struct State {
     #[serde(default)]
     pub active_job: Option<Uuid>,
     #[serde(default)]
+    pub last_image_set: Option<Uuid>,
+    #[serde(default)]
     pub job_service_tokens: BTreeMap<Uuid, BTreeMap<String, CachedJobServiceToken>>,
 }
 
