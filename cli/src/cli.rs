@@ -18,6 +18,7 @@ pub struct Cli {
 }
 
 #[derive(Args, Debug, Clone)]
+#[command(next_help_heading = "Global Options")]
 pub struct Globals {
     /// Switchboard API URL
     #[arg(long, value_name = "URL", global = true)]
