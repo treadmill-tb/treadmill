@@ -43,6 +43,9 @@ pub enum Event<'a> {
         termination_reason: Option<TerminationReason>,
         job_error: Option<&'a str>,
     },
+    TerminationRequested {
+        job_id: Uuid,
+    },
     Job {
         job: &'a JobInfo,
     },

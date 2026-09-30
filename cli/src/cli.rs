@@ -207,6 +207,9 @@ pub enum JobCommand {
         /// Target job; defaults to the active job, or inside a job to that job
         #[arg(long, value_name = "JOB")]
         job: Option<JobRef>,
+        /// Terminate without asking for confirmation
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
     #[cfg(feature = "user")]
     #[command(flatten)]
