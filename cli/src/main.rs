@@ -248,6 +248,7 @@ async fn user_job(ctx: &mut Ctx, command: &UserJobCommand) -> Result<()> {
         } => ssh::download(ctx, target, remote, local.as_deref()).await,
         UserJobCommand::SetActive { job } => context::set_active(ctx, *job),
         UserJobCommand::WsProxy { job, service } => wsproxy::run(ctx, *job, service, None).await,
+        UserJobCommand::List(args) => job::list::run(ctx, args).await,
         UserJobCommand::Update(args) => job::update(ctx, args).await,
         UserJobCommand::Lease {
             job,

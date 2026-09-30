@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
-use treadmill_rs::api::switchboard::hosts::HostRequirementsReport;
-use treadmill_rs::api::switchboard::jobs::{JobInfo, JobInitializingStage};
+use treadmill_rs::api::switchboard::hosts::{HostLeaseState, HostRequirementsReport};
+use treadmill_rs::api::switchboard::jobs::{
+    JobInfo, JobInitializingStage, JobListState, JobSummary,
+};
 use treadmill_rs::api::switchboard::{JobState, TerminationReason};
 use uuid::Uuid;
 
@@ -41,6 +43,16 @@ pub enum Event<'a> {
     },
     Job {
         job: &'a JobInfo,
+    },
+    #[serde(rename = "job")]
+    Listed {
+        lease_state: Option<HostLeaseState>,
+        job: &'a JobSummary,
+    },
+    Page {
+        state: JobListState,
+        count: usize,
+        next_cursor: Option<&'a str>,
     },
 }
 
