@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::cli::SshJob;
 use crate::ctx::Ctx;
 use crate::display::{SSHWS_PROTOCOL, short};
-use crate::state::CachedJobServiceToken;
+use crate::state::{CachedJobServiceToken, State};
 
 pub const PROGRAM: &str = "tml";
 /// Everything needed to launch a client against one job service.
@@ -386,12 +386,13 @@ pub(crate) async fn service_credentials(
         token: expose(&credentials),
         expires_at: credentials.expires_at,
     };
-    ctx.state
-        .job_service_tokens
-        .entry(job_id)
-        .or_default()
-        .insert(service.to_string(), cached.clone());
-    ctx.state.store(&ctx.state_path)?;
+    ctx.state = State::update(&ctx.state_path, |state| {
+        state
+            .job_service_tokens
+            .entry(job_id)
+            .or_default()
+            .insert(service.to_string(), cached.clone());
+    })?;
     Ok(cached)
 }
 

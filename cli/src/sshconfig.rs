@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::cli::SshSetupArgs;
 use crate::config;
 use crate::ctx::Ctx;
+use crate::locked_file;
 use crate::ssh::{PROGRAM, ssh_proxy_command};
 
 const BEGIN: &str = "# BEGIN tml profile ";
@@ -28,14 +29,20 @@ pub fn setup(ctx: &Ctx, args: &SshSetupArgs) -> Result<()> {
 
     check_path(ctx, &managed);
 
-    let contents = upsert(&read(&managed)?, &ctx.profile, &block(ctx, domains)?);
+    let block = block(ctx, domains)?;
+    private_dir(&managed)?;
+    let contents = locked_file::update(&managed, 0o600, |current| {
+        let contents = upsert(current.as_deref().unwrap_or(""), &ctx.profile, &block);
+        *current = Some(contents.clone());
+        Ok(contents)
+    })
+    .with_context(|| format!("writing {}", managed.display()))?;
     for pattern in overlapping(&contents, &ctx.profile, domains) {
         ctx.warn(&format!(
             "{pattern} is also claimed by another profile in {}; the first block wins",
             managed.display()
         ));
     }
-    replace(&managed, &contents).with_context(|| format!("writing {}", managed.display()))?;
     anstream::println!(
         "Wrote the SSH configuration for profile {:?} to {}.",
         ctx.profile,
@@ -218,24 +225,39 @@ fn included(contents: &str, managed: &Path) -> bool {
 }
 
 fn prepend(path: &Path, line: &str) -> Result<Option<PathBuf>> {
-    let existing = read(path)?;
-    let backup = match path.exists() {
-        true => {
-            let backup = backup_path(path);
-            fs::copy(path, &backup)
-                .with_context(|| format!("copying {} to {}", path.display(), backup.display()))?;
-            Some(backup)
+    private_dir(path)?;
+    locked_file::update(path, 0o600, |current| {
+        let backup = match current {
+            Some(_) => {
+                let backup = backup_path(path);
+                fs::copy(path, &backup).with_context(|| {
+                    format!("copying {} to {}", path.display(), backup.display())
+                })?;
+                Some(backup)
+            }
+            None => None,
+        };
+        let mut contents = format!("{line}\n");
+        if let Some(existing) = current.as_deref().filter(|existing| !existing.is_empty()) {
+            contents.push('\n');
+            contents.push_str(existing);
         }
-        false => None,
-    };
+        *current = Some(contents);
+        Ok(backup)
+    })
+    .with_context(|| format!("writing {}", path.display()))
+}
 
-    let mut contents = format!("{line}\n");
-    if !existing.is_empty() {
-        contents.push('\n');
-        contents.push_str(&existing);
-    }
-    replace(path, &contents).with_context(|| format!("writing {}", path.display()))?;
-    Ok(backup)
+/// Create the directory of `path`, unless it exists, readable only by the user.
+fn private_dir(path: &Path) -> Result<()> {
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    let parent = path.parent().context("path has no parent directory")?;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)
+        .with_context(|| format!("creating {}", parent.display()))
 }
 
 fn backup_path(path: &Path) -> PathBuf {
@@ -248,39 +270,6 @@ fn read(path: &Path) -> Result<String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
-}
-
-fn replace(path: &Path, contents: &str) -> Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::DirBuilderExt as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let parent = path.parent().context("path has no parent directory")?;
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(parent)
-        .with_context(|| format!("creating {}", parent.display()))?;
-
-    let mode = match fs::metadata(path) {
-        Ok(metadata) => metadata.permissions().mode(),
-        Err(_) => 0o600,
-    };
-
-    let tmp = path.with_extension("tml-tmp");
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(mode)
-        .open(&tmp)
-        .with_context(|| format!("creating {}", tmp.display()))?;
-    file.write_all(contents.as_bytes())?;
-    file.sync_all()?;
-    fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))?;
-    fs::rename(&tmp, path)?;
-    Ok(())
 }
 
 fn user_ssh_config() -> Result<PathBuf> {

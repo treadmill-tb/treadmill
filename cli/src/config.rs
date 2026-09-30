@@ -50,15 +50,15 @@ fn create(path: &Path, profile: &str) {
         "[{profile}]\nswitchboard = {DEFAULT_SWITCHBOARD:?}\nssh_domains = {}\n",
         toml_list(&DEFAULT_SSH_DOMAINS)
     );
-    let written = path
-        .parent()
-        .map(std::fs::create_dir_all)
-        .unwrap_or(Ok(()))
-        .and_then(|()| std::fs::write(path, contents));
+    // Unless another invocation created it first.
+    let written = crate::locked_file::update(path, 0o666, |current| {
+        current.get_or_insert(contents);
+        Ok(())
+    });
     if let Err(error) = written {
         let style = anstyle::AnsiColor::Yellow.on_default() | anstyle::Effects::BOLD;
         anstream::eprintln!(
-            "{style}warning:{style:#} creating {}: {error}",
+            "{style}warning:{style:#} creating {}: {error:#}",
             path.display()
         );
     }

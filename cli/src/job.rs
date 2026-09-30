@@ -16,6 +16,7 @@ use crate::cli::{ExpiryAction, JobCreateArgs, JobRef, JobUpdateArgs, LeaseUntil}
 use crate::ctx::Ctx;
 use crate::display::{HostState, describe_instant, human_duration, short};
 use crate::event::Event;
+use crate::state::State;
 use crate::tui;
 
 mod create_ui;
@@ -76,13 +77,14 @@ pub async fn create(ctx: &mut Ctx, args: &JobCreateArgs) -> Result<()> {
         .context("enqueueing the job")?;
     let job_id = enqueued.job_id;
 
-    if set_id.is_some() {
-        ctx.state.last_image_set = set_id;
-    }
-    if !args.no_set_active {
-        ctx.state.active_job = Some(job_id);
-    }
-    ctx.state.store(&ctx.state_path)?;
+    ctx.state = State::update(&ctx.state_path, |state| {
+        if set_id.is_some() {
+            state.last_image_set = set_id;
+        }
+        if !args.no_set_active {
+            state.active_job = Some(job_id);
+        }
+    })?;
 
     let ok = anstyle::AnsiColor::Green.on_default();
     let dim = anstyle::Style::new().dimmed();

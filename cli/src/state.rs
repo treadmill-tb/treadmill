@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use treadmill_rs::api::switchboard::jobs::JobServiceEndpoint;
 use uuid::Uuid;
 
+use crate::locked_file;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct State {
     #[serde(default)]
@@ -37,18 +39,38 @@ impl State {
         }
     }
 
-    /// Write via a sibling temporary file so an interrupted write cannot leave
-    /// a half-written credential behind, and so the `0600` mode is in place
-    /// before any secret reaches the filesystem.
-    pub fn store(&self, path: &Path) -> Result<()> {
-        let parent = path.parent().context("state path has no parent")?;
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-
-        let tmp: PathBuf = path.with_extension("json.tmp");
-        let contents = serde_json::to_vec_pretty(self)?;
-        write_private(&tmp, &contents).with_context(|| format!("writing {}", tmp.display()))?;
-        fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
-        Ok(())
+    /// Apply `change` to the state stored at `path`, and return the state as
+    /// stored: as one atomic step, which concurrent `tml` invocations take in
+    /// turn, each changing the state the one before it stored (see
+    /// [`locked_file::update`]). The file is `0600` before any secret reaches
+    /// it.
+    ///
+    /// A stored state that does not parse is changed as if it were empty, but
+    /// is first copied aside, so that what it held is not lost.
+    pub fn update(path: &Path, change: impl FnOnce(&mut State)) -> Result<State> {
+        locked_file::update(path, 0o600, |contents| {
+            let mut state = match contents.as_deref() {
+                None => State::default(),
+                Some(contents) => match serde_json::from_str(contents) {
+                    Ok(state) => state,
+                    Err(error) => {
+                        let backup = back_up(path, contents)?;
+                        let style =
+                            anstyle::AnsiColor::Yellow.on_default() | anstyle::Effects::BOLD;
+                        anstream::eprintln!(
+                            "{style}warning:{style:#} {} is not a valid state file ({error}); \
+                             replacing it, and keeping a copy at {}",
+                            path.display(),
+                            backup.display()
+                        );
+                        State::default()
+                    }
+                },
+            };
+            change(&mut state);
+            *contents = Some(serde_json::to_string_pretty(&state)?);
+            Ok(state)
+        })
     }
 
     pub fn token_valid(&self) -> bool {
@@ -73,35 +95,68 @@ impl State {
         service: &str,
         failed_token: &str,
     ) -> Result<()> {
-        let mut state = Self::load(path)?;
-        if state
-            .job_service_tokens
-            .get(&job_id)
-            .and_then(|services| services.get(service))
-            .is_some_and(|cached| cached.token == failed_token)
-        {
-            if let Some(services) = state.job_service_tokens.get_mut(&job_id) {
+        Self::update(path, |state| {
+            if state
+                .job_service_tokens
+                .get(&job_id)
+                .and_then(|services| services.get(service))
+                .is_some_and(|cached| cached.token == failed_token)
+                && let Some(services) = state.job_service_tokens.get_mut(&job_id)
+            {
                 services.remove(service);
                 if services.is_empty() {
                     state.job_service_tokens.remove(&job_id);
                 }
             }
-            state.store(path)?;
-        }
+        })?;
         Ok(())
     }
 }
 
-fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+/// Copy unreadable `contents` of the state file at `path` to a new file beside
+/// it, readable only by the user, as they may hold a token.
+fn back_up(path: &Path, contents: &str) -> Result<PathBuf> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
 
-    let mut file = fs::OpenOptions::new()
+    let stamp = Utc::now().format("%Y%m%dT%H%M%S%.f");
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".unreadable-{stamp}"));
+    let backup = path.with_file_name(name);
+    fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
-        .open(path)?;
-    file.write_all(contents)?;
-    file.sync_all()
+        .open(&backup)
+        .and_then(|mut file| file.write_all(contents.as_bytes()))
+        .with_context(|| format!("backing up {} to {}", path.display(), backup.display()))?;
+    Ok(backup)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unreadable_state_is_kept_aside() {
+        let dir = std::env::temp_dir().join(format!("tml-state-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        fs::write(&path, "{ not json").unwrap();
+
+        let job = Uuid::nil();
+        let state = State::update(&path, |state| state.active_job = Some(job)).unwrap();
+        assert_eq!(state.active_job, Some(job));
+        assert_eq!(State::load(&path).unwrap().active_job, Some(job));
+
+        let backups: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|entry| *entry != path)
+            .collect();
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(fs::read_to_string(&backups[0]).unwrap(), "{ not json");
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
