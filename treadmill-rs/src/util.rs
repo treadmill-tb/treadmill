@@ -27,6 +27,19 @@ pub mod hex_slice {
 
 /// Based on https://serde.rs/custom-date-format.html.
 pub mod chrono {
+    use chrono::TimeDelta;
+
+    /// A non-negative duration in the single-unit form `fundu`'s default parser
+    /// reads back: whole seconds (`90s`) where exact, else nanoseconds.
+    /// `fundu`'s own `Display` writes compound forms (`1m 30s`) that it does
+    /// not parse.
+    pub fn duration_string(duration: TimeDelta) -> String {
+        match duration.num_nanoseconds() {
+            Some(nanos) if duration.subsec_nanos() != 0 => format!("{nanos}ns"),
+            _ => format!("{}s", duration.num_seconds()),
+        }
+    }
+
     pub mod optional_duration {
         use chrono::TimeDelta;
         use serde::{Deserialize, Deserializer, Serializer};
@@ -36,9 +49,7 @@ pub mod chrono {
             S: Serializer,
         {
             match duration.as_ref() {
-                Some(duration) => {
-                    serializer.serialize_some(fundu::Duration::from(*duration).to_string().as_str())
-                }
+                Some(duration) => serializer.serialize_some(&super::duration_string(*duration)),
                 None => serializer.serialize_none(),
             }
         }
@@ -66,7 +77,7 @@ pub mod chrono {
         where
             S: Serializer,
         {
-            serializer.serialize_str(fundu::Duration::from(*duration).to_string().as_str())
+            serializer.serialize_str(&super::duration_string(*duration))
         }
 
         pub fn deserialize<'de, D>(deserializer: D) -> Result<TimeDelta, D::Error>

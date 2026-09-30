@@ -11,6 +11,7 @@ use crate::api::switchboard::hosts::SpecDocument;
 use crate::api::switchboard::{JobState, SubjectRef, TerminationReason};
 use crate::image::Digest;
 use crate::util::Secret;
+use crate::util::chrono::duration_string;
 
 /// A permission on a job. `permissions` on [`JobInfo`] reports which of these
 /// the viewer holds (an owner or global admin holds all of them).
@@ -64,14 +65,14 @@ pub enum LeaseSpec {
 impl std::fmt::Display for LeaseSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LeaseSpec::Set(d) => write!(f, "{}", fundu::Duration::from(*d)),
+            LeaseSpec::Set(d) => f.write_str(&duration_string(*d)),
             LeaseSpec::Adjust(d) => {
                 let sign = if *d < chrono::TimeDelta::zero() {
                     '-'
                 } else {
                     '+'
                 };
-                write!(f, "{sign}{}", fundu::Duration::from(d.abs()))
+                write!(f, "{sign}{}", duration_string(d.abs()))
             }
             LeaseSpec::ExpiresAt(t) => write!(f, "{}", t.to_rfc3339()),
         }
@@ -724,6 +725,26 @@ pub struct JobListResponse {
 mod tests {
     use super::*;
     use chrono::TimeDelta;
+
+    #[test]
+    fn lease_specs_round_trip_through_their_wire_form() {
+        for spec in [
+            LeaseSpec::Set(TimeDelta::seconds(90)),
+            LeaseSpec::Set(TimeDelta::minutes(90)),
+            LeaseSpec::Set(TimeDelta::zero()),
+            LeaseSpec::Set(TimeDelta::milliseconds(1500)),
+            LeaseSpec::Adjust(TimeDelta::seconds(-90)),
+            LeaseSpec::Adjust(TimeDelta::seconds(3725)),
+            LeaseSpec::ExpiresAt("2026-08-28T14:00:00.123456789Z".parse().unwrap()),
+        ] {
+            assert_eq!(parse(&spec.to_string()), spec, "{spec}");
+        }
+        assert_eq!(LeaseSpec::Set(TimeDelta::seconds(90)).to_string(), "90s");
+        assert_eq!(
+            LeaseSpec::Adjust(TimeDelta::seconds(-90)).to_string(),
+            "-90s"
+        );
+    }
 
     #[test]
     fn job_etags_round_trip_and_reject_other_tags() {
