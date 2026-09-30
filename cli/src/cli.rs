@@ -1,6 +1,8 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::str::FromStr;
+#[cfg(feature = "user")]
+use treadmill_rs::api::switchboard::jobs::LeaseSpec;
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
@@ -205,6 +207,21 @@ pub enum ExitOutcome {
 #[cfg(feature = "user")]
 #[derive(Subcommand, Debug)]
 pub enum UserJobCommand {
+    /// Enqueue a new job
+    Create(JobCreateArgs),
+    /// Show a job's state, host, lease and services
+    #[command(visible_alias = "show")]
+    Status {
+        /// Target job; defaults to the active job
+        #[arg(long, value_name = "JOB")]
+        job: Option<JobRef>,
+    },
+    /// Wait until a job is ready and reachable over SSH
+    Wait {
+        /// Target job; defaults to the active job
+        #[arg(long, value_name = "JOB")]
+        job: Option<JobRef>,
+    },
     /// Open an interactive SSH session to a job
     Ssh {
         /// Target job; defaults to the active job
@@ -286,6 +303,67 @@ pub struct SshJob {
     /// SSH subprocess arguments, inserted before the destination user/IP
     #[arg(long, value_name = "ARG", allow_hyphen_values = true)]
     pub ssh_opt: Vec<String>,
+}
+
+#[cfg(feature = "user")]
+#[derive(Args, Debug, Clone)]
+pub struct JobCreateArgs {
+    /// Image to run: an image set, by UUID or canonical name
+    #[arg(long, value_name = "IMAGE")]
+    pub image: Option<String>,
+
+    /// Resume a terminated job on its host, from its working directory
+    #[arg(long, value_name = "JOB", conflicts_with_all = ["image", "host"])]
+    pub resume: Option<JobRef>,
+
+    /// CEL predicate a host must satisfy, with its spec bound as `host`;
+    /// defaults to any host
+    #[arg(long, value_name = "CEL")]
+    pub host: Option<String>,
+
+    /// Display label
+    #[arg(long, value_name = "LABEL")]
+    pub label: Option<String>,
+
+    /// Lease duration (e.g. `30m`); defaults to the switchboard's default
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    pub lease: Option<chrono::TimeDelta>,
+
+    /// Keep the job running once its lease expires, until its host is needed
+    /// for another job
+    #[arg(long)]
+    pub reclaimable: bool,
+
+    /// Annotation, repeatable
+    #[arg(long = "annotation", value_name = "KEY=VALUE", value_parser = parse_param)]
+    pub annotations: Vec<(String, String)>,
+
+    /// Job parameter, repeatable
+    #[arg(long = "param", value_name = "KEY=VALUE", value_parser = parse_param)]
+    pub params: Vec<(String, String)>,
+
+    /// Return once enqueued, without waiting until the job is ready
+    #[arg(long)]
+    pub no_wait: bool,
+
+    /// Leave the active job unchanged
+    #[arg(long)]
+    pub no_set_active: bool,
+}
+
+#[cfg(feature = "user")]
+pub fn parse_duration(s: &str) -> Result<chrono::TimeDelta, String> {
+    match s.parse()? {
+        LeaseSpec::Set(duration) => Ok(duration),
+        _ => Err(format!("{s:?} is not a plain duration")),
+    }
+}
+
+#[cfg(feature = "user")]
+fn parse_param(s: &str) -> Result<(String, String), String> {
+    s.split_once('=')
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .ok_or_else(|| format!("{s:?} is not of the form KEY=VALUE"))
 }
 
 /// A job ID argument: a full UUID, or `^<hex>`, a suffix of one.

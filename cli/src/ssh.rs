@@ -8,10 +8,10 @@ use treadmill_rs::api::switchboard::jobs::{JobServiceCredentials, JobServiceEndp
 use uuid::Uuid;
 
 use crate::cli::SshJob;
-use crate::ctx::{Ctx, short};
+use crate::ctx::Ctx;
+use crate::display::{SSHWS_PROTOCOL, short};
 use crate::state::CachedJobServiceToken;
 
-pub const SSHWS_PROTOCOL: &str = "sshws";
 pub const PROGRAM: &str = "tml";
 /// Everything needed to launch a client against one job service.
 struct Connection {
