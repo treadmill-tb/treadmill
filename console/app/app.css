@@ -888,23 +888,30 @@ p.spec-hint {
   font-weight: 600;
 }
 
-/* Both views can be made taller by dragging their bottom-right corner. */
-.job-log-term,
+/* The terminal wrapper and text view can be made taller by dragging. */
+.log-term-wrap,
 .log-text {
   min-height: 10rem;
   resize: vertical;
 }
 
-/* Shown in a view until its first output arrives. */
+/* Shown until the first output arrives. */
 .log-empty {
   margin: 0;
   color: var(--pico-muted-color);
   font-style: italic;
 }
 
-/* Over the terminal, which is black in either theme. */
+/* Resizable box with padding around the terminal. */
 .log-term-wrap {
   position: relative;
+  display: flex;
+  box-sizing: border-box;
+  height: 28rem;
+  padding: 0.5rem;
+  border-radius: var(--pico-border-radius);
+  background: #000;
+  overflow: hidden;
 }
 
 .log-term-wrap > .log-empty {
@@ -917,16 +924,18 @@ p.spec-hint {
   pointer-events: none;
 }
 
-/* Terminal-rendered view (xterm mount) */
+/* Unpadded mount: this is the element xterm's FitAddon measures. */
 .job-log-term {
-  height: 28rem;
-  padding: 0.5rem;
-  border-radius: var(--pico-border-radius);
-  background: #000000;
-  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 
-/* Text-rendered view */
+.job-log-term .xterm {
+  height: 100%;
+}
+
+/* Text-rendered view. */
 .log-text {
   height: 28rem;
   padding: 0.5rem 0.75rem;
