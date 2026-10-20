@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 use treadmill_rs::api::switchboard::jobs::{JobServiceCredentials, JobServiceEndpoint};
 use uuid::Uuid;
 
-use crate::cli::JobTarget;
+use crate::cli::SshJob;
 use crate::ctx::{Ctx, short};
 use crate::state::CachedJobServiceToken;
 
@@ -20,8 +20,8 @@ struct Connection {
     ssh_opts: Vec<String>,
 }
 
-pub async fn ssh(ctx: &mut Ctx, target: &JobTarget, args: &[String]) -> Result<()> {
-    let connection = connect(ctx, target).await?;
+pub async fn ssh(ctx: &mut Ctx, job_id: Uuid, target: &SshJob, args: &[String]) -> Result<()> {
+    let connection = connect(ctx, job_id, target).await?;
     let mut argv = connection.ssh_options();
     argv.push(connection.destination.clone());
     argv.extend(args.iter().cloned());
@@ -101,16 +101,21 @@ fn base_domain(hostname: &str) -> Option<&str> {
     hostname.split_once('.').map(|(_, domain)| domain)
 }
 
-pub async fn exec_command(ctx: &mut Ctx, target: &JobTarget, command: &[String]) -> Result<()> {
-    let connection = connect(ctx, target).await?;
+pub async fn exec_command(
+    ctx: &mut Ctx,
+    job_id: Uuid,
+    target: &SshJob,
+    command: &[String],
+) -> Result<()> {
+    let connection = connect(ctx, job_id, target).await?;
     let mut argv = connection.ssh_options();
     argv.push(connection.destination.clone());
     argv.extend(command.iter().cloned());
     exec(ctx, "ssh", &argv)
 }
 
-pub async fn sftp(ctx: &mut Ctx, target: &JobTarget, args: &[String]) -> Result<()> {
-    let connection = connect(ctx, target).await?;
+pub async fn sftp(ctx: &mut Ctx, job_id: Uuid, target: &SshJob, args: &[String]) -> Result<()> {
+    let connection = connect(ctx, job_id, target).await?;
     let mut argv = connection.sftp_options();
     argv.push(connection.destination.clone());
     argv.extend(args.iter().cloned());
@@ -119,7 +124,8 @@ pub async fn sftp(ctx: &mut Ctx, target: &JobTarget, args: &[String]) -> Result<
 
 pub async fn upload(
     ctx: &mut Ctx,
-    target: &JobTarget,
+    job_id: Uuid,
+    target: &SshJob,
     local: &Path,
     remote: Option<&str>,
 ) -> Result<()> {
@@ -130,6 +136,7 @@ pub async fn upload(
     let local = local.to_str().context("local path is not valid UTF-8")?;
     batch(
         ctx,
+        job_id,
         target,
         &format!("put {} {}", quote(local), quote(&remote)),
     )
@@ -138,7 +145,8 @@ pub async fn upload(
 
 pub async fn download(
     ctx: &mut Ctx,
-    target: &JobTarget,
+    job_id: Uuid,
+    target: &SshJob,
     remote: &str,
     local: Option<&Path>,
 ) -> Result<()> {
@@ -151,6 +159,7 @@ pub async fn download(
     };
     batch(
         ctx,
+        job_id,
         target,
         &format!("get {} {}", quote(remote), quote(&local)),
     )
@@ -159,8 +168,8 @@ pub async fn download(
 
 /// Drive sftp through a one-line batch script on its stdin, leaving its own
 /// stdout and stderr attached.
-async fn batch(ctx: &mut Ctx, target: &JobTarget, line: &str) -> Result<()> {
-    let connection = connect(ctx, target).await?;
+async fn batch(ctx: &mut Ctx, job_id: Uuid, target: &SshJob, line: &str) -> Result<()> {
+    let connection = connect(ctx, job_id, target).await?;
     let mut argv = connection.sftp_options();
     argv.push("-b".into());
     argv.push("-".into());
@@ -222,9 +231,8 @@ impl Connection {
     }
 }
 
-async fn connect(ctx: &mut Ctx, target: &JobTarget) -> Result<Connection> {
+async fn connect(ctx: &mut Ctx, job_id: Uuid, target: &SshJob) -> Result<Connection> {
     let client = ctx.authenticated_client()?;
-    let job_id = ctx.resolve_job(target.job.as_deref())?;
 
     let service = match &target.service {
         Some(service) => service.clone(),
@@ -239,7 +247,7 @@ async fn connect(ctx: &mut Ctx, target: &JobTarget) -> Result<Connection> {
 
 fn connection(
     ctx: &Ctx,
-    target: &JobTarget,
+    target: &SshJob,
     job_id: Uuid,
     service: String,
     cached: CachedJobServiceToken,
@@ -306,7 +314,7 @@ fn proxy_command(ctx: &Ctx, job_id: Uuid, service: &str) -> Result<String> {
         .context("the tml binary path is not valid UTF-8")?;
 
     let mut command = format!(
-        "{} --switchboard {} job ws-proxy {job_id} {}",
+        "{} --switchboard {} job ws-proxy --job {job_id} {}",
         tml_command(&quote(exe), ctx)?,
         quote(&ctx.config.switchboard),
         quote(service),
