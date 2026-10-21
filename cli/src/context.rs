@@ -8,7 +8,10 @@ pub async fn run(ctx: &mut Ctx, command: &ContextCommand) -> Result<()> {
     match command {
         ContextCommand::Show => show(ctx),
         ContextCommand::Job { command } => match command {
-            ContextJobCommand::Set { job } => set_active(ctx, *job),
+            ContextJobCommand::Set { job } => {
+                let job = ctx.resolve_job(Some(job)).await?;
+                set_active(ctx, job)
+            }
             ContextJobCommand::Clear => clear(ctx),
         },
     }

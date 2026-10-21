@@ -23,7 +23,7 @@ use clap::Parser;
 use treadmill_rs::api::switchboard::client::SwitchboardClient;
 use uuid::Uuid;
 
-use cli::{Cli, Command, Globals, JobCommand};
+use cli::{Cli, Command, Globals, JobCommand, JobRef};
 #[cfg(feature = "daemon")]
 use cli::{DaemonJobCommand, ExitOutcome};
 #[cfg(feature = "user")]
@@ -128,11 +128,11 @@ async fn daemon_job(globals: &Globals, command: DaemonJobCommand) -> Result<()> 
     }
 }
 
-async fn job_client(globals: &Globals, job: Option<Uuid>) -> Result<(SwitchboardClient, Uuid)> {
+async fn job_client(globals: &Globals, job: Option<JobRef>) -> Result<(SwitchboardClient, Uuid)> {
     #[cfg(feature = "daemon")]
     if let Some(credentials) = daemon::credentials(globals.dbus_bus).await? {
-        if let Some(job) = job
-            && job != credentials.job_id
+        if let Some(job) = &job
+            && !job.matches(credentials.job_id)
         {
             anyhow::bail!(
                 "inside a job, only that job ({}) can be acted on",
@@ -145,13 +145,16 @@ async fn job_client(globals: &Globals, job: Option<Uuid>) -> Result<(Switchboard
     #[cfg(feature = "user")]
     {
         let ctx = Ctx::load(globals)?;
-        Ok((ctx.authenticated_client()?, ctx.resolve_job(&job)?))
+        Ok((
+            ctx.authenticated_client()?,
+            ctx.resolve_job(job.as_ref()).await?,
+        ))
     }
     #[cfg(not(feature = "user"))]
     anyhow::bail!("no tml daemon found on D-Bus")
 }
 
-async fn terminate(globals: &Globals, job: Option<Uuid>) -> Result<()> {
+async fn terminate(globals: &Globals, job: Option<JobRef>) -> Result<()> {
     let (client, job_id) = job_client(globals, job).await?;
     client
         .terminate_job(job_id)
@@ -181,31 +184,52 @@ async fn user_job(ctx: &mut Ctx, command: &UserJobCommand) -> Result<()> {
 
     match command {
         UserJobCommand::Ssh { job, target, args } => {
-            ssh::ssh(ctx, ctx.resolve_job(job)?, target, args).await
+            ssh::ssh(ctx, ctx.resolve_job(job.as_ref()).await?, target, args).await
         }
         UserJobCommand::Exec {
             job,
             target,
             command,
-        } => ssh::exec_command(ctx, ctx.resolve_job(job)?, target, command).await,
+        } => ssh::exec_command(ctx, ctx.resolve_job(job.as_ref()).await?, target, command).await,
         UserJobCommand::Sftp { job, target, args } => {
-            ssh::sftp(ctx, ctx.resolve_job(job)?, target, args).await
+            ssh::sftp(ctx, ctx.resolve_job(job.as_ref()).await?, target, args).await
         }
         UserJobCommand::Upload {
             job,
             target,
             local,
             remote,
-        } => ssh::upload(ctx, ctx.resolve_job(job)?, target, local, remote.as_deref()).await,
+        } => {
+            ssh::upload(
+                ctx,
+                ctx.resolve_job(job.as_ref()).await?,
+                target,
+                local,
+                remote.as_deref(),
+            )
+            .await
+        }
         UserJobCommand::Download {
             job,
             target,
             remote,
             local,
-        } => ssh::download(ctx, ctx.resolve_job(job)?, target, remote, local.as_deref()).await,
-        UserJobCommand::SetActive { job } => context::set_active(ctx, *job),
+        } => {
+            ssh::download(
+                ctx,
+                ctx.resolve_job(job.as_ref()).await?,
+                target,
+                remote,
+                local.as_deref(),
+            )
+            .await
+        }
+        UserJobCommand::SetActive { job } => {
+            let job = ctx.resolve_job(Some(job)).await?;
+            context::set_active(ctx, job)
+        }
         UserJobCommand::WsProxy { job, service } => {
-            wsproxy::run(ctx, ctx.resolve_job(job)?, service, None).await
+            wsproxy::run(ctx, ctx.resolve_job(job.as_ref()).await?, service, None).await
         }
     }
 }
