@@ -99,22 +99,16 @@ impl Ctx {
         self.output == OutputFormat::Human
     }
 
-    /// Resolve a `[JOB]` reference: an explicit UUID, `@active`, or — when
-    /// omitted — the active job. Never picks a job by any other means.
-    pub fn resolve_job(&self, reference: Option<&str>) -> Result<Uuid> {
-        match reference {
-            None | Some("@active") => {
+    /// Returns the UUID or the active job UUID if [None].
+    pub fn resolve_job(&self, reference: &Option<Uuid>) -> Result<Uuid> {
+        reference.map_or_else(|| {
                 let job = self
                     .state
                     .active_job
                     .context("no job given and no active job set; pass --job or run `tml context job set <UUID>`")?;
                 self.note(&format!("Using active job {}", short(job)));
                 Ok(job)
-            }
-            Some(reference) => Uuid::parse_str(reference).with_context(|| {
-                format!("{reference:?} is not a job UUID (shortened ids are display-only)")
-            }),
-        }
+        }, Ok)
     }
 
     /// A progress or selection notice: stderr, human output only.

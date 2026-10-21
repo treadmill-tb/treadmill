@@ -166,7 +166,7 @@ pub enum JobCommand {
     Terminate {
         /// Target job; defaults to the active job, or inside a job to that job
         #[arg(long, value_name = "JOB")]
-        job: Option<String>,
+        job: Option<Uuid>,
     },
     #[cfg(feature = "user")]
     #[command(flatten)]
@@ -202,8 +202,11 @@ pub enum ExitOutcome {
 pub enum UserJobCommand {
     /// Open an interactive SSH session to a job
     Ssh {
+        /// Target job; defaults to the active job
+        #[arg(long, value_name = "JOB")]
+        job: Option<Uuid>,
         #[command(flatten)]
-        target: JobTarget,
+        target: SshJob,
         /// Positional arguments to pass to SSH (e.g. command to run), elide to
         /// request an interactive session
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -211,47 +214,58 @@ pub enum UserJobCommand {
     },
     /// Run a command in a job via SSH and return its exit status
     Exec {
+        /// Target job; defaults to the active job
+        #[arg(long, value_name = "JOB")]
+        job: Option<Uuid>,
         #[command(flatten)]
-        target: JobTarget,
+        target: SshJob,
         /// The command and its arguments
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
     /// Open an SFTP session to a job
     Sftp {
+        /// Target job; defaults to the active job
+        #[arg(long, value_name = "JOB")]
+        job: Option<Uuid>,
         #[command(flatten)]
-        target: JobTarget,
+        target: SshJob,
         /// Trailing sftp arguments, placed after the destination
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Copy a local file into a job via SFTP
     Upload {
+        /// Target job; defaults to the active job
+        #[arg(long, value_name = "JOB")]
+        job: Option<Uuid>,
         #[command(flatten)]
-        target: JobTarget,
+        target: SshJob,
         local: PathBuf,
         remote: Option<String>,
     },
     /// Copy a file out of a job via SFTP
     Download {
+        /// Target job; defaults to the active job
+        #[arg(long, value_name = "JOB")]
+        job: Option<Uuid>,
         #[command(flatten)]
-        target: JobTarget,
+        target: SshJob,
         remote: String,
         local: Option<PathBuf>,
     },
     /// Bridge stdio to a job service over a WebSocket, used for ssh's ProxyCommand
-    #[command(hide = true)]
-    WsProxy { job: Uuid, service: String },
+    WsProxy {
+        #[arg(long, value_name = "JOB")]
+        job: Option<Uuid>,
+        service: String,
+    },
     /// Alias for `context job set`
     SetActive { job: Uuid },
 }
 
 #[derive(Args, Debug, Clone)]
-pub struct JobTarget {
-    /// Target job; defaults to the active job
-    #[arg(long, value_name = "JOB")]
-    pub job: Option<String>,
-
+pub struct SshJob {
     /// Announced service to connect to
     #[arg(long, value_name = "NAME")]
     pub service: Option<String>,

@@ -80,7 +80,7 @@ async fn run(args: Cli) -> Result<()> {
         }
         Command::Job {
             command: JobCommand::Terminate { job },
-        } => terminate(&args.globals, job.as_deref()).await,
+        } => terminate(&args.globals, job).await,
         #[cfg(feature = "user")]
         Command::Job {
             command: JobCommand::User(command),
@@ -128,11 +128,11 @@ async fn daemon_job(globals: &Globals, command: DaemonJobCommand) -> Result<()> 
     }
 }
 
-async fn job_client(globals: &Globals, job: Option<&str>) -> Result<(SwitchboardClient, Uuid)> {
+async fn job_client(globals: &Globals, job: Option<Uuid>) -> Result<(SwitchboardClient, Uuid)> {
     #[cfg(feature = "daemon")]
     if let Some(credentials) = daemon::credentials(globals.dbus_bus).await? {
         if let Some(job) = job
-            && job.parse::<Uuid>().ok() != Some(credentials.job_id)
+            && job != credentials.job_id
         {
             anyhow::bail!(
                 "inside a job, only that job ({}) can be acted on",
@@ -145,13 +145,13 @@ async fn job_client(globals: &Globals, job: Option<&str>) -> Result<(Switchboard
     #[cfg(feature = "user")]
     {
         let ctx = Ctx::load(globals)?;
-        Ok((ctx.authenticated_client()?, ctx.resolve_job(job)?))
+        Ok((ctx.authenticated_client()?, ctx.resolve_job(&job)?))
     }
     #[cfg(not(feature = "user"))]
     anyhow::bail!("no tml daemon found on D-Bus")
 }
 
-async fn terminate(globals: &Globals, job: Option<&str>) -> Result<()> {
+async fn terminate(globals: &Globals, job: Option<Uuid>) -> Result<()> {
     let (client, job_id) = job_client(globals, job).await?;
     client
         .terminate_job(job_id)
@@ -180,20 +180,32 @@ async fn user_job(ctx: &mut Ctx, command: &UserJobCommand) -> Result<()> {
     require_streaming(ctx, !matches!(command, UserJobCommand::SetActive { .. }));
 
     match command {
-        UserJobCommand::Ssh { target, args } => ssh::ssh(ctx, target, args).await,
-        UserJobCommand::Exec { target, command } => ssh::exec_command(ctx, target, command).await,
-        UserJobCommand::Sftp { target, args } => ssh::sftp(ctx, target, args).await,
+        UserJobCommand::Ssh { job, target, args } => {
+            ssh::ssh(ctx, ctx.resolve_job(job)?, target, args).await
+        }
+        UserJobCommand::Exec {
+            job,
+            target,
+            command,
+        } => ssh::exec_command(ctx, ctx.resolve_job(job)?, target, command).await,
+        UserJobCommand::Sftp { job, target, args } => {
+            ssh::sftp(ctx, ctx.resolve_job(job)?, target, args).await
+        }
         UserJobCommand::Upload {
+            job,
             target,
             local,
             remote,
-        } => ssh::upload(ctx, target, local, remote.as_deref()).await,
+        } => ssh::upload(ctx, ctx.resolve_job(job)?, target, local, remote.as_deref()).await,
         UserJobCommand::Download {
+            job,
             target,
             remote,
             local,
-        } => ssh::download(ctx, target, remote, local.as_deref()).await,
+        } => ssh::download(ctx, ctx.resolve_job(job)?, target, remote, local.as_deref()).await,
         UserJobCommand::SetActive { job } => context::set_active(ctx, *job),
-        UserJobCommand::WsProxy { job, service } => wsproxy::run(ctx, *job, service, None).await,
+        UserJobCommand::WsProxy { job, service } => {
+            wsproxy::run(ctx, ctx.resolve_job(job)?, service, None).await
+        }
     }
 }
