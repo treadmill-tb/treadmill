@@ -1,5 +1,8 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+use std::str::FromStr;
+#[cfg(feature = "user")]
+use treadmill_rs::api::switchboard::jobs::LeaseSpec;
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
@@ -17,6 +20,7 @@ pub struct Cli {
 }
 
 #[derive(Args, Debug, Clone)]
+#[command(next_help_heading = "Global Options")]
 pub struct Globals {
     /// Switchboard API URL
     #[arg(long, value_name = "URL", global = true)]
@@ -98,6 +102,12 @@ pub enum Command {
         #[command(subcommand)]
         command: JobCommand,
     },
+    /// Inspect hosts
+    #[cfg(feature = "user")]
+    Host {
+        #[command(subcommand)]
+        command: HostCommand,
+    },
     /// Integrate Treadmill with the system SSH client
     #[cfg(feature = "user")]
     Ssh {
@@ -108,6 +118,33 @@ pub enum Command {
     /// serving D-Bus
     #[cfg(feature = "daemon")]
     Daemon(crate::daemon::DaemonArgs),
+}
+
+#[cfg(feature = "user")]
+#[derive(Subcommand, Debug)]
+pub enum HostCommand {
+    /// List the hosts visible to you
+    List(HostListArgs),
+    /// Show a host, including its full spec
+    Show {
+        /// Host name, UUID, or `^<hex>` short id
+        host: String,
+    },
+}
+
+#[cfg(feature = "user")]
+#[derive(Args, Debug)]
+pub struct HostListArgs {
+    /// Only hosts matching all these terms: `^<hex>` for an id suffix, anything
+    /// else for the name, state, site, platform, board or a `key=value` label
+    #[arg(value_name = "TERMS")]
+    pub terms: Vec<String>,
+    /// Refresh the list until quit
+    #[arg(long)]
+    pub watch: bool,
+    /// Print the list without a pager
+    #[arg(long)]
+    pub no_pager: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -155,7 +192,10 @@ pub enum ContextCommand {
 #[derive(Subcommand, Debug)]
 pub enum ContextJobCommand {
     /// Set the active job
-    Set { job: Uuid },
+    Set {
+        /// Job UUID or ^<hex> suffix
+        job: JobRef,
+    },
     /// Clear the active job
     Clear,
 }
@@ -166,7 +206,10 @@ pub enum JobCommand {
     Terminate {
         /// Target job; defaults to the active job, or inside a job to that job
         #[arg(long, value_name = "JOB")]
-        job: Option<Uuid>,
+        job: Option<JobRef>,
+        /// Terminate without asking for confirmation
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
     #[cfg(feature = "user")]
     #[command(flatten)]
@@ -200,11 +243,29 @@ pub enum ExitOutcome {
 #[cfg(feature = "user")]
 #[derive(Subcommand, Debug)]
 pub enum UserJobCommand {
+    /// Enqueue a new job
+    ///
+    /// Without `--image` or `--resume`, asks for the missing options in a
+    /// terminal.
+    Create(JobCreateArgs),
+    /// Show a job's state, host, lease and services
+    #[command(visible_alias = "show")]
+    Status {
+        /// Target job; defaults to the active job
+        #[arg(long, value_name = "JOB")]
+        job: Option<JobRef>,
+    },
+    /// Wait until a job is ready and reachable over SSH
+    Wait {
+        /// Target job; defaults to the active job
+        #[arg(long, value_name = "JOB")]
+        job: Option<JobRef>,
+    },
     /// Open an interactive SSH session to a job
     Ssh {
         /// Target job; defaults to the active job
         #[arg(long, value_name = "JOB")]
-        job: Option<Uuid>,
+        job: Option<JobRef>,
         #[command(flatten)]
         target: SshJob,
         /// Positional arguments to pass to SSH (e.g. command to run), elide to
@@ -216,7 +277,7 @@ pub enum UserJobCommand {
     Exec {
         /// Target job; defaults to the active job
         #[arg(long, value_name = "JOB")]
-        job: Option<Uuid>,
+        job: Option<JobRef>,
         #[command(flatten)]
         target: SshJob,
         /// The command and its arguments
@@ -227,7 +288,7 @@ pub enum UserJobCommand {
     Sftp {
         /// Target job; defaults to the active job
         #[arg(long, value_name = "JOB")]
-        job: Option<Uuid>,
+        job: Option<JobRef>,
         #[command(flatten)]
         target: SshJob,
         /// Trailing sftp arguments, placed after the destination
@@ -238,7 +299,7 @@ pub enum UserJobCommand {
     Upload {
         /// Target job; defaults to the active job
         #[arg(long, value_name = "JOB")]
-        job: Option<Uuid>,
+        job: Option<JobRef>,
         #[command(flatten)]
         target: SshJob,
         local: PathBuf,
@@ -248,7 +309,7 @@ pub enum UserJobCommand {
     Download {
         /// Target job; defaults to the active job
         #[arg(long, value_name = "JOB")]
-        job: Option<Uuid>,
+        job: Option<JobRef>,
         #[command(flatten)]
         target: SshJob,
         remote: String,
@@ -256,12 +317,160 @@ pub enum UserJobCommand {
     },
     /// Bridge stdio to a job service over a WebSocket, used for ssh's ProxyCommand
     WsProxy {
+        /// Target job; defaults to the active job
         #[arg(long, value_name = "JOB")]
-        job: Option<Uuid>,
+        job: Option<JobRef>,
         service: String,
     },
     /// Alias for `context job set`
-    SetActive { job: Uuid },
+    SetActive {
+        /// Job UUID or ^<hex> suffix
+        job: JobRef,
+    },
+    /// List the jobs visible to you
+    List(JobListArgs),
+    /// Change a job's label, lease or annotations
+    ///
+    /// All changes apply together or not at all. A lease change that would
+    /// leave less than five minutes asks for confirmation first. Exits with 3
+    /// if `--if-revision` names a revision the job is no longer at, and with 4
+    /// if the switchboard refuses the lease change (e.g. the job is stopping).
+    Update(JobUpdateArgs),
+    /// Change a job's lease; shorthand for `update --lease`/`--lease-until`
+    ///
+    /// A change that would leave less than five minutes asks for confirmation
+    /// first. Exits with 3 if `--if-revision` names a revision the job is no
+    /// longer at, and with 4 if the switchboard refuses the lease change.
+    #[command(group = clap::ArgGroup::new("new_lease").required(true))]
+    Lease {
+        /// Target job; defaults to the active job
+        #[arg(long, value_name = "JOB")]
+        job: Option<JobRef>,
+        /// The lease's length from the job's start (`30m`), or a change to it
+        /// (`+30m`, `-10m`)
+        #[arg(
+            value_name = "LENGTH",
+            group = "new_lease",
+            value_parser = parse_lease_length,
+            allow_hyphen_values = true
+        )]
+        length: Option<LeaseSpec>,
+        /// When the lease ends instead: a time (RFC 3339), or relative to now
+        /// (`now`, `now+20m`, `now-5m`)
+        #[arg(long, value_name = "TIME", group = "new_lease", value_parser = parse_lease_until)]
+        until: Option<LeaseUntil>,
+        /// Only apply if the job is still at this revision
+        #[arg(long, value_name = "REVISION")]
+        if_revision: Option<i64>,
+        /// Don't ask before leaving the lease (almost) expired
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+}
+
+#[cfg(feature = "user")]
+#[derive(Args, Debug)]
+#[command(group = clap::ArgGroup::new("section").args(["active", "reclaimable", "finished"]))]
+pub struct JobListArgs {
+    /// Only jobs matching all these terms: `^<hex>` for an id suffix, anything
+    /// else for the label, image, host or owner name
+    #[arg(value_name = "TERMS")]
+    pub terms: Vec<String>,
+    /// Include jobs you own
+    #[arg(long)]
+    pub mine: bool,
+    /// Include jobs owned by one of your groups
+    #[arg(long)]
+    pub groups: bool,
+    /// Include jobs shared with you or your groups
+    #[arg(long)]
+    pub shared: bool,
+    /// Include every job (admins only)
+    #[arg(long)]
+    pub global: bool,
+    /// List only running jobs with a lease left
+    #[arg(long)]
+    pub active: bool,
+    /// List only running jobs whose host may be reclaimed for another job
+    #[arg(long)]
+    pub reclaimable: bool,
+    /// List finished jobs
+    #[arg(long)]
+    pub finished: bool,
+    /// Jobs per page; without a pager, the most jobs listed per section
+    #[arg(long, value_name = "N", default_value_t = 50)]
+    pub limit: usize,
+    /// Continue a previous listing from its cursor
+    #[arg(long, value_name = "CURSOR", requires = "section")]
+    pub cursor: Option<String>,
+    /// Refresh the list until quit
+    #[arg(long, conflicts_with_all = ["finished", "cursor"])]
+    pub watch: bool,
+    /// Print only the first `--limit` jobs per section, without a pager
+    #[arg(long)]
+    pub no_pager: bool,
+}
+
+#[cfg(feature = "user")]
+#[derive(Args, Debug)]
+pub struct JobUpdateArgs {
+    /// Target job; defaults to the active job
+    #[arg(long, value_name = "JOB")]
+    pub job: Option<JobRef>,
+    /// Set the display label
+    #[arg(long, value_name = "LABEL", conflicts_with = "clear_label")]
+    pub label: Option<String>,
+    /// Remove the display label
+    #[arg(long)]
+    pub clear_label: bool,
+    /// The lease's length from the job's start (`30m`), or a change to it
+    /// (`+30m`, `-10m`)
+    #[arg(
+        long,
+        value_name = "LENGTH",
+        conflicts_with = "lease_until",
+        value_parser = parse_lease_length,
+        allow_hyphen_values = true
+    )]
+    pub lease: Option<LeaseSpec>,
+    /// When the lease ends: a time (RFC 3339), or relative to now (`now`,
+    /// `now+20m`, `now-5m`)
+    #[arg(long, value_name = "TIME", value_parser = parse_lease_until)]
+    pub lease_until: Option<LeaseUntil>,
+    /// What happens when the lease expires
+    #[arg(long, value_enum, value_name = "ACTION")]
+    pub expiry_action: Option<ExpiryAction>,
+    /// Set an annotation, repeatable
+    #[arg(long = "annotation", value_name = "KEY=VALUE", value_parser = parse_param)]
+    pub annotations: Vec<(String, String)>,
+    /// Remove an annotation, repeatable
+    #[arg(long = "remove-annotation", value_name = "KEY")]
+    pub remove_annotations: Vec<String>,
+    /// Only apply if the job is still at this revision
+    #[arg(long, value_name = "REVISION")]
+    pub if_revision: Option<i64>,
+    /// Don't ask before leaving the lease (almost) expired
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+}
+
+/// What happens when a job's lease expires.
+#[cfg(feature = "user")]
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpiryAction {
+    /// The job is stopped
+    Terminate,
+    /// The job runs on, but its host may be reclaimed for another job
+    Preempt,
+}
+
+/// When a lease should end, as given on the command line. One relative to now
+/// is resolved against this machine's clock when the request is sent.
+#[cfg(feature = "user")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaseUntil {
+    At(chrono::DateTime<chrono::Utc>),
+    FromNow(chrono::TimeDelta),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -277,4 +486,272 @@ pub struct SshJob {
     /// SSH subprocess arguments, inserted before the destination user/IP
     #[arg(long, value_name = "ARG", allow_hyphen_values = true)]
     pub ssh_opt: Vec<String>,
+}
+
+#[cfg(feature = "user")]
+#[derive(Args, Debug, Clone)]
+pub struct JobCreateArgs {
+    /// Image to run: an image set, by UUID or canonical name
+    #[arg(long, value_name = "IMAGE")]
+    pub image: Option<String>,
+
+    /// Resume a terminated job on its host, from its working directory
+    #[arg(long, value_name = "JOB", conflicts_with_all = ["image", "host"])]
+    pub resume: Option<JobRef>,
+
+    /// CEL predicate a host must satisfy, with its spec bound as `host`;
+    /// defaults to any host
+    #[arg(long, value_name = "CEL")]
+    pub host: Option<String>,
+
+    /// Display label
+    #[arg(long, value_name = "LABEL")]
+    pub label: Option<String>,
+
+    /// Lease duration (e.g. `30m`); defaults to the switchboard's default
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    pub lease: Option<chrono::TimeDelta>,
+
+    /// Keep the job running once its lease expires, until its host is needed
+    /// for another job
+    #[arg(long)]
+    pub reclaimable: bool,
+
+    /// Annotation, repeatable
+    #[arg(long = "annotation", value_name = "KEY=VALUE", value_parser = parse_param)]
+    pub annotations: Vec<(String, String)>,
+
+    /// Job parameter, repeatable
+    #[arg(long = "param", value_name = "KEY=VALUE", value_parser = parse_param)]
+    pub params: Vec<(String, String)>,
+
+    /// Return once enqueued, without waiting until the job is ready
+    #[arg(long)]
+    pub no_wait: bool,
+
+    /// Leave the active job unchanged
+    #[arg(long)]
+    pub no_set_active: bool,
+
+    /// Never ask for missing options
+    #[arg(long)]
+    pub non_interactive: bool,
+}
+
+#[cfg(feature = "user")]
+pub fn parse_duration(s: &str) -> Result<chrono::TimeDelta, String> {
+    match s.parse()? {
+        LeaseSpec::Set(duration) => Ok(duration),
+        _ => Err(format!("{s:?} is not a plain duration")),
+    }
+}
+
+/// A lease length or a change to it: `30m`, `+30m`, `-10m`.
+#[cfg(feature = "user")]
+fn parse_lease_length(s: &str) -> Result<LeaseSpec, String> {
+    let end_time = || {
+        format!("{s:?} is an end time; pass it with `--lease-until` (`--until` for `job lease`)")
+    };
+    if s.starts_with("now") {
+        return Err(end_time());
+    }
+    match s.parse()? {
+        LeaseSpec::ExpiresAt(_) => Err(end_time()),
+        spec => Ok(spec),
+    }
+}
+
+/// A lease end: an RFC 3339 time, `now`, `now+DURATION` or `now-DURATION`.
+#[cfg(feature = "user")]
+fn parse_lease_until(s: &str) -> Result<LeaseUntil, String> {
+    if let Some(offset) = s.strip_prefix("now") {
+        if offset.is_empty() {
+            return Ok(LeaseUntil::FromNow(chrono::TimeDelta::zero()));
+        }
+        return match offset.parse() {
+            Ok(LeaseSpec::Adjust(offset)) => Ok(LeaseUntil::FromNow(offset)),
+            _ => Err(format!(
+                "{s:?} is not of the form `now`, `now+DURATION` or `now-DURATION`"
+            )),
+        };
+    }
+    match s.parse() {
+        Ok(LeaseSpec::ExpiresAt(at)) => Ok(LeaseUntil::At(at)),
+        Ok(_) => Err(format!(
+            "{s:?} is a lease length; pass it with `--lease` (as `job lease {s}`), or \
+             write `now+{}` for an end relative to now",
+            s.trim_start_matches(['+', '-'])
+        )),
+        Err(_) => Err(format!(
+            "{s:?} is not an RFC 3339 time, `now`, `now+DURATION` or `now-DURATION`"
+        )),
+    }
+}
+
+#[cfg(feature = "user")]
+fn parse_param(s: &str) -> Result<(String, String), String> {
+    s.split_once('=')
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .ok_or_else(|| format!("{s:?} is not of the form KEY=VALUE"))
+}
+
+/// A job ID argument: a full UUID, or `^<hex>`, a suffix of one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobRef {
+    Id(Uuid),
+    Short(String),
+}
+
+impl JobRef {
+    #[cfg(feature = "daemon")]
+    pub fn matches(&self, id: Uuid) -> bool {
+        match self {
+            Self::Id(own) => *own == id,
+            Self::Short(suffix) => id.simple().to_string().ends_with(suffix.as_str()),
+        }
+    }
+}
+
+impl FromStr for JobRef {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        let Some(hex) = s.strip_prefix('^') else {
+            return Uuid::parse_str(s)
+                .map(Self::Id)
+                .map_err(|e| format!("not a UUID or ^<hex> suffix: {e}"));
+        };
+        if hex.is_empty() || hex.len() > 32 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("expected ^ followed by 1 to 32 hex digits".to_string());
+        }
+        // ^ with all 32 digits is a full UUID.
+        Ok(Uuid::parse_str(hex).map_or_else(|_| Self::Short(hex.to_ascii_lowercase()), Self::Id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(feature = "user")]
+    use chrono::TimeDelta;
+
+    const JOB: &str = "0192f3a4-5b6c-7d8e-9fa0-b1c2d3e4f5a6";
+
+    #[test]
+    fn a_job_ref_is_a_uuid_or_a_suffix() {
+        let id = Uuid::parse_str(JOB).unwrap();
+        assert_eq!(JOB.parse(), Ok(JobRef::Id(id)));
+        assert_eq!(format!("^{}", id.simple()).parse(), Ok(JobRef::Id(id)));
+        assert_eq!("^D3E4f5a6".parse(), Ok(JobRef::Short("d3e4f5a6".into())));
+    }
+
+    #[test]
+    fn a_malformed_job_ref_is_refused() {
+        for bad in [
+            "",
+            "^",
+            "^xyz",
+            "d3e4f5a6",
+            "^-d3e4",
+            &format!("^0{}", JOB.replace('-', "")),
+        ] {
+            assert!(bad.parse::<JobRef>().is_err(), "{bad:?}");
+        }
+    }
+
+    #[cfg(feature = "daemon")]
+    #[test]
+    fn a_short_id_matches_by_suffix() {
+        let id = Uuid::parse_str(JOB).unwrap();
+        assert!(JobRef::Short("f5a6".into()).matches(id));
+        assert!(!JobRef::Short("f5a7".into()).matches(id));
+        assert!(JobRef::Id(id).matches(id));
+    }
+
+    #[cfg(feature = "user")]
+    #[test]
+    fn lease_lengths_are_durations_or_changes_to_them() {
+        assert_eq!(
+            parse_lease_length("30m"),
+            Ok(LeaseSpec::Set(TimeDelta::minutes(30)))
+        );
+        assert_eq!(
+            parse_lease_length("+30m"),
+            Ok(LeaseSpec::Adjust(TimeDelta::minutes(30)))
+        );
+        assert_eq!(
+            parse_lease_length("-10m"),
+            Ok(LeaseSpec::Adjust(TimeDelta::minutes(-10)))
+        );
+        for end in ["2026-08-28T14:00:00Z", "now", "now+20m"] {
+            let err = parse_lease_length(end).unwrap_err();
+            assert!(err.contains("--lease-until"), "{end}: {err}");
+        }
+    }
+
+    #[cfg(feature = "user")]
+    #[test]
+    fn lease_ends_are_times_or_relative_to_now() {
+        assert!(matches!(
+            parse_lease_until("2026-08-28T14:00:00Z"),
+            Ok(LeaseUntil::At(_))
+        ));
+        assert_eq!(
+            parse_lease_until("now"),
+            Ok(LeaseUntil::FromNow(TimeDelta::zero()))
+        );
+        assert_eq!(
+            parse_lease_until("now+20m"),
+            Ok(LeaseUntil::FromNow(TimeDelta::minutes(20)))
+        );
+        assert_eq!(
+            parse_lease_until("now-5m"),
+            Ok(LeaseUntil::FromNow(TimeDelta::minutes(-5)))
+        );
+        let err = parse_lease_until("20m").unwrap_err();
+        assert!(err.contains("--lease") && err.contains("now+20m"), "{err}");
+        assert!(parse_lease_until("now20m").is_err());
+        assert!(parse_lease_until("nowish").is_err());
+        assert!(parse_lease_until("soon").is_err());
+    }
+
+    #[cfg(feature = "user")]
+    #[test]
+    fn job_commands_parse() {
+        Cli::try_parse_from(["tml", "job", "lease", "-10m", "--job", "^ab"]).unwrap();
+        Cli::try_parse_from(["tml", "job", "lease", "--until", "now+20m", "-y"]).unwrap();
+        assert!(Cli::try_parse_from(["tml", "job", "lease"]).is_err());
+        assert!(Cli::try_parse_from(["tml", "job", "lease", "30m", "--until", "now"]).is_err());
+        Cli::try_parse_from([
+            "tml",
+            "job",
+            "update",
+            "--lease-until",
+            "now+20m",
+            "--annotation",
+            "a.b=c=d",
+            "--remove-annotation",
+            "e",
+            "--if-revision",
+            "3",
+            "--yes",
+        ])
+        .unwrap();
+        assert!(
+            Cli::try_parse_from([
+                "tml",
+                "job",
+                "update",
+                "--lease",
+                "30m",
+                "--lease-until",
+                "now"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["tml", "job", "update", "--label", "x", "--clear-label"]).is_err()
+        );
+        Cli::try_parse_from(["tml", "job", "list", "--mine", "--finished", "-o", "json"]).unwrap();
+    }
 }

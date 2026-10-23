@@ -104,7 +104,7 @@ async fn open(
     );
 
     if verbose > 0 {
-        anstream::eprintln!("bridging to wss://{hostname}:{port}/");
+        anstream::eprintln!("WebSocket wss://{hostname}:{port}/");
         if let Some(claims) = describe_claims(token) {
             anstream::eprintln!("{claims}");
         }
@@ -167,16 +167,19 @@ fn handshake_error(error: WsError, hostname: &str, port: u16) -> anyhow::Error {
         .map(|body| body.trim().to_string())
         .filter(|body| !body.is_empty());
 
-    match body {
+    let error = match body {
         Some(body) => anyhow::anyhow!(
-            "connecting to wss://{hostname}:{port}/: HTTP error: {status}, \
-             {body:?}; re-run with `-v` to see JWT claims"
+            "the gateway at wss://{hostname}:{port}/ refused the connection: HTTP {status}: \
+             {body:?}"
         ),
         None => anyhow::anyhow!(
-            "connecting to wss://{hostname}:{port}/: HTTP error: {status} \
-             (no response body); re-run with `-v` to see JWT claims"
+            "the gateway at wss://{hostname}:{port}/ refused the connection: HTTP {status}"
         ),
-    }
+    };
+    crate::hinted(
+        error,
+        "Pass -v to see the JWT token claims used to connect to this service.",
+    )
 }
 
 /// TLS configuration.

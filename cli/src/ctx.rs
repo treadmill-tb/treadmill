@@ -1,10 +1,13 @@
 use anyhow::{Context as _, Result, bail};
 use std::path::PathBuf;
 use treadmill_rs::api::switchboard::client::SwitchboardClient;
+use treadmill_rs::api::switchboard::jobs::{JobListQuery, JobListState};
 use uuid::Uuid;
 
-use crate::cli::{ColorChoice, Globals, OutputFormat};
+use crate::cli::{ColorChoice, Globals, JobRef, OutputFormat};
 use crate::config::{self, Config, DEFAULT_PROFILE};
+use crate::display::{program, short};
+use crate::event::{self, Event};
 use crate::state::State;
 
 pub struct Ctx {
@@ -70,11 +73,12 @@ impl Ctx {
     pub fn authenticated_client(&self) -> Result<SwitchboardClient> {
         if self.config.token.is_none() && !self.state.token_valid() {
             if self.state.token.is_some() {
-                bail!("the stored session has expired; run `tml login`");
+                bail!("the stored session has expired; run `{} login`", program());
             }
             bail!(
-                "not logged in to {}; run `tml login`",
-                self.config.switchboard
+                "not logged in to {}; run `{} login`",
+                self.config.switchboard,
+                program()
             );
         }
         self.client()
@@ -99,16 +103,73 @@ impl Ctx {
         self.output == OutputFormat::Human
     }
 
-    /// Returns the UUID or the active job UUID if [None].
-    pub fn resolve_job(&self, reference: &Option<Uuid>) -> Result<Uuid> {
-        reference.map_or_else(|| {
+    pub fn interactive(&self) -> bool {
+        self.human() && !self.quiet && crate::tui::interactive()
+    }
+
+    /// The `--job` flag a suggested command needs for `job_id`, by its short
+    /// id: none for the active job.
+    pub fn job_flag(&self, job_id: Uuid) -> String {
+        if self.state.active_job == Some(job_id) {
+            String::new()
+        } else {
+            format!(" --job {}", short(job_id))
+        }
+    }
+
+    /// Returns the job's UUID, or the active job's if [None]. A `^<hex>`
+    /// suffix is looked up on the switchboard and must match exactly one job.
+    pub async fn resolve_job(&self, reference: Option<&JobRef>) -> Result<Uuid> {
+        let suffix = match reference {
+            Some(JobRef::Id(job)) => return Ok(*job),
+            Some(JobRef::Short(suffix)) => suffix,
+            None => {
                 let job = self
                     .state
                     .active_job
-                    .context("no job given and no active job set; pass --job or run `tml context job set <UUID>`")?;
-                self.note(&format!("Using active job {}", short(job)));
+                    .with_context(|| format!("no job given and no active job set; pass --job or run `{} context job set <JOB>`", program()))?;
+                self.note(&format!("Active job {}", short(job)));
+                return Ok(job);
+            }
+        };
+
+        let client = self.authenticated_client()?;
+        let queries = [
+            JobListState::Active,
+            JobListState::Reclaimable,
+            JobListState::Finished,
+        ]
+        .map(|state| JobListQuery {
+            include: "all".to_string(),
+            state,
+            q: Some(format!("^{suffix}")),
+            limit: Some(2),
+            cursor: None,
+        });
+        let pages =
+            futures_util::future::try_join_all(queries.iter().map(|query| client.list_jobs(query)))
+                .await
+                .with_context(|| format!("looking up job ^{suffix}"))?;
+
+        let jobs: Vec<Uuid> = pages
+            .into_iter()
+            .flat_map(|page| page.jobs)
+            .map(|job| job.job_id)
+            .collect();
+        match jobs[..] {
+            [job] => {
+                self.detail(&format!("^{suffix} → {job}"));
                 Ok(job)
-        }, Ok)
+            }
+            [] => bail!("no job matches ^{suffix}"),
+            _ => bail!(
+                "^{suffix} matches several jobs, including {}; give more digits",
+                jobs.iter()
+                    .map(Uuid::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
     }
 
     /// A progress or selection notice: stderr, human output only.
@@ -128,16 +189,29 @@ impl Ctx {
         anstream::eprintln!("{message}");
     }
 
+    pub fn event(&self, event: Event) {
+        event::emit(self.output, event);
+    }
+
+    /// See [`event::result`].
+    pub fn result(&self, event: Event) {
+        event::result(self.output, event);
+    }
+
+    /// A hint on what to do next: stderr, human output only.
+    pub fn hint(&self, message: &str) {
+        if !self.human() || self.quiet {
+            return;
+        }
+        let style = anstyle::AnsiColor::Cyan.on_default() | anstyle::Effects::BOLD;
+        anstream::eprintln!("{style}hint:{style:#} {message}");
+    }
+
     pub fn warn(&self, message: &str) {
+        self.event(Event::Warning { message });
         let style = anstyle::AnsiColor::Yellow.on_default() | anstyle::Effects::BOLD;
         anstream::eprintln!("{style}warning:{style:#} {message}");
     }
-}
-
-/// Short display form of a UUID: `^` plus its final eight hexadecimal digits.
-pub fn short(id: Uuid) -> String {
-    let text = id.simple().to_string();
-    format!("^{}", &text[text.len() - 8..])
 }
 
 pub fn set_color(choice: Option<ColorChoice>) {

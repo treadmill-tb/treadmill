@@ -1,0 +1,103 @@
+---
+source: cli/src/event.rs
+expression: "[serde_json::to_value(Event::Enqueued\n{ job_id: JOB, active: true, host_requirements: (&report).into(), }),\nserde_json::to_value(Event::State\n{\n    state: JobState::Initializing, initializing_stage:\n    Some(JobInitializingStage::Booting),\n}),\nserde_json::to_value(Event::Hosts\n{\n    compatible: BTreeMap::from([(HostState::Idle, 1), (HostState::Busy, 2)]),\n}),\nserde_json::to_value(Event::Assigned\n{ host_id: HOST, host_name: Some(\"pton-rpi2004\"), boards: vec![\"pico2\"], }),\nserde_json::to_value(Event::Ready),\nserde_json::to_value(Event::Ended\n{\n    state: JobState::Finalized, termination_reason:\n    Some(TerminationReason::ExecutionTimeout), job_error: None,\n}), serde_json::to_value(Event::Cancelled { job_id: JOB }),\nserde_json::to_value(Event::Warning { message: \"careful\" }),\nserde_json::to_value(Event::Job { job: &job }),].map(Result::unwrap)"
+---
+[
+  {
+    "active": true,
+    "host_requirements": {
+      "authorized": 5,
+      "errored": 0,
+      "image_matched": 2,
+      "predicate_matched": 3,
+      "schedulable": 1
+    },
+    "job_id": "0192f3a4-5b6c-7d8e-9fa0-b1c2d3e4f5a6",
+    "type": "enqueued"
+  },
+  {
+    "initializing_stage": "booting",
+    "state": "initializing",
+    "type": "state"
+  },
+  {
+    "compatible": {
+      "busy": 2,
+      "idle": 1
+    },
+    "type": "hosts"
+  },
+  {
+    "boards": [
+      "pico2"
+    ],
+    "host_id": "0679be07-6106-48aa-8057-b1d4f2e18a99",
+    "host_name": "pton-rpi2004",
+    "type": "assigned"
+  },
+  {
+    "type": "ready"
+  },
+  {
+    "job_error": null,
+    "state": "finalized",
+    "termination_reason": "execution_timeout",
+    "type": "ended"
+  },
+  {
+    "job_id": "0192f3a4-5b6c-7d8e-9fa0-b1c2d3e4f5a6",
+    "type": "cancelled"
+  },
+  {
+    "message": "careful",
+    "type": "warning"
+  },
+  {
+    "job": {
+      "annotations": {
+        "ci.run": "17"
+      },
+      "dispatched_on_host_id": "0679be07-6106-48aa-8057-b1d4f2e18a99",
+      "exit_message": null,
+      "host_cel_predicate": "true",
+      "image": {
+        "reference": {
+          "generation": 2,
+          "set_id": "00000000-0000-0000-0000-000000000000",
+          "type": "image_set"
+        },
+        "resolved_digest": null
+      },
+      "initializing_stage": null,
+      "job_error": null,
+      "job_id": "0192f3a4-5b6c-7d8e-9fa0-b1c2d3e4f5a6",
+      "job_ip_address": null,
+      "label": "bringup",
+      "lease_duration_secs": 3600,
+      "lease_expires_at": "2026-08-28T15:00:00Z",
+      "lease_expiry_action": "terminate",
+      "owner": {
+        "id": "00000000-0000-0000-0000-000000000000",
+        "kind": "user",
+        "name": "ada"
+      },
+      "parameters": {},
+      "permissions": [
+        "read"
+      ],
+      "predecessor": null,
+      "queued_at": "2026-08-28T13:59:00Z",
+      "restart_policy": {
+        "remaining_restarts": 0
+      },
+      "revision": 4,
+      "services": [],
+      "started_at": "2026-08-28T14:00:00Z",
+      "state": "ready",
+      "task_exit_status": null,
+      "terminated_at": null,
+      "termination_reason": null
+    },
+    "type": "job"
+  }
+]

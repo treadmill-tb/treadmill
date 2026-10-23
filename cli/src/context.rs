@@ -2,55 +2,74 @@ use anyhow::Result;
 use uuid::Uuid;
 
 use crate::cli::{ContextCommand, ContextJobCommand};
-use crate::ctx::{Ctx, short};
+use crate::ctx::Ctx;
+use crate::display::{self, short};
+use crate::event::Event;
+use crate::state::State;
+use crate::tui::{self, DIM, OK, plain, span};
 
 pub async fn run(ctx: &mut Ctx, command: &ContextCommand) -> Result<()> {
     match command {
         ContextCommand::Show => show(ctx),
         ContextCommand::Job { command } => match command {
-            ContextJobCommand::Set { job } => set_active(ctx, *job),
+            ContextJobCommand::Set { job } => {
+                let job = ctx.resolve_job(Some(job)).await?;
+                set_active(ctx, job)
+            }
             ContextJobCommand::Clear => clear(ctx),
         },
     }
 }
 
 pub fn set_active(ctx: &mut Ctx, job: Uuid) -> Result<()> {
-    ctx.state.active_job = Some(job);
-    ctx.state.store(&ctx.state_path)?;
-
+    ctx.state = State::update(&ctx.state_path, |state| state.active_job = Some(job))?;
     if ctx.human() {
-        anstream::println!("Active job: {}  ({job})", short(job));
-    } else {
-        anstream::println!("{}", serde_json::json!({ "active_job": job }));
+        print(vec![
+            span(OK, "✓ "),
+            plain(format!("Active job {}", short(job))),
+            span(DIM, format!(" · {job}")),
+        ]);
     }
+    ctx.result(Event::ActiveJob {
+        active_job: Some(job),
+    });
     Ok(())
 }
 
 fn clear(ctx: &mut Ctx) -> Result<()> {
-    ctx.state.active_job = None;
-    ctx.state.store(&ctx.state_path)?;
-    anstream::println!("Cleared the active job");
+    ctx.state = State::update(&ctx.state_path, |state| state.active_job = None)?;
+    if ctx.human() {
+        print(vec![span(OK, "✓ "), plain("No active job")]);
+    }
+    ctx.result(Event::ActiveJob { active_job: None });
     Ok(())
 }
 
 fn show(ctx: &Ctx) -> Result<()> {
     if !ctx.human() {
-        anstream::println!(
-            "{}",
-            serde_json::json!({
-                "profile": ctx.profile,
-                "switchboard": ctx.config.switchboard,
-                "active_job": ctx.state.active_job,
-            })
-        );
+        ctx.result(Event::Context {
+            profile: &ctx.profile,
+            switchboard: &ctx.config.switchboard,
+            active_job: ctx.state.active_job,
+        });
         return Ok(());
     }
 
-    anstream::println!("PROFILE       {}", ctx.profile);
-    anstream::println!("SWITCHBOARD   {}", ctx.config.switchboard);
-    match ctx.state.active_job {
-        Some(job) => anstream::println!("ACTIVE JOB    {}  ({job})", short(job)),
-        None => anstream::println!("ACTIVE JOB    —"),
+    let active_job = match ctx.state.active_job {
+        Some(job) => vec![plain(short(job)), span(DIM, format!(" · {job}"))],
+        None => vec![span(DIM, "—")],
+    };
+    let rows = [
+        ("Profile", vec![plain(ctx.profile.clone())]),
+        ("Switchboard", vec![plain(ctx.config.switchboard.clone())]),
+        ("Active job", active_job),
+    ];
+    for line in display::table(&rows) {
+        anstream::println!("{}", tui::render(&line, None, true));
     }
     Ok(())
+}
+
+fn print(line: tui::Line) {
+    anstream::println!("{}", tui::render(&line, None, true));
 }

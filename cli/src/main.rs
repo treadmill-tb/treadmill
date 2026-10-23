@@ -7,6 +7,17 @@ mod context;
 mod ctx;
 #[cfg(feature = "daemon")]
 mod daemon;
+#[cfg_attr(not(feature = "user"), allow(dead_code))]
+mod display;
+#[cfg_attr(not(feature = "user"), allow(dead_code))]
+mod event;
+#[cfg(feature = "user")]
+mod host;
+#[cfg(feature = "user")]
+mod job;
+#[cfg(feature = "user")]
+mod listing;
+mod locked_file;
 #[cfg(feature = "user")]
 mod login;
 #[cfg(feature = "user")]
@@ -15,15 +26,20 @@ mod ssh;
 mod sshconfig;
 #[cfg(feature = "user")]
 mod state;
+mod terminate;
+#[cfg_attr(not(feature = "user"), allow(dead_code))]
+mod tui;
 #[cfg(feature = "user")]
 mod wsproxy;
 
-use anyhow::{Context as _, Result};
+#[cfg(feature = "daemon")]
+use anyhow::Context as _;
+use anyhow::Result;
 use clap::Parser;
 use treadmill_rs::api::switchboard::client::SwitchboardClient;
 use uuid::Uuid;
 
-use cli::{Cli, Command, Globals, JobCommand};
+use cli::{Cli, Command, Globals, JobCommand, JobRef};
 #[cfg(feature = "daemon")]
 use cli::{DaemonJobCommand, ExitOutcome};
 #[cfg(feature = "user")]
@@ -52,16 +68,100 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+/// An error that exits `tml` with a status of its own, rather than 1, so that
+/// scripts can tell it apart from other failures.
+#[derive(Debug)]
+pub struct ExitError {
+    code: u8,
+    message: String,
+}
+
+impl ExitError {
+    pub fn new(code: u8, message: String) -> Self {
+        Self { code, message }
+    }
+}
+
+impl std::fmt::Display for ExitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ExitError {}
+
+/// An error with a hint on how to resolve it, which is printed on a `hint:`
+/// line of its own.
+#[derive(Debug)]
+pub struct Hinted {
+    error: anyhow::Error,
+    hint: String,
+}
+
+/// `error`, with `hint`: a sentence or a command.
+pub fn hinted(error: impl Into<anyhow::Error>, hint: impl Into<String>) -> anyhow::Error {
+    Hinted {
+        error: error.into(),
+        hint: hint.into(),
+    }
+    .into()
+}
+
+impl std::fmt::Display for Hinted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.error)
+    }
+}
+
+impl std::error::Error for Hinted {}
+
+/// A question answered with no. It is not reported as an error, but as
+/// `✗ Cancelled · <what was left unchanged>`, and exits with status 1.
+#[derive(Debug)]
+pub struct Cancelled(String);
+
+/// See [`Cancelled`]; `unchanged` says what was left as it was.
+pub fn cancelled(unchanged: impl Into<String>) -> anyhow::Error {
+    Cancelled(unchanged.into()).into()
+}
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cancelled: {}", self.0)
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
 fn fail(error: &anyhow::Error) -> std::process::ExitCode {
+    let (error, hint) = match error.downcast_ref::<Hinted>() {
+        Some(hinted) => (&hinted.error, Some(hinted.hint.as_str())),
+        None => (error, None),
+    };
     if let Some(io) = error.downcast_ref::<std::io::Error>()
         && io.kind() == std::io::ErrorKind::Interrupted
     {
         return std::process::ExitCode::from(130);
     }
 
-    let style = anstyle::AnsiColor::Red.on_default() | anstyle::Effects::BOLD;
-    anstream::eprintln!("{style}error:{style:#} {error:#}");
-    std::process::ExitCode::FAILURE
+    let code = if let Some(Cancelled(unchanged)) = error.downcast_ref::<Cancelled>() {
+        let style = anstyle::AnsiColor::Red.on_default();
+        let dim = anstyle::Style::new().dimmed();
+        anstream::eprintln!("{style}✗{style:#} Cancelled {dim}· {unchanged}{dim:#}");
+        std::process::ExitCode::FAILURE
+    } else {
+        let style = anstyle::AnsiColor::Red.on_default() | anstyle::Effects::BOLD;
+        anstream::eprintln!("{style}error:{style:#} {error:#}");
+        match error.downcast_ref::<ExitError>() {
+            Some(exit) => std::process::ExitCode::from(exit.code),
+            None => std::process::ExitCode::FAILURE,
+        }
+    };
+    if let Some(hint) = hint {
+        let style = anstyle::AnsiColor::Cyan.on_default() | anstyle::Effects::BOLD;
+        anstream::eprintln!("{style}hint:{style:#} {hint}");
+    }
+    code
 }
 
 async fn run(args: Cli) -> Result<()> {
@@ -79,8 +179,8 @@ async fn run(args: Cli) -> Result<()> {
             context::run(&mut Ctx::load(&args.globals)?, &command).await
         }
         Command::Job {
-            command: JobCommand::Terminate { job },
-        } => terminate(&args.globals, job).await,
+            command: JobCommand::Terminate { job, yes },
+        } => terminate(&args.globals, job, yes).await,
         #[cfg(feature = "user")]
         Command::Job {
             command: JobCommand::User(command),
@@ -90,11 +190,13 @@ async fn run(args: Cli) -> Result<()> {
             command: JobCommand::Daemon(command),
         } => daemon_job(&args.globals, command).await,
         #[cfg(feature = "user")]
+        Command::Host { command } => host::run(&Ctx::load(&args.globals)?, &command).await,
+        #[cfg(feature = "user")]
         Command::Ssh { command } => {
             let mut ctx = Ctx::load(&args.globals)?;
             require_streaming(&ctx, true);
             match command {
-                SshCommand::Setup(args) => sshconfig::setup(&ctx, &args),
+                SshCommand::Setup(args) => sshconfig::setup(&ctx, &args).await,
                 SshCommand::Proxy { host } => ssh::proxy(&mut ctx, &host).await,
             }
         }
@@ -128,11 +230,11 @@ async fn daemon_job(globals: &Globals, command: DaemonJobCommand) -> Result<()> 
     }
 }
 
-async fn job_client(globals: &Globals, job: Option<Uuid>) -> Result<(SwitchboardClient, Uuid)> {
+async fn job_client(globals: &Globals, job: Option<JobRef>) -> Result<(SwitchboardClient, Uuid)> {
     #[cfg(feature = "daemon")]
     if let Some(credentials) = daemon::credentials(globals.dbus_bus).await? {
-        if let Some(job) = job
-            && job != credentials.job_id
+        if let Some(job) = &job
+            && !job.matches(credentials.job_id)
         {
             anyhow::bail!(
                 "inside a job, only that job ({}) can be acted on",
@@ -145,20 +247,18 @@ async fn job_client(globals: &Globals, job: Option<Uuid>) -> Result<(Switchboard
     #[cfg(feature = "user")]
     {
         let ctx = Ctx::load(globals)?;
-        Ok((ctx.authenticated_client()?, ctx.resolve_job(&job)?))
+        Ok((
+            ctx.authenticated_client()?,
+            ctx.resolve_job(job.as_ref()).await?,
+        ))
     }
     #[cfg(not(feature = "user"))]
     anyhow::bail!("no tml daemon found on D-Bus")
 }
 
-async fn terminate(globals: &Globals, job: Option<Uuid>) -> Result<()> {
+async fn terminate(globals: &Globals, job: Option<JobRef>, yes: bool) -> Result<()> {
     let (client, job_id) = job_client(globals, job).await?;
-    client
-        .terminate_job(job_id)
-        .await
-        .with_context(|| format!("requesting termination of job {job_id}"))?;
-    anstream::eprintln!("Requested termination of job {job_id}");
-    Ok(())
+    terminate::run(globals, &client, job_id, yes).await
 }
 
 #[cfg(feature = "user")]
@@ -168,7 +268,8 @@ fn require_streaming(ctx: &Ctx, streams: bool) {
     }
     let style = anstyle::AnsiColor::Red.on_default() | anstyle::Effects::BOLD;
     anstream::eprintln!(
-        "{style}error:{style:#} this command streams bytes and has no structured output"
+        "{style}error:{style:#} -o json and -o jsonl are not supported here, because this \
+         command's output is a byte stream"
     );
     std::process::exit(2);
 }
@@ -177,35 +278,86 @@ fn require_streaming(ctx: &Ctx, streams: bool) {
 async fn user_job(ctx: &mut Ctx, command: &UserJobCommand) -> Result<()> {
     // The SSH family hands the terminal to another program, so it has no
     // structured rendering to offer.
-    require_streaming(ctx, !matches!(command, UserJobCommand::SetActive { .. }));
+    require_streaming(
+        ctx,
+        matches!(
+            command,
+            UserJobCommand::Ssh { .. }
+                | UserJobCommand::Exec { .. }
+                | UserJobCommand::Sftp { .. }
+                | UserJobCommand::Upload { .. }
+                | UserJobCommand::Download { .. }
+                | UserJobCommand::WsProxy { .. }
+        ),
+    );
 
     match command {
+        UserJobCommand::Create(args) => job::create(ctx, args).await,
+        UserJobCommand::Wait { job } => job::wait::run(ctx, job.as_ref()).await,
+        UserJobCommand::Status { job } => job::status::run(ctx, job.as_ref()).await,
         UserJobCommand::Ssh { job, target, args } => {
-            ssh::ssh(ctx, ctx.resolve_job(job)?, target, args).await
+            ssh::ssh(ctx, ctx.resolve_job(job.as_ref()).await?, target, args).await
         }
         UserJobCommand::Exec {
             job,
             target,
             command,
-        } => ssh::exec_command(ctx, ctx.resolve_job(job)?, target, command).await,
+        } => ssh::exec_command(ctx, ctx.resolve_job(job.as_ref()).await?, target, command).await,
         UserJobCommand::Sftp { job, target, args } => {
-            ssh::sftp(ctx, ctx.resolve_job(job)?, target, args).await
+            ssh::sftp(ctx, ctx.resolve_job(job.as_ref()).await?, target, args).await
         }
         UserJobCommand::Upload {
             job,
             target,
             local,
             remote,
-        } => ssh::upload(ctx, ctx.resolve_job(job)?, target, local, remote.as_deref()).await,
+        } => {
+            ssh::upload(
+                ctx,
+                ctx.resolve_job(job.as_ref()).await?,
+                target,
+                local,
+                remote.as_deref(),
+            )
+            .await
+        }
         UserJobCommand::Download {
             job,
             target,
             remote,
             local,
-        } => ssh::download(ctx, ctx.resolve_job(job)?, target, remote, local.as_deref()).await,
-        UserJobCommand::SetActive { job } => context::set_active(ctx, *job),
+        } => {
+            ssh::download(
+                ctx,
+                ctx.resolve_job(job.as_ref()).await?,
+                target,
+                remote,
+                local.as_deref(),
+            )
+            .await
+        }
+        UserJobCommand::SetActive { job } => {
+            let job = ctx.resolve_job(Some(job)).await?;
+            context::set_active(ctx, job)
+        }
         UserJobCommand::WsProxy { job, service } => {
-            wsproxy::run(ctx, ctx.resolve_job(job)?, service, None).await
+            wsproxy::run(ctx, ctx.resolve_job(job.as_ref()).await?, service, None).await
+        }
+        UserJobCommand::List(args) => job::list::run(ctx, args).await,
+        UserJobCommand::Update(args) => job::update(ctx, args).await,
+        UserJobCommand::Lease {
+            job,
+            length,
+            until,
+            if_revision,
+            yes,
+        } => {
+            let lease = match (length, until) {
+                (Some(length), _) => *length,
+                (None, Some(until)) => job::resolve_lease_until(*until),
+                (None, None) => unreachable!("clap requires a LENGTH or --until"),
+            };
+            job::lease(ctx, job.as_ref(), lease, *if_revision, *yes).await
         }
     }
 }

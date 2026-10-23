@@ -15,10 +15,12 @@ use crate::api::switchboard::JobRequest;
 use crate::api::switchboard::TosInfoResponse;
 use crate::api::switchboard::WhoAmIResponse;
 use crate::api::switchboard::audit::AuditFeedResponse;
-use crate::api::switchboard::hosts::HostListEntry;
+use crate::api::switchboard::hosts::{
+    HostInfo, HostListEntry, HostRequirementsReport, HostRequirementsRequest,
+};
 use crate::api::switchboard::images::ImageSetInfo;
 use crate::api::switchboard::jobs::{
-    EnqueueJobResponse, JobEnvironment, JobExitStatusRequest, JobInfo, JobListQuery,
+    EnqueueJobResponse, JobDefaults, JobEnvironment, JobExitStatusRequest, JobInfo, JobListQuery,
     JobListResponse, JobServiceAnnouncement, JobServiceCredentials, UpdateJobRequest, job_etag,
     parse_job_etag,
 };
@@ -192,6 +194,11 @@ impl SwitchboardClient {
         self.get_json(&format!("/api/v1/jobs/{job_id}")).await
     }
 
+    /// `GET /jobs/defaults` — the defaults applied to a new job.
+    pub async fn job_defaults(&self) -> Result<JobDefaults, ClientError> {
+        self.get_json("/api/v1/jobs/defaults").await
+    }
+
     /// `GET /jobs` — one page of the jobs filtered by `query`.
     ///
     /// Pass the response's `next_cursor` back as `query.cursor` for the next.
@@ -303,6 +310,19 @@ impl SwitchboardClient {
     /// e.g. to populate a host picker.
     pub async fn list_hosts(&self) -> Result<Vec<HostListEntry>, ClientError> {
         self.get_json("/api/v1/hosts").await
+    }
+
+    /// `GET /hosts/{id}` — one host, with its whole spec.
+    pub async fn get_host(&self, host_id: Uuid) -> Result<HostInfo, ClientError> {
+        self.get_json(&format!("/api/v1/hosts/{host_id}")).await
+    }
+
+    /// `POST /hosts/match` — which hosts meet a job's requirements.
+    pub async fn match_hosts(
+        &self,
+        req: &HostRequirementsRequest,
+    ) -> Result<HostRequirementsReport, ClientError> {
+        self.post_json("/api/v1/hosts/match", req).await
     }
 
     /// `GET /image-sets` — the image sets the caller owns, e.g. to populate

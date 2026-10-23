@@ -8,10 +8,11 @@ use treadmill_rs::api::switchboard::jobs::{JobServiceCredentials, JobServiceEndp
 use uuid::Uuid;
 
 use crate::cli::SshJob;
-use crate::ctx::{Ctx, short};
-use crate::state::CachedJobServiceToken;
+use crate::ctx::Ctx;
+use crate::display::{SSHWS_PROTOCOL, short};
+use crate::hinted;
+use crate::state::{CachedJobServiceToken, State};
 
-pub const SSHWS_PROTOCOL: &str = "sshws";
 pub const PROGRAM: &str = "tml";
 /// Everything needed to launch a client against one job service.
 struct Connection {
@@ -239,7 +240,10 @@ async fn connect(ctx: &mut Ctx, job_id: Uuid, target: &SshJob) -> Result<Connect
         None => discover_service(&client, job_id).await?,
     };
 
-    ctx.note(&format!("Connecting to service {service}…"));
+    ctx.detail(&format!(
+        "Connecting to job {} · service {service}",
+        short(job_id)
+    ));
     let cached = service_credentials(ctx, job_id, &service).await?;
 
     connection(ctx, target, job_id, service, cached)
@@ -342,20 +346,30 @@ fn exec(ctx: &Ctx, program: &str, argv: &[String]) -> Result<()> {
 
 fn service_token_error(
     error: treadmill_rs::api::switchboard::client::ClientError,
+    job_id: Uuid,
     service: &str,
 ) -> anyhow::Error {
     use treadmill_rs::api::switchboard::client::ClientError;
 
+    let tml = crate::display::program();
     match &error {
-        ClientError::Status { status: 404, .. } => anyhow::anyhow!(
-            "the job announces no service named {service:?} any more; re-check it and retry"
+        ClientError::Status { status: 404, .. } => hinted(
+            anyhow::anyhow!("job {job_id} has no service named {service:?}"),
+            format!(
+                "`{tml} job status --job {}` lists its services.",
+                short(job_id)
+            ),
         ),
-        ClientError::Status { status: 409, .. } => {
-            anyhow::anyhow!("the job has no network address yet; wait for it to become ready")
-        }
-        ClientError::Status { status: 503, .. } => {
-            anyhow::anyhow!("this deployment runs no job service gateway, so SSH is unavailable")
-        }
+        ClientError::Status { status: 409, .. } => hinted(
+            anyhow::anyhow!("job {job_id} has no network address yet"),
+            format!(
+                "`{tml} job wait --job {}` waits until it is ready.",
+                short(job_id)
+            ),
+        ),
+        ClientError::Status { status: 503, .. } => anyhow::anyhow!(
+            "this switchboard has no job service gateway, so jobs cannot be reached over SSH"
+        ),
         _ => anyhow::Error::new(error).context("minting a job service token"),
     }
 }
@@ -377,7 +391,7 @@ pub(crate) async fn service_credentials(
         .authenticated_client()?
         .create_job_service_token(job_id, service)
         .await
-        .map_err(|error| service_token_error(error, service))?;
+        .map_err(|error| service_token_error(error, job_id, service))?;
     if credentials.endpoints.is_empty() {
         bail!("the switchboard returned no gateway endpoint for this service");
     }
@@ -386,12 +400,13 @@ pub(crate) async fn service_credentials(
         token: expose(&credentials),
         expires_at: credentials.expires_at,
     };
-    ctx.state
-        .job_service_tokens
-        .entry(job_id)
-        .or_default()
-        .insert(service.to_string(), cached.clone());
-    ctx.state.store(&ctx.state_path)?;
+    ctx.state = State::update(&ctx.state_path, |state| {
+        state
+            .job_service_tokens
+            .entry(job_id)
+            .or_default()
+            .insert(service.to_string(), cached.clone());
+    })?;
     Ok(cached)
 }
 

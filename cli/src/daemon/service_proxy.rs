@@ -5,6 +5,8 @@ use log::{info, warn};
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::locked_file;
+
 use treadmill_rs::api::switchboard::jobs::{JobGatewayInfo, JobServiceAnnouncement};
 
 pub const MAX_SERVICE_NAME_LEN: usize = 16;
@@ -213,19 +215,10 @@ impl ServiceProxy {
 }
 
 async fn write_atomically(path: &Path, contents: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .context("Creating the config directory")?;
-    }
-
-    let tmp_path = path.with_extension("tmp");
-    tokio::fs::write(&tmp_path, contents.as_bytes())
+    let (path, contents) = (path.to_path_buf(), contents.to_string());
+    tokio::task::spawn_blocking(move || locked_file::replace(&path, 0o666, &contents))
         .await
-        .context("Writing the temporary config file")?;
-    tokio::fs::rename(&tmp_path, path)
-        .await
-        .context("Renaming the temporary config file into place")
+        .context("Joining the config writer")?
 }
 
 #[cfg(test)]

@@ -1,13 +1,17 @@
 use anyhow::{Context as _, Result, bail};
-use dialoguer::{Confirm, Password, Select};
 use treadmill_rs::api::switchboard::client::LoginCompleteOutcome;
 use treadmill_rs::api::switchboard::{
-    AuthProvidersResponse, LoginCompleteRequest, LoginStagedResponse,
+    AuthProvidersResponse, LoginCompleteRequest, LoginStagedResponse, WhoAmIResponse,
 };
 use treadmill_rs::util::Secret;
 
 use crate::cli::LoginArgs;
 use crate::ctx::Ctx;
+use crate::display;
+use crate::event::Event;
+use crate::state::State;
+use crate::tui::{self, DIM, Item, OK, Terminal, plain, span};
+use crate::{cancelled, hinted};
 
 pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
     let client = ctx.anonymous_client()?;
@@ -16,18 +20,21 @@ pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
         .await
         .context("listing the switchboard's login providers")?;
 
-    let login_path = select_login(ctx, &providers, args)?;
+    let login_path = select_login(ctx, &providers, args).await?;
     let url = client.login_url(&login_path);
 
-    ctx.note(&format!("Logging in to {}", ctx.config.switchboard));
-    open_browser(&url);
-    anstream::eprintln!(
-        "Open this URL to authenticate, then paste the login code the page shows:\n\n    {url}\n"
-    );
+    if open_browser(&url) {
+        anstream::eprintln!(
+            "\n  Opening the login page in your browser. If this does not work, open the \
+             following link:\n  {url}\n"
+        );
+    } else {
+        anstream::eprintln!("\n  To log in, open the following link:\n  {url}\n");
+    }
 
     let mut staged = LoginStagedResponse {
         required: Vec::new(),
-        login_code: read_login_code()?,
+        login_code: read_login_code().await?,
         tos_version: None,
     };
 
@@ -38,12 +45,15 @@ pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
         };
 
         if staged.required.iter().any(|step| step == "tos") {
-            accept_tos(ctx, &client, &mut request).await?;
+            accept_tos(&client, &mut request).await?;
         } else if let Some(step) = staged.required.first() {
-            bail!(
-                "this switchboard requires the {step:?} login step, which this \
-                 version of tml cannot perform; complete the login in a browser"
-            );
+            return Err(hinted(
+                anyhow::anyhow!(
+                    "the switchboard requires the login step {step:?}, which this version of \
+                     tml does not support"
+                ),
+                "Log in through the web console instead.",
+            ));
         }
 
         match client
@@ -52,40 +62,69 @@ pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
             .context("completing the staged login")?
         {
             LoginCompleteOutcome::Complete(response) => {
-                ctx.state.token = Some(response.token.encode_for_http());
-                ctx.state.expires_at = Some(response.expires_at);
-                ctx.state.store(&ctx.state_path)?;
+                ctx.state = State::update(&ctx.state_path, |state| {
+                    state.token = Some(response.token.encode_for_http());
+                    state.expires_at = Some(response.expires_at);
+                })?;
 
-                let whoami = ctx.client()?.whoami().await?;
-                anstream::println!("Logged in as {}", whoami.name);
+                let identity = ctx.client()?.whoami().await?;
+                if ctx.human() {
+                    ctx.note(&tui::render(
+                        &vec![
+                            span(OK, "✓ "),
+                            plain(format!("Logged in as {}", identity.name)),
+                            span(DIM, format!(" · {}", ctx.config.switchboard)),
+                        ],
+                        None,
+                        true,
+                    ));
+                }
+                ctx.result(identity_event(ctx, &identity));
                 return Ok(());
             }
-            LoginCompleteOutcome::Staged(fresh) => {
-                ctx.note("The switchboard requires another step to finish this login");
-                staged = fresh;
-            }
+            LoginCompleteOutcome::Staged(fresh) => staged = fresh,
         }
     }
 }
 
 pub async fn logout(ctx: &mut Ctx) -> Result<()> {
+    let human = ctx.human();
+    let print = |line: tui::Line| {
+        if human {
+            anstream::println!("{}", tui::render(&line, None, true));
+        }
+    };
     if ctx.state.token.is_none() {
-        ctx.note("No stored credentials to remove");
+        print(vec![
+            plain("Not logged in"),
+            span(DIM, " · nothing removed"),
+        ]);
+        ctx.result(Event::LoggedOut { revoked: None });
         return Ok(());
     }
 
-    match revoke(ctx).await {
-        Ok(true) => ctx.note("Revoked the session token"),
-        Ok(false) => ctx.note("The session token was already gone from the switchboard"),
-        Err(e) => ctx.warn(&format!(
-            "could not revoke the session token ({e:#}); removing it locally anyway"
-        )),
-    }
+    let revoked = match revoke(ctx).await {
+        Ok(true) => {
+            print(vec![span(OK, "✓ "), plain("Session token revoked")]);
+            Some(true)
+        }
+        Ok(false) => Some(false),
+        Err(e) => {
+            ctx.warn(&format!("the session token could not be revoked: {e:#}"));
+            None
+        }
+    };
 
-    ctx.state.token = None;
-    ctx.state.expires_at = None;
-    ctx.state.store(&ctx.state_path)?;
-    anstream::println!("Removed the stored credentials");
+    ctx.state = State::update(&ctx.state_path, |state| {
+        state.token = None;
+        state.expires_at = None;
+    })?;
+    let mut removed = vec![span(OK, "✓ "), plain("Credentials removed")];
+    if revoked == Some(false) {
+        removed.push(span(DIM, " · session token already revoked"));
+    }
+    print(removed);
+    ctx.result(Event::LoggedOut { revoked });
     Ok(())
 }
 
@@ -109,25 +148,51 @@ pub async fn whoami(ctx: &Ctx) -> Result<()> {
     let identity = ctx.authenticated_client()?.whoami().await?;
 
     if !ctx.human() {
-        anstream::println!("{}", serde_json::to_string_pretty(&identity)?);
+        ctx.result(identity_event(ctx, &identity));
         return Ok(());
     }
 
-    anstream::println!("PROFILE       {}", ctx.profile);
-    anstream::println!("SWITCHBOARD   {}", ctx.config.switchboard);
-    anstream::println!("SUBJECT       {}", identity.user_id);
-    anstream::println!("NAME          {}", identity.name);
+    let mut user = vec![
+        plain(identity.name.clone()),
+        span(DIM, format!(" · {}", identity.user_id)),
+    ];
+    if identity.admin {
+        user.push(span(DIM, " · admin"));
+    }
+    let rows = [
+        ("Profile", vec![plain(ctx.profile.clone())]),
+        ("Switchboard", vec![plain(ctx.config.switchboard.clone())]),
+        ("User", user),
+    ];
+    for line in display::table(&rows) {
+        anstream::println!("{}", tui::render(&line, None, true));
+    }
     Ok(())
 }
 
-fn select_login(ctx: &Ctx, providers: &AuthProvidersResponse, args: &LoginArgs) -> Result<String> {
+fn identity_event<'a>(ctx: &'a Ctx, identity: &'a WhoAmIResponse) -> Event<'a> {
+    Event::Identity {
+        profile: &ctx.profile,
+        switchboard: &ctx.config.switchboard,
+        identity,
+    }
+}
+
+async fn select_login(
+    ctx: &Ctx,
+    providers: &AuthProvidersResponse,
+    args: &LoginArgs,
+) -> Result<String> {
     if let Some(key) = &args.identity {
         let identity = providers
             .mock_identities
             .iter()
             .find(|id| &id.key == key)
             .with_context(|| format!("no mock identity {key:?} on this switchboard"))?;
-        ctx.warn("signing in with a development-only mock identity");
+        ctx.warn(&format!(
+            "{} is a mock identity, for development only",
+            identity.label
+        ));
         return Ok(identity.login_path.clone());
     }
 
@@ -140,10 +205,10 @@ fn select_login(ctx: &Ctx, providers: &AuthProvidersResponse, args: &LoginArgs) 
         return Ok(provider.login_path.clone());
     }
 
-    let mut labels: Vec<String> = providers
+    let mut items: Vec<Item> = providers
         .oauth
         .iter()
-        .map(|p| p.display_name.clone())
+        .map(|p| Item::new(vec![plain(p.display_name.clone())], &p.display_name))
         .collect();
     let mut paths: Vec<String> = providers
         .oauth
@@ -151,24 +216,32 @@ fn select_login(ctx: &Ctx, providers: &AuthProvidersResponse, args: &LoginArgs) 
         .map(|p| p.login_path.clone())
         .collect();
     for identity in &providers.mock_identities {
-        labels.push(format!("{} [development only]", identity.label));
+        let line = vec![
+            plain(identity.label.clone()),
+            span(DIM, " · development only"),
+        ];
+        items.push(Item::new(line, &identity.label));
         paths.push(identity.login_path.clone());
     }
 
     match paths.len() {
-        0 => bail!("this switchboard advertises no login providers"),
+        0 => bail!("{} offers no login providers", ctx.config.switchboard),
         1 => Ok(paths.remove(0)),
         _ => {
-            if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                bail!(
-                    "this switchboard offers several login providers; pass --provider or --identity"
-                );
+            if !tui::interactive() {
+                return Err(hinted(
+                    anyhow::anyhow!("{} offers several login providers", ctx.config.switchboard),
+                    "Pass --provider <NAME> or --identity <KEY> to choose one.",
+                ));
             }
-            let chosen = Select::new()
-                .with_prompt("Choose an identity provider")
-                .items(&labels)
-                .default(0)
-                .interact()?;
+            let mut term = Terminal::open()?;
+            let chosen = tui::select(&mut term, "Identity provider", &[], &items, 0, true)
+                .await?
+                .ok_or_else(tui::interrupted)?;
+            term.print(&[tui::answered(
+                "Identity provider",
+                items[chosen].line.clone(),
+            )])?;
             Ok(paths.remove(chosen))
         }
     }
@@ -177,13 +250,16 @@ fn select_login(ctx: &Ctx, providers: &AuthProvidersResponse, args: &LoginArgs) 
 /// The callback shows the login code when the flow declared no `return_to`,
 /// which is the only completion route open to a client that cannot have a
 /// loopback URL allowlisted.
-fn read_login_code() -> Result<Secret<String>> {
-    let raw: String = if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+async fn read_login_code() -> Result<Secret<String>> {
+    let raw: String = if tui::interactive() {
         // The code is a token-minting secret, so it is read like a password:
         // never echoed, and never left in the scrollback.
-        Password::new()
-            .with_prompt("Paste the login code")
-            .interact()?
+        let mut term = Terminal::open()?;
+        let code = tui::secret(&mut term, "Login code", "paste it here")
+            .await?
+            .ok_or_else(tui::interrupted)?;
+        term.print(&[tui::answered("Login code", vec![span(DIM, "entered")])])?;
+        code
     } else {
         use std::io::Read;
         let mut raw = String::new();
@@ -194,7 +270,6 @@ fn read_login_code() -> Result<Secret<String>> {
 }
 
 async fn accept_tos(
-    ctx: &Ctx,
     client: &treadmill_rs::api::switchboard::client::SwitchboardClient,
     request: &mut LoginCompleteRequest,
 ) -> Result<()> {
@@ -203,25 +278,26 @@ async fn accept_tos(
         .await
         .context("fetching the Terms of Service")?;
 
-    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        bail!(
-            "this login requires accepting the Terms of Service, which needs a terminal; \
-             complete the login in a browser"
-        );
+    if !tui::interactive() {
+        return Err(hinted(
+            anyhow::anyhow!("accepting the Terms of Service requires a terminal"),
+            "Log in through the web console instead.",
+        ));
     }
 
-    ctx.note("This login requires accepting the Terms of Service.");
-    anstream::eprintln!("\n{}\n", tos.text);
+    let bold = anstyle::Style::new().bold();
+    let dim = anstyle::Style::new().dimmed();
+    anstream::eprintln!(
+        "\n  {bold}Terms of Service{bold:#} {dim}· version {}{dim:#}\n",
+        tos.version
+    );
+    for line in tos.text.lines() {
+        anstream::eprintln!("  {line}");
+    }
+    anstream::eprintln!();
 
-    if !Confirm::new()
-        .with_prompt(format!(
-            "Accept version {} of the Terms of Service?",
-            tos.version
-        ))
-        .default(false)
-        .interact()?
-    {
-        bail!("the Terms of Service were not accepted");
+    if !tui::ask(&format!("Accept Terms of Service version {}?", tos.version)).await? {
+        return Err(cancelled("Terms of Service not accepted, not logged in"));
     }
 
     request.tos_version = Some(tos.version);
@@ -229,8 +305,8 @@ async fn accept_tos(
 }
 
 /// Best-effort: the URL is printed regardless, and the paste flow needs the
-/// page open anyway.
-fn open_browser(url: &str) {
+/// page open anyway. Whether a browser could be started.
+fn open_browser(url: &str) -> bool {
     let opener = std::env::var("BROWSER").ok();
     let candidates: Vec<&str> = match &opener {
         Some(browser) => vec![browser.as_str()],
@@ -244,7 +320,8 @@ fn open_browser(url: &str) {
             .stderr(std::process::Stdio::null())
             .spawn();
         if spawned.is_ok() {
-            return;
+            return true;
         }
     }
+    false
 }
