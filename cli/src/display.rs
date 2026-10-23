@@ -188,23 +188,9 @@ pub async fn job_rows(client: &SwitchboardClient, job: &JobInfo) -> Vec<(&'stati
             Some(host) => with_boards(host),
         },
     };
-    let then = match job.lease_expiry_action {
-        JobLeaseExpiryAction::Terminate => " · then stop",
-        JobLeaseExpiryAction::Preempt => " · then reclaimable",
-    };
-    let lease = match job.lease_expires_at {
-        _ if matches!(job.state, JobState::Terminating | JobState::Finalized) => none(),
-        Some(at) => vec![
-            plain(format!("ends {}", describe_instant(at, now))),
-            span(DIM, then),
-        ],
-        None => vec![
-            plain(format!(
-                "{} from start",
-                human_duration(chrono::TimeDelta::seconds(job.lease_duration_secs))
-            )),
-            span(DIM, then),
-        ],
+    let lease = match job.state {
+        JobState::Terminating | JobState::Finalized => none(),
+        _ => lease(job, now),
     };
     let address = job
         .job_ip_address
@@ -230,6 +216,24 @@ pub async fn job_rows(client: &SwitchboardClient, job: &JobInfo) -> Vec<(&'stati
         ("Address", address),
         ("Services", services),
     ]
+}
+
+/// A job's lease: when it ends, or how long it runs from the job's start, and
+/// what happens then.
+pub fn lease(job: &JobInfo, now: chrono::DateTime<chrono::Utc>) -> Line {
+    let then = match job.lease_expiry_action {
+        JobLeaseExpiryAction::Terminate => " · then stop",
+        JobLeaseExpiryAction::Preempt => " · then reclaimable",
+    };
+    let when = match job.lease_expires_at {
+        Some(at) if at > now => format!("ends {}", describe_instant(at, now)),
+        Some(at) => format!("ended {}", describe_instant(at, now)),
+        None => format!(
+            "{} from start",
+            human_duration(chrono::TimeDelta::seconds(job.lease_duration_secs))
+        ),
+    };
+    vec![plain(when), span(DIM, then)]
 }
 
 pub fn with_boards(host: &HostListEntry) -> Line {

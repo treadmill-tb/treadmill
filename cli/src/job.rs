@@ -14,10 +14,10 @@ use uuid::Uuid;
 use crate::ExitError;
 use crate::cli::{ExpiryAction, JobCreateArgs, JobRef, JobUpdateArgs, LeaseUntil};
 use crate::ctx::Ctx;
-use crate::display::{HostState, describe_instant, human_duration, short};
-use crate::event::Event;
+use crate::display::{self, HostState, describe_instant, short};
+use crate::event::{Event, Lease};
 use crate::state::State;
-use crate::tui;
+use crate::tui::{self, DIM, OK, plain, span};
 
 mod create_ui;
 pub mod list;
@@ -388,32 +388,29 @@ async fn send_update(
         None
     };
 
-    if !ctx.human() {
-        let mut output = serde_json::json!({ "job_id": job_id, "revision": revision });
+    if ctx.human() {
+        let mut lines = vec![vec![
+            span(OK, "✓ "),
+            plain(format!("Updated job {}", short(job_id))),
+            span(DIM, format!(" · revision {revision}")),
+        ]];
         if let Some(job) = &job {
-            output["lease_duration_secs"] = job.lease_duration_secs.into();
-            output["lease_expires_at"] = serde_json::to_value(job.lease_expires_at)?;
-            output["lease_expiry_action"] = serde_json::to_value(job.lease_expiry_action)?;
+            let rows = [("Lease", display::lease(job, chrono::Utc::now()))];
+            lines.extend(display::table(&rows, &[]));
         }
-        anstream::println!("{output}");
-        return Ok(());
-    }
-
-    anstream::println!("Updated job {}, now at revision {revision}", short(job_id));
-    if let Some(job) = &job {
-        let now = chrono::Utc::now();
-        let after = after_expiry(job.lease_expiry_action);
-        match job.lease_expires_at {
-            None => anstream::println!(
-                "Lease: {} from the job's start, which is still to come",
-                human_duration(chrono::TimeDelta::seconds(job.lease_duration_secs))
-            ),
-            Some(end) if end > now => {
-                anstream::println!("Lease ends {}; then {after}", describe_instant(end, now))
-            }
-            Some(end) => anstream::println!("Lease ended {}; {after}", describe_instant(end, now)),
+        for line in lines {
+            anstream::println!("{}", tui::render(&line, None, true));
         }
     }
+    ctx.result(Event::Updated {
+        job_id,
+        revision,
+        lease: job.map(|job| Lease {
+            lease_duration_secs: job.lease_duration_secs,
+            lease_expires_at: job.lease_expires_at,
+            lease_expiry_action: job.lease_expiry_action,
+        }),
+    });
     Ok(())
 }
 

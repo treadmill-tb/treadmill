@@ -58,6 +58,6 @@ pub async fn run(
         "{ok}✓{ok:#} Termination requested {dim}· {}{dim:#}",
         short(job_id)
     ));
-    event::emit(output, Event::TerminationRequested { job_id });
+    event::result(output, Event::TerminationRequested { job_id });
     Ok(())
 }

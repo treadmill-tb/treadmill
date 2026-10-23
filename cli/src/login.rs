@@ -1,14 +1,16 @@
 use anyhow::{Context as _, Result, bail};
 use treadmill_rs::api::switchboard::client::LoginCompleteOutcome;
 use treadmill_rs::api::switchboard::{
-    AuthProvidersResponse, LoginCompleteRequest, LoginStagedResponse,
+    AuthProvidersResponse, LoginCompleteRequest, LoginStagedResponse, WhoAmIResponse,
 };
 use treadmill_rs::util::Secret;
 
 use crate::cli::LoginArgs;
 use crate::ctx::Ctx;
+use crate::display;
+use crate::event::Event;
 use crate::state::State;
-use crate::tui::{self, DIM, Item, Terminal, plain, span};
+use crate::tui::{self, DIM, Item, OK, Terminal, plain, span};
 
 pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
     let client = ctx.anonymous_client()?;
@@ -58,8 +60,19 @@ pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
                     state.expires_at = Some(response.expires_at);
                 })?;
 
-                let whoami = ctx.client()?.whoami().await?;
-                anstream::println!("Logged in as {}", whoami.name);
+                let identity = ctx.client()?.whoami().await?;
+                if ctx.human() {
+                    ctx.note(&tui::render(
+                        &vec![
+                            span(OK, "✓ "),
+                            plain(format!("Logged in as {}", identity.name)),
+                            span(DIM, format!(" · {}", ctx.config.switchboard)),
+                        ],
+                        None,
+                        true,
+                    ));
+                }
+                ctx.result(identity_event(ctx, &identity));
                 return Ok(());
             }
             LoginCompleteOutcome::Staged(fresh) => {
@@ -73,22 +86,42 @@ pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
 pub async fn logout(ctx: &mut Ctx) -> Result<()> {
     if ctx.state.token.is_none() {
         ctx.note("No stored credentials to remove");
+        ctx.result(Event::LoggedOut { revoked: None });
         return Ok(());
     }
 
-    match revoke(ctx).await {
-        Ok(true) => ctx.note("Revoked the session token"),
-        Ok(false) => ctx.note("The session token was already gone from the switchboard"),
-        Err(e) => ctx.warn(&format!(
-            "could not revoke the session token ({e:#}); removing it locally anyway"
-        )),
-    }
+    let revoked = match revoke(ctx).await {
+        Ok(true) => {
+            ctx.note("Revoked the session token");
+            Some(true)
+        }
+        Ok(false) => {
+            ctx.note("The session token was already gone from the switchboard");
+            Some(false)
+        }
+        Err(e) => {
+            ctx.warn(&format!(
+                "could not revoke the session token ({e:#}); removing it locally anyway"
+            ));
+            None
+        }
+    };
 
     ctx.state = State::update(&ctx.state_path, |state| {
         state.token = None;
         state.expires_at = None;
     })?;
-    anstream::println!("Removed the stored credentials");
+    if ctx.human() {
+        anstream::println!(
+            "{}",
+            tui::render(
+                &vec![span(OK, "✓ "), plain("Removed the stored credentials")],
+                None,
+                true
+            )
+        );
+    }
+    ctx.result(Event::LoggedOut { revoked });
     Ok(())
 }
 
@@ -112,15 +145,34 @@ pub async fn whoami(ctx: &Ctx) -> Result<()> {
     let identity = ctx.authenticated_client()?.whoami().await?;
 
     if !ctx.human() {
-        anstream::println!("{}", serde_json::to_string_pretty(&identity)?);
+        ctx.result(identity_event(ctx, &identity));
         return Ok(());
     }
 
-    anstream::println!("PROFILE       {}", ctx.profile);
-    anstream::println!("SWITCHBOARD   {}", ctx.config.switchboard);
-    anstream::println!("SUBJECT       {}", identity.user_id);
-    anstream::println!("NAME          {}", identity.name);
+    let mut user = vec![
+        plain(identity.name.clone()),
+        span(DIM, format!(" · {}", identity.user_id)),
+    ];
+    if identity.admin {
+        user.push(span(DIM, " · admin"));
+    }
+    let rows = [
+        ("Profile", vec![plain(ctx.profile.clone())]),
+        ("Switchboard", vec![plain(ctx.config.switchboard.clone())]),
+        ("User", user),
+    ];
+    for line in display::table(&rows, &[]) {
+        anstream::println!("{}", tui::render(&line, None, true));
+    }
     Ok(())
+}
+
+fn identity_event<'a>(ctx: &'a Ctx, identity: &'a WhoAmIResponse) -> Event<'a> {
+    Event::Identity {
+        profile: &ctx.profile,
+        switchboard: &ctx.config.switchboard,
+        identity,
+    }
 }
 
 async fn select_login(

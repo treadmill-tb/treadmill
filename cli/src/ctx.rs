@@ -193,6 +193,11 @@ impl Ctx {
         event::emit(self.output, event);
     }
 
+    /// See [`event::result`].
+    pub fn result(&self, event: Event) {
+        event::result(self.output, event);
+    }
+
     pub fn warn(&self, message: &str) {
         self.event(Event::Warning { message });
         let style = anstyle::AnsiColor::Yellow.on_default() | anstyle::Effects::BOLD;
