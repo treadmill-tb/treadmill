@@ -17,7 +17,7 @@ use crate::display::{
     self, HostState, boards, image_name, is_system, program, shell_quote, with_boards,
 };
 use crate::tui::{
-    self, DIM, ERR, Input, Item, Line, LineEdit, OK, Terminal, WARN, answered, fit, plain, span,
+    self, DIM, ERR, Input, Item, Line, LineEdit, Terminal, WARN, answered, fit, plain, span,
 };
 
 const ANY_HOST: &str = "true";
@@ -238,16 +238,11 @@ fn image_label(set: &ImageSetInfo) -> Line {
 
 fn host_row(host: &HostListEntry, name_width: usize) -> Line {
     let state = HostState::of(host);
-    let style = match state {
-        HostState::Idle | HostState::Reclaimable => OK,
-        HostState::Offline => ERR,
-        HostState::Busy | HostState::Maintenance => WARN,
-    };
     let boards = boards(host);
     vec![
         plain(fit(&host.name, name_width)),
         plain("  "),
-        span(style, fit(state.as_str(), 11)),
+        span(state.style(), fit(state.as_str(), 11)),
         plain("  "),
         if boards.is_empty() {
             span(DIM, "no boards")

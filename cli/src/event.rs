@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
-use treadmill_rs::api::switchboard::hosts::{HostLeaseState, HostRequirementsReport};
+use treadmill_rs::api::switchboard::hosts::{
+    HostInfo, HostLeaseState, HostListEntry, HostRequirementsReport,
+};
 use treadmill_rs::api::switchboard::jobs::{
     JobInfo, JobInitializingStage, JobListState, JobSummary,
 };
@@ -51,6 +53,20 @@ pub enum Event<'a> {
     },
     Page {
         state: JobListState,
+        count: usize,
+        next_cursor: Option<&'a str>,
+    },
+    Host {
+        state: HostState,
+        host: &'a HostInfo,
+    },
+    #[serde(rename = "host")]
+    ListedHost {
+        state: HostState,
+        host: &'a HostListEntry,
+    },
+    #[serde(rename = "page")]
+    HostPage {
         count: usize,
         next_cursor: Option<&'a str>,
     },

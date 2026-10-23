@@ -12,6 +12,8 @@ mod display;
 #[cfg(feature = "user")]
 mod event;
 #[cfg(feature = "user")]
+mod host;
+#[cfg(feature = "user")]
 mod job;
 #[cfg(feature = "user")]
 mod listing;
@@ -124,6 +126,8 @@ async fn run(args: Cli) -> Result<()> {
         Command::Job {
             command: JobCommand::Daemon(command),
         } => daemon_job(&args.globals, command).await,
+        #[cfg(feature = "user")]
+        Command::Host { command } => host::run(&Ctx::load(&args.globals)?, &command).await,
         #[cfg(feature = "user")]
         Command::Ssh { command } => {
             let mut ctx = Ctx::load(&args.globals)?;

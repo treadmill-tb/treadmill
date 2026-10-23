@@ -5,7 +5,7 @@ use treadmill_rs::api::switchboard::images::ImageSetInfo;
 use treadmill_rs::api::switchboard::jobs::{JobImageReference, JobInfo, JobLeaseExpiryAction};
 use uuid::Uuid;
 
-use crate::tui::{BOLD, DIM, Line, plain, span};
+use crate::tui::{BOLD, DIM, ERR, Line, OK, WARN, plain, span};
 
 pub const SSHWS_PROTOCOL: &str = "sshws";
 const SYSTEM_SUBJECT_ID: Uuid = Uuid::from_u128(2);
@@ -95,7 +95,11 @@ pub enum HostState {
 
 impl HostState {
     pub fn of(host: &HostListEntry) -> Self {
-        match (host.live, host.maintenance, host.lease_state) {
+        Self::new(host.live, host.maintenance, host.lease_state)
+    }
+
+    pub fn new(live: bool, maintenance: bool, lease_state: HostLeaseState) -> Self {
+        match (live, maintenance, lease_state) {
             (false, _, _) => Self::Offline,
             (true, true, _) => Self::Maintenance,
             (true, false, HostLeaseState::Busy) => Self::Busy,
@@ -111,6 +115,14 @@ impl HostState {
             Self::Busy => "busy",
             Self::Maintenance => "maintenance",
             Self::Offline => "offline",
+        }
+    }
+
+    pub fn style(self) -> anstyle::Style {
+        match self {
+            Self::Idle | Self::Reclaimable => OK,
+            Self::Offline => ERR,
+            Self::Busy | Self::Maintenance => WARN,
         }
     }
 }
