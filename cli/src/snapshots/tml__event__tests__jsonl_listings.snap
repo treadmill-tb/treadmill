@@ -1,0 +1,97 @@
+---
+source: cli/src/event.rs
+expression: "[serde_json::to_value(Event::ListedJob\n{ lease_state: Some(HostLeaseState::Busy), job: &job, }),\nserde_json::to_value(Event::Page\n{ state: JobListState::Active, count: 1, next_cursor: Some(\"c2\"), }),\nserde_json::to_value(Event::ListedHost\n{ state: HostState::of(&host), host: &host, }),\nserde_json::to_value(Event::HostPage\n{ count: 1, next_cursor: None, }),].map(Result::unwrap)"
+---
+[
+  {
+    "job": {
+      "annotations": {},
+      "dispatched_on_host_id": "0679be07-6106-48aa-8057-b1d4f2e18a99",
+      "host_name": "pton-rpi2004",
+      "image": {
+        "reference": {
+          "generation": 2,
+          "set_id": "00000000-0000-0000-0000-000000000000",
+          "type": "image_set"
+        },
+        "resolved_digest": null
+      },
+      "image_name": "debian-trixie",
+      "job_id": "0192f3a4-5b6c-7d8e-9fa0-b1c2d3e4f5a6",
+      "label": "bringup",
+      "lease_expires_at": "2026-08-28T15:00:00Z",
+      "lease_expiry_action": "terminate",
+      "owner": {
+        "id": "00000000-0000-0000-0000-000000000000",
+        "kind": "user",
+        "name": "ada"
+      },
+      "predecessor": null,
+      "queued_at": "2026-08-28T13:59:00Z",
+      "revision": 4,
+      "started_at": "2026-08-28T14:00:00Z",
+      "state": "ready",
+      "task_exit_status": null,
+      "terminated_at": null,
+      "termination_reason": null
+    },
+    "lease_state": "busy",
+    "type": "job"
+  },
+  {
+    "count": 1,
+    "next_cursor": "c2",
+    "state": "active",
+    "type": "page"
+  },
+  {
+    "host": {
+      "current_lease_expires_at": "2026-08-28T15:00:00Z",
+      "current_lease_expiry_action": "terminate",
+      "host_id": "0679be07-6106-48aa-8057-b1d4f2e18a99",
+      "last_seen_at": "2026-08-28T14:30:00Z",
+      "lease_state": "busy",
+      "live": true,
+      "maintenance": false,
+      "name": "pton-rpi2004",
+      "spec": {
+        "description": null,
+        "duts": [
+          {
+            "board": "pico2",
+            "name": null,
+            "vendor": "Raspberry Pi"
+          }
+        ],
+        "labels": {
+          "rack": "b2"
+        },
+        "location": null,
+        "platform": {
+          "arch": "aarch64",
+          "hypervisor": null,
+          "kind": "physical",
+          "model": "Raspberry Pi 5 8GB",
+          "profiles": [
+            "arm64-nbd-netboot"
+          ],
+          "vendor": "Raspberry Pi"
+        },
+        "resources": {
+          "cpu_cores": 4,
+          "memory_mb": 8192,
+          "storage_gb": 32
+        },
+        "site": "pton"
+      },
+      "spec_revision": 3
+    },
+    "state": "busy",
+    "type": "host"
+  },
+  {
+    "count": 1,
+    "next_cursor": null,
+    "type": "page"
+  }
+]

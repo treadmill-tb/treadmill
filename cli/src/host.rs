@@ -482,30 +482,6 @@ mod tests {
     }
 
     #[test]
-    fn listed_hosts_are_host_messages_ending_in_a_page() {
-        let host = host();
-        let listed = serde_json::to_value(Event::ListedHost {
-            state: HostState::of(&host),
-            host: &host,
-        })
-        .unwrap();
-        assert_eq!(listed["type"], "host");
-        assert_eq!(listed["state"], "reclaimable");
-        assert_eq!(listed["host"]["name"], "pton-rpi2004");
-        assert_eq!(listed["host"]["spec"]["duts"][0]["board"], "pico2");
-
-        let page = serde_json::to_value(Event::HostPage {
-            count: 1,
-            next_cursor: None,
-        })
-        .unwrap();
-        assert_eq!(
-            page,
-            serde_json::json!({ "type": "page", "count": 1, "next_cursor": null })
-        );
-    }
-
-    #[test]
     fn terms_match_ids_names_boards_and_labels() {
         let host = host();
         let matches = |terms: &[&str]| {

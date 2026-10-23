@@ -185,7 +185,7 @@ user); without it, builds start from scratch.
 
 ### Snapshot drift guards
 
-Three committed snapshots are guarded by tests; regenerate them deliberately
+Four committed snapshots are guarded by tests; regenerate them deliberately
 when a change is intentional:
 
 - **Supervisor wire protocol** — `treadmill-rs/protocol-schema/*.schema.json`,
@@ -197,6 +197,10 @@ when a change is intentional:
 - **Supervisor daemon API** — `supervisor/lib/api-spec/daemon-api.yaml`,
   guarded by `supervisor/lib/tests/daemon_api_spec.rs`. Regenerate:
   `UPDATE_SCHEMA=1 cargo test -p treadmill-supervisor-lib --test daemon_api_spec`.
+- **CLI JSON output** — `cli/src/snapshots/*.snap` (`insta`), the messages of
+  `tml -o json`/`-o jsonl`, guarded by the tests in `cli/src/event.rs`.
+  Regenerate: `INSTA_UPDATE=always cargo test -p treadmill-cli`, or review
+  with `cargo insta review`.
 
 ## 5. Formatting
 

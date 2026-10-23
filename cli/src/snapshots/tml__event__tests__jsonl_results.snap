@@ -1,0 +1,69 @@
+---
+source: cli/src/event.rs
+expression: results
+---
+[
+  {
+    "type": "identity",
+    "profile": "default",
+    "switchboard": "https://tml.example",
+    "user_id": "00000000-0000-0000-0000-000000000000",
+    "name": "ada",
+    "admin": false
+  },
+  {
+    "type": "context",
+    "profile": "default",
+    "switchboard": "https://tml.example",
+    "active_job": "0192f3a4-5b6c-7d8e-9fa0-b1c2d3e4f5a6"
+  },
+  {
+    "type": "active_job",
+    "active_job": null
+  },
+  {
+    "type": "logged_out",
+    "revoked": true
+  },
+  {
+    "type": "updated",
+    "job_id": "0192f3a4-5b6c-7d8e-9fa0-b1c2d3e4f5a6",
+    "revision": 5
+  },
+  {
+    "type": "updated",
+    "job_id": "0192f3a4-5b6c-7d8e-9fa0-b1c2d3e4f5a6",
+    "revision": 6,
+    "lease_duration_secs": 5400,
+    "lease_expires_at": "2026-08-28T15:30:00Z",
+    "lease_expiry_action": "preempt"
+  },
+  {
+    "type": "termination_requested",
+    "job_id": "0192f3a4-5b6c-7d8e-9fa0-b1c2d3e4f5a6"
+  },
+  {
+    "type": "host",
+    "state": "busy",
+    "host": {
+      "host_id": "0679be07-6106-48aa-8057-b1d4f2e18a99",
+      "name": "pton-rpi2004",
+      "owner": null,
+      "live": true,
+      "last_seen_at": "2026-08-28T14:30:00Z",
+      "maintenance": false,
+      "lease_state": "busy",
+      "current_lease_expires_at": "2026-08-28T15:00:00Z",
+      "current_lease_expiry_action": "terminate",
+      "spec": {
+        "site": "pton",
+        "spec_version": "v2"
+      },
+      "spec_revision": 3,
+      "permissions": [
+        "read",
+        "start"
+      ]
+    }
+  }
+]
