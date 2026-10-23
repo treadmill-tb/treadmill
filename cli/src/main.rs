@@ -137,7 +137,7 @@ async fn run(args: Cli) -> Result<()> {
             let mut ctx = Ctx::load(&args.globals)?;
             require_streaming(&ctx, true);
             match command {
-                SshCommand::Setup(args) => sshconfig::setup(&ctx, &args),
+                SshCommand::Setup(args) => sshconfig::setup(&ctx, &args).await,
                 SshCommand::Proxy { host } => ssh::proxy(&mut ctx, &host).await,
             }
         }

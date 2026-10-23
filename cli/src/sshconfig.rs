@@ -1,7 +1,5 @@
 use anyhow::{Context as _, Result, bail};
-use dialoguer::Confirm;
 use std::fs;
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use crate::cli::SshSetupArgs;
@@ -9,6 +7,7 @@ use crate::config;
 use crate::ctx::Ctx;
 use crate::locked_file;
 use crate::ssh::{PROGRAM, ssh_proxy_command};
+use crate::tui;
 
 const BEGIN: &str = "# BEGIN tml profile ";
 const END: &str = "# END tml profile ";
@@ -23,7 +22,7 @@ const OPTIONS: [(&str, &str); 7] = [
     ("LogLevel", "ERROR"),
 ];
 
-pub fn setup(ctx: &Ctx, args: &SshSetupArgs) -> Result<()> {
+pub async fn setup(ctx: &Ctx, args: &SshSetupArgs) -> Result<()> {
     let domains = ctx.config.ssh_domains(&ctx.profile)?;
     let managed = config::ssh_config_path()?;
 
@@ -67,7 +66,7 @@ pub fn setup(ctx: &Ctx, args: &SshSetupArgs) -> Result<()> {
     }
 
     if !args.yes {
-        if !std::io::stdin().is_terminal() {
+        if !tui::interactive() {
             return hint(ctx, domains);
         }
         anstream::println!(
@@ -77,11 +76,7 @@ pub fn setup(ctx: &Ctx, args: &SshSetupArgs) -> Result<()> {
             user_config.display(),
             backup_path(&user_config).display()
         );
-        if !Confirm::new()
-            .with_prompt(format!("Edit {}?", user_config.display()))
-            .default(false)
-            .interact()?
-        {
+        if !tui::ask(&format!("Edit {}?", user_config.display())).await? {
             anstream::println!("\nLeft {} alone.", user_config.display());
             return hint(ctx, domains);
         }

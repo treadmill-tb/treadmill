@@ -1,5 +1,4 @@
 use anyhow::{Context as _, Result, bail};
-use dialoguer::{Confirm, Password, Select};
 use treadmill_rs::api::switchboard::client::LoginCompleteOutcome;
 use treadmill_rs::api::switchboard::{
     AuthProvidersResponse, LoginCompleteRequest, LoginStagedResponse,
@@ -9,6 +8,7 @@ use treadmill_rs::util::Secret;
 use crate::cli::LoginArgs;
 use crate::ctx::Ctx;
 use crate::state::State;
+use crate::tui::{self, DIM, Item, Terminal, plain, span};
 
 pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
     let client = ctx.anonymous_client()?;
@@ -17,7 +17,7 @@ pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
         .await
         .context("listing the switchboard's login providers")?;
 
-    let login_path = select_login(ctx, &providers, args)?;
+    let login_path = select_login(ctx, &providers, args).await?;
     let url = client.login_url(&login_path);
 
     ctx.note(&format!("Logging in to {}", ctx.config.switchboard));
@@ -28,7 +28,7 @@ pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
 
     let mut staged = LoginStagedResponse {
         required: Vec::new(),
-        login_code: read_login_code()?,
+        login_code: read_login_code().await?,
         tos_version: None,
     };
 
@@ -123,7 +123,11 @@ pub async fn whoami(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
-fn select_login(ctx: &Ctx, providers: &AuthProvidersResponse, args: &LoginArgs) -> Result<String> {
+async fn select_login(
+    ctx: &Ctx,
+    providers: &AuthProvidersResponse,
+    args: &LoginArgs,
+) -> Result<String> {
     if let Some(key) = &args.identity {
         let identity = providers
             .mock_identities
@@ -143,10 +147,10 @@ fn select_login(ctx: &Ctx, providers: &AuthProvidersResponse, args: &LoginArgs) 
         return Ok(provider.login_path.clone());
     }
 
-    let mut labels: Vec<String> = providers
+    let mut items: Vec<Item> = providers
         .oauth
         .iter()
-        .map(|p| p.display_name.clone())
+        .map(|p| Item::new(vec![plain(p.display_name.clone())], &p.display_name))
         .collect();
     let mut paths: Vec<String> = providers
         .oauth
@@ -154,7 +158,11 @@ fn select_login(ctx: &Ctx, providers: &AuthProvidersResponse, args: &LoginArgs) 
         .map(|p| p.login_path.clone())
         .collect();
     for identity in &providers.mock_identities {
-        labels.push(format!("{} [development only]", identity.label));
+        let line = vec![
+            plain(identity.label.clone()),
+            span(DIM, " · development only"),
+        ];
+        items.push(Item::new(line, &identity.label));
         paths.push(identity.login_path.clone());
     }
 
@@ -162,16 +170,19 @@ fn select_login(ctx: &Ctx, providers: &AuthProvidersResponse, args: &LoginArgs) 
         0 => bail!("this switchboard advertises no login providers"),
         1 => Ok(paths.remove(0)),
         _ => {
-            if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            if !tui::interactive() {
                 bail!(
                     "this switchboard offers several login providers; pass --provider or --identity"
                 );
             }
-            let chosen = Select::new()
-                .with_prompt("Choose an identity provider")
-                .items(&labels)
-                .default(0)
-                .interact()?;
+            let mut term = Terminal::open()?;
+            let chosen = tui::select(&mut term, "Identity provider", &[], &items, 0, true)
+                .await?
+                .ok_or_else(tui::interrupted)?;
+            term.print(&[tui::answered(
+                "Identity provider",
+                items[chosen].line.clone(),
+            )])?;
             Ok(paths.remove(chosen))
         }
     }
@@ -180,13 +191,16 @@ fn select_login(ctx: &Ctx, providers: &AuthProvidersResponse, args: &LoginArgs) 
 /// The callback shows the login code when the flow declared no `return_to`,
 /// which is the only completion route open to a client that cannot have a
 /// loopback URL allowlisted.
-fn read_login_code() -> Result<Secret<String>> {
-    let raw: String = if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+async fn read_login_code() -> Result<Secret<String>> {
+    let raw: String = if tui::interactive() {
         // The code is a token-minting secret, so it is read like a password:
         // never echoed, and never left in the scrollback.
-        Password::new()
-            .with_prompt("Paste the login code")
-            .interact()?
+        let mut term = Terminal::open()?;
+        let code = tui::secret(&mut term, "Login code", "paste it here")
+            .await?
+            .ok_or_else(tui::interrupted)?;
+        term.print(&[tui::answered("Login code", vec![span(DIM, "entered")])])?;
+        code
     } else {
         use std::io::Read;
         let mut raw = String::new();
@@ -206,7 +220,7 @@ async fn accept_tos(
         .await
         .context("fetching the Terms of Service")?;
 
-    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+    if !tui::interactive() {
         bail!(
             "this login requires accepting the Terms of Service, which needs a terminal; \
              complete the login in a browser"
@@ -216,13 +230,11 @@ async fn accept_tos(
     ctx.note("This login requires accepting the Terms of Service.");
     anstream::eprintln!("\n{}\n", tos.text);
 
-    if !Confirm::new()
-        .with_prompt(format!(
-            "Accept version {} of the Terms of Service?",
-            tos.version
-        ))
-        .default(false)
-        .interact()?
+    if !tui::ask(&format!(
+        "Accept version {} of the Terms of Service?",
+        tos.version
+    ))
+    .await?
     {
         bail!("the Terms of Service were not accepted");
     }

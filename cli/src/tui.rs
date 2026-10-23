@@ -213,6 +213,7 @@ pub fn interrupted() -> anyhow::Error {
 pub struct LineEdit {
     chars: Vec<char>,
     pos: usize,
+    masked: bool,
 }
 
 impl LineEdit {
@@ -221,6 +222,15 @@ impl LineEdit {
         Self {
             pos: chars.len(),
             chars,
+            masked: false,
+        }
+    }
+
+    /// An empty line whose text is shown as `•`s, for a secret.
+    pub fn masked() -> Self {
+        Self {
+            masked: true,
+            ..Self::default()
         }
     }
 
@@ -276,7 +286,12 @@ impl LineEdit {
     fn view(&self, width: usize) -> (String, usize) {
         let width = width.max(1);
         let start = (self.pos + 1).saturating_sub(width);
-        let text = self.chars[start..].iter().take(width).collect();
+        let shown = self.chars[start..].iter().take(width);
+        let text = if self.masked {
+            shown.map(|_| '•').collect()
+        } else {
+            shown.collect()
+        };
         (text, self.pos - start)
     }
 }
@@ -441,7 +456,25 @@ pub async fn input(
     placeholder: &str,
     validate: impl Fn(&str) -> Result<(), String>,
 ) -> anyhow::Result<Option<String>> {
-    let mut edit = LineEdit::new(initial);
+    edit_line(term, title, LineEdit::new(initial), placeholder, validate).await
+}
+
+/// Like [`input`], but the text is never shown, only a `•` per character.
+pub async fn secret(
+    term: &mut Terminal,
+    title: &str,
+    placeholder: &str,
+) -> anyhow::Result<Option<String>> {
+    edit_line(term, title, LineEdit::masked(), placeholder, |_| Ok(())).await
+}
+
+async fn edit_line(
+    term: &mut Terminal,
+    title: &str,
+    mut edit: LineEdit,
+    placeholder: &str,
+    validate: impl Fn(&str) -> Result<(), String>,
+) -> anyhow::Result<Option<String>> {
     let mut error = None;
     loop {
         let (line, col) = prompt_line(title, &edit, placeholder);
