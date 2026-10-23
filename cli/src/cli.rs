@@ -123,12 +123,27 @@ pub enum Command {
 #[derive(Subcommand, Debug)]
 pub enum HostCommand {
     /// List the hosts visible to you
-    List,
+    List(HostListArgs),
     /// Show a host, including its full spec
     Show {
-        /// Host UUID or name
+        /// Host name, UUID, or `^<hex>` short id
         host: String,
     },
+}
+
+#[cfg(feature = "user")]
+#[derive(Args, Debug)]
+pub struct HostListArgs {
+    /// Only hosts matching all these terms: `^<hex>` for an id suffix, anything
+    /// else for the name, state, site, platform, board or a `key=value` label
+    #[arg(value_name = "TERMS")]
+    pub terms: Vec<String>,
+    /// Refresh the list until quit
+    #[arg(long)]
+    pub watch: bool,
+    /// Print the list without a pager
+    #[arg(long)]
+    pub no_pager: bool,
 }
 
 #[derive(Subcommand, Debug)]
