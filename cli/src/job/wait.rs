@@ -54,7 +54,7 @@ pub async fn wait(
             _ = tokio::signal::ctrl_c() => {
                 client.terminate_job(job_id).await.ok();
                 ctx.event(Event::Cancelled { job_id });
-                bail!("interrupted; requested termination of job {job_id}");
+                bail!("interrupted; termination of job {job_id} was requested");
             }
         }
     }
@@ -209,7 +209,7 @@ async fn live(ctx: &Ctx, client: &SwitchboardClient, job_id: Uuid) -> Result<Out
         line.extend(status.iter().cloned());
         let hint = vec![span(
             DIM,
-            "  ctrl-c: cancel (terminate job) · d: detach (leave running)",
+            "  ctrl-c terminates the job · d detaches and leaves it running",
         )];
         term.draw(&[line, hint], None)?;
     }

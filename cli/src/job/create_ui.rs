@@ -101,11 +101,11 @@ pub async fn run(
             Step::Expiry => pick_expiry(&mut term).await?.map(|reclaimable| {
                 args.reclaimable = reclaimable;
                 answered(
-                    "When the lease ends",
+                    "On lease end",
                     vec![plain(if reclaimable {
                         "Keep it running (reclaimable)"
                     } else {
-                        "Stop the job"
+                        "Terminate the job"
                     })],
                 )
             }),
@@ -331,8 +331,8 @@ async fn pick_host(
     let header = overview(&report, hosts);
     let options = [
         Item::action(vec![plain("Any compatible host")]),
-        Item::action(vec![plain("A specific host…")]),
-        Item::action(vec![plain("Match hosts with a CEL expression…")]),
+        Item::action(vec![plain("A single host…")]),
+        Item::action(vec![plain("Hosts matching a CEL predicate…")]),
     ];
     loop {
         match tui::select(term, "Host", &header, &options, 0, false).await? {
@@ -499,17 +499,15 @@ async fn pick_lease(term: &mut Terminal, default: TimeDelta) -> Result<Option<Ti
 
 async fn pick_expiry(term: &mut Terminal) -> Result<Option<bool>> {
     let expiry = [
-        Item::action(vec![plain("Stop the job")]),
+        Item::action(vec![plain("Terminate the job")]),
         Item::action(vec![
-            plain("Keep it running until its host is needed"),
-            span(DIM, " (reclaimable)"),
+            plain("Keep it running"),
+            span(DIM, " · its host may then be reclaimed for another job"),
         ]),
     ];
-    Ok(
-        tui::select(term, "When the lease ends", &[], &expiry, 0, false)
-            .await?
-            .map(|i| i == 1),
-    )
+    Ok(tui::select(term, "On lease end", &[], &expiry, 0, false)
+        .await?
+        .map(|i| i == 1))
 }
 
 fn duration_text(duration: TimeDelta) -> String {
@@ -571,7 +569,7 @@ fn summary(
     }
 
     let mut lines = vec![Vec::new()];
-    lines.extend(display::table(&rows, &[]));
+    lines.extend(display::table(&rows));
     lines.push(Vec::new());
     lines.push(vec![span(DIM, "  $ "), plain(command_line(args))]);
     lines.push(vec![]);

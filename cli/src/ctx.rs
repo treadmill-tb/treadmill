@@ -128,7 +128,7 @@ impl Ctx {
                     .state
                     .active_job
                     .with_context(|| format!("no job given and no active job set; pass --job or run `{} context job set <JOB>`", program()))?;
-                self.note(&format!("Using active job {}", short(job)));
+                self.note(&format!("Active job {}", short(job)));
                 return Ok(job);
             }
         };
@@ -158,7 +158,7 @@ impl Ctx {
             .collect();
         match jobs[..] {
             [job] => {
-                self.detail(&format!("^{suffix} is job {job}"));
+                self.detail(&format!("^{suffix} → {job}"));
                 Ok(job)
             }
             [] => bail!("no job matches ^{suffix}"),
@@ -196,6 +196,15 @@ impl Ctx {
     /// See [`event::result`].
     pub fn result(&self, event: Event) {
         event::result(self.output, event);
+    }
+
+    /// A hint on what to do next: stderr, human output only.
+    pub fn hint(&self, message: &str) {
+        if !self.human() || self.quiet {
+            return;
+        }
+        let style = anstyle::AnsiColor::Cyan.on_default() | anstyle::Effects::BOLD;
+        anstream::eprintln!("{style}hint:{style:#} {message}");
     }
 
     pub fn warn(&self, message: &str) {

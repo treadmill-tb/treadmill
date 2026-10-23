@@ -7,7 +7,7 @@ use crate::cli::{JobRef, OutputFormat};
 use crate::ctx::Ctx;
 use crate::display::{self, program};
 use crate::event::Event;
-use crate::tui::{self, Line, plain};
+use crate::tui::{self, Line};
 
 pub async fn run(ctx: &Ctx, job: Option<&JobRef>) -> Result<()> {
     let client = ctx.authenticated_client()?;
@@ -48,26 +48,35 @@ async fn lines(ctx: &Ctx, client: &SwitchboardClient, job: &JobInfo) -> Vec<Line
     let rows = display::job_rows(client, job).await;
     let flag = ctx.job_flag(job.job_id);
     let tml = program();
-    let commands: Vec<(&str, String)> = match job.state {
+    let commands = match job.state {
         JobState::Ready => vec![
-            ("Connect", format!("{tml} job ssh{flag}")),
-            ("Upload", format!("{tml} job upload{flag} <local> [remote]")),
+            (format!("{tml} job ssh{flag}"), "open a shell"),
             (
-                "Download",
-                format!("{tml} job download{flag} <remote> [local]"),
+                format!("{tml} job upload{flag} <local> [remote]"),
+                "copy a file to the job",
             ),
-            ("Extend", format!("{tml} job lease{flag} +30m")),
-            ("Stop", format!("{tml} job terminate{flag}")),
+            (
+                format!("{tml} job download{flag} <remote> [local]"),
+                "copy a file from the job",
+            ),
+            (
+                format!("{tml} job lease{flag} +30m"),
+                "extend the lease by 30 minutes",
+            ),
+            (format!("{tml} job terminate{flag}"), "terminate the job"),
         ],
         JobState::Queued | JobState::Assigned | JobState::Initializing => vec![
-            ("Wait", format!("{tml} job wait{flag}")),
-            ("Stop", format!("{tml} job terminate{flag}")),
+            (
+                format!("{tml} job wait{flag}"),
+                "wait until the job is ready",
+            ),
+            (format!("{tml} job terminate{flag}"), "terminate the job"),
         ],
         JobState::Terminating | JobState::Finalized => Vec::new(),
     };
-    let commands: Vec<(&str, Line)> = commands
-        .into_iter()
-        .map(|(title, command)| (title, vec![plain(command)]))
-        .collect();
-    display::table(&rows, &commands)
+    let mut lines = display::table(&rows);
+    if !commands.is_empty() {
+        lines.extend(display::commands("Commands for this job:", &commands));
+    }
+    lines
 }

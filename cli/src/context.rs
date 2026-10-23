@@ -64,7 +64,7 @@ fn show(ctx: &Ctx) -> Result<()> {
         ("Switchboard", vec![plain(ctx.config.switchboard.clone())]),
         ("Active job", active_job),
     ];
-    for line in display::table(&rows, &[]) {
+    for line in display::table(&rows) {
         anstream::println!("{}", tui::render(&line, None, true));
     }
     Ok(())

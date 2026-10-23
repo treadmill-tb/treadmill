@@ -7,7 +7,8 @@ use crate::config;
 use crate::ctx::Ctx;
 use crate::locked_file;
 use crate::ssh::{PROGRAM, ssh_proxy_command};
-use crate::tui;
+use crate::tui::{self, ACCENT, BOLD, DIM, Line, OK, plain, span};
+use crate::{cancelled, hinted};
 
 const BEGIN: &str = "# BEGIN tml profile ";
 const END: &str = "# END tml profile ";
@@ -36,79 +37,145 @@ pub async fn setup(ctx: &Ctx, args: &SshSetupArgs) -> Result<()> {
         Ok(contents)
     })
     .with_context(|| format!("writing {}", managed.display()))?;
-    for pattern in overlapping(&contents, &ctx.profile, domains) {
+    for (profile, pattern) in overlapping(&contents, &ctx.profile, domains) {
         ctx.warn(&format!(
-            "{pattern} is also claimed by another profile in {}; the first block wins",
-            managed.display()
+            "profile {profile} also matches {pattern}; the first matching block in {} applies",
+            display_path(&managed)
         ));
     }
-    anstream::println!(
-        "Wrote the SSH configuration for profile {:?} to {}.",
-        ctx.profile,
-        managed.display()
-    );
+    print(vec![
+        span(OK, "✓ "),
+        plain(format!("Wrote {}", display_path(&managed))),
+        span(DIM, format!(" · profile {}", ctx.profile)),
+    ]);
 
     let user_config = user_ssh_config()?;
     let include = format!("Include {}", display_path(&managed));
+    let existing = match fs::read_to_string(&user_config) {
+        Ok(contents) => Some(contents),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e).with_context(|| format!("reading {}", user_config.display())),
+    };
+
+    if existing
+        .as_deref()
+        .is_some_and(|contents| included(contents, &managed))
+    {
+        print(vec![
+            span(OK, "✓ "),
+            plain(format!(
+                "{} includes {}",
+                display_path(&user_config),
+                display_path(&managed)
+            )),
+        ]);
+        return connect_hint(ctx, domains);
+    }
+
+    anstream::println!();
     anstream::println!(
-        "\nFor ssh, git, rsync and anything else that speaks SSH to pick it up,\n\
-         {} has to contain this line:\n\n    {include}\n",
-        user_config.display()
+        "  To support SSH to Treadmill jobs, the following change needs to be applied to the SSH config:"
     );
-
-    if included(&read(&user_config)?, &managed) {
-        anstream::println!("It already does, so nothing was changed.");
-        return hint(ctx, domains);
+    anstream::println!();
+    for line in patch(&display_path(&user_config), existing.as_deref(), &include) {
+        print(line);
     }
-
-    if args.print {
-        return hint(ctx, domains);
-    }
+    anstream::println!();
 
     if !args.yes {
-        if !tui::interactive() {
-            return hint(ctx, domains);
+        if args.print || !tui::interactive() {
+            ctx.hint("Pass --yes to apply this change, or add the line by hand.");
+            return Ok(());
         }
-        anstream::println!(
-            "tml can prepend that one line to {}, keeping a copy of the current file\n\
-             at {}. Nothing else in it is changed. Some systems manage this file\n\
-             themselves, in which case add the line above by hand instead.\n",
-            user_config.display(),
-            backup_path(&user_config).display()
-        );
-        if !tui::ask(&format!("Edit {}?", user_config.display())).await? {
-            anstream::println!("\nLeft {} alone.", user_config.display());
-            return hint(ctx, domains);
+        if !tui::ask(&format!(
+            "Apply this change to {}?",
+            display_path(&user_config)
+        ))
+        .await?
+        {
+            return Err(hinted(
+                cancelled(format!("{} unchanged", display_path(&user_config))),
+                format!(
+                    "Until {} includes {}, only `{} job ssh` can connect to jobs.",
+                    display_path(&user_config),
+                    display_path(&managed),
+                    PROGRAM
+                ),
+            ));
         }
     }
 
-    let backup = prepend(&user_config, &include)?;
-    match backup {
-        Some(backup) => anstream::println!(
-            "Added the line to {}; the previous file is at {}.",
-            user_config.display(),
-            backup.display()
-        ),
-        None => anstream::println!("Created {} with that line.", user_config.display()),
+    match prepend(&user_config, &include)? {
+        Some(backup) => print(vec![
+            span(OK, "✓ "),
+            plain(format!("Updated {}", display_path(&user_config))),
+            span(DIM, format!(" · backup {}", display_path(&backup))),
+        ]),
+        None => print(vec![
+            span(OK, "✓ "),
+            plain(format!("Created {}", display_path(&user_config))),
+            span(DIM, format!(" · includes {}", display_path(&managed))),
+        ]),
     }
-    hint(ctx, domains)
+    connect_hint(ctx, domains)
+}
+
+/// The change [`prepend`] makes to the file at `path`, as a unified diff.
+fn patch(path: &str, existing: Option<&str>, line: &str) -> Vec<Line> {
+    let old: Vec<&str> = existing.map_or(Vec::new(), |contents| contents.lines().collect());
+    let mut added = vec![line];
+    if !old.is_empty() {
+        added.push("");
+    }
+    let range = |start: usize, len: usize| match len {
+        1 => format!("{start}"),
+        _ => format!("{start},{len}"),
+    };
+    let mut lines = vec![
+        vec![span(
+            BOLD,
+            format!("  --- {}", existing.map_or("/dev/null", |_| path)),
+        )],
+        vec![span(BOLD, format!("  +++ {path}"))],
+        vec![span(
+            ACCENT,
+            format!(
+                "  @@ -{} +{} @@",
+                range(usize::from(!old.is_empty()), old.len()),
+                range(1, old.len() + added.len())
+            ),
+        )],
+    ];
+    lines.extend(
+        added
+            .iter()
+            .map(|line| vec![span(OK, format!("  +{line}"))]),
+    );
+    lines.extend(old.iter().map(|line| vec![plain(format!("   {line}"))]));
+    lines
+}
+
+fn print(line: Line) {
+    anstream::println!("{}", tui::render(&line, None, true));
 }
 
 fn check_path(ctx: &Ctx, managed: &Path) {
     let Some(found) = on_path(PROGRAM) else {
         ctx.warn(&format!(
-            "{PROGRAM} is not on PATH, so ssh will not be able to start it; put it on PATH, \
-             or edit the ProxyCommand in {}",
-            managed.display()
+            "{PROGRAM} is not on PATH, so ssh cannot run the ProxyCommand in {}",
+            display_path(managed)
         ));
         return;
     };
 
     let running = std::env::current_exe().ok().and_then(resolve);
-    if running.is_some_and(|running| running != found) {
+    if let Some(running) = running
+        && running != found
+    {
         ctx.warn(&format!(
-            "ssh will run {}, which is not the {PROGRAM} you invoked",
-            found.display()
+            "ssh will run {}, not the {PROGRAM} that was invoked ({})",
+            display_path(&found),
+            display_path(&running)
         ));
     }
 }
@@ -131,12 +198,14 @@ fn resolve(path: PathBuf) -> Option<PathBuf> {
     fs::canonicalize(path).ok()
 }
 
-fn hint(ctx: &Ctx, domains: &[String]) -> Result<()> {
-    anstream::println!(
-        "\nYou can now reach a job as: ssh {}@<job-id>.{}",
-        ctx.config.user,
-        domains[0]
-    );
+fn connect_hint(ctx: &Ctx, domains: &[String]) -> Result<()> {
+    anstream::println!();
+    anstream::println!("  To connect to a Treadmill job, run:");
+    anstream::println!();
+    print(vec![
+        span(DIM, "  $ "),
+        plain(format!("ssh {}@<job-uuid>.{}", ctx.config.user, domains[0])),
+    ]);
     Ok(())
 }
 
@@ -184,7 +253,9 @@ fn upsert(contents: &str, profile: &str, block: &str) -> String {
     out
 }
 
-fn overlapping(contents: &str, profile: &str, domains: &[String]) -> Vec<String> {
+/// The other profiles' host patterns in `contents` that match one of
+/// `domains`, as `(profile, pattern)`.
+fn overlapping(contents: &str, profile: &str, domains: &[String]) -> Vec<(String, String)> {
     let mut current: Option<&str> = None;
     let mut found = Vec::new();
     for line in contents.lines() {
@@ -193,7 +264,7 @@ fn overlapping(contents: &str, profile: &str, domains: &[String]) -> Vec<String>
         } else if line.trim_end().starts_with(END) {
             current = None;
         } else if let Some(patterns) = line.trim().strip_prefix("Host ")
-            && current.is_some_and(|name| name != profile)
+            && let Some(other) = current.filter(|name| *name != profile)
         {
             found.extend(
                 patterns
@@ -203,7 +274,7 @@ fn overlapping(contents: &str, profile: &str, domains: &[String]) -> Vec<String>
                             .iter()
                             .any(|domain| *pattern == format!("*.{domain}"))
                     })
-                    .map(str::to_string),
+                    .map(|pattern| (other.to_string(), pattern.to_string())),
             );
         }
     }
@@ -259,14 +330,6 @@ fn backup_path(path: &Path) -> PathBuf {
     path.with_extension("tml-backup")
 }
 
-fn read(path: &Path) -> Result<String> {
-    match fs::read_to_string(path) {
-        Ok(contents) => Ok(contents),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
-    }
-}
-
 fn user_ssh_config() -> Result<PathBuf> {
     Ok(home()?.join(".ssh").join("config"))
 }
@@ -285,5 +348,36 @@ fn display_path(path: &Path) -> String {
     match path.strip_prefix(&home) {
         Ok(rest) => format!("~/{}", rest.display()),
         Err(_) => path.display().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(lines: Vec<Line>) -> String {
+        lines
+            .iter()
+            .map(|line| tui::render(line, None, false) + "\n")
+            .collect()
+    }
+
+    #[test]
+    fn the_patch_prepends_the_include_line() {
+        let include = "Include ~/.config/tml/ssh_config";
+        assert_eq!(
+            text(patch(
+                "~/.ssh/config",
+                Some("Host *\n    User ada\n"),
+                include
+            )),
+            "  --- ~/.ssh/config\n  +++ ~/.ssh/config\n  @@ -1,2 +1,4 @@\n  \
+             +Include ~/.config/tml/ssh_config\n  +\n   Host *\n       User ada\n"
+        );
+        assert_eq!(
+            text(patch("~/.ssh/config", None, include)),
+            "  --- /dev/null\n  +++ ~/.ssh/config\n  @@ -0,0 +1 @@\n  \
+             +Include ~/.config/tml/ssh_config\n"
+        );
     }
 }

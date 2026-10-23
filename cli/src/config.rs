@@ -58,7 +58,7 @@ fn create(path: &Path, profile: &str) {
     if let Err(error) = written {
         let style = anstyle::AnsiColor::Yellow.on_default() | anstyle::Effects::BOLD;
         anstream::eprintln!(
-            "{style}warning:{style:#} creating {}: {error:#}",
+            "{style}warning:{style:#} the default config {} could not be created: {error:#}",
             path.display()
         );
     }

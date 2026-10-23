@@ -245,26 +245,39 @@ pub fn with_boards(host: &HostListEntry) -> Line {
     line
 }
 
-pub fn table(rows: &[(&str, Line)], commands: &[(&str, Line)]) -> Vec<Line> {
-    let width = rows
+pub fn table(rows: &[(&str, Line)]) -> Vec<Line> {
+    let width = rows.iter().map(|(title, _)| title.len()).max().unwrap_or(0);
+    rows.iter()
+        .map(|(title, value)| {
+            let mut line = vec![
+                plain("  "),
+                span(BOLD, format!("{title:<width$}")),
+                plain("  "),
+            ];
+            line.extend(value.iter().cloned());
+            line
+        })
+        .collect()
+}
+
+/// Commands to run, after a blank line and `intro`, a sentence ending in a
+/// colon: each on a `$ ` line, with what it does as a comment, if anything.
+pub fn commands(intro: &str, commands: &[(String, &str)]) -> Vec<Line> {
+    let width = commands
         .iter()
-        .chain(commands)
-        .map(|(title, _)| title.len())
+        .map(|(command, _)| command.chars().count())
         .max()
         .unwrap_or(0);
-    let line = |(title, value): &(&str, Line)| {
-        let mut line = vec![
-            plain("  "),
-            span(BOLD, format!("{title:<width$}")),
-            plain("  "),
-        ];
-        line.extend(value.iter().cloned());
-        line
-    };
-    let mut lines: Vec<Line> = rows.iter().map(line).collect();
-    if !commands.is_empty() {
-        lines.push(Vec::new());
-        lines.extend(commands.iter().map(line));
+    let mut lines = vec![Vec::new(), vec![plain("  "), plain(intro)], Vec::new()];
+    for (command, what) in commands {
+        let mut line = vec![span(DIM, "  $ ")];
+        if what.is_empty() {
+            line.push(plain(command.clone()));
+        } else {
+            line.push(plain(crate::tui::fit(command, width)));
+            line.push(span(DIM, format!("  # {what}")));
+        }
+        lines.push(line);
     }
     lines
 }

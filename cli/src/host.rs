@@ -222,14 +222,10 @@ fn sections(hosts: &[HostListEntry], searching: bool) -> Vec<Line> {
 }
 
 fn footer() -> Vec<Line> {
-    vec![
-        Vec::new(),
-        vec![
-            plain("  "),
-            span(BOLD, "Details"),
-            plain(format!("  {} host show <HOST>", program())),
-        ],
-    ]
+    display::commands(
+        "Related commands:",
+        &[(format!("{} host show <HOST>", program()), "show a host")],
+    )
 }
 
 /// The id of the host named by `reference`: a UUID, a name, or a `^<hex>`
@@ -284,7 +280,9 @@ async fn show(ctx: &Ctx, client: &SwitchboardClient, reference: &str) -> Result<
         OutputFormat::Jsonl => ctx.event(Event::Host { state, host: &host }),
         OutputFormat::Human => {
             let summary = summary(&host);
-            for line in display::table(&rows(&host, summary.as_ref(), state), &commands(&host)) {
+            let mut lines = display::table(&rows(&host, summary.as_ref(), state));
+            lines.extend(commands(&host));
+            for line in lines {
                 anstream::println!("{}", tui::render(&line, None, true));
             }
             if let Some(spec) = &host.spec {
@@ -428,22 +426,22 @@ fn rows(
     rows
 }
 
-fn commands(host: &HostInfo) -> Vec<(&'static str, Line)> {
+fn commands(host: &HostInfo) -> Vec<Line> {
     let tml = program();
     let predicate = format!("host.name == {:?}", host.name);
-    vec![
-        (
-            "Run",
-            vec![plain(format!(
-                "{tml} job create --host {}",
-                shell_quote(&predicate)
-            ))],
-        ),
-        (
-            "Jobs",
-            vec![plain(format!("{tml} job list {}", shell_quote(&host.name)))],
-        ),
-    ]
+    display::commands(
+        "Commands for this host:",
+        &[
+            (
+                format!("{tml} job create --host {}", shell_quote(&predicate)),
+                "run a job on this host",
+            ),
+            (
+                format!("{tml} job list {}", shell_quote(&host.name)),
+                "list its jobs",
+            ),
+        ],
+    )
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::cli::{JobListArgs, OutputFormat};
 use crate::ctx::Ctx;
-use crate::display::{human_duration, image_name, program, shell_quote, short, snake};
+use crate::display::{self, human_duration, image_name, program, shell_quote, short, snake};
 use crate::event::Event;
 use crate::listing::{self, Cell, Pager, cell};
 use crate::tui::{self, ACCENT, BOLD, DIM, ERR, Line, OK, WARN, plain, span};
@@ -425,19 +425,13 @@ fn footer(args: &JobListArgs) -> Vec<Line> {
         return Vec::new();
     }
     let tml = program();
-    vec![
-        Vec::new(),
-        vec![
-            plain("  "),
-            span(BOLD, "Details"),
-            plain(format!("  {tml} job status --job <JOB>")),
+    display::commands(
+        "Related commands:",
+        &[
+            (format!("{tml} job status --job <JOB>"), "show a job"),
+            (format!("{tml} job list --finished"), "list finished jobs"),
         ],
-        vec![
-            plain("  "),
-            span(BOLD, "History"),
-            plain(format!("  {tml} job list --finished")),
-        ],
-    ]
+    )
 }
 
 async fn stream(

@@ -11,13 +11,13 @@ use treadmill_rs::api::switchboard::jobs::{
 use treadmill_rs::api::switchboard::{JobInitSpec, JobRequest, JobState};
 use uuid::Uuid;
 
-use crate::ExitError;
 use crate::cli::{ExpiryAction, JobCreateArgs, JobRef, JobUpdateArgs, LeaseUntil};
 use crate::ctx::Ctx;
-use crate::display::{self, HostState, describe_instant, short};
+use crate::display::{self, HostState, describe_instant, human_duration, program, short};
 use crate::event::{Event, Lease};
 use crate::state::State;
-use crate::tui::{self, DIM, OK, plain, span};
+use crate::tui::{self, DIM, OK, WARN, plain, span};
+use crate::{ExitError, cancelled, hinted};
 
 mod create_ui;
 pub mod list;
@@ -105,12 +105,19 @@ pub async fn create(ctx: &mut Ctx, args: &JobCreateArgs) -> Result<()> {
     }
     if requirements.schedulable.is_empty() {
         ctx.warn(&format!(
-            "no host can run this job: {} authorized, {} matched the predicate, {} errored",
+            "no host can run this job ({} authorized, {} matching the predicate, {} failing \
+             to evaluate it)",
             requirements.authorized, requirements.predicate_matched, requirements.errored
         ));
         if !args.no_wait {
             client.terminate_job(job_id).await.ok();
-            bail!("not waiting for a job that no host can run; terminated it");
+            return Err(hinted(
+                anyhow::anyhow!("job {job_id} was terminated, because no host can run it"),
+                format!(
+                    "`{} host list` lists the hosts; --no-wait leaves such a job queued.",
+                    program()
+                ),
+            ));
         }
     }
 
@@ -272,15 +279,14 @@ fn lease_end_after(
 /// What becomes of a job when a lease with `action` ends, in words.
 fn after_expiry(action: JobLeaseExpiryAction) -> &'static str {
     match action {
-        JobLeaseExpiryAction::Terminate => "the job is stopped",
-        JobLeaseExpiryAction::Preempt => "its host may be reclaimed for another job at any time",
+        JobLeaseExpiryAction::Terminate => "The job is terminated.",
+        JobLeaseExpiryAction::Preempt => "The host may be reclaimed for another job at any time.",
     }
 }
 
 /// Ask before applying a lease change that leaves the job's lease ending
 /// within [`LEASE_MARGIN`]; `Ok(true)` if it asked and was told to go ahead.
 async fn confirm_lease_change(
-    ctx: &Ctx,
     job: &JobInfo,
     request: &UpdateJobRequest,
     yes: bool,
@@ -299,23 +305,34 @@ async fn confirm_lease_change(
     let action = request
         .lease_expiry_action
         .unwrap_or(job.lease_expiry_action);
-    let warning = format!(
-        "the lease of job {} would end {} {}, after which {}",
-        job.job_id,
-        if end > now {
-            "at"
-        } else {
-            "right away, having ended at"
-        },
-        describe_instant(end, now),
-        after_expiry(action),
-    );
+    let when = if end > now {
+        format!("in {}", human_duration(end - now))
+    } else {
+        "immediately".to_string()
+    };
     if !tui::interactive() {
-        bail!("{warning}; pass --yes to change it anyway");
+        return Err(hinted(
+            anyhow::anyhow!("this change ends the lease of job {} {when}", job.job_id),
+            "Pass --yes to apply it.",
+        ));
     }
-    ctx.warn(&warning);
-    if !tui::ask("Change the lease anyway?").await? {
-        bail!("left the lease of job {} unchanged", job.job_id);
+    let mut lines = vec![vec![
+        span(WARN, "! "),
+        plain(format!(
+            "This change ends the lease of job {} {when}.",
+            short(job.job_id)
+        )),
+    ]];
+    lines.extend(display::table(&[
+        ("Ends", vec![plain(describe_instant(end, now))]),
+        ("Then", vec![plain(after_expiry(action))]),
+    ]));
+    lines.push(Vec::new());
+    for line in lines {
+        anstream::eprintln!("{}", tui::render(&line, None, true));
+    }
+    if !tui::ask("Apply the lease change?").await? {
+        return Err(cancelled("lease unchanged"));
     }
     Ok(true)
 }
@@ -338,7 +355,7 @@ async fn send_update(
             .with_context(|| format!("reading job {job_id}"))?;
         // Apply what was confirmed, or nothing: a change made while asking
         // makes the patch fail its revision check.
-        if confirm_lease_change(ctx, &job, &request, yes).await? {
+        if confirm_lease_change(&job, &request, yes).await? {
             if_revision.get_or_insert(job.revision);
         }
     }
@@ -367,11 +384,13 @@ async fn send_update(
             )
             .into());
         }
-        Err(ClientError::Status { status: 400, .. }) => bail!(
-            "the switchboard rejected the change of job {job_id}: check the label, the \
-             annotations (at most 64; keys of lowercase letters, digits and `._/-`) \
-             and the lease"
-        ),
+        Err(ClientError::Status { status: 400, .. }) => {
+            return Err(hinted(
+                anyhow::anyhow!("the switchboard rejected the change to job {job_id}"),
+                "A job has at most 64 annotations, and their keys consist of a–z, 0–9 and \
+                 `._/-`.",
+            ));
+        }
         Err(e) => return Err(e).with_context(|| format!("updating job {job_id}")),
     };
 
@@ -396,7 +415,7 @@ async fn send_update(
         ]];
         if let Some(job) = &job {
             let rows = [("Lease", display::lease(job, chrono::Utc::now()))];
-            lines.extend(display::table(&rows, &[]));
+            lines.extend(display::table(&rows));
         }
         for line in lines {
             anstream::println!("{}", tui::render(&line, None, true));

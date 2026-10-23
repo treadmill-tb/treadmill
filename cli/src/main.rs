@@ -90,19 +90,78 @@ impl std::fmt::Display for ExitError {
 
 impl std::error::Error for ExitError {}
 
+/// An error with a hint on how to resolve it, which is printed on a `hint:`
+/// line of its own.
+#[derive(Debug)]
+pub struct Hinted {
+    error: anyhow::Error,
+    hint: String,
+}
+
+/// `error`, with `hint`: a sentence or a command.
+pub fn hinted(error: impl Into<anyhow::Error>, hint: impl Into<String>) -> anyhow::Error {
+    Hinted {
+        error: error.into(),
+        hint: hint.into(),
+    }
+    .into()
+}
+
+impl std::fmt::Display for Hinted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.error)
+    }
+}
+
+impl std::error::Error for Hinted {}
+
+/// A question answered with no. It is not reported as an error, but as
+/// `✗ Cancelled · <what was left unchanged>`, and exits with status 1.
+#[derive(Debug)]
+pub struct Cancelled(String);
+
+/// See [`Cancelled`]; `unchanged` says what was left as it was.
+pub fn cancelled(unchanged: impl Into<String>) -> anyhow::Error {
+    Cancelled(unchanged.into()).into()
+}
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cancelled: {}", self.0)
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
 fn fail(error: &anyhow::Error) -> std::process::ExitCode {
+    let (error, hint) = match error.downcast_ref::<Hinted>() {
+        Some(hinted) => (&hinted.error, Some(hinted.hint.as_str())),
+        None => (error, None),
+    };
     if let Some(io) = error.downcast_ref::<std::io::Error>()
         && io.kind() == std::io::ErrorKind::Interrupted
     {
         return std::process::ExitCode::from(130);
     }
 
-    let style = anstyle::AnsiColor::Red.on_default() | anstyle::Effects::BOLD;
-    anstream::eprintln!("{style}error:{style:#} {error:#}");
-    match error.downcast_ref::<ExitError>() {
-        Some(exit) => std::process::ExitCode::from(exit.code),
-        None => std::process::ExitCode::FAILURE,
+    let code = if let Some(Cancelled(unchanged)) = error.downcast_ref::<Cancelled>() {
+        let style = anstyle::AnsiColor::Red.on_default();
+        let dim = anstyle::Style::new().dimmed();
+        anstream::eprintln!("{style}✗{style:#} Cancelled {dim}· {unchanged}{dim:#}");
+        std::process::ExitCode::FAILURE
+    } else {
+        let style = anstyle::AnsiColor::Red.on_default() | anstyle::Effects::BOLD;
+        anstream::eprintln!("{style}error:{style:#} {error:#}");
+        match error.downcast_ref::<ExitError>() {
+            Some(exit) => std::process::ExitCode::from(exit.code),
+            None => std::process::ExitCode::FAILURE,
+        }
+    };
+    if let Some(hint) = hint {
+        let style = anstyle::AnsiColor::Cyan.on_default() | anstyle::Effects::BOLD;
+        anstream::eprintln!("{style}hint:{style:#} {hint}");
     }
+    code
 }
 
 async fn run(args: Cli) -> Result<()> {
@@ -209,7 +268,8 @@ fn require_streaming(ctx: &Ctx, streams: bool) {
     }
     let style = anstyle::AnsiColor::Red.on_default() | anstyle::Effects::BOLD;
     anstream::eprintln!(
-        "{style}error:{style:#} this command streams bytes and has no structured output"
+        "{style}error:{style:#} -o json and -o jsonl are not supported here, because this \
+         command's output is a byte stream"
     );
     std::process::exit(2);
 }

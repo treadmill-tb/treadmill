@@ -7,6 +7,7 @@ use crate::cli::{Globals, OutputFormat};
 use crate::display::{self, short};
 use crate::event::{self, Event};
 use crate::tui;
+use crate::{cancelled, hinted};
 
 pub async fn run(
     globals: &Globals,
@@ -28,7 +29,11 @@ pub async fn run(
     match job.state {
         JobState::Finalized => bail!("job {job_id} has already finished"),
         JobState::Terminating => {
-            note(&format!("Job {} is already terminating", short(job_id)));
+            let dim = anstyle::Style::new().dimmed();
+            note(&format!(
+                "Job {} {dim}· already terminating{dim:#}",
+                short(job_id)
+            ));
             return Ok(());
         }
         _ => {}
@@ -36,15 +41,18 @@ pub async fn run(
 
     if !yes {
         if !tui::interactive() {
-            bail!("terminating job {job_id} needs confirmation; pass --yes");
+            return Err(hinted(
+                anyhow::anyhow!("terminating job {job_id} requires confirmation"),
+                "Pass --yes to terminate it without a terminal.",
+            ));
         }
         let rows = display::job_rows(client, &job).await;
-        for line in display::table(&rows, &[]) {
+        for line in display::table(&rows) {
             anstream::eprintln!("{}", tui::render(&line, None, true));
         }
         anstream::eprintln!();
-        if !tui::ask("Terminate this job?").await? {
-            bail!("left job {job_id} running");
+        if !tui::ask(&format!("Terminate job {}?", short(job_id))).await? {
+            return Err(cancelled(format!("job {} still running", short(job_id))));
         }
     }
 
