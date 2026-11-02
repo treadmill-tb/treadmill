@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 #[cfg(feature = "user")]
@@ -315,11 +316,16 @@ pub enum UserJobCommand {
         remote: String,
         local: Option<PathBuf>,
     },
-    /// Bridge stdio to a job service over a WebSocket, used for ssh's ProxyCommand
+    /// Bridge stdio, or a TCP port with --addr, to a job service over a
+    /// WebSocket; the stdio form backs ssh's ProxyCommand
     WsProxy {
         /// Target job; defaults to the active job
         #[arg(long, value_name = "JOB")]
         job: Option<JobRef>,
+        /// Listen on this TCP address and bridge each connection in turn,
+        /// instead of bridging stdio
+        #[arg(long, value_name = "IP:PORT")]
+        addr: Option<SocketAddr>,
         service: String,
     },
     /// Alias for `context job set`
