@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result, bail};
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
@@ -19,10 +19,18 @@ use crate::state::State;
 
 const READ_BUFFER: usize = 16 * 1024;
 
-/// Bridge stdin/stdout to a job's `sshws` service: the gateway and the job's
-/// own proxy both admit the request against the service token, and the socket
-/// then carries raw SSH bytes in binary frames.
-pub async fn run(ctx: &mut Ctx, job_id: Uuid, service: &str, gateway: Option<&str>) -> Result<()> {
+/// Bridge `infd` and `outfd` to a job's `sshws` service: the gateway and the
+/// job's own proxy both admit the request against the service token, and the
+/// socket then carries raw SSH bytes in binary frames. The caller chooses the
+/// ends: stdio for a `ProxyCommand`, an accepted socket for `--addr`.
+pub async fn run<I: AsyncRead + Unpin + Send + 'static, O: AsyncWrite + Unpin + Send + 'static>(
+    ctx: &mut Ctx,
+    job_id: Uuid,
+    mut infd: I,
+    mut outfd: O,
+    service: &str,
+    gateway: Option<&str>,
+) -> Result<()> {
     let ssh_domains = match gateway {
         Some(_) => ctx.config.ssh_domains(&ctx.profile)?.to_vec(),
         None => Vec::new(),
@@ -52,10 +60,9 @@ pub async fn run(ctx: &mut Ctx, job_id: Uuid, service: &str, gateway: Option<&st
     let (mut sink, mut stream) = socket.split();
 
     let uplink = tokio::spawn(async move {
-        let mut stdin = tokio::io::stdin();
         let mut buffer = vec![0u8; READ_BUFFER];
         loop {
-            let read = match stdin.read(&mut buffer).await {
+            let read = match infd.read(&mut buffer).await {
                 Ok(0) | Err(_) => break,
                 Ok(read) => read,
             };
@@ -70,7 +77,6 @@ pub async fn run(ctx: &mut Ctx, job_id: Uuid, service: &str, gateway: Option<&st
         let _ = sink.send(Message::Close(None)).await;
     });
 
-    let mut stdout = tokio::io::stdout();
     while let Some(message) = stream.next().await {
         let payload = match message.context("reading from the job service")? {
             Message::Binary(payload) => payload,
@@ -78,7 +84,7 @@ pub async fn run(ctx: &mut Ctx, job_id: Uuid, service: &str, gateway: Option<&st
             Message::Close(_) => break,
             _ => continue,
         };
-        if stdout.write_all(&payload).await.is_err() || stdout.flush().await.is_err() {
+        if outfd.write_all(&payload).await.is_err() || outfd.flush().await.is_err() {
             break;
         }
     }

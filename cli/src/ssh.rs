@@ -39,7 +39,15 @@ pub async fn proxy(ctx: &mut Ctx, host: &str) -> Result<()> {
         "{host} is job {} service {service} at {domain}",
         short(job_id)
     ));
-    crate::wsproxy::run(ctx, job_id, &service, Some(domain)).await
+    crate::wsproxy::run(
+        ctx,
+        job_id,
+        tokio::io::stdin(),
+        tokio::io::stdout(),
+        &service,
+        Some(domain),
+    )
+    .await
 }
 
 fn parse_destination(host: &str) -> Result<(Option<&str>, Uuid, &str)> {
