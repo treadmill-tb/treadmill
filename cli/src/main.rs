@@ -340,9 +340,13 @@ async fn user_job(ctx: &mut Ctx, command: &UserJobCommand) -> Result<()> {
             let job = ctx.resolve_job(Some(job)).await?;
             context::set_active(ctx, job)
         }
-        UserJobCommand::WsProxy { job, addr, service } => {
+        UserJobCommand::WsProxy {
+            job,
+            listen_addr,
+            service,
+        } => {
             let job_id = ctx.resolve_job(job.as_ref()).await?;
-            match addr {
+            match listen_addr {
                 Some(addr) => {
                     let listener = tokio::net::TcpListener::bind(*addr).await?;
                     loop {

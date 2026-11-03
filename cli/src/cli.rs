@@ -325,7 +325,7 @@ pub enum UserJobCommand {
         /// Listen on this TCP address and bridge each connection in turn,
         /// instead of bridging stdio
         #[arg(long, value_name = "IP:PORT")]
-        addr: Option<SocketAddr>,
+        listen_addr: Option<SocketAddr>,
         service: String,
     },
     /// Alias for `context job set`
