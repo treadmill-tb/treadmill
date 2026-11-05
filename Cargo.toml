@@ -38,7 +38,7 @@ treadmill-ws-connector = { path = "supervisor/connector/ws" }
 # Cargo.toml selects features and may set `default-features = false`.
 aide = "0.16.0-alpha.4"
 anyhow = "1.0.76"
-async-nats = "0.50.0"
+async-nats = "0.51.0"
 async-trait = "0.1.81"
 axum = "0.8.9"
 base64 = "0.23.0"
