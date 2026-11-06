@@ -46,7 +46,7 @@
           natscli
 
           # Web console (console/): npm-driven Vite/React toolchain.
-          nodejs_22
+          nodejs_26
 
           # FAT tooling for the nbd-netboot daemon tests.
           dosfstools
