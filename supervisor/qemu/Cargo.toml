@@ -14,7 +14,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
-strfmt = "0.2.4"
+strfmt = "0.2.6"
 tokio = { workspace = true, features = [
   "rt-multi-thread",
   "process",

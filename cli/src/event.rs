@@ -166,7 +166,23 @@ mod tests {
     //! review`, or accept it with `INSTA_UPDATE=always cargo test`.
 
     use super::*;
-    use insta::assert_json_snapshot;
+
+    /// Like `insta::assert_json_snapshot!`, but finds the snapshots relative
+    /// to the current directory instead of the path the test was compiled in.
+    ///
+    /// The Nix checks build the tests in one directory and run them in
+    /// another, so the compile-time path may no longer exist.
+    macro_rules! assert_json_snapshot {
+        ($($args:tt)*) => {{
+            let mut settings = insta::Settings::clone_current();
+            settings.set_snapshot_path(
+                std::env::current_dir()
+                    .expect("current directory")
+                    .join("src/snapshots"),
+            );
+            settings.bind(|| insta::assert_json_snapshot!($($args)*));
+        }};
+    }
 
     const JOB: Uuid = Uuid::from_u128(0x0192f3a4_5b6c_7d8e_9fa0_b1c2d3e4f5a6);
     const HOST: Uuid = Uuid::from_u128(0x0679be07_6106_48aa_8057_b1d4f2e18a99);

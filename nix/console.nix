@@ -27,7 +27,7 @@
           npmDeps = pkgs.importNpmLock { npmRoot = ../console; };
           inherit (pkgs.importNpmLock) npmConfigHook;
 
-          nodejs = pkgs.nodejs_22;
+          nodejs = pkgs.nodejs_26;
 
           # openapi-typescript's redocly core reads this; keep it from
           # attempting any network in the sandbox.

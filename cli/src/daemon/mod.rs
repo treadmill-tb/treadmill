@@ -285,7 +285,6 @@ impl DbusDaemon {
 #[interface(
     name = "dev.treadmill.Daemon1",
     proxy(
-        gen_blocking = false,
         default_path = "/dev/treadmill/Daemon",
         default_service = "dev.treadmill.Daemon",
     )

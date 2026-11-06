@@ -9,9 +9,9 @@
 //!   addresses, and provider usernames may only be logged here.
 
 use anyhow::Context;
-use sentry::integrations::tracing::EventFilter;
+use sentry::integrations::tracing::{BreadcrumbLayer, ErrorLayer, SpanLayer};
 use tracing::Level;
-use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::filter::{LevelFilter, filter_fn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
@@ -28,9 +28,14 @@ pub fn init(config: Option<&SentryConfig>) -> anyhow::Result<Option<sentry::Clie
         _ => Level::WARN,
     };
     let sentry_layer = sentry.is_some().then(|| {
-        sentry::integrations::tracing::layer()
-            .event_filter(move |meta| classify(*meta.level(), event_level))
+        SpanLayer::new()
             .with_filter(LevelFilter::INFO)
+            .and_then(BreadcrumbLayer::new().with_filter(filter_fn(move |meta| {
+                classify(*meta.level(), event_level) == Report::Breadcrumb
+            })))
+            .and_then(ErrorLayer::new().with_filter(filter_fn(move |meta| {
+                classify(*meta.level(), event_level) == Report::Event
+            })))
     });
 
     tracing_subscriber::registry()
@@ -47,12 +52,22 @@ pub fn init(config: Option<&SentryConfig>) -> anyhow::Result<Option<sentry::Clie
     Ok(sentry)
 }
 
+/// How a tracing event at some level is reported to Sentry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Report {
+    /// A Sentry issue.
+    Event,
+    /// Context attached to the next issue.
+    Breadcrumb,
+    Ignore,
+}
+
 /// `Level` is ordered by verbosity, so `ERROR <= WARN <= INFO`.
-fn classify(level: Level, event_level: Level) -> EventFilter {
+fn classify(level: Level, event_level: Level) -> Report {
     match level {
-        l if l <= event_level => EventFilter::Event,
-        l if l <= Level::INFO => EventFilter::Breadcrumb,
-        _ => EventFilter::Ignore,
+        l if l <= event_level => Report::Event,
+        l if l <= Level::INFO => Report::Breadcrumb,
+        _ => Report::Ignore,
     }
 }
 
@@ -91,29 +106,19 @@ fn client(config: &SentryConfig) -> anyhow::Result<sentry::ClientInitGuard> {
 mod tests {
     use super::*;
 
-    fn bits(level: Level, event_level: Level) -> u32 {
-        classify(level, event_level).bits()
-    }
-
     #[test]
     fn warn_threshold_reports_warnings_as_issues() {
-        assert_eq!(bits(Level::ERROR, Level::WARN), EventFilter::Event.bits());
-        assert_eq!(bits(Level::WARN, Level::WARN), EventFilter::Event.bits());
-        assert_eq!(
-            bits(Level::INFO, Level::WARN),
-            EventFilter::Breadcrumb.bits()
-        );
-        assert_eq!(bits(Level::DEBUG, Level::WARN), EventFilter::Ignore.bits());
-        assert_eq!(bits(Level::TRACE, Level::WARN), EventFilter::Ignore.bits());
+        assert_eq!(classify(Level::ERROR, Level::WARN), Report::Event);
+        assert_eq!(classify(Level::WARN, Level::WARN), Report::Event);
+        assert_eq!(classify(Level::INFO, Level::WARN), Report::Breadcrumb);
+        assert_eq!(classify(Level::DEBUG, Level::WARN), Report::Ignore);
+        assert_eq!(classify(Level::TRACE, Level::WARN), Report::Ignore);
     }
 
     #[test]
     fn error_threshold_demotes_warnings_to_breadcrumbs() {
-        assert_eq!(bits(Level::ERROR, Level::ERROR), EventFilter::Event.bits());
-        assert_eq!(
-            bits(Level::WARN, Level::ERROR),
-            EventFilter::Breadcrumb.bits()
-        );
-        assert_eq!(bits(Level::DEBUG, Level::ERROR), EventFilter::Ignore.bits());
+        assert_eq!(classify(Level::ERROR, Level::ERROR), Report::Event);
+        assert_eq!(classify(Level::WARN, Level::ERROR), Report::Breadcrumb);
+        assert_eq!(classify(Level::DEBUG, Level::ERROR), Report::Ignore);
     }
 }

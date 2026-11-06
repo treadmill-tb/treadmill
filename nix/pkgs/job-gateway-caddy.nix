@@ -15,8 +15,8 @@
 }:
 let
   base = pkgs.caddy.withPlugins {
-    plugins = [ "github.com/ggicci/caddy-jwt@v1.2.0" ];
-    hash = "sha256-jaCgIe5sAXMIefSQj4qp2+RLT/9S4fge8rb6cqRYgU4=";
+    plugins = [ "github.com/ggicci/caddy-jwt@v1.4.0" ];
+    hash = "sha256-28ZA3CVc/meSglrvMYWlnDpmDzbXgYsZJHze8t1Xa7o=";
   };
 
   canExecute = pkgs.stdenv.buildPlatform.canExecute staticFor;
