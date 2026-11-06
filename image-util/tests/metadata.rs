@@ -6,7 +6,12 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 fn run(root: &Path, args: &[&str]) {
-    let output = Command::new(env!("CARGO_BIN_EXE_image-util"))
+    // Read at runtime, not with `env!`: the Nix checks build the tests in one
+    // directory and run them in another, so the compile-time path may no
+    // longer exist.
+    let image_util = std::env::var_os("CARGO_BIN_EXE_image-util")
+        .expect("CARGO_BIN_EXE_image-util is set by the test runner");
+    let output = Command::new(image_util)
         .current_dir(root)
         .args(args)
         .output()
