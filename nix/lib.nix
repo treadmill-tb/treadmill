@@ -21,16 +21,31 @@ let
       rust-analyzer
     ]
   );
-  craneLib = ((crane.mkLib pkgs).overrideToolchain rustToolchain).overrideScope (
-    _: prev: {
-      # nixpkgs' fetchurl floods the build logs; Nix's builtin fetcher is quiet.
-      downloadCargoPackage = prev.downloadCargoPackage.override {
-        pkgsBuildBuild = pkgs.pkgsBuildBuild // {
-          fetchurl = import <nix/fetchurl.nix>;
-        };
-      };
-    }
-  );
+
+  # Tweak the crane crate download curl flags to prevent downloads from getting
+  # stuck in CI.
+  craneLib0 = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+  craneLib = craneLib0.appendCrateRegistries [
+    (craneLib0.registryFromDownloadUrl {
+      dl = "https://static.crates.io/crates";
+      indexUrl = "https://github.com/rust-lang/crates.io-index";
+      fetchurlExtraArgs.curlOptsList = [
+        "--connect-timeout"
+        "20"
+        # Abort below 1 KiB/s for 30 s, or after 2 min in total.
+        "--speed-limit"
+        "1024"
+        "--speed-time"
+        "30"
+        "--max-time"
+        "120"
+        "--retry"
+        "5"
+        # No progress table per crate; errors and retry warnings stay.
+        "--no-progress-meter"
+      ];
+    })
+  ];
 
   workspaceRoot = ../.;
 
