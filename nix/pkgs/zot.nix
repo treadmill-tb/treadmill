@@ -11,15 +11,11 @@
   go_1_27,
 }:
 let
-  rev = "2bfe843171d8846e12ea423bf108e04d12eef5a3";
-  # The stable 2.1.21 release doesn't compile under Go 1.27 because the trivy
-  # dependency chokes on stablization differences of the jsonv2 experiment.
-  # Unstable upstream already pins a trivy revision with this fixed.
-  version = "2.1.21-unstable-2026-09-20";
+  version = "2.1.23";
 
   zui = fetchurl {
-    url = "https://github.com/project-zot/zui/releases/download/commit-a7feb46/zui.tgz";
-    hash = "sha256-sV0TxPWLekQAbE0aKyI7vcFI9Wo/zo+0gvSyb6EwXF4=";
+    url = "https://github.com/project-zot/zui/releases/download/commit-ce3819c/zui.tgz";
+    hash = "sha256-g2wQoNCPq4h8nFBeyz9IJsr2Z5waWU8Ep5oO9PoVuAo=";
   };
 in
 (buildGoModule.override { go = go_1_27; }) {
@@ -29,11 +25,11 @@ in
   src = fetchFromGitHub {
     owner = "project-zot";
     repo = "zot";
-    inherit rev;
-    hash = "sha256-1Ik3Bcy1W2DbpVqfw+BT8p7gh+5trAOrjvLDfioAR6o=";
+    tag = "v${version}";
+    hash = "sha256-Q21qFoZzOpJe7oJP4RSGiBvhPF9znCF2ndegsVSHQnY=";
   };
 
-  vendorHash = "sha256-f+u3wsd+yBTgW7HAAphSFi1KUKbmLC0kkLq71HMfMbM=";
+  vendorHash = "sha256-ILHn4EUCHLpwdgSj/CBlX58R1D2zJhr+H6HkcAOdhis=";
   doCheck = false;
 
   env.CGO_ENABLED = "0";
@@ -60,7 +56,7 @@ in
     "-s"
     "-w"
     "-X zotregistry.dev/zot/v2/pkg/buildinfo.ReleaseTag=${version}"
-    "-X zotregistry.dev/zot/v2/pkg/buildinfo.Commit=${rev}"
+    "-X zotregistry.dev/zot/v2/pkg/buildinfo.Commit=v${version}"
     "-X zotregistry.dev/zot/v2/pkg/buildinfo.BinaryType=zot-full"
   ];
 
