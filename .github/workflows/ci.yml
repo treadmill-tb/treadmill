@@ -30,6 +30,8 @@ jobs:
   flake-check:
     runs-on: ubuntu-latest
 
+    timeout-minutes: 60
+
     # On main or in the merge queue to main we have access to the "cachix-push"
     # environment secrets and can seed the cache.
     environment: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/main')) && 'cachix-push' || '' }}
