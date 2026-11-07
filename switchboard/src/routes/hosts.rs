@@ -832,11 +832,24 @@ fn is_live(host: &sql::host::SqlHostListing, state: &AppState) -> bool {
 /// listing cannot show every host the way the tag view did. Liveness is
 /// computed against the same heartbeat window the scheduler uses
 /// (`host_liveness_timeout`).
+///
+/// With a job's own token, the listing is what the public (the `everyone`
+/// subject) may read, plus the host the job is dispatched on.
 pub async fn list(
     State(state): State<AppState>,
-    subject: crate::auth::Subject,
+    caller: crate::auth::Caller,
 ) -> Result<Json<Vec<HostListEntry>>, StatusCode> {
-    let hosts = crate::sql::host::list_readable(subject.user_id(), state.pool())
+    let (viewer, own_host) = match caller {
+        crate::auth::Caller::User(subject) => (subject.user_id(), None),
+        crate::auth::Caller::Job(job) => {
+            let own_host = sql::job::fetch_by_job_id(job.job_id(), state.pool())
+                .await
+                .or_internal(&format!("fetching job {} to list hosts", job.job_id()))?
+                .dispatched_on_host_id();
+            (EVERYONE_SUBJECT_ID, own_host)
+        }
+    };
+    let hosts = crate::sql::host::list_readable(viewer, own_host, state.pool())
         .await
         .or_internal("listing hosts")?;
 

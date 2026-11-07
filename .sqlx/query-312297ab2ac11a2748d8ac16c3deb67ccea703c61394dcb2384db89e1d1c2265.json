@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select g.id, g.display_name, g.canonical_name, g.owner_subject, g.created_at\n           from tml_switchboard.image_sets g\n           where exists (\n                  select 1 from tml_switchboard.principals($1) p\n                  where p.id = g.owner_subject\n              )\n              or exists (\n                  select 1\n                  from tml_switchboard.image_set_grants gr\n                  join tml_switchboard.principals($1) p on gr.subject_id = p.id\n                  where gr.set_id = g.id\n              )\n           order by g.created_at, g.id",
+  "query": "select g.id, g.display_name, g.canonical_name, g.owner_subject, g.created_at\n           from tml_switchboard.image_sets g\n           where exists (\n                  select 1 from tml_switchboard.principals($1) p\n                  where p.id = g.owner_subject\n              )\n              or exists (\n                  select 1\n                  from tml_switchboard.image_set_grants gr\n                  join tml_switchboard.principals($1) p on gr.subject_id = p.id\n                  where gr.set_id = g.id\n              )\n              or g.id = $2\n           order by g.created_at, g.id",
   "describe": {
     "columns": [
       {
@@ -61,6 +61,7 @@
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid"
       ]
     },
@@ -72,5 +73,5 @@
       false
     ]
   },
-  "hash": "8d8867355595bc527532ff9f0c71002d277beff19bdff3a222a5eac00b6d8128"
+  "hash": "312297ab2ac11a2748d8ac16c3deb67ccea703c61394dcb2384db89e1d1c2265"
 }

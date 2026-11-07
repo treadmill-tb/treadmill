@@ -391,6 +391,7 @@ paths:
       tags:
       - Jobs
       summary: Watch a job for changes
+      description: Requires `read` on the job, or the job's own token.
       operationId: watchJob
       parameters:
       - in: path
@@ -404,13 +405,14 @@ paths:
         style: simple
       responses:
         '401':
-          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+          description: 'Authentication failed: the token is missing, malformed, expired, or revoked, or its job has finalized.'
         '403':
-          description: The authenticated account is locked, or lacks permission for this resource.
+          description: The account is locked or lacks permission for this resource, or the job token belongs to a different job.
         '200':
           description: A `text/event-stream` of `change` events; re-GET the job on each.
       security:
       - token: []
+      - job_token: []
   /jobs/{id}/nats-log-token:
     post:
       tags:
@@ -685,6 +687,7 @@ paths:
       tags:
       - Jobs
       summary: Get a job
+      description: Requires `read` on the job, or the job's own token.
       operationId: getJob
       parameters:
       - in: path
@@ -698,9 +701,9 @@ paths:
         style: simple
       responses:
         '401':
-          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+          description: 'Authentication failed: the token is missing, malformed, expired, or revoked, or its job has finalized.'
         '403':
-          description: The authenticated account is locked, or lacks permission for this resource.
+          description: The account is locked or lacks permission for this resource, or the job token belongs to a different job.
         '200':
           description: The job; its `ETag` header is the job's revision.
           content:
@@ -709,6 +712,7 @@ paths:
                 $ref: '#/components/schemas/JobInfo'
       security:
       - token: []
+      - job_token: []
     delete:
       tags:
       - Jobs
@@ -811,9 +815,9 @@ paths:
       operationId: listHosts
       responses:
         '401':
-          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+          description: 'Authentication failed: the token is missing, malformed, expired, or revoked, or its job has finalized.'
         '403':
-          description: The authenticated account is locked, or lacks permission for this resource.
+          description: The account is locked or lacks permission for this resource, or the job token belongs to a different job.
         '200':
           description: ''
           content:
@@ -824,6 +828,7 @@ paths:
                   $ref: '#/components/schemas/HostListEntry'
       security:
       - token: []
+      - job_token: []
     post:
       tags:
       - Hosts
@@ -2015,9 +2020,9 @@ paths:
       operationId: listImageSets
       responses:
         '401':
-          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+          description: 'Authentication failed: the token is missing, malformed, expired, or revoked, or its job has finalized.'
         '403':
-          description: The authenticated account is locked, or lacks permission for this resource.
+          description: The account is locked or lacks permission for this resource, or the job token belongs to a different job.
         '200':
           description: ''
           content:
@@ -2028,6 +2033,7 @@ paths:
                   $ref: '#/components/schemas/ImageSetInfo'
       security:
       - token: []
+      - job_token: []
     post:
       tags:
       - Images
@@ -4161,7 +4167,8 @@ components:
     JobPermission:
       description: |-
         A permission on a job. `permissions` on [`JobInfo`] reports which of these
-        the viewer holds (an owner or global admin holds all of them).
+        the viewer holds (an owner or global admin holds all of them; the job's own
+        token holds `read` and `stop`).
       oneOf:
       - description: May read the job (its info, listing, and console logs).
         type: string

@@ -35,16 +35,18 @@ pub struct SqlHostName {
     pub name: String,
 }
 
-/// The hosts `subject` may `read`, with their operational fields, ordered by
-/// `(name, host_id)`: `name` is free-form and non-unique, so it needs a
-/// tiebreak to paginate stably.
+/// The hosts `subject` may `read`, plus `also` if given, with their
+/// operational fields, ordered by `(name, host_id)`: `name` is free-form and
+/// non-unique, so it needs a tiebreak to paginate stably.
 ///
 /// Mirrors `can_access_host(subject, host, 'read')` in `src/auth/engine.rs`,
 /// evaluated set-wise so the listing stays one query. A spec is readable by
 /// anyone who can read its host, which is why the filter has to be here rather
-/// than left to the caller.
+/// than left to the caller. `also` admits one host regardless of grants: a
+/// job's own host, for a listing made with the job's token.
 pub async fn list_readable(
     subject_id: Uuid,
+    also: Option<Uuid>,
     conn: impl PgExecutor<'_>,
 ) -> Result<Vec<SqlHostListing>, sqlx::Error> {
     sqlx::query_as!(
@@ -70,9 +72,11 @@ pub async fn list_readable(
                      join principals p on g.subject_id = p.id
                      where g.host_id = h.host_id and g.permission = 'read'
                  )
+              or h.host_id = $3
            order by h.name, h.host_id"#,
         subject_id,
         crate::auth::engine::ADMINS_GROUP_ID,
+        also,
     )
     .fetch_all(conn)
     .await

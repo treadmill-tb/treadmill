@@ -555,6 +555,9 @@ impl SqlJob {
     pub fn started_at(&self) -> Option<&DateTime<Utc>> {
         self.started_at.as_ref()
     }
+    pub fn image_set_id(&self) -> Option<Uuid> {
+        self.image_set_id
+    }
     pub fn dispatched_on_host_id(&self) -> Option<Uuid> {
         self.dispatched_on_host_id
     }

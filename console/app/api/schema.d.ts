@@ -200,7 +200,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Watch a job for changes */
+        /**
+         * Watch a job for changes
+         * @description Requires `read` on the job, or the job's own token.
+         */
         get: operations["watchJob"];
         put?: never;
         post?: never;
@@ -328,7 +331,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get a job */
+        /**
+         * Get a job
+         * @description Requires `read` on the job, or the job's own token.
+         */
         get: operations["getJob"];
         put?: never;
         post?: never;
@@ -1973,7 +1979,8 @@ export interface components {
         };
         /**
          * @description A permission on a job. `permissions` on [`JobInfo`] reports which of these
-         *     the viewer holds (an owner or global admin holds all of them).
+         *     the viewer holds (an owner or global admin holds all of them; the job's own
+         *     token holds `read` and `stop`).
          */
         JobPermission: "read" | "stop" | "manage";
         /** @description The job a resumed or restarted job continues. */
@@ -3210,14 +3217,14 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            /** @description Authentication failed: the token is missing, malformed, expired, or revoked, or its job has finalized. */
             401: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            /** @description The account is locked or lacks permission for this resource, or the job token belongs to a different job. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3613,14 +3620,14 @@ export interface operations {
                     "application/json": components["schemas"]["JobInfo"];
                 };
             };
-            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            /** @description Authentication failed: the token is missing, malformed, expired, or revoked, or its job has finalized. */
             401: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            /** @description The account is locked or lacks permission for this resource, or the job token belongs to a different job. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3777,14 +3784,14 @@ export interface operations {
                     "application/json": components["schemas"]["HostListEntry"][];
                 };
             };
-            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            /** @description Authentication failed: the token is missing, malformed, expired, or revoked, or its job has finalized. */
             401: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            /** @description The account is locked or lacks permission for this resource, or the job token belongs to a different job. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5326,14 +5333,14 @@ export interface operations {
                     "application/json": components["schemas"]["ImageSetInfo"][];
                 };
             };
-            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            /** @description Authentication failed: the token is missing, malformed, expired, or revoked, or its job has finalized. */
             401: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            /** @description The account is locked or lacks permission for this resource, or the job token belongs to a different job. */
             403: {
                 headers: {
                     [name: string]: unknown;

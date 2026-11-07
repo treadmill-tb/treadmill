@@ -327,12 +327,24 @@ pub async fn update_image_set(
     Ok(Json(set_info(&state, set).await?))
 }
 
-/// `GET /image-sets`: list sets the caller owns (directly or via a group).
+/// `GET /image-sets`: list sets the caller owns (directly or via a group) or
+/// was granted. With a job's own token, the sets granted to the public (the
+/// `everyone` subject), plus the set the job was started from.
 pub async fn list_image_sets(
     State(state): State<AppState>,
-    subject: crate::auth::Subject,
+    caller: crate::auth::Caller,
 ) -> Result<Json<Vec<ImageSetInfo>>, StatusCode> {
-    let sets = image::list_owned_sets(state.pool(), subject.user_id())
+    let (viewer, own_set) = match caller {
+        crate::auth::Caller::User(subject) => (subject.user_id(), None),
+        crate::auth::Caller::Job(job) => {
+            let own_set = crate::sql::job::fetch_by_job_id(job.job_id(), state.pool())
+                .await
+                .map_err(internal)?
+                .image_set_id();
+            (engine::EVERYONE_SUBJECT_ID, own_set)
+        }
+    };
+    let sets = image::list_owned_sets(state.pool(), viewer, own_set)
         .await
         .map_err(internal)?;
     let mut out = Vec::with_capacity(sets.len());

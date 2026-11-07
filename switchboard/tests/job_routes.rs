@@ -3061,6 +3061,248 @@ async fn a_job_cannot_terminate_another_job(pool: PgPool) {
 
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_reads_itself(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
+
+    let resp = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(job_token(&pool, job_id).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let etag = resp.headers().get(reqwest::header::ETAG).cloned();
+    let info: JobInfo = resp.json().await.unwrap();
+    assert_eq!(info.job_id, job_id);
+    assert_eq!(info.permissions, [JobPermission::Read, JobPermission::Stop]);
+    assert_eq!(
+        etag.as_ref().and_then(|v| v.to_str().ok()),
+        Some(format!("\"{}\"", info.revision).as_str()),
+    );
+    assert_eq!(
+        info.revision,
+        get_job(&client, addr, &user_token, job_id).await.revision
+    );
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_cannot_read_another_job(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
+    let other_job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
+    let token = job_token(&pool, job_id).await;
+
+    for path in ["", "/watch"] {
+        let resp = client
+            .get(format!("http://{addr}/api/v1/jobs/{other_job_id}{path}"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN, "{path}");
+    }
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_finalized_job_cannot_read_itself(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (_, job_id) = running_job(&pool, &client, addr).await;
+    mark_finalized(&pool, job_id).await;
+
+    let resp = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(job_token(&pool, job_id).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_watches_itself(pool: PgPool) {
+    let addr = spawn_server(watch_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (_, job_id) = running_job(&pool, &client, addr).await;
+
+    let mut resp = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}/watch"))
+        .bearer_auth(job_token(&pool, job_id).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    next_change(&mut resp).await;
+}
+
+/// Insert a host with no spec, owned by `owner`.
+async fn insert_owned_host(pool: &PgPool, owner: Option<Uuid>) -> Uuid {
+    let host_id = Uuid::new_v4();
+    sqlx::query(
+        "insert into tml_switchboard.hosts (host_id, name, auth_token, owner_id) \
+         values ($1, $2, $3, $4)",
+    )
+    .bind(host_id)
+    .bind(format!("host-{host_id}"))
+    .bind([host_id.as_bytes().as_slice(), host_id.as_bytes()].concat())
+    .bind(owner)
+    .execute(pool)
+    .await
+    .unwrap();
+    host_id
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_lists_public_hosts_and_its_own(pool: PgPool) {
+    const EVERYONE: Uuid = Uuid::from_u128(4);
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
+    let bob = whoami(&client, addr, &user_token).await;
+    let own_host: Uuid = sqlx::query_scalar(
+        "select dispatched_on_host_id from tml_switchboard.jobs where job_id = $1",
+    )
+    .bind(job_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // The job's owner's private host stays hidden from the job; a public one
+    // does not.
+    let owners_host = insert_owned_host(&pool, Some(bob)).await;
+    let public_host = insert_owned_host(&pool, None).await;
+    sqlx::query(
+        "insert into tml_switchboard.host_grants (host_id, subject_id, permission) \
+         values ($1, $2, 'read')",
+    )
+    .bind(public_host)
+    .bind(EVERYONE)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let listed = |token: String| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .get(format!("http://{addr}/api/v1/hosts"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::OK);
+            let mut ids: Vec<Uuid> = resp
+                .json::<Vec<HostListEntry>>()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|h| h.host_id)
+                .collect();
+            ids.sort();
+            ids
+        }
+    };
+
+    let mut expected = vec![own_host, public_host];
+    expected.sort();
+    assert_eq!(listed(job_token(&pool, job_id).await).await, expected);
+    assert!(listed(user_token).await.contains(&owners_host));
+}
+
+/// Insert an image set with one (empty) generation, owned by `owner`.
+async fn insert_image_set(pool: &PgPool, owner: Option<Uuid>) -> Uuid {
+    let set_id = Uuid::new_v4();
+    sqlx::query(
+        "insert into tml_switchboard.image_sets (id, owner_subject, display_name) \
+         values ($1, $2, 'set')",
+    )
+    .bind(set_id)
+    .bind(owner)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into tml_switchboard.image_set_generations (set_id, generation) \
+         values ($1, 1)",
+    )
+    .bind(set_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    set_id
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_lists_public_image_sets_and_its_own(pool: PgPool) {
+    const EVERYONE: Uuid = Uuid::from_u128(4);
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
+    let bob = whoami(&client, addr, &user_token).await;
+
+    // The job runs from one of its owner's private sets; another one stays
+    // hidden from the job, while a public one does not.
+    let own_set = insert_image_set(&pool, Some(bob)).await;
+    let owners_set = insert_image_set(&pool, Some(bob)).await;
+    let public_set = insert_image_set(&pool, None).await;
+    sqlx::query(
+        "insert into tml_switchboard.image_set_grants (set_id, subject_id, permission) \
+         values ($1, $2, 'use')",
+    )
+    .bind(public_set)
+    .bind(EVERYONE)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "update tml_switchboard.jobs \
+         set image_id = null, image_set_id = $2, image_set_generation = 1 \
+         where job_id = $1",
+    )
+    .bind(job_id)
+    .bind(own_set)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let listed = |token: String| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .get(format!("http://{addr}/api/v1/image-sets"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::OK);
+            let mut ids: Vec<Uuid> = resp
+                .json::<Vec<serde_json::Value>>()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|s| s["id"].as_str().unwrap().parse().unwrap())
+                .collect();
+            ids.sort();
+            ids
+        }
+    };
+
+    let mut expected = vec![own_set, public_set];
+    expected.sort();
+    assert_eq!(listed(job_token(&pool, job_id).await).await, expected);
+    assert!(listed(user_token).await.contains(&owners_set));
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn a_job_reports_its_exit_status(pool: PgPool) {
     let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
     let client = no_redirect_client();

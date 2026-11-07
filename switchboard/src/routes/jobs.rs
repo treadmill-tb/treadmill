@@ -814,40 +814,60 @@ fn job_perm_to_api(p: JobPermission) -> ApiJobPermission {
     }
 }
 
+/// Gate a read of a job on its `read` permission for a user, or on the job's
+/// own token. A user who cannot read the job -- including the case where it
+/// does not exist -- gets `403` rather than a signal of its (non-)existence.
+async fn require_read(state: &AppState, caller: &Caller, job_id: Uuid) -> Result<(), StatusCode> {
+    match caller {
+        Caller::User(subject) => {
+            let authorized = engine::can_access_job(
+                state.pool(),
+                subject.user_id(),
+                job_id,
+                JobPermission::Read,
+            )
+            .await
+            .or_internal("checking job read access")?;
+            if authorized {
+                Ok(())
+            } else {
+                Err(StatusCode::FORBIDDEN)
+            }
+        }
+        Caller::Job(job_subject) => require_own_job(job_subject, job_id),
+    }
+}
+
 /// Axum handler for `GET /jobs/{id}`.
 ///
 /// Returns the full [`JobInfo`] view of a job — including the caller's own
-/// permissions on it — gated on the caller's `read` permission. A caller who
-/// cannot read the job — including the case where the job does not exist —
-/// gets `403` rather than a signal of the job's (non-)existence, matching the
-/// log-token route. The job's revision is also served as its `ETag`, for a
-/// conditional `PATCH`.
+/// permissions on it — gated on the caller's `read` permission, or on the
+/// job's own token (see [`require_read`]). A job token's permissions are
+/// `read` and `stop`: it can read and terminate its job, nothing more. The
+/// job's revision is also served as its `ETag`, for a conditional `PATCH`.
 pub async fn get_job(
     State(state): State<AppState>,
-    subject: crate::auth::Subject,
+    caller: Caller,
     Path(IdPath { id: job_id }): Path<IdPath>,
 ) -> Result<(TypedHeader<ETag>, Json<JobInfo>), StatusCode> {
-    let authorized =
-        engine::can_access_job(state.pool(), subject.user_id(), job_id, JobPermission::Read)
-            .await
-            .or_internal("checking job read access for get_job")?;
-    if !authorized {
-        return Err(StatusCode::FORBIDDEN);
-    }
+    require_read(&state, &caller, job_id).await?;
 
-    let permissions = engine::job_permissions(state.pool(), subject.user_id(), job_id)
-        .await
-        .or_internal("enumerating job permissions for get_job")?
-        .into_iter()
-        .map(job_perm_to_api)
-        .collect();
+    let permissions = match &caller {
+        Caller::User(subject) => engine::job_permissions(state.pool(), subject.user_id(), job_id)
+            .await
+            .or_internal("enumerating job permissions for get_job")?
+            .into_iter()
+            .map(job_perm_to_api)
+            .collect(),
+        Caller::Job(_) => vec![ApiJobPermission::Read, ApiJobPermission::Stop],
+    };
 
     let mut conn = state
         .pool()
         .acquire()
         .await
         .or_internal("acquiring a connection for get_job")?;
-    // The `read` check above already passed, so the row exists; a missing row
+    // The read check above already passed, so the row exists; a missing row
     // here is a genuine internal inconsistency, not a 404.
     let sql_job = job::fetch_by_job_id(job_id, &mut *conn)
         .await
@@ -1059,21 +1079,15 @@ pub async fn terminate(
 ///
 /// Opens a Server-Sent Events stream that pings whenever the job's row or its
 /// announced services change, gated once at open on the caller's `read`
-/// permission (403 otherwise, including for a nonexistent job). Each ping is
+/// permission or the job's own token (see [`require_read`]). Each ping is
 /// contentless; the client re-`GET`s the job in response, which is what carries
 /// both.
 pub async fn watch(
     State(state): State<AppState>,
-    subject: crate::auth::Subject,
+    caller: Caller,
     Path(IdPath { id: job_id }): Path<IdPath>,
 ) -> Result<Response, StatusCode> {
-    let authorized =
-        engine::can_access_job(state.pool(), subject.user_id(), job_id, JobPermission::Read)
-            .await
-            .or_internal("checking job read access for a watch stream")?;
-    if !authorized {
-        return Err(StatusCode::FORBIDDEN);
-    }
+    require_read(&state, &caller, job_id).await?;
 
     let sub = state.event_bus().subscribe(&[
         EventFilter {

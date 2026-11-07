@@ -221,13 +221,13 @@ pub fn api_router() -> ApiRouter<AppState> {
         .api_route(
             "/jobs/{id}/watch",
             get_with(jobs::watch, |o| {
-                doc(o, "watchJob", "Jobs", "Watch a job for changes").response_with::<200, (), _>(
-                    |r| {
+                doc(o, "watchJob", "Jobs", "Watch a job for changes")
+                    .description("Requires `read` on the job, or the job's own token.")
+                    .response_with::<200, (), _>(|r| {
                         r.description(
                             "A `text/event-stream` of `change` events; re-GET the job on each.",
                         )
-                    },
-                )
+                    })
             }),
         )
         //  POST /jobs/{id}/nats-log-token -- mint a NATS read token for this job's logs
@@ -333,9 +333,11 @@ pub fn api_router() -> ApiRouter<AppState> {
         .api_route(
             "/jobs/{id}",
             get_with(jobs::get_job, |o| {
-                doc(o, "getJob", "Jobs", "Get a job").response_with::<200, Json<JobInfo>, _>(|r| {
-                    r.description("The job; its `ETag` header is the job's revision.")
-                })
+                doc(o, "getJob", "Jobs", "Get a job")
+                    .description("Requires `read` on the job, or the job's own token.")
+                    .response_with::<200, Json<JobInfo>, _>(|r| {
+                        r.description("The job; its `ETag` header is the job's revision.")
+                    })
             })
             .patch_with(jobs::update_job, |o| {
                 doc(o, "updateJob", "Jobs", "Update a job")
