@@ -490,10 +490,13 @@ pub async fn fetch_set_by_id(
 /// Sets visible to `subject`: those it owns (directly or via a group it
 /// transitively joins) plus those granted to any of its principals. Because
 /// `principals()` folds in the `everyone` subject, public sets (which grant
-/// `everyone` `use`) are included for every caller.
+/// `everyone` `use`) are included for every caller. `also` admits one set
+/// regardless of grants: a job's own set, for a listing made with the job's
+/// token.
 pub async fn list_owned_sets(
     conn: impl PgExecutor<'_>,
     subject: Uuid,
+    also: Option<Uuid>,
 ) -> Result<Vec<SetRecord>, sqlx::Error> {
     sqlx::query_as!(
         SetRecord,
@@ -509,8 +512,10 @@ pub async fn list_owned_sets(
                   join tml_switchboard.principals($1) p on gr.subject_id = p.id
                   where gr.set_id = g.id
               )
+              or g.id = $2
            order by g.created_at, g.id"#,
         subject,
+        also,
     )
     .fetch_all(conn)
     .await

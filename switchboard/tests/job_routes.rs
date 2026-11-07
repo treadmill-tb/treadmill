@@ -3216,6 +3216,91 @@ async fn a_job_lists_public_hosts_and_its_own(pool: PgPool) {
     assert!(listed(user_token).await.contains(&owners_host));
 }
 
+/// Insert an image set with one (empty) generation, owned by `owner`.
+async fn insert_image_set(pool: &PgPool, owner: Option<Uuid>) -> Uuid {
+    let set_id = Uuid::new_v4();
+    sqlx::query(
+        "insert into tml_switchboard.image_sets (id, owner_subject, display_name) \
+         values ($1, $2, 'set')",
+    )
+    .bind(set_id)
+    .bind(owner)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into tml_switchboard.image_set_generations (set_id, generation) \
+         values ($1, 1)",
+    )
+    .bind(set_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    set_id
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_lists_public_image_sets_and_its_own(pool: PgPool) {
+    const EVERYONE: Uuid = Uuid::from_u128(4);
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
+    let bob = whoami(&client, addr, &user_token).await;
+
+    // The job runs from one of its owner's private sets; another one stays
+    // hidden from the job, while a public one does not.
+    let own_set = insert_image_set(&pool, Some(bob)).await;
+    let owners_set = insert_image_set(&pool, Some(bob)).await;
+    let public_set = insert_image_set(&pool, None).await;
+    sqlx::query(
+        "insert into tml_switchboard.image_set_grants (set_id, subject_id, permission) \
+         values ($1, $2, 'use')",
+    )
+    .bind(public_set)
+    .bind(EVERYONE)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "update tml_switchboard.jobs \
+         set image_id = null, image_set_id = $2, image_set_generation = 1 \
+         where job_id = $1",
+    )
+    .bind(job_id)
+    .bind(own_set)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let listed = |token: String| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .get(format!("http://{addr}/api/v1/image-sets"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::OK);
+            let mut ids: Vec<Uuid> = resp
+                .json::<Vec<serde_json::Value>>()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|s| s["id"].as_str().unwrap().parse().unwrap())
+                .collect();
+            ids.sort();
+            ids
+        }
+    };
+
+    let mut expected = vec![own_set, public_set];
+    expected.sort();
+    assert_eq!(listed(job_token(&pool, job_id).await).await, expected);
+    assert!(listed(user_token).await.contains(&owners_set));
+}
+
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn a_job_reports_its_exit_status(pool: PgPool) {

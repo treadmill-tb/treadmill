@@ -5333,14 +5333,14 @@ export interface operations {
                     "application/json": components["schemas"]["ImageSetInfo"][];
                 };
             };
-            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            /** @description Authentication failed: the token is missing, malformed, expired, or revoked, or its job has finalized. */
             401: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description The authenticated account is locked, or lacks permission for this resource. */
+            /** @description The account is locked or lacks permission for this resource, or the job token belongs to a different job. */
             403: {
                 headers: {
                     [name: string]: unknown;

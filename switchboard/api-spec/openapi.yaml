@@ -2020,9 +2020,9 @@ paths:
       operationId: listImageSets
       responses:
         '401':
-          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+          description: 'Authentication failed: the token is missing, malformed, expired, or revoked, or its job has finalized.'
         '403':
-          description: The authenticated account is locked, or lacks permission for this resource.
+          description: The account is locked or lacks permission for this resource, or the job token belongs to a different job.
         '200':
           description: ''
           content:
@@ -2033,6 +2033,7 @@ paths:
                   $ref: '#/components/schemas/ImageSetInfo'
       security:
       - token: []
+      - job_token: []
     post:
       tags:
       - Images
