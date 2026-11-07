@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use treadmill_rs::api::switchboard::jobs::JobServiceEndpoint;
 use uuid::Uuid;
 
+use crate::diagnostics::Diagnostics;
 use crate::locked_file;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -40,14 +41,19 @@ impl State {
     }
 
     /// Apply `change` to the state stored at `path`, and return the state as
-    /// stored: as one atomic step, which concurrent `tml` invocations take in
-    /// turn, each changing the state the one before it stored (see
+    /// stored: as one atomic step, which concurrent invocations take in turn,
+    /// each changing the state the one before it stored (see
     /// [`locked_file::update`]). The file is `0600` before any secret reaches
     /// it.
     ///
     /// A stored state that does not parse is changed as if it were empty, but
-    /// is first copied aside, so that what it held is not lost.
-    pub fn update(path: &Path, change: impl FnOnce(&mut State)) -> Result<State> {
+    /// is first copied aside, so that what it held is not lost. That is
+    /// reported through `diagnostics`, not returned: the update still happened.
+    pub fn update(
+        path: &Path,
+        diagnostics: &dyn Diagnostics,
+        change: impl FnOnce(&mut State),
+    ) -> Result<State> {
         locked_file::update(path, 0o600, |contents| {
             let mut state = match contents.as_deref() {
                 None => State::default(),
@@ -55,14 +61,12 @@ impl State {
                     Ok(state) => state,
                     Err(error) => {
                         let backup = back_up(path, contents)?;
-                        let style =
-                            anstyle::AnsiColor::Yellow.on_default() | anstyle::Effects::BOLD;
-                        anstream::eprintln!(
-                            "{style}warning:{style:#} {} is not a valid state file ({error}); \
-                             replacing it, and keeping a copy at {}",
+                        diagnostics.warn(&format!(
+                            "{} is not a valid state file ({error}); replacing it, and keeping \
+                             a copy at {}",
                             path.display(),
                             backup.display()
-                        );
+                        ));
                         State::default()
                     }
                 },
@@ -91,11 +95,12 @@ impl State {
     /// Remove a credential whose WebSocket handshake failed.
     pub fn invalidate_job_service_token(
         path: &Path,
+        diagnostics: &dyn Diagnostics,
         job_id: Uuid,
         service: &str,
         failed_token: &str,
     ) -> Result<()> {
-        Self::update(path, |state| {
+        Self::update(path, diagnostics, |state| {
             if state
                 .job_service_tokens
                 .get(&job_id)
@@ -136,6 +141,7 @@ fn back_up(path: &Path, contents: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostics::Recording;
 
     #[test]
     fn an_unreadable_state_is_kept_aside() {
@@ -146,9 +152,18 @@ mod tests {
         fs::write(&path, "{ not json").unwrap();
 
         let job = Uuid::nil();
-        let state = State::update(&path, |state| state.active_job = Some(job)).unwrap();
+        let diagnostics = Recording::default();
+        let state =
+            State::update(&path, &diagnostics, |state| state.active_job = Some(job)).unwrap();
         assert_eq!(state.active_job, Some(job));
         assert_eq!(State::load(&path).unwrap().active_job, Some(job));
+
+        let warnings = diagnostics.warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("is not a valid state file"),
+            "{warnings:?}"
+        );
 
         let backups: Vec<_> = fs::read_dir(&dir)
             .unwrap()

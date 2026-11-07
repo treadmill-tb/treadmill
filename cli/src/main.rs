@@ -1,12 +1,12 @@
 mod cli;
 #[cfg(feature = "user")]
-mod config;
-#[cfg(feature = "user")]
 mod context;
 #[cfg(feature = "user")]
 mod ctx;
 #[cfg(feature = "daemon")]
 mod daemon;
+#[cfg_attr(not(feature = "user"), allow(dead_code))]
+mod diag;
 #[cfg_attr(not(feature = "user"), allow(dead_code))]
 mod display;
 #[cfg_attr(not(feature = "user"), allow(dead_code))]
@@ -17,15 +17,12 @@ mod host;
 mod job;
 #[cfg(feature = "user")]
 mod listing;
-mod locked_file;
 #[cfg(feature = "user")]
 mod login;
 #[cfg(feature = "user")]
 mod ssh;
 #[cfg(feature = "user")]
 mod sshconfig;
-#[cfg(feature = "user")]
-mod state;
 mod terminate;
 #[cfg_attr(not(feature = "user"), allow(dead_code))]
 mod tui;
@@ -36,6 +33,7 @@ mod wsproxy;
 use anyhow::Context as _;
 use anyhow::Result;
 use clap::Parser;
+use treadmill_client::error::{Cancelled, Hinted};
 use treadmill_rs::api::switchboard::client::SwitchboardClient;
 use uuid::Uuid;
 
@@ -68,74 +66,9 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-/// An error that exits `tml` with a status of its own, rather than 1, so that
-/// scripts can tell it apart from other failures.
-#[derive(Debug)]
-pub struct ExitError {
-    code: u8,
-    message: String,
-}
-
-impl ExitError {
-    pub fn new(code: u8, message: String) -> Self {
-        Self { code, message }
-    }
-}
-
-impl std::fmt::Display for ExitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for ExitError {}
-
-/// An error with a hint on how to resolve it, which is printed on a `hint:`
-/// line of its own.
-#[derive(Debug)]
-pub struct Hinted {
-    error: anyhow::Error,
-    hint: String,
-}
-
-/// `error`, with `hint`: a sentence or a command.
-pub fn hinted(error: impl Into<anyhow::Error>, hint: impl Into<String>) -> anyhow::Error {
-    Hinted {
-        error: error.into(),
-        hint: hint.into(),
-    }
-    .into()
-}
-
-impl std::fmt::Display for Hinted {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:#}", self.error)
-    }
-}
-
-impl std::error::Error for Hinted {}
-
-/// A question answered with no. It is not reported as an error, but as
-/// `✗ Cancelled · <what was left unchanged>`, and exits with status 1.
-#[derive(Debug)]
-pub struct Cancelled(String);
-
-/// See [`Cancelled`]; `unchanged` says what was left as it was.
-pub fn cancelled(unchanged: impl Into<String>) -> anyhow::Error {
-    Cancelled(unchanged.into()).into()
-}
-
-impl std::fmt::Display for Cancelled {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "cancelled: {}", self.0)
-    }
-}
-
-impl std::error::Error for Cancelled {}
-
 fn fail(error: &anyhow::Error) -> std::process::ExitCode {
     let (error, hint) = match error.downcast_ref::<Hinted>() {
-        Some(hinted) => (&hinted.error, Some(hinted.hint.as_str())),
+        Some(hinted) => (hinted.error(), Some(hinted.hint())),
         None => (error, None),
     };
     if let Some(io) = error.downcast_ref::<std::io::Error>()
@@ -144,16 +77,19 @@ fn fail(error: &anyhow::Error) -> std::process::ExitCode {
         return std::process::ExitCode::from(130);
     }
 
-    let code = if let Some(Cancelled(unchanged)) = error.downcast_ref::<Cancelled>() {
+    let code = if let Some(cancelled) = error.downcast_ref::<Cancelled>() {
         let style = anstyle::AnsiColor::Red.on_default();
         let dim = anstyle::Style::new().dimmed();
-        anstream::eprintln!("{style}✗{style:#} Cancelled {dim}· {unchanged}{dim:#}");
+        anstream::eprintln!(
+            "{style}✗{style:#} Cancelled {dim}· {}{dim:#}",
+            cancelled.unchanged()
+        );
         std::process::ExitCode::FAILURE
     } else {
         let style = anstyle::AnsiColor::Red.on_default() | anstyle::Effects::BOLD;
         anstream::eprintln!("{style}error:{style:#} {error:#}");
-        match error.downcast_ref::<ExitError>() {
-            Some(exit) => std::process::ExitCode::from(exit.code),
+        match error.downcast_ref::<treadmill_client::error::ExitError>() {
+            Some(exit) => std::process::ExitCode::from(exit.code()),
             None => std::process::ExitCode::FAILURE,
         }
     };

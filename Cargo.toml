@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "cli",
+  "client",
   "image-util",
   "supervisor/connector/local",
   "supervisor/connector/ws",
@@ -30,6 +31,7 @@ name = "treadmill"
 # Internal crates (declared here so members can use `workspace = true` and
 # don't have to repeat relative path strings).
 treadmill-rs = { path = "treadmill-rs", version = "0.3.0" }
+treadmill-client = { path = "client", version = "0.1.0" }
 treadmill-supervisor-lib = { path = "supervisor/lib" }
 treadmill-local-connector = { path = "supervisor/connector/local" }
 treadmill-ws-connector = { path = "supervisor/connector/ws" }

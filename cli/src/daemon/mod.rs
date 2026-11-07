@@ -12,7 +12,7 @@ use treadmill_rs::api::switchboard::client::{ClientError, SwitchboardClient};
 use treadmill_rs::api::switchboard::jobs::{JobEnvironment, JobGatewayEndpoint, JobParameter};
 use uuid::Uuid;
 
-use crate::locked_file;
+use treadmill_client::locked_file;
 
 mod service_proxy;
 

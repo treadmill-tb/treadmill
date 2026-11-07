@@ -7,7 +7,7 @@ use crate::cli::{Globals, OutputFormat};
 use crate::display::{self, short};
 use crate::event::{self, Event};
 use crate::tui;
-use crate::{cancelled, hinted};
+use treadmill_client::error::{cancelled, hinted};
 
 pub async fn run(
     globals: &Globals,

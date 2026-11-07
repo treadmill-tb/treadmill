@@ -9,9 +9,9 @@ use crate::cli::LoginArgs;
 use crate::ctx::Ctx;
 use crate::display;
 use crate::event::Event;
-use crate::state::State;
 use crate::tui::{self, DIM, Item, OK, Terminal, plain, span};
-use crate::{cancelled, hinted};
+use treadmill_client::error::{cancelled, hinted};
+use treadmill_client::state::State;
 
 pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
     let client = ctx.anonymous_client()?;
@@ -62,7 +62,7 @@ pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
             .context("completing the staged login")?
         {
             LoginCompleteOutcome::Complete(response) => {
-                ctx.state = State::update(&ctx.state_path, |state| {
+                ctx.state = State::update(&ctx.state_path, ctx.diagnostics.as_ref(), |state| {
                     state.token = Some(response.token.encode_for_http());
                     state.expires_at = Some(response.expires_at);
                 })?;
@@ -115,7 +115,7 @@ pub async fn logout(ctx: &mut Ctx) -> Result<()> {
         }
     };
 
-    ctx.state = State::update(&ctx.state_path, |state| {
+    ctx.state = State::update(&ctx.state_path, ctx.diagnostics.as_ref(), |state| {
         state.token = None;
         state.expires_at = None;
     })?;

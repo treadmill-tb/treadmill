@@ -5,8 +5,8 @@ use crate::cli::{ContextCommand, ContextJobCommand};
 use crate::ctx::Ctx;
 use crate::display::{self, short};
 use crate::event::Event;
-use crate::state::State;
 use crate::tui::{self, DIM, OK, plain, span};
+use treadmill_client::state::State;
 
 pub async fn run(ctx: &mut Ctx, command: &ContextCommand) -> Result<()> {
     match command {
@@ -22,7 +22,9 @@ pub async fn run(ctx: &mut Ctx, command: &ContextCommand) -> Result<()> {
 }
 
 pub fn set_active(ctx: &mut Ctx, job: Uuid) -> Result<()> {
-    ctx.state = State::update(&ctx.state_path, |state| state.active_job = Some(job))?;
+    ctx.state = State::update(&ctx.state_path, ctx.diagnostics.as_ref(), |state| {
+        state.active_job = Some(job)
+    })?;
     if ctx.human() {
         print(vec![
             span(OK, "✓ "),
@@ -37,7 +39,9 @@ pub fn set_active(ctx: &mut Ctx, job: Uuid) -> Result<()> {
 }
 
 fn clear(ctx: &mut Ctx) -> Result<()> {
-    ctx.state = State::update(&ctx.state_path, |state| state.active_job = None)?;
+    ctx.state = State::update(&ctx.state_path, ctx.diagnostics.as_ref(), |state| {
+        state.active_job = None
+    })?;
     if ctx.human() {
         print(vec![span(OK, "✓ "), plain("No active job")]);
     }

@@ -15,9 +15,9 @@ use crate::cli::{ExpiryAction, JobCreateArgs, JobRef, JobUpdateArgs, LeaseUntil}
 use crate::ctx::Ctx;
 use crate::display::{self, HostState, describe_instant, human_duration, program, short};
 use crate::event::{Event, Lease};
-use crate::state::State;
 use crate::tui::{self, DIM, OK, WARN, plain, span};
-use crate::{ExitError, cancelled, hinted};
+use treadmill_client::error::{ExitError, cancelled, hinted};
+use treadmill_client::state::State;
 
 mod create_ui;
 pub mod list;
@@ -77,7 +77,7 @@ pub async fn create(ctx: &mut Ctx, args: &JobCreateArgs) -> Result<()> {
         .context("enqueueing the job")?;
     let job_id = enqueued.job_id;
 
-    ctx.state = State::update(&ctx.state_path, |state| {
+    ctx.state = State::update(&ctx.state_path, ctx.diagnostics.as_ref(), |state| {
         if set_id.is_some() {
             state.last_image_set = set_id;
         }

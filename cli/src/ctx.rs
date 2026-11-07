@@ -1,14 +1,17 @@
 use anyhow::{Context as _, Result, bail};
 use std::path::PathBuf;
+use std::sync::Arc;
+use treadmill_client::diagnostics::Diagnostics;
 use treadmill_rs::api::switchboard::client::SwitchboardClient;
 use treadmill_rs::api::switchboard::jobs::{JobListQuery, JobListState};
 use uuid::Uuid;
 
 use crate::cli::{ColorChoice, Globals, JobRef, OutputFormat};
-use crate::config::{self, Config, DEFAULT_PROFILE};
+use crate::diag;
 use crate::display::{program, short};
 use crate::event::{self, Event};
-use crate::state::State;
+use treadmill_client::config::{self, Config, DEFAULT_PROFILE};
+use treadmill_client::state::State;
 
 pub struct Ctx {
     pub config: Config,
@@ -20,6 +23,9 @@ pub struct Ctx {
     pub quiet: bool,
     pub verbose: u8,
     pub insecure_tls: bool,
+    /// How [`treadmill_client`] reports warnings and `-v` detail, and how
+    /// [`Ctx::warn`] and [`Ctx::detail`] report `tml`'s own.
+    pub diagnostics: Arc<diag::Stderr>,
 }
 
 impl Ctx {
@@ -30,8 +36,11 @@ impl Ctx {
             .or_else(|| std::env::var("TML_PROFILE").ok())
             .unwrap_or_else(|| DEFAULT_PROFILE.to_string());
 
+        let output = globals.output.unwrap_or(OutputFormat::Human);
+        let diagnostics = diag::Stderr::new(output, globals.verbose);
+
         let config_path = config::config_path(globals.config.as_deref())?;
-        let mut config = config::load(&config_path, &profile)?;
+        let mut config = config::load(&config_path, &profile, diagnostics.as_ref())?;
         if let Some(switchboard) = &globals.switchboard {
             config.switchboard = switchboard.clone();
         }
@@ -46,10 +55,11 @@ impl Ctx {
             config_path,
             state,
             state_path,
-            output: globals.output.unwrap_or(OutputFormat::Human),
+            output,
             quiet: globals.quiet,
             verbose: globals.verbose,
             insecure_tls,
+            diagnostics,
         })
     }
 
@@ -183,10 +193,7 @@ impl Ctx {
     /// Diagnostic detail asked for with `-v`: stderr, whatever the output
     /// format, and not silenced by `--quiet`.
     pub fn detail(&self, message: &str) {
-        if self.verbose == 0 {
-            return;
-        }
-        anstream::eprintln!("{message}");
+        self.diagnostics.detail(message);
     }
 
     pub fn event(&self, event: Event) {
@@ -208,9 +215,7 @@ impl Ctx {
     }
 
     pub fn warn(&self, message: &str) {
-        self.event(Event::Warning { message });
-        let style = anstyle::AnsiColor::Yellow.on_default() | anstyle::Effects::BOLD;
-        anstream::eprintln!("{style}warning:{style:#} {message}");
+        self.diagnostics.warn(message);
     }
 }
 

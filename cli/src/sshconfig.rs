@@ -3,12 +3,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::cli::SshSetupArgs;
-use crate::config;
 use crate::ctx::Ctx;
-use crate::locked_file;
 use crate::ssh::{PROGRAM, ssh_proxy_command};
 use crate::tui::{self, ACCENT, BOLD, DIM, Line, OK, plain, span};
-use crate::{cancelled, hinted};
+use treadmill_client::config;
+use treadmill_client::error::{cancelled, hinted};
+use treadmill_client::locked_file;
 
 const BEGIN: &str = "# BEGIN tml profile ";
 const END: &str = "# END tml profile ";

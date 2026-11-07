@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::ctx::Ctx;
 use crate::ssh::{select_endpoint, service_credentials};
-use crate::state::State;
+use treadmill_client::state::State;
 
 const READ_BUFFER: usize = 16 * 1024;
 
@@ -42,6 +42,7 @@ pub async fn run<I: AsyncRead + Unpin + Send + 'static, O: AsyncWrite + Unpin + 
         Err(first_error) => {
             State::invalidate_job_service_token(
                 &ctx.state_path,
+                ctx.diagnostics.as_ref(),
                 job_id,
                 service,
                 &credentials.token,
@@ -182,7 +183,7 @@ fn handshake_error(error: WsError, hostname: &str, port: u16) -> anyhow::Error {
             "the gateway at wss://{hostname}:{port}/ refused the connection: HTTP {status}"
         ),
     };
-    crate::hinted(
+    treadmill_client::error::hinted(
         error,
         "Pass -v to see the JWT token claims used to connect to this service.",
     )
