@@ -127,6 +127,8 @@ pub struct WhoAmIResponse {
     pub name: String,
     /// Whether the subject is a global admin.
     pub admin: bool,
+    /// Whether the subject is a bot user.
+    pub bot: bool,
 }
 
 /// Response body for the unauthenticated `/auth/providers` endpoint: which login
@@ -185,6 +187,9 @@ pub struct SubjectRef {
     pub kind: SubjectKind,
     /// The user's or group's name; null for system subjects.
     pub name: Option<String>,
+    /// Whether the subject is a bot user (a non-human account, e.g. CI
+    /// automation). Always false for non-user subjects.
+    pub bot: bool,
 }
 
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]

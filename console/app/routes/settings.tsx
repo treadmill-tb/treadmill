@@ -79,13 +79,15 @@ function ProfileForm({
 export default function Settings() {
   const queryClient = useQueryClient();
   const me = $api.useQuery("get", "/users/me");
-  const tokens = $api.useQuery("get", "/users/me/tokens");
+  const tokens = $api.useQuery("get", "/users/{id}/tokens", {
+    params: { path: { id: "me" } },
+  });
   const [editing, setEditing] = useState(false);
 
-  const revoke = $api.useMutation("delete", "/users/me/tokens/{token_id}", {
+  const revoke = $api.useMutation("delete", "/users/{id}/tokens/{token_id}", {
     onSuccess: async () => {
       await queryClient.invalidateQueries({
-        queryKey: ["get", "/users/me/tokens"],
+        queryKey: ["get", "/users/{id}/tokens"],
       });
     },
   });
@@ -213,7 +215,11 @@ export default function Settings() {
                       )}
                     </td>
                     <td>
-                      <RelTime iso={t.expires_at} />
+                      {t.expires_at != null ? (
+                        <RelTime iso={t.expires_at} />
+                      ) : (
+                        <span className="muted">never</span>
+                      )}
                     </td>
                     <td className="muted">{t.user_agent ?? "—"}</td>
                     <td>
@@ -237,7 +243,9 @@ export default function Settings() {
                               : "Revoke this token?";
                             if (window.confirm(q)) {
                               revoke.mutate({
-                                params: { path: { token_id: t.token_id } },
+                                params: {
+                                  path: { id: "me", token_id: t.token_id },
+                                },
                               });
                             }
                           }}

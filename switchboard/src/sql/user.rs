@@ -774,3 +774,45 @@ async fn reconcile_auto_groups(
 
     Ok(())
 }
+
+/// Create a bot user: a subject + user row flagged `bot`, with no external
+/// identity (so it can never log in interactively) and no ToS acceptance (it
+/// never claims a login). The route restricts this to global admins. Emits
+/// [`events::BotCreated`].
+pub struct CreateBot {
+    pub actor: Uuid,
+    pub name: String,
+}
+
+impl Transition for CreateBot {
+    type Output = Uuid;
+    type Event = events::BotCreated;
+
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        let user_id = Uuid::now_v7();
+        sqlx::query!(
+            "insert into tml_switchboard.subjects (subject_id, kind) values ($1, 'user');",
+            user_id,
+        )
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query!(
+            "insert into tml_switchboard.users (subject_id, name, bot) values ($1, $2, true);",
+            user_id,
+            self.name,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::BotCreated {
+            actor: AuditSubject(self.actor),
+            user: AuditSubject(user_id),
+            name: self.name,
+        };
+        Ok((user_id, event))
+    }
+}

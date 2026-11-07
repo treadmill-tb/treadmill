@@ -534,15 +534,15 @@ pub async fn callback(
 /// later at completion is stamped with the user's context — for a browser
 /// flow, the completing caller is the frontend's server, not the user.
 #[derive(Debug, Clone, Default)]
-struct ClientContext {
-    ip: Option<String>,
-    port: Option<i32>,
-    user_agent: Option<String>,
+pub(crate) struct ClientContext {
+    pub(crate) ip: Option<String>,
+    pub(crate) port: Option<i32>,
+    pub(crate) user_agent: Option<String>,
 }
 
 impl ClientContext {
     /// Resolve from an incoming request's parts (before they are consumed).
-    fn resolve(parts: &Parts, server: &ServerConfig) -> Self {
+    pub(crate) fn resolve(parts: &Parts, server: &ServerConfig) -> Self {
         let client = ClientAddr::resolve(parts, server);
         ClientContext {
             ip: client.as_ref().map(ClientAddr::ip_string),
@@ -1153,7 +1153,7 @@ pub async fn whoami(
 ) -> Result<Json<WhoAmIResponse>, StatusCode> {
     let user_id = subject.user_id();
     let row = sqlx::query!(
-        "select name from tml_switchboard.users where subject_id = $1;",
+        "select name, bot from tml_switchboard.users where subject_id = $1;",
         user_id,
     )
     .fetch_one(state.pool())
@@ -1168,5 +1168,6 @@ pub async fn whoami(
         user_id,
         name: row.name,
         admin,
+        bot: row.bot,
     }))
 }

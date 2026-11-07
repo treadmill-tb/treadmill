@@ -1460,13 +1460,61 @@ paths:
                 type: string
       security:
       - token: []
-  /users/me/tokens:
+  /users:
+    post:
+      tags:
+      - Users
+      summary: Create a bot user
+      description: 'Only bot users can be created this way (`bot: true`); human accounts are provisioned by interactive login.'
+      operationId: createUser
+      requestBody:
+        description: |-
+          `POST /users`: create a user. Global admins only, and only bot users: human
+          accounts are provisioned by interactive login.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The caller is not a global admin.
+        '400':
+          description: Invalid name.
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: '`bot` was false: only bot users can be created.'
+        '201':
+          description: The bot user was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicUserProfile'
+      security:
+      - token: []
+  /users/{id}/tokens:
     get:
       tags:
       - Users
-      summary: List the current user's tokens
-      description: Returns the complete set in a stable order; this route is not paginated.
-      operationId: listCurrentUserTokens
+      summary: List a user's tokens
+      description: The user themself (`/users/me/tokens`) or a global admin may list a user's sessions and API tokens. Not paginated.
+      operationId: listUserTokens
+      parameters:
+      - in: path
+        name: id
+        description: The user's unique identifier, or `me` for the caller.
+        required: true
+        schema:
+          description: The user's unique identifier, or `me` for the caller.
+          type: string
+        style: simple
       responses:
         '401':
           description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
@@ -1480,15 +1528,74 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/SessionInfo'
+        '404':
+          description: No such user, or the caller may not see their tokens.
       security:
       - token: []
-  /users/me/tokens/{token_id}:
+    post:
+      tags:
+      - Users
+      summary: Mint an API token for a bot user
+      description: Only for bot users, and only by a global admin. The token secret is returned only in this response. Omitting `expires_at` mints a token that never expires; it stays valid until revoked.
+      operationId: issueUserToken
+      parameters:
+      - in: path
+        name: id
+        description: The user's unique identifier, or `me` for the caller.
+        required: true
+        schema:
+          description: The user's unique identifier, or `me` for the caller.
+          type: string
+        style: simple
+      requestBody:
+        description: |-
+          `POST /users/{id}/tokens`: mint an API token for a bot user. Global admins
+          only.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IssueTokenRequest'
+        required: true
+      responses:
+        '401':
+          description: 'Authentication failed: the bearer token is missing, malformed, expired, or revoked.'
+        '403':
+          description: The caller is not a global admin.
+        '400':
+          description: '`expires_at` is not in the future, or the comment is invalid.'
+        '415':
+          description: 'Expected request with `Content-Type: application/json`'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: The user is not a bot; their tokens come from login.
+        '201':
+          description: The token was minted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssuedToken'
+        '404':
+          description: No such user.
+      security:
+      - token: []
+  /users/{id}/tokens/{token_id}:
     delete:
       tags:
       - Users
-      summary: Revoke one of the current user's tokens
-      operationId: revokeCurrentUserToken
+      summary: Revoke a user's token
+      operationId: revokeUserToken
       parameters:
+      - in: path
+        name: id
+        description: The user's unique identifier, or `me` for the caller.
+        required: true
+        schema:
+          description: The user's unique identifier, or `me` for the caller.
+          type: string
+        style: simple
       - in: path
         name: token_id
         description: The token's unique identifier.
@@ -1506,7 +1613,7 @@ paths:
         '204':
           description: The token was revoked.
         '404':
-          description: No such token belonging to the caller.
+          description: No such token belonging to the user, or the caller may not manage their tokens.
       security:
       - token: []
   /users/{id}:
@@ -2517,6 +2624,25 @@ components:
       additionalProperties: false
       required:
       - display_name
+    CreateUserRequest:
+      description: |-
+        `POST /users`: create a user. Global admins only, and only bot users: human
+        accounts are provisioned by interactive login.
+      type: object
+      properties:
+        bot:
+          description: |-
+            Must be `true`: create a bot user (a non-human account, e.g. CI
+            automation), which never logs in and authenticates with tokens minted
+            through `POST /users/{id}/tokens`.
+          type: boolean
+        name:
+          description: The display name, under the same rules as a profile update.
+          type: string
+      additionalProperties: false
+      required:
+      - name
+      - bot
     Digest:
       description: |-
         A content-addressable OCI digest over 32 bytes of SHA-256.
@@ -3450,6 +3576,48 @@ components:
       - description: May manage the source's grants and delete it (owner holds this implicitly).
         type: string
         const: manage
+    IssueTokenRequest:
+      description: |-
+        `POST /users/{id}/tokens`: mint an API token for a bot user. Global admins
+        only.
+      type: object
+      properties:
+        comment:
+          description: An optional label for the token, e.g. where it is deployed.
+          type:
+          - string
+          - 'null'
+          default: null
+        expires_at:
+          description: |-
+            When the token expires. Omitted or null mints a non-expiring token,
+            which stays valid until revoked.
+          type:
+          - string
+          - 'null'
+          format: date-time
+          default: null
+      additionalProperties: false
+    IssuedToken:
+      description: A freshly minted API token. The secret is returned exactly once.
+      type: object
+      properties:
+        expires_at:
+          description: When the token expires; null if it never does.
+          type:
+          - string
+          - 'null'
+          format: date-time
+        token:
+          description: The bearer token secret.
+          allOf:
+          - $ref: '#/components/schemas/AuthToken'
+        token_id:
+          type: string
+          format: uuid
+      required:
+      - token_id
+      - token
     JobDefaults:
       description: Defaults applied to a new job (`GET /jobs/defaults`).
       type: object
@@ -4712,6 +4880,11 @@ components:
           type:
           - string
           - 'null'
+        bot:
+          description: |-
+            Whether this is a bot user: a non-human account (e.g. CI automation)
+            created by an admin, which cannot log in interactively.
+          type: boolean
         github:
           description: The linked GitHub account, if any.
           anyOf:
@@ -4726,6 +4899,7 @@ components:
       required:
       - user_id
       - name
+      - bot
     RenderedAuditRow:
       description: |-
         One audit event, already rendered to a human-readable `message` for the
@@ -4838,6 +5012,11 @@ components:
           type:
           - string
           - 'null'
+        bot:
+          description: |-
+            Whether this is a bot user: a non-human account (e.g. CI automation)
+            created by an admin, which cannot log in interactively.
+          type: boolean
         emails:
           description: All email addresses on file for the account, one entry per address.
           type: array
@@ -4865,6 +5044,7 @@ components:
       required:
       - user_id
       - name
+      - bot
       - emails
       - groups
       - locked
@@ -4891,7 +5071,10 @@ components:
           description: True for the token used to authenticate the current request.
           type: boolean
         expires_at:
-          type: string
+          description: When the token expires; null for a non-expiring bot token.
+          type:
+          - string
+          - 'null'
           format: date-time
         revoked:
           description: Set if the token has been revoked.
@@ -4909,7 +5092,6 @@ components:
       required:
       - token_id
       - created_at
-      - expires_at
       - current
     SourceGrantPath:
       description: |-
@@ -4973,6 +5155,11 @@ components:
       description: A reference to a subject, with what is needed to display it.
       type: object
       properties:
+        bot:
+          description: |-
+            Whether the subject is a bot user (a non-human account, e.g. CI
+            automation). Always false for non-user subjects.
+          type: boolean
         id:
           type: string
           format: uuid
@@ -4986,6 +5173,7 @@ components:
       required:
       - id
       - kind
+      - bot
     TaskExitStatus:
       description: |-
         The user workload's success/failure outcome, exposed as `task_exit_status`
@@ -5054,16 +5242,6 @@ components:
       - description: An unexpected internal failure.
         type: string
         const: internal_error
-    TokenIdPath:
-      description: The `{token_id}` segment of a token route.
-      type: object
-      properties:
-        token_id:
-          description: The token's unique identifier.
-          type: string
-          format: uuid
-      required:
-      - token_id
     TokenRevocation:
       description: When and why a token was revoked.
       type: object
@@ -5182,12 +5360,38 @@ components:
       - email
       - verified
       - is_primary
+    UserPath:
+      description: A single `{id}` user segment, accepting `me`.
+      type: object
+      properties:
+        id:
+          description: The user's unique identifier, or `me` for the caller.
+          type: string
+      required:
+      - id
+    UserTokenPath:
+      description: The `{id}/tokens/{token_id}` segments of a user-token route.
+      type: object
+      properties:
+        id:
+          description: The user's unique identifier, or `me` for the caller.
+          type: string
+        token_id:
+          description: The token's unique identifier.
+          type: string
+          format: uuid
+      required:
+      - id
+      - token_id
     WhoAmIResponse:
       description: 'Response body for `/auth/whoami`: the identity of the authenticated subject.'
       type: object
       properties:
         admin:
           description: Whether the subject is a global admin.
+          type: boolean
+        bot:
+          description: Whether the subject is a bot user.
           type: boolean
         name:
           description: 'The user''s display name: freely chosen, not unique.'
@@ -5199,6 +5403,7 @@ components:
       - user_id
       - name
       - admin
+      - bot
 tags:
 - name: Authentication
   description: Interactive OAuth login, the login-completion step, and token introspection.
@@ -5209,4 +5414,4 @@ tags:
 - name: Images
   description: Manage images, sources, sets, their generations, and grants.
 - name: Users
-  description: Profiles, sessions, and audit feeds.
+  description: Profiles, sessions, audit feeds, and bot users (non-human accounts, e.g. CI automation).

@@ -10,7 +10,8 @@ pub async fn subject_ref(
 ) -> Result<Option<SubjectRef>, sqlx::Error> {
     let row = sqlx::query!(
         r#"
-        select s.kind as "kind: SubjectKind", coalesce(u.name, g.name) as name
+        select s.kind as "kind: SubjectKind", coalesce(u.name, g.name) as name,
+               coalesce(u.bot, false) as "bot!"
         from tml_switchboard.subjects s
         left join tml_switchboard.users u on u.subject_id = s.subject_id
         left join tml_switchboard.groups g on g.subject_id = s.subject_id
@@ -24,5 +25,6 @@ pub async fn subject_ref(
         id,
         kind: r.kind.into(),
         name: r.name,
+        bot: r.bot,
     }))
 }

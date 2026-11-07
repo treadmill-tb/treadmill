@@ -47,8 +47,9 @@ pub struct SqlApiTokenMetadata {
     /// If this is `Some`, then the token was at some prior time revoked; the information inside the
     /// [`Revocation`] describes the precise time and circumstance.
     pub revoked: Option<Revocation>,
-    /// The time at which the token expires/expired.
-    pub expires_at: DateTime<Utc>,
+    /// The time at which the token expires/expired; `None` for a token that
+    /// never expires (a bot's).
+    pub expires_at: Option<DateTime<Utc>>,
     /// ID of the user that owns the token
     pub user_id: Uuid,
     /// Whether the owning user's account is locked. A locked account's tokens
@@ -65,7 +66,7 @@ pub async fn fetch_metadata_by_token<'c, E: PgExecutor<'c>>(
     sqlx::query_as!(
         SqlApiTokenMetadata,
         r#"SELECT t.token_id, t.subject_id as user_id, t.revoked as "revoked: _",
-                  t.expires_at as "expires_at!", u.locked
+                  t.expires_at, u.locked
             FROM tml_switchboard.api_tokens t
             JOIN tml_switchboard.users u ON u.subject_id = t.subject_id
             WHERE t.token = $1
@@ -87,7 +88,7 @@ pub async fn fetch_metadata_by_id<'c, E: PgExecutor<'c>>(
     sqlx::query_as!(
         SqlApiTokenMetadata,
         r#"SELECT t.token_id, t.subject_id as user_id, t.revoked as "revoked: _",
-                  t.expires_at as "expires_at!", u.locked
+                  t.expires_at, u.locked
             FROM tml_switchboard.api_tokens t
             JOIN tml_switchboard.users u ON u.subject_id = t.subject_id
             WHERE t.token_id = $1
@@ -214,11 +215,68 @@ impl Transition for IssueSessionToken {
     }
 }
 
-/// Revoke (cancel) a token. The route confirms the token belongs to the caller
-/// before running this. Idempotent on the write (only flips an un-revoked
-/// token) but always emits [`events::SessionTokenRevoked`]. Run via
+/// Mint an API token for a bot user on an admin's behalf. Unlike a session
+/// token it may never expire (`expires_at: None`); the database refuses that
+/// for a non-bot. The route checks the target is a bot before running this.
+/// Emits [`events::BotTokenIssued`]. Run via
+/// [`audit::transition`](crate::audit::transition).
+pub struct IssueBotToken {
+    pub actor: Uuid,
+    pub bot_id: Uuid,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub comment: Option<String>,
+    pub created_ip: Option<String>,
+    pub created_port: Option<i32>,
+    pub user_agent: Option<String>,
+}
+
+impl Transition for IssueBotToken {
+    type Output = (Uuid, SecurityToken);
+    type Event = events::BotTokenIssued;
+
+    async fn apply(
+        self,
+        conn: &mut PgConnection,
+        _w: &WriteToken,
+    ) -> Result<(Self::Output, Self::Event), sqlx::Error> {
+        let token_id = Uuid::now_v7();
+        let api_token = SecurityToken::generate();
+        sqlx::query!(
+            "insert into tml_switchboard.api_tokens \
+             (token_id, token, subject_id, subject_kind, revoked, created_at, expires_at, user_agent, comment, created_ip, created_port) \
+             values ($1, $2, $3, 'user', null, now(), $4, $5, $6, $7, $8);",
+            token_id,
+            api_token.as_bytes(),
+            self.bot_id,
+            self.expires_at,
+            self.user_agent,
+            self.comment,
+            self.created_ip,
+            self.created_port,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        let event = events::BotTokenIssued {
+            actor: AuditSubject(self.actor),
+            user: AuditSubject(self.bot_id),
+            token_id,
+            expires_at: self.expires_at,
+            comment: self.comment,
+        };
+        Ok(((token_id, api_token), event))
+    }
+}
+
+/// Revoke (cancel) a token. The route confirms the caller may revoke it (it is
+/// their own, or a bot's and the caller is an admin) before running this.
+/// Idempotent on the write (only flips an un-revoked token) but always emits
+/// [`events::SessionTokenRevoked`]. Run via
 /// [`audit::transition`](crate::audit::transition).
 pub struct RevokeToken {
+    /// Who revokes the token: its owner, or an admin revoking a bot's.
+    pub actor: Uuid,
+    /// The token's owner.
     pub user_id: Uuid,
     pub token_id: Uuid,
     pub reason: String,
@@ -244,7 +302,7 @@ impl Transition for RevokeToken {
         .await?;
 
         let event = events::SessionTokenRevoked {
-            actor: AuditSubject(self.user_id),
+            actor: AuditSubject(self.actor),
             user: AuditSubject(self.user_id),
             token_id: self.token_id,
         };

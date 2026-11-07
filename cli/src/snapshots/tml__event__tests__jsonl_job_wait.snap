@@ -77,6 +77,7 @@ expression: "[serde_json::to_value(Event::Enqueued\n{ job_id: JOB, active: true,
       "lease_expires_at": "2026-08-28T15:00:00Z",
       "lease_expiry_action": "terminate",
       "owner": {
+        "bot": false,
         "id": "00000000-0000-0000-0000-000000000000",
         "kind": "user",
         "name": "ada"

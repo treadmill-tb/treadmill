@@ -23,6 +23,7 @@ use treadmill_rs::api::switchboard::hosts::{
 };
 use treadmill_rs::api::switchboard::images::{ImageInfo, ImageSetGenerationInfo, ImageSetInfo};
 use treadmill_rs::api::switchboard::jobs::{EnqueueJobResponse, JobInfo, LeaseRejection};
+use treadmill_rs::api::switchboard::users::{IssuedToken, PublicUserProfile};
 use treadmill_rs::api::switchboard::{LoginResponse, LoginStagedResponse};
 
 pub fn build_router(state: AppState) -> Router<()> {
@@ -605,33 +606,79 @@ pub fn api_router() -> ApiRouter<AppState> {
                 )
             }),
         )
-        //  GET /users/me/tokens      -- list own sessions/tokens
+        //  POST /users               -- create a bot user (global admin only)
         .api_route(
-            "/users/me/tokens",
-            get_with(users::list_tokens, |o| {
-                doc(
-                    o,
-                    "listCurrentUserTokens",
-                    "Users",
-                    "List the current user's tokens",
-                )
-                .description(NOT_PAGINATED)
+            "/users",
+            post_with(users::create_user, |o| {
+                doc(o, "createUser", "Users", "Create a bot user")
+                    .description(
+                        "Only bot users can be created this way (`bot: true`); human \
+                         accounts are provisioned by interactive login.",
+                    )
+                    .response_with::<201, Json<PublicUserProfile>, _>(|r| {
+                        r.description("The bot user was created.")
+                    })
+                    .response_with::<400, (), _>(|r| r.description("Invalid name."))
+                    .response_with::<403, (), _>(|r| {
+                        r.description("The caller is not a global admin.")
+                    })
+                    .response_with::<422, (), _>(|r| {
+                        r.description("`bot` was false: only bot users can be created.")
+                    })
             }),
         )
-        //  DELETE /users/me/tokens/{token_id} -- revoke own token
+        //  POST /users/{id}/tokens   -- mint a bot token (global admin only)
+        //  GET  /users/{id}/tokens   -- list a user's tokens (self or admin;
+        //                               `{id}` may be `me`)
         .api_route(
-            "/users/me/tokens/{token_id}",
-            delete_with(users::revoke_token, |o| {
+            "/users/{id}/tokens",
+            post_with(users::issue_token, |o| {
                 doc(
                     o,
-                    "revokeCurrentUserToken",
+                    "issueUserToken",
                     "Users",
-                    "Revoke one of the current user's tokens",
+                    "Mint an API token for a bot user",
                 )
-                .response_with::<204, (), _>(|r| r.description("The token was revoked."))
-                .response_with::<404, (), _>(|r| {
-                    r.description("No such token belonging to the caller.")
+                .description(
+                    "Only for bot users, and only by a global admin. The token secret \
+                         is returned only in this response. Omitting `expires_at` mints a \
+                         token that never expires; it stays valid until revoked.",
+                )
+                .response_with::<201, Json<IssuedToken>, _>(|r| {
+                    r.description("The token was minted.")
                 })
+                .response_with::<400, (), _>(|r| {
+                    r.description("`expires_at` is not in the future, or the comment is invalid.")
+                })
+                .response_with::<403, (), _>(|r| r.description("The caller is not a global admin."))
+                .response_with::<404, (), _>(|r| r.description("No such user."))
+                .response_with::<422, (), _>(|r| {
+                    r.description("The user is not a bot; their tokens come from login.")
+                })
+            })
+            .get_with(users::list_tokens, |o| {
+                doc(o, "listUserTokens", "Users", "List a user's tokens")
+                    .description(
+                        "The user themself (`/users/me/tokens`) or a global admin may \
+                         list a user's sessions and API tokens. Not paginated.",
+                    )
+                    .response_with::<404, (), _>(|r| {
+                        r.description("No such user, or the caller may not see their tokens.")
+                    })
+            }),
+        )
+        //  DELETE /users/{id}/tokens/{token_id} -- revoke a user's token (self or admin)
+        .api_route(
+            "/users/{id}/tokens/{token_id}",
+            delete_with(users::revoke_token, |o| {
+                doc(o, "revokeUserToken", "Users", "Revoke a user's token")
+                    .response_with::<204, (), _>(|r| r.description("The token was revoked."))
+                    .response_with::<404, (), _>(|r| {
+                        r.description(
+                            "No such token belonging to the user, or the caller may not \
+                             manage their tokens.",
+                        )
+                    })
             }),
         )
         //  GET /users/{id}           -- public profile subset
@@ -964,7 +1011,11 @@ pub fn openapi_spec() -> aide::openapi::OpenApi {
                 "Images",
                 "Manage images, sources, sets, their generations, and grants.",
             ),
-            tag("Users", "Profiles, sessions, and audit feeds."),
+            tag(
+                "Users",
+                "Profiles, sessions, audit feeds, and bot users (non-human accounts, \
+                 e.g. CI automation).",
+            ),
         ],
         ..Default::default()
     };

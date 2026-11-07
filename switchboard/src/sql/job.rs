@@ -899,6 +899,7 @@ pub async fn list_visible(
           j.owner_id,
           os.kind as "owner_kind?: SubjectKind",
           coalesce(u.name, g.name) as owner_name,
+          coalesce(u.bot, false) as "owner_bot!",
           j.job_state as "job_state: SqlJobState",
           j.resume_job_id,
           j.restart_job_id,
@@ -1016,6 +1017,7 @@ pub async fn list_visible(
                 id,
                 kind: kind.into(),
                 name: r.owner_name,
+                bot: r.owner_bot,
             });
             Ok((
                 r.sort_at,

@@ -46,11 +46,16 @@ CREATE TABLE tml_switchboard.subjects (
 -- - `locked` deactivates the account without deleting it (preserving job/audit
 --   provenance). A locked account must not be able to login, and its tokens
 --   must not be accepted.
+-- - `bot` marks a non-human account (e.g. CI automation) created by a global
+--   admin through the API. A bot has no external identity, so it can never
+--   log in interactively; its tokens are minted by an admin, and may be
+--   non-expiring (see `api_tokens`). Otherwise a bot is an ordinary user.
 CREATE TABLE tml_switchboard.users (
     subject_id uuid NOT NULL PRIMARY KEY REFERENCES tml_switchboard.subjects (subject_id) ON DELETE CASCADE,
     name text NOT NULL,
     avatar_url text,
     locked bool NOT NULL DEFAULT FALSE,
+    bot bool NOT NULL DEFAULT FALSE,
     -- ToS acceptance. NULL version = never accepted. A user whose accepted
     -- version is below the configured current version must re-accept before a
     -- token is issued (their account is not otherwise gated).
@@ -358,8 +363,10 @@ CREATE TYPE tml_switchboard.api_token_revocation AS (
 -- disturbing this one.
 --
 -- User tokens have both natural expiration and an explicit revocation
--- mechanism, which voids a token before it expires. Job tokens never expire
--- and stop working once their job finalizes.
+-- mechanism, which voids a token before it expires. A bot user's tokens may
+-- omit the expiration (enforced by the `api_tokens_non_expiring_bot` trigger
+-- below), leaving revocation as the only way to void them. Job tokens never
+-- expire and stop working once their job finalizes.
 --
 -- `user_agent` and `created_ip`/`created_port` record the provenance of a token
 -- at mint time (the client that requested it), surfaced in the session-list API
@@ -383,8 +390,37 @@ CREATE TABLE tml_switchboard.api_tokens (
     CHECK (octet_length(token) = 32),
     FOREIGN KEY (subject_id, subject_kind) REFERENCES tml_switchboard.subjects (subject_id, kind) ON DELETE CASCADE,
     CONSTRAINT token_subject_kind CHECK (subject_kind IN ('user', 'job')),
-    CONSTRAINT job_tokens_never_expire CHECK ((subject_kind = 'job') = (expires_at IS NULL))
+    CONSTRAINT job_tokens_never_expire CHECK (
+        subject_kind <> 'job'
+        OR expires_at IS NULL
+    )
 );
+
+
+-- Only a bot user may hold a non-expiring user token. A CHECK cannot consult
+-- `users`, hence the trigger. `users.bot` is fixed at creation, so checking at
+-- token write time suffices.
+CREATE OR REPLACE FUNCTION tml_switchboard.api_tokens_non_expiring_bot () returns trigger language plpgsql AS $$
+begin
+    if NEW.subject_kind = 'user' and NEW.expires_at is null and not exists (
+        select 1
+        from tml_switchboard.users
+        where subject_id = NEW.subject_id and bot
+    ) then
+        raise exception
+            'only a bot user may hold a non-expiring token (subject %)', NEW.subject_id;
+    end if;
+
+    return NEW;
+end;
+$$;
+
+
+CREATE CONSTRAINT TRIGGER api_tokens_non_expiring_bot
+AFTER insert
+OR
+UPDATE ON tml_switchboard.api_tokens FOR each ROW
+EXECUTE function tml_switchboard.api_tokens_non_expiring_bot ();
 
 
 -- =============================================================================

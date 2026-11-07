@@ -1,4 +1,4 @@
-import { Globe, User, Users } from "lucide-react";
+import { Bot, Globe, User, Users } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router";
 
@@ -18,7 +18,7 @@ export function SubjectLink({ subject }: { subject: SubjectRef }) {
           kind="user"
           id={subject.id}
           label={subject.name ?? undefined}
-          icon={User}
+          icon={subject.bot ? Bot : User}
         />
       );
     case "group":
@@ -77,7 +77,12 @@ export function SubjectName({ id }: { id: string }) {
   if (user.data !== undefined) {
     return (
       <Link to={`/users/${id}`} className="subject" title={id}>
-        <User size={14} aria-hidden="true" /> {user.data.name}
+        {user.data.bot ? (
+          <Bot size={14} aria-label="Bot" />
+        ) : (
+          <User size={14} aria-hidden="true" />
+        )}{" "}
+        {user.data.name}
         {me.data?.user_id === id && <span className="muted"> (you)</span>}
       </Link>
     );

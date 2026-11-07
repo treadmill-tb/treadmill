@@ -41,9 +41,50 @@ pub(crate) struct DigestPath {
     pub digest: String,
 }
 
-/// The `{token_id}` segment of a token route.
+/// A user path segment: a user's id, or `me` for the caller.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(try_from = "String")]
+pub(crate) enum UserRef {
+    Me,
+    Id(Uuid),
+}
+
+impl TryFrom<String> for UserRef {
+    type Error = uuid::Error;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        if s == "me" {
+            Ok(UserRef::Me)
+        } else {
+            s.parse().map(UserRef::Id)
+        }
+    }
+}
+
+impl UserRef {
+    /// The user this segment names, given the caller's id.
+    pub fn resolve(self, caller: Uuid) -> Uuid {
+        match self {
+            UserRef::Me => caller,
+            UserRef::Id(id) => id,
+        }
+    }
+}
+
+/// A single `{id}` user segment, accepting `me`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub(crate) struct TokenIdPath {
+pub(crate) struct UserPath {
+    /// The user's unique identifier, or `me` for the caller.
+    #[schemars(with = "String")]
+    pub id: UserRef,
+}
+
+/// The `{id}/tokens/{token_id}` segments of a user-token route.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub(crate) struct UserTokenPath {
+    /// The user's unique identifier, or `me` for the caller.
+    #[schemars(with = "String")]
+    pub id: UserRef,
     /// The token's unique identifier.
     pub token_id: Uuid,
 }
