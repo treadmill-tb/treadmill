@@ -31,6 +31,8 @@ mod tui;
 use anyhow::Context as _;
 use anyhow::Result;
 use clap::Parser;
+#[cfg(feature = "daemon")]
+use treadmill_client::daemon as client_daemon;
 use treadmill_client::error::{Cancelled, Hinted};
 #[cfg(feature = "user")]
 use treadmill_client::wsproxy;
@@ -137,16 +139,20 @@ async fn run(args: Cli) -> Result<()> {
             }
         }
         #[cfg(feature = "daemon")]
-        Command::Daemon(daemon_args) => daemon::run(daemon_args, args.globals.dbus_bus).await,
+        Command::Daemon(daemon_args) => {
+            daemon::run(daemon_args, args.globals.dbus_bus.into()).await
+        }
     }
 }
 
 #[cfg(feature = "daemon")]
 async fn daemon_job(globals: &Globals, command: DaemonJobCommand) -> Result<()> {
     match command {
-        DaemonJobCommand::ReloadServices => daemon::reload_services(globals.dbus_bus).await,
+        DaemonJobCommand::ReloadServices => {
+            client_daemon::reload_services(globals.dbus_bus.into()).await
+        }
         DaemonJobCommand::SetExitStatus { outcome, message } => {
-            let credentials = daemon::credentials(globals.dbus_bus)
+            let credentials = client_daemon::credentials(globals.dbus_bus.into())
                 .await?
                 .context("reporting an exit status needs the tml daemon of a job")?;
             let outcome = match outcome {
@@ -168,16 +174,9 @@ async fn daemon_job(globals: &Globals, command: DaemonJobCommand) -> Result<()> 
 
 async fn job_client(globals: &Globals, job: Option<JobRef>) -> Result<(SwitchboardClient, Uuid)> {
     #[cfg(feature = "daemon")]
-    if let Some(credentials) = daemon::credentials(globals.dbus_bus).await? {
-        if let Some(job) = &job
-            && !job.matches(credentials.job_id)
-        {
-            anyhow::bail!(
-                "inside a job, only that job ({}) can be acted on",
-                credentials.job_id
-            );
-        }
-        return Ok((credentials.client(), credentials.job_id));
+    if let Some(credentials) = client_daemon::credentials(globals.dbus_bus.into()).await? {
+        let job_id = credentials.check_job(job.as_ref())?;
+        return Ok((credentials.client(), job_id));
     }
 
     #[cfg(feature = "user")]

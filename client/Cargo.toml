@@ -17,6 +17,10 @@ default = ["profile", "ws"]
 # layered under `TML_*` environment variables. Carries `session`, and with it
 # everything that needs to know which switchboard to talk to.
 profile = ["dep:figment", "dep:xdg", "dep:futures-util"]
+# Asking the in-job `tml daemon` for the job's own credentials. Off by
+# default: it is only meaningful inside a job, and zbus is a heavy dependency
+# to impose on a consumer that just wants to log in and enqueue a job.
+dbus = ["dep:zbus"]
 # The WebSocket bridge to a job's service, and the TLS to reach a gateway over.
 ws = [
   "profile",
@@ -54,6 +58,7 @@ tokio-tungstenite = { version = "0.30", features = [
 ], optional = true }
 uuid = { workspace = true, features = ["serde"] }
 xdg = { version = "3.0.0", optional = true }
+zbus = { version = "6.2.1", optional = true }
 
 [lints]
 workspace = true

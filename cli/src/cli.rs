@@ -2,6 +2,25 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 pub use treadmill_client::job::JobRef;
+
+/// `--dbus-bus`, as clap parses it. The library's [`DbusBus`] is a foreign
+/// type, so the `ValueEnum` derive lives here.
+#[cfg(feature = "daemon")]
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum DbusBusArg {
+    Session,
+    System,
+}
+
+#[cfg(feature = "daemon")]
+impl From<DbusBusArg> for treadmill_client::daemon::DbusBus {
+    fn from(bus: DbusBusArg) -> Self {
+        match bus {
+            DbusBusArg::Session => Self::Session,
+            DbusBusArg::System => Self::System,
+        }
+    }
+}
 #[cfg(feature = "user")]
 use treadmill_rs::api::switchboard::jobs::LeaseSpec;
 
@@ -63,7 +82,7 @@ pub struct Globals {
         default_value = "system",
         global = true
     )]
-    pub dbus_bus: crate::daemon::DbusBus,
+    pub dbus_bus: DbusBusArg,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]

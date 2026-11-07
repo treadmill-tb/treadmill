@@ -11,6 +11,8 @@
 
 #[cfg(feature = "profile")]
 pub mod config;
+#[cfg(feature = "dbus")]
+pub mod daemon;
 pub mod diagnostics;
 pub mod error;
 pub mod job;

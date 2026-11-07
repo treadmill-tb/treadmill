@@ -5092,6 +5092,7 @@ dependencies = [
  "treadmill-rs",
  "uuid",
  "xdg",
+ "zbus",
 ]
 
 [[package]]

@@ -37,6 +37,7 @@ daemon = [
   "tokio/fs",
   "tokio/process",
   "tokio/time",
+  "treadmill-client/dbus",
 ]
 
 [dependencies]

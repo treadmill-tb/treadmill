@@ -3,15 +3,16 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use clap::{Args, ValueEnum};
+use clap::Args;
 use log::{error, info, warn};
 use zbus::interface;
 
 use treadmill_rs::api::supervisor_daemon::{SupervisorClient, SwitchboardApi};
-use treadmill_rs::api::switchboard::client::{ClientError, SwitchboardClient};
+use treadmill_rs::api::switchboard::client::ClientError;
 use treadmill_rs::api::switchboard::jobs::{JobEnvironment, JobGatewayEndpoint, JobParameter};
 use uuid::Uuid;
 
+use treadmill_client::daemon::{Credentials, DbusBus, connect};
 use treadmill_client::locked_file;
 
 mod service_proxy;
@@ -22,12 +23,6 @@ const FW_CFG_SUPERVISOR_URL: &str =
     "/sys/firmware/qemu_fw_cfg/by_name/opt/dev.treadmill.supervisor-url/raw";
 
 const SWITCHBOARD_RETRY_INTERVAL: Duration = Duration::from_secs(5);
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum DbusBus {
-    Session,
-    System,
-}
 
 #[derive(Debug, Clone, Args)]
 pub struct DaemonArgs {
@@ -119,19 +114,6 @@ async fn scan_services(services_dir: &Path) -> Result<Vec<ServiceDeclaration>> {
 
     services.sort_by(|a, b| a.service.name.cmp(&b.service.name));
     Ok(services)
-}
-
-#[derive(Clone)]
-pub struct Credentials {
-    pub base_url: String,
-    pub token: String,
-    pub job_id: Uuid,
-}
-
-impl Credentials {
-    pub fn client(&self) -> SwitchboardClient {
-        SwitchboardClient::new(self.base_url.clone(), Some(self.token.clone()))
-    }
 }
 
 async fn fetch_environment(credentials: &Credentials) -> Result<JobEnvironment> {
@@ -282,13 +264,9 @@ impl DbusDaemon {
     }
 }
 
-#[interface(
-    name = "dev.treadmill.Daemon1",
-    proxy(
-        default_path = "/dev/treadmill/Daemon",
-        default_service = "dev.treadmill.Daemon",
-    )
-)]
+/// The other side of `treadmill_client::daemon::DaemonProxy`. The two declare
+/// the same interface and have to be kept in step by hand.
+#[interface(name = "dev.treadmill.Daemon1")]
 impl DbusDaemon {
     async fn credentials(&self) -> (String, String, String) {
         (
@@ -314,13 +292,6 @@ async fn supervisor_url(args: &DaemonArgs) -> Result<String> {
             .with_context(|| {
                 format!("No --supervisor-url given, and reading {FW_CFG_SUPERVISOR_URL} failed")
             }),
-    }
-}
-
-async fn connect(dbus_bus: DbusBus) -> zbus::Result<zbus::Connection> {
-    match dbus_bus {
-        DbusBus::System => zbus::Connection::system().await,
-        DbusBus::Session => zbus::Connection::session().await,
     }
 }
 
@@ -391,45 +362,46 @@ pub async fn run(args: DaemonArgs, dbus_bus: DbusBus) -> Result<()> {
     Ok(())
 }
 
-pub async fn credentials(dbus_bus: DbusBus) -> Result<Option<Credentials>> {
-    let Ok(conn) = connect(dbus_bus).await else {
-        return Ok(None);
-    };
-    let owned = zbus::fdo::DBusProxy::new(&conn)
-        .await?
-        .name_has_owner("dev.treadmill.Daemon".try_into()?)
-        .await?;
-    if !owned {
-        return Ok(None);
-    }
-
-    let (base_url, token, job_id) = DbusDaemonProxy::new(&conn)
-        .await?
-        .credentials()
-        .await
-        .context("Asking the tml daemon for its credentials")?;
-    Ok(Some(Credentials {
-        base_url,
-        token,
-        job_id: job_id
-            .parse()
-            .context("The tml daemon sent a malformed job id")?,
-    }))
-}
-
-pub async fn reload_services(dbus_bus: DbusBus) -> Result<()> {
-    DbusDaemonProxy::new(&connect(dbus_bus).await?)
-        .await?
-        .reload_services()
-        .await
-        .context("Requesting a service reload")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use service_proxy::MAX_SERVICE_NAME_LEN;
     use treadmill_rs::api::switchboard::jobs::JobServiceAnnouncement;
+
+    /// The daemon's `#[interface]` and the library's `#[zbus::proxy]` declare
+    /// the same D-Bus interface in two crates. Nothing makes them agree, so
+    /// this pins what the daemon actually serves against the names the proxy
+    /// calls — change one side and this fails rather than the next `tml job
+    /// terminate` inside a job.
+    #[test]
+    fn the_served_interface_is_the_one_the_proxy_calls() {
+        use zbus::object_server::Interface as _;
+
+        let daemon = DbusDaemon {
+            credentials: Credentials {
+                base_url: "https://sb.example".into(),
+                token: "token".into(),
+                job_id: uuid::Uuid::nil(),
+            },
+            services_dir: PathBuf::new(),
+            proxy: None,
+        };
+
+        let mut xml = String::new();
+        daemon.introspect_to_writer(&mut xml, 0);
+
+        assert_eq!(
+            DbusDaemon::name(),
+            treadmill_client::daemon::DAEMON_INTERFACE,
+            "the interface name the daemon serves is not the one the proxy asks for"
+        );
+        for member in treadmill_client::daemon::DAEMON_METHODS {
+            assert!(
+                xml.contains(&format!("<method name=\"{member}\">")),
+                "the daemon serves no {member:?} method:\n{xml}"
+            );
+        }
+    }
 
     /// A scratch service directory, removed when the test ends.
     struct ServicesDir(PathBuf);
