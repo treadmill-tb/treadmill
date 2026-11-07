@@ -11,7 +11,7 @@ use crate::cli::SshJob;
 use crate::ctx::Ctx;
 use crate::display::{SSHWS_PROTOCOL, short};
 use treadmill_client::error::hinted;
-use treadmill_client::state::{CachedJobServiceToken, State};
+use treadmill_client::state::CachedJobServiceToken;
 
 pub const PROGRAM: &str = "tml";
 /// Everything needed to launch a client against one job service.
@@ -267,7 +267,7 @@ fn connection(
     let user = target
         .user
         .clone()
-        .unwrap_or_else(|| ctx.config.user.clone());
+        .unwrap_or_else(|| ctx.session.config.user.clone());
 
     let endpoint = select_endpoint(&cached, None, &[])?;
 
@@ -312,8 +312,8 @@ async fn discover_service(
 fn tml_command(program: &str, ctx: &Ctx) -> Result<String> {
     Ok(format!(
         "{program} --profile {} --config {}",
-        quote(&ctx.profile),
-        quote_path(&ctx.config_path)?,
+        quote(&ctx.session.profile),
+        quote_path(&ctx.session.config_path)?,
     ))
 }
 
@@ -328,10 +328,10 @@ fn proxy_command(ctx: &Ctx, job_id: Uuid, service: &str) -> Result<String> {
     let mut command = format!(
         "{} --switchboard {} job ws-proxy --job {job_id} {}",
         tml_command(&quote(exe), ctx)?,
-        quote(&ctx.config.switchboard),
+        quote(&ctx.session.config.switchboard),
         quote(service),
     );
-    if ctx.insecure_tls {
+    if ctx.session.insecure_tls {
         command.push_str(" --insecure-tls");
     }
     for _ in 0..ctx.verbose {
@@ -391,7 +391,12 @@ pub(crate) async fn service_credentials(
     job_id: Uuid,
     service: &str,
 ) -> Result<CachedJobServiceToken> {
-    if let Some(cached) = ctx.state.valid_job_service_token(job_id, service).cloned() {
+    if let Some(cached) = ctx
+        .session
+        .state
+        .valid_job_service_token(job_id, service)
+        .cloned()
+    {
         return Ok(cached);
     }
 
@@ -408,7 +413,7 @@ pub(crate) async fn service_credentials(
         token: expose(&credentials),
         expires_at: credentials.expires_at,
     };
-    ctx.state = State::update(&ctx.state_path, ctx.diagnostics.as_ref(), |state| {
+    ctx.session.update_state(|state| {
         state
             .job_service_tokens
             .entry(job_id)

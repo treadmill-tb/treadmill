@@ -11,7 +11,6 @@ use crate::display;
 use crate::event::Event;
 use crate::tui::{self, DIM, Item, OK, Terminal, plain, span};
 use treadmill_client::error::{cancelled, hinted};
-use treadmill_client::state::State;
 
 pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
     let client = ctx.anonymous_client()?;
@@ -62,10 +61,7 @@ pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
             .context("completing the staged login")?
         {
             LoginCompleteOutcome::Complete(response) => {
-                ctx.state = State::update(&ctx.state_path, ctx.diagnostics.as_ref(), |state| {
-                    state.token = Some(response.token.encode_for_http());
-                    state.expires_at = Some(response.expires_at);
-                })?;
+                ctx.session.store_session(&response)?;
 
                 let identity = ctx.client()?.whoami().await?;
                 if ctx.human() {
@@ -73,7 +69,7 @@ pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
                         &vec![
                             span(OK, "✓ "),
                             plain(format!("Logged in as {}", identity.name)),
-                            span(DIM, format!(" · {}", ctx.config.switchboard)),
+                            span(DIM, format!(" · {}", ctx.session.config.switchboard)),
                         ],
                         None,
                         true,
@@ -94,7 +90,7 @@ pub async fn logout(ctx: &mut Ctx) -> Result<()> {
             anstream::println!("{}", tui::render(&line, None, true));
         }
     };
-    if ctx.state.token.is_none() {
+    if ctx.session.state.token.is_none() {
         print(vec![
             plain("Not logged in"),
             span(DIM, " · nothing removed"),
@@ -103,7 +99,7 @@ pub async fn logout(ctx: &mut Ctx) -> Result<()> {
         return Ok(());
     }
 
-    let revoked = match revoke(ctx).await {
+    let revoked = match ctx.session.revoke_session().await {
         Ok(true) => {
             print(vec![span(OK, "✓ "), plain("Session token revoked")]);
             Some(true)
@@ -115,10 +111,7 @@ pub async fn logout(ctx: &mut Ctx) -> Result<()> {
         }
     };
 
-    ctx.state = State::update(&ctx.state_path, ctx.diagnostics.as_ref(), |state| {
-        state.token = None;
-        state.expires_at = None;
-    })?;
+    ctx.session.clear_session()?;
     let mut removed = vec![span(OK, "✓ "), plain("Credentials removed")];
     if revoked == Some(false) {
         removed.push(span(DIM, " · session token already revoked"));
@@ -126,22 +119,6 @@ pub async fn logout(ctx: &mut Ctx) -> Result<()> {
     print(removed);
     ctx.result(Event::LoggedOut { revoked });
     Ok(())
-}
-
-/// Revoke the token this invocation authenticates with. The switchboard flags
-/// it in the session listing, so no token id has to be stored alongside it.
-async fn revoke(ctx: &Ctx) -> Result<bool> {
-    let client = ctx.client()?;
-    let Some(session) = client
-        .list_my_tokens()
-        .await?
-        .into_iter()
-        .find(|session| session.current)
-    else {
-        return Ok(false);
-    };
-    client.revoke_own_token(session.token_id).await?;
-    Ok(true)
 }
 
 pub async fn whoami(ctx: &Ctx) -> Result<()> {
@@ -160,8 +137,11 @@ pub async fn whoami(ctx: &Ctx) -> Result<()> {
         user.push(span(DIM, " · admin"));
     }
     let rows = [
-        ("Profile", vec![plain(ctx.profile.clone())]),
-        ("Switchboard", vec![plain(ctx.config.switchboard.clone())]),
+        ("Profile", vec![plain(ctx.session.profile.clone())]),
+        (
+            "Switchboard",
+            vec![plain(ctx.session.config.switchboard.clone())],
+        ),
         ("User", user),
     ];
     for line in display::table(&rows) {
@@ -172,8 +152,8 @@ pub async fn whoami(ctx: &Ctx) -> Result<()> {
 
 fn identity_event<'a>(ctx: &'a Ctx, identity: &'a WhoAmIResponse) -> Event<'a> {
     Event::Identity {
-        profile: &ctx.profile,
-        switchboard: &ctx.config.switchboard,
+        profile: &ctx.session.profile,
+        switchboard: &ctx.session.config.switchboard,
         identity,
     }
 }
@@ -225,12 +205,18 @@ async fn select_login(
     }
 
     match paths.len() {
-        0 => bail!("{} offers no login providers", ctx.config.switchboard),
+        0 => bail!(
+            "{} offers no login providers",
+            ctx.session.config.switchboard
+        ),
         1 => Ok(paths.remove(0)),
         _ => {
             if !tui::interactive() {
                 return Err(hinted(
-                    anyhow::anyhow!("{} offers several login providers", ctx.config.switchboard),
+                    anyhow::anyhow!(
+                        "{} offers several login providers",
+                        ctx.session.config.switchboard
+                    ),
                     "Pass --provider <NAME> or --identity <KEY> to choose one.",
                 ));
             }

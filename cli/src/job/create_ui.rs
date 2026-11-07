@@ -67,7 +67,7 @@ pub async fn run(
     let mut answers: Vec<Line> = Vec::new();
     let mut set = sets
         .iter()
-        .find(|set| Some(set.id) == ctx.state.last_image_set);
+        .find(|set| Some(set.id) == ctx.session.state.last_image_set);
     let mut expression = String::new();
     let mut i = 0;
     loop {

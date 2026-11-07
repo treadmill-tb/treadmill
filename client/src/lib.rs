@@ -14,4 +14,6 @@ pub mod config;
 pub mod diagnostics;
 pub mod error;
 pub mod locked_file;
+#[cfg(feature = "profile")]
+pub mod session;
 pub mod state;

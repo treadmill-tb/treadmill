@@ -24,7 +24,7 @@ const OPTIONS: [(&str, &str); 7] = [
 ];
 
 pub async fn setup(ctx: &Ctx, args: &SshSetupArgs) -> Result<()> {
-    let domains = ctx.config.ssh_domains(&ctx.profile)?;
+    let domains = ctx.session.config.ssh_domains(&ctx.session.profile)?;
     let managed = config::ssh_config_path()?;
 
     check_path(ctx, &managed);
@@ -32,12 +32,16 @@ pub async fn setup(ctx: &Ctx, args: &SshSetupArgs) -> Result<()> {
     let block = block(ctx, domains)?;
     private_dir(&managed)?;
     let contents = locked_file::update(&managed, 0o600, |current| {
-        let contents = upsert(current.as_deref().unwrap_or(""), &ctx.profile, &block);
+        let contents = upsert(
+            current.as_deref().unwrap_or(""),
+            &ctx.session.profile,
+            &block,
+        );
         *current = Some(contents.clone());
         Ok(contents)
     })
     .with_context(|| format!("writing {}", managed.display()))?;
-    for (profile, pattern) in overlapping(&contents, &ctx.profile, domains) {
+    for (profile, pattern) in overlapping(&contents, &ctx.session.profile, domains) {
         ctx.warn(&format!(
             "profile {profile} also matches {pattern}; the first matching block in {} applies",
             display_path(&managed)
@@ -46,7 +50,7 @@ pub async fn setup(ctx: &Ctx, args: &SshSetupArgs) -> Result<()> {
     print(vec![
         span(OK, "✓ "),
         plain(format!("Wrote {}", display_path(&managed))),
-        span(DIM, format!(" · profile {}", ctx.profile)),
+        span(DIM, format!(" · profile {}", ctx.session.profile)),
     ]);
 
     let user_config = user_ssh_config()?;
@@ -204,21 +208,24 @@ fn connect_hint(ctx: &Ctx, domains: &[String]) -> Result<()> {
     anstream::println!();
     print(vec![
         span(DIM, "  $ "),
-        plain(format!("ssh {}@<job-uuid>.{}", ctx.config.user, domains[0])),
+        plain(format!(
+            "ssh {}@<job-uuid>.{}",
+            ctx.session.config.user, domains[0]
+        )),
     ]);
     Ok(())
 }
 
 fn block(ctx: &Ctx, domains: &[String]) -> Result<String> {
     let patterns: Vec<String> = domains.iter().map(|domain| format!("*.{domain}")).collect();
-    let mut block = format!("{BEGIN}{}\n", ctx.profile);
+    let mut block = format!("{BEGIN}{}\n", ctx.session.profile);
     block.push_str(&format!("Host {}\n", patterns.join(" ")));
-    block.push_str(&format!("    User {}\n", ctx.config.user));
+    block.push_str(&format!("    User {}\n", ctx.session.config.user));
     block.push_str(&format!("    ProxyCommand {}\n", ssh_proxy_command(ctx)?));
     for (keyword, value) in OPTIONS {
         block.push_str(&format!("    {keyword} {value}\n"));
     }
-    block.push_str(&format!("{END}{}\n", ctx.profile));
+    block.push_str(&format!("{END}{}\n", ctx.session.profile));
     Ok(block)
 }
 

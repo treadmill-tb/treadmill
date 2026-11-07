@@ -17,7 +17,6 @@ use crate::display::{self, HostState, describe_instant, human_duration, program,
 use crate::event::{Event, Lease};
 use crate::tui::{self, DIM, OK, WARN, plain, span};
 use treadmill_client::error::{ExitError, cancelled, hinted};
-use treadmill_client::state::State;
 
 mod create_ui;
 pub mod list;
@@ -77,7 +76,7 @@ pub async fn create(ctx: &mut Ctx, args: &JobCreateArgs) -> Result<()> {
         .context("enqueueing the job")?;
     let job_id = enqueued.job_id;
 
-    ctx.state = State::update(&ctx.state_path, ctx.diagnostics.as_ref(), |state| {
+    ctx.session.update_state(|state| {
         if set_id.is_some() {
             state.last_image_set = set_id;
         }

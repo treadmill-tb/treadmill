@@ -32,29 +32,41 @@ pub async fn run<I: AsyncRead + Unpin + Send + 'static, O: AsyncWrite + Unpin + 
     gateway: Option<&str>,
 ) -> Result<()> {
     let ssh_domains = match gateway {
-        Some(_) => ctx.config.ssh_domains(&ctx.profile)?.to_vec(),
+        Some(_) => ctx.session.ssh_domains()?.to_vec(),
         None => Vec::new(),
     };
     let credentials = service_credentials(ctx, job_id, service).await?;
     let endpoint = select_endpoint(&credentials, gateway, &ssh_domains)?;
-    let socket = match open(endpoint, &credentials.token, ctx.insecure_tls, ctx.verbose).await {
+    let socket = match open(
+        endpoint,
+        &credentials.token,
+        ctx.session.insecure_tls,
+        ctx.verbose,
+    )
+    .await
+    {
         Ok(socket) => socket,
         Err(first_error) => {
             State::invalidate_job_service_token(
-                &ctx.state_path,
-                ctx.diagnostics.as_ref(),
+                &ctx.session.state_path,
+                ctx.session.diagnostics(),
                 job_id,
                 service,
                 &credentials.token,
             )?;
-            ctx.state = State::load(&ctx.state_path)?;
+            ctx.session.state = State::load(&ctx.session.state_path)?;
             let replacement = service_credentials(ctx, job_id, service).await?;
             let endpoint = select_endpoint(&replacement, gateway, &ssh_domains)?;
-            open(endpoint, &replacement.token, ctx.insecure_tls, ctx.verbose)
-                .await
-                .with_context(|| {
-                    format!("retrying after the first connection failed: {first_error:#}")
-                })?
+            open(
+                endpoint,
+                &replacement.token,
+                ctx.session.insecure_tls,
+                ctx.verbose,
+            )
+            .await
+            .with_context(|| {
+                format!("retrying after the first connection failed: {first_error:#}")
+            })?
         }
     };
 

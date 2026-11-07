@@ -1,7 +1,8 @@
 use anyhow::{Context as _, Result, bail};
-use std::path::PathBuf;
 use std::sync::Arc;
-use treadmill_client::diagnostics::Diagnostics;
+use treadmill_client::diagnostics::Diagnostics as _;
+use treadmill_client::error::hinted;
+use treadmill_client::session::{Options, Session};
 use treadmill_rs::api::switchboard::client::SwitchboardClient;
 use treadmill_rs::api::switchboard::jobs::{JobListQuery, JobListState};
 use uuid::Uuid;
@@ -10,103 +11,55 @@ use crate::cli::{ColorChoice, Globals, JobRef, OutputFormat};
 use crate::diag;
 use crate::display::{program, short};
 use crate::event::{self, Event};
-use treadmill_client::config::{self, Config, DEFAULT_PROFILE};
-use treadmill_client::state::State;
 
+/// A [`Session`] — which switchboard, as whom — together with how this
+/// invocation was asked to present itself.
 pub struct Ctx {
-    pub config: Config,
-    pub profile: String,
-    pub config_path: PathBuf,
-    pub state: State,
-    pub state_path: PathBuf,
+    pub session: Session,
     pub output: OutputFormat,
     pub quiet: bool,
     pub verbose: u8,
-    pub insecure_tls: bool,
-    /// How [`treadmill_client`] reports warnings and `-v` detail, and how
-    /// [`Ctx::warn`] and [`Ctx::detail`] report `tml`'s own.
-    pub diagnostics: Arc<diag::Stderr>,
+    diagnostics: Arc<diag::Stderr>,
 }
 
 impl Ctx {
     pub fn load(globals: &Globals) -> Result<Self> {
-        let profile = globals
-            .profile
-            .clone()
-            .or_else(|| std::env::var("TML_PROFILE").ok())
-            .unwrap_or_else(|| DEFAULT_PROFILE.to_string());
-
         let output = globals.output.unwrap_or(OutputFormat::Human);
         let diagnostics = diag::Stderr::new(output, globals.verbose);
 
-        let config_path = config::config_path(globals.config.as_deref())?;
-        let mut config = config::load(&config_path, &profile, diagnostics.as_ref())?;
-        if let Some(switchboard) = &globals.switchboard {
-            config.switchboard = switchboard.clone();
-        }
-        let insecure_tls = globals.insecure_tls || config.insecure_tls;
-
-        let state_path = config::state_path(&profile)?;
-        let state = State::load(&state_path)?;
+        let session = Session::load(
+            &Options {
+                profile: globals.profile.clone(),
+                config_path: globals.config.clone(),
+                switchboard: globals.switchboard.clone(),
+                insecure_tls: globals.insecure_tls,
+            },
+            diagnostics.clone(),
+        )?;
 
         Ok(Self {
-            config,
-            profile,
-            config_path,
-            state,
-            state_path,
+            session,
             output,
             quiet: globals.quiet,
             verbose: globals.verbose,
-            insecure_tls,
             diagnostics,
         })
     }
 
-    /// The bearer token to present, preferring an explicitly configured one
-    /// (`TML_TOKEN` or the profile) over the stored session.
-    pub fn token(&self) -> Option<String> {
-        if let Some(token) = &self.config.token {
-            return Some(token.clone());
-        }
-        self.state.token.clone()
-    }
-
     pub fn client(&self) -> Result<SwitchboardClient> {
-        self.client_with(self.token())
+        self.session.client()
     }
 
     pub fn anonymous_client(&self) -> Result<SwitchboardClient> {
-        self.client_with(None)
+        self.session.anonymous_client()
     }
 
+    /// As [`Session::authenticated_client`], with the remedy `tml` offers for
+    /// having no usable session.
     pub fn authenticated_client(&self) -> Result<SwitchboardClient> {
-        if self.config.token.is_none() && !self.state.token_valid() {
-            if self.state.token.is_some() {
-                bail!("the stored session has expired; run `{} login`", program());
-            }
-            bail!(
-                "not logged in to {}; run `{} login`",
-                self.config.switchboard,
-                program()
-            );
-        }
-        self.client()
-    }
-
-    fn client_with(&self, token: Option<String>) -> Result<SwitchboardClient> {
-        if self.insecure_tls {
-            self.warn("TLS certificate verification is disabled");
-            return SwitchboardClient::new_danger_accept_invalid_certs(
-                self.config.switchboard.clone(),
-                token,
-            )
-            .context("building an insecure HTTP client");
-        }
-        Ok(SwitchboardClient::new(
-            self.config.switchboard.clone(),
-            token,
-        ))
+        self.session
+            .authenticated_client()
+            .map_err(|error| hinted(error, format!("Run `{} login`.", program())))
     }
 
     pub fn human(&self) -> bool {
@@ -120,7 +73,7 @@ impl Ctx {
     /// The `--job` flag a suggested command needs for `job_id`, by its short
     /// id: none for the active job.
     pub fn job_flag(&self, job_id: Uuid) -> String {
-        if self.state.active_job == Some(job_id) {
+        if self.session.state.active_job == Some(job_id) {
             String::new()
         } else {
             format!(" --job {}", short(job_id))
@@ -135,6 +88,7 @@ impl Ctx {
             Some(JobRef::Short(suffix)) => suffix,
             None => {
                 let job = self
+                    .session
                     .state
                     .active_job
                     .with_context(|| format!("no job given and no active job set; pass --job or run `{} context job set <JOB>`", program()))?;
