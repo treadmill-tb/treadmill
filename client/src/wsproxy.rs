@@ -1,3 +1,5 @@
+//! Bridging a byte stream to a job's service over a WebSocket.
+
 use anyhow::{Context as _, Result, bail};
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
@@ -13,9 +15,10 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
-use crate::ctx::Ctx;
-use crate::ssh::{select_endpoint, service_credentials};
-use treadmill_client::state::State;
+use crate::diagnostics::Diagnostics;
+use crate::service::{self, select_endpoint};
+use crate::session::Session;
+use crate::state::State;
 
 const READ_BUFFER: usize = 16 * 1024;
 
@@ -24,7 +27,7 @@ const READ_BUFFER: usize = 16 * 1024;
 /// socket then carries raw SSH bytes in binary frames. The caller chooses the
 /// ends: stdio for a `ProxyCommand`, an accepted socket for `--addr`.
 pub async fn run<I: AsyncRead + Unpin + Send + 'static, O: AsyncWrite + Unpin + Send + 'static>(
-    ctx: &mut Ctx,
+    session: &mut Session,
     job_id: Uuid,
     mut infd: I,
     mut outfd: O,
@@ -32,36 +35,40 @@ pub async fn run<I: AsyncRead + Unpin + Send + 'static, O: AsyncWrite + Unpin + 
     gateway: Option<&str>,
 ) -> Result<()> {
     let ssh_domains = match gateway {
-        Some(_) => ctx.session.ssh_domains()?.to_vec(),
+        Some(_) => session.ssh_domains()?.to_vec(),
         None => Vec::new(),
     };
-    let credentials = service_credentials(ctx, job_id, service).await?;
+    let insecure_tls = session.insecure_tls;
+    let credentials = service::credentials(session, job_id, service).await?;
     let endpoint = select_endpoint(&credentials, gateway, &ssh_domains)?;
     let socket = match open(
         endpoint,
         &credentials.token,
-        ctx.session.insecure_tls,
-        ctx.verbose,
+        insecure_tls,
+        session.diagnostics(),
     )
     .await
     {
         Ok(socket) => socket,
+        // A cached credential the gateway no longer accepts is indistinguishable
+        // from an unreachable gateway here, so drop it and try once with a fresh
+        // one before reporting the failure.
         Err(first_error) => {
             State::invalidate_job_service_token(
-                &ctx.session.state_path,
-                ctx.session.diagnostics(),
+                &session.state_path,
+                session.diagnostics(),
                 job_id,
                 service,
                 &credentials.token,
             )?;
-            ctx.session.state = State::load(&ctx.session.state_path)?;
-            let replacement = service_credentials(ctx, job_id, service).await?;
+            session.reload_state()?;
+            let replacement = service::credentials(session, job_id, service).await?;
             let endpoint = select_endpoint(&replacement, gateway, &ssh_domains)?;
             open(
                 endpoint,
                 &replacement.token,
-                ctx.session.insecure_tls,
-                ctx.verbose,
+                insecure_tls,
+                session.diagnostics(),
             )
             .await
             .with_context(|| {
@@ -110,7 +117,7 @@ async fn open(
     endpoint: &treadmill_rs::api::switchboard::jobs::JobServiceEndpoint,
     token: &str,
     insecure_tls: bool,
-    verbose: u8,
+    diagnostics: &dyn Diagnostics,
 ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
     let hostname = &endpoint.hostname;
     let port = endpoint.port;
@@ -122,11 +129,9 @@ async fn open(
         HeaderValue::from_str(token).context("the service token is not a valid header value")?,
     );
 
-    if verbose > 0 {
-        anstream::eprintln!("WebSocket wss://{hostname}:{port}/");
-        if let Some(claims) = describe_claims(token) {
-            anstream::eprintln!("{claims}");
-        }
+    diagnostics.detail(&format!("WebSocket wss://{hostname}:{port}/"));
+    if let Some(claims) = describe_claims(token) {
+        diagnostics.detail(&claims);
     }
 
     let connector = Some(tls_connector(insecure_tls)?);
@@ -195,7 +200,7 @@ fn handshake_error(error: WsError, hostname: &str, port: u16) -> anyhow::Error {
             "the gateway at wss://{hostname}:{port}/ refused the connection: HTTP {status}"
         ),
     };
-    treadmill_client::error::hinted(
+    crate::error::hinted(
         error,
         "Pass -v to see the JWT token claims used to connect to this service.",
     )

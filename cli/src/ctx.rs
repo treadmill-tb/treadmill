@@ -1,13 +1,14 @@
-use anyhow::{Context as _, Result, bail};
+use anyhow::Result;
 use std::sync::Arc;
 use treadmill_client::diagnostics::Diagnostics as _;
 use treadmill_client::error::hinted;
+// `crate::job` is `tml`'s own job commands; this is the library's.
+use treadmill_client::job::{self as client_job, JobRef};
 use treadmill_client::session::{Options, Session};
 use treadmill_rs::api::switchboard::client::SwitchboardClient;
-use treadmill_rs::api::switchboard::jobs::{JobListQuery, JobListState};
 use uuid::Uuid;
 
-use crate::cli::{ColorChoice, Globals, JobRef, OutputFormat};
+use crate::cli::{ColorChoice, Globals, OutputFormat};
 use crate::diag;
 use crate::display::{program, short};
 use crate::event::{self, Event};
@@ -80,60 +81,27 @@ impl Ctx {
         }
     }
 
-    /// Returns the job's UUID, or the active job's if [None]. A `^<hex>`
-    /// suffix is looked up on the switchboard and must match exactly one job.
+    /// The job `reference` names, or the active job if it names none.
+    ///
+    /// Picking the active job is a selection the user did not make outright,
+    /// so it is announced; a `^<hex>` suffix is resolved on the switchboard.
     pub async fn resolve_job(&self, reference: Option<&JobRef>) -> Result<Uuid> {
-        let suffix = match reference {
-            Some(JobRef::Id(job)) => return Ok(*job),
-            Some(JobRef::Short(suffix)) => suffix,
-            None => {
-                let job = self
-                    .session
-                    .state
-                    .active_job
-                    .with_context(|| format!("no job given and no active job set; pass --job or run `{} context job set <JOB>`", program()))?;
-                self.note(&format!("Active job {}", short(job)));
-                return Ok(job);
-            }
-        };
-
-        let client = self.authenticated_client()?;
-        let queries = [
-            JobListState::Active,
-            JobListState::Reclaimable,
-            JobListState::Finished,
-        ]
-        .map(|state| JobListQuery {
-            include: "all".to_string(),
-            state,
-            q: Some(format!("^{suffix}")),
-            limit: Some(2),
-            cursor: None,
-        });
-        let pages =
-            futures_util::future::try_join_all(queries.iter().map(|query| client.list_jobs(query)))
-                .await
-                .with_context(|| format!("looking up job ^{suffix}"))?;
-
-        let jobs: Vec<Uuid> = pages
-            .into_iter()
-            .flat_map(|page| page.jobs)
-            .map(|job| job.job_id)
-            .collect();
-        match jobs[..] {
-            [job] => {
-                self.detail(&format!("^{suffix} → {job}"));
-                Ok(job)
-            }
-            [] => bail!("no job matches ^{suffix}"),
-            _ => bail!(
-                "^{suffix} matches several jobs, including {}; give more digits",
-                jobs.iter()
-                    .map(Uuid::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+        if reference.is_none()
+            && let Some(job) = self.session.state.active_job
+        {
+            self.note(&format!("Active job {}", short(job)));
         }
+        client_job::resolve(&self.session, reference)
+            .await
+            .map_err(|error| {
+                if reference.is_some() {
+                    return error;
+                }
+                hinted(
+                    error,
+                    format!("Pass --job, or run `{} context job set <JOB>`.", program()),
+                )
+            })
     }
 
     /// A progress or selection notice: stderr, human output only.

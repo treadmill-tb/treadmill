@@ -4,14 +4,13 @@ use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use treadmill_rs::api::switchboard::jobs::{JobServiceCredentials, JobServiceEndpoint};
 use uuid::Uuid;
 
 use crate::cli::SshJob;
 use crate::ctx::Ctx;
 use crate::display::{SSHWS_PROTOCOL, short};
-use treadmill_client::error::hinted;
 use treadmill_client::state::CachedJobServiceToken;
+use treadmill_client::{service, wsproxy};
 
 pub const PROGRAM: &str = "tml";
 /// Everything needed to launch a client against one job service.
@@ -39,8 +38,8 @@ pub async fn proxy(ctx: &mut Ctx, host: &str) -> Result<()> {
         "{host} is job {} service {service} at {domain}",
         short(job_id)
     ));
-    crate::wsproxy::run(
-        ctx,
+    wsproxy::run(
+        &mut ctx.session,
         job_id,
         tokio::io::stdin(),
         tokio::io::stdout(),
@@ -65,49 +64,6 @@ fn parse_destination(host: &str) -> Result<(Option<&str>, Uuid, &str)> {
     let job_id = Uuid::parse_str(job_id)
         .with_context(|| format!("{job_id:?} is not the job UUID of {label:?}"))?;
     Ok((Some(service), job_id, domain))
-}
-
-pub(crate) fn select_endpoint<'a>(
-    cached: &'a CachedJobServiceToken,
-    domain: Option<&str>,
-    ssh_domains: &[String],
-) -> Result<&'a JobServiceEndpoint> {
-    let primary = || {
-        cached
-            .endpoints
-            .first()
-            .context("the switchboard returned no gateway endpoint for this service")
-    };
-
-    let Some(domain) = domain else {
-        return primary();
-    };
-
-    if let Some(endpoint) = cached
-        .endpoints
-        .iter()
-        .find(|endpoint| base_domain(&endpoint.hostname) == Some(domain))
-    {
-        return Ok(endpoint);
-    }
-
-    if ssh_domains.iter().any(|configured| configured == domain) {
-        return primary();
-    }
-
-    let published: Vec<&str> = cached
-        .endpoints
-        .iter()
-        .filter_map(|endpoint| base_domain(&endpoint.hostname))
-        .collect();
-    bail!(
-        "no gateway at {domain:?} publishes this service; it is published at: {}",
-        published.join(", ")
-    )
-}
-
-fn base_domain(hostname: &str) -> Option<&str> {
-    hostname.split_once('.').map(|(_, domain)| domain)
 }
 
 pub async fn exec_command(
@@ -252,7 +208,7 @@ async fn connect(ctx: &mut Ctx, job_id: Uuid, target: &SshJob) -> Result<Connect
         "Connecting to job {} · service {service}",
         short(job_id)
     ));
-    let cached = service_credentials(ctx, job_id, &service).await?;
+    let cached = service::credentials(&mut ctx.session, job_id, &service).await?;
 
     connection(ctx, target, job_id, service, cached)
 }
@@ -269,7 +225,7 @@ fn connection(
         .clone()
         .unwrap_or_else(|| ctx.session.config.user.clone());
 
-    let endpoint = select_endpoint(&cached, None, &[])?;
+    let endpoint = service::select_endpoint(&cached, None, &[])?;
 
     Ok(Connection {
         destination: format!("{user}@{}", endpoint.hostname),
@@ -352,77 +308,6 @@ fn exec(ctx: &Ctx, program: &str, argv: &[String]) -> Result<()> {
     Err(error).with_context(|| format!("launching {program}; is OpenSSH installed and on PATH?"))
 }
 
-fn service_token_error(
-    error: treadmill_rs::api::switchboard::client::ClientError,
-    job_id: Uuid,
-    service: &str,
-) -> anyhow::Error {
-    use treadmill_rs::api::switchboard::client::ClientError;
-
-    let tml = crate::display::program();
-    match &error {
-        ClientError::Status { status: 404, .. } => hinted(
-            anyhow::anyhow!("job {job_id} has no service named {service:?}"),
-            format!(
-                "`{tml} job status --job {}` lists its services.",
-                short(job_id)
-            ),
-        ),
-        ClientError::Status { status: 409, .. } => hinted(
-            anyhow::anyhow!("job {job_id} has no network address yet"),
-            format!(
-                "`{tml} job wait --job {}` waits until it is ready.",
-                short(job_id)
-            ),
-        ),
-        ClientError::Status { status: 503, .. } => anyhow::anyhow!(
-            "this switchboard has no job service gateway, so jobs cannot be reached over SSH"
-        ),
-        _ => anyhow::Error::new(error).context("minting a job service token"),
-    }
-}
-
-fn expose(credentials: &JobServiceCredentials) -> String {
-    credentials.token.expose().clone()
-}
-
-pub(crate) async fn service_credentials(
-    ctx: &mut Ctx,
-    job_id: Uuid,
-    service: &str,
-) -> Result<CachedJobServiceToken> {
-    if let Some(cached) = ctx
-        .session
-        .state
-        .valid_job_service_token(job_id, service)
-        .cloned()
-    {
-        return Ok(cached);
-    }
-
-    let credentials = ctx
-        .authenticated_client()?
-        .create_job_service_token(job_id, service)
-        .await
-        .map_err(|error| service_token_error(error, job_id, service))?;
-    if credentials.endpoints.is_empty() {
-        bail!("the switchboard returned no gateway endpoint for this service");
-    }
-    let cached = CachedJobServiceToken {
-        endpoints: credentials.endpoints.clone(),
-        token: expose(&credentials),
-        expires_at: credentials.expires_at,
-    };
-    ctx.session.update_state(|state| {
-        state
-            .job_service_tokens
-            .entry(job_id)
-            .or_default()
-            .insert(service.to_string(), cached.clone());
-    })?;
-    Ok(cached)
-}
-
 fn quote_path(path: &Path) -> Result<String> {
     path.to_str()
         .map(quote)
@@ -465,24 +350,6 @@ mod tests {
 
     const JOB: &str = "1b4e28ba-2fa1-11d2-883f-b9a761bde3fb";
 
-    fn cached(hostnames: &[&str]) -> CachedJobServiceToken {
-        CachedJobServiceToken {
-            endpoints: hostnames
-                .iter()
-                .map(|hostname| JobServiceEndpoint {
-                    hostname: hostname.to_string(),
-                    port: 443,
-                })
-                .collect(),
-            token: "token".to_string(),
-            expires_at: chrono::Utc::now(),
-        }
-    }
-
-    fn domains(domains: &[&str]) -> Vec<String> {
-        domains.iter().map(|domain| domain.to_string()).collect()
-    }
-
     #[test]
     fn a_bare_job_id_leaves_the_service_to_be_discovered() {
         let host = format!("{JOB}.job.treadmill.dev");
@@ -506,61 +373,5 @@ mod tests {
         assert!(parse_destination("nonsense.job.treadmill.dev").is_err());
         assert!(parse_destination(&format!("sshws-not-a-uuid.{JOB}")).is_err());
         assert!(parse_destination(JOB).is_err());
-    }
-
-    #[test]
-    fn a_configured_domain_takes_the_primary_endpoint() {
-        let cached = cached(&[
-            &format!("sshws-{JOB}.us-east-1.user-gw.treadmill.dev"),
-            &format!("sshws-{JOB}.eu-central-1.user-gw.treadmill.dev"),
-        ]);
-        let domains = domains(&["job.treadmill.dev", "user-gw.treadmill.dev"]);
-        let endpoint = select_endpoint(&cached, Some("job.treadmill.dev"), &domains).unwrap();
-        assert_eq!(endpoint.hostname, cached.endpoints[0].hostname);
-    }
-
-    #[test]
-    fn a_gateway_under_a_configured_domain_is_pinned() {
-        let cached = cached(&[
-            &format!("sshws-{JOB}.us-east-1.user-gw.treadmill.dev"),
-            &format!("sshws-{JOB}.eu-central-1.user-gw.treadmill.dev"),
-        ]);
-        let domains = domains(&["job.treadmill.dev", "user-gw.treadmill.dev"]);
-        let endpoint = select_endpoint(
-            &cached,
-            Some("eu-central-1.user-gw.treadmill.dev"),
-            &domains,
-        )
-        .unwrap();
-        assert_eq!(endpoint.hostname, cached.endpoints[1].hostname);
-    }
-
-    #[test]
-    fn a_gateway_that_is_itself_a_configured_domain_is_pinned() {
-        let cached = cached(&[
-            &format!("sshws-{JOB}.gw-us-east-1.example.com"),
-            &format!("sshws-{JOB}.gw-eu-central-1.example.com"),
-        ]);
-        let domains = domains(&["gw-us-east-1.example.com", "gw-eu-central-1.example.com"]);
-        let endpoint =
-            select_endpoint(&cached, Some("gw-eu-central-1.example.com"), &domains).unwrap();
-        assert_eq!(endpoint.hostname, cached.endpoints[1].hostname);
-    }
-
-    #[test]
-    fn an_unpublished_domain_is_refused() {
-        let cached = cached(&[&format!("sshws-{JOB}.us-east-1.user-gw.treadmill.dev")]);
-        let domains = domains(&["job.treadmill.dev", "user-gw.treadmill.dev"]);
-        let error = select_endpoint(&cached, Some("nosuch.user-gw.treadmill.dev"), &domains)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("us-east-1.user-gw.treadmill.dev"), "{error}");
-    }
-
-    #[test]
-    fn no_requested_domain_takes_the_primary_endpoint() {
-        let cached = cached(&[&format!("sshws-{JOB}.us-east-1.user-gw.treadmill.dev")]);
-        let endpoint = select_endpoint(&cached, None, &[]).unwrap();
-        assert_eq!(endpoint.hostname, cached.endpoints[0].hostname);
     }
 }

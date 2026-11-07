@@ -1,10 +1,9 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::str::FromStr;
+pub use treadmill_client::job::JobRef;
 #[cfg(feature = "user")]
 use treadmill_rs::api::switchboard::jobs::LeaseSpec;
-use uuid::Uuid;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -601,78 +600,11 @@ fn parse_param(s: &str) -> Result<(String, String), String> {
         .ok_or_else(|| format!("{s:?} is not of the form KEY=VALUE"))
 }
 
-/// A job ID argument: a full UUID, or `^<hex>`, a suffix of one.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum JobRef {
-    Id(Uuid),
-    Short(String),
-}
-
-impl JobRef {
-    #[cfg(feature = "daemon")]
-    pub fn matches(&self, id: Uuid) -> bool {
-        match self {
-            Self::Id(own) => *own == id,
-            Self::Short(suffix) => id.simple().to_string().ends_with(suffix.as_str()),
-        }
-    }
-}
-
-impl FromStr for JobRef {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, String> {
-        let Some(hex) = s.strip_prefix('^') else {
-            return Uuid::parse_str(s)
-                .map(Self::Id)
-                .map_err(|e| format!("not a UUID or ^<hex> suffix: {e}"));
-        };
-        if hex.is_empty() || hex.len() > 32 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err("expected ^ followed by 1 to 32 hex digits".to_string());
-        }
-        // ^ with all 32 digits is a full UUID.
-        Ok(Uuid::parse_str(hex).map_or_else(|_| Self::Short(hex.to_ascii_lowercase()), Self::Id))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     #[cfg(feature = "user")]
     use chrono::TimeDelta;
-
-    const JOB: &str = "0192f3a4-5b6c-7d8e-9fa0-b1c2d3e4f5a6";
-
-    #[test]
-    fn a_job_ref_is_a_uuid_or_a_suffix() {
-        let id = Uuid::parse_str(JOB).unwrap();
-        assert_eq!(JOB.parse(), Ok(JobRef::Id(id)));
-        assert_eq!(format!("^{}", id.simple()).parse(), Ok(JobRef::Id(id)));
-        assert_eq!("^D3E4f5a6".parse(), Ok(JobRef::Short("d3e4f5a6".into())));
-    }
-
-    #[test]
-    fn a_malformed_job_ref_is_refused() {
-        for bad in [
-            "",
-            "^",
-            "^xyz",
-            "d3e4f5a6",
-            "^-d3e4",
-            &format!("^0{}", JOB.replace('-', "")),
-        ] {
-            assert!(bad.parse::<JobRef>().is_err(), "{bad:?}");
-        }
-    }
-
-    #[cfg(feature = "daemon")]
-    #[test]
-    fn a_short_id_matches_by_suffix() {
-        let id = Uuid::parse_str(JOB).unwrap();
-        assert!(JobRef::Short("f5a6".into()).matches(id));
-        assert!(!JobRef::Short("f5a7".into()).matches(id));
-        assert!(JobRef::Id(id).matches(id));
-    }
 
     #[cfg(feature = "user")]
     #[test]

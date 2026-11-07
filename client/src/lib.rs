@@ -13,7 +13,12 @@
 pub mod config;
 pub mod diagnostics;
 pub mod error;
+pub mod job;
 pub mod locked_file;
+#[cfg(feature = "profile")]
+pub mod service;
 #[cfg(feature = "profile")]
 pub mod session;
 pub mod state;
+#[cfg(feature = "ws")]
+pub mod wsproxy;

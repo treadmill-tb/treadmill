@@ -26,14 +26,14 @@ mod sshconfig;
 mod terminate;
 #[cfg_attr(not(feature = "user"), allow(dead_code))]
 mod tui;
-#[cfg(feature = "user")]
-mod wsproxy;
 
 #[cfg(feature = "daemon")]
 use anyhow::Context as _;
 use anyhow::Result;
 use clap::Parser;
 use treadmill_client::error::{Cancelled, Hinted};
+#[cfg(feature = "user")]
+use treadmill_client::wsproxy;
 use treadmill_rs::api::switchboard::client::SwitchboardClient;
 use uuid::Uuid;
 
@@ -288,12 +288,12 @@ async fn user_job(ctx: &mut Ctx, command: &UserJobCommand) -> Result<()> {
                     loop {
                         let (stream, _) = listener.accept().await?;
                         let (infd, outfd) = stream.into_split();
-                        wsproxy::run(ctx, job_id, infd, outfd, service, None).await?;
+                        wsproxy::run(&mut ctx.session, job_id, infd, outfd, service, None).await?;
                     }
                 }
                 None => {
                     let (infd, outfd) = (tokio::io::stdin(), tokio::io::stdout());
-                    wsproxy::run(ctx, job_id, infd, outfd, service, None).await
+                    wsproxy::run(&mut ctx.session, job_id, infd, outfd, service, None).await
                 }
             }
         }
