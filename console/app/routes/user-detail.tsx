@@ -1,3 +1,5 @@
+import { Bot } from "lucide-react";
+
 import { $api } from "../api/client";
 import { AuditLog } from "../components/audit-log";
 import { RequestError } from "../components/request-error";
@@ -18,7 +20,15 @@ export default function UserDetail({ params }: Route.ComponentProps) {
             {user.data.avatar_url != null && (
               <img className="avatar" src={user.data.avatar_url} alt="" />
             )}{" "}
-            {user.data.name}
+            {user.data.name}{" "}
+            {user.data.bot && (
+              <span
+                className="badge"
+                title="A non-human account, e.g. CI automation"
+              >
+                <Bot size={14} aria-hidden="true" /> bot
+              </span>
+            )}
           </h1>
           <dl className="props">
             <dt>Id</dt>

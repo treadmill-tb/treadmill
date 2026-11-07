@@ -29,6 +29,9 @@ pub struct PublicUserProfile {
     pub avatar_url: Option<String>,
     /// The linked GitHub account, if any.
     pub github: Option<LinkedGitHub>,
+    /// Whether this is a bot user: a non-human account (e.g. CI automation)
+    /// created by an admin, which cannot log in interactively.
+    pub bot: bool,
 }
 
 /// One email address on file for a user.
@@ -99,7 +102,8 @@ pub struct TokenRevocation {
 pub struct SessionInfo {
     pub token_id: Uuid,
     pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
+    /// When the token expires; null for a non-expiring bot token.
+    pub expires_at: Option<DateTime<Utc>>,
     /// The user agent that requested the token, if recorded.
     pub user_agent: Option<String>,
     /// An optional human-supplied label for the token.
@@ -110,4 +114,41 @@ pub struct SessionInfo {
     pub revoked: Option<TokenRevocation>,
     /// True for the token used to authenticate the current request.
     pub current: bool,
+}
+
+/// `POST /users`: create a user. Global admins only, and only bot users: human
+/// accounts are provisioned by interactive login.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateUserRequest {
+    /// The display name, under the same rules as a profile update.
+    pub name: String,
+    /// Must be `true`: create a bot user (a non-human account, e.g. CI
+    /// automation), which never logs in and authenticates with tokens minted
+    /// through `POST /users/{id}/tokens`.
+    pub bot: bool,
+}
+
+/// `POST /users/{id}/tokens`: mint an API token for a bot user. Global admins
+/// only.
+#[derive(schemars::JsonSchema, Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IssueTokenRequest {
+    /// When the token expires. Omitted or null mints a non-expiring token,
+    /// which stays valid until revoked.
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+    /// An optional label for the token, e.g. where it is deployed.
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+
+/// A freshly minted API token. The secret is returned exactly once.
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
+pub struct IssuedToken {
+    pub token_id: Uuid,
+    /// The bearer token secret.
+    pub token: crate::api::switchboard::AuthToken,
+    /// When the token expires; null if it never does.
+    pub expires_at: Option<DateTime<Utc>>,
 }

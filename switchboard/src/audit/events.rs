@@ -14,6 +14,10 @@ use uuid::Uuid;
 use crate::audit::model::{Host, ImageSet, Job, Subject};
 use crate::define_event;
 
+/// `define_event!` takes at most one level of generics in a field type, so a
+/// nested `Option<DateTime<Utc>>` is spelled `Option<Timestamp>`.
+type Timestamp = DateTime<Utc>;
+
 define_event! {
     /// A user completed an interactive OAuth login and was issued a session
     /// token. Emitted once per successful callback, after provisioning.
@@ -284,6 +288,32 @@ define_event! {
     }
     event_type = "session_token_issued";
     render = "session token {token_id} issued";
+}
+
+define_event! {
+    /// A global admin created a bot user: a non-human account that cannot log
+    /// in interactively and authenticates with admin-minted tokens.
+    BotCreated v1 {
+        actor: Subject,
+        user: Subject @ view(SelfAccess),
+        name: String,
+    }
+    event_type = "bot_created";
+    render = "created bot user {name}";
+}
+
+define_event! {
+    /// A global admin minted an API token for a bot user. `expires_at` is
+    /// absent for a non-expiring token.
+    BotTokenIssued v1 {
+        actor: Subject,
+        user: Subject @ view(SelfAccess),
+        token_id: Uuid,
+        expires_at: Option<Timestamp>,
+        comment: Option<String>,
+    }
+    event_type = "bot_token_issued";
+    render = "bot token {token_id} issued";
 }
 
 define_event! {

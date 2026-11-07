@@ -572,7 +572,27 @@ export interface paths {
         patch: operations["updateCurrentUser"];
         trace?: never;
     };
-    "/users/me/tokens": {
+    "/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a bot user
+         * @description Only bot users can be created this way (`bot: true`); human accounts are provisioned by interactive login.
+         */
+        post: operations["createUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/{id}/tokens": {
         parameters: {
             query?: never;
             header?: never;
@@ -580,19 +600,23 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List the current user's tokens
-         * @description Returns the complete set in a stable order; this route is not paginated.
+         * List a user's tokens
+         * @description The user themself (`/users/me/tokens`) or a global admin may list a user's sessions and API tokens. Not paginated.
          */
-        get: operations["listCurrentUserTokens"];
+        get: operations["listUserTokens"];
         put?: never;
-        post?: never;
+        /**
+         * Mint an API token for a bot user
+         * @description Only for bot users, and only by a global admin. The token secret is returned only in this response. Omitting `expires_at` mints a token that never expires; it stays valid until revoked.
+         */
+        post: operations["issueUserToken"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/users/me/tokens/{token_id}": {
+    "/users/{id}/tokens/{token_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -602,8 +626,8 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Revoke one of the current user's tokens */
-        delete: operations["revokeCurrentUserToken"];
+        /** Revoke a user's token */
+        delete: operations["revokeUserToken"];
         options?: never;
         head?: never;
         patch?: never;
@@ -983,6 +1007,20 @@ export interface components {
             canonical_name: string | null;
             /** @description The human-readable name the set is shown by. Not unique. */
             display_name: string;
+        };
+        /**
+         * @description `POST /users`: create a user. Global admins only, and only bot users: human
+         *     accounts are provisioned by interactive login.
+         */
+        CreateUserRequest: {
+            /**
+             * @description Must be `true`: create a bot user (a non-human account, e.g. CI
+             *     automation), which never logs in and authenticates with tokens minted
+             *     through `POST /users/{id}/tokens`.
+             */
+            bot: boolean;
+            /** @description The display name, under the same rules as a profile update. */
+            name: string;
         };
         /**
          * @description A content-addressable OCI digest over 32 bytes of SHA-256.
@@ -1577,6 +1615,36 @@ export interface components {
          *     that grants the well-known `everyone` subject `use`.
          */
         ImageSourcePermission: "use" | "manage";
+        /**
+         * @description `POST /users/{id}/tokens`: mint an API token for a bot user. Global admins
+         *     only.
+         */
+        IssueTokenRequest: {
+            /**
+             * @description An optional label for the token, e.g. where it is deployed.
+             * @default null
+             */
+            comment: string | null;
+            /**
+             * Format: date-time
+             * @description When the token expires. Omitted or null mints a non-expiring token,
+             *     which stays valid until revoked.
+             * @default null
+             */
+            expires_at: string | null;
+        };
+        /** @description A freshly minted API token. The secret is returned exactly once. */
+        IssuedToken: {
+            /**
+             * Format: date-time
+             * @description When the token expires; null if it never does.
+             */
+            expires_at?: string | null;
+            /** @description The bearer token secret. */
+            token: components["schemas"]["AuthToken"];
+            /** Format: uuid */
+            token_id: string;
+        };
         /** @description Defaults applied to a new job (`GET /jobs/defaults`). */
         JobDefaults: {
             /**
@@ -2375,6 +2443,11 @@ export interface components {
          */
         PublicUserProfile: {
             avatar_url?: string | null;
+            /**
+             * @description Whether this is a bot user: a non-human account (e.g. CI automation)
+             *     created by an admin, which cannot log in interactively.
+             */
+            bot: boolean;
             /** @description The linked GitHub account, if any. */
             github?: components["schemas"]["LinkedGitHub"] | null;
             /** @description The user's display name: freely chosen, not unique. */
@@ -2461,6 +2534,11 @@ export interface components {
          */
         SelfUserProfile: {
             avatar_url?: string | null;
+            /**
+             * @description Whether this is a bot user: a non-human account (e.g. CI automation)
+             *     created by an admin, which cannot log in interactively.
+             */
+            bot: boolean;
             /** @description All email addresses on file for the account, one entry per address. */
             emails: components["schemas"]["UserEmail"][];
             /** @description The linked GitHub account, if any. */
@@ -2487,8 +2565,11 @@ export interface components {
             created_ip?: string | null;
             /** @description True for the token used to authenticate the current request. */
             current: boolean;
-            /** Format: date-time */
-            expires_at: string;
+            /**
+             * Format: date-time
+             * @description When the token expires; null for a non-expiring bot token.
+             */
+            expires_at?: string | null;
             /** @description Set if the token has been revoked. */
             revoked?: components["schemas"]["TokenRevocation"] | null;
             /** Format: uuid */
@@ -2541,6 +2622,11 @@ export interface components {
         SubjectKind: "user" | "group" | "system" | "job";
         /** @description A reference to a subject, with what is needed to display it. */
         SubjectRef: {
+            /**
+             * @description Whether the subject is a bot user (a non-human account, e.g. CI
+             *     automation). Always false for non-user subjects.
+             */
+            bot: boolean;
             /** Format: uuid */
             id: string;
             kind: components["schemas"]["SubjectKind"];
@@ -2565,14 +2651,6 @@ export interface components {
          *     (the success/failure of the user's workload) and to any `exit_message`.
          */
         TerminationReason: "workload_exited" | "workload_self_terminated" | "user_terminated" | "preempted" | "queue_timeout" | "execution_timeout" | "image_error" | "host_match_error" | "host_start_failure" | "host_dropped_job" | "host_unreachable" | "resume_failed" | "internal_error";
-        /** @description The `{token_id}` segment of a token route. */
-        TokenIdPath: {
-            /**
-             * Format: uuid
-             * @description The token's unique identifier.
-             */
-            token_id: string;
-        };
         /** @description When and why a token was revoked. */
         TokenRevocation: {
             reason: string;
@@ -2652,10 +2730,27 @@ export interface components {
             /** @description Whether the provider has verified the address belongs to the user. */
             verified: boolean;
         };
+        /** @description A single `{id}` user segment, accepting `me`. */
+        UserPath: {
+            /** @description The user's unique identifier, or `me` for the caller. */
+            id: string;
+        };
+        /** @description The `{id}/tokens/{token_id}` segments of a user-token route. */
+        UserTokenPath: {
+            /** @description The user's unique identifier, or `me` for the caller. */
+            id: string;
+            /**
+             * Format: uuid
+             * @description The token's unique identifier.
+             */
+            token_id: string;
+        };
         /** @description Response body for `/auth/whoami`: the identity of the authenticated subject. */
         WhoAmIResponse: {
             /** @description Whether the subject is a global admin. */
             admin: boolean;
+            /** @description Whether the subject is a bot user. */
+            bot: boolean;
             /** @description The user's display name: freely chosen, not unique. */
             name: string;
             /** Format: uuid */
@@ -4512,11 +4607,79 @@ export interface operations {
             };
         };
     };
-    listCurrentUserTokens: {
+    createUser: {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description `POST /users`: create a user. Global admins only, and only bot users: human
+         *     accounts are provisioned by interactive login.
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateUserRequest"];
+            };
+        };
+        responses: {
+            /** @description The bot user was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicUserProfile"];
+                };
+            };
+            /** @description Invalid name. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller is not a global admin. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description `bot` was false: only bot users can be created. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listUserTokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The user's unique identifier, or `me` for the caller. */
+                id: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4543,13 +4706,97 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description No such user, or the caller may not see their tokens. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
-    revokeCurrentUserToken: {
+    issueUserToken: {
         parameters: {
             query?: never;
             header?: never;
             path: {
+                /** @description The user's unique identifier, or `me` for the caller. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * @description `POST /users/{id}/tokens`: mint an API token for a bot user. Global admins
+         *     only.
+         */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IssueTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description The token was minted. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuedToken"];
+                };
+            };
+            /** @description `expires_at` is not in the future, or the comment is invalid. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication failed: the bearer token is missing, malformed, expired, or revoked. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller is not a global admin. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such user. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expected request with `Content-Type: application/json` */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The user is not a bot; their tokens come from login. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revokeUserToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The user's unique identifier, or `me` for the caller. */
+                id: string;
                 /** @description The token's unique identifier. */
                 token_id: string;
             };
@@ -4578,7 +4825,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No such token belonging to the caller. */
+            /** @description No such token belonging to the user, or the caller may not manage their tokens. */
             404: {
                 headers: {
                     [name: string]: unknown;

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT t.token_id, t.subject_id as user_id, t.revoked as \"revoked: _\",\n                  t.expires_at as \"expires_at!\", u.locked\n            FROM tml_switchboard.api_tokens t\n            JOIN tml_switchboard.users u ON u.subject_id = t.subject_id\n            WHERE t.token = $1\n            LIMIT 1;",
+  "query": "SELECT t.token_id, t.subject_id as user_id, t.revoked as \"revoked: _\",\n                  t.expires_at, u.locked\n            FROM tml_switchboard.api_tokens t\n            JOIN tml_switchboard.users u ON u.subject_id = t.subject_id\n            WHERE t.token_id = $1\n            LIMIT 1;",
   "describe": {
     "columns": [
       {
@@ -54,7 +54,7 @@
       },
       {
         "ordinal": 3,
-        "name": "expires_at!",
+        "name": "expires_at",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -77,7 +77,7 @@
     ],
     "parameters": {
       "Left": [
-        "Bytea"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -88,5 +88,5 @@
       false
     ]
   },
-  "hash": "53982eaf94938b78f7401c360564530dfe66c169c37a4ef9bc47517a3515b982"
+  "hash": "36690e904e1d6e8e212919b31879893b1b47563a8429524e990927632dc43690"
 }

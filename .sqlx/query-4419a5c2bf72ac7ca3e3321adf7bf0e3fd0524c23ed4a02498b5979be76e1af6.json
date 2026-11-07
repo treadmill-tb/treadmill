@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select name, avatar_url, locked from tml_switchboard.users where subject_id = $1;",
+  "query": "select name, avatar_url, locked, bot from tml_switchboard.users where subject_id = $1;",
   "describe": {
     "columns": [
       {
@@ -35,6 +35,17 @@
             "name": "locked"
           }
         }
+      },
+      {
+        "ordinal": 3,
+        "name": "bot",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tml_switchboard.users",
+            "name": "bot"
+          }
+        }
       }
     ],
     "parameters": {
@@ -45,8 +56,9 @@
     "nullable": [
       false,
       true,
+      false,
       false
     ]
   },
-  "hash": "439154e9759d98cc1e2b0e9ba34e0307fc1008c4f1458acc8e0192b994569051"
+  "hash": "4419a5c2bf72ac7ca3e3321adf7bf0e3fd0524c23ed4a02498b5979be76e1af6"
 }

@@ -35,11 +35,12 @@ async fn user_subject(state: &AppState, token: SecurityToken) -> Result<Option<S
             return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
         }
     };
-    if token_info.expires_at < Utc::now() {
+    if let Some(expires_at) = token_info.expires_at
+        && expires_at < Utc::now()
+    {
         tracing::debug!(
-            "failed to derive subject: token ({}) expired at {}",
+            "failed to derive subject: token ({}) expired at {expires_at}",
             token_info.token_id,
-            token_info.expires_at
         );
         return Err(StatusCode::UNAUTHORIZED.into_response());
     }

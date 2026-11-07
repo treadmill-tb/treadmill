@@ -191,7 +191,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "job_id": JOB,
             "label": "bringup",
-            "owner": { "id": Uuid::nil(), "kind": "user", "name": "ada" },
+            "owner": { "id": Uuid::nil(), "kind": "user", "name": "ada", "bot": false },
             "revision": 4,
             "annotations": { "ci.run": "17" },
             "state": "ready",
@@ -226,7 +226,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "job_id": JOB,
             "label": "bringup",
-            "owner": { "id": Uuid::nil(), "kind": "user", "name": "ada" },
+            "owner": { "id": Uuid::nil(), "kind": "user", "name": "ada", "bot": false },
             "revision": 4,
             "annotations": {},
             "state": "ready",
@@ -376,6 +376,7 @@ mod tests {
             user_id: Uuid::nil(),
             name: "ada".to_string(),
             admin: false,
+            bot: false,
         };
         let host = host_info();
         let results = [
