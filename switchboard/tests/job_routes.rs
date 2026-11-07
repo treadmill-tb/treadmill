@@ -3061,6 +3061,88 @@ async fn a_job_cannot_terminate_another_job(pool: PgPool) {
 
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_reads_itself(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
+
+    let resp = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(job_token(&pool, job_id).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let etag = resp.headers().get(reqwest::header::ETAG).cloned();
+    let info: JobInfo = resp.json().await.unwrap();
+    assert_eq!(info.job_id, job_id);
+    assert_eq!(info.permissions, [JobPermission::Read, JobPermission::Stop]);
+    assert_eq!(
+        etag.as_ref().and_then(|v| v.to_str().ok()),
+        Some(format!("\"{}\"", info.revision).as_str()),
+    );
+    assert_eq!(
+        info.revision,
+        get_job(&client, addr, &user_token, job_id).await.revision
+    );
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_cannot_read_another_job(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
+    let other_job_id = enqueue_with_secret(&pool, &client, addr, &user_token).await;
+    let token = job_token(&pool, job_id).await;
+
+    for path in ["", "/watch"] {
+        let resp = client
+            .get(format!("http://{addr}/api/v1/jobs/{other_job_id}{path}"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN, "{path}");
+    }
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_finalized_job_cannot_read_itself(pool: PgPool) {
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (_, job_id) = running_job(&pool, &client, addr).await;
+    mark_finalized(&pool, job_id).await;
+
+    let resp = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}"))
+        .bearer_auth(job_token(&pool, job_id).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_watches_itself(pool: PgPool) {
+    let addr = spawn_server(watch_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (_, job_id) = running_job(&pool, &client, addr).await;
+
+    let mut resp = client
+        .get(format!("http://{addr}/api/v1/jobs/{job_id}/watch"))
+        .bearer_auth(job_token(&pool, job_id).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    next_change(&mut resp).await;
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn a_job_reports_its_exit_status(pool: PgPool) {
     let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
     let client = no_redirect_client();

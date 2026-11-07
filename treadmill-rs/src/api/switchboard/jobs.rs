@@ -14,7 +14,8 @@ use crate::util::Secret;
 use crate::util::chrono::duration_string;
 
 /// A permission on a job. `permissions` on [`JobInfo`] reports which of these
-/// the viewer holds (an owner or global admin holds all of them).
+/// the viewer holds (an owner or global admin holds all of them; the job's own
+/// token holds `read` and `stop`).
 #[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobPermission {
