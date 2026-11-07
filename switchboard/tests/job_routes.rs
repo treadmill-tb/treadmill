@@ -3141,6 +3141,81 @@ async fn a_job_watches_itself(pool: PgPool) {
     next_change(&mut resp).await;
 }
 
+/// Insert a host with no spec, owned by `owner`.
+async fn insert_owned_host(pool: &PgPool, owner: Option<Uuid>) -> Uuid {
+    let host_id = Uuid::new_v4();
+    sqlx::query(
+        "insert into tml_switchboard.hosts (host_id, name, auth_token, owner_id) \
+         values ($1, $2, $3, $4)",
+    )
+    .bind(host_id)
+    .bind(format!("host-{host_id}"))
+    .bind([host_id.as_bytes().as_slice(), host_id.as_bytes()].concat())
+    .bind(owner)
+    .execute(pool)
+    .await
+    .unwrap();
+    host_id
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
+async fn a_job_lists_public_hosts_and_its_own(pool: PgPool) {
+    const EVERYONE: Uuid = Uuid::from_u128(4);
+    let addr = spawn_server(streaming_enabled_state(pool.clone())).await;
+    let client = no_redirect_client();
+    let (user_token, job_id) = running_job(&pool, &client, addr).await;
+    let bob = whoami(&client, addr, &user_token).await;
+    let own_host: Uuid = sqlx::query_scalar(
+        "select dispatched_on_host_id from tml_switchboard.jobs where job_id = $1",
+    )
+    .bind(job_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // The job's owner's private host stays hidden from the job; a public one
+    // does not.
+    let owners_host = insert_owned_host(&pool, Some(bob)).await;
+    let public_host = insert_owned_host(&pool, None).await;
+    sqlx::query(
+        "insert into tml_switchboard.host_grants (host_id, subject_id, permission) \
+         values ($1, $2, 'read')",
+    )
+    .bind(public_host)
+    .bind(EVERYONE)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let listed = |token: String| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .get(format!("http://{addr}/api/v1/hosts"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::OK);
+            let mut ids: Vec<Uuid> = resp
+                .json::<Vec<HostListEntry>>()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|h| h.host_id)
+                .collect();
+            ids.sort();
+            ids
+        }
+    };
+
+    let mut expected = vec![own_host, public_host];
+    expected.sort();
+    assert_eq!(listed(job_token(&pool, job_id).await).await, expected);
+    assert!(listed(user_token).await.contains(&owners_host));
+}
+
 #[sqlx::test]
 #[ignore = "needs Postgres; run via `cargo nextest run --run-ignored only`"]
 async fn a_job_reports_its_exit_status(pool: PgPool) {

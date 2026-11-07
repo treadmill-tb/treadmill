@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "with principals (id) as (\n               select id from tml_switchboard.principals($1::uuid)\n           )\n           select h.host_id, h.name, h.owner_id, h.maintenance, h.last_seen_at,\n                  h.current_job is not null as \"busy!\",\n                  coalesce(j.job_state <> 'finalized'\n                           and j.lease_expiry_action = 'preempt'\n                           and j.terminate_requested_at is null\n                           and j.started_at + j.lease_duration <= now(), false) as \"reclaimable!\",\n                  (j.started_at + j.lease_duration) as \"current_lease_expires_at?\",\n                  j.lease_expiry_action as \"current_lease_expiry_action?: super::job::SqlLeaseExpiryAction\"\n           from tml_switchboard.hosts h\n           left join tml_switchboard.jobs j on j.job_id = h.current_job\n           where exists (select 1 from principals where id = $2::uuid)\n              or exists (select 1 from principals p where p.id = h.owner_id)\n              or exists (\n                     select 1\n                     from tml_switchboard.host_grants g\n                     join principals p on g.subject_id = p.id\n                     where g.host_id = h.host_id and g.permission = 'read'\n                 )\n           order by h.name, h.host_id",
+  "query": "with principals (id) as (\n               select id from tml_switchboard.principals($1::uuid)\n           )\n           select h.host_id, h.name, h.owner_id, h.maintenance, h.last_seen_at,\n                  h.current_job is not null as \"busy!\",\n                  coalesce(j.job_state <> 'finalized'\n                           and j.lease_expiry_action = 'preempt'\n                           and j.terminate_requested_at is null\n                           and j.started_at + j.lease_duration <= now(), false) as \"reclaimable!\",\n                  (j.started_at + j.lease_duration) as \"current_lease_expires_at?\",\n                  j.lease_expiry_action as \"current_lease_expiry_action?: super::job::SqlLeaseExpiryAction\"\n           from tml_switchboard.hosts h\n           left join tml_switchboard.jobs j on j.job_id = h.current_job\n           where exists (select 1 from principals where id = $2::uuid)\n              or exists (select 1 from principals p where p.id = h.owner_id)\n              or exists (\n                     select 1\n                     from tml_switchboard.host_grants g\n                     join principals p on g.subject_id = p.id\n                     where g.host_id = h.host_id and g.permission = 'read'\n                 )\n              or h.host_id = $3\n           order by h.name, h.host_id",
   "describe": {
     "columns": [
       {
@@ -101,6 +101,7 @@
     "parameters": {
       "Left": [
         "Uuid",
+        "Uuid",
         "Uuid"
       ]
     },
@@ -116,5 +117,5 @@
       false
     ]
   },
-  "hash": "19456de90a5df7f6060ab5957d440f56f4c77ef981c8de2f24f3f01b1375cd4e"
+  "hash": "620a73a4e882c339f2115cf73c07560618618709d86e9a4f4b33a5032e9884e6"
 }
