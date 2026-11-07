@@ -51,10 +51,6 @@ impl Ctx {
         self.session.client()
     }
 
-    pub fn anonymous_client(&self) -> Result<SwitchboardClient> {
-        self.session.anonymous_client()
-    }
-
     /// As [`Session::authenticated_client`], with the remedy `tml` offers for
     /// having no usable session.
     pub fn authenticated_client(&self) -> Result<SwitchboardClient> {

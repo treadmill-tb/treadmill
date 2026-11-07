@@ -1,8 +1,6 @@
 use anyhow::{Context as _, Result, bail};
-use treadmill_rs::api::switchboard::client::LoginCompleteOutcome;
-use treadmill_rs::api::switchboard::{
-    AuthProvidersResponse, LoginCompleteRequest, LoginStagedResponse, WhoAmIResponse,
-};
+use treadmill_client::login::{self, LoginFlow, LoginStep};
+use treadmill_rs::api::switchboard::{AuthProvidersResponse, WhoAmIResponse};
 use treadmill_rs::util::Secret;
 
 use crate::cli::LoginArgs;
@@ -13,16 +11,12 @@ use crate::tui::{self, DIM, Item, OK, Terminal, plain, span};
 use treadmill_client::error::{cancelled, hinted};
 
 pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
-    let client = ctx.anonymous_client()?;
-    let providers = client
-        .auth_providers()
-        .await
-        .context("listing the switchboard's login providers")?;
-
+    let mut flow = LoginFlow::begin(&ctx.session)?;
+    let providers = flow.providers().await?;
     let login_path = select_login(ctx, &providers, args).await?;
-    let url = client.login_url(&login_path);
+    let url = flow.login_url(&login_path);
 
-    if open_browser(&url) {
+    if login::open_browser(&url) {
         anstream::eprintln!(
             "\n  Opening the login page in your browser. If this does not work, open the \
              following link:\n  {url}\n"
@@ -31,36 +25,10 @@ pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
         anstream::eprintln!("\n  To log in, open the following link:\n  {url}\n");
     }
 
-    let mut staged = LoginStagedResponse {
-        required: Vec::new(),
-        login_code: read_login_code().await?,
-        tos_version: None,
-    };
-
+    let mut step = flow.submit(read_login_code().await?).await?;
     loop {
-        let mut request = LoginCompleteRequest {
-            login_code: staged.login_code.clone(),
-            tos_version: staged.tos_version,
-        };
-
-        if staged.required.iter().any(|step| step == "tos") {
-            accept_tos(&client, &mut request).await?;
-        } else if let Some(step) = staged.required.first() {
-            return Err(hinted(
-                anyhow::anyhow!(
-                    "the switchboard requires the login step {step:?}, which this version of \
-                     tml does not support"
-                ),
-                "Log in through the web console instead.",
-            ));
-        }
-
-        match client
-            .login_complete(&request)
-            .await
-            .context("completing the staged login")?
-        {
-            LoginCompleteOutcome::Complete(response) => {
+        match step {
+            LoginStep::Complete(response) => {
                 ctx.session.store_session(&response)?;
 
                 let identity = ctx.client()?.whoami().await?;
@@ -78,7 +46,19 @@ pub async fn login(ctx: &mut Ctx, args: &LoginArgs) -> Result<()> {
                 ctx.result(identity_event(ctx, &identity));
                 return Ok(());
             }
-            LoginCompleteOutcome::Staged(fresh) => staged = fresh,
+            LoginStep::NeedsTos { version, text } => {
+                accept_tos(version, &text).await?;
+                step = flow.accept_tos(version).await?;
+            }
+            LoginStep::Unsupported(required) => {
+                return Err(hinted(
+                    anyhow::anyhow!(
+                        "the switchboard requires the login step {required:?}, which this \
+                         version of tml does not support"
+                    ),
+                    "Log in through the web console instead.",
+                ));
+            }
         }
     }
 }
@@ -164,10 +144,7 @@ async fn select_login(
     args: &LoginArgs,
 ) -> Result<String> {
     if let Some(key) = &args.identity {
-        let identity = providers
-            .mock_identities
-            .iter()
-            .find(|id| &id.key == key)
+        let identity = login::find_mock_identity(providers, key)
             .with_context(|| format!("no mock identity {key:?} on this switchboard"))?;
         ctx.warn(&format!(
             "{} is a mock identity, for development only",
@@ -177,10 +154,7 @@ async fn select_login(
     }
 
     if let Some(name) = &args.provider {
-        let provider = providers
-            .oauth
-            .iter()
-            .find(|p| &p.name == name)
+        let provider = login::find_provider(providers, name)
             .with_context(|| format!("no login provider {name:?} on this switchboard"))?;
         return Ok(provider.login_path.clone());
     }
@@ -255,15 +229,9 @@ async fn read_login_code() -> Result<Secret<String>> {
     Ok(Secret::new(raw.trim().to_string()))
 }
 
-async fn accept_tos(
-    client: &treadmill_rs::api::switchboard::client::SwitchboardClient,
-    request: &mut LoginCompleteRequest,
-) -> Result<()> {
-    let tos = client
-        .tos_info()
-        .await
-        .context("fetching the Terms of Service")?;
-
+/// Present the Terms of Service and ask for them. The text and version come
+/// from the flow, which fetched them.
+async fn accept_tos(version: i32, text: &str) -> Result<()> {
     if !tui::interactive() {
         return Err(hinted(
             anyhow::anyhow!("accepting the Terms of Service requires a terminal"),
@@ -273,41 +241,14 @@ async fn accept_tos(
 
     let bold = anstyle::Style::new().bold();
     let dim = anstyle::Style::new().dimmed();
-    anstream::eprintln!(
-        "\n  {bold}Terms of Service{bold:#} {dim}· version {}{dim:#}\n",
-        tos.version
-    );
-    for line in tos.text.lines() {
+    anstream::eprintln!("\n  {bold}Terms of Service{bold:#} {dim}· version {version}{dim:#}\n");
+    for line in text.lines() {
         anstream::eprintln!("  {line}");
     }
     anstream::eprintln!();
 
-    if !tui::ask(&format!("Accept Terms of Service version {}?", tos.version)).await? {
+    if !tui::ask(&format!("Accept Terms of Service version {version}?")).await? {
         return Err(cancelled("Terms of Service not accepted, not logged in"));
     }
-
-    request.tos_version = Some(tos.version);
     Ok(())
-}
-
-/// Best-effort: the URL is printed regardless, and the paste flow needs the
-/// page open anyway. Whether a browser could be started.
-fn open_browser(url: &str) -> bool {
-    let opener = std::env::var("BROWSER").ok();
-    let candidates: Vec<&str> = match &opener {
-        Some(browser) => vec![browser.as_str()],
-        None => vec!["xdg-open", "open"],
-    };
-
-    for candidate in candidates {
-        let spawned = std::process::Command::new(candidate)
-            .arg(url)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        if spawned.is_ok() {
-            return true;
-        }
-    }
-    false
 }

@@ -16,6 +16,8 @@ pub mod error;
 pub mod job;
 pub mod locked_file;
 #[cfg(feature = "profile")]
+pub mod login;
+#[cfg(feature = "profile")]
 pub mod service;
 #[cfg(feature = "profile")]
 pub mod session;
