@@ -1,4 +1,4 @@
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use std::ffi::OsString;
 use std::io::Write;
 use std::os::unix::process::CommandExt;
@@ -8,21 +8,15 @@ use uuid::Uuid;
 
 use crate::cli::SshJob;
 use crate::ctx::Ctx;
-use crate::display::{SSHWS_PROTOCOL, short};
-use treadmill_client::state::CachedJobServiceToken;
-use treadmill_client::{service, wsproxy};
+use crate::display::short;
+use treadmill_client::error::hinted;
+use treadmill_client::ssh::{self, Connection, parse_destination, quote};
+use treadmill_client::wsproxy;
 
 pub const PROGRAM: &str = "tml";
-/// Everything needed to launch a client against one job service.
-struct Connection {
-    destination: String,
-    proxy_command: String,
-    ssh_opts: Vec<String>,
-}
-
 pub async fn ssh(ctx: &mut Ctx, job_id: Uuid, target: &SshJob, args: &[String]) -> Result<()> {
     let connection = connect(ctx, job_id, target).await?;
-    let mut argv = connection.ssh_options();
+    let mut argv = connection.options();
     argv.push(connection.destination.clone());
     argv.extend(args.iter().cloned());
     exec(ctx, "ssh", &argv)
@@ -32,7 +26,7 @@ pub async fn proxy(ctx: &mut Ctx, host: &str) -> Result<()> {
     let (service, job_id, domain) = parse_destination(host)?;
     let service = match service {
         Some(service) => service.to_string(),
-        None => discover_service(&ctx.authenticated_client()?, job_id).await?,
+        None => ssh::discover_service(&ctx.authenticated_client()?, job_id).await?,
     };
     ctx.detail(&format!(
         "{host} is job {} service {service} at {domain}",
@@ -49,23 +43,6 @@ pub async fn proxy(ctx: &mut Ctx, host: &str) -> Result<()> {
     .await
 }
 
-fn parse_destination(host: &str) -> Result<(Option<&str>, Uuid, &str)> {
-    let (label, domain) = host
-        .split_once('.')
-        .with_context(|| format!("{host:?} carries no domain to resolve a job under"))?;
-
-    if let Ok(job_id) = Uuid::parse_str(label) {
-        return Ok((None, job_id, domain));
-    }
-
-    let (service, job_id) = label
-        .split_once('-')
-        .with_context(|| format!("{label:?} is neither a job UUID nor <service>-<job-uuid>"))?;
-    let job_id = Uuid::parse_str(job_id)
-        .with_context(|| format!("{job_id:?} is not the job UUID of {label:?}"))?;
-    Ok((Some(service), job_id, domain))
-}
-
 pub async fn exec_command(
     ctx: &mut Ctx,
     job_id: Uuid,
@@ -73,7 +50,7 @@ pub async fn exec_command(
     command: &[String],
 ) -> Result<()> {
     let connection = connect(ctx, job_id, target).await?;
-    let mut argv = connection.ssh_options();
+    let mut argv = connection.options();
     argv.push(connection.destination.clone());
     argv.extend(command.iter().cloned());
     exec(ctx, "ssh", &argv)
@@ -81,7 +58,7 @@ pub async fn exec_command(
 
 pub async fn sftp(ctx: &mut Ctx, job_id: Uuid, target: &SshJob, args: &[String]) -> Result<()> {
     let connection = connect(ctx, job_id, target).await?;
-    let mut argv = connection.sftp_options();
+    let mut argv = connection.options();
     argv.push(connection.destination.clone());
     argv.extend(args.iter().cloned());
     exec(ctx, "sftp", &argv)
@@ -135,7 +112,7 @@ pub async fn download(
 /// stdout and stderr attached.
 async fn batch(ctx: &mut Ctx, job_id: Uuid, target: &SshJob, line: &str) -> Result<()> {
     let connection = connect(ctx, job_id, target).await?;
-    let mut argv = connection.sftp_options();
+    let mut argv = connection.options();
     argv.push("-b".into());
     argv.push("-".into());
     argv.push(connection.destination.clone());
@@ -159,110 +136,33 @@ async fn batch(ctx: &mut Ctx, job_id: Uuid, target: &SshJob, line: &str) -> Resu
     std::process::exit(status.code().unwrap_or(1));
 }
 
-impl Connection {
-    /// SSH arguments.
-    ///
-    /// These take precedence over any user-supplied options.
-    fn ssh_options(&self) -> Vec<String> {
-        vec![
-            // Ignore the user's SSH config, it's defaults like control socket
-            // or known hosts file could mess with this subcommand.
-            "-F".into(),
-            "/dev/null".into(),
-            "-o".into(),
-            format!("ProxyCommand={}", self.proxy_command),
-            "-o".into(),
-            "BatchMode=yes".into(),
-            "-o".into(),
-            "StrictHostKeyChecking=no".into(),
-            "-o".into(),
-            "UserKnownHostsFile=/dev/null".into(),
-            "-o".into(),
-            "GlobalKnownHostsFile=/dev/null".into(),
-            "-o".into(),
-            "ControlMaster=no".into(),
-            "-o".into(),
-            "ControlPath=none".into(),
-            "-o".into(),
-            "LogLevel=ERROR".into(),
-        ]
-        .into_iter()
-        .chain(self.ssh_opts.iter().cloned())
-        .collect()
-    }
-
-    fn sftp_options(&self) -> Vec<String> {
-        self.ssh_options()
-    }
-}
-
 async fn connect(ctx: &mut Ctx, job_id: Uuid, target: &SshJob) -> Result<Connection> {
     let client = ctx.authenticated_client()?;
 
     let service = match &target.service {
         Some(service) => service.clone(),
-        None => discover_service(&client, job_id).await?,
+        None => ssh::discover_service(&client, job_id)
+            .await
+            .map_err(|error| hinted(error, "Pass --service <NAME> to choose one."))?,
     };
 
     ctx.detail(&format!(
         "Connecting to job {} · service {service}",
         short(job_id)
     ));
-    let cached = service::credentials(&mut ctx.session, job_id, &service).await?;
 
-    connection(ctx, target, job_id, service, cached)
-}
-
-fn connection(
-    ctx: &Ctx,
-    target: &SshJob,
-    job_id: Uuid,
-    service: String,
-    cached: CachedJobServiceToken,
-) -> Result<Connection> {
+    let proxy_command = proxy_command(ctx, job_id, &service)?;
     let user = target
         .user
         .clone()
         .unwrap_or_else(|| ctx.session.config.user.clone());
-
-    let endpoint = service::select_endpoint(&cached, None, &[])?;
+    let destination = ssh::destination(&mut ctx.session, job_id, &service, &user).await?;
 
     Ok(Connection {
-        destination: format!("{user}@{}", endpoint.hostname),
-        proxy_command: proxy_command(ctx, job_id, &service)?,
+        destination,
+        proxy_command,
         ssh_opts: target.ssh_opt.clone(),
     })
-}
-
-async fn discover_service(
-    client: &treadmill_rs::api::switchboard::client::SwitchboardClient,
-    job_id: Uuid,
-) -> Result<String> {
-    let job = client
-        .get_job(job_id)
-        .await
-        .with_context(|| format!("reading job {} to find its SSH service", short(job_id)))?;
-
-    let names: Vec<&str> = job
-        .services
-        .iter()
-        .filter(|service| service.protocol == SSHWS_PROTOCOL)
-        .map(|service| service.name.as_str())
-        .collect();
-
-    match names.len() {
-        0 => bail!(
-            "job {} announces no {SSHWS_PROTOCOL} service (state: {:?})",
-            short(job_id),
-            job.state
-        ),
-        1 => Ok(names[0].to_string()),
-        _ => bail!(
-            "job {} announces several {SSHWS_PROTOCOL} services ({}); pass --service",
-            short(job_id),
-            names.join(", ")
-        ),
-    }
 }
 
 fn tml_command(program: &str, ctx: &Ctx) -> Result<String> {
@@ -336,12 +236,6 @@ fn display_arg(arg: &str) -> String {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "@%_+=:,./-".contains(c));
     if plain { arg.to_string() } else { quote(arg) }
-}
-
-/// POSIX single-quoting: ssh hands a ProxyCommand to `/bin/sh -c`, and sftp
-/// splits a batch line on whitespace unless a path is quoted.
-fn quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 #[cfg(test)]

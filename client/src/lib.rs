@@ -21,6 +21,7 @@ pub mod login;
 pub mod service;
 #[cfg(feature = "profile")]
 pub mod session;
+pub mod ssh;
 pub mod state;
 #[cfg(feature = "ws")]
 pub mod wsproxy;

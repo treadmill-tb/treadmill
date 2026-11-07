@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::tui::{BOLD, DIM, ERR, Line, OK, WARN, plain, span};
 
-pub const SSHWS_PROTOCOL: &str = "sshws";
+pub use treadmill_client::ssh::SSHWS_PROTOCOL;
 const SYSTEM_SUBJECT_ID: Uuid = Uuid::from_u128(2);
 
 /// Short display form of a UUID: `^` plus its final eight hexadecimal digits.
