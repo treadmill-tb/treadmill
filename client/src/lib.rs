@@ -8,6 +8,27 @@
 //!
 //! `tml` (the `treadmill-cli` crate) is built on it, and is the reference for
 //! how the pieces fit together.
+//!
+//! Nothing here writes to a terminal. What a human might want to see is
+//! reported through a [`diagnostics::Diagnostics`] the caller supplies, and
+//! [`diagnostics::Silent`] discards it.
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use treadmill_client::diagnostics::Silent;
+//! use treadmill_client::session::{Options, Session};
+//!
+//! # async fn example() -> anyhow::Result<()> {
+//! // The same profile `tml` would use, and the session `tml login` stored.
+//! let session = Session::load(&Options::default(), Arc::new(Silent))?;
+//! let client = session.authenticated_client()?;
+//! println!("{}", client.whoami().await?.name);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! `examples/run-job.rs` goes the whole way: enqueue a job, wait for it, and
+//! open a local port onto its SSH service.
 
 #[cfg(feature = "profile")]
 pub mod config;
