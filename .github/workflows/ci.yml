@@ -44,7 +44,7 @@ jobs:
 
       # Building on a Cachix miss (e.g., zot after a bump) can fill the runner's
       # disk. Give the Nix store all free space; must precede install-nix-action.
-      - uses: wimpysworld/nothing-but-nix@v11
+      - uses: wimpysworld/nothing-but-nix@v12
         with:
           hatchet-protocol: 'carve'
           witness-carnage: true
