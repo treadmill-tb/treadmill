@@ -5096,19 +5096,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "treadmill-image-util"
+name = "treadmill-image-build"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "clap",
  "digest-io",
  "oci-spec",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
  "sha2 0.11.1",
- "tempfile",
  "treadmill-rs",
+]
+
+[[package]]
+name = "treadmill-image-util"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "treadmill-image-build",
 ]
 
 [[package]]

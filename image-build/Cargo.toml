@@ -1,0 +1,29 @@
+[package]
+name = "treadmill-image-build"
+version = "0.1.0"
+edition.workspace = true
+
+authors.workspace = true
+categories = ["development-tools::build-utils", "virtualization"]
+description = "Build and assemble Treadmill OCI disk images"
+homepage = "https://treadmill.dev"
+keywords = ["ci", "testing", "testbed", "hardware", "oci"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[dependencies]
+# Needs `version` + `path` (rather than `workspace = true`) for `cargo publish`
+# to be able to resolve treadmill-rs by its published version. Local builds
+# continue to use the path dependency.
+treadmill-rs = { version = "0.3.0", path = "../treadmill-rs" }
+
+anyhow = { workspace = true }
+digest-io = { workspace = true }
+oci-spec = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_json_canonicalizer = { workspace = true }
+sha2 = { workspace = true }
+
+[lints]
+workspace = true

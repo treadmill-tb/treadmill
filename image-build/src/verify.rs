@@ -3,7 +3,6 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, bail, ensure};
-use clap::Parser;
 
 use treadmill_rs::image::annotations::Role;
 use treadmill_rs::image::parse::LayerFormat;
@@ -11,43 +10,49 @@ use treadmill_rs::image::parse::LayerFormat;
 use crate::layer_arg::ChainArg;
 use crate::layout::{Layout, qcow2_info, read_image, verify_blob_digest};
 
-const DEFAULT_MAX_HEAD_VIRTUAL_SIZE: u64 = 10 * 1024 * 1024 * 1024;
+/// The default ceiling on a chain head's virtual size: 10 GiB.
+///
+/// A supervisor refuses an image whose head does not fit its working disk, so
+/// this has to stay at or below the smallest such disk in the fleet.
+pub const DEFAULT_MAX_HEAD_VIRTUAL_SIZE: u64 = 10 * 1024 * 1024 * 1024;
 
-/// Validate a built Treadmill OCI image layout.
-#[derive(Debug, Parser)]
-pub struct VerifyArgs {
+/// What to check a built layout against.
+///
+/// Parsing the manifest already validates the image's structure, so these are
+/// the expectations that need the blobs, or that only the caller knows.
+#[derive(Debug, Clone)]
+pub struct VerifyParams {
     /// Path to the OCI image layout directory.
     pub layout: PathBuf,
 
-    /// An expected chain as `ROLE=LAYERS`. Repeatable; when given, the image
-    /// must provide exactly these roles, each with a chain of that many layers.
-    #[arg(long = "chain", value_name = "ROLE=LAYERS")]
-    chains: Vec<ChainArg>,
+    /// The chains the image must provide, each with its expected length. When
+    /// non-empty the match is exact: a role the image has and this does not is
+    /// as much a failure as one that is missing.
+    pub chains: Vec<ChainArg>,
 
     /// Expected `org.opencontainers.image.title`; asserted only when given.
-    #[arg(long)]
-    title: Option<String>,
+    pub title: Option<String>,
 
-    /// Ceiling for the virtual size of every chain's head, in bytes. Must not
-    /// exceed the smallest working disk of any supervisor the image may be
-    /// scheduled on. Pass 0 to disable the check.
-    #[arg(long, default_value_t = DEFAULT_MAX_HEAD_VIRTUAL_SIZE)]
-    max_head_virtual_size: u64,
-
-    /// Human-readable label used in messages (defaults to the layout path).
-    #[arg(long)]
-    pub name: Option<String>,
+    /// Ceiling for the virtual size of every chain's head, in bytes. 0
+    /// disables the check. See [`DEFAULT_MAX_HEAD_VIRTUAL_SIZE`].
+    pub max_head_virtual_size: u64,
 }
 
-impl VerifyArgs {
-    pub fn label(&self) -> String {
-        self.name
-            .clone()
-            .unwrap_or_else(|| self.layout.display().to_string())
+impl VerifyParams {
+    /// Check `layout`, with every expectation left at its default.
+    pub fn new(layout: impl Into<PathBuf>) -> Self {
+        Self {
+            layout: layout.into(),
+            chains: Vec::new(),
+            title: None,
+            max_head_virtual_size: DEFAULT_MAX_HEAD_VIRTUAL_SIZE,
+        }
     }
 }
 
-pub fn verify(args: &VerifyArgs) -> anyhow::Result<()> {
+/// Check that the layout at `args.layout` is a well-formed Treadmill image and
+/// meets every expectation `args` states.
+pub fn verify(args: &VerifyParams) -> anyhow::Result<()> {
     let layout = Layout::open(&args.layout)?;
     // Parsing validates the image's structure; what is left to check here is
     // what needs the blobs.
@@ -112,7 +117,7 @@ pub fn verify(args: &VerifyArgs) -> anyhow::Result<()> {
             }
             LayerFormat::Raw => {}
             LayerFormat::Unknown { media_type } => bail!(
-                "layer {} has media type {media_type}, which image-util cannot verify",
+                "layer {} has media type {media_type}, which cannot be verified",
                 layer.digest,
             ),
         }
