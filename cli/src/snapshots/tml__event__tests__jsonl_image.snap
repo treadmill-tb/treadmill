@@ -1,0 +1,53 @@
+---
+source: cli/src/event.rs
+expression: "[Event::Image\n{\n    name: \"ubuntu-server-2604/tock\", title:\n    \"Ubuntu Server 26.04 with the Tock toolchain\", path:\n    \"images/ubuntu-server-2604/tock\", level: 1,\n}, Event::ImagesChecked { images: 8 }, Event::ImageBuilt\n{\n    name: \"ubuntu-server-2604/tock\", title:\n    \"Ubuntu Server 26.04 with the Tock toolchain\", layout: \"out/tock\",\n}, Event::ImagePushed\n{\n    image: \"ubuntu-server-2604/tock\", registry: \"ghcr.io:443\", repository:\n    \"treadmill-tb/ubuntu-server-2604\", digest, tags: &tags,\n}, Event::ImageRegistered\n{\n    digest, registry: \"ghcr.io:443\", repository:\n    \"treadmill-tb/ubuntu-server-2604\", registered: true, granted: true,\n}, Event::ImageSetRolled { set: \"linux\", generation: 7, members: 2, },\nEvent::ImageSetUnchanged { set: \"linux-webide\", generation: Some(6), },]"
+---
+[
+  {
+    "type": "image",
+    "name": "ubuntu-server-2604/tock",
+    "title": "Ubuntu Server 26.04 with the Tock toolchain",
+    "path": "images/ubuntu-server-2604/tock",
+    "level": 1
+  },
+  {
+    "type": "images_checked",
+    "images": 8
+  },
+  {
+    "type": "image_built",
+    "name": "ubuntu-server-2604/tock",
+    "title": "Ubuntu Server 26.04 with the Tock toolchain",
+    "layout": "out/tock"
+  },
+  {
+    "type": "image_pushed",
+    "image": "ubuntu-server-2604/tock",
+    "registry": "ghcr.io:443",
+    "repository": "treadmill-tb/ubuntu-server-2604",
+    "digest": "sha256:abababababababababababababababababababababababababababababababab",
+    "tags": [
+      "20261115T120000Z-abc1234",
+      "latest"
+    ]
+  },
+  {
+    "type": "image_registered",
+    "digest": "sha256:abababababababababababababababababababababababababababababababab",
+    "registry": "ghcr.io:443",
+    "repository": "treadmill-tb/ubuntu-server-2604",
+    "registered": true,
+    "granted": true
+  },
+  {
+    "type": "image_set_rolled",
+    "set": "linux",
+    "generation": 7,
+    "members": 2
+  },
+  {
+    "type": "image_set_unchanged",
+    "set": "linux-webide",
+    "generation": 6
+  }
+]
