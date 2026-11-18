@@ -19,20 +19,33 @@ treadmill-rs = { version = "0.3.0", path = "../treadmill-rs" }
 
 anyhow = { workspace = true }
 digest-io = { workspace = true }
+# flock(2), to keep two concurrent builds off the same NBD device.
+libc = "0.2"
+# "user" for the effective-uid check that decides whether to escalate;
+# "feature" is this crate's odd name for the gate on sys::utsname (uname).
+nix = { workspace = true, features = ["user", "feature", "signal"] }
 http = { workspace = true }
 oci-client = { workspace = true }
 oci-spec = { workspace = true }
+# The vendor-image download. Blocking, because the build around it is.
+reqwest = { workspace = true, default-features = false, features = [
+  "blocking",
+  "rustls",
+  "charset",
+  "http2",
+] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_path_to_error = { workspace = true }
 serde_json_canonicalizer = { workspace = true }
 sha2 = { workspace = true }
-# Only the registry client is async; the rest of this crate is synchronous and
+tempfile = { workspace = true }
+# Only the registry client is async; the build itself is synchronous and
 # drives it from a current-thread runtime of its own.
 tokio = { workspace = true, features = ["rt", "fs", "io-util"] }
 tokio-util = { workspace = true, features = ["io"] }
 futures-util = { workspace = true }
 base64 = { workspace = true }
-tempfile = { workspace = true }
 
 [lints]
 workspace = true
