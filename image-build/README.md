@@ -12,6 +12,7 @@ and the invariants that make one valid. This crate writes one.
 | `assemble` | starting an image from layer blobs |
 | `append` | adding layers to an image, carrying the lower's through |
 | `verify` | checking a built layout against what it claims |
+| `registry` | moving a layout to and from an OCI registry |
 | `layer_arg` | the `ROLE=FORMAT:PATH` and `ROLE=LAYERS` grammars |
 
 Nothing here parses a command line or writes to a terminal. `image-util` is

@@ -5100,12 +5100,19 @@ name = "treadmill-image-build"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "digest-io",
+ "futures-util",
+ "http",
+ "oci-client",
  "oci-spec",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
  "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "tokio-util",
  "treadmill-rs",
 ]
 
