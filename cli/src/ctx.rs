@@ -101,6 +101,12 @@ impl Ctx {
     }
 
     /// A progress or selection notice: stderr, human output only.
+    /// The sink the client library reports through, so that what it has to
+    /// say arrives the same way everything else here does.
+    pub fn diagnostics(&self) -> &dyn treadmill_client::diagnostics::Diagnostics {
+        self.diagnostics.as_ref()
+    }
+
     pub fn note(&self, message: &str) {
         if self.quiet || !self.human() {
             return;

@@ -36,6 +36,7 @@ pub mod config;
 pub mod daemon;
 pub mod diagnostics;
 pub mod error;
+pub mod images;
 pub mod job;
 pub mod locked_file;
 #[cfg(feature = "profile")]

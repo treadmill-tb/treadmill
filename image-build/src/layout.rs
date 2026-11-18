@@ -142,8 +142,29 @@ impl Layout {
 
         let json = assemble::manifest_bytes(&image.to_manifest());
         let (digest, size) = self.store_bytes(&json)?;
+        self.write_index(&digest, size)
+    }
 
-        let mut descriptor = Descriptor::new(MediaType::ImageManifest, size, oci_digest(&digest)?);
+    /// Store a manifest exactly as it was received, and point the index at it.
+    ///
+    /// Unlike [`Layout::write_image`], which serializes a manifest this crate
+    /// just built, this keeps the bytes a registry served. Re-serializing
+    /// them would be a different document and so a different digest, and the
+    /// digest is the image's identity everywhere downstream.
+    pub fn store_manifest_bytes(&self, digest: &Digest, bytes: &[u8]) -> anyhow::Result<()> {
+        let (stored, size) = self.store_bytes(bytes)?;
+        ensure!(
+            stored == *digest,
+            "manifest bytes hash to {} but are referenced as {}",
+            stored.encoded(),
+            digest.encoded(),
+        );
+        self.write_index(digest, size)
+    }
+
+    /// Write `index.json` pointing at one manifest, and the layout marker.
+    fn write_index(&self, digest: &Digest, size: u64) -> anyhow::Result<()> {
+        let mut descriptor = Descriptor::new(MediaType::ImageManifest, size, oci_digest(digest)?);
         descriptor.set_artifact_type(Some(MediaType::Other(
             media_types::IMAGE_ARTIFACT_TYPE.to_string(),
         )));
@@ -160,7 +181,6 @@ impl Layout {
         )
         .context("write index.json")?;
         fs::write(self.root.join("oci-layout"), OCI_LAYOUT_MARKER).context("write oci-layout")?;
-
         Ok(())
     }
 

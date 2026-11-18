@@ -5065,10 +5065,13 @@ dependencies = [
  "sd-notify",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "simplelog",
+ "tempfile",
  "tokio",
  "toml 1.2.1+spec-1.1.0",
  "treadmill-client",
+ "treadmill-image-build",
  "treadmill-rs",
  "uuid",
  "zbus",
@@ -5096,19 +5099,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "treadmill-image-build"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "digest-io",
+ "futures-util",
+ "http",
+ "libc",
+ "nix 0.31.3",
+ "oci-client",
+ "oci-spec",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "serde_path_to_error",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "treadmill-rs",
+]
+
+[[package]]
 name = "treadmill-image-util"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "digest-io",
- "oci-spec",
- "serde",
  "serde_json",
- "serde_json_canonicalizer",
  "sha2 0.11.1",
  "tempfile",
- "treadmill-rs",
+ "treadmill-image-build",
 ]
 
 [[package]]

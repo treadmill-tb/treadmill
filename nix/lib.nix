@@ -228,6 +228,7 @@ let
       tml.members = [
         "cli"
         "client"
+        "image-build"
         "treadmill-rs"
       ];
       swx = {
@@ -239,6 +240,7 @@ let
       };
       # Producer-side OCI layout assemble + validate tool.
       image-util.members = [
+        "image-build"
         "image-util"
         "treadmill-rs"
       ];

@@ -26,7 +26,11 @@
 
         tml = cmn.mkBin {
           bin = "tml";
-          features = "treadmill-cli/user";
+          # `image` carries `tml image`, which shells out to qemu-img,
+          # qemu-nbd, systemd-nspawn and friends. Those stay off the closure
+          # on purpose: they are only wanted on a privileged build host, and
+          # the command names any that is missing before it starts.
+          features = "treadmill-cli/user,treadmill-cli/image";
         };
 
         swx = cmn.mkBin { bin = "swx"; };

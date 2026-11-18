@@ -16,7 +16,7 @@ name = "tml"
 path = "src/main.rs"
 
 [features]
-default = ["user", "daemon"]
+default = ["user", "daemon", "image"]
 user = [
   "dep:chrono",
   "dep:crossterm",
@@ -25,6 +25,10 @@ user = [
   "tokio/process",
   "treadmill-client/ws",
 ]
+# Building, pushing and publishing Treadmill images. In `default` so plain
+# cargo builds cover it, and in the `tml` package; deliberately *not* in the
+# static in-image binaries, which only ever run `tml daemon`.
+image = ["dep:treadmill-image-build", "dep:tempfile", "user"]
 daemon = [
   "dep:chrono",
   "dep:crossterm",
@@ -51,6 +55,7 @@ treadmill-rs = { version = "0.3.0", path = "../treadmill-rs", features = [
 # the dependency-free pieces, does not pull the profile loader; `user` turns
 # the needed features back on.
 treadmill-client = { version = "0.1.0", path = "../client", default-features = false }
+treadmill-image-build = { version = "0.1.0", path = "../image-build", optional = true }
 
 anstream = "1.0.0"
 anstyle = "1.0.14"
@@ -65,6 +70,8 @@ log = { workspace = true, optional = true }
 sd-notify = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_path_to_error = { workspace = true }
+tempfile = { workspace = true, optional = true }
 simplelog = { version = "0.12.2", optional = true }
 tokio = { workspace = true, features = [
   "rt-multi-thread",
