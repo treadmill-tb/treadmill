@@ -48,6 +48,7 @@
         ./nix/treefmt.nix
         ./nix/packages.nix
         ./nix/apps.nix
+        ./nix/build-vm.nix
         ./nix/tml-cross-musl.nix
         ./nix/image-caddy.nix
         ./nix/tiny-efi.nix
