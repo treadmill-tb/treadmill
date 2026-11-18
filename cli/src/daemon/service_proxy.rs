@@ -5,7 +5,7 @@ use log::{info, warn};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::locked_file;
+use treadmill_client::locked_file;
 
 use treadmill_rs::api::switchboard::jobs::{JobGatewayInfo, JobServiceAnnouncement};
 

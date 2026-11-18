@@ -17,6 +17,7 @@ image-based, reproducible way to run workloads on them.
 | **Daemon API**                        | `supervisor/lib/`             | HTTP API between supervisors and the daemon.  |
 | **CLI**                               | `cli/`                        | `tml`: the user-facing client, and the agent  |
 |                                       |                               | inside images (`tml daemon`).                 |
+| **Client Library**                    | `client/`                     | Client-side mechanics `tml` is built on.      |
 | **Shared Library**                    | `treadmill-rs/`               | Common types & infrastructure.                |
 | **Web Console (SPA)**                 | `console/`                    | Browser frontend for the switchboard API.     |
 
@@ -102,6 +103,43 @@ client on a user's machine, and `daemon` (`tml daemon`, D-Bus) for the agent
 inside images. Plain cargo builds enable both, so clippy and the test checks
 cover both. The `tml` package builds only `user`, and the static
 `tml-static-*` packages, for musl, only `daemon`.
+
+A change that touches either half has to build that half *alone*, which the
+default build does not prove:
+
+```bash
+cargo build -p treadmill-cli --no-default-features --features user
+cargo build -p treadmill-cli --no-default-features --features daemon
+```
+
+### The client library (`client/`)
+
+`treadmill-client` holds everything a Treadmill client needs that is not a
+request or a response: configuration profiles, the session-token store, the
+login flow, per-job service credentials, the WebSocket bridge, and the in-job
+credential lookup over D-Bus. `tml` is its first consumer; it is published so
+other tools can be built on it rather than shelling out to `tml`.
+
+The split is capabilities versus presentation. "Log in", "mint a service
+token", "open the bridge" belong in the library; parsing flags, prompting, and
+rendering tables belong in `cli/`. **A library module must not write to a
+terminal** — it reports through the `Diagnostics` sink its caller supplies,
+and `cli/src/diag.rs` is the implementation that makes those look like `tml`'s
+own output.
+
+Its features gate dependencies, not taste: `profile` (figment, xdg), `ws`
+(tokio-tungstenite, rustls) and `dbus` (zbus). `dbus` is off by default and is
+what `treadmill-cli/daemon` turns on. Check the slices build apart:
+
+```bash
+cargo build -p treadmill-client --no-default-features
+cargo clippy -p treadmill-client --all-targets --all-features
+```
+
+The D-Bus interface between `tml daemon` and the library's proxy is declared
+twice, in two crates. `cli/src/daemon/mod.rs`'s
+`the_served_interface_is_the_one_the_proxy_calls` is what keeps them in step;
+if you rename a method on either side, update both.
 
 ### Web console (`console/`)
 

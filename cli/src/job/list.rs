@@ -195,7 +195,7 @@ impl View {
         Ok(Self {
             me,
             sets,
-            active: ctx.state.active_job,
+            active: ctx.session.state.active_job,
             owners: false,
             widths: None,
         })

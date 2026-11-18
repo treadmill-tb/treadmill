@@ -1,8 +1,13 @@
+//! The on-disk client configuration: a profile-nested TOML file under the
+//! XDG config directory, layered under `TML_*` environment variables.
+
 use anyhow::{Context, Result, bail};
 use figment::Figment;
 use figment::providers::{Env, Format, Toml};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+
+use crate::diagnostics::Diagnostics;
 
 pub const DEFAULT_SWITCHBOARD: &str = "https://swb.treadmill.dev";
 pub const DEFAULT_PROFILE: &str = "default";
@@ -45,7 +50,10 @@ fn toml_list(values: &[&str]) -> String {
     format!("[{}]", quoted.join(", "))
 }
 
-fn create(path: &Path, profile: &str) {
+/// Seed `path` with a default profile. Best-effort: a client works without a
+/// config file as long as it is told a switchboard some other way, so failing
+/// to write one is reported, not returned.
+fn create(path: &Path, profile: &str, diagnostics: &dyn Diagnostics) {
     let contents = format!(
         "[{profile}]\nswitchboard = {DEFAULT_SWITCHBOARD:?}\nssh_domains = {}\n",
         toml_list(&DEFAULT_SSH_DOMAINS)
@@ -56,11 +64,10 @@ fn create(path: &Path, profile: &str) {
         Ok(())
     });
     if let Err(error) = written {
-        let style = anstyle::AnsiColor::Yellow.on_default() | anstyle::Effects::BOLD;
-        anstream::eprintln!(
-            "{style}warning:{style:#} the default config {} could not be created: {error:#}",
+        diagnostics.warn(&format!(
+            "the default config {} could not be created: {error:#}",
             path.display()
-        );
+        ));
     }
 }
 
@@ -88,9 +95,9 @@ pub fn state_path(profile: &str) -> Result<PathBuf> {
 /// Load the selected profile, layering the config file under `TML_*`
 /// environment variables. The environment is `global` so that a variable
 /// overrides whichever profile was selected, rather than only the default one.
-pub fn load(path: &Path, profile: &str) -> Result<Config> {
+pub fn load(path: &Path, profile: &str, diagnostics: &dyn Diagnostics) -> Result<Config> {
     if !path.exists() {
-        create(path, profile);
+        create(path, profile, diagnostics);
     }
 
     let mut figment = Figment::new();

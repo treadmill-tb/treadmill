@@ -7,14 +7,11 @@ use uuid::Uuid;
 
 use crate::tui::{BOLD, DIM, ERR, Line, OK, WARN, plain, span};
 
-pub const SSHWS_PROTOCOL: &str = "sshws";
+pub use treadmill_client::ssh::SSHWS_PROTOCOL;
 const SYSTEM_SUBJECT_ID: Uuid = Uuid::from_u128(2);
 
 /// Short display form of a UUID: `^` plus its final eight hexadecimal digits.
-pub fn short(id: Uuid) -> String {
-    let text = id.simple().to_string();
-    format!("^{}", &text[text.len() - 8..])
-}
+pub use treadmill_client::job::short;
 
 pub fn program() -> String {
     let arg0 = std::env::args_os().next().map_or_else(

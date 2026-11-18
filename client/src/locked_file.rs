@@ -81,7 +81,6 @@ pub fn update<R>(
 }
 
 /// Replace the file at `path` with `contents`, as [`update`] does.
-#[cfg_attr(not(feature = "daemon"), allow(dead_code))]
 pub fn replace(path: &Path, mode: u32, contents: &str) -> Result<()> {
     update(path, mode, |current| {
         *current = Some(contents.to_string());

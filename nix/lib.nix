@@ -227,6 +227,7 @@ let
     {
       tml.members = [
         "cli"
+        "client"
         "treadmill-rs"
       ];
       swx = {
