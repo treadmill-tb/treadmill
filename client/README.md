@@ -17,6 +17,7 @@ request or a response:
 | `wsproxy` | the WebSocket bridge to a job service, through the gateway |
 | `ssh` | what an SSH client has to be told to reach a job |
 | `daemon` | asking the in-job `tml daemon` for the job's own credentials |
+| `images` | registering a pushed image, and rolling an image set forward |
 | `job`, `locked_file`, `error`, `diagnostics` | the pieces those are built from |
 
 `tml` (the `treadmill-cli` crate) is built on this, and is the worked
@@ -58,8 +59,8 @@ reported through a `Diagnostics` the caller supplies, and `Silent` discards it.
   enqueue one.
 
 With `default-features = false` you still get `locked_file`, `state`, `job`,
-`ssh`'s grammar and option set, `error` and `diagnostics`, which need nothing
-beyond `treadmill-rs`.
+`images`, `ssh`'s grammar and option set, `error` and `diagnostics`, which need
+nothing beyond `treadmill-rs`.
 
 ## License
 

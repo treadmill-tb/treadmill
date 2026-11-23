@@ -22,6 +22,48 @@ pub enum Event<'a> {
     Warning {
         message: &'a str,
     },
+    /// One image, as `tml image list` reports it.
+    Image {
+        name: &'a str,
+        title: &'a str,
+        /// Where it is, relative to the directory that was listed.
+        path: &'a str,
+        /// How many images it is built on, locally.
+        level: usize,
+    },
+    ImagesChecked {
+        images: usize,
+    },
+    ImageBuilt {
+        name: &'a str,
+        title: &'a str,
+        layout: &'a str,
+    },
+    ImagePushed {
+        image: &'a str,
+        registry: &'a str,
+        repository: &'a str,
+        digest: treadmill_rs::image::Digest,
+        tags: &'a [String],
+    },
+    ImageRegistered {
+        digest: treadmill_rs::image::Digest,
+        registry: &'a str,
+        repository: &'a str,
+        /// Whether this call put the digest in the catalog for the first time.
+        registered: bool,
+        /// Whether everyone was granted permission to use it.
+        granted: bool,
+    },
+    ImageSetRolled {
+        set: &'a str,
+        generation: u32,
+        members: usize,
+    },
+    ImageSetUnchanged {
+        set: &'a str,
+        generation: Option<u32>,
+    },
     State {
         state: JobState,
         initializing_stage: Option<JobInitializingStage>,
@@ -370,6 +412,52 @@ mod tests {
     }
 
     /// The messages a command ends in, and `-o json`'s rendering of each.
+    #[test]
+    fn image_messages() {
+        let digest = treadmill_rs::image::Digest::from_sha256([0xab; 32]);
+        let tags = vec!["20261115T120000Z-abc1234".to_string(), "latest".to_string()];
+        assert_json_snapshot!(
+            "jsonl_image",
+            [
+                Event::Image {
+                    name: "ubuntu-server-2604/tock",
+                    title: "Ubuntu Server 26.04 with the Tock toolchain",
+                    path: "images/ubuntu-server-2604/tock",
+                    level: 1,
+                },
+                Event::ImagesChecked { images: 8 },
+                Event::ImageBuilt {
+                    name: "ubuntu-server-2604/tock",
+                    title: "Ubuntu Server 26.04 with the Tock toolchain",
+                    layout: "out/tock",
+                },
+                Event::ImagePushed {
+                    image: "ubuntu-server-2604/tock",
+                    registry: "ghcr.io:443",
+                    repository: "treadmill-tb/ubuntu-server-2604",
+                    digest,
+                    tags: &tags,
+                },
+                Event::ImageRegistered {
+                    digest,
+                    registry: "ghcr.io:443",
+                    repository: "treadmill-tb/ubuntu-server-2604",
+                    registered: true,
+                    granted: true,
+                },
+                Event::ImageSetRolled {
+                    set: "linux",
+                    generation: 7,
+                    members: 2,
+                },
+                Event::ImageSetUnchanged {
+                    set: "linux-webide",
+                    generation: Some(6),
+                },
+            ]
+        );
+    }
+
     #[test]
     fn results() {
         let identity = WhoAmIResponse {

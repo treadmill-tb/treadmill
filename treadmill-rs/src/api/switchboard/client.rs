@@ -18,7 +18,10 @@ use crate::api::switchboard::audit::AuditFeedResponse;
 use crate::api::switchboard::hosts::{
     HostInfo, HostListEntry, HostRequirementsReport, HostRequirementsRequest,
 };
-use crate::api::switchboard::images::ImageSetInfo;
+use crate::api::switchboard::images::{
+    AddImageSourceRequest, CreateGenerationRequest, ImageInfo, ImageSetGenerationInfo,
+    ImageSetInfo, ImageSourceGrantRequest,
+};
 use crate::api::switchboard::jobs::{
     EnqueueJobResponse, JobDefaults, JobEnvironment, JobExitStatusRequest, JobInfo, JobListQuery,
     JobListResponse, JobServiceAnnouncement, JobServiceCredentials, UpdateJobRequest, job_etag,
@@ -26,6 +29,7 @@ use crate::api::switchboard::jobs::{
 };
 use crate::api::switchboard::users::{PublicUserProfile, SelfUserProfile, SessionInfo};
 use crate::api::switchboard::{LoginCompleteRequest, LoginResponse, LoginStagedResponse};
+use crate::image::Digest;
 
 /// All the ways a switchboard API call can fail, from the caller's point of
 /// view. `Unauthorized` is split out from other error statuses because callers
@@ -52,6 +56,20 @@ pub enum ClientError {
 pub enum LoginCompleteOutcome {
     Complete(LoginResponse),
     Staged(LoginStagedResponse),
+}
+
+/// The outcome of [`SwitchboardClient::add_image_source`].
+///
+/// The route answers `201` when the digest was not in the catalog before and
+/// `200` when it was, and a publisher wants to say which happened. The two are
+/// otherwise identical: both leave the source recorded, and adding a source
+/// that is already there is a no-op rather than an error.
+#[derive(Debug, Clone)]
+pub struct AddedImageSource {
+    /// The image, carrying every source currently recorded for the digest.
+    pub image: ImageInfo,
+    /// Whether this call put the digest in the catalog for the first time.
+    pub registered: bool,
 }
 
 /// A handle to one switchboard instance, optionally carrying a bearer token for
@@ -331,6 +349,69 @@ impl SwitchboardClient {
         self.get_json("/api/v1/image-sets").await
     }
 
+    /// `POST /images/{digest}/sources` — record that `digest` can be pulled
+    /// from `registry`/`repository`, registering the image on first sight.
+    ///
+    /// The switchboard pulls and verifies the manifest from the submitted
+    /// source before recording anything, so this answers `502` for as long as
+    /// the registry is not yet serving the digest. Publishers are expected to
+    /// retry; `treadmill_client::images::register` implements that policy.
+    pub async fn add_image_source(
+        &self,
+        digest: &Digest,
+        req: &AddImageSourceRequest,
+    ) -> Result<AddedImageSource, ClientError> {
+        let (status, image) = self
+            .post_json_with_status(&format!("/api/v1/images/{digest}/sources"), req)
+            .await?;
+        Ok(AddedImageSource {
+            image,
+            registered: status == 201,
+        })
+    }
+
+    /// `POST /images/{digest}/sources/{source_id}/grants` — grant a subject a
+    /// permission on one source. Needs `manage` on that source.
+    pub async fn grant_image_source(
+        &self,
+        digest: &Digest,
+        source_id: Uuid,
+        req: &ImageSourceGrantRequest,
+    ) -> Result<(), ClientError> {
+        self.post_no_content(
+            &format!("/api/v1/images/{digest}/sources/{source_id}/grants"),
+            req,
+        )
+        .await
+    }
+
+    /// `GET /image-sets/{id}/generations/{generation}` — one immutable
+    /// membership snapshot, e.g. to carry its members into the next generation.
+    pub async fn image_set_generation(
+        &self,
+        set_id: Uuid,
+        generation: u32,
+    ) -> Result<ImageSetGenerationInfo, ClientError> {
+        self.get_json(&format!(
+            "/api/v1/image-sets/{set_id}/generations/{generation}"
+        ))
+        .await
+    }
+
+    /// `POST /image-sets/{id}/generations` — append a generation, replacing the
+    /// set's membership wholesale. Needs `manage` on the set.
+    ///
+    /// Member order is significant: it becomes each member's `index`, which is
+    /// the tie-break among equally-specific members.
+    pub async fn create_image_set_generation(
+        &self,
+        set_id: Uuid,
+        req: &CreateGenerationRequest,
+    ) -> Result<ImageSetGenerationInfo, ClientError> {
+        self.post_json(&format!("/api/v1/image-sets/{set_id}/generations"), req)
+            .await
+    }
+
     fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
         let req = self
             .http
@@ -357,6 +438,28 @@ impl SwitchboardClient {
             .await?
             .json()
             .await?)
+    }
+
+    /// Like [`Self::post_json`], but also yields the HTTP status, for routes
+    /// whose success statuses differ in meaning (`201` created, `200` existing).
+    async fn post_json_with_status<B: serde::Serialize, T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<(u16, T), ClientError> {
+        let resp = send(self.request(reqwest::Method::POST, path).json(body)).await?;
+        let status = resp.status().as_u16();
+        Ok((status, resp.json().await?))
+    }
+
+    /// A POST that succeeds with `204 No Content`, so there is no body to parse.
+    async fn post_no_content<B: serde::Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<(), ClientError> {
+        send(self.request(reqwest::Method::POST, path).json(body)).await?;
+        Ok(())
     }
 
     async fn post_empty<T: serde::de::DeserializeOwned>(

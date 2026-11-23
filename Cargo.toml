@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "cli",
   "client",
+  "image-build",
   "image-util",
   "supervisor/connector/local",
   "supervisor/connector/ws",

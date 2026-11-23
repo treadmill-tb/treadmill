@@ -11,17 +11,14 @@ name = "image-util"
 path = "src/main.rs"
 
 [dependencies]
-treadmill-rs = { workspace = true }
-oci-spec = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-serde_json_canonicalizer = { workspace = true }
-sha2 = { workspace = true }
+treadmill-image-build = { version = "0.1.0", path = "../image-build" }
+
 anyhow = { workspace = true }
-digest-io = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
+serde_json = { workspace = true }
+sha2 = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

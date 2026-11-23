@@ -49,15 +49,49 @@ nix develop --command bash -c 'cargo build -p treadmill-rs' # default shell
 
 ### Image builds
 
-Treadmill's OCI disk images are built in a separate repository, which consumes
-this flake as an input for the `image-util`, `tml-static-*` and
-`tml-caddy-static-*` packages. Nothing in this repository builds an image.
+The split is between the *builder*, which lives here, and the *images*, which
+do not.
 
-The image *format* contract lives here: `treadmill-rs/src/image/` defines the
+The image **format** contract is `treadmill-rs/src/image/`: it defines the
 manifest shape (`assemble.rs` produces it, `parse.rs` reads it back, and their
-roundtrip tests pin the two together), and `image-util` is the producer-side CLI
-over it -- `assemble`, `append` and `verify`. What to build, and how, is the
-image repository's business; this CLI only knows about layouts and layers.
+roundtrip tests pin the two together).
+
+The **builder** is `image-build/` (`treadmill-image-build`), and `tml image` is
+the front-end over it. An image is a *directory*: an `image.json`, a
+`provision.sh`, and whatever that provisioning needs. What it is built on is
+its `base` -- another directory written as a relative path, an image in a
+registry, or nothing at all -- so a chain is a path through the file system
+and resolves the same wherever the directories live, including across two
+checkouts. The builder turns one into an OCI layout: fetch or relink a chain,
+overlay it, attach it with `qemu-nbd`, provision into it with
+`systemd-nspawn`, and write out whatever changed as a layer. It also pushes a
+layout to a registry and tells a switchboard about it (`tml image push`,
+`register`, `publish`).
+
+The **images** -- the directories themselves, and the `publish.json` naming
+the sets they roll into -- live in a separate repository, which consumes this
+flake for `tml`, `tml-static-*` and `tml-caddy-static-*`. That repository holds
+distribution and board specifics and churns on its own schedule; nothing about
+it belongs here. Nor is it special to the builder: any directory with an
+`image.json` is an image, so a project that keeps one of its own builds it with
+the same command.
+
+Still open: expressing a layer that applies to *any* base providing a given
+interface, which is what both repositories want and what no model here
+delivers yet. A published base would have to declare that interface in its
+manifest, and the format carries no architecture today, let alone a
+capability -- so it is a format change first.
+
+`image-util` remains as a thin shim over `image-build`'s `assemble`, `append`
+and `verify`, because the `image-util-add-a-layer` and `image-util-roles`
+packages drive it by name and the images repository still calls it. It is the
+one piece of this expected to go away.
+
+Building needs a privileged Linux host with `qemu-img`, `qemu-nbd`,
+`systemd-nspawn`, `growpart`, `resize2fs` and friends on `PATH`; `tml image
+build` names any that are missing before it starts. Those tools are
+deliberately **not** in the `tml` package's closure -- they matter only on a
+build host, and a user-facing CLI should not carry them.
 
 ### Nix Dev Apps
 
@@ -98,11 +132,13 @@ The Nix flake provides multiple convenience dev apps:
 
 ### The `tml` binary (`cli/`)
 
-One crate, two additive features: `user` (login, contexts, SSH) for the
-client on a user's machine, and `daemon` (`tml daemon`, D-Bus) for the agent
-inside images. Plain cargo builds enable both, so clippy and the test checks
-cover both. The `tml` package builds only `user`, and the static
-`tml-static-*` packages, for musl, only `daemon`.
+One crate, three additive features: `user` (login, contexts, SSH) for the
+client on a user's machine, `daemon` (`tml daemon`, D-Bus) for the agent
+inside images, and `image` (`tml image`, which implies `user`) for building and
+publishing images. Plain cargo builds enable all three, so clippy and the test
+checks cover them. The `tml` package builds `user` + `image`, and the static
+`tml-static-*` packages, for musl, only `daemon` -- they are a payload baked
+into every image and have no business carrying a builder.
 
 A change that touches either half has to build that half *alone*, which the
 default build does not prove:

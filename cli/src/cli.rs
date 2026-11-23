@@ -127,6 +127,12 @@ pub enum Command {
         #[command(subcommand)]
         command: HostCommand,
     },
+    /// Build, push and publish Treadmill images
+    #[cfg(feature = "image")]
+    Image {
+        #[command(subcommand)]
+        command: ImageCommand,
+    },
     /// Integrate Treadmill with the system SSH client
     #[cfg(feature = "user")]
     Ssh {
@@ -137,6 +143,171 @@ pub enum Command {
     /// serving D-Bus
     #[cfg(feature = "daemon")]
     Daemon(crate::daemon::DaemonArgs),
+}
+
+#[cfg(feature = "image")]
+#[derive(Subcommand, Debug)]
+pub enum ImageCommand {
+    /// List the images under a directory
+    List(ImageTreeArgs),
+    /// Check every image under a directory: that each parses and has what it
+    /// needs, every chain terminates, and no two claim the same name
+    Check(ImageTreeArgs),
+    /// Build an image, and everything it is built on
+    Build(ImageBuildArgs),
+    /// Push a built layout to a container registry
+    Push(ImagePushArgs),
+    /// Tell the switchboard where a pushed image can be pulled from
+    Register(ImageRegisterArgs),
+    /// Roll the image sets of a publish configuration forward
+    Publish(ImagePublishArgs),
+    /// Check a built layout against what it claims
+    Verify(ImageVerifyArgs),
+}
+
+/// A directory to look for images under.
+#[cfg(feature = "image")]
+#[derive(Args, Debug)]
+pub struct ImageTreeArgs {
+    /// Where to look. An image is any directory with an `image.json` in it
+    #[arg(value_name = "DIR")]
+    pub dir: PathBuf,
+}
+
+#[cfg(feature = "image")]
+#[derive(Args, Debug)]
+pub struct ImageBuildArgs {
+    /// The image to build: a directory with an `image.json` in it. Whatever
+    /// its `base` chain names is built first
+    #[arg(value_name = "DIR")]
+    pub image: PathBuf,
+
+    /// Where to leave the finished layout
+    ///
+    /// No `-o`: that is the global output-format flag.
+    #[arg(long, value_name = "DIR")]
+    pub out: PathBuf,
+
+    /// Where built links are kept between runs
+    #[arg(long, value_name = "DIR")]
+    pub cache: Option<PathBuf>,
+
+    /// Rebuild every link, even one the cache already holds
+    #[arg(long)]
+    pub rebuild: bool,
+
+    /// Build only this image, onto a layout that is already built
+    #[arg(long, value_name = "LAYOUT", conflicts_with_all = ["lower_ref", "cache", "rebuild"])]
+    pub lower: Option<PathBuf>,
+
+    /// Build only this image, onto an image pulled from a registry
+    #[arg(long, value_name = "REF", conflicts_with_all = ["cache", "rebuild"])]
+    pub lower_ref: Option<String>,
+
+    /// Talk plain HTTP when pulling a lower
+    #[arg(long)]
+    pub insecure_lower_ref: bool,
+
+    /// An executable to install into the image, as `$TML_PAYLOAD_DIR`
+    #[arg(long = "payload", value_name = "PATH")]
+    pub payloads: Vec<PathBuf>,
+
+    /// Where to put the working directory
+    #[arg(long, value_name = "DIR")]
+    pub work: Option<PathBuf>,
+}
+
+#[cfg(feature = "image")]
+#[derive(Args, Debug)]
+pub struct ImagePushArgs {
+    /// The layout to push
+    #[arg(value_name = "LAYOUT")]
+    pub layout: PathBuf,
+
+    /// Where to push it, as `<registry>/<repository>`
+    #[arg(value_name = "REPOSITORY")]
+    pub repository: String,
+
+    /// A tag to publish under. Repeatable; the digest is pushed regardless
+    #[arg(long = "tag", value_name = "TAG")]
+    pub tags: Vec<String>,
+
+    /// Write a record of the push here, for `tml image publish`
+    #[arg(long, value_name = "PATH")]
+    pub record: Option<PathBuf>,
+
+    /// The coordinate this layout was built from, recorded alongside it
+    #[arg(long, value_name = "COORD")]
+    pub image: Option<String>,
+
+    /// Talk plain HTTP
+    #[arg(long)]
+    pub insecure: bool,
+}
+
+#[cfg(feature = "image")]
+#[derive(Args, Debug)]
+pub struct ImageRegisterArgs {
+    /// The manifest digest to register
+    #[arg(value_name = "DIGEST")]
+    pub digest: String,
+
+    /// Registry authority the image can be pulled from, e.g. `ghcr.io:443`
+    #[arg(long, value_name = "AUTHORITY")]
+    pub registry: String,
+
+    /// Repository path within the registry
+    #[arg(long, value_name = "REPOSITORY")]
+    pub repository: String,
+
+    /// Also grant everyone permission to use it, making it public
+    #[arg(long)]
+    pub grant_everyone: bool,
+
+    /// How long to keep retrying while the registry cannot serve the digest
+    #[arg(long, value_name = "SECONDS")]
+    pub timeout: Option<u64>,
+}
+
+#[cfg(feature = "image")]
+#[derive(Args, Debug)]
+pub struct ImagePublishArgs {
+    /// The publish configuration naming the image sets to roll forward
+    #[arg(long, value_name = "PATH")]
+    pub config: PathBuf,
+
+    /// Directory of records left by `tml image push`, searched recursively
+    #[arg(long, value_name = "DIR")]
+    pub records: PathBuf,
+
+    /// Say what would happen, and change nothing
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// How long to keep retrying a registration
+    #[arg(long, value_name = "SECONDS")]
+    pub timeout: Option<u64>,
+}
+
+#[cfg(feature = "image")]
+#[derive(Args, Debug)]
+pub struct ImageVerifyArgs {
+    /// The layout to check
+    #[arg(value_name = "LAYOUT")]
+    pub layout: PathBuf,
+
+    /// A chain the image must provide, as `ROLE=LAYERS`. When given, the
+    /// match is exact
+    #[arg(long = "chain", value_name = "ROLE=LAYERS")]
+    pub chains: Vec<treadmill_image_build::layer_arg::ChainArg>,
+
+    /// The title the image must carry
+    #[arg(long)]
+    pub title: Option<String>,
+
+    /// Ceiling on every chain head's virtual size, in bytes. 0 disables it
+    #[arg(long, value_name = "BYTES")]
+    pub max_head_virtual_size: Option<u64>,
 }
 
 #[cfg(feature = "user")]
@@ -622,6 +793,153 @@ fn parse_param(s: &str) -> Result<(String, String), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "image")]
+    fn image_command(args: &[&str]) -> ImageCommand {
+        let cli = Cli::try_parse_from(args).expect("should parse");
+        match cli.command {
+            Command::Image { command } => command,
+            other => panic!("expected an image command, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "image")]
+    #[test]
+    fn building_takes_a_directory_and_an_output() {
+        let command = image_command(&["tml", "image", "build", "./image", "--out", "out"]);
+        let ImageCommand::Build(args) = command else {
+            panic!("expected build");
+        };
+        assert_eq!(args.image, PathBuf::from("./image"));
+        assert_eq!(args.out, PathBuf::from("out"));
+        // Nothing restricts it to one link, so it builds the whole chain.
+        assert!(args.lower.is_none() && args.lower_ref.is_none());
+
+        // Both are required: there is nothing sensible to guess for either.
+        assert!(Cli::try_parse_from(["tml", "image", "build", "./image"]).is_err());
+        assert!(Cli::try_parse_from(["tml", "image", "build", "--out", "out"]).is_err());
+    }
+
+    #[cfg(feature = "image")]
+    #[test]
+    fn a_single_link_build_takes_exactly_one_lower() {
+        let command = image_command(&[
+            "tml", "image", "build", "./image", "--out", "out", "--lower", "out/base",
+        ]);
+        let ImageCommand::Build(args) = command else {
+            panic!("expected build");
+        };
+        assert_eq!(args.lower, Some(PathBuf::from("out/base")));
+
+        // Two lowers are contradictory, and so is caching a single link.
+        assert!(
+            Cli::try_parse_from([
+                "tml",
+                "image",
+                "build",
+                "./image",
+                "--out",
+                "out",
+                "--lower",
+                "a",
+                "--lower-ref",
+                "ghcr.io/o/i:t",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "tml",
+                "image",
+                "build",
+                "./image",
+                "--out",
+                "out",
+                "--lower",
+                "a",
+                "--rebuild",
+            ])
+            .is_err()
+        );
+    }
+
+    #[cfg(feature = "image")]
+    #[test]
+    fn listing_and_checking_take_a_directory() {
+        // Named, never guessed from the working directory.
+        let ImageCommand::List(args) = image_command(&["tml", "image", "list", "images"]) else {
+            panic!("expected list");
+        };
+        assert_eq!(args.dir, PathBuf::from("images"));
+        assert!(Cli::try_parse_from(["tml", "image", "list"]).is_err());
+        assert!(Cli::try_parse_from(["tml", "image", "check"]).is_err());
+    }
+
+    #[cfg(feature = "image")]
+    #[test]
+    fn pushing_takes_a_layout_a_repository_and_repeatable_tags() {
+        let command = image_command(&[
+            "tml",
+            "image",
+            "push",
+            "out",
+            "ghcr.io/org/image",
+            "--tag",
+            "v1",
+            "--tag",
+            "latest",
+        ]);
+        let ImageCommand::Push(args) = command else {
+            panic!("expected push");
+        };
+        assert_eq!(args.repository, "ghcr.io/org/image");
+        assert_eq!(args.tags, ["v1", "latest"]);
+    }
+
+    #[cfg(feature = "image")]
+    #[test]
+    fn registering_needs_a_source_to_register() {
+        let command = image_command(&[
+            "tml",
+            "image",
+            "register",
+            "sha256:abc",
+            "--registry",
+            "ghcr.io:443",
+            "--repository",
+            "org/image",
+            "--grant-everyone",
+        ]);
+        let ImageCommand::Register(args) = command else {
+            panic!("expected register");
+        };
+        assert_eq!(args.registry, "ghcr.io:443");
+        assert!(args.grant_everyone);
+
+        // The registry and repository are what make a digest pullable, so
+        // neither is optional.
+        assert!(Cli::try_parse_from(["tml", "image", "register", "sha256:abc"]).is_err());
+    }
+
+    #[cfg(feature = "image")]
+    #[test]
+    fn verifying_parses_chain_expectations() {
+        let command = image_command(&[
+            "tml", "image", "verify", "out", "--chain", "rootfs=2", "--chain", "bootfs=1",
+        ]);
+        let ImageCommand::Verify(args) = command else {
+            panic!("expected verify");
+        };
+        assert_eq!(args.chains.len(), 2);
+        assert_eq!(args.chains[0].role.to_string(), "rootfs");
+        assert_eq!(args.chains[0].layers, 2);
+
+        // A malformed expectation is caught at parse time.
+        assert!(
+            Cli::try_parse_from(["tml", "image", "verify", "out", "--chain", "rootfs"]).is_err()
+        );
+    }
+
     #[cfg(feature = "user")]
     use chrono::TimeDelta;
 
